@@ -1,0 +1,121 @@
+;; ============================================================
+;; Simple HTTP Server - Direct FFI to POSIX sockets
+;;
+;; Demonstrates:
+;; - FFI function declarations
+;; - FFI struct mapping with nested structs
+;; - Type casting with (cast Type expr)
+;; - sizeof for FFI structs
+;; - Arena allocation
+;; ============================================================
+
+(module http-server
+  (export (main 0))
+
+  ;; FFI function declarations
+  (ffi "sys/socket.h"
+    (socket ((domain Int) (type Int) (protocol Int)) Int)
+    (bind ((fd Int) (addr (Ptr Void)) (len U32)) Int)
+    (listen ((fd Int) (backlog Int)) Int)
+    (accept ((fd Int) (addr (Ptr Void)) (len (Ptr U32))) Int)
+    (setsockopt ((fd Int) (level Int) (opt Int) (val (Ptr Void)) (len U32)) Int)
+    (recv ((fd Int) (buf (Ptr U8)) (len U64) (flags Int)) I64)
+    (send ((fd Int) (buf (Ptr Void)) (len U64) (flags Int)) I64))
+
+  (ffi "unistd.h"
+    (close ((fd Int)) Int))
+
+  (ffi "string.h"
+    (strstr ((haystack (Ptr U8)) (needle (Ptr U8))) (Ptr U8))
+    (memset ((ptr (Ptr Void)) (val Int) (len U64)) (Ptr Void)))
+
+  (ffi "arpa/inet.h"
+    (htons ((port U16)) U16))
+
+  ;; Struct mappings for socket addresses
+  ;; sockaddr is the base type we cast to for bind()
+  (ffi-struct "sys/socket.h" sockaddr
+    (sa_family U16)
+    (sa_data (Array U8 14)))
+
+  ;; sockaddr_in is the IPv4-specific version
+  ;; Note: sin_addr is actually struct in_addr with s_addr field
+  (ffi-struct "netinet/in.h" sockaddr_in
+    (sin_family U16)
+    (sin_port U16)
+    (sin_addr (ffi-struct in_addr (s_addr U32)))
+    (sin_zero (Array U8 8)))
+
+  ;; HTTP responses
+  (fn response-ok ()
+    (@intent "Return 200 OK with greeting")
+    (@spec (() -> String))
+    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: close\r\n\r\nHello, SLOP!")
+
+  (fn response-404 ()
+    (@intent "Return 404 Not Found")
+    (@spec (() -> String))
+    "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found")
+
+  ;; Main server
+  (fn main ()
+    (@intent "Run HTTP server on port 8080")
+    (@spec (() -> Int))
+
+    ;; Create socket (AF_INET=2, SOCK_STREAM=1)
+    (let ((sock (socket 2 1 0)))
+      (if (< sock 0)
+        (do
+          (println "Failed to create socket")
+          1)
+
+        (with-arena 256
+          (let ((addr (arena-alloc arena (sizeof sockaddr_in)))
+                (opt (arena-alloc arena (sizeof Int))))
+
+            ;; Set SO_REUSEADDR (SOL_SOCKET=1, SO_REUSEADDR=2)
+            (set! opt 1)
+            (setsockopt sock 1 2 opt 4)
+
+            ;; Zero out sockaddr_in
+            (memset addr 0 (sizeof sockaddr_in))
+
+            ;; Configure address (AF_INET=2, INADDR_ANY=0)
+            (set! addr.sin_family 2)
+            (set! addr.sin_port (htons 8080))
+            ;; sin_addr is a nested struct - now supported!
+            (set! addr.sin_addr.s_addr 0)
+
+            ;; Bind (cast sockaddr_in* to sockaddr*)
+            (if (< (bind sock (cast (Ptr sockaddr) addr) (sizeof sockaddr_in)) 0)
+              (do
+                (println "Failed to bind")
+                (close sock)
+                1)
+
+              (do
+                ;; Listen
+                (listen sock 10)
+                (println "Listening on http://localhost:8080")
+                (println "  GET /health -> 200 OK")
+                (println "  Press Ctrl+C to stop")
+
+                ;; Accept loop
+                (while true
+                  (let ((client (accept sock nil nil)))
+                    (when (>= client 0)
+                      (with-arena 4096
+                        (let ((buf (arena-alloc arena 4096)))
+                          ;; Read request
+                          (recv client buf 4095 0)
+
+                          ;; Route request (string auto-converts to C string for FFI)
+                          (let ((resp (if (strstr buf "GET /health")
+                                        (response-ok)
+                                        (response-404))))
+                            ;; Send response (use . for struct value access)
+                            (send client (. resp data) (. resp len) 0))
+
+                          ;; Close client
+                          (close client))))))
+                0))))))))

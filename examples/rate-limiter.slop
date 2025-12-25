@@ -1,0 +1,112 @@
+;; ============================================================
+;; Rate Limiter - Token Bucket Algorithm
+;; ============================================================
+;; 
+;; Demonstrates:
+;; - Range types for bounds safety
+;; - Contracts for correctness
+;; - Arena allocation
+;; - Transpiles to efficient C
+
+(module rate-limiter
+  (export (limiter-new 3) (acquire 1) (try-acquire 1) (status 2))
+  
+  ;; ------------------------------------------------------------
+  ;; Types
+  ;; ------------------------------------------------------------
+  
+  (@generation-mode deterministic)
+  
+  (type Tokens (Int 0 .. 10000))
+  (type MaxTokens (Int 1 .. 10000))
+  (type RefillRate (Int 1 .. 1000))  ; tokens per second
+  (type Milliseconds (Int 0 ..))
+  
+  (type Limiter (record
+    (max-tokens MaxTokens)
+    (refill-rate RefillRate)
+    (tokens Tokens)
+    (last-refill Milliseconds)))
+  
+  (type Status (record
+    (available Tokens)
+    (max MaxTokens)
+    (refill-rate RefillRate)))
+  
+  (type AcquireResult (enum acquired rate-limited))
+  
+  ;; ------------------------------------------------------------
+  ;; Public API
+  ;; ------------------------------------------------------------
+  
+  (@generation-mode llm)
+  
+  (fn limiter-new ((arena Arena) (max-tokens MaxTokens) (refill-rate RefillRate))
+    (@intent "Create a new rate limiter with specified capacity and refill rate")
+    (@spec ((Arena MaxTokens RefillRate) -> (Ptr Limiter)))
+    (@pre (>= max-tokens 1))
+    (@pre (>= refill-rate 1))
+    (@post (!= $result nil))
+    (@alloc arena)
+    
+    (let ((limiter (arena-alloc arena (sizeof Limiter))))
+      (set! limiter max-tokens max-tokens)
+      (set! limiter refill-rate refill-rate)
+      (set! limiter tokens max-tokens)
+      (set! limiter last-refill (now-ms))
+      limiter))
+  
+  (fn acquire ((limiter (Ptr Limiter)))
+    (@intent "Try to acquire one token, returns result")
+    (@spec (((Ptr Limiter)) -> AcquireResult))
+    (@pre (!= limiter nil))
+
+    ;; First refill based on elapsed time
+    (refill-tokens limiter)
+
+    ;; Then try to acquire
+    (if (> (. limiter tokens) 0)
+      (do
+        (set! limiter tokens (- (. limiter tokens) 1))
+        'acquired)
+      'rate-limited))
+  
+  (fn try-acquire ((limiter (Ptr Limiter)))
+    (@intent "Non-blocking acquire attempt")
+    (@spec (((Ptr Limiter)) -> AcquireResult))
+    (@pre (!= limiter nil))
+    
+    ;; Same as acquire for this implementation
+    (acquire limiter))
+  
+  (fn status ((arena Arena) (limiter (Ptr Limiter)))
+    (@intent "Get current rate limiter status")
+    (@spec ((Arena (Ptr Limiter)) -> (Ptr Status)))
+    (@pre (!= limiter nil))
+    (@alloc arena)
+    
+    (refill-tokens limiter)
+    (let ((s (arena-alloc arena (sizeof Status))))
+      (set! s available (. limiter tokens))
+      (set! s max (. limiter max-tokens))
+      (set! s refill-rate (. limiter refill-rate))
+      s))
+  
+  ;; ------------------------------------------------------------
+  ;; Internal Functions
+  ;; ------------------------------------------------------------
+  
+  (fn refill-tokens ((limiter (Ptr Limiter)))
+    (@intent "Add tokens based on elapsed time")
+    (@spec (((Ptr Limiter)) -> Unit))
+    (@pre (!= limiter nil))
+    
+    (let ((now (now-ms))
+          (elapsed-ms (- now (. limiter last-refill)))
+          (elapsed-sec (/ elapsed-ms 1000))
+          (to-add (* elapsed-sec (. limiter refill-rate)))
+          (new-tokens (min (. limiter max-tokens)
+                           (+ (. limiter tokens) to-add))))
+      (when (> to-add 0)
+        (set! limiter tokens new-tokens)
+        (set! limiter last-refill now)))))

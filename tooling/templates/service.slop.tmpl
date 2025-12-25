@@ -1,0 +1,88 @@
+;; ============================================================
+;; Service Template - CRUD service pattern
+;; ============================================================
+;;
+;; Variables:
+;;   {{name}}     - Service name (e.g., "user")
+;;   {{entity}}   - Entity type name (e.g., "User")  
+;;   {{id-type}}  - ID type (e.g., "(Int 1 ..)")
+;;
+;; Usage:
+;;   slop expand --template service.slop.tmpl \
+;;     --var name=user --var entity=User --var id-type="(Int 1 ..)"
+
+(module {{name}}-service
+  (export
+    (create 2)
+    (find-by-id 2)
+    (update 3)
+    (delete 2)
+    (list-all 1))
+  
+  ;; ------------------------------------------------------------
+  ;; Types
+  ;; ------------------------------------------------------------
+  
+  (type {{entity}}Id {{id-type}})
+  
+  (type {{entity}}Error (enum
+    not-found
+    duplicate
+    validation-failed
+    database-error))
+  
+  ;; ------------------------------------------------------------
+  ;; API Functions
+  ;; ------------------------------------------------------------
+  
+  (fn create ((arena Arena) (input (Ptr Create{{entity}}Input)))
+    (@intent "Create a new {{name}}")
+    (@spec ((Arena (Ptr Create{{entity}}Input)) -> (Result (Ptr {{entity}}) {{entity}}Error)))
+    (@pre (!= input nil))
+    (@alloc arena)
+    
+    (hole (Result (Ptr {{entity}}) {{entity}}Error)
+      "Validate input, generate ID, save to database"
+      :complexity tier-2
+      :must-use (arena input db-insert now-ms)))
+  
+  (fn find-by-id ((arena Arena) (id {{entity}}Id))
+    (@intent "Find {{name}} by ID")
+    (@spec ((Arena {{entity}}Id) -> (Result (Ptr {{entity}}) {{entity}}Error)))
+    (@alloc arena)
+    
+    (hole (Result (Ptr {{entity}}) {{entity}}Error)
+      "Look up by ID, return not-found if missing"
+      :complexity tier-1
+      :must-use (arena id db-get)))
+  
+  (fn update ((arena Arena) (id {{entity}}Id) (input (Ptr Update{{entity}}Input)))
+    (@intent "Update existing {{name}}")
+    (@spec ((Arena {{entity}}Id (Ptr Update{{entity}}Input)) -> (Result (Ptr {{entity}}) {{entity}}Error)))
+    (@pre (!= input nil))
+    (@alloc arena)
+    
+    (hole (Result (Ptr {{entity}}) {{entity}}Error)
+      "Find by ID, validate, apply updates, save"
+      :complexity tier-3
+      :must-use (arena id input db-get db-update now-ms)))
+  
+  (fn delete ((arena Arena) (id {{entity}}Id))
+    (@intent "Delete {{name}}")
+    (@spec ((Arena {{entity}}Id) -> (Result Unit {{entity}}Error)))
+    (@alloc arena)
+    
+    (hole (Result Unit {{entity}}Error)
+      "Find by ID, mark deleted or remove"
+      :complexity tier-2
+      :must-use (arena id db-get db-delete)))
+  
+  (fn list-all ((arena Arena))
+    (@intent "List all {{name}}s")
+    (@spec ((Arena) -> (Result (Ptr (List (Ptr {{entity}}))) {{entity}}Error)))
+    (@alloc arena)
+    
+    (hole (Result (Ptr (List (Ptr {{entity}}))) {{entity}}Error)
+      "Query all from database"
+      :complexity tier-1
+      :must-use (arena db-list))))

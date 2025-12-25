@@ -1,0 +1,20 @@
+;; ============================================================
+;; Hello World - Minimal SLOP Example
+;; ============================================================
+;;
+;; Demonstrates:
+;; - Basic function definition
+;; - Contracts (@intent, @spec)
+;; - String output
+;; - Entry point (main)
+
+(module hello
+  (export (main 0))
+
+  (fn main ()
+    (@intent "Print a greeting and exit")
+    (@spec (() -> Int))
+    (@post (== $result 0))
+
+    (println "Hello, World!")
+    0))

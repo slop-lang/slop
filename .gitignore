@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.eggs/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+
+# Generated C code and binaries
+*.o
+*.a
+*.out
+a.out
+
+# User configuration (keep the .example)
+slop.toml
+
+# IDE / Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build directories
+build/
+dist/
+
+# Test artifacts
+*.log
+.coverage
+htmlcov/
+
+# code tools
+.claude/

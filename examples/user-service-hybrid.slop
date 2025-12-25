@@ -1,0 +1,258 @@
+;; ============================================================
+;; User Service - Hybrid Generation Example
+;; ============================================================
+;;
+;; Demonstrates structure/logic separation:
+;; - Structure block: deterministically generated from schema
+;; - Logic block: LLM fills implementation holes
+;; - Targets C with arena allocation
+
+;; ============================================================
+;; STRUCTURE BLOCK (Deterministic - from user.json schema)
+;; ============================================================
+
+(@derived-from "schemas/user.json")
+(@generation-mode deterministic)
+
+(structure
+  (module user-service
+    (export 
+      (user-create 2)
+      (user-find-by-id 2)
+      (user-find-by-email 2)
+      (user-update 3)
+      (user-delete 2)
+      (user-list-active 1)
+      (user-authenticate 3))
+    
+    ;; Types - generated from JSON Schema
+    (type UserId (Int 1 ..))
+    (type Email (String 5 .. 255))
+    (type Password (String 8 .. 100))
+    (type HashedPassword (String 60 .. 60))  ; bcrypt hash length
+    (type Username (String 3 .. 50))
+    (type Age (U8 0 .. 150))
+    
+    (type UserStatus (enum active inactive suspended deleted))
+    
+    (type User (record
+      (id UserId)
+      (email Email)
+      (username Username)
+      (password-hash HashedPassword)
+      (age (Option Age))
+      (status UserStatus)
+      (created-at Milliseconds)
+      (updated-at Milliseconds)))
+    
+    (type CreateUserInput (record
+      (email Email)
+      (username Username)
+      (password Password)
+      (age (Option Age))))
+    
+    (type UpdateUserInput (record
+      (email (Option Email))
+      (username (Option Username))
+      (password (Option Password))
+      (age (Option Age))
+      (status (Option UserStatus))))
+    
+    (type UserError (enum
+      not-found
+      duplicate-email
+      duplicate-username
+      invalid-password
+      validation-failed
+      database-error))
+    
+    (type AuthResult (enum
+      authenticated
+      invalid-credentials
+      account-suspended
+      account-deleted))
+    
+    ;; Signatures only
+    (sig user-create ((arena Arena) (input (Ptr CreateUserInput))) 
+         (Result (Ptr User) UserError))
+    (sig user-find-by-id ((arena Arena) (id UserId)) 
+         (Result (Ptr User) UserError))
+    (sig user-find-by-email ((arena Arena) (email Email)) 
+         (Result (Ptr User) UserError))
+    (sig user-update ((arena Arena) (id UserId) (input (Ptr UpdateUserInput))) 
+         (Result (Ptr User) UserError))
+    (sig user-delete ((arena Arena) (id UserId)) 
+         (Result (Ptr User) UserError))
+    (sig user-list-active ((arena Arena)) 
+         (Result (Ptr (List (Ptr User))) UserError))
+    (sig user-authenticate ((arena Arena) (email Email) (password Password)) 
+         (Result AuthResult UserError))))
+
+
+;; ============================================================
+;; LOGIC BLOCK (LLM Generation)
+;; ============================================================
+
+(@generation-mode llm)
+
+(logic
+  ;; ----------------------------------------------------------
+  ;; Create User
+  ;; ----------------------------------------------------------
+  
+  (impl user-create ((arena Arena) (input (Ptr CreateUserInput)))
+    (@intent "Create a new user with validation and password hashing")
+    (@pre (!= input nil))
+    (@post (match $result
+             ((ok user) (== (. user email) (. input email)))
+             ((error _) true)))
+    (@alloc arena)
+    
+    ;; Tier 2: validation
+    (let ((validation-result 
+            (hole (Result Unit UserError)
+              "Check email and username don't already exist in database"
+              :complexity tier-2
+              :must-use (input db-find-by-email db-find-by-username))))
+      
+      (match validation-result
+        ((error e) (error e))
+        ((ok _)
+          ;; Tier 1: hash password
+          (let ((password-hash
+                  (hole HashedPassword
+                    "Hash the password using bcrypt"
+                    :complexity tier-1
+                    :must-use ((. input password) crypto-hash-password))))
+            
+            ;; Tier 2: create and save
+            (hole (Result (Ptr User) UserError)
+              "Allocate User in arena, set fields from input, generate ID, set timestamps, save to DB"
+              :complexity tier-2
+              :must-use (arena input password-hash db-insert-user now-ms)))))))
+  
+  ;; ----------------------------------------------------------
+  ;; Find by ID
+  ;; ----------------------------------------------------------
+  
+  (impl user-find-by-id ((arena Arena) (id UserId))
+    (@intent "Find a user by their ID")
+    (@pre (>= id 1))
+    (@post (match $result
+             ((ok user) (== (. user id) id))
+             ((error not-found) true)
+             ((error _) true)))
+    (@alloc arena)
+    
+    (hole (Result (Ptr User) UserError)
+      "Look up user by ID in database, return not-found if missing"
+      :complexity tier-1
+      :must-use (arena id db-get-user)
+      :examples (((id: 1) -> (ok user))
+                 ((id: 99999) -> (error not-found)))))
+  
+  ;; ----------------------------------------------------------
+  ;; Find by Email
+  ;; ----------------------------------------------------------
+  
+  (impl user-find-by-email ((arena Arena) (email Email))
+    (@intent "Find a user by email address")
+    (@post (match $result
+             ((ok user) (string-eq (. user email) email))
+             ((error not-found) true)
+             ((error _) true)))
+    (@alloc arena)
+    
+    (hole (Result (Ptr User) UserError)
+      "Look up user by email, return not-found if missing"
+      :complexity tier-1
+      :must-use (arena email db-find-by-email)))
+  
+  ;; ----------------------------------------------------------
+  ;; Update User
+  ;; ----------------------------------------------------------
+  
+  (impl user-update ((arena Arena) (id UserId) (input (Ptr UpdateUserInput)))
+    (@intent "Update user fields, validating uniqueness constraints")
+    (@pre (>= id 1))
+    (@pre (!= input nil))
+    (@alloc arena)
+    
+    (hole (Result (Ptr User) UserError)
+      "Find user, validate uniqueness for changed email/username, hash new password if provided, update only non-nil fields, set updated-at timestamp"
+      :complexity tier-3
+      :must-use (arena id input db-get-user db-update-user db-find-by-email 
+                 crypto-hash-password now-ms)
+      :constraints
+        ((only-update-provided-fields)
+         (preserve-unchanged-fields)
+         (validate-uniqueness-before-save))))
+  
+  ;; ----------------------------------------------------------
+  ;; Delete User (Soft Delete)
+  ;; ----------------------------------------------------------
+  
+  (impl user-delete ((arena Arena) (id UserId))
+    (@intent "Soft delete user by setting status to deleted")
+    (@pre (>= id 1))
+    (@post (match $result
+             ((ok user) (== (. user status) 'deleted))
+             ((error _) true)))
+    (@alloc arena)
+    
+    (hole (Result (Ptr User) UserError)
+      "Find user, set status to deleted, update timestamp, save"
+      :complexity tier-2
+      :must-use (arena id db-get-user db-update-user now-ms)))
+  
+  ;; ----------------------------------------------------------
+  ;; List Active Users
+  ;; ----------------------------------------------------------
+  
+  (impl user-list-active ((arena Arena))
+    (@intent "Return all users with active status")
+    (@alloc arena)
+    
+    (hole (Result (Ptr (List (Ptr User))) UserError)
+      "Query database for all users where status = active, return as list"
+      :complexity tier-1
+      :must-use (arena db-find-users-by-status)))
+  
+  ;; ----------------------------------------------------------
+  ;; Authenticate
+  ;; ----------------------------------------------------------
+  
+  (impl user-authenticate ((arena Arena) (email Email) (password Password))
+    (@intent "Verify credentials and account status")
+    (@alloc arena)
+    (@examples
+      (("user@example.com" "correct") -> (ok authenticated))
+      (("user@example.com" "wrong") -> (ok invalid-credentials))
+      (("suspended@example.com" "any") -> (ok account-suspended)))
+    
+    (hole (Result AuthResult UserError)
+      "Find user by email, verify password hash, check status is active"
+      :complexity tier-2
+      :must-use (arena email password db-find-by-email crypto-verify-password)
+      :constraints
+        ((check-password-before-status)
+         (return-invalid-credentials-for-wrong-password)
+         (return-account-suspended-if-suspended)
+         (return-account-deleted-if-deleted)))))
+
+
+;; ============================================================
+;; EXTERNAL DEPENDENCIES
+;; ============================================================
+
+;; Database functions (provided by runtime/FFI):
+;;   db-get-user       : (Arena UserId) -> (Option (Ptr User))
+;;   db-find-by-email  : (Arena Email) -> (Option (Ptr User))  
+;;   db-find-by-username : (Arena Username) -> (Option (Ptr User))
+;;   db-insert-user    : (Arena (Ptr User)) -> (Result UserId UserError)
+;;   db-update-user    : (Arena (Ptr User)) -> (Result Unit UserError)
+;;   db-find-users-by-status : (Arena UserStatus) -> (Ptr (List (Ptr User)))
+;;
+;; Crypto functions (FFI to bcrypt/argon2):
+;;   crypto-hash-password   : (Password) -> HashedPassword
+;;   crypto-verify-password : (Password HashedPassword) -> Bool
