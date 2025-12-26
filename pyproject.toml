@@ -21,6 +21,9 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
     "Topic :: Software Development :: Compilers",
 ]
+dependencies = [
+    "pyperclip>=1.11.0",
+]
 
 [project.scripts]
 slop = "slop.cli:main"

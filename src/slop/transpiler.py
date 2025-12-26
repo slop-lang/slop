@@ -29,6 +29,7 @@ class Transpiler:
     def __init__(self):
         self.types: Dict[str, TypeInfo] = {}
         self.enums: Dict[str, str] = {}  # value -> qualified name
+        self.simple_enums: Set[str] = set()  # Type names that are simple enums
         self.ffi_funcs: Dict[str, dict] = {}  # FFI function registry
         self.ffi_structs: Dict[str, dict] = {}  # FFI struct registry
         self.ffi_struct_fields: Dict[str, Dict[str, dict]] = {}  # struct → field → type info
@@ -301,6 +302,10 @@ class Transpiler:
         params = form[2] if len(form) > 2 else SList([])
         return_type = self._get_return_type(form)
 
+        # C requires main to return int
+        if name == 'main':
+            return_type = 'int'
+
         param_strs = []
         for p in params:
             if isinstance(p, SList) and len(p) >= 2:
@@ -387,6 +392,7 @@ class Transpiler:
         self.emit("")
 
         self.types[name] = TypeInfo(name, name)
+        self.simple_enums.add(name)
 
     def transpile_union(self, name: str, form: SList):
         """Transpile tagged union"""
@@ -513,6 +519,10 @@ class Transpiler:
                 annotations.setdefault('post', []).append(item[1] if len(item) > 1 else None)
             elif is_form(item, '@alloc'):
                 annotations['alloc'] = item[1].name if len(item) > 1 else None
+            elif is_form(item, '@example'):
+                pass  # Examples are for documentation/testing, not compiled
+            elif is_form(item, '@pure'):
+                pass  # Purity annotation, not compiled
             else:
                 body_exprs.append(item)
 
@@ -523,6 +533,10 @@ class Transpiler:
             # spec is ((ParamTypes) -> ReturnType)
             if isinstance(spec, SList) and len(spec) >= 3:
                 return_type = self.to_c_type(spec[-1])
+
+        # C requires main to return int
+        if name == 'main':
+            return_type = 'int'
 
         # Emit function comment
         if 'intent' in annotations:
@@ -851,7 +865,26 @@ class Transpiler:
     def transpile_match(self, expr: SList, is_return: bool):
         """Transpile match expression"""
         scrutinee = self.transpile_expr(expr[1])
-        self.emit(f"switch ({scrutinee}.tag) {{")
+
+        # Determine if this is a simple enum match
+        # Check if any pattern is a bare symbol or SList head that's in self.enums
+        is_simple_enum = False
+        for clause in expr.items[2:]:
+            if isinstance(clause, SList) and len(clause) >= 2:
+                pattern = clause[0]
+                if isinstance(pattern, Symbol) and pattern.name in self.enums:
+                    is_simple_enum = True
+                    break
+                if isinstance(pattern, SList) and len(pattern) >= 1:
+                    tag = pattern[0].name if isinstance(pattern[0], Symbol) else None
+                    if tag and tag in self.enums:
+                        is_simple_enum = True
+                        break
+
+        if is_simple_enum:
+            self.emit(f"switch ({scrutinee}) {{")
+        else:
+            self.emit(f"switch ({scrutinee}.tag) {{")
         self.indent += 1
 
         for i, clause in enumerate(expr.items[2:]):
@@ -859,14 +892,19 @@ class Transpiler:
                 pattern = clause[0]
                 body = clause.items[1:]
 
-                if isinstance(pattern, SList) and len(pattern) >= 1:
-                    tag = pattern[0].name
-                    var_name = self.to_c_name(pattern[1].name) if len(pattern) > 1 else None
-
-                    self.emit(f"case {i}: {{")
+                if isinstance(pattern, Symbol):
+                    # Bare symbol pattern (simple enum or wildcard)
+                    if pattern.name == '_':
+                        # Wildcard/default case
+                        self.emit("default: {")
+                    elif pattern.name in self.enums:
+                        # Simple enum variant
+                        enum_const = self.enums[pattern.name]
+                        self.emit(f"case {enum_const}: {{")
+                    else:
+                        # Unknown pattern, use index as fallback
+                        self.emit(f"case {i}: {{")
                     self.indent += 1
-                    if var_name:
-                        self.emit(f"__auto_type {var_name} = {scrutinee}.data.{tag};")
                     for j, item in enumerate(body):
                         is_last = (j == len(body) - 1)
                         self.transpile_statement(item, is_return and is_last)
@@ -874,10 +912,19 @@ class Transpiler:
                         self.emit("break;")
                     self.indent -= 1
                     self.emit("}")
-                elif isinstance(pattern, Symbol) and pattern.name == '_':
-                    # Wildcard/default case
-                    self.emit("default: {")
+                elif isinstance(pattern, SList) and len(pattern) >= 1:
+                    # Pattern with binding like (Number n)
+                    tag = pattern[0].name
+                    var_name = self.to_c_name(pattern[1].name) if len(pattern) > 1 else None
+
+                    if is_simple_enum and tag in self.enums:
+                        enum_const = self.enums[tag]
+                        self.emit(f"case {enum_const}: {{")
+                    else:
+                        self.emit(f"case {i}: {{")
                     self.indent += 1
+                    if var_name and not is_simple_enum:
+                        self.emit(f"__auto_type {var_name} = {scrutinee}.data.{tag};")
                     for j, item in enumerate(body):
                         is_last = (j == len(body) - 1)
                         self.transpile_statement(item, is_return and is_last)
@@ -986,8 +1033,9 @@ class Transpiler:
                 if enum_val in self.enums:
                     return self.enums[enum_val]
                 return self.to_c_name(enum_val)
-            # NOTE: Don't check for unquoted enum values here - they should use 'quote syntax
-            # Bare identifiers are always variable names
+            # Check if bare identifier is a known enum value
+            if name in self.enums:
+                return self.enums[name]
             # Handle dot notation for field access (e.g., resp.data, addr.sin_addr.s_addr)
             if '.' in name:
                 parts = name.split('.')
@@ -1008,7 +1056,7 @@ class Transpiler:
                     b = self.transpile_expr(expr[2])
                     return f"({a} {op} {b})"
 
-                if op == '==':
+                if op == '==' or op == '=':
                     a = self.transpile_expr(expr[1])
                     b = self.transpile_expr(expr[2])
                     return f"({a} == {b})"
@@ -1252,6 +1300,11 @@ class Transpiler:
                             args.append(self.transpile_expr(arg))
 
                     return f"{ffi['c_name']}({', '.join(args)})"
+
+                # Check if it's an enum value being called like a constructor
+                if op in self.enums:
+                    # Just return the enum value, ignore any "arguments"
+                    return self.enums[op]
 
                 # Function call
                 fn_name = self.to_c_name(op)

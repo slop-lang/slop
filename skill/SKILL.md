@@ -42,8 +42,64 @@ Machines: Handle HOW (implementation, verification, compilation)
 (Ptr T)                ; Pointer to T
 (Option T)             ; T or nil
 (Result T E)           ; Success or error
-(enum a b c)           ; Enumeration
+(enum a b c)           ; Enumeration (simple, no data)
 (record (x T) (y U))   ; Struct
+```
+
+### Enums (Simple)
+
+Simple enums are just symbolic values - NO data attached:
+
+```
+(type Status (enum pending active done))
+
+;; Return enum value - just use the symbol directly
+(fn get-status ()
+  (@spec (() -> Status))
+  active)              ; just the symbol name
+
+;; Compare enum values
+(== status active)
+```
+
+**DO NOT use `union-new` for simple enums.** That's only for tagged unions with data.
+
+#### Matching Simple Enums
+
+Simple enums have NO data, so you CANNOT bind variables in match patterns:
+
+```
+(type FizzBuzzResult (enum Fizz Buzz FizzBuzz Number))
+
+;; CORRECT - bare symbols, no bindings
+(match result
+  (Fizz (println "Fizz"))
+  (Buzz (println "Buzz"))
+  (FizzBuzz (println "FizzBuzz"))
+  (Number (println (int-to-string arena i))))  ; use outer variable 'i', NOT a binding
+
+;; WRONG - trying to bind 'n' from Number (simple enums have no data!)
+(match result
+  ((Number n) (println n)))   ; ERROR: Number has no data to bind
+```
+
+### Tagged Unions (With Data)
+
+Use `union-new` ONLY for unions that carry associated data:
+
+```
+(type Result (union
+  (ok Int)
+  (error String)))
+
+;; Construct tagged union values
+(union-new Result ok 42)       ; Result with ok=42
+(union-new Result error "bad") ; Result with error="bad"
+
+;; Match with bindings - tagged unions DO have data
+(match result
+  ((ok val) (println (int-to-string arena val)))   ; bind 'val' from ok variant
+  ((error msg) (println msg)))                      ; bind 'msg' from error variant
 ```
 
 ### Required Annotations
@@ -62,7 +118,7 @@ Machines: Handle HOW (implementation, verification, compilation)
 (@post condition)          ; Postcondition ($result = return value)
 (@example (args) -> result) ; Test case
 (@alloc arena)             ; Memory allocation strategy
-(@pure)                    ; No side effects
+(@pure)                    ; No side effects, does NOT take arena param
 ```
 
 ### Memory Model
@@ -73,20 +129,54 @@ Machines: Handle HOW (implementation, verification, compilation)
   (let ((data (arena-alloc arena (sizeof Data))))
     ...))
 
-;; Scoped arena
+;; Scoped arena - creates 'arena' variable in scope
 (with-arena 4096
   (let ((x (alloc ...)))
     ...))  ; Arena freed at end
 ```
 
+**IMPORTANT:** The `arena` variable only exists inside `with-arena` blocks or when passed as a function parameter. Using `arena` outside these contexts is an error.
+
+```
+;; CORRECT - arena from with-arena block
+(fn main ()
+  (with-arena 1024
+    (println (int-to-string arena 42))))
+
+;; WRONG - arena not in scope
+(fn main ()
+  (println (int-to-string arena 42)))  ; ERROR: arena undefined
+```
+
 ### Holes (For LLM Generation)
 
 ```
-(hole Type "prompt")
-(hole Type "prompt" 
-  :complexity tier-2          ; tier-1 to tier-4
-  :must-use (var1 var2)
-  :examples ((in) -> out))
+(hole Type "prompt"
+  :complexity tier-N)          ; REQUIRED - selects appropriate model
+```
+
+#### Complexity Tiers (REQUIRED)
+
+Specify `:complexity` based on the **control flow** needed:
+
+| Tier | Heuristic | Control Flow |
+|------|-----------|--------------|
+| tier-1 | Single expression, no branching | Literals, arithmetic, field access, enum variant |
+| tier-2 | One level of branching | `if`/`cond`/`match` without nesting |
+| tier-3 | Iteration or recursion | `for`/`while`/`for-each`, recursive calls |
+| tier-4 | Nested control flow + state | Nested loops, accumulators, multi-pass algorithms |
+
+**Rules:**
+- No branching → tier-1
+- Branching without loops → tier-2
+- Any loop or recursion → tier-3
+- Nested loops or complex state → tier-4
+
+#### Optional Hole Attributes
+
+```
+:must-use (var1 var2)          ; Identifiers that MUST appear
+:examples ((in) -> out)        ; Example input/output pairs
 ```
 
 ### Common Patterns
@@ -164,12 +254,16 @@ SLOP                    C
 
 1. Always include @intent and @spec
 2. Use range types to constrain values
-3. Pass Arena as first param for allocating functions  
+3. Pass Arena as first param for allocating functions
 4. Use (Result T E) for fallible operations
-5. Mark hole complexity for optimal model routing
+5. ALWAYS specify `:complexity` on holes (tier-1: no branching, tier-2: branching, tier-3: loops, tier-4: nested/complex)
 6. Prefer (. x field) over direct pointer syntax
+7. ONLY use functions from references/builtins.md or defined via FFI
+8. When unsure if a function exists, check builtins.md first
+9. SLOP is minimal - no convenience functions. Convert types explicitly.
 
 ## See Also
 
+- references/builtins.md - Complete built-in function list (CHECK THIS FIRST)
 - references/types.md - Full type system
 - references/patterns.md - Common patterns

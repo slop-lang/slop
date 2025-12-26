@@ -5,10 +5,81 @@ Routes holes to appropriately-sized models based on complexity,
 with automatic escalation on verification failure.
 """
 
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 from slop.parser import SExpr, SList, Symbol, String, parse, find_holes, is_form, pretty_print
 from slop.providers import Tier, ModelConfig, Provider, MockProvider, create_default_configs
+
+logger = logging.getLogger(__name__)
+
+
+# Cache for SKILL.md + builtins.md content
+_SKILL_SPEC: Optional[str] = None
+
+# Valid built-in expression forms from SLOP spec
+VALID_EXPRESSION_FORMS = {
+    # Control flow
+    'if', 'cond', 'match', 'when', 'while', 'for', 'for-each',
+    'break', 'continue', 'return',
+    # Binding
+    'let', 'let*',
+    # Data construction
+    'array', 'list', 'map', 'record-new', 'union-new',
+    'ok', 'error', 'some', 'none',
+    # Data access
+    '.', '@', 'put', 'set!',
+    # Arithmetic
+    '+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>',
+    # Comparison
+    '==', '!=', '<', '<=', '>', '>=', '=',
+    # Boolean
+    'and', 'or', 'not',
+    # Type/memory
+    'cast', 'sizeof', 'addr',
+    'arena-new', 'arena-alloc', 'arena-free', 'with-arena',
+    # Error handling
+    'try', '?',
+    # I/O
+    'print', 'println',
+    # String operations
+    'int-to-string', 'string-len', 'string-concat', 'string-eq',
+    # Sequencing
+    'do',
+}
+
+
+def load_skill_spec() -> str:
+    """Load and cache the SLOP language spec from SKILL.md and builtins.md"""
+    global _SKILL_SPEC
+    if _SKILL_SPEC is not None:
+        return _SKILL_SPEC
+
+    # Find skill files relative to this file's location
+    # hole_filler.py is in src/slop/, skill/ is at project root
+    pkg_root = Path(__file__).parent.parent.parent
+
+    # Load SKILL.md
+    skill_path = pkg_root / "skill" / "SKILL.md"
+    content = ""
+    if skill_path.exists():
+        content = skill_path.read_text()
+        # Strip YAML frontmatter (between --- markers)
+        lines = content.split('\n')
+        if lines and lines[0].strip() == '---':
+            for i, line in enumerate(lines[1:], 1):
+                if line.strip() == '---':
+                    content = '\n'.join(lines[i + 1:])
+                    break
+
+    # Load builtins.md - critical for I/O constraints
+    builtins_path = pkg_root / "skill" / "references" / "builtins.md"
+    if builtins_path.exists():
+        content += "\n\n" + builtins_path.read_text()
+
+    _SKILL_SPEC = content.strip()
+    return _SKILL_SPEC
 
 
 @dataclass
@@ -116,21 +187,47 @@ def _type_complexity(type_expr: SExpr) -> Tier:
     return Tier.TIER_2
 
 
-def build_prompt(hole: Hole, context: Dict[str, Any]) -> str:
-    """Build prompt for hole filling"""
+def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tuple] = None) -> str:
+    """Build prompt for hole filling, optionally including feedback from failures"""
+    spec = load_skill_spec()
+
     sections = [
-        "You are filling a typed hole in SLOP code. SLOP uses S-expression syntax.",
+        "You are filling a typed hole in SLOP code.",
+    ]
+
+    if spec:
+        sections.extend([
+            "",
+            spec,
+        ])
+
+    sections.extend([
         "",
         "## Context",
         f"Function: {context.get('fn_name', 'unknown')}",
         f"Intent: {context.get('intent', '')}",
         f"Parameters: {context.get('params', '')}",
         f"Return type: {context.get('return_type', '')}",
+    ])
+
+    # Explicitly list available variables to prevent using wrong names
+    if context.get('params'):
+        sections.append("")
+        sections.append("## Available Variables")
+        sections.append(f"IMPORTANT: Use ONLY these parameter names in your expression: {context.get('params')}")
+
+    if context.get('type_defs'):
+        sections.append("")
+        sections.append("## Type Definitions")
+        for td in context.get('type_defs', []):
+            sections.append(td)
+
+    sections.extend([
         "",
         "## Hole to Fill",
         f"Type: {hole.type_expr}",
         f"Description: {hole.prompt}",
-    ]
+    ])
 
     if hole.constraints:
         sections.append("")
@@ -149,6 +246,17 @@ def build_prompt(hole: Hole, context: Dict[str, Any]) -> str:
         sections.append("## Must Use")
         sections.append(f"The expression MUST use: {', '.join(hole.must_use)}")
 
+    # Include feedback from failed attempts
+    if failed_attempts:
+        sections.append("")
+        sections.append("## Previous Failed Attempts")
+        sections.append("Your previous attempts were rejected. Do NOT repeat these mistakes:")
+        # Include last 3 failures to avoid prompt bloat
+        for i, (attempt, error) in enumerate(failed_attempts[-3:], 1):
+            sections.append("")
+            sections.append(f"Attempt {i}: {attempt}...")
+            sections.append(f"Error: {error}")
+
     sections.append("")
     sections.append("Respond with ONLY the SLOP S-expression. No explanation.")
 
@@ -166,7 +274,10 @@ class HoleFiller:
     def fill(self, hole: Hole, context: Dict[str, Any]) -> FillResult:
         """Fill a single hole"""
         tier = classify_tier(hole)
-        prompt = build_prompt(hole, context)
+        failed_attempts = []  # List of (response_snippet, error) tuples
+
+        logger.debug(f"Filling hole: {hole.prompt}")
+        logger.debug(f"Classified as {tier.name}")
 
         attempts = 0
         current_tier = tier
@@ -174,38 +285,59 @@ class HoleFiller:
         while current_tier.value <= Tier.TIER_4.value:
             config = self.configs.get(current_tier)
             if not config:
-                # Skip to next tier if no config, but check bounds
+                logger.debug(f"No config for {current_tier.name}, skipping")
                 next_val = current_tier.value + 1
                 if next_val > Tier.TIER_4.value:
                     break
                 current_tier = Tier(next_val)
                 continue
 
-            for _ in range(self.max_retries):
+            for retry in range(self.max_retries):
                 attempts += 1
+                # Rebuild prompt with feedback from failed attempts
+                prompt = build_prompt(hole, context, failed_attempts)
+                logger.info(f"Attempt {attempts}: {current_tier.name} using {config.model}")
+                logger.debug(f"Prompt:\n{prompt}")
+
                 try:
                     response = self.provider.complete(prompt, config)
-                    expr = self._parse_response(response)
+                    logger.debug(f"Response:\n{response}")
 
-                    if expr and self._validate(expr, hole):
+                    expr = self._parse_response(response)
+                    if not expr:
+                        error = "Failed to parse as valid S-expression"
+                        logger.warning(error)
+                        failed_attempts.append((response[:100], error))
+                        continue
+
+                    success, error = self._validate(expr, hole)
+                    if success:
+                        logger.info(f"Success after {attempts} attempt(s)")
                         return FillResult(
                             success=True,
                             expression=expr,
                             model_used=config.model,
                             attempts=attempts
                         )
+                    else:
+                        logger.warning(f"Validation failed: {error}")
+                        failed_attempts.append((str(expr)[:100], error))
                 except Exception as e:
+                    logger.warning(f"Exception during attempt {attempts}: {e}")
+                    failed_attempts.append(("(exception)", str(e)))
                     continue
 
-            # Escalate to next tier, but check bounds
+            # Escalate to next tier
             next_val = current_tier.value + 1
             if next_val > Tier.TIER_4.value:
                 break
+            logger.info(f"Escalating from {current_tier.name} to {Tier(next_val).name}")
             current_tier = Tier(next_val)
 
+        logger.error(f"Failed after {attempts} attempt(s)")
         return FillResult(
             success=False,
-            error="Failed after all attempts",
+            error=f"Failed after {attempts} attempts",
             attempts=attempts
         )
 
@@ -215,24 +347,77 @@ class HoleFiller:
         if response.startswith('```'):
             lines = response.split('\n')
             response = '\n'.join(lines[1:-1])
+            logger.debug(f"Stripped code fence, parsing: {response[:100]}...")
 
         try:
             exprs = parse(response)
-            return exprs[0] if exprs else None
-        except:
+            if exprs:
+                logger.debug(f"Parsed expression: {exprs[0]}")
+                return exprs[0]
+            logger.debug("Parse returned empty list")
+            return None
+        except Exception as e:
+            logger.debug(f"Parse error: {e}")
+            logger.debug(f"Failed to parse: {response[:200]}")
             return None
 
-    def _validate(self, expr: SExpr, hole: Hole) -> bool:
-        """Basic validation"""
+    def _find_invalid_form(self, expr: SExpr) -> Optional[str]:
+        """Recursively find any invalid form names in the expression.
+        Returns the invalid form name if found, None otherwise."""
+        if not isinstance(expr, SList) or len(expr) == 0:
+            return None
+
+        head = expr[0]
+        if isinstance(head, Symbol):
+            form_name = head.name
+            # Known bad forms that LLMs invent
+            INVALID_FORMS = {'block', 'begin', 'progn', 'seq', 'sequence', 'do-block'}
+            if form_name in INVALID_FORMS:
+                return form_name
+
+        # Recursively check all children
+        for item in expr.items:
+            if isinstance(item, SList):
+                invalid = self._find_invalid_form(item)
+                if invalid:
+                    return invalid
+
+        return None
+
+    def _validate(self, expr: SExpr, hole: Hole) -> tuple[bool, Optional[str]]:
+        """Validate expression, return (success, error_message)"""
+        # Reject if the "fill" is itself a hole form
+        if is_form(expr, 'hole'):
+            error = "Do not return a hole form - fill it with actual code"
+            logger.warning(error)
+            return False, error
+
+        # Reject definition forms - holes must be filled with expressions, not definitions
+        invalid_forms = ['fn', 'type', 'module', 'impl', 'ffi', 'ffi-struct',
+                         '@intent', '@spec', '@pre', '@post', '@example', '@pure', '@alloc']
+        for form_name in invalid_forms:
+            if is_form(expr, form_name):
+                error = f"Do not return a '{form_name}' form - fill the hole with an expression, not a definition"
+                logger.warning(error)
+                return False, error
+
+        # Recursive check: reject invented forms anywhere in the expression tree
+        invalid_form = self._find_invalid_form(expr)
+        if invalid_form:
+            error = f"Invalid form '{invalid_form}' - not a valid SLOP expression. Use 'do' for sequencing."
+            logger.warning(error)
+            return False, error
+
         if hole.must_use:
             expr_str = str(expr)
             for must in hole.must_use:
-                # Flexible matching for identifiers
                 must_normalized = must.replace('-', '_').replace('.', '')
                 expr_normalized = expr_str.replace('-', '_').replace('.', '')
                 if must_normalized not in expr_normalized:
-                    return False
-        return True
+                    error = f"Expression must use '{must}' but it was not found"
+                    logger.debug(error)
+                    return False, error
+        return True, None
 
     def fill_batch(
         self,
@@ -262,14 +447,33 @@ class HoleFiller:
 
     def _build_batch_prompt(self, holes: List[tuple]) -> str:
         """Build a combined prompt for multiple holes"""
+        spec = load_skill_spec()
+
         sections = [
             "You are filling multiple typed holes in SLOP code.",
-            "SLOP uses S-expression syntax (like Lisp).",
+        ]
+
+        if spec:
+            sections.extend([
+                "",
+                spec,
+            ])
+
+        sections.extend([
             "",
             "For each hole, provide ONLY the expression with no explanation.",
             "Use the [HOLE N] format for each response.",
             "",
-        ]
+        ])
+
+        # Include type definitions once (they're shared across holes)
+        if holes:
+            first_context = holes[0][1]
+            if first_context.get('type_defs'):
+                sections.append("## Type Definitions")
+                for td in first_context.get('type_defs', []):
+                    sections.append(td)
+                sections.append("")
 
         for i, (hole, context) in enumerate(holes, 1):
             sections.append(f"## Hole {i}: {context.get('fn_name', 'unknown')}")
@@ -314,17 +518,25 @@ class HoleFiller:
             if i < len(parts):
                 expr_str = parts[i].strip()
                 expr = self._parse_response(expr_str)
-                if expr and self._validate(expr, hole):
-                    results.append(FillResult(
-                        success=True,
-                        expression=expr,
-                        model_used=self.configs.get(Tier.TIER_3, ModelConfig('', '')).model,
-                        attempts=1
-                    ))
+                if expr:
+                    valid, error = self._validate(expr, hole)
+                    if valid:
+                        results.append(FillResult(
+                            success=True,
+                            expression=expr,
+                            model_used=self.configs.get(Tier.TIER_3, ModelConfig('', '')).model,
+                            attempts=1
+                        ))
+                    else:
+                        results.append(FillResult(
+                            success=False,
+                            error=error or f"Validation failed: {expr_str[:50]}...",
+                            attempts=1
+                        ))
                 else:
                     results.append(FillResult(
                         success=False,
-                        error=f"Failed to parse or validate: {expr_str[:50]}...",
+                        error=f"Failed to parse: {expr_str[:50]}...",
                         attempts=1
                     ))
             else:
@@ -363,6 +575,7 @@ def replace_holes_in_ast(ast: List[SExpr], replacements: Dict[int, SExpr]) -> Li
 def _replace_holes_recursive(expr: SExpr, replacements: Dict[int, SExpr]) -> SExpr:
     """Recursively replace holes identified by their id()"""
     if id(expr) in replacements:
+        logger.debug(f"Replacing hole id={id(expr)} with {replacements[id(expr)]}")
         return replacements[id(expr)]
 
     if isinstance(expr, SList):

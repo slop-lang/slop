@@ -184,6 +184,7 @@ identifier               ; Variable reference
 (while cond body)
 (for (i start end) body)
 (for-each (item collection) body)
+(do expr1 expr2 ...)         ; Sequence, returns last
 (break)
 (continue)
 (return expr)

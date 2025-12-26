@@ -1,0 +1,14 @@
+# Generated files
+src/
+build/
+node_modules/
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.wasm
+
+# Logs
+*.log

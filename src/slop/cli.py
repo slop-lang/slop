@@ -78,42 +78,79 @@ def cmd_transpile(args):
 
 def cmd_fill(args):
     """Fill holes with LLM"""
+    import logging
+    if args.verbose:
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(name)s %(levelname)s: %(message)s'
+        )
+    elif not args.quiet:
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(message)s'
+        )
+
+    logger = logging.getLogger(__name__)
+    quiet = args.quiet
+
     try:
         ast = parse_file(args.input)
 
-        # Collect all holes with their parent forms for context
+        # Collect type definitions from module for context
+        type_defs = []
+        for form in ast:
+            if is_form(form, 'module'):
+                for item in form.items:
+                    if is_form(item, 'type'):
+                        type_defs.append(pretty_print(item))
+
+        # Collect all holes with their parent function forms for context
         all_holes = []
         for form in ast:
-            holes = find_holes(form)
-            for h in holes:
-                all_holes.append((form, h))
+            if is_form(form, 'module'):
+                # Look inside module for functions containing holes
+                for item in form.items:
+                    if is_form(item, 'fn') or is_form(item, 'impl'):
+                        holes = find_holes(item)
+                        for h in holes:
+                            all_holes.append((item, h))  # item is the fn form
+            else:
+                # Top-level function
+                holes = find_holes(form)
+                for h in holes:
+                    all_holes.append((form, h))
 
         if not all_holes:
-            print("No holes to fill")
+            if not quiet:
+                print("No holes to fill")
             if args.output:
                 with open(args.input) as f:
                     Path(args.output).write_text(f.read())
             return 0
 
-        print(f"Found {len(all_holes)} holes")
+        if not quiet:
+            print(f"Found {len(all_holes)} holes")
 
         # Create filler from config or use mock
         if args.config:
             try:
                 config = load_config(args.config)
                 configs, provider = create_from_config(config)
-                print(f"Loaded config from {args.config}")
+                if not quiet:
+                    print(f"Loaded config from {args.config}")
             except Exception as e:
                 print(f"Error loading config: {e}", file=sys.stderr)
                 return 1
         else:
             configs = create_default_configs()
             provider = MockProvider()
-            print("Note: No --config specified. Using mock provider.")
-            print("      Create slop.toml from slop.toml.example for real LLM generation.")
+            if not quiet:
+                print("Note: No --config specified. Using mock provider.")
+                print("      Create slop.toml from slop.toml.example for real LLM generation.")
 
         filler = HoleFiller(configs, provider)
-        print("Filling holes...")
+        if not quiet:
+            print("Filling holes...")
 
         # Fill holes and track replacements
         replacements = {}  # id(hole) -> filled_expr
@@ -130,6 +167,7 @@ def cmd_fill(args):
                 info = extract_hole(hole)
                 tier = classify_tier(info)
                 context = _extract_context(form)
+                context['type_defs'] = type_defs
                 if tier not in tier_groups:
                     tier_groups[tier] = []
                 tier_groups[tier].append((form, hole, info, context))
@@ -148,7 +186,8 @@ def cmd_fill(args):
 
                 if is_interactive and len(group) > 1:
                     # Batch fill for interactive providers
-                    print(f"\n{tier.name} ({len(group)} holes): Batching for interactive provider...")
+                    if not quiet:
+                        print(f"\n{tier.name} ({len(group)} holes): Batching for interactive provider...")
                     batch_data = [(info, context) for (form, hole, info, context) in group]
                     results = filler.fill_batch(batch_data, tier)
 
@@ -156,26 +195,33 @@ def cmd_fill(args):
                         result = results[i] if i < len(results) else None
                         if result and result.success and result.expression:
                             replacements[id(hole)] = result.expression
+                            logger.debug(f"Replacement added: id={id(hole)}")
                             success_count += 1
-                            print(f"  + {info.prompt[:50]}...")
+                            if not quiet:
+                                print(f"  + {info.prompt[:50]}...")
                         else:
                             fail_count += 1
                             error_info = f": {result.error}" if result and result.error else ""
-                            print(f"  x {info.prompt[:50]}...{error_info}")
+                            if not quiet:
+                                print(f"  x {info.prompt[:50]}...{error_info}")
                 else:
                     # Individual fill for non-interactive or single holes
-                    print(f"\n{tier.name} ({len(group)} holes):")
+                    if not quiet:
+                        print(f"\n{tier.name} ({len(group)} holes):")
                     for form, hole, info, context in group:
                         result = filler.fill(info, context)
                         if result.success and result.expression:
                             replacements[id(hole)] = result.expression
+                            logger.debug(f"Replacement added: id={id(hole)}")
                             success_count += 1
-                            model_info = f" [{result.model_used}]" if result.model_used else ""
-                            print(f"  + {info.prompt[:50]}...{model_info}")
+                            if not quiet:
+                                model_info = f" [{result.model_used}]" if result.model_used else ""
+                                print(f"  + {info.prompt[:50]}...{model_info}")
                         else:
                             fail_count += 1
-                            error_info = f": {result.error}" if result.error else ""
-                            print(f"  x {info.prompt[:50]}...{error_info}")
+                            if not quiet:
+                                error_info = f": {result.error}" if result.error else ""
+                                print(f"  x {info.prompt[:50]}...{error_info}")
         else:
             # Original sequential mode
             for form, hole in all_holes:
@@ -184,19 +230,24 @@ def cmd_fill(args):
 
                 # Build context from parent function
                 context = _extract_context(form)
+                context['type_defs'] = type_defs
 
                 result = filler.fill(info, context)
                 if result.success and result.expression:
                     replacements[id(hole)] = result.expression
+                    logger.debug(f"Replacement added: id={id(hole)}")
                     success_count += 1
-                    model_info = f" [{result.model_used}]" if result.model_used else ""
-                    print(f"  + {info.prompt[:50]}... ({tier.name}){model_info}")
+                    if not quiet:
+                        model_info = f" [{result.model_used}]" if result.model_used else ""
+                        print(f"  + {info.prompt[:50]}... ({tier.name}){model_info}")
                 else:
                     fail_count += 1
-                    error_info = f": {result.error}" if result.error else ""
-                    print(f"  x {info.prompt[:50]}... ({tier.name}){error_info}")
+                    if not quiet:
+                        error_info = f": {result.error}" if result.error else ""
+                        print(f"  x {info.prompt[:50]}... ({tier.name}){error_info}")
 
         # Replace holes in AST
+        logger.debug(f"Replacements: {len(replacements)} entries, ids={list(replacements.keys())}")
         if replacements:
             filled_ast = replace_holes_in_ast(ast, replacements)
         else:
@@ -212,12 +263,15 @@ def cmd_fill(args):
 
         if args.output:
             Path(args.output).write_text(output_text)
-            print(f"\nWrote {args.output}")
+            if not quiet:
+                print(f"\nWrote {args.output}")
         else:
-            print("\n--- Filled source ---")
+            if not quiet:
+                print("\n--- Filled source ---")
             print(output_text)
 
-        print(f"\n{success_count} filled, {fail_count} failed")
+        if not quiet:
+            print(f"\n{success_count} filled, {fail_count} failed")
         return 0 if fail_count == 0 else 1
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -421,6 +475,8 @@ def main():
     p.add_argument('-o', '--output')
     p.add_argument('-c', '--config', help='Path to TOML config file')
     p.add_argument('-v', '--verbose', action='store_true')
+    p.add_argument('-q', '--quiet', action='store_true',
+        help='Output only the filled source, no status messages')
     p.add_argument('--batch-interactive', action='store_true',
         help='Batch interactive provider holes into single sessions')
 
