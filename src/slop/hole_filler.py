@@ -22,7 +22,7 @@ _SKILL_SPEC: Optional[str] = None
 VALID_EXPRESSION_FORMS = {
     # Control flow
     'if', 'cond', 'match', 'when', 'while', 'for', 'for-each',
-    'break', 'continue', 'return',
+    'break', 'continue', 'return', 'else',
     # Binding
     'let', 'let*',
     # Data construction
@@ -47,11 +47,103 @@ VALID_EXPRESSION_FORMS = {
     'int-to-string', 'string-len', 'string-concat', 'string-eq',
     # Sequencing
     'do',
+    # FFI
+    'c-inline',
 }
 
 
+def _extract_function_calls(expr: SExpr) -> set:
+    """Extract all function/form names called in an expression.
+
+    Skips known binding forms where identifiers are not function calls:
+    - (let ((x val)) body) - x is a binding, not a call
+    - (for (i start end) body) - i is a binding
+    - (for-each (x list) body) - x is a binding
+    - (match expr (Pattern body)) - Pattern is a tag, not a call
+    - (record-new Type (field val)) - field is a field name
+    """
+    calls = set()
+    if not isinstance(expr, SList) or len(expr) == 0:
+        return calls
+
+    head = expr[0]
+    if not isinstance(head, Symbol):
+        # Head is not a symbol, recurse on all items
+        for item in expr.items:
+            calls.update(_extract_function_calls(item))
+        return calls
+
+    head_name = head.name
+
+    # Always add the head as a call (we'll filter builtins later)
+    calls.add(head_name)
+
+    # Handle special forms that introduce bindings (don't recurse into binding positions)
+    if head_name in ('let', 'let*') and len(expr) >= 3:
+        # (let ((x val) (y val2)) body) - skip binding names, recurse on values and body
+        bindings = expr[1]
+        if isinstance(bindings, SList):
+            for binding in bindings.items:
+                if isinstance(binding, SList) and len(binding) >= 2:
+                    # Skip first element (binding name), recurse on value
+                    calls.update(_extract_function_calls(binding[1]))
+        # Recurse on body
+        for item in expr.items[2:]:
+            calls.update(_extract_function_calls(item))
+
+    elif head_name == 'for' and len(expr) >= 3:
+        # (for (i start end) body) - skip i, recurse on start, end, body
+        loop_spec = expr[1]
+        if isinstance(loop_spec, SList) and len(loop_spec) >= 3:
+            calls.update(_extract_function_calls(loop_spec[1]))  # start
+            calls.update(_extract_function_calls(loop_spec[2]))  # end
+        for item in expr.items[2:]:
+            calls.update(_extract_function_calls(item))
+
+    elif head_name == 'for-each' and len(expr) >= 3:
+        # (for-each (x list) body) - skip x, recurse on list, body
+        loop_spec = expr[1]
+        if isinstance(loop_spec, SList) and len(loop_spec) >= 2:
+            calls.update(_extract_function_calls(loop_spec[1]))  # list expr
+        for item in expr.items[2:]:
+            calls.update(_extract_function_calls(item))
+
+    elif head_name == 'match' and len(expr) >= 2:
+        # (match expr (Pattern body) ...) - skip pattern heads, recurse on bodies
+        calls.update(_extract_function_calls(expr[1]))  # matched expr
+        for clause in expr.items[2:]:
+            if isinstance(clause, SList) and len(clause) >= 2:
+                # Skip pattern (first element), recurse on body (rest)
+                for item in clause.items[1:]:
+                    calls.update(_extract_function_calls(item))
+
+    elif head_name == 'record-new' and len(expr) >= 2:
+        # (record-new Type (field val) ...) - skip Type and field names
+        for item in expr.items[2:]:
+            if isinstance(item, SList) and len(item) >= 2:
+                # Skip field name, recurse on value
+                calls.update(_extract_function_calls(item[1]))
+
+    elif head_name == 'cond':
+        # (cond (test body) ... (else body)) - recurse on all tests and bodies
+        for clause in expr.items[1:]:
+            if isinstance(clause, SList):
+                for item in clause.items:
+                    # Skip 'else' keyword
+                    if isinstance(item, Symbol) and item.name == 'else':
+                        continue
+                    calls.update(_extract_function_calls(item))
+
+    else:
+        # Default: recurse on all items after head
+        for item in expr.items[1:]:
+            calls.update(_extract_function_calls(item))
+
+    return calls
+
+
 def load_skill_spec() -> str:
-    """Load and cache the SLOP language spec from SKILL.md and builtins.md"""
+    """Load and cache the SLOP language spec from SKILL.md, builtins.md, and patterns.md"""
     global _SKILL_SPEC
     if _SKILL_SPEC is not None:
         return _SKILL_SPEC
@@ -78,6 +170,21 @@ def load_skill_spec() -> str:
     if builtins_path.exists():
         content += "\n\n" + builtins_path.read_text()
 
+    # Load patterns.md - common patterns to reduce LLM reinvention errors
+    patterns_path = pkg_root / "skill" / "references" / "patterns.md"
+    if patterns_path.exists():
+        patterns_content = patterns_path.read_text()
+        # Only include the "Simple Loop Patterns" section for conciseness
+        if "## Simple Loop Patterns" in patterns_content:
+            start = patterns_content.find("## Simple Loop Patterns")
+            end = patterns_content.find("\n---\n", start)
+            if end == -1:
+                end = patterns_content.find("\n## Arena Allocation", start)
+            if end != -1:
+                content += "\n\n" + patterns_content[start:end].strip()
+            else:
+                content += "\n\n" + patterns_content[start:start+2000].strip()
+
     _SKILL_SPEC = content.strip()
     return _SKILL_SPEC
 
@@ -99,6 +206,8 @@ class FillResult:
     error: Optional[str] = None
     model_used: Optional[str] = None
     attempts: int = 0
+    quality_score: float = 0.0
+    quality_metrics: Optional[Dict[str, float]] = None
 
 
 def extract_hole(hole_expr: SList) -> Hole:
@@ -187,6 +296,36 @@ def _type_complexity(type_expr: SExpr) -> Tier:
     return Tier.TIER_2
 
 
+def _get_syntax_hints_for_type(type_str: str) -> str:
+    """Generate syntax hints based on expected return type"""
+    hints = []
+    if 'Result' in type_str:
+        hints.append("For Result types: return (ok value) for success, (error err) for failure")
+        hints.append("Match with: (match result ((ok val) use-val) ((error e) handle-e))")
+    if 'Option' in type_str:
+        hints.append("For Option types: return (some value) or (none)")
+        hints.append("Match with: (match opt ((some val) use-val) ((none) handle-none))")
+    if 'Bool' in type_str:
+        hints.append("Return true or false (bare symbols, not quoted)")
+    if 'String' in type_str:
+        hints.append("String operations need arena: (string-concat arena s1 s2), (int-to-string arena n)")
+    return '\n'.join(hints) if hints else ""
+
+
+# Common function mistakes and their correct alternatives
+FUNCTION_ALTERNATIVES = {
+    'parse-int': 'No parse-int in SLOP. Use (string-to-int str) via FFI or manual loop',
+    'json-parse': 'No JSON library. Parse manually or use record-new with known fields',
+    'string-find': 'No string-find. Use for-each to iterate characters',
+    'substring': 'Use (string-slice s start end) if available via FFI',
+    'list-length': 'Arrays are fixed size (e.g., 100). Track length manually for lists',
+    'print-int': 'Use (println (int-to-string arena n))',
+    'arr.length': 'Use the declared array size directly (e.g., 100)',
+    'malloc': 'Use (arena-alloc arena size)',
+    'free': 'Arenas auto-free. Use (arena-free arena) only for explicit cleanup',
+}
+
+
 def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tuple] = None) -> str:
     """Build prompt for hole filling, optionally including feedback from failures"""
     spec = load_skill_spec()
@@ -201,6 +340,45 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
             spec,
         ])
 
+    # Strong constraints to prevent invented functions
+    sections.extend([
+        "",
+        "## CRITICAL CONSTRAINTS",
+        "1. ONLY use functions listed in the Built-in Functions above",
+        "2. DO NOT invent functions - these DO NOT exist in SLOP:",
+        "   - json-parse, json-get-*, parse-json (no JSON library)",
+        "   - string-find, string-index, substring, string-slice",
+        "   - parse-int, atoi, str-to-int (use FFI if needed)",
+        "   - read, write (use recv, send for sockets)",
+        "   - ref, deref (no references)",
+        "   - list-invoices, find-invoice, create-invoice (define these yourself)",
+        "3. Use (do expr1 expr2 ...) for sequencing multiple expressions",
+        "4. Use match with bare enum names: (match x (Foo ...) (Bar ...)) not ((Foo v) ...)",
+        "5. Escape quotes in strings: \"hello \\\"world\\\"\"",
+        "6. Arrays are FIXED SIZE - no .length property. Use the declared size (e.g., 100 for Array T 100)",
+    ])
+
+    # Add type-specific syntax hints
+    type_str = str(hole.type_expr)
+    type_hints = _get_syntax_hints_for_type(type_str)
+    if type_hints:
+        sections.extend([
+            "",
+            "## Type-Specific Syntax",
+            type_hints,
+        ])
+
+    # Examples of correct fills
+    sections.extend([
+        "",
+        "## Examples of Correct Fills",
+        "Hole: (hole Int \"Add two numbers\" :must-use (a b))",
+        "Fill: (+ a b)",
+        "",
+        "Hole: (hole FizzBuzzResult \"Return result based on divisibility\")",
+        "Fill: (cond ((== (% n 15) 0) FizzBuzz) ((== (% n 3) 0) Fizz) ((== (% n 5) 0) Buzz) (else Number))",
+    ])
+
     sections.extend([
         "",
         "## Context",
@@ -210,17 +388,28 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         f"Return type: {context.get('return_type', '')}",
     ])
 
-    # Explicitly list available variables to prevent using wrong names
+    # Explicitly list available variables with types to prevent using wrong names
     if context.get('params'):
         sections.append("")
         sections.append("## Available Variables")
-        sections.append(f"IMPORTANT: Use ONLY these parameter names in your expression: {context.get('params')}")
+        # Include typed params if available, otherwise just names
+        typed_params = context.get('typed_params', context.get('params'))
+        sections.append(f"IMPORTANT: Use ONLY these parameter names in your expression: {typed_params}")
+        sections.append("Note: Value types use . for field access (val.field), pointer types use -> (ptr.field maps to ptr->field in C)")
 
     if context.get('type_defs'):
         sections.append("")
         sections.append("## Type Definitions")
         for td in context.get('type_defs', []):
             sections.append(td)
+
+    if context.get('fn_specs'):
+        sections.append("")
+        sections.append("## Functions Defined in This File")
+        sections.append("You may call these functions:")
+        for spec in context['fn_specs']:
+            ret = f" -> {spec['return_type']}" if spec.get('return_type') else ""
+            sections.append(f"  ({spec['name']} {spec['params']}{ret})")
 
     sections.extend([
         "",
@@ -310,14 +499,17 @@ class HoleFiller:
                         failed_attempts.append((response[:100], error))
                         continue
 
-                    success, error = self._validate(expr, hole)
+                    success, error = self._validate(expr, hole, context)
                     if success:
                         logger.info(f"Success after {attempts} attempt(s)")
+                        quality_metrics = self._calculate_quality(expr, hole, context, attempts)
                         return FillResult(
                             success=True,
                             expression=expr,
                             model_used=config.model,
-                            attempts=attempts
+                            attempts=attempts,
+                            quality_score=quality_metrics['overall'],
+                            quality_metrics=quality_metrics
                         )
                     else:
                         logger.warning(f"Validation failed: {error}")
@@ -384,8 +576,10 @@ class HoleFiller:
 
         return None
 
-    def _validate(self, expr: SExpr, hole: Hole) -> tuple[bool, Optional[str]]:
+    def _validate(self, expr: SExpr, hole: Hole, context: dict = None) -> tuple[bool, Optional[str]]:
         """Validate expression, return (success, error_message)"""
+        context = context or {}
+
         # Reject if the "fill" is itself a hole form
         if is_form(expr, 'hole'):
             error = "Do not return a hole form - fill it with actual code"
@@ -408,6 +602,16 @@ class HoleFiller:
             logger.warning(error)
             return False, error
 
+        # Check for undefined function calls
+        defined_fns = set(context.get('defined_functions', []))
+        allowed = VALID_EXPRESSION_FORMS | defined_fns
+        calls = _extract_function_calls(expr)
+        undefined = calls - allowed
+        if undefined:
+            error = f"Undefined function(s): {', '.join(sorted(undefined))}. Only use built-ins or functions defined in this file."
+            logger.warning(error)
+            return False, error
+
         if hole.must_use:
             expr_str = str(expr)
             for must in hole.must_use:
@@ -418,6 +622,49 @@ class HoleFiller:
                     logger.debug(error)
                     return False, error
         return True, None
+
+    def _calculate_quality(self, expr: SExpr, hole: Hole, context: dict, attempts: int) -> Dict[str, float]:
+        """Calculate quality metrics for a successful fill"""
+        metrics = {
+            'parse_success': 1.0,  # Always 1.0 if we get here
+            'validation_pass': 1.0,  # Always 1.0 if we get here
+        }
+
+        # Check must-use coverage
+        if hole.must_use:
+            expr_str = str(expr)
+            found = 0
+            for must in hole.must_use:
+                must_normalized = must.replace('-', '_').replace('.', '')
+                expr_normalized = expr_str.replace('-', '_').replace('.', '')
+                if must_normalized in expr_normalized:
+                    found += 1
+            metrics['must_use_coverage'] = found / len(hole.must_use)
+        else:
+            metrics['must_use_coverage'] = 1.0
+
+        # Check for undefined calls (should be 0 if validation passed)
+        defined_fns = set(context.get('defined_functions', []))
+        allowed = VALID_EXPRESSION_FORMS | defined_fns
+        calls = _extract_function_calls(expr)
+        undefined = calls - allowed
+        metrics['no_undefined_calls'] = 1.0 if not undefined else 0.0
+
+        # Penalize multiple attempts (first attempt = 1.0, decreases by 0.15 per attempt)
+        metrics['first_attempt_bonus'] = max(0.0, 1.0 - (attempts - 1) * 0.15)
+
+        # Calculate overall score (weighted average)
+        weights = {
+            'parse_success': 0.2,
+            'validation_pass': 0.3,
+            'must_use_coverage': 0.2,
+            'no_undefined_calls': 0.2,
+            'first_attempt_bonus': 0.1,
+        }
+        score = sum(metrics[k] * weights[k] for k in weights)
+        metrics['overall'] = round(score, 2)
+
+        return metrics
 
     def fill_batch(
         self,
@@ -519,7 +766,7 @@ class HoleFiller:
                 expr_str = parts[i].strip()
                 expr = self._parse_response(expr_str)
                 if expr:
-                    valid, error = self._validate(expr, hole)
+                    valid, error = self._validate(expr, hole, context)
                     if valid:
                         results.append(FillResult(
                             success=True,

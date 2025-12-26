@@ -2,6 +2,8 @@
 
 SLOP is minimal. These are the ONLY built-in functions.
 
+**Remember: Every function needs `@intent` and `@spec` annotations!**
+
 ## I/O (Strings Only)
 
 ```
@@ -147,3 +149,5 @@ These do NOT exist - use alternatives:
 | `sqrt`, `sin`, `cos` | FFI to math.h |
 | `strlen s` | `(string-len s)` |
 | `malloc` | `(arena-alloc arena size)` |
+| `arr.length` | Arrays are fixed size - use declared size (e.g., 100 for `Array T 100`) |
+| `list.length` | No built-in - track length manually or use loops |

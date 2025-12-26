@@ -104,11 +104,28 @@ Use `union-new` ONLY for unions that carry associated data:
 
 ### Required Annotations
 
+**EVERY function MUST have both `@intent` and `@spec`:**
+
 ```
 (fn name ((params...))
-  (@intent "Human-readable purpose")     ; REQUIRED
-  (@spec ((ParamTypes) -> ReturnType))   ; REQUIRED
+  (@intent "Human-readable purpose")     ; REQUIRED - describes what
+  (@spec ((ParamTypes) -> ReturnType))   ; REQUIRED - type signature
   body)
+```
+
+**Without `@spec`, the type checker assumes `Unit` return type and will fail.**
+
+Example:
+```
+(fn add ((a Int) (b Int))
+  (@intent "Add two integers")
+  (@spec ((Int Int) -> Int))
+  (+ a b))
+
+(fn greet ((name String))
+  (@intent "Print a greeting")
+  (@spec ((String) -> Unit))
+  (println (string-concat arena "Hello, " name)))
 ```
 
 ### Optional Annotations
@@ -252,7 +269,7 @@ SLOP                    C
 
 ## Generation Guidelines
 
-1. Always include @intent and @spec
+1. **ALWAYS include @intent and @spec on EVERY function** - without @spec, type checking fails
 2. Use range types to constrain values
 3. Pass Arena as first param for allocating functions
 4. Use (Result T E) for fallible operations

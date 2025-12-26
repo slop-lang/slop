@@ -76,6 +76,26 @@ def cmd_transpile(args):
         return 1
 
 
+def _extract_fn_spec(form: SList) -> dict:
+    """Extract function name, params, and return type from fn form."""
+    from slop.parser import Symbol
+    if len(form) < 3:
+        return None
+    name = form[1].name if isinstance(form[1], Symbol) else str(form[1])
+    params = str(form[2])  # ((x Type) (y Type))
+
+    # Find @spec annotation for return type
+    return_type = None
+    for item in form.items[3:]:
+        if is_form(item, '@spec') and len(item) > 1:
+            spec = item[1]
+            if hasattr(spec, 'items') and len(spec.items) >= 3:
+                return_type = str(spec.items[-1])  # Last element is return type
+            break
+
+    return {'name': name, 'params': params, 'return_type': return_type}
+
+
 def cmd_fill(args):
     """Fill holes with LLM"""
     import logging
@@ -96,13 +116,64 @@ def cmd_fill(args):
     try:
         ast = parse_file(args.input)
 
-        # Collect type definitions from module for context
+        # Collect type definitions and names from module for context
         type_defs = []
+        type_names = []
         for form in ast:
-            if is_form(form, 'module'):
+            if is_form(form, 'type') and len(form) > 1:
+                type_defs.append(pretty_print(form))
+                from slop.parser import Symbol
+                if isinstance(form[1], Symbol):
+                    type_names.append(form[1].name)
+            elif is_form(form, 'record') and len(form) > 1:
+                type_defs.append(pretty_print(form))
+                from slop.parser import Symbol
+                if isinstance(form[1], Symbol):
+                    type_names.append(form[1].name)
+            elif is_form(form, 'enum') and len(form) > 1:
+                type_defs.append(pretty_print(form))
+                from slop.parser import Symbol
+                if isinstance(form[1], Symbol):
+                    type_names.append(form[1].name)
+                # Also add enum variant names
+                for item in form.items[2:]:
+                    if isinstance(item, Symbol):
+                        type_names.append(item.name)
+            elif is_form(form, 'module'):
                 for item in form.items:
-                    if is_form(item, 'type'):
+                    if is_form(item, 'type') and len(item) > 1:
                         type_defs.append(pretty_print(item))
+                        from slop.parser import Symbol
+                        if isinstance(item[1], Symbol):
+                            type_names.append(item[1].name)
+                    elif is_form(item, 'record') and len(item) > 1:
+                        type_defs.append(pretty_print(item))
+                        from slop.parser import Symbol
+                        if isinstance(item[1], Symbol):
+                            type_names.append(item[1].name)
+                    elif is_form(item, 'enum') and len(item) > 1:
+                        type_defs.append(pretty_print(item))
+                        from slop.parser import Symbol
+                        if isinstance(item[1], Symbol):
+                            type_names.append(item[1].name)
+                        # Also add enum variant names
+                        for variant in item.items[2:]:
+                            if isinstance(variant, Symbol):
+                                type_names.append(variant.name)
+
+        # Collect function specs for context (name + params + return type)
+        fn_specs = []
+        for form in ast:
+            if is_form(form, 'fn'):
+                spec = _extract_fn_spec(form)
+                if spec:
+                    fn_specs.append(spec)
+            elif is_form(form, 'module'):
+                for item in form.items:
+                    if is_form(item, 'fn'):
+                        spec = _extract_fn_spec(item)
+                        if spec:
+                            fn_specs.append(spec)
 
         # Collect all holes with their parent function forms for context
         all_holes = []
@@ -168,6 +239,8 @@ def cmd_fill(args):
                 tier = classify_tier(info)
                 context = _extract_context(form)
                 context['type_defs'] = type_defs
+                context['fn_specs'] = fn_specs
+                context['defined_functions'] = [s['name'] for s in fn_specs] + type_names
                 if tier not in tier_groups:
                     tier_groups[tier] = []
                 tier_groups[tier].append((form, hole, info, context))
@@ -231,6 +304,8 @@ def cmd_fill(args):
                 # Build context from parent function
                 context = _extract_context(form)
                 context['type_defs'] = type_defs
+                context['fn_specs'] = fn_specs
+                context['defined_functions'] = [s['name'] for s in fn_specs] + type_names
 
                 result = filler.fill(info, context)
                 if result.success and result.expression:

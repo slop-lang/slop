@@ -1,5 +1,131 @@
 # SLOP Patterns Reference
 
+## Simple Loop Patterns (Most Common)
+
+These are the patterns you'll need most often for holes. Use them exactly.
+
+### Find Index in Array
+
+Find element matching a predicate, return index or -1:
+
+```lisp
+(let ((result -1))
+  (for (i 0 SIZE)
+    (when PREDICATE
+      (do
+        (set! result i)
+        (break))))
+  result)
+```
+
+Example - find invoice by ID:
+```lisp
+(let ((result -1))
+  (for (i 0 100)
+    (when (== (. (@ storage i) id) target-id)
+      (do
+        (set! result i)
+        (break))))
+  result)
+```
+
+### Find Maximum Value
+
+```lisp
+(let ((max-val INITIAL))
+  (for (i 0 SIZE)
+    (let ((current ACCESSOR))
+      (when (> current max-val)
+        (set! max-val current))))
+  max-val)
+```
+
+### Count Matching Elements
+
+```lisp
+(let ((count 0))
+  (for (i 0 SIZE)
+    (when PREDICATE
+      (set! count (+ count 1))))
+  count)
+```
+
+### Sum Values
+
+```lisp
+(let ((total 0))
+  (for (i 0 SIZE)
+    (set! total (+ total ACCESSOR)))
+  total)
+```
+
+### Find Empty Slot (sentinel check)
+
+```lisp
+(let ((idx -1))
+  (for (i 0 SIZE)
+    (when (== (. (@ storage i) id) 0)  ; or other sentinel
+      (do
+        (set! idx i)
+        (break))))
+  idx)
+```
+
+### Array Shift Delete
+
+Delete element at index by shifting:
+```lisp
+(for (i idx (- SIZE 1))
+  (set! (@ arr i) (@ arr (+ i 1))))
+```
+
+### Format Record to String
+
+```lisp
+(string-concat arena
+  (string-concat arena "Label: " (int-to-string arena field1))
+  (string-concat arena " - " field2))
+```
+
+### Match on Enum
+
+```lisp
+(match value
+  (VARIANT1 ACTION1)
+  (VARIANT2 ACTION2)
+  (else DEFAULT))
+```
+
+## Common Mistakes to Avoid
+
+**DON'T: Use `->` for array indexing results**
+```lisp
+; WRONG: (@ storage i) returns Invoice, not (Ptr Invoice)
+(-> (@ storage i) field)
+
+; CORRECT: use . for values
+(. (@ storage i) field)
+```
+
+**DON'T: Forget arena for string operations**
+```lisp
+; WRONG
+(string-concat "a" "b")
+
+; CORRECT
+(string-concat arena "a" "b")
+```
+
+**DON'T: Use nonexistent functions**
+```lisp
+; WRONG: parse-int, json-parse, string-find don't exist
+(parse-int str)
+
+; CORRECT: implement manually or use FFI
+```
+
+---
+
 ## Arena Allocation
 
 Standard pattern for request-scoped memory:

@@ -205,6 +205,10 @@ static inline slop_string string_concat(slop_arena* arena, slop_string a, slop_s
     return slop_string_concat(arena, a, b);
 }
 
+static inline bool string_eq(slop_string a, slop_string b) {
+    return slop_string_eq(a, b);
+}
+
 /* ============================================================
  * Bytes Type (mutable, length + capacity)
  * ============================================================ */

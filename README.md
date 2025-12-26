@@ -19,11 +19,11 @@ SLOP inverts the traditional programming model:
 
 ## Design Choices
 
-- **S-expression syntax**: Zero parsing ambiguity, trivial for LLMs
-- **Range types**: `(Int 0 .. 100)` catches bounds errors at compile time
-- **Mandatory contracts**: `@intent`, `@spec`, `@pre`, `@post` define correctness
+- **S-expression syntax**: Zero parsing ambiguity, trivial for LLMs (I also like Lisp)
+- **Range types**: `(Int 0 .. 100)` catches bounds errors at compile time (Ada-inspired)
+- **Mandatory contracts**: `@intent`, `@spec`, `@pre`, `@post` define correctness 
 - **Typed holes**: Explicit markers for LLM generation with complexity tiers
-- **Transpiles to C**: Maximum performance, universal FFI, minimal runtime
+- **Transpiles to C**: Maximum performance, universal FFI, minimal runtime 
 
 ## Quick Example
 

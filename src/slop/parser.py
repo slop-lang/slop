@@ -19,7 +19,9 @@ class Symbol:
 @dataclass
 class String:
     value: str
-    def __repr__(self): return f'"{self.value}"'
+    def __repr__(self):
+        escaped = self.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
+        return f'"{escaped}"'
 
 @dataclass
 class Number:
@@ -38,6 +40,34 @@ class SList:
     def __iter__(self): return iter(self.items)
 
 SExpr = Union[Symbol, String, Number, SList]
+
+
+def _unescape_string(s: str) -> str:
+    """Unescape a string value, handling \\, \", \n, \t, \r"""
+    result = []
+    i = 0
+    while i < len(s):
+        if s[i] == '\\' and i + 1 < len(s):
+            next_char = s[i + 1]
+            if next_char == 'n':
+                result.append('\n')
+            elif next_char == 't':
+                result.append('\t')
+            elif next_char == 'r':
+                result.append('\r')
+            elif next_char == '"':
+                result.append('"')
+            elif next_char == '\\':
+                result.append('\\')
+            else:
+                # Unknown escape, keep as-is
+                result.append(s[i])
+                result.append(next_char)
+            i += 2
+        else:
+            result.append(s[i])
+            i += 1
+    return ''.join(result)
 
 
 class ParseError(Exception):
@@ -127,7 +157,7 @@ class Parser:
             return Number(float(value) if '.' in value else int(value))
         elif kind == 'STRING':
             self.pos += 1
-            return String(value[1:-1].replace('\\"', '"').replace('\\n', '\n').replace('\\r', '\r').replace('\\t', '\t'))
+            return String(_unescape_string(value[1:-1]))
         elif kind == 'QUOTE':
             self.pos += 1
             return SList([Symbol('quote'), self.parse_expr()])

@@ -21,6 +21,7 @@ class TypeInfo:
     is_range: bool = False
     min_val: Optional[int] = None
     max_val: Optional[int] = None
+    is_array: bool = False  # True if this is an array type alias
 
 
 class Transpiler:
@@ -37,6 +38,7 @@ class Transpiler:
         self.output: List[str] = []
         self.indent = 0
         self.pointer_vars: Set[str] = set()  # Track variables that are pointers
+        self.var_types: Dict[str, str] = {}  # Track variable types: var_name -> type_name
         self.record_fields: Dict[str, Dict[str, bool]] = {}  # type_name -> {field_name -> is_pointer}
         self.func_returns_pointer: Dict[str, bool] = {}  # func_name -> returns_pointer
 
@@ -80,7 +82,20 @@ class Transpiler:
     def _is_pointer_expr(self, expr: SExpr) -> bool:
         """Check if an expression is known to return a pointer"""
         if isinstance(expr, Symbol):
-            return expr.name in self.pointer_vars
+            name = expr.name
+            # Check explicit pointer tracking
+            if name in self.pointer_vars:
+                return True
+            # Check type flow: if we know the variable's type
+            if name in self.var_types:
+                var_type = self.var_types[name]
+                # Type ending in * is a pointer
+                if var_type.endswith('*'):
+                    return True
+                # Check if it's an array type alias (treated as pointer)
+                if var_type in self.types and self.types[var_type].is_array:
+                    return True
+            return False
         if isinstance(expr, SList) and len(expr) >= 1:
             head = expr[0]
             if isinstance(head, Symbol):
@@ -102,6 +117,106 @@ class Transpiler:
                 # Function call: check if function returns a pointer
                 if op in self.func_returns_pointer:
                     return self.func_returns_pointer[op]
+        return False
+
+    def _get_type_name(self, type_expr: SExpr) -> Optional[str]:
+        """Extract the type name from a type expression for tracking"""
+        if isinstance(type_expr, Symbol):
+            return type_expr.name
+        if isinstance(type_expr, SList) and len(type_expr) >= 1:
+            head = type_expr[0]
+            if isinstance(head, Symbol):
+                op = head.name
+                # (Ptr T) -> track as "T*"
+                if op == 'Ptr' and len(type_expr) >= 2:
+                    inner = self._get_type_name(type_expr[1])
+                    if inner:
+                        return f"{inner}*"
+                # (Array T size) -> track as T (element type for indexing)
+                if op == 'Array' and len(type_expr) >= 2:
+                    return self._get_type_name(type_expr[1])
+                # (Option T), (Result T E), (List T) -> track the wrapper type name
+                if op in ('Option', 'Result', 'List'):
+                    return op
+        return None
+
+    def _infer_type(self, expr: SExpr) -> Optional[str]:
+        """Infer the type name of an expression for type flow analysis"""
+        if isinstance(expr, Symbol):
+            name = expr.name
+            # Check if it's a known variable with tracked type
+            if name in self.var_types:
+                return self.var_types[name]
+            return None
+
+        if isinstance(expr, SList) and len(expr) >= 1:
+            head = expr[0]
+            if isinstance(head, Symbol):
+                op = head.name
+
+                # Array index: (@ arr idx) -> element type (not pointer to element)
+                if op == '@' and len(expr) >= 2:
+                    arr_expr = expr[1]
+                    if isinstance(arr_expr, Symbol):
+                        arr_type = self.var_types.get(arr_expr.name)
+                        if arr_type:
+                            # Handle pointer to array type: "Storage*" -> look up "Storage"
+                            base_type = arr_type.rstrip('*')
+                            if base_type in self.types:
+                                type_info = self.types[base_type]
+                                # If it's an array alias, return the element type
+                                if type_info.is_array and type_info.c_type.endswith('*'):
+                                    # c_type is like "Invoice*", return "Invoice"
+                                    elem_type = type_info.c_type[:-1].strip()
+                                    return elem_type
+                            # If arr_type is directly an array alias
+                            if arr_type in self.types:
+                                type_info = self.types[arr_type]
+                                if type_info.is_array and type_info.c_type.endswith('*'):
+                                    elem_type = type_info.c_type[:-1].strip()
+                                    return elem_type
+                            # If it's a pointer type like "Invoice*", return "Invoice"
+                            if arr_type.endswith('*'):
+                                return arr_type[:-1].strip()
+                    return None
+
+                # Record construction: (record-new Type ...) -> Type
+                if op == 'record-new' and len(expr) >= 2:
+                    if isinstance(expr[1], Symbol):
+                        return expr[1].name
+
+                # Field access: (. obj field) -> field's type (harder to determine)
+                if op == '.' and len(expr) >= 3:
+                    # For now, return None (requires full type inference)
+                    return None
+
+        return None
+
+    def _is_string_expr(self, expr: SExpr) -> bool:
+        """Check if expression is a string type"""
+        if isinstance(expr, String):
+            return True
+        if isinstance(expr, Symbol):
+            name = expr.name
+            # Parameters with String type would need type tracking
+            # For now, check common patterns
+            if name in ('path', 'body', 'customer', 'name', 'message', 'msg'):
+                return True
+            return False
+        if isinstance(expr, SList) and len(expr) > 0:
+            head = expr[0]
+            if isinstance(head, Symbol):
+                # String-returning functions
+                if head.name in ('string-concat', 'int-to-string', 'format-invoice',
+                                 'string-eq', '.'):
+                    # For field access, check if field name suggests string
+                    if head.name == '.' and len(expr) >= 3:
+                        field = expr[2]
+                        if isinstance(field, Symbol):
+                            if field.name in ('path', 'body', 'customer', 'name', 'message'):
+                                return True
+                    elif head.name != '.':
+                        return True
         return False
 
     def transpile(self, ast: List[SExpr]) -> str:
@@ -141,6 +256,14 @@ class Transpiler:
                 self.transpile_module(form)
             elif is_form(form, 'type'):
                 self.transpile_type(form)
+            elif is_form(form, 'record'):
+                # Bare record: (record Name (field Type) ...)
+                name = form[1].name if len(form) > 1 and isinstance(form[1], Symbol) else "unnamed"
+                self.transpile_record(name, form)
+            elif is_form(form, 'enum'):
+                # Bare enum: (enum Name val1 val2 ...)
+                name = form[1].name if len(form) > 1 and isinstance(form[1], Symbol) else "unnamed"
+                self.transpile_enum(name, form)
             elif is_form(form, 'fn'):
                 self.transpile_function(form)
 
@@ -349,7 +472,12 @@ class Transpiler:
             self.transpile_range_type(name, type_expr)
 
     def transpile_record(self, name: str, form: SList):
-        """Transpile record to C struct"""
+        """Transpile record to C struct
+
+        Handles both syntaxes:
+        - Wrapped: (record (field Type) ...) - called from (type Name (record ...))
+        - Bare: (record Name (field Type) ...) - top-level form
+        """
         # Use struct tag name so it works with forward declarations
         self.emit(f"struct {name} {{")
         self.indent += 1
@@ -357,7 +485,13 @@ class Transpiler:
         # Track field types for pointer detection
         self.record_fields[name] = {}
 
-        for field in form.items[1:]:
+        # Determine start index: skip name if bare form
+        start_idx = 1
+        if len(form) > 1 and isinstance(form[1], Symbol):
+            # First element is a symbol (the name in bare form), skip it
+            start_idx = 2
+
+        for field in form.items[start_idx:]:
             if isinstance(field, SList) and len(field) >= 2:
                 raw_field_name = field[0].name
                 field_name = self.to_c_name(raw_field_name)
@@ -369,19 +503,35 @@ class Transpiler:
 
         self.indent -= 1
         self.emit(f"}};")
+        # Add typedef so we can use just 'Name' instead of 'struct Name'
+        self.emit(f"typedef struct {name} {name};")
         self.emit("")
 
         self.types[name] = TypeInfo(name, name)
 
     def transpile_enum(self, name: str, form: SList):
-        """Transpile enum"""
+        """Transpile enum
+
+        Handles both syntaxes:
+        - Wrapped: (enum val1 val2 ...) - called from (type Name (enum ...))
+        - Bare: (enum Name val1 val2 ...) - top-level form
+        """
         self.emit(f"typedef enum {{")
         self.indent += 1
 
-        for i, val in enumerate(form.items[1:]):
+        # Determine start index: skip name if bare form
+        start_idx = 1
+        if len(form) > 1 and isinstance(form[1], Symbol) and form[1].name == name:
+            # First element is the name in bare form, skip it
+            start_idx = 2
+
+        values = form.items[start_idx:]
+        for i, val in enumerate(values):
+            if not isinstance(val, Symbol):
+                continue
             val_c_name = self.to_c_name(val.name)
             qualified_name = f"{name}_{val_c_name}"
-            comma = "," if i < len(form.items) - 2 else ""
+            comma = "," if i < len(values) - 1 else ""
             self.emit(f"{qualified_name}{comma}")
             # Store enum value for lookup
             self.enums[val.name] = qualified_name
@@ -431,6 +581,18 @@ class Transpiler:
         base_type = 'int64_t'
 
         if isinstance(type_expr, SList):
+            head = type_expr[0].name if isinstance(type_expr[0], Symbol) else ''
+
+            # Handle Array type: (Array T size)
+            if head == 'Array' and len(type_expr) >= 3:
+                inner_type = self.to_c_type(type_expr[1])
+                size = int(type_expr[2].value) if isinstance(type_expr[2], Number) else 100
+                # For array types, create a typedef to the array
+                self.emit(f"typedef {inner_type} {name}[{size}];")
+                self.emit("")
+                self.types[name] = TypeInfo(name, f"{inner_type}*", is_array=True)
+                return
+
             # Parse (Int min .. max) or similar
             if len(type_expr) >= 1:
                 base = type_expr[0].name
@@ -488,14 +650,20 @@ class Transpiler:
         name = self.to_c_name(raw_name)
         params = form[2] if len(form) > 2 else SList([])
 
-        # Clear pointer tracking for this function scope
+        # Clear pointer and type tracking for this function scope
         self.pointer_vars = set()
+        self.var_types = {}
 
-        # Register pointer parameters
+        # Register parameter types and track pointers
         for p in params:
             if isinstance(p, SList) and len(p) >= 2:
                 pname = p[0].name
                 ptype = p[1]
+                # Track type for type flow analysis
+                type_name = self._get_type_name(ptype)
+                if type_name:
+                    self.var_types[pname] = type_name
+                # Track pointers
                 if self._is_pointer_type(ptype):
                     self.pointer_vars.add(pname)
 
@@ -672,9 +840,30 @@ class Transpiler:
             var_name = self.to_c_name(raw_name)
             init_expr = binding[1]
 
+            # Track variable type for type flow analysis
+            inferred_type = self._infer_type(init_expr)
+            if inferred_type:
+                self.var_types[raw_name] = inferred_type
+
             # Register pointer variables
             if self._is_pointer_expr(init_expr):
                 self.pointer_vars.add(raw_name)
+
+            # Special case: (array Type) - need explicit type for array init
+            if is_form(init_expr, 'array') and len(init_expr) == 2:
+                type_arg = init_expr[1]
+                if isinstance(type_arg, Symbol):
+                    type_name = type_arg.name
+                    # Check if it's a known array type alias
+                    if type_name in self.types and self.types[type_name].is_array:
+                        self.emit(f"{type_name} {var_name} = {{0}};")
+                        self.var_types[raw_name] = type_name  # Track type
+                        continue
+                    # Otherwise use the type directly with a default size
+                    c_type = self.to_c_type(type_arg)
+                    self.emit(f"{c_type} {var_name}[100] = {{0}};")
+                    self.var_types[raw_name] = type_name  # Track type
+                    continue
 
             var_expr = self.transpile_expr(init_expr)
             # Type inference would go here; for now use auto
@@ -894,7 +1083,7 @@ class Transpiler:
 
                 if isinstance(pattern, Symbol):
                     # Bare symbol pattern (simple enum or wildcard)
-                    if pattern.name == '_':
+                    if pattern.name == '_' or pattern.name == 'else':
                         # Wildcard/default case
                         self.emit("default: {")
                     elif pattern.name in self.enums:
@@ -1039,7 +1228,8 @@ class Transpiler:
             # Handle dot notation for field access (e.g., resp.data, addr.sin_addr.s_addr)
             if '.' in name:
                 parts = name.split('.')
-                return self._resolve_field_chain(parts)
+                base_is_ptr = parts[0] in self.pointer_vars
+                return self._resolve_field_chain(parts, base_is_pointer=base_is_ptr)
             return self.to_c_name(name)
 
         if isinstance(expr, SList):
@@ -1059,6 +1249,9 @@ class Transpiler:
                 if op == '==' or op == '=':
                     a = self.transpile_expr(expr[1])
                     b = self.transpile_expr(expr[2])
+                    # Use string_eq for string comparisons
+                    if self._is_string_expr(expr[1]) or self._is_string_expr(expr[2]):
+                        return f"string_eq({a}, {b})"
                     return f"({a} == {b})"
 
                 if op == '!=':
@@ -1091,6 +1284,38 @@ class Transpiler:
                     then_expr = self.transpile_expr(expr[2])
                     else_expr = self.transpile_expr(expr[3]) if len(expr) > 3 else "0"
                     return f"(({cond}) ? ({then_expr}) : ({else_expr}))"
+
+                # Let as expression (GCC statement expression)
+                if op == 'let' or op == 'let*':
+                    bindings = expr[1]
+                    body = expr[2] if len(expr) > 2 else Number(0)
+                    parts = ["({"]
+                    for binding in bindings.items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            var_name = self.to_c_name(binding[0].name)
+                            val = self.transpile_expr(binding[1])
+                            parts.append(f" __auto_type {var_name} = {val};")
+                    body_code = self.transpile_expr(body)
+                    parts.append(f" {body_code}; }})")
+                    return ''.join(parts)
+
+                # With-arena as expression
+                if op == 'with-arena':
+                    size = self.transpile_expr(expr[1])
+                    body = expr[2] if len(expr) > 2 else Number(0)
+                    body_code = self.transpile_expr(body)
+                    return f"({{ slop_arena _arena = slop_arena_new({size}); slop_arena* arena = &_arena; __auto_type _result = {body_code}; slop_arena_free(&_arena); _result; }})"
+
+                # Do as expression (sequence, returns last)
+                if op == 'do':
+                    parts = [self.transpile_expr(e) for e in expr.items[1:]]
+                    if len(parts) == 0:
+                        return "0"
+                    if len(parts) == 1:
+                        return parts[0]
+                    # Use GCC statement expression for proper sequencing
+                    stmts = '; '.join(parts[:-1])
+                    return f"({{ {stmts}; {parts[-1]}; }})"
 
                 # Field access
                 if op == '.':
@@ -1210,7 +1435,19 @@ class Transpiler:
                     return f"(slop_list){{ .data = (void*[]){{{elems_str}}}, .len = {n}, .cap = {n} }}"
 
                 if op == 'array':
+                    # (array Type) with just a type = empty array, zero-initialized
+                    # (array elem1 elem2 ...) = array with elements
+                    if len(expr) == 2:
+                        # Check if it's a type name (starts with uppercase or in types)
+                        arg = expr[1]
+                        if isinstance(arg, Symbol):
+                            name = arg.name
+                            if name[0].isupper() or name in self.types or name in self.builtin_types:
+                                # It's a type, create zero-initialized array
+                                return "{0}"
                     elements = [self.transpile_expr(e) for e in expr.items[1:]]
+                    if len(elements) == 0:
+                        return "{0}"
                     elems_str = ", ".join(elements)
                     return f"{{{elems_str}}}"
 
@@ -1392,6 +1629,14 @@ class Transpiler:
             head = type_expr[0].name
 
             if head == 'Ptr':
+                # Check if inner type is an array type alias
+                inner_arg = type_expr[1]
+                if isinstance(inner_arg, Symbol) and inner_arg.name in self.types:
+                    type_info = self.types[inner_arg.name]
+                    if type_info.is_array:
+                        # For array type alias, use element pointer type directly
+                        # (Ptr Storage) where Storage is Invoice[100] -> Invoice*
+                        return type_info.c_type
                 inner = self.to_c_type(type_expr[1])
                 return f"{inner}*"
 
@@ -1407,6 +1652,11 @@ class Transpiler:
             if head == 'List':
                 inner = self.to_c_type(type_expr[1])
                 return f"slop_list_{inner}"
+
+            if head == 'Array':
+                # (Array T size) -> T* (pointer to first element)
+                inner = self.to_c_type(type_expr[1])
+                return f"{inner}*"
 
             if head in self.builtin_types:
                 return self.builtin_types[head]
