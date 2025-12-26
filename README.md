@@ -1,4 +1,13 @@
-# SLOP - Symbolic LLM-Optimized Programming
+```
+ ███████╗██╗      ██████╗ ██████╗
+ ██╔════╝██║     ██╔═══██╗██╔══██╗
+ ███████╗██║     ██║   ██║██████╔╝
+ ╚════██║██║     ██║   ██║██╔═══╝
+ ███████║███████╗╚██████╔╝██║
+ ╚══════╝╚══════╝ ╚═════╝ ╚═╝
+```
+
+# Symbolic LLM-Optimized Programming
 
 A programming language designed for minimal human involvement in coding.
 
@@ -6,9 +15,28 @@ A programming language designed for minimal human involvement in coding.
 Humans specify WHAT and WHY → Machines handle HOW
 ```
 
-## Motivation
+## Why SLOP?
 
 This started as a thought experiment.  It's still very much an experiment :)
+
+LLMs generate code fast—but without constraints they hallucinate APIs, ignore edge cases, and produce code that "looks right" but fails in production.
+
+SLOP makes the spec the source of truth:
+
+```lisp
+(fn transfer ((from Account) (to Account) (amount (Int 1 ..)))
+  (@intent "Transfer funds between accounts")
+  (@spec ((Account Account (Int 1 ..)) -> (Result Receipt Error)))
+  (@pre (!= from to))
+  (@pre (>= (. from balance) amount))
+  (@post (== (+ (. from balance) (. to balance))
+             (+ (old (. from balance)) (old (. to balance)))))
+  ...)
+```
+
+- **Contracts are mandatory.** No `@intent` or `@spec`, no compilation.
+- **Range types catch bugs at compile time.** `(Int 1 .. 100)`
+- **Typed holes constrain generation.** LLMs fill gaps bounded by types, examples, and required variables.
 
 ## Status
 
@@ -174,6 +202,8 @@ Holes are routed to appropriately-sized models:
 ```
 
 ## Why C?
+
+Because that's what I want.  And also:
 
 C's problems are **human** problems:
 - Manual memory management? Machines don't forget
