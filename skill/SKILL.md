@@ -128,15 +128,36 @@ Example:
   (println (string-concat arena "Hello, " name)))
 ```
 
-### Optional Annotations
+### Recommended Annotations (Use Liberally!)
+
+These annotations improve code quality, enable verification, and help LLMs generate better implementations:
 
 ```
-(@pre condition)           ; Precondition
-(@post condition)          ; Postcondition ($result = return value)
-(@example (args) -> result) ; Test case
+(@pre condition)           ; Precondition - validates inputs
+(@post condition)          ; Postcondition - guarantees outputs ($result = return value)
+(@example (args) -> result) ; Test case - guides implementation
 (@alloc arena)             ; Memory allocation strategy
 (@pure)                    ; No side effects, does NOT take arena param
 ```
+
+**Best Practice:** Include `@pre` for any function that can receive invalid input, `@post` when return values have invariants, and `@example` to demonstrate expected behavior.
+
+### Well-Annotated Function Example
+
+```lisp
+(fn find-user ((db (Ptr Database)) (id UserId))
+  (@intent "Find user by ID, return None if not found")
+  (@spec (((Ptr Database) UserId) -> (Option (Ptr User))))
+  (@pre (!= db nil))
+  (@pre (> id 0))
+  (@post (or (none? $result) (!= (unwrap $result) nil)))
+  (@example ((db 42) -> (some user-42)))
+  (@example ((db 999) -> (none)))
+  (@pure)
+  ...)
+```
+
+This example demonstrates: mandatory @intent/@spec, multiple @pre conditions, @post invariant, @example test cases, and @pure annotation.
 
 ### Memory Model
 
@@ -270,14 +291,19 @@ SLOP                    C
 ## Generation Guidelines
 
 1. **ALWAYS include @intent and @spec on EVERY function** - without @spec, type checking fails
-2. Use range types to constrain values
-3. Pass Arena as first param for allocating functions
-4. Use (Result T E) for fallible operations
-5. ALWAYS specify `:complexity` on holes (tier-1: no branching, tier-2: branching, tier-3: loops, tier-4: nested/complex)
-6. Prefer (. x field) over direct pointer syntax
-7. ONLY use functions from references/builtins.md or defined via FFI
-8. When unsure if a function exists, check builtins.md first
-9. SLOP is minimal - no convenience functions. Convert types explicitly.
+2. **Use ALL applicable annotations** - @pre/@post/@example improve verification and LLM accuracy
+3. **Add @pre for input validation** - e.g., `(@pre (!= ptr nil))`, `(@pre (> id 0))`
+4. **Add @post for output guarantees** - e.g., `(@post (>= $result 0))`, `(@post (!= $result nil))`
+5. **Add @example for clarity** - concrete input/output pairs guide implementation
+6. **Mark pure functions with @pure** - enables optimizations, documents no side effects
+7. Use range types to constrain values
+8. Pass Arena as first param for allocating functions
+9. Use (Result T E) for fallible operations
+10. ALWAYS specify `:complexity` on holes (tier-1: no branching, tier-2: branching, tier-3: loops, tier-4: nested/complex)
+11. Prefer (. x field) over direct pointer syntax
+12. ONLY use functions from references/builtins.md or defined via FFI
+13. When unsure if a function exists, check builtins.md first
+14. SLOP is minimal - no convenience functions. Convert types explicitly.
 
 ## See Also
 

@@ -6,6 +6,10 @@ A programming language designed for minimal human involvement in coding.
 Humans specify WHAT and WHY → Machines handle HOW
 ```
 
+## Motivation
+
+This started as a thought experiment.  It's still an experiment.  This may or may not be a viable idea :)
+
 ## Philosophy
 
 SLOP inverts the traditional programming model:
@@ -167,9 +171,9 @@ Holes are routed to appropriately-sized models:
 ## Why C?
 
 C's problems are **human** problems:
-- Manual memory management → Machines don't forget
-- No namespaces → Machines use prefixes consistently
-- Buffer overflows → Transpiler generates safe patterns
+- Manual memory management? Machines don't forget
+- No namespaces? Machines use prefixes consistently
+- Buffer overflows? Transpiler generates safe patterns
 
 C's benefits remain:
 - 10-100x faster than interpreted languages
@@ -179,7 +183,7 @@ C's benefits remain:
 
 ## Other Targets
 
-Aside from C, an obvious choice for another target would be typescript.
+Aside from C, an obvious choice for a future target would be typescript.
 WASM would also be easy to do since we're already transpiling to C.
 
 ## Memory Model
