@@ -30,6 +30,9 @@ slop = "slop.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "black", "mypy"]
+yaml = ["pyyaml>=6.0"]
+openapi = ["pyyaml>=6.0"]
+all = ["pyyaml>=6.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/slop"]

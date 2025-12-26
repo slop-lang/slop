@@ -355,6 +355,192 @@ static inline bool slop_map_has(slop_map* map, slop_string key) {
 }
 
 /* ============================================================
+ * Generic Map Operations (for transpiled SLOP code)
+ *
+ * These are stub implementations that allow generated code to compile.
+ * For production use, you should provide proper typed implementations.
+ * ============================================================ */
+
+/* Generic map entry with fixed-size value storage */
+typedef struct slop_gmap_entry_t {
+    int64_t gmap_key;
+    uint8_t gmap_value[256];
+    size_t gmap_value_size;
+    bool gmap_occupied;
+} slop_gmap_entry_t;
+
+typedef struct slop_gmap_t {
+    size_t gmap_len;
+    size_t gmap_cap;
+    slop_gmap_entry_t* gmap_entries;
+} slop_gmap_t;
+
+/* Create empty generic map */
+static inline void* map_empty(void) {
+    slop_gmap_t* m = (slop_gmap_t*)malloc(sizeof(slop_gmap_t));
+    m->gmap_len = 0;
+    m->gmap_cap = SLOP_MAP_INITIAL_CAPACITY;
+    m->gmap_entries = (slop_gmap_entry_t*)calloc(m->gmap_cap, sizeof(slop_gmap_entry_t));
+    return m;
+}
+
+/* Check if key exists - use unique param name to avoid shadowing */
+static inline bool map_has(void* gmap_ptr, int64_t gmap_lookup_key) {
+    slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
+    for (size_t idx = 0; idx < m->gmap_len; idx++) {
+        if (m->gmap_entries[idx].gmap_occupied && m->gmap_entries[idx].gmap_key == gmap_lookup_key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Remove key (returns map for functional style) */
+static inline void* map_remove(void* gmap_ptr, int64_t gmap_lookup_key) {
+    slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
+    for (size_t idx = 0; idx < m->gmap_len; idx++) {
+        if (m->gmap_entries[idx].gmap_occupied && m->gmap_entries[idx].gmap_key == gmap_lookup_key) {
+            m->gmap_entries[idx].gmap_occupied = false;
+            return m;
+        }
+    }
+    return m;
+}
+
+/* Map put - implemented as a macro to handle any value type */
+/* Returns the map pointer (functional style but mutates in place) */
+#define map_put(gmap_ptr, gmap_k, gmap_v) \
+    _slop_map_put_impl((gmap_ptr), (gmap_k), &(gmap_v), sizeof(gmap_v))
+
+static inline void* _slop_map_put_impl(void* gmap_ptr, int64_t gmap_k, const void* gmap_v, size_t gmap_vsz) {
+    slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
+
+    /* Check if key exists - update in place */
+    for (size_t idx = 0; idx < m->gmap_len; idx++) {
+        if (m->gmap_entries[idx].gmap_occupied && m->gmap_entries[idx].gmap_key == gmap_k) {
+            memcpy(m->gmap_entries[idx].gmap_value, gmap_v, gmap_vsz);
+            m->gmap_entries[idx].gmap_value_size = gmap_vsz;
+            return m;
+        }
+    }
+
+    /* Add new entry */
+    if (m->gmap_len >= m->gmap_cap) {
+        size_t new_cap = m->gmap_cap * 2;
+        m->gmap_entries = (slop_gmap_entry_t*)realloc(m->gmap_entries, new_cap * sizeof(slop_gmap_entry_t));
+        memset(m->gmap_entries + m->gmap_cap, 0, (new_cap - m->gmap_cap) * sizeof(slop_gmap_entry_t));
+        m->gmap_cap = new_cap;
+    }
+
+    m->gmap_entries[m->gmap_len].gmap_key = gmap_k;
+    memcpy(m->gmap_entries[m->gmap_len].gmap_value, gmap_v, gmap_vsz);
+    m->gmap_entries[m->gmap_len].gmap_value_size = gmap_vsz;
+    m->gmap_entries[m->gmap_len].gmap_occupied = true;
+    m->gmap_len++;
+
+    return m;
+}
+
+/* Map get - returns Option-like struct matching generated types layout:
+ * typedef struct { uint8_t tag; union { T some; } data; } slop_option_T;
+ * We use a large enough buffer to hold any value type.
+ */
+typedef struct {
+    uint8_t tag;
+    union { uint8_t some[256]; } data;
+} slop_gmap_option_raw;
+
+static inline slop_gmap_option_raw _slop_map_get_raw(void* gmap_ptr, int64_t gmap_k) {
+    slop_gmap_option_raw result = {1, {{0}}}; /* tag=1 means none */
+    slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
+
+    for (size_t idx = 0; idx < m->gmap_len; idx++) {
+        if (m->gmap_entries[idx].gmap_occupied && m->gmap_entries[idx].gmap_key == gmap_k) {
+            result.tag = 0; /* tag=0 means some */
+            memcpy(result.data.some, m->gmap_entries[idx].gmap_value, m->gmap_entries[idx].gmap_value_size);
+            break;
+        }
+    }
+    return result;
+}
+
+/* Map values - returns List-like struct matching generated types layout:
+ * typedef struct { T* data; size_t len; size_t cap; } slop_list_T;
+ */
+typedef struct { uint8_t* data; size_t len; size_t cap; } slop_gmap_list;
+
+static inline slop_gmap_list _slop_map_values_raw(void* gmap_ptr) {
+    slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
+    size_t count = 0;
+    for (size_t idx = 0; idx < m->gmap_len; idx++) {
+        if (m->gmap_entries[idx].gmap_occupied) count++;
+    }
+    return (slop_gmap_list){NULL, count, count};
+}
+
+/* Take first n elements from list - modifies in place and returns */
+static inline slop_gmap_list _slop_take_raw(slop_gmap_list lst, int64_t n) {
+    if ((size_t)n < lst.len) lst.len = (size_t)n;
+    return lst;
+}
+
+/*
+ * Type-specific map_get/map_values/take must be generated by the transpiler.
+ * Define a macro that generates them for a given value type:
+ */
+#define SLOP_MAP_OPS_DEFINE(V, OptName, ListName) \
+    static inline OptName map_get_##V(void* m, int64_t k) { \
+        slop_gmap_option_raw raw = _slop_map_get_raw(m, k); \
+        OptName result; \
+        result.tag = raw.tag; \
+        if (raw.tag == 0) memcpy(&result.data.some, raw.some, sizeof(V)); \
+        return result; \
+    } \
+    static inline ListName map_values_##V(void* m) { \
+        slop_gmap_list raw = _slop_map_values_raw(m); \
+        return (ListName){(V*)raw.data, raw.len, raw.cap}; \
+    } \
+    static inline ListName take_##V(int64_t n, ListName lst) { \
+        if ((size_t)n < lst.len) lst.len = (size_t)n; \
+        return lst; \
+    }
+
+/*
+ * Type-specific map operations are generated by the transpiler.
+ * Use SLOP_MAP_GET_DEFINE(ValueType, OptionType) to define map_get for a type.
+ * Use SLOP_MAP_VALUES_DEFINE(ValueType, ListType) to define map_values for a type.
+ */
+
+#define SLOP_MAP_GET_DEFINE(V, OptType) \
+    static inline OptType map_get_##V(void* m, int64_t k) { \
+        slop_gmap_option_raw raw = _slop_map_get_raw(m, k); \
+        OptType result; \
+        result.tag = raw.tag; \
+        if (raw.tag == 0) memcpy(&result.data.some, raw.data.some, sizeof(V)); \
+        return result; \
+    }
+
+#define SLOP_MAP_VALUES_DEFINE(V, ListType) \
+    static inline ListType map_values_##V(void* m) { \
+        slop_gmap_list raw = _slop_map_values_raw(m); \
+        return (ListType){(V*)raw.data, raw.len, raw.cap}; \
+    }
+
+#define SLOP_TAKE_DEFINE(V, ListType) \
+    static inline ListType take_##V(int64_t n, ListType lst) { \
+        if ((size_t)n < lst.len) lst.len = (size_t)n; \
+        return lst; \
+    }
+
+/* Generic take that works with any list type */
+#define take(n, lst) ({ \
+    __auto_type _take_lst = (lst); \
+    int64_t _take_n = (n); \
+    if ((size_t)_take_n < _take_lst.len) _take_lst.len = (size_t)_take_n; \
+    _take_lst; \
+})
+
+/* ============================================================
  * Option Type (generic via macros)
  * ============================================================ */
 

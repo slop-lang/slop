@@ -289,6 +289,14 @@ class OptionType(Type):
             return self.inner.equals(other.inner)
         return False
 
+    def is_subtype_of(self, other: Type) -> bool:
+        """Option is covariant: Option<Subtype> <: Option<Supertype>"""
+        if self.equals(other):
+            return True
+        if isinstance(other, OptionType):
+            return self.inner.is_subtype_of(other.inner)
+        return False
+
 
 @dataclass(frozen=True)
 class ResultType(Type):
@@ -303,6 +311,25 @@ class ResultType(Type):
         if isinstance(other, ResultType):
             return (self.ok_type.equals(other.ok_type) and
                     self.err_type.equals(other.err_type))
+        return False
+
+    def is_subtype_of(self, other: Type) -> bool:
+        """Result subtyping with TypeVar handling.
+
+        (Result T TypeVar) is subtype of (Result T E) for any E.
+        This allows (ok x) to match any expected Result error type.
+        """
+        if self.equals(other):
+            return True
+        if isinstance(other, ResultType):
+            # ok_type must be subtype
+            if not self.ok_type.is_subtype_of(other.ok_type):
+                return False
+            # err_type: if self has TypeVar, it matches anything
+            if isinstance(self.err_type, TypeVar) and not self.err_type.bound:
+                return True
+            # Otherwise, err_type must be subtype
+            return self.err_type.is_subtype_of(other.err_type)
         return False
 
 
@@ -363,6 +390,13 @@ class TypeVar(Type):
         if self.bound:
             return self.bound.equals(other)
         return isinstance(other, TypeVar) and self.id == other.id
+
+    def is_subtype_of(self, other: Type) -> bool:
+        """TypeVar subtyping: bound TypeVar delegates, unbound matches anything"""
+        if self.bound:
+            return self.bound.is_subtype_of(other)
+        # Unbound TypeVar is subtype of anything (will be unified later)
+        return True
 
     def resolve(self) -> Type:
         """Follow type variable chain to get concrete type"""
@@ -822,7 +856,10 @@ class TypeChecker:
         if isinstance(expr, Symbol):
             return self._infer_symbol(expr)
 
-        if isinstance(expr, SList) and len(expr) > 0:
+        if isinstance(expr, SList):
+            if len(expr) == 0:
+                # Empty list () is Unit
+                return PrimitiveType('Unit')
             return self._infer_compound(expr)
 
         return UNKNOWN
@@ -830,6 +867,36 @@ class TypeChecker:
     def _infer_symbol(self, sym: Symbol) -> Type:
         """Infer type of symbol reference"""
         name = sym.name
+
+        # Handle dotted field access: foo.bar.baz
+        if '.' in name:
+            parts = name.split('.')
+            # Check refinements first, then variable lookup
+            base_type = self._get_refined_type(parts[0])
+            if base_type is None:
+                base_type = self.env.lookup_var(parts[0])
+            if base_type is None:
+                self.error(f"Undefined variable: {parts[0]}")
+                return UNKNOWN
+
+            current_type = base_type
+            for field in parts[1:]:
+                actual_type = current_type
+                if isinstance(current_type, PtrType):
+                    actual_type = current_type.pointee
+
+                if isinstance(actual_type, RecordType):
+                    field_type = actual_type.get_field(field)
+                    if field_type:
+                        current_type = field_type
+                    else:
+                        self.error(f"Record '{actual_type.name}' has no field '{field}'")
+                        return UNKNOWN
+                else:
+                    # Can't access field on non-record type
+                    return UNKNOWN
+
+            return current_type
 
         if name == 'nil':
             return PtrType(self.fresh_type_var(), nullable=True)
@@ -1347,13 +1414,21 @@ class TypeChecker:
     def _infer_set(self, expr: SList) -> Type:
         """Infer type of assignment: (set! target value) or (set! obj field value)"""
         if len(expr) == 3:
-            # (set! var value)
+            # (set! var value) or (set! obj.field value)
             target = expr[1]
             value_type = self.infer_expr(expr[2])
             if isinstance(target, Symbol):
-                expected = self.env.lookup_var(target.name)
-                if expected:
-                    self._check_assignable(value_type, expected, f"assignment to '{target.name}'")
+                name = target.name
+                if '.' in name:
+                    # Handle dotted field access: (set! obj.field value)
+                    target_type = self._infer_symbol(target)
+                    if not isinstance(target_type, UnknownType):
+                        self._check_assignable(value_type, target_type, f"assignment to '{name}'")
+                else:
+                    # Simple variable assignment
+                    expected = self.env.lookup_var(name)
+                    if expected:
+                        self._check_assignable(value_type, expected, f"assignment to '{name}'")
         elif len(expr) == 4:
             # (set! obj field value)
             obj_type = self.infer_expr(expr[1])

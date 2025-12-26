@@ -160,6 +160,13 @@ literal     = number | string | 'true | 'false | 'nil
 (@generation-mode llm)
 (@derived-from "source-path")
 (@generated-by source :version v :timestamp t)
+
+; Dependency annotations (for scaffolded/generated code)
+(@requires category
+  :prompt "Question"              ; Optional - triggers user prompt
+  :options ((desc sym)...)        ; Optional - choices for user
+  (fn-sig ...)                    ; Required function signatures
+  ...)
 ```
 
 ### 3.5 Expressions
@@ -259,7 +266,51 @@ identifier               ; Variable reference
 ; tier-4: 70B+ models (algorithms, complex logic)
 ```
 
-### 3.7 Patterns
+### 3.7 Requirements (Scaffold Dependencies)
+
+The `@requires` annotation declares external dependencies that must be provided
+before code can be filled or compiled. This is used by code generators (like
+`slop derive`) to mark incomplete scaffolds.
+
+```
+; Basic form - just documents dependencies
+(@requires category
+  (fn-name ((param Type)...) -> ReturnType)
+  ...)
+
+; Interactive form - prompts user for implementation choice
+(@requires category
+  :prompt "Which approach do you want?"
+  :options (("Description one" symbol1)
+            ("Description two" symbol2))
+  (fn-name ((param Type)...) -> ReturnType)
+  ...)
+```
+
+**Example: Storage requirements for a generated API**
+
+```lisp
+(@requires storage
+  :prompt "Which storage approach for the Pet API?"
+  :options (
+    ("In-memory Map - good for prototypes" map)
+    ("Database via FFI - I'll provide db-* functions" db)
+    ("Custom implementation - I'll implement myself" custom))
+  ;; Required function signatures
+  (state-get-pet ((state (Ptr PetState)) (id PetId)) -> (Option (Ptr Pet)))
+  (state-insert-pet ((state (Ptr PetState)) (pet (Ptr NewPet))) -> Pet)
+  (state-delete-pet ((state (Ptr PetState)) (id PetId)) -> Bool))
+```
+
+**Behavior:**
+
+1. **LLM/Claude Code**: When `:prompt` is present, the LLM should ask the user
+   which option they prefer and generate appropriate code based on choice
+2. **`slop fill`**: Warns if unresolved `@requires` exist and suggests resolution
+3. **Type checker**: Can verify that `:must-use` in holes references functions
+   declared in `@requires`
+
+### 3.8 Patterns
 
 ```
 _                            ; Wildcard
@@ -519,7 +570,7 @@ Example:
 ;; Use directly
 (fn hash-data ((arena Arena) (data Bytes))
   (@intent "Hash data with SHA256")
-  (let ((out (arena-alloc arena 32)))
+  (let ((out (cast (Ptr U8) (arena-alloc arena 32))))
     (SHA256 data.ptr data.len out)
     (bytes-from-ptr out 32)))
 ```
@@ -537,7 +588,7 @@ Map C structs for field access:
 
 ;; Access fields with dot notation
 (fn make-sockaddr ((arena Arena) (port (Int 1 .. 65535)))
-  (let ((addr (arena-alloc arena (sizeof sockaddr_in))))
+  (let ((addr (cast (Ptr sockaddr_in) (arena-alloc arena (sizeof sockaddr_in)))))
     (set! addr.sin_family 2)       ; AF_INET
     (set! addr.sin_port (htons port))
     (set! addr.sin_addr 0)         ; INADDR_ANY

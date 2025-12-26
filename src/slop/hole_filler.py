@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from slop.parser import SExpr, SList, Symbol, String, parse, find_holes, is_form, pretty_print
+from slop.parser import SExpr, SList, Symbol, String, Number, parse, find_holes, is_form, pretty_print
 from slop.providers import Tier, ModelConfig, Provider, MockProvider, create_default_configs
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,113 @@ VALID_EXPRESSION_FORMS = {
     # FFI
     'c-inline',
 }
+
+
+def _transform_lisp_forms(expr: SExpr) -> SExpr:
+    """Transform common Lisp forms to SLOP equivalents.
+
+    LLMs trained on Lisp often generate forms that don't exist in SLOP.
+    This transforms them to valid SLOP.
+    """
+    if isinstance(expr, Symbol):
+        # Transform symbols: t -> true, nil -> false (when used as boolean)
+        name = expr.name
+        if name == 't':
+            return Symbol('true')
+        if name == '#t':
+            return Symbol('true')
+        if name == '#f':
+            return Symbol('false')
+        return expr
+
+    if not isinstance(expr, SList) or len(expr) == 0:
+        return expr
+
+    head = expr[0]
+    if isinstance(head, Symbol):
+        form = head.name
+
+        # (quote symbol) -> 'symbol
+        if form == 'quote' and len(expr) == 2:
+            inner = expr[1]
+            if isinstance(inner, Symbol):
+                return Symbol(f"'{inner.name}")
+
+        # (setq var val) -> (set! var val)
+        # (setf var val) -> (set! var val)
+        if form in ('setq', 'setf') and len(expr) == 3:
+            new_items = [Symbol('set!')] + [_transform_lisp_forms(item) for item in expr.items[1:]]
+            return SList(new_items)
+
+        # (eq a b) / (eql a b) / (equal a b) -> (== a b)
+        if form in ('eq', 'eql', 'equal', 'equalp') and len(expr) == 3:
+            new_items = [Symbol('==')] + [_transform_lisp_forms(item) for item in expr.items[1:]]
+            return SList(new_items)
+
+        # (mod a b) -> (% a b)
+        if form == 'mod' and len(expr) == 3:
+            new_items = [Symbol('%')] + [_transform_lisp_forms(item) for item in expr.items[1:]]
+            return SList(new_items)
+
+        # (unless cond body) -> (when (not cond) body)
+        if form == 'unless' and len(expr) >= 3:
+            cond = _transform_lisp_forms(expr[1])
+            body = [_transform_lisp_forms(item) for item in expr.items[2:]]
+            negated = SList([Symbol('not'), cond])
+            if len(body) == 1:
+                return SList([Symbol('when'), negated, body[0]])
+            else:
+                return SList([Symbol('when'), negated, SList([Symbol('do')] + body)])
+
+        # (case expr ...) -> (match expr ...)  (structure is similar enough)
+        if form == 'case':
+            new_items = [Symbol('match')] + [_transform_lisp_forms(item) for item in expr.items[1:]]
+            return SList(new_items)
+
+        # (nth n list) -> (@ list n)
+        if form == 'nth' and len(expr) == 3:
+            n = _transform_lisp_forms(expr[1])
+            lst = _transform_lisp_forms(expr[2])
+            return SList([Symbol('@'), lst, n])
+
+        # (elt seq n) / (aref arr n) -> (@ seq n)
+        if form in ('elt', 'aref') and len(expr) == 3:
+            seq = _transform_lisp_forms(expr[1])
+            n = _transform_lisp_forms(expr[2])
+            return SList([Symbol('@'), seq, n])
+
+        # (display x) -> (print x)
+        if form == 'display' and len(expr) == 2:
+            return SList([Symbol('print'), _transform_lisp_forms(expr[1])])
+
+        # (newline) -> (println "")
+        if form == 'newline' and len(expr) == 1:
+            return SList([Symbol('println'), String("")])
+
+        # (1+ x) -> (+ x 1)
+        if form == '1+' and len(expr) == 2:
+            return SList([Symbol('+'), _transform_lisp_forms(expr[1]), Number(1)])
+
+        # (1- x) -> (- x 1)
+        if form == '1-' and len(expr) == 2:
+            return SList([Symbol('-'), _transform_lisp_forms(expr[1]), Number(1)])
+
+        # (lambda args body) -> (fn args body)
+        if form == 'lambda':
+            new_items = [Symbol('fn')] + [_transform_lisp_forms(item) for item in expr.items[1:]]
+            return SList(new_items)
+
+        # (progn ...) / (begin ...) -> (do ...)
+        if form in ('progn', 'begin'):
+            new_items = [Symbol('do')] + [_transform_lisp_forms(item) for item in expr.items[1:]]
+            return SList(new_items)
+
+    # Recursively transform children
+    new_items = []
+    for item in expr.items:
+        new_items.append(_transform_lisp_forms(item))
+
+    return SList(new_items)
 
 
 def _extract_function_calls(expr: SExpr) -> set:
@@ -143,47 +250,32 @@ def _extract_function_calls(expr: SExpr) -> set:
 
 
 def load_skill_spec() -> str:
-    """Load and cache the SLOP language spec from SKILL.md, builtins.md, and patterns.md"""
+    """Load and cache the SLOP language spec from LANGUAGE.md, builtins.md, and patterns.md"""
     global _SKILL_SPEC
     if _SKILL_SPEC is not None:
         return _SKILL_SPEC
 
-    # Find skill files relative to this file's location
-    # hole_filler.py is in src/slop/, skill/ is at project root
+    # Find spec files relative to this file's location
+    # hole_filler.py is in src/slop/, spec/ and skill/ are at project root
     pkg_root = Path(__file__).parent.parent.parent
 
-    # Load SKILL.md
-    skill_path = pkg_root / "skill" / "SKILL.md"
     content = ""
-    if skill_path.exists():
-        content = skill_path.read_text()
-        # Strip YAML frontmatter (between --- markers)
-        lines = content.split('\n')
-        if lines and lines[0].strip() == '---':
-            for i, line in enumerate(lines[1:], 1):
-                if line.strip() == '---':
-                    content = '\n'.join(lines[i + 1:])
-                    break
 
-    # Load builtins.md - critical for I/O constraints
+    # Load spec/LANGUAGE.md - complete language specification with grammar
+    # This includes the crucial 'symbol syntax showing quoted enum variants
+    lang_path = pkg_root / "spec" / "LANGUAGE.md"
+    if lang_path.exists():
+        content = lang_path.read_text()
+
+    # Load builtins.md - concise function reference with common mistakes
     builtins_path = pkg_root / "skill" / "references" / "builtins.md"
     if builtins_path.exists():
         content += "\n\n" + builtins_path.read_text()
 
-    # Load patterns.md - common patterns to reduce LLM reinvention errors
+    # Load full patterns.md - includes Error Handling section with (error 'variant) syntax
     patterns_path = pkg_root / "skill" / "references" / "patterns.md"
     if patterns_path.exists():
-        patterns_content = patterns_path.read_text()
-        # Only include the "Simple Loop Patterns" section for conciseness
-        if "## Simple Loop Patterns" in patterns_content:
-            start = patterns_content.find("## Simple Loop Patterns")
-            end = patterns_content.find("\n---\n", start)
-            if end == -1:
-                end = patterns_content.find("\n## Arena Allocation", start)
-            if end != -1:
-                content += "\n\n" + patterns_content[start:end].strip()
-            else:
-                content += "\n\n" + patterns_content[start:start+2000].strip()
+        content += "\n\n" + patterns_path.read_text()
 
     _SKILL_SPEC = content.strip()
     return _SKILL_SPEC
@@ -296,11 +388,30 @@ def _type_complexity(type_expr: SExpr) -> Tier:
     return Tier.TIER_2
 
 
+def _extract_error_type_name(type_expr: SExpr) -> Optional[str]:
+    """Extract the error type name from a Result type expression.
+
+    (Result Pet ApiError) -> 'ApiError'
+    (Result (List Pet) ApiError) -> 'ApiError'
+    """
+    if not isinstance(type_expr, SList) or len(type_expr) < 3:
+        return None
+    head = type_expr[0]
+    if not isinstance(head, Symbol) or head.name != 'Result':
+        return None
+    # Error type is the third element
+    err_type = type_expr[2]
+    if isinstance(err_type, Symbol):
+        return err_type.name
+    return None
+
+
 def _get_syntax_hints_for_type(type_str: str) -> str:
     """Generate syntax hints based on expected return type"""
     hints = []
     if 'Result' in type_str:
-        hints.append("For Result types: return (ok value) for success, (error err) for failure")
+        hints.append("For Result types: return (ok value) for success, (error 'variant) for failure")
+        hints.append("IMPORTANT: Error variants must be QUOTED: (error 'not-found) NOT (error not-found)")
         hints.append("Match with: (match result ((ok val) use-val) ((error e) handle-e))")
     if 'Option' in type_str:
         hints.append("For Option types: return (some value) or (none)")
@@ -314,6 +425,7 @@ def _get_syntax_hints_for_type(type_str: str) -> str:
 
 # Common function mistakes and their correct alternatives
 FUNCTION_ALTERNATIVES = {
+    # SLOP-specific
     'parse-int': 'No parse-int in SLOP. Use (string-to-int str) via FFI or manual loop',
     'json-parse': 'No JSON library. Parse manually or use record-new with known fields',
     'string-find': 'No string-find. Use for-each to iterate characters',
@@ -323,6 +435,32 @@ FUNCTION_ALTERNATIVES = {
     'arr.length': 'Use the declared array size directly (e.g., 100)',
     'malloc': 'Use (arena-alloc arena size)',
     'free': 'Arenas auto-free. Use (arena-free arena) only for explicit cleanup',
+    # Common Lisp forms not in SLOP (ones we can't auto-transform)
+    'car': 'No car in SLOP. Use (@ list 0) for first element',
+    'cdr': 'No cdr in SLOP. Use slice or iterate from index 1',
+    'first': 'No first in SLOP. Use (@ list 0)',
+    'rest': 'No rest in SLOP. Use slice or iterate from index 1',
+    'cons': 'No cons in SLOP. Use (list ...) to create lists',
+    'append': 'No append in SLOP. Build new list with for-each',
+    'reverse': 'No reverse in SLOP. Build reversed list with for loop',
+    'length': 'No length in SLOP. Use string-len for strings, track list length manually',
+    'null?': 'No null? in SLOP. Use (== x nil) or (none? x) for Option',
+    'nil?': 'No nil? in SLOP. Use (== x nil)',
+    'empty?': 'No empty? in SLOP. Check length or use == nil',
+    'atom?': 'No atom? in SLOP. Type checking is static',
+    'pair?': 'No pair? in SLOP. Type checking is static',
+    'list?': 'No list? in SLOP. Type checking is static',
+    'apply': 'No apply in SLOP. Call function directly with arguments',
+    'funcall': 'No funcall in SLOP. Call function directly',
+    'mapcar': 'No mapcar in SLOP. Use for-each loop',
+    'filter': 'No filter in SLOP. Use for-each with when',
+    'reduce': 'No reduce in SLOP. Use for-each with accumulator',
+    'format': 'No format in SLOP. Use string-concat and int-to-string',
+    'princ': 'No princ in SLOP. Use print',
+    'prin1': 'No prin1 in SLOP. Use print',
+    'terpri': 'No terpri in SLOP. Use (println "")',
+    'read': 'No read in SLOP. Use FFI for stdio',
+    'read-line': 'No read-line in SLOP. Use FFI for stdio',
 }
 
 
@@ -356,6 +494,16 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         "4. Use match with bare enum names: (match x (Foo ...) (Bar ...)) not ((Foo v) ...)",
         "5. Escape quotes in strings: \"hello \\\"world\\\"\"",
         "6. Arrays are FIXED SIZE - no .length property. Use the declared size (e.g., 100 for Array T 100)",
+        "7. ENUM VARIANTS: The quote is PART OF THE SYMBOL NAME, not a separate form!",
+        "   - 'not-found is a SINGLE TOKEN (the symbol literally starts with a quote character)",
+        "   - DO NOT write (quote not-found) - there is NO quote function in SLOP!",
+        "   - CORRECT: (error 'not-found)  - the 'not-found is one atomic symbol",
+        "   - WRONG: (error (quote not-found)) - quote does not exist!",
+        "   - WRONG: (error not-found) - bare symbol is undefined variable",
+        "8. For Result types with specific error enums (like ApiError), use the enum variant:",
+        "   - If return type is (Result T ApiError), use (error 'bad-request) or (error 'not-found)",
+        "   - The error variant MUST come from the declared error enum in the @spec",
+        "   - Remember: 'bad-request is ONE token, not (quote bad-request)",
     ])
 
     # Add type-specific syntax hints
@@ -368,6 +516,19 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
             type_hints,
         ])
 
+    # If return type is Result with a named error type, extract available variants
+    error_type_name = _extract_error_type_name(hole.type_expr)
+    if error_type_name and context.get('error_variants'):
+        variants = context.get('error_variants', {}).get(error_type_name, [])
+        if variants:
+            sections.extend([
+                "",
+                f"## Available Error Variants for {error_type_name}",
+                f"When returning an error, use ONE of these quoted variants:",
+                f"  {', '.join(repr(v) for v in variants)}",
+                f"Example: (error '{variants[0]})",
+            ])
+
     # Examples of correct fills
     sections.extend([
         "",
@@ -376,7 +537,13 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         "Fill: (+ a b)",
         "",
         "Hole: (hole FizzBuzzResult \"Return result based on divisibility\")",
-        "Fill: (cond ((== (% n 15) 0) FizzBuzz) ((== (% n 3) 0) Fizz) ((== (% n 5) 0) Buzz) (else Number))",
+        "Fill: (cond ((== (% n 15) 0) 'FizzBuzz) ((== (% n 3) 0) 'Fizz) ((== (% n 5) 0) 'Buzz) (else 'Number))",
+        "",
+        "Hole: (hole (Result Pet ApiError) \"Get pet or return not-found error\")",
+        "Fill: (match (lookup id) ((some pet) (ok pet)) ((none) (error 'not-found)))",
+        "",
+        "Hole: (hole (Result Unit ApiError) \"Delete or return error\")",
+        "Fill: (if success (ok ()) (error 'not-found))",
     ])
 
     sections.extend([
@@ -410,6 +577,13 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         for spec in context['fn_specs']:
             ret = f" -> {spec['return_type']}" if spec.get('return_type') else ""
             sections.append(f"  ({spec['name']} {spec['params']}{ret})")
+
+    if context.get('requires_fns'):
+        sections.append("")
+        sections.append("## Required Functions (from @requires)")
+        sections.append("These function signatures are declared as dependencies. Use them as specified:")
+        for sig in context['requires_fns']:
+            sections.append(f"  {sig}")
 
     sections.extend([
         "",
@@ -534,7 +708,7 @@ class HoleFiller:
         )
 
     def _parse_response(self, response: str) -> Optional[SExpr]:
-        """Parse LLM response"""
+        """Parse LLM response and transform Lisp forms to SLOP equivalents"""
         response = response.strip()
         if response.startswith('```'):
             lines = response.split('\n')
@@ -544,8 +718,12 @@ class HoleFiller:
         try:
             exprs = parse(response)
             if exprs:
-                logger.debug(f"Parsed expression: {exprs[0]}")
-                return exprs[0]
+                expr = exprs[0]
+                # Transform common Lisp forms to SLOP equivalents
+                # e.g., (quote x) -> 'x, (setq x v) -> (set! x v), etc.
+                expr = _transform_lisp_forms(expr)
+                logger.debug(f"Parsed expression: {expr}")
+                return expr
             logger.debug("Parse returned empty list")
             return None
         except Exception as e:
@@ -563,6 +741,8 @@ class HoleFiller:
         if isinstance(head, Symbol):
             form_name = head.name
             # Known bad forms that LLMs invent
+            # Note: 'quote' is handled by _transform_quote_forms() which converts
+            # (quote symbol) to 'symbol before validation
             INVALID_FORMS = {'block', 'begin', 'progn', 'seq', 'sequence', 'do-block'}
             if form_name in INVALID_FORMS:
                 return form_name
@@ -585,6 +765,9 @@ class HoleFiller:
             error = "Do not return a hole form - fill it with actual code"
             logger.warning(error)
             return False, error
+
+        # Note: (quote symbol) is transformed to 'symbol by _transform_quote_forms()
+        # before reaching validation, so we don't need to reject it here
 
         # Reject definition forms - holes must be filled with expressions, not definitions
         invalid_forms = ['fn', 'type', 'module', 'impl', 'ffi', 'ffi-struct',

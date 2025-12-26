@@ -164,7 +164,7 @@ This example demonstrates: mandatory @intent/@spec, multiple @pre conditions, @p
 ```
 ;; Arena allocation (primary pattern)
 (fn handle ((arena Arena) (input Input))
-  (let ((data (arena-alloc arena (sizeof Data))))
+  (let ((data (cast (Ptr Data) (arena-alloc arena (sizeof Data)))))
     ...))
 
 ;; Scoped arena - creates 'arena' variable in scope
@@ -271,7 +271,7 @@ Example:
   (sin_addr U32))
 
 ;; Use directly
-(let ((addr (arena-alloc arena (sizeof sockaddr_in))))
+(let ((addr (cast (Ptr sockaddr_in) (arena-alloc arena (sizeof sockaddr_in)))))
   (set! addr.sin_family 2)
   (set! addr.sin_port (htons 8080)))
 ```
@@ -287,6 +287,49 @@ SLOP                    C
 (arena-alloc ...)  →    slop_arena_alloc(...)
 (@pre cond)        →    SLOP_PRE(cond, "...")
 ```
+
+## Handling @requires (Scaffold Dependencies)
+
+When you encounter `(@requires ...)` in SLOP code, this indicates incomplete
+generated code that needs user input before proceeding.
+
+### Interactive @requires
+
+When you see:
+```lisp
+(@requires storage
+  :prompt "Which storage approach for the Pet API?"
+  :options (
+    ("In-memory Map - good for prototypes" map)
+    ("Database via FFI" db)
+    ("Custom - I'll implement" custom))
+  (state-get-pet ((state (Ptr PetState)) (id PetId)) -> (Option (Ptr Pet)))
+  ...)
+```
+
+**You MUST:**
+1. **Ask the user** which option they want (use the `:prompt` text)
+2. **Generate code** based on their choice:
+   - `map`: Generate Map-based State type and CRUD helper functions
+   - `db`: Keep signatures, user will implement via FFI
+   - `custom`: Remove @requires, user handles it
+3. **Remove or update** the `@requires` after generating
+
+### Non-interactive @requires
+
+When `:prompt` is absent, the @requires just documents needed functions:
+```lisp
+(@requires database
+  (db-query ((sql String)) -> (Result Rows DbError)))
+```
+
+These functions must be defined elsewhere (via `ffi` or user code). Reference
+them in `:must-use` when filling holes.
+
+### When Filling Holes
+
+If holes reference functions from `@requires`, make sure those functions
+are available. If not, warn the user that the @requires must be resolved first.
 
 ## Generation Guidelines
 

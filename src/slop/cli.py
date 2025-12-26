@@ -8,6 +8,7 @@ Commands:
   fill       Fill holes with LLM generation
   check      Validate types and contracts
   build      Full pipeline: fill → transpile → compile
+  derive     Generate SLOP types from schemas (JSON Schema, OpenAPI, SQL)
 """
 
 import argparse
@@ -22,6 +23,52 @@ from slop.providers import (
     MockProvider, create_default_configs, load_config, create_from_config, Tier
 )
 from slop.type_checker import TypeChecker, check_file
+
+
+def extract_requires_blocks(ast):
+    """Extract @requires annotations from AST.
+
+    Returns list of dicts with:
+      - category: the requires category (e.g., 'storage')
+      - has_prompt: whether it has an interactive :prompt
+      - prompt: the prompt text if present
+      - functions: list of required function signatures
+    """
+    requires = []
+    for form in ast:
+        if is_form(form, '@requires') and len(form) > 1:
+            from slop.parser import Symbol, String
+            category = form[1].name if isinstance(form[1], Symbol) else str(form[1])
+
+            has_prompt = False
+            prompt_text = None
+            functions = []
+
+            i = 2
+            while i < len(form):
+                item = form[i]
+                if isinstance(item, Symbol) and item.name == ':prompt' and i + 1 < len(form):
+                    has_prompt = True
+                    prompt_text = form[i + 1].value if isinstance(form[i + 1], String) else str(form[i + 1])
+                    i += 2
+                elif isinstance(item, Symbol) and item.name == ':options':
+                    i += 2  # Skip :options and its value
+                elif isinstance(item, SList):
+                    # This is a function signature
+                    functions.append(pretty_print(item))
+                    i += 1
+                elif isinstance(item, Symbol) and str(item).startswith(';;'):
+                    i += 1  # Skip comments
+                else:
+                    i += 1
+
+            requires.append({
+                'category': category,
+                'has_prompt': has_prompt,
+                'prompt': prompt_text,
+                'functions': functions
+            })
+    return requires
 
 
 def cmd_parse(args):
@@ -116,15 +163,73 @@ def cmd_fill(args):
     try:
         ast = parse_file(args.input)
 
+        # Check for @requires blocks
+        requires_blocks = extract_requires_blocks(ast)
+        requires_fns = []  # Function signatures from @requires for context
+
+        for req in requires_blocks:
+            if req['has_prompt']:
+                # Interactive @requires - warn user
+                print(f"Warning: File contains (@requires {req['category']} ...) with interactive :prompt", file=sys.stderr)
+                print(f"  Prompt: {req['prompt']}", file=sys.stderr)
+                print("  This scaffold needs resolution before holes can be filled reliably.", file=sys.stderr)
+                print("  Use Claude Code or another LLM to resolve this @requires first.", file=sys.stderr)
+                print("", file=sys.stderr)
+            else:
+                # Non-interactive @requires - add function signatures to context
+                if not quiet:
+                    print(f"Found (@requires {req['category']}) - adding {len(req['functions'])} function signatures to context")
+
+            # Add function signatures for LLM context
+            requires_fns.extend(req['functions'])
+
         # Collect type definitions and names from module for context
         type_defs = []
         type_names = []
+        error_variants = {}  # Maps enum type name -> list of variant names
+
+        def _extract_enum_variants(type_form):
+            """Extract enum variants from a type definition.
+
+            Handles both (type Name (enum v1 v2 ...)) and (enum v1 v2 ...) forms.
+            """
+            from slop.parser import Symbol
+            name = None
+            enum_form = None
+
+            if is_form(type_form, 'type') and len(type_form) > 2:
+                # (type Name (enum v1 v2 ...))
+                if isinstance(type_form[1], Symbol):
+                    name = type_form[1].name
+                enum_expr = type_form[2]
+                if is_form(enum_expr, 'enum'):
+                    enum_form = enum_expr
+            elif is_form(type_form, 'enum') and len(type_form) > 1:
+                # (enum v1 v2 ...) - no name
+                name = None
+                enum_form = type_form
+
+            if enum_form is not None:
+                variants = []
+                for v in enum_form.items[1:]:
+                    if isinstance(v, Symbol):
+                        variants.append(v.name)
+                if name and variants:
+                    error_variants[name] = variants
+                return variants
+            return []
+
         for form in ast:
             if is_form(form, 'type') and len(form) > 1:
                 type_defs.append(pretty_print(form))
                 from slop.parser import Symbol
                 if isinstance(form[1], Symbol):
                     type_names.append(form[1].name)
+                # Check if this type is an enum
+                if len(form) > 2 and is_form(form[2], 'enum'):
+                    variants = _extract_enum_variants(form)
+                    for v in variants:
+                        type_names.append(v)
             elif is_form(form, 'record') and len(form) > 1:
                 type_defs.append(pretty_print(form))
                 from slop.parser import Symbol
@@ -146,6 +251,11 @@ def cmd_fill(args):
                         from slop.parser import Symbol
                         if isinstance(item[1], Symbol):
                             type_names.append(item[1].name)
+                        # Check if this type is an enum
+                        if len(item) > 2 and is_form(item[2], 'enum'):
+                            variants = _extract_enum_variants(item)
+                            for v in variants:
+                                type_names.append(v)
                     elif is_form(item, 'record') and len(item) > 1:
                         type_defs.append(pretty_print(item))
                         from slop.parser import Symbol
@@ -240,7 +350,9 @@ def cmd_fill(args):
                 context = _extract_context(form)
                 context['type_defs'] = type_defs
                 context['fn_specs'] = fn_specs
+                context['requires_fns'] = requires_fns
                 context['defined_functions'] = [s['name'] for s in fn_specs] + type_names
+                context['error_variants'] = error_variants
                 if tier not in tier_groups:
                     tier_groups[tier] = []
                 tier_groups[tier].append((form, hole, info, context))
@@ -305,7 +417,9 @@ def cmd_fill(args):
                 context = _extract_context(form)
                 context['type_defs'] = type_defs
                 context['fn_specs'] = fn_specs
+                context['requires_fns'] = requires_fns
                 context['defined_functions'] = [s['name'] for s in fn_specs] + type_names
+                context['error_variants'] = error_variants
 
                 result = filler.fill(info, context)
                 if result.success and result.expression:
@@ -525,6 +639,83 @@ def cmd_build(args):
         return 1
 
 
+def cmd_derive(args):
+    """Derive SLOP types from external schemas"""
+    import json
+    from slop.schema_converter import (
+        convert_json_schema, convert_sql, OpenApiConverter, detect_schema_format
+    )
+
+    input_path = Path(args.input)
+
+    # Auto-detect format
+    if args.format:
+        fmt = args.format
+    else:
+        fmt = _detect_format(input_path)
+
+    # Get storage mode (only applies to OpenAPI)
+    storage_mode = getattr(args, 'storage', 'stub')
+
+    try:
+        if fmt == 'sql':
+            output = convert_sql(str(input_path))
+        elif fmt == 'openapi':
+            spec = _load_spec(str(input_path))
+            output = OpenApiConverter(storage_mode=storage_mode).convert(spec)
+        else:  # jsonschema
+            output = convert_json_schema(str(input_path))
+
+        if args.output:
+            Path(args.output).write_text(output)
+            print(f"Wrote {args.output}")
+        else:
+            print(output)
+
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def _detect_format(path: Path) -> str:
+    """Auto-detect schema format from file"""
+    suffix = path.suffix.lower()
+
+    if suffix == '.sql':
+        return 'sql'
+    elif suffix in ('.yaml', '.yml', '.json'):
+        # Check content for OpenAPI vs JSON Schema
+        try:
+            data = _load_spec(str(path))
+            if 'openapi' in data or 'swagger' in data or 'paths' in data:
+                return 'openapi'
+            else:
+                return 'jsonschema'
+        except Exception:
+            return 'jsonschema'
+    else:
+        return 'jsonschema'
+
+
+def _load_spec(path: str) -> dict:
+    """Load spec from JSON or YAML file"""
+    import json
+
+    if path.endswith(('.yaml', '.yml')):
+        try:
+            import yaml
+            with open(path) as f:
+                return yaml.safe_load(f)
+        except ImportError:
+            raise ImportError(
+                "PyYAML required for YAML files. Install with: pip install pyyaml"
+            )
+    else:
+        with open(path) as f:
+            return json.load(f)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='SLOP - Symbolic LLM-Optimized Programming',
@@ -566,6 +757,18 @@ def main():
     p.add_argument('-c', '--config', help='Path to TOML config file')
     p.add_argument('--debug', action='store_true')
 
+    # derive
+    p = subparsers.add_parser('derive', help='Generate SLOP from schemas')
+    p.add_argument('input', help='Schema file (JSON, YAML, or SQL)')
+    p.add_argument('-o', '--output', help='Output file')
+    p.add_argument('-f', '--format',
+        choices=['jsonschema', 'openapi', 'sql'],
+        help='Force schema format (auto-detected by default)')
+    p.add_argument('-s', '--storage',
+        choices=['stub', 'map', 'none'],
+        default='stub',
+        help='Storage mode for OpenAPI: stub (default, with @requires), map (in-memory), none (holes only)')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -578,6 +781,7 @@ def main():
         'fill': cmd_fill,
         'check': cmd_check,
         'build': cmd_build,
+        'derive': cmd_derive,
     }
 
     return commands[args.command](args)
