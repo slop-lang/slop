@@ -497,7 +497,7 @@ Minimal runtime (~500 lines of C):
 
 ## 10. FFI
 
-SLOP provides direct access to C libraries through FFI declarations. 50 years of C libraries are the SLOP ecosystem.
+SLOP provides direct access to C libraries through FFI declarations. C libraries are the SLOP ecosystem.
 
 ### 10.1 Function Declarations
 

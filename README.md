@@ -8,7 +8,12 @@ Humans specify WHAT and WHY → Machines handle HOW
 
 ## Motivation
 
-This started as a thought experiment.  It's still an experiment.  This may or may not be a viable idea :)
+This started as a thought experiment.  It's still very much an experiment :)
+
+## Status
+
+Currently bootstrapped with Python.  If SLOP proves useful, we'll want to make this self-hosting.  
+So you can make your SLOP using SLOP.
 
 ## Philosophy
 
