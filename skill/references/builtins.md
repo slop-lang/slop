@@ -54,6 +54,7 @@ To print other types, convert to string first:
 (with-arena size body)   ; scoped arena (implicit 'arena' var)
 (sizeof Type)            ; size of type in bytes
 (addr expr)              ; address-of (&expr)
+(deref ptr)              ; dereference pointer (*ptr)
 ```
 
 ## Data Construction

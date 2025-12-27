@@ -286,6 +286,8 @@ class JsonSchemaConverter:
 
     def _to_type_name(self, s: str) -> str:
         """Convert string to PascalCase type name"""
+        # Split on separators AND case boundaries to preserve PascalCase
+        s = re.sub(r'([a-z])([A-Z])', r'\1_\2', s)
         words = re.split(r'[-_\s]+', s)
         return ''.join(w.capitalize() for w in words)
 
@@ -413,6 +415,8 @@ class SqlSchemaConverter:
 
     def _to_type_name(self, s: str) -> str:
         """Convert to PascalCase"""
+        # Split on separators AND case boundaries to preserve PascalCase
+        s = re.sub(r'([a-z])([A-Z])', r'\1_\2', s)
         words = re.split(r'[-_\s]+', s)
         return ''.join(w.capitalize() for w in words)
 
@@ -438,6 +442,7 @@ class OpenApiConverter:
         self.functions: List[SlopFunction] = []
         self.error_codes: set = set()
         self.resource_types: List[str] = []  # Track resource types for state generation
+        self.schema_fields: Dict[str, List[str]] = {}  # Track fields per schema type
 
     def convert(self, spec: dict) -> str:
         """Convert OpenAPI spec to SLOP module with types and function stubs"""
@@ -445,6 +450,7 @@ class OpenApiConverter:
         self.functions = []
         self.error_codes = set()
         self.resource_types = []
+        self.schema_fields = {}
         self.json_converter = JsonSchemaConverter()
 
         # Extract API metadata
@@ -546,6 +552,10 @@ class OpenApiConverter:
         for name, schema in schemas.items():
             type_name = self._to_type_name(name)
             self.json_converter._convert_schema(schema, type_name)
+            # Track field names for each schema (for generating make-*-from-new)
+            if schema.get('type') == 'object' and 'properties' in schema:
+                fields = [self._to_kebab(f) for f in schema['properties'].keys()]
+                self.schema_fields[type_name] = fields
 
         # Copy generated types
         self.types.extend(self.json_converter.types)
@@ -1020,7 +1030,7 @@ class OpenApiConverter:
 
             lines.append(f"  ({get_fn} ((state (Ptr State)) (id {resource}Id)) -> {get_ret})")
             lines.append(f"  ({list_fn} ((state (Ptr State)) (limit (Option Int))) -> {list_ret})")
-            lines.append(f"  ({insert_fn} ((state (Ptr State)) (item (Ptr New{resource}))) -> {insert_ret})")
+            lines.append(f"  ({insert_fn} ((arena Arena) (state (Ptr State)) (item (Ptr New{resource}))) -> {insert_ret})")
             lines.append(f"  ({delete_fn} ((state (Ptr State)) (id {resource}Id)) -> {delete_ret})")
 
         lines.append(")")
@@ -1061,10 +1071,31 @@ class OpenApiConverter:
 
         for resource in self.resource_types:
             resource_lower = self._to_kebab(resource)
-            lines.append(f"    (set! s {resource_lower}s (map-new arena))")
+            lines.append(f"    (set! s {resource_lower}s (map-empty))")
             lines.append(f"    (set! s next-{resource_lower}-id 1)")
         lines.append("    s))")
         lines.append("")
+
+        # Generate make-{resource}-from-new for each resource type
+        for resource in self.resource_types:
+            resource_lower = self._to_kebab(resource)
+            new_type = f"New{resource}"
+
+            # Get fields from NewX (these are the fields to copy)
+            new_fields = self.schema_fields.get(new_type, [])
+
+            # Generate field copy statements
+            field_copies = [f"    (set! p {f} (. item {f}))" for f in new_fields]
+            field_copies_str = '\n'.join(field_copies) if field_copies else "    ;; no fields to copy"
+
+            lines.append(f"""(fn make-{resource_lower}-from-new ((arena Arena) (id {resource}Id) (item (Ptr {new_type})))
+  (@intent "Create {resource} from {new_type} with assigned ID")
+  (@spec ((Arena {resource}Id (Ptr {new_type})) -> {resource}))
+  (let ((p (cast (Ptr {resource}) (arena-alloc arena (sizeof {resource})))))
+    (set! p id id)
+{field_copies_str}
+    (deref p)))
+""")
 
         # Generate CRUD for each resource
         for resource in self.resource_types:
@@ -1093,19 +1124,21 @@ class OpenApiConverter:
   (@pure)
   (map-values (. state {resource_lower}s)))
 """)
-            lines.append(f"""(fn {insert_fn} ((state (Ptr State)) (item (Ptr New{resource})))
+            lines.append(f"""(fn {insert_fn} ((arena Arena) (state (Ptr State)) (item (Ptr New{resource})))
   (@intent "Insert new {resource_lower} into state")
-  (@spec (((Ptr State) (Ptr New{resource})) -> {insert_ret}))
+  (@spec ((Arena (Ptr State) (Ptr New{resource})) -> {insert_ret}))
   (let ((id (. state next-{resource_lower}-id)))
     (set! state next-{resource_lower}-id (+ id 1))
-    (let ((new-item (make-{resource_lower} id item)))
-      (map-set (. state {resource_lower}s) id new-item)
+    (let ((new-item (make-{resource_lower}-from-new arena id item)))
+      (map-put (. state {resource_lower}s) id new-item)
       new-item)))
 """)
             lines.append(f"""(fn {delete_fn} ((state (Ptr State)) (id {resource}Id))
   (@intent "Delete {resource_lower} from state by ID")
   (@spec (((Ptr State) {resource}Id) -> {delete_ret}))
-  (map-remove (. state {resource_lower}s) id))
+  (if (map-has (. state {resource_lower}s) id)
+    (do (map-remove (. state {resource_lower}s) id) true)
+    false))
 """)
 
         return '\n'.join(lines)
@@ -1137,6 +1170,8 @@ class OpenApiConverter:
 
     def _to_type_name(self, s: str) -> str:
         """Convert string to PascalCase type name"""
+        # Split on separators AND case boundaries to preserve PascalCase
+        s = re.sub(r'([a-z])([A-Z])', r'\1_\2', s)
         words = re.split(r'[-_\s]+', s)
         return ''.join(w.capitalize() for w in words)
 

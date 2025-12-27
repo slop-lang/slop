@@ -81,7 +81,7 @@
    '((list
       :anchor
       (identifier) @font-lock-operator-face
-      (:match "^\\(\\+\\|-\\|\\*\\|/\\|%\\|&\\||\\|\\^\\|<<\\|>>\\|==\\|!=\\|<\\|<=\\|>\\|>=\\|and\\|or\\|not\\|\\.\\|@\\|put\\|set!\\|ok\\|error\\|try\\|\\?\\|break\\|continue\\|return\\|cast\\|sizeof\\|addr\\|array\\|list\\|map\\|record-new\\|union-new\\|arena-new\\|arena-alloc\\|arena-free\\|with-arena\\)$"
+      (:match "^\\(\\+\\|-\\|\\*\\|/\\|%\\|&\\||\\|\\^\\|<<\\|>>\\|==\\|!=\\|<\\|<=\\|>\\|>=\\|and\\|or\\|not\\|\\.\\|@\\|put\\|set!\\|ok\\|error\\|try\\|\\?\\|break\\|continue\\|return\\|cast\\|sizeof\\|addr\\|deref\\|array\\|list\\|map\\|record-new\\|union-new\\|arena-new\\|arena-alloc\\|arena-free\\|with-arena\\)$"
               @font-lock-operator-face))
      (range_dots) @font-lock-operator-face)
 

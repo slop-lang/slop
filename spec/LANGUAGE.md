@@ -212,6 +212,7 @@ identifier               ; Variable reference
 (@ expr index)                   ; Index access: expr[index]
 (put expr field value)           ; Functional update (returns new)
 (set! expr field value)          ; Mutation (modifies in place)
+(deref ptr)                      ; Dereference pointer: (Ptr T) -> T
 
 ; Field Access Semantics:
 ; The transpiler automatically selects -> vs . based on pointer tracking:

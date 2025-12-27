@@ -1668,6 +1668,11 @@ class Transpiler:
                     c_type = self.to_c_type(type_expr)
                     return f"sizeof({c_type})"
 
+                if op == 'deref':
+                    # Dereference a pointer: (deref p) -> (*p)
+                    ptr = self.transpile_expr(expr[1])
+                    return f"(*{ptr})"
+
                 if op == 'now-ms':
                     return "slop_now_ms()"
 
