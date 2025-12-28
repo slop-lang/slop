@@ -83,10 +83,14 @@ def _transform_lisp_forms(expr: SExpr) -> SExpr:
         form = head.name
 
         # (quote symbol) -> 'symbol
+        # This is critical - LLMs often use (quote foo) but SLOP uses 'foo
         if form == 'quote' and len(expr) == 2:
             inner = expr[1]
             if isinstance(inner, Symbol):
+                logger.debug(f"Transforming (quote {inner.name}) -> '{inner.name}")
                 return Symbol(f"'{inner.name}")
+            # For non-symbols, log warning but still try to transform
+            logger.warning(f"quote with non-symbol: {inner}")
 
         # (setq var val) -> (set! var val)
         # (setf var val) -> (set! var val)
@@ -589,6 +593,14 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
             ret = f" -> {spec['return_type']}" if spec.get('return_type') else ""
             sections.append(f"  ({spec['name']} {spec['params']}{ret})")
 
+    if context.get('ffi_specs'):
+        sections.append("")
+        sections.append("## FFI Functions (from C headers)")
+        sections.append("These C functions are available via FFI. Use them with EXACT argument types:")
+        for spec in context['ffi_specs']:
+            ret = f" -> {spec['return_type']}" if spec.get('return_type') else ""
+            sections.append(f"  ({spec['name']} {spec['params']}{ret})")
+
     if context.get('requires_fns'):
         sections.append("")
         sections.append("## Required Functions (from @requires)")
@@ -752,11 +764,12 @@ class HoleFiller:
         if isinstance(head, Symbol):
             form_name = head.name
             # Known bad forms that LLMs invent
-            # Note: 'quote' is handled by _transform_quote_forms() which converts
-            # (quote symbol) to 'symbol before validation
             INVALID_FORMS = {'block', 'begin', 'progn', 'seq', 'sequence', 'do-block'}
             if form_name in INVALID_FORMS:
                 return form_name
+            # Reject (quote ...) - should have been transformed to 'symbol
+            if form_name == 'quote':
+                return 'quote (use quoted symbol like \'ok instead of (quote ok))'
 
         # Recursively check all children
         for item in expr.items:
@@ -846,7 +859,21 @@ class HoleFiller:
             # Create type checker
             checker = TypeChecker()
 
+            # Register built-in functions (from slop_runtime.h)
+            from slop.type_checker import FnType, PrimitiveType
+            STRING = PrimitiveType('String')
+            INT64 = PrimitiveType('I64')
+            BOOL = PrimitiveType('Bool')
+            ARENA = PrimitiveType('Arena')
+
+            # String operations
+            checker.env.register_function('string-concat', FnType((ARENA, STRING, STRING), STRING))
+            checker.env.register_function('int-to-string', FnType((ARENA, INT64), STRING))
+            checker.env.register_function('string-len', FnType((STRING,), INT64))
+            checker.env.register_function('string-eq', FnType((STRING, STRING), BOOL))
+
             # Parse and register types from type_defs (pretty-printed strings)
+            from slop.type_checker import RecordType, EnumType, UnionType
             type_defs = context.get('type_defs', [])
             for type_def_str in type_defs:
                 try:
@@ -854,6 +881,13 @@ class HoleFiller:
                     if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
                         name = type_ast[0][1].name if isinstance(type_ast[0][1], Symbol) else str(type_ast[0][1])
                         typ = checker.parse_type_expr(type_ast[0][2])
+                        # Fix anonymous names for record/enum/union types
+                        if isinstance(typ, RecordType) and typ.name == '<anonymous>':
+                            typ = RecordType(name, typ.fields)
+                        elif isinstance(typ, EnumType) and typ.name == '<anonymous>':
+                            typ = EnumType(name, typ.variants)
+                        elif isinstance(typ, UnionType) and typ.name == '<anonymous>':
+                            typ = UnionType(name, typ.variants)
                         checker.env.register_type(name, typ)
                 except Exception:
                     pass  # Skip malformed type defs
@@ -878,13 +912,51 @@ class HoleFiller:
                 try:
                     fn_name = spec.get('name', '')
                     if fn_name and spec.get('return_type'):
-                        # Parse return type and register as function
+                        # Parse return type
                         ret_ast = parse(spec['return_type'])
                         if ret_ast:
                             ret_type = checker.parse_type_expr(ret_ast[0])
-                            # Create a simple FnType (we don't have full param info but that's ok)
+
+                            # Parse parameter types from params string
+                            param_types = []
+                            params_str = spec.get('params', '')
+                            if params_str:
+                                params_ast = parse(params_str)
+                                if params_ast and isinstance(params_ast[0], SList):
+                                    for param in params_ast[0].items:
+                                        if isinstance(param, SList) and len(param) >= 2:
+                                            param_type = checker.parse_type_expr(param[1])
+                                            param_types.append(param_type)
+
                             from slop.type_checker import FnType
-                            checker.env.register_function(fn_name, FnType((), ret_type))
+                            checker.env.register_function(fn_name, FnType(tuple(param_types), ret_type))
+                except Exception:
+                    pass
+
+            # Register FFI functions from ffi_specs
+            ffi_specs = context.get('ffi_specs', [])
+            for spec in ffi_specs:
+                try:
+                    fn_name = spec.get('name', '')
+                    if fn_name and spec.get('return_type'):
+                        # Parse return type
+                        ret_ast = parse(spec['return_type'])
+                        if ret_ast:
+                            ret_type = checker.parse_type_expr(ret_ast[0])
+
+                            # Parse parameter types from params string
+                            param_types = []
+                            params_str = spec.get('params', '')
+                            if params_str:
+                                params_ast = parse(params_str)
+                                if params_ast and isinstance(params_ast[0], SList):
+                                    for param in params_ast[0].items:
+                                        if isinstance(param, SList) and len(param) >= 2:
+                                            param_type = checker.parse_type_expr(param[1])
+                                            param_types.append(param_type)
+
+                            from slop.type_checker import FnType
+                            checker.env.register_function(fn_name, FnType(tuple(param_types), ret_type))
                 except Exception:
                     pass
 
@@ -893,6 +965,12 @@ class HoleFiller:
 
             # Infer actual type of expression
             inferred = checker.infer_expr(expr)
+
+            # Check for type errors (especially undefined variables)
+            errors = [d for d in checker.diagnostics if d.severity == 'error']
+            if errors:
+                # Return the first error message
+                return errors[0].message
 
             # Check compatibility
             if not self._types_compatible(inferred, expected):
@@ -1042,6 +1120,21 @@ class HoleFiller:
                 sections.append("## Type Definitions")
                 for td in first_context.get('type_defs', []):
                     sections.append(td)
+                sections.append("")
+
+            if first_context.get('fn_specs'):
+                sections.append("## Functions Defined in This File")
+                for spec in first_context['fn_specs']:
+                    ret = f" -> {spec['return_type']}" if spec.get('return_type') else ""
+                    sections.append(f"  ({spec['name']} {spec['params']}{ret})")
+                sections.append("")
+
+            if first_context.get('ffi_specs'):
+                sections.append("## FFI Functions (from C headers)")
+                sections.append("Use these with EXACT argument types:")
+                for spec in first_context['ffi_specs']:
+                    ret = f" -> {spec['return_type']}" if spec.get('return_type') else ""
+                    sections.append(f"  ({spec['name']} {spec['params']}{ret})")
                 sections.append("")
 
         for i, (hole, context) in enumerate(holes, 1):

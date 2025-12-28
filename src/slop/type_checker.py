@@ -1093,6 +1093,14 @@ class TypeChecker:
         if op.startswith('@'):
             return PrimitiveType('Unit')
 
+        # C inline escape hatch - defaults to Int, or (c-inline "code" Type)
+        if op == 'c-inline':
+            if len(expr) >= 3:
+                # Optional type annotation: (c-inline "code" Type)
+                return self.parse_type_expr(expr[2])
+            # Default to Int (most C functions return int)
+            return PrimitiveType('Int')
+
         # Cast
         if op == 'cast':
             if len(expr) >= 2:
@@ -1252,7 +1260,12 @@ class TypeChecker:
         numeric_types = {'Int', 'Float', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64', 'F32'}
         a_numeric = (isinstance(a, PrimitiveType) and a.name in numeric_types) or isinstance(a, RangeType)
         b_numeric = (isinstance(b, PrimitiveType) and b.name in numeric_types) or isinstance(b, RangeType)
-        return a_numeric and b_numeric
+        if a_numeric and b_numeric:
+            return True
+        # Pointer types are comparable (for == and !=)
+        if isinstance(a, PtrType) and isinstance(b, PtrType):
+            return True
+        return False
 
     def _check_bool_operands(self, expr: SList):
         """Check that boolean operands are Bool"""
@@ -1482,6 +1495,13 @@ class TypeChecker:
         if isinstance(obj_type, PtrType):
             actual_type = obj_type.pointee
 
+        # Resolve forward references - if we have a PrimitiveType that's actually
+        # a registered RecordType, use the registered type
+        if isinstance(actual_type, PrimitiveType):
+            resolved = self.env.lookup_type(actual_type.name)
+            if resolved:
+                actual_type = resolved
+
         if isinstance(actual_type, RecordType):
             field_type = actual_type.get_field(field_name)
             if field_type:
@@ -1619,6 +1639,38 @@ class TypeChecker:
         if isinstance(actual, Type) and not isinstance(actual, UnknownType):
             self._check_assignable(actual, expected, context, node)
 
+    def _get_type_name(self, t: Type) -> Optional[str]:
+        """Get the name of a type for forward reference comparison"""
+        if isinstance(t, PrimitiveType):
+            return t.name
+        if isinstance(t, RecordType):
+            return t.name if t.name != '<anonymous>' else None
+        if isinstance(t, EnumType):
+            return t.name if t.name != '<anonymous>' else None
+        if isinstance(t, UnionType):
+            return t.name if t.name != '<anonymous>' else None
+        return None
+
+    def _types_same_by_name(self, a: Type, b: Type) -> bool:
+        """Check if types are the same by name (for forward references)"""
+        a_name = self._get_type_name(a)
+        b_name = self._get_type_name(b)
+        return a_name is not None and a_name == b_name
+
+    def _range_fits_in_type(self, range_type: RangeType, target: str) -> bool:
+        """Check if a range type fits within a fixed-width integer type"""
+        type_ranges = {
+            'U8': (0, 255), 'U16': (0, 65535), 'U32': (0, 2**32-1), 'U64': (0, 2**64-1),
+            'I8': (-128, 127), 'I16': (-32768, 32767), 'I32': (-2**31, 2**31-1), 'I64': (-2**63, 2**63-1)
+        }
+        if target not in type_ranges:
+            return False
+        tmin, tmax = type_ranges[target]
+        bounds = range_type.bounds
+        rmin = bounds.min_val if bounds.min_val is not None else float('-inf')
+        rmax = bounds.max_val if bounds.max_val is not None else float('inf')
+        return rmin >= tmin and rmax <= tmax
+
     def _check_assignable(self, source: Type, target: Type, context: str, node: Optional[SExpr] = None):
         """Check if source type can be assigned to target type"""
         if isinstance(source, UnknownType) or isinstance(target, UnknownType):
@@ -1652,13 +1704,23 @@ class TypeChecker:
 
         # Pointer compatibility
         if isinstance(source, PtrType) and isinstance(target, PtrType):
-            if source.pointee.equals(target.pointee):
+            pointees_match = source.pointee.equals(target.pointee)
+            # Forward reference fallback: compare by name
+            if not pointees_match:
+                pointees_match = self._types_same_by_name(source.pointee, target.pointee)
+            if pointees_match:
                 if target.nullable and not source.nullable:
                     return  # Non-null to nullable is OK
                 if not target.nullable and source.nullable:
                     self.warning(f"{context}: assigning nullable pointer to non-nullable", node)
                     return
                 return
+
+        # Range type assignable to fixed-width integers
+        if isinstance(source, RangeType) and isinstance(target, PrimitiveType):
+            if target.name in ('U8', 'U16', 'U32', 'U64', 'I8', 'I16', 'I32', 'I64'):
+                if self._range_fits_in_type(source, target.name):
+                    return
 
         self.error(f"{context}: expected {target}, got {source}", node)
 
@@ -1736,12 +1798,14 @@ class TypeChecker:
             if is_form(form, 'type'):
                 self._register_type_def(form)
 
-        # Second pass: collect function signatures
+        # Second pass: collect function signatures (including FFI)
         for form in forms:
             if is_form(form, 'fn'):
                 self._register_function_sig(form)
             elif is_form(form, 'impl'):
                 self._register_function_sig(form)
+            elif is_form(form, 'ffi'):
+                self._register_ffi_funcs(form)
 
         # Third pass: check function bodies
         for form in forms:
@@ -1824,6 +1888,35 @@ class TypeChecker:
 
         fn_type = FnType(tuple(param_types), return_type)
         self.env.register_function(name, fn_type)
+
+    def _register_ffi_funcs(self, form: SList):
+        """Register FFI function signatures.
+
+        FFI form: (ffi "header.h" (func-name ((param Type)...) ReturnType) ...)
+        """
+        if len(form) < 2:
+            return
+
+        # Skip header string, process function declarations
+        for item in form.items[2:]:
+            if isinstance(item, SList) and len(item) >= 3:
+                # (func-name ((param Type)...) ReturnType)
+                fn_name = item[0].name if isinstance(item[0], Symbol) else str(item[0])
+                params_list = item[1] if isinstance(item[1], SList) else SList([])
+                return_type_expr = item[2]
+
+                # Parse parameter types
+                param_types: List[Type] = []
+                for param in params_list:
+                    if isinstance(param, SList) and len(param) >= 2:
+                        param_type = self.parse_type_expr(param[1])
+                        param_types.append(param_type)
+
+                # Parse return type
+                return_type = self.parse_type_expr(return_type_expr)
+
+                fn_type = FnType(tuple(param_types), return_type)
+                self.env.register_function(fn_name, fn_type)
 
     def _check_function(self, form: SList):
         """Type check function body"""

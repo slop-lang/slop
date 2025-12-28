@@ -19,6 +19,7 @@ from pathlib import Path
 from slop.parser import parse, parse_file, pretty_print, find_holes, is_form, SList, get_imports
 from slop.transpiler import Transpiler, transpile, transpile_multi
 from slop.hole_filler import HoleFiller, extract_hole, classify_tier, replace_holes_in_ast
+from slop.formatter import format_source
 from slop.providers import (
     MockProvider, create_default_configs, load_config, create_from_config, Tier
 )
@@ -169,6 +170,46 @@ def _extract_ffi_functions(ast) -> list:
                                 ffi_functions.append(item[0].name)
 
     return ffi_functions
+
+
+def _extract_ffi_specs(ast) -> list:
+    """Extract full FFI function specs with return types.
+
+    Handles both top-level (ffi ...) and (module ... (ffi ...)) forms.
+    Returns list of dicts with 'name', 'params', 'return_type'.
+
+    FFI form: (ffi "header.h" (func-name ((param Type)...) ReturnType) ...)
+    """
+    from slop.parser import Symbol, pretty_print
+    ffi_specs = []
+
+    def extract_from_ffi_form(ffi_form):
+        for item in ffi_form.items[2:]:  # Skip 'ffi' and header
+            if isinstance(item, SList) and len(item) >= 3:
+                # (func-name ((param Type)...) ReturnType)
+                fn_name = item[0].name if isinstance(item[0], Symbol) else str(item[0])
+                params_list = item[1] if isinstance(item[1], SList) else SList([])
+                return_type_expr = item[2]
+
+                # Pretty-print params and return type for the validator
+                params_str = pretty_print(params_list)
+                return_type_str = pretty_print(return_type_expr)
+
+                ffi_specs.append({
+                    'name': fn_name,
+                    'params': params_str,
+                    'return_type': return_type_str
+                })
+
+    for form in ast:
+        if is_form(form, 'ffi'):
+            extract_from_ffi_form(form)
+        elif is_form(form, 'module'):
+            for subform in form.items:
+                if is_form(subform, 'ffi'):
+                    extract_from_ffi_form(subform)
+
+    return ffi_specs
 
 
 def _extract_imported_functions(ast) -> list:
@@ -346,8 +387,9 @@ def cmd_fill(args):
                         if spec:
                             fn_specs.append(spec)
 
-        # Collect FFI function names and imported names for validation
+        # Collect FFI function names/specs and imported names for validation
         ffi_functions = _extract_ffi_functions(ast)
+        ffi_specs = _extract_ffi_specs(ast)
         imported_names = _extract_imported_functions(ast)
 
         # Collect all holes with their parent function forms for context
@@ -415,6 +457,7 @@ def cmd_fill(args):
                 context = _extract_context(form)
                 context['type_defs'] = type_defs
                 context['fn_specs'] = fn_specs
+                context['ffi_specs'] = ffi_specs
                 context['requires_fns'] = requires_fns
                 context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names
                 context['error_variants'] = error_variants
@@ -482,6 +525,7 @@ def cmd_fill(args):
                 context = _extract_context(form)
                 context['type_defs'] = type_defs
                 context['fn_specs'] = fn_specs
+                context['ffi_specs'] = ffi_specs
                 context['requires_fns'] = requires_fns
                 context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names
                 context['error_variants'] = error_variants
@@ -507,13 +551,14 @@ def cmd_fill(args):
         else:
             filled_ast = ast
 
-        # Generate output
+        # Generate output and format it
         output_lines = []
         for form in filled_ast:
             output_lines.append(pretty_print(form))
             output_lines.append("")
 
         output_text = '\n'.join(output_lines)
+        output_text = format_source(output_text)
 
         if args.inplace:
             Path(args.input).write_text(output_text)

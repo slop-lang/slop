@@ -47,16 +47,38 @@
   .
   (identifier) @operator
   (#any-of? @operator
+    ; Arithmetic
     "+" "-" "*" "/" "%"
+    ; Bitwise
     "&" "|" "^" "<<" ">>"
+    ; Comparison
     "==" "!=" "<" "<=" ">" ">="
+    ; Boolean
     "and" "or" "not"
-    "." "@" "put" "set!"
-    "ok" "error" "try" "?"
+    ; Data access
+    "." "@" "put" "set!" "deref"
+    ; Result/Option
+    "ok" "error" "try" "?" "is-ok" "unwrap" "some" "none"
+    ; Control
     "break" "continue" "return"
+    ; Type/Memory
     "cast" "sizeof" "addr"
+    ; Data construction
     "array" "list" "map" "record-new" "union-new"
-    "arena-new" "arena-alloc" "arena-free" "with-arena"))
+    ; Arena
+    "arena-new" "arena-alloc" "arena-free" "with-arena"
+    ; String operations
+    "string-new" "string-len" "string-concat" "string-eq" "string-slice" "int-to-string"
+    ; List operations
+    "list-new" "list-push" "list-get" "list-len"
+    ; Map operations
+    "map-new" "map-put" "map-get" "map-has"
+    ; Time
+    "now-ms" "sleep-ms"
+    ; File I/O
+    "file-read" "file-write"
+    ; Console I/O
+    "print" "println"))
 
 ; Function name (second element after 'fn')
 (list

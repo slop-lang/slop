@@ -138,8 +138,10 @@ def format_module(expr: SList, indent: int) -> str:
     if exports_imports and body:
         lines.append("")
 
-    # Format body
-    for item in body:
+    # Format body with blank lines between top-level forms
+    for i, item in enumerate(body):
+        if i > 0:
+            lines.append("")  # Blank line between top-level forms
         lines.append(p + format_expr(item, indent + 1))
 
     lines[-1] += ")"
