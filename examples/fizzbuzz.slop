@@ -13,6 +13,7 @@
     (@example (7) -> Number)
     (@pure)
     (hole FizzBuzzResult "check divisibility by 3 and 5, return appropriate enum variant"
+      :must-use (n)
       :complexity tier-2))
 
   (fn main ()

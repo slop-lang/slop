@@ -13,3 +13,11 @@ __version__ = "0.1.0"
 from slop.parser import parse, parse_file
 from slop.transpiler import transpile
 from slop.type_checker import TypeChecker, check_file, check_source
+# Re-export type classes and constants from types module for backwards compatibility
+from slop.types import (
+    Type, PrimitiveType, RangeType, ListType, ArrayType, MapType,
+    RecordType, EnumType, UnionType, OptionType, ResultType, PtrType,
+    FnType, TypeVar, UnknownType, UNKNOWN,
+    STRING, INT, BOOL, UNIT, ARENA, BUILTIN_FUNCTIONS,
+    RangeBounds, Constraint,
+)

@@ -110,18 +110,28 @@ class TestQuotedSymbols:
     """Test quoted symbol parsing"""
 
     def test_quoted_symbol(self):
+        """'foo is normalized to Symbol("'foo") - not (quote foo) list"""
         result = parse("'foo")
         assert len(result) == 1
-        lst = result[0]
-        assert is_form(lst, 'quote')
-        assert lst[1].name == 'foo'
+        sym = result[0]
+        assert isinstance(sym, Symbol)
+        assert sym.name == "'foo"
 
     def test_quoted_with_hyphen(self):
+        """'rate-limited is normalized to Symbol("'rate-limited")"""
         result = parse("'rate-limited")
         assert len(result) == 1
-        lst = result[0]
-        assert is_form(lst, 'quote')
-        assert lst[1].name == 'rate-limited'
+        sym = result[0]
+        assert isinstance(sym, Symbol)
+        assert sym.name == "'rate-limited"
+
+    def test_quote_form_normalized(self):
+        """(quote x) is normalized to 'x"""
+        result = parse("(quote foo)")
+        assert len(result) == 1
+        sym = result[0]
+        assert isinstance(sym, Symbol)
+        assert sym.name == "'foo"
 
 
 class TestComments:

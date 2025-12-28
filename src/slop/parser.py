@@ -206,8 +206,28 @@ class Parser:
         raise ParseError("Unclosed list", line, col)
 
 
+def _normalize_quotes(expr: SExpr) -> SExpr:
+    """Normalize (quote symbol) to 'symbol.
+
+    This handles Lisp-style quote forms, converting them to SLOP's 'symbol syntax.
+    Applied post-parse to ensure consistent AST regardless of input style.
+    """
+    if isinstance(expr, SList) and len(expr) == 2:
+        if isinstance(expr[0], Symbol) and expr[0].name == 'quote':
+            inner = expr[1]
+            if isinstance(inner, Symbol):
+                # (quote foo) -> 'foo
+                return Symbol(f"'{inner.name}", expr.line, expr.col)
+    # Recursively normalize children
+    if isinstance(expr, SList):
+        normalized = [_normalize_quotes(item) for item in expr.items]
+        return SList(normalized, expr.line, expr.col)
+    return expr
+
+
 def parse(source: str) -> List[SExpr]:
-    return Parser(source).parse()
+    forms = Parser(source).parse()
+    return [_normalize_quotes(form) for form in forms]
 
 def parse_file(path: str) -> List[SExpr]:
     with open(path) as f:

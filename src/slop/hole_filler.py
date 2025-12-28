@@ -13,6 +13,7 @@ from threading import Semaphore
 from typing import Optional, List, Dict, Any, Callable
 from slop.parser import SExpr, SList, Symbol, String, Number, parse, find_holes, is_form, pretty_print, ParseError
 from slop.providers import Tier, ModelConfig, Provider, MockProvider, create_default_configs
+from slop.types import BUILTIN_FUNCTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 _SKILL_SPEC: Optional[str] = None
 
 # Valid built-in expression forms from SLOP spec
+# Note: BUILTIN_FUNCTIONS (from types.py) is unioned with these special forms
 VALID_EXPRESSION_FORMS = {
     # Control flow
     'if', 'cond', 'match', 'when', 'while', 'for', 'for-each',
@@ -39,23 +41,9 @@ VALID_EXPRESSION_FORMS = {
     # Boolean
     'and', 'or', 'not',
     # Type/memory
-    'cast', 'sizeof', 'addr',
-    'arena-new', 'arena-alloc', 'arena-free', 'with-arena',
+    'cast', 'sizeof', 'addr', 'with-arena',
     # Error handling
     'try', '?',
-    # Result operations
-    'is-ok', 'unwrap',
-    # I/O
-    'print', 'println', 'file-read', 'file-write',
-    # String operations
-    'string-new', 'string-len', 'string-concat', 'string-eq', 'string-slice',
-    'int-to-string',
-    # List operations
-    'list-new', 'list-push', 'list-get', 'list-len',
-    # Map operations
-    'map-new', 'map-put', 'map-get', 'map-has',
-    # Time
-    'now-ms', 'sleep-ms',
     # Sequencing
     'do',
     # FFI
@@ -66,7 +54,7 @@ VALID_EXPRESSION_FORMS = {
     'Int', 'U8', 'U16', 'U32', 'U64', 'I8', 'I16', 'I32', 'I64',
     'String', 'Bool', 'Float', 'Void', 'Unit', 'Arena',
     'ffi-struct',  # Nested FFI struct type
-}
+} | BUILTIN_FUNCTIONS
 
 
 def _transform_lisp_forms(expr: SExpr) -> SExpr:
@@ -1183,8 +1171,8 @@ class HoleFiller:
         - ALLOW unresolved type variables
         """
         import re
-        from slop.type_checker import (
-            TypeChecker, TypeEnv,
+        from slop.type_checker import TypeChecker, TypeEnv
+        from slop.types import (
             Type, PrimitiveType, PtrType, OptionType, ResultType,
             TypeVar, UNKNOWN, FnType, RecordType, EnumType, UnionType
         )
@@ -1193,20 +1181,8 @@ class HoleFiller:
             return []  # No type constraint to check
 
         try:
-            # Create type checker
+            # Create type checker (built-ins registered automatically via _register_builtins)
             checker = TypeChecker()
-
-            # Register built-in functions (from slop_runtime.h)
-            STRING = PrimitiveType('String')
-            INT64 = PrimitiveType('I64')
-            BOOL = PrimitiveType('Bool')
-            ARENA = PrimitiveType('Arena')
-
-            # String operations
-            checker.env.register_function('string-concat', FnType((ARENA, STRING, STRING), STRING))
-            checker.env.register_function('int-to-string', FnType((ARENA, INT64), STRING))
-            checker.env.register_function('string-len', FnType((STRING,), INT64))
-            checker.env.register_function('string-eq', FnType((STRING, STRING), BOOL))
 
             # Register imported types FIRST (so local types can reference them)
             imported_types = context.get('imported_types', [])
@@ -1379,7 +1355,7 @@ class HoleFiller:
 
         Uses subtype checking where available, falls back to equality.
         """
-        from slop.type_checker import TypeVar, UNKNOWN, PtrType, PrimitiveType, ResultType, RecordType
+        from slop.types import TypeVar, UNKNOWN, PtrType, PrimitiveType, ResultType, RecordType
 
         # Unknown always compatible (can't verify)
         if inferred == UNKNOWN or expected == UNKNOWN:
@@ -1412,7 +1388,7 @@ class HoleFiller:
 
     def _is_allowable_unknown(self, typ: 'Type') -> bool:
         """Check if type is an allowable unknown (c-inline, type var)."""
-        from slop.type_checker import TypeVar, UNKNOWN
+        from slop.types import TypeVar, UNKNOWN
 
         if typ == UNKNOWN:
             return True

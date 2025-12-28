@@ -140,6 +140,10 @@ static inline slop_string slop_string_new(slop_arena* arena, const char* cstr) {
     return (slop_string){len, data};
 }
 
+static inline slop_string string_new(slop_arena* arena, const char* cstr) {
+    return slop_string_new(arena, cstr);
+}
+
 static inline slop_string slop_string_new_len(slop_arena* arena, const char* src, size_t len) {
     char* data = (char*)slop_arena_alloc(arena, len + 1);
     memcpy(data, src, len);
@@ -652,6 +656,10 @@ static inline void slop_sleep_ms(int64_t ms) {
     struct timespec ts = {ms / 1000, (ms % 1000) * 1000000};
     nanosleep(&ts, NULL);
 #endif
+}
+
+static inline void sleep_ms(int64_t ms) {
+    slop_sleep_ms(ms);
 }
 
 /* ============================================================
