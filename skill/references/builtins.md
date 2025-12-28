@@ -78,6 +78,26 @@ To print other types, convert to string first:
 (@ arr idx)              ; array indexing (arr[idx])
 ```
 
+## List Operations
+
+```
+(list-new arena)         ; create empty list
+(list-push list elem)    ; append element to list
+(list-get list idx)      ; get element at index
+(list-len list)          ; get list length
+```
+
+Note: `list-append` does NOT exist. Use `list-push` to add elements.
+
+## Map Operations
+
+```
+(map-new arena)          ; create empty map
+(map-put map key val)    ; insert/update key-value pair
+(map-get map key)        ; get value (returns Option)
+(map-has map key)        ; check if key exists -> Bool
+```
+
 ## Control Flow
 
 ```
@@ -151,4 +171,8 @@ These do NOT exist - use alternatives:
 | `strlen s` | `(string-len s)` |
 | `malloc` | `(arena-alloc arena size)` |
 | `arr.length` | Arrays are fixed size - use declared size (e.g., 100 for `Array T 100`) |
-| `list.length` | No built-in - track length manually or use loops |
+| `list.length` | `(list-len list)` |
+| `list-append` | `(list-push list elem)` - push adds to end |
+| `list-add` | `(list-push list elem)` |
+| `map-set` | `(map-put map key val)` |
+| `hash-get` | `(map-get map key)` |

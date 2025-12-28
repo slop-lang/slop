@@ -15,7 +15,7 @@ def make_filler():
 
 
 class TestCheckType:
-    """Test the _check_type validation method."""
+    """Test the _check_type_all validation method."""
 
     def test_simple_int_match(self):
         """Test that Int expression matches Int hole."""
@@ -27,8 +27,8 @@ class TestCheckType:
         )
         context = {}
 
-        error = filler._check_type(expr, hole, context)
-        assert error is None  # Should pass
+        errors = filler._check_type_all(expr, hole, context)
+        assert errors == []  # Should pass
 
     def test_string_for_int_mismatch(self):
         """Test that String expression fails Int hole."""
@@ -41,9 +41,9 @@ class TestCheckType:
         )
         context = {}
 
-        error = filler._check_type(expr, hole, context)
-        assert error is not None  # Should fail
-        assert "Type mismatch" in error
+        errors = filler._check_type_all(expr, hole, context)
+        assert len(errors) > 0  # Should fail
+        assert any("Type mismatch" in err for err in errors)
 
     def test_option_some_matches(self):
         """Test (some value) matches (Option T)."""
@@ -57,8 +57,8 @@ class TestCheckType:
         )
         context = {}
 
-        error = filler._check_type(expr, hole, context)
-        assert error is None  # Should pass
+        errors = filler._check_type_all(expr, hole, context)
+        assert errors == []  # Should pass
 
     def test_result_ok_matches(self):
         """Test (ok value) matches (Result T E)."""
@@ -72,8 +72,8 @@ class TestCheckType:
         )
         context = {}
 
-        error = filler._check_type(expr, hole, context)
-        assert error is None  # Should pass
+        errors = filler._check_type_all(expr, hole, context)
+        assert errors == []  # Should pass
 
     def test_unknown_type_allowed(self):
         """Test that unknown types (from c-inline) are allowed."""
@@ -86,9 +86,9 @@ class TestCheckType:
         )
         context = {}
 
-        error = filler._check_type(expr, hole, context)
+        errors = filler._check_type_all(expr, hole, context)
         # c-inline returns unknown, should be allowed with warning
-        assert error is None
+        assert errors == []
 
     def test_param_types_in_scope(self):
         """Test that parameters are properly in scope for type checking."""
@@ -103,8 +103,8 @@ class TestCheckType:
             'params': '((x Int))'  # x is Int
         }
 
-        error = filler._check_type(expr, hole, context)
-        assert error is None  # x is Int, hole expects Int
+        errors = filler._check_type_all(expr, hole, context)
+        assert errors == []  # x is Int, hole expects Int
 
     def test_ptr_type_mismatch(self):
         """Test that (Ptr Void) doesn't match (Ptr User) without cast."""
@@ -121,7 +121,7 @@ class TestCheckType:
             'type_defs': ['(type User (record (name String)))']
         }
 
-        error = filler._check_type(expr, hole, context)
+        errors = filler._check_type_all(expr, hole, context)
         # arena-alloc returns (Ptr Void), should fail without cast
         # Note: This depends on how strict the type checker is
         # With our "allow unknowns" policy, this might pass
@@ -145,8 +145,8 @@ class TestCheckType:
             'type_defs': ['(type User (record (name String)))']
         }
 
-        error = filler._check_type(expr, hole, context)
-        assert error is None  # Cast should make it match
+        errors = filler._check_type_all(expr, hole, context)
+        assert errors == []  # Cast should make it match
 
 
 class TestTypesCompatible:

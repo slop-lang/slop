@@ -585,10 +585,50 @@ class TypeChecker:
         self._param_modes: Dict[str, str] = {}
         # Track which 'out' parameters have been initialized (written to)
         self._out_initialized: Set[str] = set()
+        # Register built-in functions
+        self._register_builtins()
 
     def fresh_type_var(self, name: Optional[str] = None) -> TypeVar:
         self._type_var_counter += 1
         return TypeVar(self._type_var_counter, name)
+
+    def _register_builtins(self):
+        """Register built-in function signatures."""
+        # Common types
+        STRING = PrimitiveType('String')
+        INT = PrimitiveType('Int')
+        BOOL = PrimitiveType('Bool')
+        UNIT = PrimitiveType('Unit')
+        ARENA = PrimitiveType('Arena')
+
+        # I/O
+        self.env.register_function('print', FnType((STRING,), UNIT))
+        self.env.register_function('println', FnType((STRING,), UNIT))
+
+        # String operations
+        self.env.register_function('string-len', FnType((STRING,), INT))
+        self.env.register_function('string-concat', FnType((ARENA, STRING, STRING), STRING))
+        self.env.register_function('string-eq', FnType((STRING, STRING), BOOL))
+        self.env.register_function('string-new', FnType((ARENA, PtrType(PrimitiveType('U8'))), STRING))
+        self.env.register_function('int-to-string', FnType((ARENA, INT), STRING))
+
+        # Arena/memory operations
+        # arena-alloc returns a polymorphic pointer; use UNKNOWN so it unifies with any Ptr type
+        self.env.register_function('arena-new', FnType((INT,), ARENA))
+        self.env.register_function('arena-alloc', FnType((ARENA, INT), PtrType(UNKNOWN)))
+        self.env.register_function('arena-free', FnType((ARENA,), UNIT))
+
+        # List operations - return types use UNKNOWN for polymorphism
+        self.env.register_function('list-new', FnType((ARENA,), ListType(UNKNOWN)))
+        self.env.register_function('list-push', FnType((ListType(UNKNOWN), UNKNOWN), UNIT))
+        self.env.register_function('list-get', FnType((ListType(UNKNOWN), INT), UNKNOWN))
+        self.env.register_function('list-len', FnType((ListType(UNKNOWN),), INT))
+
+        # Map operations - use UNKNOWN for polymorphism
+        self.env.register_function('map-new', FnType((ARENA,), MapType(UNKNOWN, UNKNOWN)))
+        self.env.register_function('map-put', FnType((MapType(UNKNOWN, UNKNOWN), UNKNOWN, UNKNOWN), UNIT))
+        self.env.register_function('map-get', FnType((MapType(UNKNOWN, UNKNOWN), UNKNOWN), OptionType(UNKNOWN)))
+        self.env.register_function('map-has', FnType((MapType(UNKNOWN, UNKNOWN), UNKNOWN), BOOL))
 
     def error(self, message: str, node: Optional[SExpr] = None, hint: Optional[str] = None):
         line = getattr(node, 'line', 0) if node else 0
@@ -1101,6 +1141,10 @@ class TypeChecker:
             # Default to Int (most C functions return int)
             return PrimitiveType('Int')
 
+        # Hole - typed placeholder for LLM generation
+        if op == 'hole':
+            return self._infer_hole(expr)
+
         # Cast
         if op == 'cast':
             if len(expr) >= 2:
@@ -1254,6 +1298,9 @@ class TypeChecker:
 
     def _types_comparable(self, a: Type, b: Type) -> bool:
         """Check if two types can be compared"""
+        # UNKNOWN is compatible with anything (we don't have enough info to reject)
+        if isinstance(a, UnknownType) or isinstance(b, UnknownType):
+            return True
         if a.equals(b):
             return True
         # Numeric types are comparable
@@ -1591,6 +1638,30 @@ class TypeChecker:
 
         return PrimitiveType('Unit')
 
+    def _infer_hole(self, expr: SList) -> Type:
+        """Infer type of hole expression and check for :must-use.
+
+        (hole Type "prompt" :complexity tier-2 :must-use (fn1 fn2))
+        """
+        if len(expr) < 2:
+            self.error("Hole requires a type", expr)
+            return UNKNOWN
+
+        # Parse the type (first argument)
+        hole_type = self.parse_type_expr(expr[1])
+
+        # Check for :must-use - warn if missing
+        has_must_use = False
+        for i, item in enumerate(expr.items):
+            if isinstance(item, Symbol) and item.name == ':must-use':
+                has_must_use = True
+                break
+
+        if not has_must_use:
+            self.warn("Hole is missing :must-use - add it for better LLM context filtering", expr)
+
+        return hole_type
+
     def _infer_with_arena(self, expr: SList) -> Type:
         """Infer type of with-arena block"""
         self.env.push_scope()
@@ -1682,6 +1753,21 @@ class TypeChecker:
         if source.is_subtype_of(target):
             return
 
+        # Parameterized type compatibility with UNKNOWN inner types
+        # (List ?) matches (List T), (Map ? ?) matches (Map K V), etc.
+        if isinstance(source, ListType) and isinstance(target, ListType):
+            if isinstance(source.element_type, UnknownType) or isinstance(target.element_type, UnknownType):
+                return
+
+        if isinstance(source, MapType) and isinstance(target, MapType):
+            if (isinstance(source.key_type, UnknownType) or isinstance(target.key_type, UnknownType) or
+                isinstance(source.value_type, UnknownType) or isinstance(target.value_type, UnknownType)):
+                return
+
+        if isinstance(source, OptionType) and isinstance(target, OptionType):
+            if isinstance(source.inner, UnknownType) or isinstance(target.inner, UnknownType):
+                return
+
         # Handle range subtyping
         if isinstance(source, RangeType) and isinstance(target, RangeType):
             if source.base == target.base and source.bounds.is_subrange_of(target.bounds):
@@ -1704,6 +1790,9 @@ class TypeChecker:
 
         # Pointer compatibility
         if isinstance(source, PtrType) and isinstance(target, PtrType):
+            # UNKNOWN pointee matches any type (polymorphic pointers like arena-alloc)
+            if isinstance(source.pointee, UnknownType) or isinstance(target.pointee, UnknownType):
+                return
             pointees_match = source.pointee.equals(target.pointee)
             # Forward reference fallback: compare by name
             if not pointees_match:
@@ -1722,10 +1811,28 @@ class TypeChecker:
                 if self._range_fits_in_type(source, target.name):
                     return
 
+        # Result type with type variables - allow if structure matches
+        if isinstance(source, ResultType) and isinstance(target, ResultType):
+            # If source has unresolved type variables, allow it (can't fully verify)
+            if isinstance(source.ok_type, TypeVar) or isinstance(source.err_type, TypeVar):
+                return
+            # If target has anonymous record, be lenient
+            if (isinstance(target.ok_type, RecordType) and
+                target.ok_type.name == '<anonymous>'):
+                # Just verify error types are compatible
+                if source.err_type.equals(target.err_type) or source.err_type.is_subtype_of(target.err_type):
+                    return
+
         self.error(f"{context}: expected {target}, got {source}", node)
 
     def _unify_branch_types(self, a: Type, b: Type, node: Optional[SExpr] = None) -> Type:
         """Unify types from different branches (if/match)"""
+        # UNKNOWN can unify with anything - return the known type
+        if isinstance(a, UnknownType):
+            return b
+        if isinstance(b, UnknownType):
+            return a
+
         if a.equals(b):
             return a
 
@@ -1798,7 +1905,12 @@ class TypeChecker:
             if is_form(form, 'type'):
                 self._register_type_def(form)
 
-        # Second pass: collect function signatures (including FFI)
+        # Second pass: collect constants
+        for form in forms:
+            if is_form(form, 'const'):
+                self._register_const(form)
+
+        # Third pass: collect function signatures (including FFI)
         for form in forms:
             if is_form(form, 'fn'):
                 self._register_function_sig(form)
@@ -1807,7 +1919,7 @@ class TypeChecker:
             elif is_form(form, 'ffi'):
                 self._register_ffi_funcs(form)
 
-        # Third pass: check function bodies
+        # Fourth pass: check function bodies
         for form in forms:
             if is_form(form, 'fn'):
                 self._check_function(form)
@@ -1918,6 +2030,17 @@ class TypeChecker:
                 fn_type = FnType(tuple(param_types), return_type)
                 self.env.register_function(fn_name, fn_type)
 
+    def _register_const(self, form: SList):
+        """Register a constant as a bound variable.
+
+        Const form: (const NAME Type value)
+        """
+        if len(form) < 3:
+            return
+        name = form[1].name if isinstance(form[1], Symbol) else str(form[1])
+        const_type = self.parse_type_expr(form[2])
+        self.env.bind_var(name, const_type)
+
     def _check_function(self, form: SList):
         """Type check function body"""
         if len(form) < 2:
@@ -1999,11 +2122,46 @@ def parse_type_expr(expr: SExpr, type_registry: Optional[Dict[str, 'Type']] = No
 
 
 def check_file(path: str) -> List[TypeDiagnostic]:
-    """Type check a SLOP file"""
-    from slop.parser import parse_file
+    """Type check a SLOP file.
+
+    If the file has imports, performs full module resolution to get
+    imported function signatures for accurate type checking.
+    """
+    from slop.parser import parse_file, is_form
+    from pathlib import Path
+
     ast = parse_file(path)
-    checker = TypeChecker(path)
-    return checker.check_module(ast)
+
+    # Check if file has imports
+    has_imports = any(
+        is_form(f, 'import') or
+        (is_form(f, 'module') and any(is_form(i, 'import') for i in f.items))
+        for f in ast
+    )
+
+    if has_imports:
+        # Use full module resolution to get imported signatures
+        from slop.resolver import ModuleResolver
+        resolver = ModuleResolver()
+        try:
+            graph = resolver.build_dependency_graph(Path(path))
+            order = resolver.topological_sort(graph)
+            results = check_modules(graph.modules, order)
+            # Return diagnostics for the requested file's module
+            # Module name may differ from filename, so find by path
+            for mod_name, mod_info in graph.modules.items():
+                if mod_info.path == Path(path).resolve():
+                    return results.get(mod_name, [])
+            # Fallback to filename stem
+            return results.get(Path(path).stem, [])
+        except Exception:
+            # Fall back to single-file check if resolution fails
+            checker = TypeChecker(path)
+            return checker.check_module(ast)
+    else:
+        # Simple single-file check
+        checker = TypeChecker(path)
+        return checker.check_module(ast)
 
 
 def check_source(source: str, filename: str = "<string>") -> List[TypeDiagnostic]:

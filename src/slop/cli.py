@@ -172,6 +172,53 @@ def _extract_ffi_functions(ast) -> list:
     return ffi_functions
 
 
+def _extract_const_names(ast) -> list:
+    """Extract constant names from const declarations.
+
+    Handles both top-level (const ...) and (module ... (const ...)) forms.
+    Format: (const NAME Type value)
+    """
+    from slop.parser import Symbol
+    const_names = []
+
+    for form in ast:
+        if is_form(form, 'const') and len(form) >= 2:
+            if isinstance(form[1], Symbol):
+                const_names.append(form[1].name)
+        elif is_form(form, 'module'):
+            for subform in form.items:
+                if is_form(subform, 'const') and len(subform) >= 2:
+                    if isinstance(subform[1], Symbol):
+                        const_names.append(subform[1].name)
+
+    return const_names
+
+
+def _extract_const_specs(ast) -> list:
+    """Extract constant specs (name + type) from const declarations.
+
+    Format: (const NAME Type value)
+    Returns list of dicts with 'name' and 'type_expr' (as string)
+    """
+    from slop.parser import Symbol
+    const_specs = []
+
+    def extract_const(form):
+        if is_form(form, 'const') and len(form) >= 3:
+            if isinstance(form[1], Symbol):
+                name = form[1].name
+                type_expr = pretty_print(form[2])
+                const_specs.append({'name': name, 'type_expr': type_expr})
+
+    for form in ast:
+        extract_const(form)
+        if is_form(form, 'module'):
+            for subform in form.items:
+                extract_const(subform)
+
+    return const_specs
+
+
 def _extract_ffi_specs(ast) -> list:
     """Extract full FFI function specs with return types.
 
@@ -216,44 +263,182 @@ def _extract_imported_functions(ast) -> list:
     """Extract function and type names from import declarations.
 
     Handles both top-level (import ...) and (module ... (import ...)) forms.
-    Returns both function names (from (fn-name arity)) and type names (bare symbols).
+    Supports two import formats:
+      - (import mod func1 func2 Type1 Type2)  -- direct list
+      - (import mod (func1 func2 Type1 Type2))  -- grouped in SList
     """
     from slop.parser import Symbol
     imported_names = []
 
+    def extract_from_import(import_form):
+        """Extract names from an import form."""
+        # Skip 'import' keyword and module name
+        for item in import_form.items[2:]:
+            if isinstance(item, SList):
+                # Grouped import list: (func1 func2 Type1 Type2)
+                # Extract ALL names from the list
+                for sub_item in item.items:
+                    if isinstance(sub_item, Symbol):
+                        imported_names.append(sub_item.name)
+            elif isinstance(item, Symbol):
+                # Direct import: bare symbol
+                imported_names.append(item.name)
+
     for form in ast:
         if is_form(form, 'import'):
-            # (import module-name (fn1 arity) (fn2 arity) Type1 Type2 ...)
-            for item in form.items[2:]:  # Skip 'import' and module name
-                if isinstance(item, SList) and len(item) >= 1:
-                    # Function import: (fn-name arity)
-                    if isinstance(item[0], Symbol):
-                        imported_names.append(item[0].name)
-                elif isinstance(item, Symbol):
-                    # Type import: bare symbol
-                    imported_names.append(item.name)
+            extract_from_import(form)
         elif is_form(form, 'module'):
             for subform in form.items:
                 if is_form(subform, 'import'):
-                    for item in subform.items[2:]:
-                        if isinstance(item, SList) and len(item) >= 1:
-                            if isinstance(item[0], Symbol):
-                                imported_names.append(item[0].name)
-                        elif isinstance(item, Symbol):
-                            imported_names.append(item.name)
+                    extract_from_import(subform)
 
     return imported_names
+
+
+def _parse_import_form(import_form) -> tuple:
+    """Parse import form, return (module_name, [imported_names])."""
+    from slop.parser import Symbol
+
+    if len(import_form) < 2:
+        return (None, [])
+
+    module_name = import_form[1].name if isinstance(import_form[1], Symbol) else str(import_form[1])
+    names = []
+
+    for item in import_form.items[2:]:
+        if isinstance(item, Symbol):
+            names.append(item.name)
+        elif isinstance(item, SList):
+            for sub in item.items:
+                if isinstance(sub, Symbol):
+                    names.append(sub.name)
+
+    return (module_name, names)
+
+
+def _extract_imported_specs(ast, search_paths=None, from_path=None) -> list:
+    """Extract function signatures from imported modules.
+
+    Args:
+        ast: Parsed AST of the importing file
+        search_paths: List of paths to search for modules
+        from_path: Path of the importing file (for relative resolution)
+
+    Returns list of dicts: {'name': str, 'params': str, 'return_type': str}
+    """
+    from slop.resolver import ModuleResolver
+
+    resolver = ModuleResolver([Path(p) for p in (search_paths or [])])
+    imported_specs = []
+
+    # Collect all import info: [(module_name, [imported_names]), ...]
+    imports = []
+    for form in ast:
+        if is_form(form, 'import'):
+            imports.append(_parse_import_form(form))
+        elif is_form(form, 'module'):
+            for subform in form.items:
+                if is_form(subform, 'import'):
+                    imports.append(_parse_import_form(subform))
+
+    # For each imported module, load and extract specs
+    for module_name, imported_names in imports:
+        if not module_name:
+            continue
+        imported_set = set(imported_names)
+        try:
+            module_path = resolver.resolve_module(module_name, from_path)
+            module_ast = parse_file(str(module_path))
+
+            # Extract all fn specs from module
+            for form in module_ast:
+                if is_form(form, 'fn'):
+                    spec = _extract_fn_spec(form)
+                    if spec and spec['name'] in imported_set:
+                        imported_specs.append(spec)
+                elif is_form(form, 'module'):
+                    for item in form.items:
+                        if is_form(item, 'fn'):
+                            spec = _extract_fn_spec(item)
+                            if spec and spec['name'] in imported_set:
+                                imported_specs.append(spec)
+        except Exception:
+            # Module not found - skip, will error during type checking
+            pass
+
+    return imported_specs
+
+
+def _extract_imported_types(ast, search_paths=None, from_path=None) -> list:
+    """Extract type definitions from imported modules.
+
+    Args:
+        ast: Parsed AST of the importing file
+        search_paths: List of paths to search for modules
+        from_path: Path of the importing file (for relative resolution)
+
+    Returns list of dicts: {'name': str, 'type_def': str}
+    where type_def is the pretty-printed (type Name ...) form.
+    """
+    from slop.resolver import ModuleResolver
+    from slop.parser import Symbol
+
+    resolver = ModuleResolver([Path(p) for p in (search_paths or [])])
+    imported_types = []
+
+    # Collect all import info: [(module_name, [imported_names]), ...]
+    imports = []
+    for form in ast:
+        if is_form(form, 'import'):
+            imports.append(_parse_import_form(form))
+        elif is_form(form, 'module'):
+            for subform in form.items:
+                if is_form(subform, 'import'):
+                    imports.append(_parse_import_form(subform))
+
+    # For each imported module, load and extract type definitions
+    for module_name, imported_names in imports:
+        if not module_name:
+            continue
+        imported_set = set(imported_names)
+        try:
+            module_path = resolver.resolve_module(module_name, from_path)
+            module_ast = parse_file(str(module_path))
+
+            # Extract type definitions from module
+            for form in module_ast:
+                if is_form(form, 'type') and len(form) > 1:
+                    name = form[1].name if isinstance(form[1], Symbol) else str(form[1])
+                    if name in imported_set:
+                        imported_types.append({
+                            'name': name,
+                            'type_def': pretty_print(form)
+                        })
+                elif is_form(form, 'module'):
+                    for item in form.items:
+                        if is_form(item, 'type') and len(item) > 1:
+                            name = item[1].name if isinstance(item[1], Symbol) else str(item[1])
+                            if name in imported_set:
+                                imported_types.append({
+                                    'name': name,
+                                    'type_def': pretty_print(item)
+                                })
+        except Exception:
+            # Module not found - skip, will error during type checking
+            pass
+
+    return imported_types
 
 
 def cmd_fill(args):
     """Fill holes with LLM"""
     import logging
-    if args.verbose:
+    if args.verbose >= 2:
         logging.basicConfig(
             level=logging.DEBUG,
             format='%(name)s %(levelname)s: %(message)s'
         )
-    elif not args.quiet:
+    elif args.verbose >= 1 or not args.quiet:
         logging.basicConfig(
             level=logging.INFO,
             format='%(message)s'
@@ -264,6 +449,26 @@ def cmd_fill(args):
 
     try:
         ast = parse_file(args.input)
+
+        # Pre-check scaffold for type errors before filling
+        if not quiet:
+            print("  Pre-checking scaffold...")
+
+        diagnostics = check_file(args.input)
+        type_errors = [d for d in diagnostics if d.severity == 'error']
+        type_warnings = [d for d in diagnostics if d.severity == 'warning']
+
+        # Show warnings but don't block
+        if type_warnings and not quiet:
+            for w in type_warnings:
+                print(f"  warning: {w}")
+
+        if type_errors:
+            print(f"Scaffold has {len(type_errors)} type error(s) that must be fixed before filling:", file=sys.stderr)
+            for e in type_errors:
+                print(f"  {e}", file=sys.stderr)
+            print("\nFix these errors in the scaffold file first.", file=sys.stderr)
+            return 1
 
         # Check for @requires blocks
         requires_blocks = extract_requires_blocks(ast)
@@ -391,6 +596,23 @@ def cmd_fill(args):
         ffi_functions = _extract_ffi_functions(ast)
         ffi_specs = _extract_ffi_specs(ast)
         imported_names = _extract_imported_functions(ast)
+        const_names = _extract_const_names(ast)
+        const_specs = _extract_const_specs(ast)
+        # Extract full signatures from imported modules
+        imported_specs = _extract_imported_specs(ast, from_path=Path(args.input))
+        imported_types = _extract_imported_types(ast, from_path=Path(args.input))
+        if not quiet:
+            if imported_specs:
+                print(f"  Extracted {len(imported_specs)} imported function specs")
+                if args.verbose >= 2:  # -vv shows details
+                    for spec in imported_specs:
+                        print(f"    {spec['name']}: {spec['params']} -> {spec.get('return_type', '?')}")
+            else:
+                print("  Warning: No imported function specs extracted")
+            if imported_types and args.verbose >= 2:
+                print(f"  Extracted {len(imported_types)} imported type definitions")
+                for t in imported_types:
+                    print(f"    {t['name']}")
 
         # Collect all holes with their parent function forms for context
         all_holes = []
@@ -458,8 +680,11 @@ def cmd_fill(args):
                 context['type_defs'] = type_defs
                 context['fn_specs'] = fn_specs
                 context['ffi_specs'] = ffi_specs
+                context['const_specs'] = const_specs
                 context['requires_fns'] = requires_fns
-                context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names
+                context['imported_specs'] = imported_specs
+                context['imported_types'] = imported_types
+                context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names + const_names
                 context['error_variants'] = error_variants
                 if tier not in tier_groups:
                     tier_groups[tier] = []
@@ -528,8 +753,11 @@ def cmd_fill(args):
                 context['type_defs'] = type_defs
                 context['fn_specs'] = fn_specs
                 context['ffi_specs'] = ffi_specs
+                context['const_specs'] = const_specs
                 context['requires_fns'] = requires_fns
-                context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names
+                context['imported_specs'] = imported_specs
+                context['imported_types'] = imported_types
+                context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names + const_names
                 context['error_variants'] = error_variants
                 hole_data.append((form, hole, info, context))
 
@@ -576,8 +804,11 @@ def cmd_fill(args):
                 context['type_defs'] = type_defs
                 context['fn_specs'] = fn_specs
                 context['ffi_specs'] = ffi_specs
+                context['const_specs'] = const_specs
                 context['requires_fns'] = requires_fns
-                context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names
+                context['imported_specs'] = imported_specs
+                context['imported_types'] = imported_types
+                context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names + const_names
                 context['error_variants'] = error_variants
 
                 result = filler.fill(info, context)
@@ -669,6 +900,8 @@ def cmd_check(args):
             for h in holes:
                 info = extract_hole(h)
                 errors.append(f"Unfilled hole: {info.prompt}")
+                if not info.must_use:
+                    warnings.append(f"Hole missing :must-use - add for better LLM context: {info.prompt[:50]}...")
 
             if is_form(form, 'fn') or is_form(form, 'impl'):
                 has_intent = any(is_form(item, '@intent') for item in form.items)
@@ -1061,7 +1294,8 @@ def main():
     p.add_argument('-i', '--inplace', action='store_true',
         help='Modify input file in place')
     p.add_argument('-c', '--config', help='Path to TOML config file')
-    p.add_argument('-v', '--verbose', action='store_true')
+    p.add_argument('-v', '--verbose', action='count', default=0,
+        help='Increase verbosity (-v for info, -vv for debug with imported specs)')
     p.add_argument('-q', '--quiet', action='store_true',
         help='Output only the filled source, no status messages')
     p.add_argument('--batch-interactive', action='store_true',

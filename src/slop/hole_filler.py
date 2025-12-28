@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Semaphore
 from typing import Optional, List, Dict, Any, Callable
-from slop.parser import SExpr, SList, Symbol, String, Number, parse, find_holes, is_form, pretty_print
+from slop.parser import SExpr, SList, Symbol, String, Number, parse, find_holes, is_form, pretty_print, ParseError
 from slop.providers import Tier, ModelConfig, Provider, MockProvider, create_default_configs
 
 logger = logging.getLogger(__name__)
@@ -485,6 +485,115 @@ FUNCTION_ALTERNATIVES = {
 }
 
 
+def _extract_enum_variants(context: Dict[str, Any]) -> set:
+    """Extract all enum variant names from type definitions.
+
+    This allows enum variant constructors like (literal "pets") to be
+    recognized as valid forms, not undefined functions.
+    """
+    variants = set()
+    all_type_defs = context.get('type_defs', []) + [t['type_def'] for t in context.get('imported_types', [])]
+
+    for type_def_str in all_type_defs:
+        try:
+            type_ast = parse(type_def_str)
+            if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
+                type_expr = type_ast[0][2]
+                if is_form(type_expr, 'enum'):
+                    for v in type_expr.items[1:]:
+                        if isinstance(v, Symbol):
+                            variants.add(v.name)
+                        elif isinstance(v, SList) and len(v) > 0 and isinstance(v[0], Symbol):
+                            # Variant with payload like (literal String)
+                            variants.add(v[0].name)
+        except Exception:
+            pass
+
+    return variants
+
+
+def _extract_param_names(params_str: str) -> List[str]:
+    """Extract variable names from params string like '((arena Arena) (request (Ptr Request)))'"""
+    if not params_str:
+        return []
+
+    try:
+        parsed = parse(params_str)
+        if not parsed or not isinstance(parsed[0], SList):
+            return []
+        names = []
+        for param in parsed[0].items:
+            if isinstance(param, SList) and len(param) >= 1 and isinstance(param[0], Symbol):
+                names.append(param[0].name)
+        return names
+    except Exception:
+        return []
+
+
+def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
+    """Find all type names referenced by hole's must_use functions and return type.
+
+    This enables context-aware prompt filtering - only include enum values and
+    record fields for types that are actually used by the hole.
+    """
+    import re
+
+    # Collect all known type names from type definitions
+    all_type_defs = context.get('type_defs', []) + [t['type_def'] for t in context.get('imported_types', [])]
+    type_names = set()
+    for type_def_str in all_type_defs:
+        # Extract name from "(type Name ...)"
+        match = re.match(r'\(type\s+(\w+)', type_def_str)
+        if match:
+            type_names.add(match.group(1))
+
+    referenced = set()
+
+    # 1. Include types from the hole's return type
+    if hole.type_expr:
+        hole_type_str = str(hole.type_expr)
+        for type_name in type_names:
+            if type_name in hole_type_str:
+                referenced.add(type_name)
+
+    must_use = hole.must_use or []
+    must_use_set = set(must_use)
+
+    # 2. Include types from must_use function signatures
+    all_specs = (context.get('fn_specs', []) +
+                 context.get('ffi_specs', []) +
+                 context.get('imported_specs', []))
+
+    for fn_name in must_use:
+        spec = next((s for s in all_specs if s['name'] == fn_name), None)
+        if not spec:
+            continue
+        signature = spec.get('params', '') + ' ' + spec.get('return_type', '')
+        for type_name in type_names:
+            if type_name in signature:
+                referenced.add(type_name)
+
+    # 3. Include types from function parameters (must_use often lists param names)
+    params_str = context.get('params', '')
+    if params_str and must_use_set:
+        try:
+            params_ast = parse(params_str)
+            if params_ast and isinstance(params_ast[0], SList):
+                for param in params_ast[0].items:
+                    if isinstance(param, SList) and len(param) >= 2:
+                        param_name = param[0].name if isinstance(param[0], Symbol) else str(param[0])
+                        if param_name in must_use_set:
+                            # Extract type names from this param's type
+                            param_type_str = str(param[1])
+                            for type_name in type_names:
+                                if type_name in param_type_str:
+                                    referenced.add(type_name)
+        except Exception:
+            pass
+
+    return referenced
+
+
 def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tuple] = None) -> str:
     """Build prompt for hole filling, optionally including feedback from failures"""
     spec = load_skill_spec()
@@ -581,14 +690,21 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         f"Return type: {context.get('return_type', '')}",
     ])
 
-    # Explicitly list available variables with types to prevent using wrong names
+    # Explicitly list available variables to prevent using wrong names
     if context.get('params'):
-        sections.append("")
-        sections.append("## Available Variables")
-        # Include typed params if available, otherwise just names
-        typed_params = context.get('typed_params', context.get('params'))
-        sections.append(f"IMPORTANT: Use ONLY these parameter names in your expression: {typed_params}")
-        sections.append("Note: Value types use . for field access (val.field), pointer types use -> (ptr.field maps to ptr->field in C)")
+        param_names = _extract_param_names(context.get('params', ''))
+        if param_names:
+            sections.append("")
+            sections.append("## Available Variables")
+            sections.append(f"Existing variables: {', '.join(param_names)}")
+            sections.append(f"Full parameter types: {context.get('params', '')}")
+            sections.append("")
+            sections.append("To CREATE new variables, use:")
+            sections.append("  (let ((name value)) body)  - binds 'name' to result of 'value'")
+            sections.append("  (match expr ((ok x) ...) ((error e) ...))  - binds x or e from Result")
+            sections.append("  (with-arena SIZE body)  - binds 'arena' inside body")
+            sections.append("")
+            sections.append("Do NOT use undefined variables. Either use existing ones or create new ones with let/match.")
 
     if context.get('type_defs'):
         sections.append("")
@@ -619,6 +735,106 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         for sig in context['requires_fns']:
             sections.append(f"  {sig}")
 
+    # Show imported functions (from other modules) WITH SIGNATURES
+    if context.get('imported_specs'):
+        sections.append("")
+        sections.append("## Imported Functions (from other modules)")
+        sections.append("These functions are imported and available. Use EXACT parameter types:")
+        for spec in context['imported_specs']:
+            ret = f" -> {spec['return_type']}" if spec.get('return_type') else ""
+            sections.append(f"  ({spec['name']} {spec['params']}{ret})")
+    elif context.get('defined_functions'):
+        # Fallback to just names if specs not available
+        fn_names = {s['name'] for s in context.get('fn_specs', [])}
+        ffi_names = {s['name'] for s in context.get('ffi_specs', [])}
+        imported = [f for f in context['defined_functions']
+                    if f not in fn_names and f not in ffi_names and f not in VALID_EXPRESSION_FORMS]
+        if imported:
+            sections.append("")
+            sections.append("## Imported Functions (from other modules)")
+            sections.append("These functions are imported and available to use:")
+            sections.append(f"  {', '.join(sorted(imported))}")
+
+    # Extract enum values and record fields from type_defs and imported_types
+    all_type_defs = context.get('type_defs', []) + [t['type_def'] for t in context.get('imported_types', [])]
+
+    enum_info = []
+    record_info = []
+
+    for type_def_str in all_type_defs:
+        try:
+            type_ast = parse(type_def_str)
+            if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
+                name = type_ast[0][1].name if isinstance(type_ast[0][1], Symbol) else str(type_ast[0][1])
+                type_expr = type_ast[0][2]
+
+                if is_form(type_expr, 'enum'):
+                    # Extract enum variants with payload info
+                    variants = []
+                    for v in type_expr.items[1:]:
+                        if isinstance(v, Symbol):
+                            variants.append(f"'{v.name}")
+                        elif isinstance(v, SList) and len(v) > 0 and isinstance(v[0], Symbol):
+                            # Variant with payload - show as (variant-name PayloadType)
+                            variant_name = v[0].name
+                            if len(v) > 1:
+                                payload_type = str(v[1])
+                                variants.append(f"({variant_name} {payload_type})")
+                            else:
+                                variants.append(f"'{variant_name}")
+                    if variants:
+                        enum_info.append(f"{name}: {', '.join(variants)}")
+
+                elif is_form(type_expr, 'record'):
+                    # Extract field names
+                    fields = []
+                    for field in type_expr.items[1:]:
+                        if isinstance(field, SList) and len(field) >= 1:
+                            field_name = field[0].name if isinstance(field[0], Symbol) else str(field[0])
+                            fields.append(field_name)
+                    if fields:
+                        record_info.append(f"{name}: {', '.join(fields)}")
+        except Exception:
+            pass
+
+    # Filter enum_info and record_info to only include types referenced by this hole
+    if hole.must_use:
+        referenced_types = _extract_referenced_types(hole, context)
+        filtered_enum_info = [e for e in enum_info if e.split(':')[0] in referenced_types]
+        filtered_record_info = [r for r in record_info if r.split(':')[0] in referenced_types]
+        # Safety: if filtering removed everything but there were items, fall back to all
+        if not filtered_enum_info and enum_info:
+            filtered_enum_info = enum_info
+        if not filtered_record_info and record_info:
+            filtered_record_info = record_info
+    else:
+        # No must_use - include all types (fallback for holes without must_use)
+        filtered_enum_info = enum_info
+        filtered_record_info = record_info
+
+    if filtered_enum_info:
+        sections.append("")
+        sections.append("## Enum Values")
+        sections.append("Simple variants: use quoted like 'ok, 'created (NOT integers!)")
+        sections.append("Variants with payload: (variant-name value) e.g., (literal \"pets\"), (param \"id\")")
+        for info in filtered_enum_info:
+            sections.append(f"  {info}")
+
+    if filtered_record_info:
+        sections.append("")
+        sections.append("## Record Fields (use (. record field-name) to access)")
+        for info in filtered_record_info:
+            sections.append(f"  {info}")
+
+    # Range type guidance - SLOP-specific, LLMs may not understand
+    sections.append("")
+    sections.append("## Range Types (IMPORTANT)")
+    sections.append("Range types like (Int 1 ..) are DIFFERENT from plain Int.")
+    sections.append("When a function expects (Int 1 ..) but you have Int, you MUST cast:")
+    sections.append("  (cast (Int 1 ..) value)")
+    sections.append("Example: If path-param-int returns (Option Int) and you extract id,")
+    sections.append("  but delete-by-id expects (Int 1 ..), use: (delete-by-id state (cast (Int 1 ..) id))")
+
     sections.extend([
         "",
         "## Hole to Fill",
@@ -645,14 +861,24 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
 
     # Include feedback from failed attempts
     if failed_attempts:
+        import re
         sections.append("")
         sections.append("## Previous Failed Attempts")
-        sections.append("Your previous attempts were rejected. Do NOT repeat these mistakes:")
+        sections.append("Your previous attempts were rejected. Fix ALL of these issues:")
         # Include last 3 failures to avoid prompt bloat
         for i, (attempt, error) in enumerate(failed_attempts[-3:], 1):
             sections.append("")
-            sections.append(f"Attempt {i}: {attempt}...")
-            sections.append(f"Error: {error}")
+            sections.append(f"Attempt {i}: {attempt[:80]}...")
+            # Split multiple errors (joined with "; ") for readability
+            error_parts = error.split("; ")
+            for err in error_parts:
+                if "Undefined variable:" in err:
+                    var_match = re.search(r"Undefined variable: (\S+)", err)
+                    var_name = var_match.group(1) if var_match else "it"
+                    sections.append(f"  - CRITICAL: {err}")
+                    sections.append(f"    To fix: use (let (({var_name} ...)) body) or bind in match")
+                else:
+                    sections.append(f"  - {err}")
 
     sections.append("")
     sections.append("Respond with ONLY the SLOP S-expression. No explanation.")
@@ -739,9 +965,9 @@ class HoleFiller:
                         response = self.provider.complete(prompt, config)
                         logger.debug(f"Response:\n{response}")
 
-                        expr = self._parse_response(response)
-                        if not expr:
-                            error = "Failed to parse as valid S-expression"
+                        expr, parse_error = self._parse_response(response)
+                        if expr is None:
+                            error = parse_error or "Failed to parse response"
                             logger.warning(error)
                             failed_attempts.append((response[:100], error))
                             continue
@@ -830,8 +1056,8 @@ class HoleFiller:
 
         return results
 
-    def _parse_response(self, response: str) -> Optional[SExpr]:
-        """Parse LLM response and transform Lisp forms to SLOP equivalents"""
+    def _parse_response(self, response: str) -> tuple[Optional[SExpr], Optional[str]]:
+        """Parse LLM response. Returns (expr, None) on success, (None, error) on failure."""
         response = response.strip()
         if response.startswith('```'):
             lines = response.split('\n')
@@ -846,13 +1072,18 @@ class HoleFiller:
                 # e.g., (quote x) -> 'x, (setq x v) -> (set! x v), etc.
                 expr = _transform_lisp_forms(expr)
                 logger.debug(f"Parsed expression: {expr}")
-                return expr
+                return (expr, None)
             logger.debug("Parse returned empty list")
-            return None
+            return (None, "Parse returned empty result")
+        except ParseError as e:
+            # Include specific error like "Unclosed list at line 3"
+            logger.debug(f"Parse error: {e}")
+            logger.debug(f"Failed to parse: {response[:200]}")
+            return (None, f"Parse error: {e}")
         except Exception as e:
             logger.debug(f"Parse error: {e}")
             logger.debug(f"Failed to parse: {response[:200]}")
-            return None
+            return (None, f"Parse error: {e}")
 
     def _find_invalid_form(self, expr: SExpr) -> Optional[str]:
         """Recursively find any invalid form names in the expression.
@@ -881,86 +1112,91 @@ class HoleFiller:
         return None
 
     def _validate(self, expr: SExpr, hole: Hole, context: dict = None) -> tuple[bool, Optional[str]]:
-        """Validate expression, return (success, error_message)"""
+        """Validate expression, return (success, error_messages).
+
+        Collects ALL errors rather than stopping at the first one,
+        so the LLM gets complete feedback and can fix multiple issues at once.
+        """
         context = context or {}
+        errors = []
 
-        # Reject if the "fill" is itself a hole form
+        # Check 1: Reject if the "fill" is itself a hole form
         if is_form(expr, 'hole'):
-            error = "Do not return a hole form - fill it with actual code"
-            logger.warning(error)
-            return False, error
+            errors.append("Do not return a hole form - fill it with actual code")
 
-        # Note: (quote symbol) is transformed to 'symbol by _transform_quote_forms()
-        # before reaching validation, so we don't need to reject it here
-
-        # Reject definition forms - holes must be filled with expressions, not definitions
+        # Check 2: Reject definition forms - holes must be filled with expressions
         invalid_forms = ['fn', 'type', 'module', 'impl', 'ffi', 'ffi-struct',
                          '@intent', '@spec', '@pre', '@post', '@example', '@pure', '@alloc']
         for form_name in invalid_forms:
             if is_form(expr, form_name):
-                error = f"Do not return a '{form_name}' form - fill the hole with an expression, not a definition"
-                logger.warning(error)
-                return False, error
+                errors.append(f"Do not return a '{form_name}' form - fill the hole with an expression, not a definition")
+                break  # Only report first matching definition form
 
-        # Recursive check: reject invented forms anywhere in the expression tree
+        # Check 3: Recursive check for invented forms (quote, block, etc.)
         invalid_form = self._find_invalid_form(expr)
         if invalid_form:
-            error = f"Invalid form '{invalid_form}' - not a valid SLOP expression. Use 'do' for sequencing."
-            logger.warning(error)
-            return False, error
+            errors.append(f"Invalid form '{invalid_form}' - not a valid SLOP expression. Use 'do' for sequencing.")
 
-        # Check for undefined function calls
+        # Check 4: Undefined function calls
         defined_fns = set(context.get('defined_functions', []))
-        allowed = VALID_EXPRESSION_FORMS | defined_fns
+        enum_variants = _extract_enum_variants(context)  # Allow enum variant constructors
+        allowed = VALID_EXPRESSION_FORMS | defined_fns | enum_variants
         calls = _extract_function_calls(expr)
         undefined = calls - allowed
         if undefined:
-            error = f"Undefined function(s): {', '.join(sorted(undefined))}. Only use built-ins or functions defined in this file."
-            logger.warning(error)
-            return False, error
+            errors.append(f"Undefined function(s): {', '.join(sorted(undefined))}. Only use built-ins or functions defined in this file.")
 
+        # Check 5: must_use requirements
         if hole.must_use:
             expr_str = str(expr)
+            missing_uses = []
             for must in hole.must_use:
                 must_normalized = must.replace('-', '_').replace('.', '')
                 expr_normalized = expr_str.replace('-', '_').replace('.', '')
                 if must_normalized not in expr_normalized:
-                    error = f"Expression must use '{must}' but it was not found"
-                    logger.debug(error)
-                    return False, error
+                    missing_uses.append(must)
+            if missing_uses:
+                errors.append(f"Expression must use: {', '.join(missing_uses)}")
 
-        # Type check the filled expression against expected type
-        type_error = self._check_type(expr, hole, context)
-        if type_error:
-            return False, type_error
+        # Check 6: Type checking - get ALL type errors
+        type_errors = self._check_type_all(expr, hole, context)
+        errors.extend(type_errors)
+
+        # Return all errors joined, or success
+        if errors:
+            # Deduplicate and cap at 5 errors to avoid prompt bloat
+            unique_errors = list(dict.fromkeys(errors))[:5]
+            for err in unique_errors:
+                logger.warning(err)
+            return False, "; ".join(unique_errors)
 
         return True, None
 
-    def _check_type(self, expr: SExpr, hole: Hole, context: dict) -> Optional[str]:
+    def _check_type_all(self, expr: SExpr, hole: Hole, context: dict) -> List[str]:
         """Type check filled expression against hole's expected type.
 
-        Returns error message if type mismatch, None if valid.
+        Returns list of ALL error messages (empty if valid).
 
         Policy (strict with exceptions):
         - FAIL on clear type mismatches (wrong type, missing cast)
         - ALLOW unknown types (?) from c-inline expressions
         - ALLOW unresolved type variables
         """
+        import re
         from slop.type_checker import (
             TypeChecker, TypeEnv,
             Type, PrimitiveType, PtrType, OptionType, ResultType,
-            TypeVar, UNKNOWN
+            TypeVar, UNKNOWN, FnType, RecordType, EnumType, UnionType
         )
 
         if not hole.type_expr:
-            return None  # No type constraint to check
+            return []  # No type constraint to check
 
         try:
             # Create type checker
             checker = TypeChecker()
 
             # Register built-in functions (from slop_runtime.h)
-            from slop.type_checker import FnType, PrimitiveType
             STRING = PrimitiveType('String')
             INT64 = PrimitiveType('I64')
             BOOL = PrimitiveType('Bool')
@@ -972,8 +1208,27 @@ class HoleFiller:
             checker.env.register_function('string-len', FnType((STRING,), INT64))
             checker.env.register_function('string-eq', FnType((STRING, STRING), BOOL))
 
+            # Register imported types FIRST (so local types can reference them)
+            imported_types = context.get('imported_types', [])
+            for type_info in imported_types:
+                try:
+                    type_ast = parse(type_info['type_def'])
+                    if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
+                        name = type_info['name']
+                        typ = checker.parse_type_expr(type_ast[0][2])
+                        # Fix anonymous names
+                        if isinstance(typ, RecordType) and typ.name == '<anonymous>':
+                            typ = RecordType(name, typ.fields)
+                        elif isinstance(typ, EnumType) and typ.name == '<anonymous>':
+                            typ = EnumType(name, typ.variants)
+                        elif isinstance(typ, UnionType) and typ.name == '<anonymous>':
+                            typ = UnionType(name, typ.variants)
+                        checker.env.register_type(name, typ)
+                except Exception:
+                    pass
+
             # Parse and register types from type_defs (pretty-printed strings)
-            from slop.type_checker import RecordType, EnumType, UnionType
+            # These come after imported_types so they can reference imported types
             type_defs = context.get('type_defs', [])
             for type_def_str in type_defs:
                 try:
@@ -1012,12 +1267,9 @@ class HoleFiller:
                 try:
                     fn_name = spec.get('name', '')
                     if fn_name and spec.get('return_type'):
-                        # Parse return type
                         ret_ast = parse(spec['return_type'])
                         if ret_ast:
                             ret_type = checker.parse_type_expr(ret_ast[0])
-
-                            # Parse parameter types from params string
                             param_types = []
                             params_str = spec.get('params', '')
                             if params_str:
@@ -1027,8 +1279,6 @@ class HoleFiller:
                                         if isinstance(param, SList) and len(param) >= 2:
                                             param_type = checker.parse_type_expr(param[1])
                                             param_types.append(param_type)
-
-                            from slop.type_checker import FnType
                             checker.env.register_function(fn_name, FnType(tuple(param_types), ret_type))
                 except Exception:
                     pass
@@ -1039,12 +1289,9 @@ class HoleFiller:
                 try:
                     fn_name = spec.get('name', '')
                     if fn_name and spec.get('return_type'):
-                        # Parse return type
                         ret_ast = parse(spec['return_type'])
                         if ret_ast:
                             ret_type = checker.parse_type_expr(ret_ast[0])
-
-                            # Parse parameter types from params string
                             param_types = []
                             params_str = spec.get('params', '')
                             if params_str:
@@ -1054,9 +1301,43 @@ class HoleFiller:
                                         if isinstance(param, SList) and len(param) >= 2:
                                             param_type = checker.parse_type_expr(param[1])
                                             param_types.append(param_type)
-
-                            from slop.type_checker import FnType
                             checker.env.register_function(fn_name, FnType(tuple(param_types), ret_type))
+                except Exception:
+                    pass
+
+            # Register imported functions from imported_specs
+            imported_specs = context.get('imported_specs', [])
+            for spec in imported_specs:
+                try:
+                    fn_name = spec.get('name', '')
+                    if fn_name and spec.get('return_type'):
+                        ret_ast = parse(spec['return_type'])
+                        if ret_ast:
+                            ret_type = checker.parse_type_expr(ret_ast[0])
+                            param_types = []
+                            params_str = spec.get('params', '')
+                            if params_str:
+                                params_ast = parse(params_str)
+                                if params_ast and isinstance(params_ast[0], SList):
+                                    for param in params_ast[0].items:
+                                        if isinstance(param, SList) and len(param) >= 2:
+                                            param_type = checker.parse_type_expr(param[1])
+                                            param_types.append(param_type)
+                            checker.env.register_function(fn_name, FnType(tuple(param_types), ret_type))
+                except Exception:
+                    pass
+
+            # Register constants from const_specs as variables
+            const_specs = context.get('const_specs', [])
+            for spec in const_specs:
+                try:
+                    const_name = spec.get('name', '')
+                    type_expr_str = spec.get('type_expr', '')
+                    if const_name and type_expr_str:
+                        type_ast = parse(type_expr_str)
+                        if type_ast:
+                            const_type = checker.parse_type_expr(type_ast[0])
+                            checker.env.bind_var(const_name, const_type)
                 except Exception:
                     pass
 
@@ -1066,34 +1347,39 @@ class HoleFiller:
             # Infer actual type of expression
             inferred = checker.infer_expr(expr)
 
-            # Check for type errors (especially undefined variables)
+            # Collect ALL type errors with enhancements
+            error_msgs = []
             errors = [d for d in checker.diagnostics if d.severity == 'error']
-            if errors:
-                # Return the first error message
-                return errors[0].message
+            param_names = _extract_param_names(context.get('params', ''))
 
-            # Check compatibility
-            if not self._types_compatible(inferred, expected):
-                # Check for allowable unknowns (c-inline, type vars)
-                if self._is_allowable_unknown(inferred):
-                    logger.warning(f"Type check warning: inferred unknown type {inferred} for expected {expected}")
-                    return None  # Allow but warn
-                return f"Type mismatch: expected {expected}, got {inferred}"
+            for err in errors:
+                msg = err.message
+                # Enhance undefined variable errors with available variables
+                if "Undefined variable:" in msg and param_names:
+                    msg += f" -- Available: {', '.join(param_names)}"
+                # Enhance range type errors with cast hint
+                if re.search(r"expected \(Int \d+ \.\..*\), got Int", msg):
+                    msg += " -- Use (cast <range-type> value)"
+                error_msgs.append(msg)
 
-            return None  # Types are compatible
+            # Check type compatibility (only if no other errors)
+            if not error_msgs and not self._types_compatible(inferred, expected):
+                if not self._is_allowable_unknown(inferred):
+                    error_msgs.append(f"Type mismatch: expected {expected}, got {inferred}")
+
+            return error_msgs
 
         except Exception as e:
             # Type checking failed - log but don't fail validation
-            # (might be missing context for complex expressions)
             logger.warning(f"Type check exception (allowing): {e}")
-            return None
+            return []
 
     def _types_compatible(self, inferred: 'Type', expected: 'Type') -> bool:
         """Check if inferred type is compatible with expected type.
 
         Uses subtype checking where available, falls back to equality.
         """
-        from slop.type_checker import TypeVar, UNKNOWN, PtrType, PrimitiveType
+        from slop.type_checker import TypeVar, UNKNOWN, PtrType, PrimitiveType, ResultType, RecordType
 
         # Unknown always compatible (can't verify)
         if inferred == UNKNOWN or expected == UNKNOWN:
@@ -1102,6 +1388,17 @@ class HoleFiller:
         # Type variables are compatible (unresolved)
         if isinstance(inferred, TypeVar) or isinstance(expected, TypeVar):
             return True
+
+        # Handle Result types with type variables or anonymous types
+        if isinstance(inferred, ResultType) and isinstance(expected, ResultType):
+            # If inferred has type variables, allow it (can't fully verify)
+            if isinstance(inferred.ok_type, TypeVar) or isinstance(inferred.err_type, TypeVar):
+                return True
+            # If expected has anonymous record as ok_type, be lenient
+            if (isinstance(expected.ok_type, RecordType) and
+                expected.ok_type.name == '<anonymous>'):
+                # Just verify error types are compatible
+                return self._types_compatible(inferred.err_type, expected.err_type)
 
         # Check subtype relationship
         if hasattr(inferred, 'is_subtype_of'):
@@ -1237,11 +1534,34 @@ class HoleFiller:
                     sections.append(f"  ({spec['name']} {spec['params']}{ret})")
                 sections.append("")
 
+            # Show imported functions (from other modules) WITH SIGNATURES
+            if first_context.get('imported_specs'):
+                sections.append("## Imported Functions (from other modules)")
+                sections.append("These functions are imported and available. Use EXACT parameter types:")
+                for spec in first_context['imported_specs']:
+                    ret = f" -> {spec['return_type']}" if spec.get('return_type') else ""
+                    sections.append(f"  ({spec['name']} {spec['params']}{ret})")
+                sections.append("")
+            elif first_context.get('defined_functions'):
+                # Fallback to just names if specs not available
+                fn_names = {s['name'] for s in first_context.get('fn_specs', [])}
+                ffi_names = {s['name'] for s in first_context.get('ffi_specs', [])}
+                imported = [f for f in first_context['defined_functions']
+                            if f not in fn_names and f not in ffi_names and f not in VALID_EXPRESSION_FORMS]
+                if imported:
+                    sections.append("## Imported Functions (from other modules)")
+                    sections.append("These functions are imported and available to use:")
+                    sections.append(f"  {', '.join(sorted(imported))}")
+                    sections.append("")
+
         for i, (hole, context) in enumerate(holes, 1):
             sections.append(f"## Hole {i}: {context.get('fn_name', 'unknown')}")
             sections.append(f"Type: {hole.type_expr}")
             sections.append(f"Intent: {hole.prompt}")
             if context.get('params'):
+                param_names = _extract_param_names(context.get('params', ''))
+                if param_names:
+                    sections.append(f"Available variables: {', '.join(param_names)} (use these EXACT names)")
                 sections.append(f"Parameters: {context.get('params')}")
             if hole.must_use:
                 sections.append(f"Must use: {', '.join(hole.must_use)}")

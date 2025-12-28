@@ -1081,6 +1081,22 @@ class Transpiler:
 
         self.types[raw_name] = TypeInfo(raw_name, qualified_name, True, min_val, max_val)
 
+    def _parse_range_bounds(self, type_expr: SList) -> tuple:
+        """Parse range bounds from inline range type like (Int 1 ..) or (Int 0 .. 100).
+
+        Returns (min_val, max_val) tuple, with None for unbounded sides.
+        """
+        min_val, max_val = None, None
+        for item in type_expr.items[1:]:
+            if isinstance(item, Number):
+                if min_val is None:
+                    min_val = int(item.value)
+                else:
+                    max_val = int(item.value)
+            elif isinstance(item, Symbol) and item.name == '..':
+                continue
+        return (min_val, max_val)
+
     def transpile_function(self, form: SList):
         """Transpile function definition"""
         raw_name = form[1].name
@@ -2062,6 +2078,24 @@ class Transpiler:
                 if op == 'cast':
                     target_type = self.to_c_type(expr[1])
                     value = self.transpile_expr(expr[2])
+                    # Check if target is a named range type with a _new constructor
+                    if isinstance(expr[1], Symbol) and expr[1].name in self.types:
+                        # Named type - use constructor for range checking
+                        return f"{target_type}_new({value})"
+                    elif isinstance(expr[1], SList) and len(expr[1]) >= 3:
+                        # Inline range type like (Int 1 ..) - generate inline check
+                        head = expr[1][0].name if isinstance(expr[1][0], Symbol) else ''
+                        if head in ('Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64'):
+                            min_val, max_val = self._parse_range_bounds(expr[1])
+                            if min_val is not None or max_val is not None:
+                                # Generate inline range check
+                                check_parts = []
+                                if min_val is not None:
+                                    check_parts.append(f"({value}) >= {min_val}")
+                                if max_val is not None:
+                                    check_parts.append(f"({value}) <= {max_val}")
+                                check = " && ".join(check_parts)
+                                return f"(SLOP_PRE({check}, \"range check\"), ({target_type})({value}))"
                     return f"(({target_type})({value}))"
 
                 # Sizeof

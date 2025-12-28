@@ -296,10 +296,13 @@ class ModuleResolver:
                         errors.append(
                             f"{info.path}:{imp.line}: '{name}' not exported from '{imp.module_name}'"
                         )
-                    elif source.exports[name] != arity:
-                        errors.append(
-                            f"{info.path}:{imp.line}: '{name}' has arity {source.exports[name]}, not {arity}"
-                        )
+                    else:
+                        export_arity = source.exports[name]
+                        # -1 means "any arity" (bare symbol export/import)
+                        if export_arity != -1 and arity != -1 and export_arity != arity:
+                            errors.append(
+                                f"{info.path}:{imp.line}: '{name}' has arity {export_arity}, not {arity}"
+                            )
 
         return errors
 

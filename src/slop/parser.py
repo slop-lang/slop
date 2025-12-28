@@ -250,7 +250,9 @@ class ImportSpec:
 def parse_import(form: SList) -> ImportSpec:
     """Parse an import form into ImportSpec.
 
-    (import module-name (sym1 arity1) (sym2 arity2) ...)
+    (import module-name sym1 sym2 ...)  -- bare symbols
+    (import module-name (sym1 sym2 ...))  -- grouped in list
+    (import module-name (sym1 arity1) (sym2 arity2) ...)  -- with arity
     """
     if len(form) < 2:
         raise ParseError("import requires module name", form.line, form.col)
@@ -259,10 +261,21 @@ def parse_import(form: SList) -> ImportSpec:
     symbols = []
 
     for item in form.items[2:]:
-        if isinstance(item, SList) and len(item) >= 2:
-            name = item[0].name if isinstance(item[0], Symbol) else str(item[0])
-            arity = int(item[1].value) if isinstance(item[1], Number) else 0
-            symbols.append((name, arity))
+        if isinstance(item, Symbol):
+            # Bare symbol import
+            symbols.append((item.name, -1))
+        elif isinstance(item, SList):
+            # Could be (sym1 sym2 ...) grouped list or (sym arity) pair
+            if len(item) >= 2 and isinstance(item[1], Number):
+                # (sym arity) pair
+                name = item[0].name if isinstance(item[0], Symbol) else str(item[0])
+                arity = int(item[1].value)
+                symbols.append((name, arity))
+            else:
+                # Grouped list of symbols: (sym1 sym2 ...)
+                for sub_item in item.items:
+                    if isinstance(sub_item, Symbol):
+                        symbols.append((sub_item.name, -1))
 
     return ImportSpec(module_name, symbols, form.line, form.col)
 
@@ -276,12 +289,16 @@ class ExportSpec:
 def parse_export(form: SList) -> ExportSpec:
     """Parse an export form into ExportSpec.
 
-    (export (sym1 arity1) (sym2 arity2) ...)
+    (export sym1 sym2 ...)  -- bare symbols
+    (export (sym1 arity1) (sym2 arity2) ...)  -- with arity
     """
     symbols = []
 
     for item in form.items[1:]:
-        if isinstance(item, SList) and len(item) >= 2:
+        if isinstance(item, Symbol):
+            # Bare symbol export - use -1 for "any arity"
+            symbols.append((item.name, -1))
+        elif isinstance(item, SList) and len(item) >= 2:
             name = item[0].name if isinstance(item[0], Symbol) else str(item[0])
             arity = int(item[1].value) if isinstance(item[1], Number) else 0
             symbols.append((name, arity))
