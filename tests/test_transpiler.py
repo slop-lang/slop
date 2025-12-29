@@ -130,8 +130,8 @@ class TestCollectionTypes:
             (list-new arena Int)))
         '''
         result = transpile(source)
-        # Should generate typed list struct
-        assert 'slop_list_int64_t' in result
+        # Should generate typed list struct (int64_t normalized to int in identifiers)
+        assert 'slop_list_int' in result
         # Should cast data pointer to element type
         assert 'int64_t*)slop_arena_alloc' in result
 
@@ -145,8 +145,8 @@ class TestCollectionTypes:
             (map-new arena String Int)))
         '''
         result = transpile(source)
-        # Should generate typed map constructor
-        assert 'slop_map_string_int64_t_new' in result
+        # Should generate typed map constructor (int64_t normalized to int in identifiers)
+        assert 'slop_map_string_int_new' in result
 
 
 class TestFunctionTranspilation:
@@ -623,6 +623,169 @@ class TestMapLiterals:
         c_code = transpile(source)
         # Should generate map type definition
         assert "slop_map_" in c_code or "entries" in c_code
+
+
+class TestListOperations:
+    """Test list operations transpilation"""
+
+    def test_list_get_with_match_infers_option_type(self):
+        """list-get with match should infer Option type from list element type"""
+        source = """
+        (module test
+          (fn sum-first ((lst (List Int)))
+            (@intent "Sum first element")
+            (@spec (((List Int)) -> Int))
+            (match (list-get lst 0)
+              ((some val) val)
+              ((none) 0))))
+        """
+        c_code = transpile(source)
+        # Should generate slop_option_int (int64_t normalized to int)
+        assert "slop_option_int" in c_code
+        assert ".has_value" in c_code
+        assert ".value" in c_code
+
+    def test_list_get_from_list_new_var(self):
+        """list-get on variable from list-new should infer element type"""
+        source = """
+        (module test
+          (fn test-list ((arena Arena))
+            (@intent "Test list operations")
+            (@spec ((Arena) -> Int))
+            (let ((nums (list-new arena Int)))
+              (list-push nums 42)
+              (match (list-get nums 0)
+                ((some v) v)
+                ((none) 0)))))
+        """
+        c_code = transpile(source)
+        # Should use slop_option_int (int64_t normalized to int)
+        assert "slop_option_int" in c_code
+
+    def test_unwrap_on_option_uses_value(self):
+        """unwrap on Option should use .value, not .data.ok"""
+        source = """
+        (module test
+          (fn first-or-zero ((lst (List Int)))
+            (@intent "Get first element or 0")
+            (@spec (((List Int)) -> Int))
+            (if (> (list-len lst) 0)
+              (unwrap (list-get lst 0))
+              0)))
+        """
+        c_code = transpile(source)
+        # Should use .value for Option, not .data.ok
+        assert ".value)" in c_code
+        assert ".data.ok" not in c_code
+
+
+class TestMatchExpressions:
+    """Test match expression transpilation"""
+
+    def test_match_in_while_with_bool_result(self):
+        """Match expression returning bool in while condition should use bool type"""
+        source = """
+        (module test
+          (fn find-above ((lst (List Int)) (threshold Int))
+            (@intent "Find first above threshold")
+            (@spec (((List Int) Int) -> (Option Int)))
+            (let ((result none))
+              (while (match result ((none) true) (else false))
+                (set! result (some 1)))
+              result)))
+        """
+        c_code = transpile(source)
+        # Should use bool type for match result, not slop_result
+        assert "bool _match_result" in c_code
+        assert "slop_result _match_result" not in c_code
+
+
+class TestFieldAccess:
+    """Test field access transpilation"""
+
+    def test_list_get_on_field_access_infers_element_type(self):
+        """list-get on list from record field should infer correct element type"""
+        source = """
+        (module test
+          (type Container (record (items (List Int))))
+          (fn first-item ((c (Ptr Container)))
+            (@intent "Get first item")
+            (@spec (((Ptr Container)) -> Int))
+            (let ((items (. c items)))
+              (match (list-get items 0)
+                ((some v) v)
+                (none 0)))))
+        """
+        c_code = transpile(source)
+        # Should use slop_option_int (int64_t normalized to int)
+        assert "slop_option_int" in c_code
+        assert ".has_value" in c_code
+
+
+class TestMapOperations:
+    """Test map operations transpilation"""
+
+    def test_map_put_uses_typed_function_for_string_keyed_maps(self):
+        """map-put on string-keyed map should use typed put function"""
+        source = """
+        (module test
+          (fn test-map ((arena Arena))
+            (@intent "Test map operations")
+            (@spec ((Arena) -> Int))
+            (let ((m (map-new arena String Int)))
+              (map-put m "key" 42)
+              1)))
+        """
+        c_code = transpile(source)
+        # Should use typed map functions, not generic map_put
+        assert "slop_map_string_int_put" in c_code
+        assert "&m" in c_code  # map passed by pointer
+
+
+class TestMultiModuleTypes:
+    """Test cross-module type resolution"""
+
+    def test_imported_type_alias_uses_source_module_prefix(self):
+        """Imported type alias should use source module prefix, not current module"""
+        from pathlib import Path
+        from slop.transpiler import transpile_multi_split
+        from slop.resolver import ModuleInfo
+        from slop.parser import ImportSpec
+
+        # Module 'math' defines Score type
+        math_source = """
+        (module math
+          (export Score)
+          (type Score (Int 0 .. 100)))
+        """
+        math_ast = parse(math_source)
+
+        # Module 'main' imports and uses Score
+        main_source = """
+        (module main
+          (import math (Score))
+          (fn process ((s Score))
+            (@intent "Process score")
+            (@spec ((Score) -> Int))
+            s))
+        """
+        main_ast = parse(main_source)
+
+        # Create module info
+        math_info = ModuleInfo(name='math', path=Path('math.slop'), ast=math_ast)
+        math_info.exports = {'Score'}
+        main_info = ModuleInfo(name='main', path=Path('main.slop'), ast=main_ast)
+        main_info.imports = [ImportSpec(module_name='math', symbols=[('Score', 0)])]
+
+        # Transpile multi-module
+        modules = {'math': math_info, 'main': main_info}
+        order = ['math', 'main']
+        results = transpile_multi_split(modules, order)
+
+        # main.h should have math_Score, not main_Score
+        main_header = results['main'][0]
+        assert 'math_Score' in main_header
+        assert 'main_Score' not in main_header
 
 
 class TestTranspilerValidation:

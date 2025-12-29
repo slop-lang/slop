@@ -232,9 +232,23 @@ class Transpiler:
                 # (Array T size) -> track as T (element type for indexing)
                 if op == 'Array' and len(type_expr) >= 2:
                     return self._get_type_name(type_expr[1])
-                # (Option T), (Result T E), (List T) -> track the wrapper type name
-                if op in ('Option', 'Result', 'List'):
+                # (Option T), (Result T E) -> track the wrapper type name
+                if op in ('Option', 'Result'):
                     return op
+                # (List T) -> track as "List[elem_c_type]" to preserve element type
+                if op == 'List' and len(type_expr) >= 2:
+                    elem_c_type = self.to_c_type(type_expr[1])
+                    return f"List[{elem_c_type}]"
+                # (Map K V) -> track as slop_map_K_V (C type name)
+                if op == 'Map' and len(type_expr) >= 3:
+                    key_c = self.to_c_type(type_expr[1])
+                    val_c = self.to_c_type(type_expr[2])
+                    key_id = self._type_to_identifier(key_c)
+                    val_id = self._type_to_identifier(val_c)
+                    # String-keyed maps use slop_map_string_X pattern
+                    if key_c == 'slop_string':
+                        return f"slop_map_string_{val_id}"
+                    return f"slop_map_{key_id}_{val_id}"
         return None
 
     def _get_result_c_type(self) -> str:
@@ -271,6 +285,24 @@ class Transpiler:
         self.output = saved_output
         self.indent = saved_indent
         return result
+
+    def _transpile_option_constructor_with_type(self, expr: SExpr, option_c_type: str) -> str:
+        """Transpile an expression, using the given Option C type for some/none constructors.
+
+        This is used in match expressions where we've inferred the result type.
+        """
+        # Check if this is a (some val) constructor
+        if isinstance(expr, SList) and len(expr) >= 1 and isinstance(expr[0], Symbol):
+            if expr[0].name == 'some' and len(expr) >= 2:
+                val = self.transpile_expr(expr[1])
+                return f"(({option_c_type}){{ .has_value = true, .value = {val} }})"
+            elif expr[0].name == 'none':
+                return f"(({option_c_type}){{ .has_value = false }})"
+        # Check if this is (none) as a standalone symbol
+        elif isinstance(expr, Symbol) and expr.name == 'none':
+            return f"(({option_c_type}){{ .has_value = false }})"
+        # Otherwise use normal transpilation
+        return self.transpile_expr(expr)
 
     def _get_option_c_type(self, expected_type: Optional[SExpr] = None) -> Optional[str]:
         """Get the C type for the current context's Option type.
@@ -342,7 +374,7 @@ class Transpiler:
 
         Examples:
             "NewPet*" -> "NewPet_ptr"
-            "int64_t" -> "int64_t"
+            "int64_t" -> "int"  (normalized for runtime compatibility)
             "void*" -> "void_ptr"
             "slop_string" -> "string"
         """
@@ -351,6 +383,10 @@ class Transpiler:
         # e.g., slop_option_string instead of slop_option_slop_string
         if result.startswith('slop_'):
             result = result[5:]
+        # Normalize integer types to match runtime function naming
+        # e.g., slop_map_string_int_get (not slop_map_string_int64_t_get)
+        if result == 'int64_t':
+            result = 'int'
         return result
 
     def _get_map_value_type_from_context(self) -> Optional[str]:
@@ -579,6 +615,9 @@ class Transpiler:
                     # Check for number literal
                     elif isinstance(last_expr, Number):
                         result_c_type = "int64_t"
+                    # Check for boolean literal (true/false)
+                    elif isinstance(last_expr, Symbol) and last_expr.name in ('true', 'false'):
+                        result_c_type = "bool"
 
         # Fall back to function's result type if we couldn't infer
         if result_c_type is None:
@@ -665,6 +704,38 @@ class Transpiler:
                     elif isinstance(last_expr, Number):
                         result_c_type = "int64_t"
                         break
+                    # Check for boolean literal (true/false)
+                    elif isinstance(last_expr, Symbol) and last_expr.name in ('true', 'false'):
+                        result_c_type = "bool"
+                        break
+                    # Check for (none) - result is an Option type
+                    elif isinstance(last_expr, Symbol) and last_expr.name == 'none':
+                        result_c_type = "slop_option_int"  # Default, will be refined below
+                        break
+                    # Check for (some val) - result is an Option type
+                    elif isinstance(last_expr, SList) and len(last_expr) >= 1:
+                        if isinstance(last_expr[0], Symbol) and last_expr[0].name == 'some':
+                            # Infer inner type from the value
+                            if len(last_expr) >= 2:
+                                inner = last_expr[1]
+                                if isinstance(inner, Number):
+                                    result_c_type = "slop_option_int"
+                                elif isinstance(inner, String):
+                                    result_c_type = "slop_option_string"
+                                elif isinstance(inner, SList) and len(inner) >= 1:
+                                    if isinstance(inner[0], Symbol) and inner[0].name == 'cast':
+                                        # (some (cast Type val)) - use int for now
+                                        result_c_type = "slop_option_int"
+                                    else:
+                                        result_c_type = "slop_option_ptr"
+                                else:
+                                    result_c_type = "slop_option_ptr"
+                            else:
+                                result_c_type = "slop_option_ptr"
+                            break
+                        elif isinstance(last_expr[0], Symbol) and last_expr[0].name == 'none':
+                            result_c_type = "slop_option_int"
+                            break
                     # For symbols/variables, continue checking other branches
 
         # If still None and this is an Option match with bound variable,
@@ -740,7 +811,9 @@ class Transpiler:
                     parts.append(f"__auto_type {var_name} = _match_val.data.ok; ")
             for j, item in enumerate(body):
                 if j == len(body) - 1:
-                    parts.append(f"_match_result = {self.transpile_expr(item)}; ")
+                    # Special handling for (some val) and (none) constructors
+                    expr_str = self._transpile_option_constructor_with_type(item, result_c_type)
+                    parts.append(f"_match_result = {expr_str}; ")
                 else:
                     parts.append(f"{self.transpile_expr(item)}; ")
             parts.append("} ")
@@ -755,7 +828,9 @@ class Transpiler:
                 parts.append(f"__auto_type {var_name} = _match_val.data.err; ")
             for j, item in enumerate(body):
                 if j == len(body) - 1:
-                    parts.append(f"_match_result = {self.transpile_expr(item)}; ")
+                    # Special handling for (some val) and (none) constructors
+                    expr_str = self._transpile_option_constructor_with_type(item, result_c_type)
+                    parts.append(f"_match_result = {expr_str}; ")
                 else:
                     parts.append(f"{self.transpile_expr(item)}; ")
             parts.append("} ")
@@ -812,6 +887,41 @@ class Transpiler:
                     if isinstance(expr[1], Symbol):
                         return expr[1].name
 
+                # List construction: (list-new arena Type) -> List[C_Type]
+                if op == 'list-new' and len(expr) > 2:
+                    elem_type_expr = expr[2]
+                    elem_c_type = self.to_c_type(elem_type_expr)
+                    return f"List[{elem_c_type}]"
+
+                # Map construction: (map-new arena KeyType ValueType) -> slop_map_X_Y
+                if op == 'map-new' and len(expr) >= 4:
+                    key_type_expr = expr[2]
+                    value_type_expr = expr[3]
+                    key_c_type = self.to_c_type(key_type_expr)
+                    value_c_type = self.to_c_type(value_type_expr)
+                    key_id = self._type_to_identifier(key_c_type)
+                    value_id = self._type_to_identifier(value_c_type)
+                    if isinstance(key_type_expr, Symbol) and key_type_expr.name == 'String':
+                        return f"slop_map_string_{value_id}"
+                    return f"slop_map_{key_id}_{value_id}"
+
+                # Map get: (map-get map key) -> Option[value_type]
+                if op == 'map-get' and len(expr) >= 3:
+                    map_expr = expr[1]
+                    map_type = self._infer_type(map_expr)
+                    if map_type:
+                        # Extract value type from map type: slop_map_string_X -> X
+                        if map_type.startswith('slop_map_string_'):
+                            value_id = map_type[len('slop_map_string_'):]
+                            return f"slop_option_{value_id}"
+                        elif map_type.startswith('slop_map_'):
+                            # slop_map_K_V -> V
+                            parts = map_type[len('slop_map_'):].split('_', 1)
+                            if len(parts) == 2:
+                                value_id = parts[1]
+                                return f"slop_option_{value_id}"
+                    return None
+
                 # Field access: (. obj field) -> field's type
                 if op == '.' and len(expr) >= 3:
                     base = expr[1]
@@ -823,6 +933,10 @@ class Transpiler:
                             # Look up the field type
                             field_type = self._get_type_field(base_type, field.name)
                             if field_type:
+                                # For list types, return List[elem_c_type] format
+                                if is_form(field_type, 'List') and len(field_type) >= 2:
+                                    elem_c_type = self.to_c_type(field_type[1])
+                                    return f"List[{elem_c_type}]"
                                 return self.to_c_type(field_type)
                     return None
 
@@ -1995,26 +2109,39 @@ class Transpiler:
                     tag = pattern[0].name
 
                 if tag:
+                    # Check if pattern is a list (ok val) or bare symbol ok
+                    pattern_is_list = isinstance(pattern, SList)
+
+                    # Option/Result patterns: only if the pattern is a list like (ok val) or (some val)
+                    # Bare symbols like ok or error could be enum values
+                    if pattern_is_list:
+                        if tag in ('some', 'none'):
+                            is_option_match = True
+                            if first_tag is None:
+                                first_tag = tag
+                            break
+                        elif tag in ('ok', 'error'):
+                            is_result_match = True
+                            if first_tag is None:
+                                first_tag = tag
+                            break
+
                     # Check if this tag is a registered enum value - if so, don't treat as Option/Result
                     unquoted_tag = self._unquote_symbol(tag)
                     if unquoted_tag in self.enums:
                         # This is an enum value, not Option/Result pattern
                         break
 
-                    if tag in ('some', 'none'):
+                    # Bare symbol none/some without being in a list - still treat as Option
+                    if not pattern_is_list and tag in ('some', 'none'):
                         is_option_match = True
-                        if first_tag is None:
-                            first_tag = tag
-                        break
-                    elif tag in ('ok', 'error'):
-                        is_result_match = True
                         if first_tag is None:
                             first_tag = tag
                         break
 
         # Handle Option/Result matches with if-else (bool check)
         if is_option_match or is_result_match:
-            self._transpile_option_result_match_stmt(scrutinee, expr.items[2:], is_option_match, is_return)
+            self._transpile_option_result_match_stmt(scrutinee, expr[1], expr.items[2:], is_option_match, is_return)
             return
 
         # Determine if this is a simple enum match (only quoted symbols like 'Fizz)
@@ -2095,8 +2222,11 @@ class Transpiler:
         self.indent -= 1
         self.emit("}")
 
-    def _transpile_option_result_match_stmt(self, scrutinee: str, clauses: list, is_option: bool, is_return: bool):
+    def _transpile_option_result_match_stmt(self, scrutinee: str, scrutinee_expr: SExpr, clauses: list, is_option: bool, is_return: bool):
         """Transpile Option/Result match as statement using if-else."""
+        # Infer type of scrutinee for tracking bound variables
+        scrutinee_type = self._infer_type(scrutinee_expr)
+
         # Collect clauses
         some_ok_clause = None
         none_err_clause = None
@@ -2131,6 +2261,11 @@ class Transpiler:
             if var_name:
                 if is_option:
                     self.emit(f"__auto_type {var_name} = {scrutinee}.value;")
+                    # Track the type of the bound variable for type flow analysis
+                    if scrutinee_type and scrutinee_type.startswith('slop_option_'):
+                        # Extract inner type: slop_option_string -> slop_string
+                        inner_type = 'slop_' + scrutinee_type[len('slop_option_'):]
+                        self.var_types[var_name] = inner_type
                 else:
                     self.emit(f"__auto_type {var_name} = {scrutinee}.data.ok;")
             for j, item in enumerate(body):
@@ -2442,6 +2577,13 @@ class Transpiler:
                 if op == '@':
                     arr = self.transpile_expr(expr[1])
                     idx = self.transpile_expr(expr[2])
+                    # Check if indexing a string - use .data[i] for struct access
+                    arr_expr = expr[1]
+                    arr_type = None
+                    if isinstance(arr_expr, Symbol) and arr_expr.name in self.var_types:
+                        arr_type = self.var_types[arr_expr.name]
+                    if arr_type in ('slop_string', 'string', 'String'):
+                        return f"({arr}).data[{idx}]"
                     return f"{arr}[{idx}]"
 
                 # Address-of operator: (addr expr) -> &expr
@@ -2473,6 +2615,10 @@ class Transpiler:
                         c_type = self.to_c_type(type_ref)
                         size = self.transpile_expr(size_expr)
                         return f"({c_type}*)slop_arena_alloc({arena}, {size})"
+                    elif isinstance(size_expr, Symbol) and size_expr.name in self.types:
+                        # Known type name: (arena-alloc arena TypeName) -> alloc sizeof(Type)
+                        c_type = self.to_c_type(size_expr)
+                        return f"(({c_type}*)slop_arena_alloc({arena}, sizeof({c_type})))"
                     else:
                         size = self.transpile_expr(size_expr)
                         return f"slop_arena_alloc({arena}, {size})"
@@ -2510,12 +2656,19 @@ class Transpiler:
                     key = self.transpile_expr(expr[2])
                     # Check if map variable has a known string-keyed map type
                     map_var = expr[1]
+                    map_type = None
+
                     if isinstance(map_var, Symbol) and map_var.name in self.var_types:
-                        var_type = self.var_types[map_var.name]
-                        # Check for slop_map_string_X pattern
-                        if var_type.startswith('slop_map_string_'):
-                            # Use typed getter: slop_map_string_X_get(&map, key)
-                            return f"{var_type}_get(&{m}, {key})"
+                        map_type = self.var_types[map_var.name]
+                    elif is_form(map_var, '.') and len(map_var) >= 3:
+                        # Field access: (. obj field) - infer map type from field
+                        inferred = self._infer_type(map_var)
+                        if inferred:
+                            map_type = inferred
+
+                    if map_type and map_type.startswith('slop_map_string_'):
+                        # Use typed getter: slop_map_string_X_get(&map, key)
+                        return f"{map_type}_get(&{m}, {key})"
 
                     # Get value type from context
                     value_type = self._get_map_value_type_from_context()
@@ -2555,11 +2708,15 @@ class Transpiler:
                     map_var = expr[1]
                     if isinstance(map_var, Symbol) and map_var.name in self.var_types:
                         var_type = self.var_types[map_var.name]
-                        # Check for slop_map_string_X pattern
-                        if var_type.startswith('slop_map_string_'):
-                            # Use typed putter: slop_map_string_X_put(&arena, &map, key, val)
-                            # Note: arena is accessed via _arena in with-arena blocks
-                            return f"{var_type}_put(&_arena, &{m}, {key}, {val})"
+                        # Handle pointer to string-keyed map: slop_map_string_X*
+                        if var_type.endswith('*') and 'slop_map_string_' in var_type:
+                            base_type = var_type.rstrip('*')
+                            # For pointer, pass map directly (already a pointer)
+                            return f"{base_type}_put(arena, {m}, {key}, {val})"
+                        # Handle value type string-keyed map
+                        elif var_type.startswith('slop_map_string_'):
+                            # Use typed putter: slop_map_string_X_put(arena, &map, key, val)
+                            return f"{var_type}_put(arena, &{m}, {key}, {val})"
                     # Fallback for generic maps
                     return f"map_put({m}, {key}, {val})"
 
@@ -2615,7 +2772,17 @@ class Transpiler:
                     return f"({val}.is_ok)"
 
                 if op == 'unwrap':
-                    val = self.transpile_expr(expr[1])
+                    inner_expr = expr[1]
+                    val = self.transpile_expr(inner_expr)
+                    # Detect if this is an Option or Result to use correct accessor
+                    # Options use .value, Results use .data.ok
+                    inner_type = self._infer_type(inner_expr)
+                    if inner_type and inner_type == 'Option':
+                        return f"({val}.value)"
+                    # Also check if the generated code is an Option (from list-get, etc.)
+                    if 'slop_option_' in val or '.has_value' in val:
+                        return f"({val}.value)"
+                    # Default to Result accessor
                     return f"({val}.data.ok)"
 
                 # Option type constructors
@@ -2661,10 +2828,33 @@ class Transpiler:
 
                 # List get - returns Option<T> for bounds-checked access
                 if op == 'list-get':
-                    lst = self.transpile_expr(expr[1])
+                    lst_expr = expr[1]
+                    lst = self.transpile_expr(lst_expr)
                     idx = self.transpile_expr(expr[2])
-                    # Get the Option type for the return value
-                    option_type = self._get_option_c_type(expected_type)
+
+                    # Try to infer element type from the list expression
+                    option_type = None
+                    elem_c_type = None
+                    list_type = self._infer_type(lst_expr)
+
+                    if list_type and list_type.startswith('List[') and list_type.endswith(']'):
+                        # Extract element type from List[elem_type]
+                        elem_c_type = list_type[5:-1]  # Remove "List[" and "]"
+                        elem_id = self._type_to_identifier(elem_c_type)
+                        option_type = f"slop_option_{elem_id}"
+                        # Register option type so it gets emitted
+                        self.generated_option_types.add((option_type, elem_c_type))
+                    elif list_type and list_type.startswith('slop_list_'):
+                        # Handle slop_list_X format from function parameters
+                        elem_id = list_type[10:]  # Remove "slop_list_"
+                        option_type = f"slop_option_{elem_id}"
+                        # Register option type (elem_c_type may be derived from elem_id)
+                        self.generated_option_types.add((option_type, elem_id))
+
+                    # Fallback to expected_type if still no option_type
+                    if not option_type:
+                        option_type = self._get_option_c_type(expected_type)
+
                     if option_type:
                         # Generate bounds-checked access returning Option
                         return f"({{ __auto_type _lst = {lst}; size_t _idx = (size_t){idx}; {option_type} _r; if (_idx < _lst.len) {{ _r.has_value = true; _r.value = _lst.data[_idx]; }} else {{ _r.has_value = false; }} _r; }})"
@@ -3108,6 +3298,13 @@ class Transpiler:
             if isinstance(field, SList) and len(field) >= 2:
                 field_type_expr = field[1]
                 self.to_c_type(field_type_expr)  # This populates generated_*_types sets
+                # For List<T> fields, also register Option<T> since list-get returns Option
+                if is_form(field_type_expr, 'List') and len(field_type_expr) >= 2:
+                    elem_type = field_type_expr[1]
+                    elem_c_type = self.to_c_type(elem_type)
+                    elem_id = self._type_to_identifier(elem_c_type)
+                    option_type = f"slop_option_{elem_id}"
+                    self.generated_option_types.add((option_type, elem_c_type))
 
     def _scan_function_types(self, form: SList):
         """Pre-scan function to discover needed generic types.
@@ -3119,7 +3316,15 @@ class Transpiler:
         params = form[2] if len(form) > 2 else SList([])
         for p in params:
             if isinstance(p, SList) and len(p) >= 2:
-                self.to_c_type(p[1])  # This populates generated_*_types sets
+                param_type = p[1]
+                self.to_c_type(param_type)  # This populates generated_*_types sets
+                # For List<T> parameters, also register Option<T> since list-get returns Option
+                if is_form(param_type, 'List') and len(param_type) >= 2:
+                    elem_type = param_type[1]
+                    elem_c_type = self.to_c_type(elem_type)
+                    elem_id = self._type_to_identifier(elem_c_type)
+                    option_type = f"slop_option_{elem_id}"
+                    self.generated_option_types.add((option_type, elem_c_type))
 
         # Scan return type from @spec
         for item in form.items[3:]:
@@ -3676,7 +3881,15 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
                 record_def = t[2]
                 for field in record_def.items[1:]:
                     if isinstance(field, SList) and len(field) >= 2:
-                        transpiler.to_c_type(field[1])
+                        field_type_expr = field[1]
+                        transpiler.to_c_type(field_type_expr)
+                        # For List<T> fields, also register Option<T> since list-get returns Option
+                        if is_form(field_type_expr, 'List') and len(field_type_expr) >= 2:
+                            elem_type = field_type_expr[1]
+                            elem_c_type = transpiler.to_c_type(elem_type)
+                            elem_id = transpiler._type_to_identifier(elem_c_type)
+                            option_type = f"slop_option_{elem_id}"
+                            transpiler.generated_option_types.add((option_type, elem_c_type))
             elif len(t) > 2 and is_form(t[2], 'union'):
                 union_def = t[2]
                 for variant in union_def.items[1:]:

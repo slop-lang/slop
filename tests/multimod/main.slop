@@ -1,6 +1,12 @@
 (module main
-  (import math (add double Point make-point point-sum Direction direction-value safe-div list-size))
+  (import math (add double Point make-point point-sum Direction direction-value safe-div list-size sum-first-n first-or-zero Score find-first-above count-map-entries make-container container-first make-item-list item-list-first test-map-ptr safe-sqrt))
   (import native (get-time))
+
+  ;; Level 9: Function using cross-module type alias
+  (fn process-score ((s Score))
+    (@intent "Process a score value")
+    (@spec ((Score) -> Int))
+    s)
 
   (fn main ()
     (@intent "Entry point")
@@ -16,7 +22,40 @@
         (list-push nums 2)
         (list-push nums 3)
         ;; Use timestamp > 0 as a sanity check (adds 1 if timestamp positive)
-        (match result
-          ((some val) (+ (+ (+ (+ (point-sum p) (direction-value d)) val) (list-size nums))
-                         (if (> timestamp 0) 1 0)))
-          (none 0))))))
+        ;; Level 7: sum first 2 elements = 1+2 = 3
+        ;; Level 8: first-or-zero should return 1
+        ;; Level 9: process-score should return 5
+        ;; Level 10: find-first-above [1,2,3] threshold=1 should find 2
+        ;; Level 11: count-map-entries should return 1
+        ;; Level 12: container-first should return 10 (first item in container)
+        ;; Level 13: item-list-first should return 100 (value of first item)
+        ;; Level 14: test-map-ptr should return 1 (tests map-put on Ptr Map)
+        (let ((sum2 (sum-first-n nums 2))
+              (first (first-or-zero nums))
+              (score (process-score 5))
+              (above (find-first-above nums 1))
+              (m (map-new arena String Int))
+              (container (make-container arena))
+              (item-list (make-item-list arena))
+              (mapptr (test-map-ptr arena)))
+          (map-put m "a" 10)
+          (let ((count (count-map-entries (addr m)))
+                (cfirst (container-first container))
+                (ifirst (item-list-first item-list)))
+            ;; Level 15: Result match with bindings - safe-sqrt 4 returns (ok 4)
+            (let ((sqrt-res (safe-sqrt 4)))
+              (match result
+                ((some val) (+ (match sqrt-res
+                                 ((ok sqval) sqval)
+                                 ((error e) 0))
+                               (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (+ (point-sum p) (direction-value d)) val) (list-size nums))
+                                                    (if (> timestamp 0) 1 0))
+                                                 sum2)
+                                              first)
+                                           score)
+                                        (match above ((some v) v) (none 0)))
+                                     count)
+                                  cfirst)
+                               ifirst)
+                            mapptr)))
+                (none 0)))))))))
