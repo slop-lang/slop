@@ -12,6 +12,7 @@
     (@intent "Entry point")
     (@spec (() -> Int))
     (with-arena 1024
+      (println "HELLO")
       (let ((p (make-point 10 20))
             (d 'east)
             (result (safe-div 100 5))

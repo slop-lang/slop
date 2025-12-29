@@ -1085,9 +1085,81 @@ def cmd_build(args):
             else:
                 print("  Type check passed")
 
-            # Transpile all modules
+            # Transpile all modules to separate files
             print("  Transpiling to C...")
-            c_code = transpile_multi(graph.modules, order)
+            from slop.transpiler import transpile_multi_split
+            import tempfile
+            import subprocess
+
+            results = transpile_multi_split(graph.modules, order)
+
+            # Write to temp directory and compile
+            runtime_path = _get_runtime_path()
+            library_mode = getattr(args, 'library', None)
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                c_files = []
+                for mod_name, (header, impl) in results.items():
+                    header_path = os.path.join(tmpdir, f"{mod_name}.h")
+                    impl_path = os.path.join(tmpdir, f"{mod_name}.c")
+                    with open(header_path, 'w') as f:
+                        f.write(header)
+                    with open(impl_path, 'w') as f:
+                        f.write(impl)
+                    c_files.append(impl_path)
+
+                print("  Compiling...")
+
+                if library_mode == 'static':
+                    # Compile to object files, then create static library
+                    obj_files = []
+                    for c_file in c_files:
+                        obj_file = c_file.replace('.c', '.o')
+                        compile_cmd = ["cc", "-c", "-O2", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
+                        if args.debug:
+                            compile_cmd.insert(1, "-g")
+                            compile_cmd.insert(2, "-DSLOP_DEBUG")
+                        result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                        if result.returncode != 0:
+                            print(f"Compilation failed:\n{result.stderr}")
+                            return 1
+                        obj_files.append(obj_file)
+
+                    lib_file = f"{output}.a"
+                    ar_cmd = ["ar", "rcs", lib_file] + obj_files
+                    result = subprocess.run(ar_cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"Archive failed:\n{result.stderr}")
+                        return 1
+                    print(f"✓ Built {lib_file}")
+
+                elif library_mode == 'shared':
+                    ext = ".dylib" if sys.platform == "darwin" else ".so"
+                    lib_file = f"{output}{ext}"
+                    compile_cmd = ["cc", "-shared", "-fPIC", "-O2", "-I", str(runtime_path), "-I", tmpdir,
+                                  "-o", lib_file] + c_files
+                    if args.debug:
+                        compile_cmd.insert(1, "-g")
+                        compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"Compilation failed:\n{result.stderr}")
+                        return 1
+                    print(f"✓ Built {lib_file}")
+
+                else:
+                    # Default: build executable
+                    compile_cmd = ["cc", "-O2", "-I", str(runtime_path), "-I", tmpdir, "-o", output] + c_files
+                    if args.debug:
+                        compile_cmd.insert(1, "-g")
+                        compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"Compilation failed:\n{result.stderr}")
+                        return 1
+                    print(f"✓ Built {output}")
+
+            return 0
 
         else:
             # Single-file build (backward compatible)
