@@ -297,7 +297,8 @@ class Hole:
     complexity: Optional[str] = None
     constraints: Optional[List[SExpr]] = None
     examples: Optional[List[SExpr]] = None
-    must_use: Optional[List[str]] = None
+    context: Optional[List[str]] = None     # Whitelist of available identifiers
+    required: Optional[List[str]] = None    # Identifiers that MUST appear in output
 
 
 @dataclass
@@ -321,7 +322,8 @@ def extract_hole(hole_expr: SList) -> Hole:
     complexity = None
     constraints = None
     examples = None
-    must_use = None
+    context = None
+    required = None
 
     i = 2
     while i < len(items):
@@ -335,18 +337,23 @@ def extract_hole(hole_expr: SList) -> Hole:
                     constraints = val.items if isinstance(val, SList) else [val]
                 elif key == 'examples':
                     examples = val.items if isinstance(val, SList) else [val]
-                elif key == 'must-use':
+                elif key == 'context':
                     if isinstance(val, SList):
-                        must_use = [str(x) for x in val.items]
+                        context = [str(x) for x in val.items]
                     else:
-                        must_use = [str(val)]
+                        context = [str(val)]
+                elif key == 'required':
+                    if isinstance(val, SList):
+                        required = [str(x) for x in val.items]
+                    else:
+                        required = [str(val)]
                 i += 2
             else:
                 i += 1
         else:
             i += 1
 
-    return Hole(type_expr, prompt, complexity, constraints, examples, must_use)
+    return Hole(type_expr, prompt, complexity, constraints, examples, context, required)
 
 
 def classify_tier(hole: Hole) -> Tier:
@@ -519,7 +526,7 @@ def _extract_param_names(params_str: str) -> List[str]:
 
 
 def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
-    """Find all type names referenced by hole's must_use functions and return type.
+    """Find all type names referenced by hole's context functions and return type.
 
     This enables context-aware prompt filtering - only include enum values and
     record fields for types that are actually used by the hole.
@@ -544,15 +551,16 @@ def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
             if type_name in hole_type_str:
                 referenced.add(type_name)
 
-    must_use = hole.must_use or []
-    must_use_set = set(must_use)
+    # Use context list (whitelist of available items) for type extraction
+    context_items = hole.context or []
+    context_set = set(context_items)
 
-    # 2. Include types from must_use function signatures
+    # 2. Include types from context function signatures
     all_specs = (context.get('fn_specs', []) +
                  context.get('ffi_specs', []) +
                  context.get('imported_specs', []))
 
-    for fn_name in must_use:
+    for fn_name in context_items:
         spec = next((s for s in all_specs if s['name'] == fn_name), None)
         if not spec:
             continue
@@ -561,16 +569,16 @@ def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
             if type_name in signature:
                 referenced.add(type_name)
 
-    # 3. Include types from function parameters (must_use often lists param names)
+    # 3. Include types from function parameters (context often lists param names)
     params_str = context.get('params', '')
-    if params_str and must_use_set:
+    if params_str and context_set:
         try:
             params_ast = parse(params_str)
             if params_ast and isinstance(params_ast[0], SList):
                 for param in params_ast[0].items:
                     if isinstance(param, SList) and len(param) >= 2:
                         param_name = param[0].name if isinstance(param[0], Symbol) else str(param[0])
-                        if param_name in must_use_set:
+                        if param_name in context_set:
                             # Extract type names from this param's type
                             param_type_str = str(param[1])
                             for type_name in type_names:
@@ -603,7 +611,7 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         "1. ONLY use functions listed in the Built-in Functions above",
         "2. DO NOT invent functions - these DO NOT exist in SLOP:",
         "   - json-parse, json-get-*, parse-json (no JSON library)",
-        "   - string-find, string-index, substring, string-slice",
+        "   - string-find, string-index, substring (use string-slice or string-split)",
         "   - parse-int, atoi, str-to-int (use FFI if needed)",
         "   - read, write (use recv, send for sockets)",
         "   - ref (no references - use deref for pointer dereferencing)",
@@ -657,7 +665,7 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
     sections.extend([
         "",
         "## Examples of Correct Fills",
-        "Hole: (hole Int \"Add two numbers\" :must-use (a b))",
+        "Hole: (hole Int \"Add two numbers\" :context (a b))",
         "Fill: (+ a b)",
         "",
         "Hole: (hole FizzBuzzResult \"Return result based on divisibility\")",
@@ -737,7 +745,7 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         fn_names = {s['name'] for s in context.get('fn_specs', [])}
         ffi_names = {s['name'] for s in context.get('ffi_specs', [])}
         imported = [f for f in context['defined_functions']
-                    if f not in fn_names and f not in ffi_names and f not in VALID_EXPRESSION_FORMS]
+                    if f not in fn_names and f not in ffi_names and f not in VALID_EXPRESSION_FORMS and f not in BUILTIN_FUNCTIONS]
         if imported:
             sections.append("")
             sections.append("## Imported Functions (from other modules)")
@@ -787,7 +795,7 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
             pass
 
     # Filter enum_info and record_info to only include types referenced by this hole
-    if hole.must_use:
+    if hole.context:
         referenced_types = _extract_referenced_types(hole, context)
         filtered_enum_info = [e for e in enum_info if e.split(':')[0] in referenced_types]
         filtered_record_info = [r for r in record_info if r.split(':')[0] in referenced_types]
@@ -797,7 +805,7 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         if not filtered_record_info and record_info:
             filtered_record_info = record_info
     else:
-        # No must_use - include all types (fallback for holes without must_use)
+        # No context whitelist - include all types
         filtered_enum_info = enum_info
         filtered_record_info = record_info
 
@@ -843,10 +851,16 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
         for ex in hole.examples:
             sections.append(f"- {ex}")
 
-    if hole.must_use:
+    if hole.context:
         sections.append("")
-        sections.append("## Must Use")
-        sections.append(f"The expression MUST use: {', '.join(hole.must_use)}")
+        sections.append("## Available Context")
+        sections.append(f"You may ONLY call these functions/identifiers: {', '.join(hole.context)}")
+        sections.append("(Built-in forms like let, if, match, do are always available)")
+
+    if hole.required:
+        sections.append("")
+        sections.append("## Required")
+        sections.append(f"The expression MUST use: {', '.join(hole.required)}")
 
     # Include feedback from failed attempts
     if failed_attempts:
@@ -1100,6 +1114,24 @@ class HoleFiller:
 
         return None
 
+    def _check_syntax(self, expr: SExpr) -> Optional[str]:
+        """Validate expression syntax that parser doesn't catch.
+        Returns error message if invalid, None otherwise."""
+        if isinstance(expr, SList) and len(expr) >= 1:
+            # Check field access: (. obj field) requires exactly 2 args and field must be Symbol
+            if is_form(expr, '.'):
+                if len(expr) != 3:
+                    return f"Field access requires exactly 2 arguments (obj field), got {len(expr) - 1}"
+                if not isinstance(expr[2], Symbol):
+                    return f"Field access requires symbol, got {type(expr[2]).__name__}: (. obj {expr[2]})"
+            # Recurse into children
+            for item in expr.items:
+                if isinstance(item, SList):
+                    err = self._check_syntax(item)
+                    if err:
+                        return err
+        return None
+
     def _validate(self, expr: SExpr, hole: Hole, context: dict = None) -> tuple[bool, Optional[str]]:
         """Validate expression, return (success, error_messages).
 
@@ -1126,24 +1158,41 @@ class HoleFiller:
         if invalid_form:
             errors.append(f"Invalid form '{invalid_form}' - not a valid SLOP expression. Use 'do' for sequencing.")
 
+        # Check 3.5: Structural syntax validation (field access, etc.)
+        syntax_error = self._check_syntax(expr)
+        if syntax_error:
+            errors.append(syntax_error)
+
         # Check 4: Undefined function calls
         defined_fns = set(context.get('defined_functions', []))
         enum_variants = _extract_enum_variants(context)  # Allow enum variant constructors
-        allowed = VALID_EXPRESSION_FORMS | defined_fns | enum_variants
+        allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | enum_variants
         calls = _extract_function_calls(expr)
         undefined = calls - allowed
         if undefined:
             errors.append(f"Undefined function(s): {', '.join(sorted(undefined))}. Only use built-ins or functions defined in this file.")
 
-        # Check 5: must_use requirements
-        if hole.must_use:
+        # Check 5a: context whitelist (limits what functions/identifiers can be used)
+        if hole.context:
+            context_set = set(hole.context)
+            # Include FFI functions - they're globally available
+            ffi_names = {s['name'] for s in context.get('ffi_specs', [])}
+            # Allow built-in forms, built-in functions, enum variants, FFI functions, and context items
+            context_allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | enum_variants | ffi_names | context_set
+            disallowed = calls - context_allowed
+            if disallowed:
+                errors.append(f"Only allowed to use: {', '.join(hole.context)}")
+                errors.append(f"Disallowed calls found: {', '.join(sorted(disallowed))}")
+
+        # Check 5b: required items (must appear in output)
+        if hole.required:
             expr_str = str(expr)
             missing_uses = []
-            for must in hole.must_use:
-                must_normalized = must.replace('-', '_').replace('.', '')
+            for req in hole.required:
+                req_normalized = req.replace('-', '_').replace('.', '')
                 expr_normalized = expr_str.replace('-', '_').replace('.', '')
-                if must_normalized not in expr_normalized:
-                    missing_uses.append(must)
+                if req_normalized not in expr_normalized:
+                    missing_uses.append(req)
             if missing_uses:
                 errors.append(f"Expression must use: {', '.join(missing_uses)}")
 
@@ -1404,22 +1453,22 @@ class HoleFiller:
             'validation_pass': 1.0,  # Always 1.0 if we get here
         }
 
-        # Check must-use coverage
-        if hole.must_use:
+        # Check required items coverage
+        if hole.required:
             expr_str = str(expr)
             found = 0
-            for must in hole.must_use:
-                must_normalized = must.replace('-', '_').replace('.', '')
+            for req in hole.required:
+                req_normalized = req.replace('-', '_').replace('.', '')
                 expr_normalized = expr_str.replace('-', '_').replace('.', '')
-                if must_normalized in expr_normalized:
+                if req_normalized in expr_normalized:
                     found += 1
-            metrics['must_use_coverage'] = found / len(hole.must_use)
+            metrics['required_coverage'] = found / len(hole.required)
         else:
-            metrics['must_use_coverage'] = 1.0
+            metrics['required_coverage'] = 1.0
 
         # Check for undefined calls (should be 0 if validation passed)
         defined_fns = set(context.get('defined_functions', []))
-        allowed = VALID_EXPRESSION_FORMS | defined_fns
+        allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns
         calls = _extract_function_calls(expr)
         undefined = calls - allowed
         metrics['no_undefined_calls'] = 1.0 if not undefined else 0.0
@@ -1431,7 +1480,7 @@ class HoleFiller:
         weights = {
             'parse_success': 0.2,
             'validation_pass': 0.3,
-            'must_use_coverage': 0.2,
+            'required_coverage': 0.2,
             'no_undefined_calls': 0.2,
             'first_attempt_bonus': 0.1,
         }
@@ -1524,7 +1573,7 @@ class HoleFiller:
                 fn_names = {s['name'] for s in first_context.get('fn_specs', [])}
                 ffi_names = {s['name'] for s in first_context.get('ffi_specs', [])}
                 imported = [f for f in first_context['defined_functions']
-                            if f not in fn_names and f not in ffi_names and f not in VALID_EXPRESSION_FORMS]
+                            if f not in fn_names and f not in ffi_names and f not in VALID_EXPRESSION_FORMS and f not in BUILTIN_FUNCTIONS]
                 if imported:
                     sections.append("## Imported Functions (from other modules)")
                     sections.append("These functions are imported and available to use:")
@@ -1540,8 +1589,10 @@ class HoleFiller:
                 if param_names:
                     sections.append(f"Available variables: {', '.join(param_names)} (use these EXACT names)")
                 sections.append(f"Parameters: {context.get('params')}")
-            if hole.must_use:
-                sections.append(f"Must use: {', '.join(hole.must_use)}")
+            if hole.context:
+                sections.append(f"Context (allowed): {', '.join(hole.context)}")
+            if hole.required:
+                sections.append(f"Required: {', '.join(hole.required)}")
             sections.append("")
 
         sections.append("## Response Format")
@@ -1654,7 +1705,7 @@ if __name__ == '__main__':
       (hole (Result (Ptr Account) Error)
         "Check balance and deduct"
         :complexity tier-2
-        :must-use (account amount)))
+        :context (account amount)))
     '''
 
     from slop.parser import parse, find_holes

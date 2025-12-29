@@ -113,6 +113,24 @@ class TypeEnv:
                 return typ
         return None
 
+    def find_enum_variant_collisions(self) -> Dict[str, List[str]]:
+        """Find enum variants that appear in multiple enum types.
+
+        Returns:
+            Dict mapping variant_name -> [enum_type_1, enum_type_2, ...]
+            for variants that appear in more than one enum.
+        """
+        variant_to_enums: Dict[str, List[str]] = {}
+        for type_name, typ in self.type_registry.items():
+            if isinstance(typ, EnumType):
+                for variant in typ.variants:
+                    if variant not in variant_to_enums:
+                        variant_to_enums[variant] = []
+                    variant_to_enums[variant].append(type_name)
+
+        # Filter to only collisions
+        return {v: enums for v, enums in variant_to_enums.items() if len(enums) > 1}
+
 
 # ============================================================================
 # Diagnostics
@@ -190,6 +208,7 @@ class TypeChecker:
         self.env.register_function('string-concat', FnType((ARENA, STRING, STRING), STRING))
         self.env.register_function('string-eq', FnType((STRING, STRING), BOOL))
         self.env.register_function('string-new', FnType((ARENA, PtrType(PrimitiveType('U8'))), STRING))
+        self.env.register_function('string-split', FnType((ARENA, STRING, STRING), ListType(STRING)))
         self.env.register_function('int-to-string', FnType((ARENA, INT), STRING))
 
         # Arena/memory operations
@@ -221,6 +240,15 @@ class TypeChecker:
         col = getattr(node, 'col', 0) if node else 0
         self.diagnostics.append(TypeDiagnostic('warning', message,
                                                SourceLocation(self.filename, line, col), hint))
+
+    def _check_enum_variant_collisions(self):
+        """Check for enum variants that appear in multiple enum types and report errors."""
+        collisions = self.env.find_enum_variant_collisions()
+        for variant, enum_names in collisions.items():
+            self.error(
+                f"Ambiguous enum variant '{variant}' exists in multiple types: {', '.join(sorted(enum_names))}",
+                hint="Rename variants to be unique across enum types, e.g., 'api-not-found' vs 'http-not-found'"
+            )
 
     # ========================================================================
     # Path-Sensitive Refinement
@@ -1113,6 +1141,7 @@ class TypeChecker:
     def _infer_field_access(self, expr: SList) -> Type:
         """Infer type of field access: (. obj field)"""
         if len(expr) < 3:
+            self.error(f"Field access requires 2 arguments (obj field), got {len(expr) - 1}", expr)
             return UNKNOWN
 
         # Check for refined type of the full field path
@@ -1227,9 +1256,9 @@ class TypeChecker:
         return PrimitiveType('Unit')
 
     def _infer_hole(self, expr: SList) -> Type:
-        """Infer type of hole expression and check for :must-use.
+        """Infer type of hole expression and check for :context.
 
-        (hole Type "prompt" :complexity tier-2 :must-use (fn1 fn2))
+        (hole Type "prompt" :complexity tier-2 :context (fn1 fn2) :required (fn1))
         """
         if len(expr) < 2:
             self.error("Hole requires a type", expr)
@@ -1238,15 +1267,15 @@ class TypeChecker:
         # Parse the type (first argument)
         hole_type = self.parse_type_expr(expr[1])
 
-        # Check for :must-use - warn if missing
-        has_must_use = False
+        # Check for :context - warn if missing
+        has_context = False
         for i, item in enumerate(expr.items):
-            if isinstance(item, Symbol) and item.name == ':must-use':
-                has_must_use = True
+            if isinstance(item, Symbol) and item.name == ':context':
+                has_context = True
                 break
 
-        if not has_must_use:
-            self.warning("Hole is missing :must-use - add it for better LLM context filtering", expr)
+        if not has_context:
+            self.warning("Hole is missing :context - add it for better LLM guidance", expr)
 
         return hole_type
 
@@ -1492,6 +1521,9 @@ class TypeChecker:
         for form in forms:
             if is_form(form, 'type'):
                 self._register_type_def(form)
+
+        # Check for ambiguous enum variants (collisions between local and imported types)
+        self._check_enum_variant_collisions()
 
         # Second pass: collect constants
         for form in forms:

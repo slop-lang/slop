@@ -89,8 +89,10 @@ def cmd_parse(args):
                     print(f"Hole: {info.prompt}")
                     print(f"  Type: {info.type_expr}")
                     print(f"  Tier: {tier.name}")
-                    if info.must_use:
-                        print(f"  Must use: {', '.join(info.must_use)}")
+                    if info.context:
+                        print(f"  Context: {', '.join(info.context)}")
+                    if info.required:
+                        print(f"  Required: {', '.join(info.required)}")
                     print()
             print(f"Found {total} holes", file=sys.stderr)
         else:
@@ -900,8 +902,8 @@ def cmd_check(args):
             for h in holes:
                 info = extract_hole(h)
                 errors.append(f"Unfilled hole: {info.prompt}")
-                if not info.must_use:
-                    warnings.append(f"Hole missing :must-use - add for better LLM context: {info.prompt[:50]}...")
+                if not info.context:
+                    warnings.append(f"Hole missing :context - add for better LLM guidance: {info.prompt[:50]}...")
 
             if is_form(form, 'fn') or is_form(form, 'impl'):
                 has_intent = any(is_form(item, '@intent') for item in form.items)

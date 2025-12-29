@@ -272,7 +272,8 @@ identifier               ; Variable reference
 (hole Type "prompt"
   :constraints (expr...)
   :examples ((input...) -> output)...
-  :must-use (identifier...)
+  :context (identifier...)      ; Whitelist of available identifiers
+  :required (identifier...)     ; Identifiers that must appear in output
   :complexity tier)
 
 ; Complexity tiers
@@ -323,8 +324,8 @@ before code can be filled or compiled. This is used by code generators (like
 1. **LLM/Claude Code**: When `:prompt` is present, the LLM should ask the user
    which option they prefer and generate appropriate code based on choice
 2. **`slop fill`**: Warns if unresolved `@requires` exist and suggests resolution
-3. **Type checker**: Can verify that `:must-use` in holes references functions
-   declared in `@requires`
+3. **Type checker**: Can verify that `:context` and `:required` in holes reference
+   functions declared in `@requires`
 
 ### 3.9 Patterns
 
@@ -513,6 +514,7 @@ Minimal runtime (~500 lines of C):
 (string-concat arena a b) -> String
 (string-eq a b) -> Bool
 (string-slice s start end) -> (Slice U8)
+(string-split arena s delimiter) -> (List String)  ; delimiter must be single char
 
 ; Lists
 (list-new arena) -> (List T)

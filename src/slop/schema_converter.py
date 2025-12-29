@@ -37,7 +37,7 @@ class SlopFunction:
     intent: str
     hole_prompt: str
     hole_tier: str
-    must_use: Optional[List[str]] = None
+    context: Optional[List[str]] = None         # Whitelist of available identifiers
     preconditions: Optional[List[str]] = None   # @pre expressions
     postconditions: Optional[List[str]] = None  # @post expressions
     examples: Optional[List[tuple]] = None      # [(input, output), ...]
@@ -71,13 +71,13 @@ class SlopFunction:
             for (input_args, output) in self.examples:
                 lines.append(f"  (@example {input_args} -> {output})")
 
-        # Hole with complexity and must-use
-        must_use_str = ""
-        if self.must_use:
-            must_use_str = f"\n    :must-use ({' '.join(self.must_use)})"
+        # Hole with complexity and context
+        context_str = ""
+        if self.context:
+            context_str = f"\n    :context ({' '.join(self.context)})"
 
         lines.append(f'  (hole {self.return_type} "{self.hole_prompt}"')
-        lines.append(f"    :complexity {self.hole_tier}{must_use_str}))")
+        lines.append(f"    :complexity {self.hole_tier}{context_str}))")
 
         return '\n'.join(lines)
 
@@ -522,12 +522,12 @@ class OpenApiConverter:
         storage_types: Dict[str, str] = {}
 
         for fn in self.functions:
-            if not fn.must_use:
+            if not fn.context:
                 continue
 
             inner_type = self._extract_result_inner_type(fn.return_type)
 
-            for storage_fn in fn.must_use:
+            for storage_fn in fn.context:
                 if not storage_fn.startswith("state-"):
                     continue
 
@@ -645,7 +645,7 @@ class OpenApiConverter:
 
         # Extract parameters
         params = []
-        must_use = []
+        context = []
         preconditions = []
         param_examples = {}
 
@@ -654,9 +654,9 @@ class OpenApiConverter:
             # POST operations need arena for state-insert-*
             if method.lower() == 'post':
                 params.append(('arena', 'Arena'))
-                must_use.append('arena')
+                context.append('arena')
             params.append(('state', '(Ptr State)'))
-            must_use.append('state')
+            context.append('state')
             preconditions.append("(!= state nil)")
 
         # Path parameters
@@ -665,7 +665,7 @@ class OpenApiConverter:
                 pname = self._to_kebab(param['name'])
                 ptype = self._schema_to_type(param.get('schema', {}))
                 params.append((pname, ptype))
-                must_use.append(pname)
+                context.append(pname)
 
                 # Extract preconditions from schema constraints
                 schema = param.get('schema', {})
@@ -697,13 +697,13 @@ class OpenApiConverter:
             if body_schema:
                 body_type = self._schema_to_type(body_schema)
                 params.append(('body', f"(Ptr {body_type})"))
-                must_use.append('body')
+                context.append('body')
                 preconditions.append("(!= body nil)")
 
         # Extract return type from success response
         return_type = self._extract_return_type(operation)
 
-        # For stub/map modes, add appropriate storage function to must_use
+        # For stub/map modes, add appropriate storage function to context
         storage_fn = None
         if self.storage_mode in ('stub', 'map') and self.resource_types:
             # Determine resource from path (first non-param segment)
@@ -734,7 +734,7 @@ class OpenApiConverter:
                     storage_fn = f"state-get-{resource_lower}"
 
                 if storage_fn:
-                    must_use.append(storage_fn)
+                    context.append(storage_fn)
 
         # Generate intent from summary/description
         summary = operation.get('summary', '')
@@ -762,7 +762,7 @@ class OpenApiConverter:
             intent=intent,
             hole_prompt=hole_prompt,
             hole_tier=tier,
-            must_use=must_use if must_use else None,
+            context=context if context else None,
             preconditions=preconditions if preconditions else None,
             postconditions=postconditions if postconditions else None,
             examples=examples if examples else None

@@ -121,6 +121,31 @@ class TestEnumVariantInference:
         errors = [d for d in diagnostics if d.severity == 'error']
         assert len(errors) == 0
 
+    def test_ambiguous_enum_variants_error(self):
+        """Enum variants with same name in different types should be an error"""
+        source = """
+        (module test
+          (type Status (enum ok error))
+          (type Result (enum ok fail)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 1
+        assert "Ambiguous enum variant 'ok'" in errors[0].message
+        assert "Result" in errors[0].message
+        assert "Status" in errors[0].message
+
+    def test_non_overlapping_enum_variants_ok(self):
+        """Enum types with distinct variants should not error"""
+        source = """
+        (module test
+          (type HttpStatus (enum http-ok http-error))
+          (type ApiError (enum api-ok api-fail)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
 
 class TestPathSensitiveAnalysis:
     """Test path-sensitive type refinement"""

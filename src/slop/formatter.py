@@ -508,7 +508,7 @@ def format_export(expr: SList, indent: int) -> str:
 
 
 def format_hole(expr: SList, indent: int) -> str:
-    """Format hole: (hole Type "prompt" :complexity tier :must-use (...))"""
+    """Format hole: (hole Type "prompt" :complexity tier :context (...) :required (...))"""
     if len(expr) < 3:
         return inline(expr)
 

@@ -3,7 +3,7 @@ Transpiler tests for SLOP
 """
 
 import pytest
-from slop.transpiler import transpile, Transpiler
+from slop.transpiler import transpile, Transpiler, TranspileError
 from slop.parser import parse
 
 
@@ -33,6 +33,21 @@ class TestTypeDefinitions:
         assert "typedef enum" in c_code
         assert "Status_active" in c_code
         assert "Status_inactive" in c_code
+
+    def test_record_new_with_inline_type(self):
+        """Test record-new with inline anonymous record type instead of named type."""
+        source = '''
+        (module test
+          (fn make-pair ()
+            (@intent "Create a pair")
+            (@spec (() -> (record (x Int) (y Int))))
+            (record-new (record (x Int) (y Int)) (x 1) (y 2))))
+        '''
+        result = transpile(source)
+        # Uses inline struct for anonymous record type
+        assert 'struct {' in result
+        assert '.x = 1' in result
+        assert '.y = 2' in result
 
 
 class TestFunctionTranspilation:
@@ -157,6 +172,48 @@ class TestEnumValues:
         c_code = transpile(source)
         assert "Result_success" in c_code
 
+    def test_match_enum_unquoted_variant(self):
+        """Test that unquoted enum variants in match generate correct case labels."""
+        source = """
+        (module test
+          (type Status (enum ok error))
+          (fn handle ((s Status))
+            (@intent "Handle status")
+            (@spec ((Status) -> Int))
+            (match s
+              (ok 1)
+              (error 0))))
+        """
+        c_code = transpile(source)
+        # Should use enum constant names, not indices
+        # Note: single-file transpile doesn't add module prefix
+        assert "case Status_ok:" in c_code
+        assert "case Status_error:" in c_code
+        assert "case 0:" not in c_code
+        assert "case 1:" not in c_code
+
+
+class TestPointerTypeIdentifiers:
+    """Test that pointer types generate valid C identifiers."""
+
+    def test_result_with_pointer_type(self):
+        """Test Result<Ptr<T>, E> generates valid type name."""
+        source = """
+        (module test
+          (type Pet (record (name String)))
+          (type ApiError (enum not-found))
+          (fn get-pet ()
+            (@intent "Get pet")
+            (@spec (() -> (Result (Ptr Pet) ApiError)))
+            (error 'not-found)))
+        """
+        c_code = transpile(source)
+        # Should have _ptr instead of * in type name
+        # Note: single-file transpile doesn't add module prefix
+        assert "slop_result_Pet_ptr_ApiError" in c_code
+        # Should NOT have * in identifier
+        assert "slop_result_Pet*" not in c_code
+
 
 class TestExamples:
     """Test transpilation of example files"""
@@ -206,11 +263,11 @@ class TestComprehensiveTranspilation:
         assert "__auto_type n = " in c_code  # binding from (number n)
 
         # Result constructors
-        assert ".tag = 0, .data.ok =" in c_code  # ok
-        assert ".tag = 1, .data.err =" in c_code  # error
+        assert ".is_ok = true, .data.ok =" in c_code  # ok
+        assert ".is_ok = false, .data.err =" in c_code  # error
 
         # Early return with ?
-        assert "if (_tmp.tag != 0) return _tmp" in c_code
+        assert "if (!_tmp.is_ok) return _tmp" in c_code
 
         # Array indexing
         assert "scores[i]" in c_code
@@ -467,3 +524,36 @@ class TestMapLiterals:
         c_code = transpile(source)
         # Should generate map type definition
         assert "slop_map_" in c_code or "entries" in c_code
+
+
+class TestTranspilerValidation:
+    """Test that transpiler rejects malformed input instead of generating invalid C"""
+
+    def test_const_too_many_args_error(self):
+        """Malformed const with extra args should raise error."""
+        source = "(const FOO Bar Baz 42)"  # 4 args instead of 3
+        with pytest.raises(TranspileError) as exc:
+            transpile(source)
+        assert "3 arguments" in str(exc.value)
+
+    def test_const_too_few_args_error(self):
+        """Malformed const with missing args should raise error."""
+        source = "(const FOO Int)"  # 2 args instead of 3
+        with pytest.raises(TranspileError) as exc:
+            transpile(source)
+        assert "3 arguments" in str(exc.value)
+
+    def test_valid_const_works(self):
+        """Valid const should transpile without error."""
+        source = "(const FOO Int 42)"
+        c_code = transpile(source)
+        assert "FOO" in c_code
+        assert "42" in c_code
+
+    def test_field_access_requires_symbol(self):
+        """Field access with non-symbol should raise TranspileError with line."""
+        source = "(fn test () (@spec (() -> Int)) (. x 42))"
+        with pytest.raises(TranspileError) as exc:
+            transpile(source)
+        assert "Field name must be a symbol" in str(exc.value)
+        assert "line" in str(exc.value)

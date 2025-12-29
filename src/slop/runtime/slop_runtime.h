@@ -1,7 +1,7 @@
 /*
  * SLOP Runtime - Minimal runtime for SLOP-generated C code
  * 
- * ~500 lines total. Provides:
+ * Provides:
  * - Arena allocator
  * - String type
  * - List type
@@ -272,6 +272,30 @@ SLOP_LIST_DEFINE(double, slop_list_float)
 SLOP_LIST_DEFINE(slop_string, slop_list_string)
 SLOP_LIST_DEFINE(void*, slop_list_ptr)
 
+/* String split - splits string on single-char delimiter */
+static inline slop_list_string string_split(slop_arena* arena, slop_string s, slop_string delim) {
+    SLOP_PRE(delim.len == 1, "delimiter must be single character");
+    char dc = delim.data[0];
+
+    /* Count segments */
+    size_t count = 1;
+    for (size_t i = 0; i < s.len; i++) {
+        if (s.data[i] == dc) count++;
+    }
+
+    slop_list_string result = slop_list_string_new(arena, count);
+
+    size_t start = 0;
+    for (size_t i = 0; i <= s.len; i++) {
+        if (i == s.len || s.data[i] == dc) {
+            slop_string seg = slop_string_new_len(arena, s.data + start, i - start);
+            slop_list_string_push(arena, &result, seg);
+            start = i + 1;
+        }
+    }
+    return result;
+}
+
 /* ============================================================
  * Map Type (simple hash map)
  * ============================================================ */
@@ -357,6 +381,32 @@ static inline void slop_map_put(slop_arena* arena, slop_map* map,
 static inline bool slop_map_has(slop_map* map, slop_string key) {
     return slop_map_get(map, key) != NULL;
 }
+
+/* ============================================================
+ * Typed String-Keyed Map (generic via macro)
+ *
+ * Generates a type-safe wrapper around slop_map for (Map String V) types.
+ * The typedef allows assignment compatibility while providing typed accessors.
+ * ============================================================ */
+
+#define SLOP_STRING_MAP_DEFINE(V, Name, OptName) \
+    typedef slop_map Name; \
+    \
+    static inline Name Name##_new(slop_arena* arena, size_t cap) { \
+        return slop_map_new(arena, cap); \
+    } \
+    \
+    static inline OptName Name##_get(Name* map, slop_string key) { \
+        void* v = slop_map_get(map, key); \
+        if (v) return (OptName){ .has_value = true, .value = *(V*)v }; \
+        return (OptName){ .has_value = false }; \
+    } \
+    \
+    static inline void Name##_put(slop_arena* arena, Name* map, slop_string key, V value) { \
+        V* stored = (V*)slop_arena_alloc(arena, sizeof(V)); \
+        *stored = value; \
+        slop_map_put(arena, map, key, stored); \
+    }
 
 /* ============================================================
  * Generic Map Operations (for transpiled SLOP code)
@@ -518,9 +568,9 @@ static inline slop_gmap_list _slop_take_raw(slop_gmap_list lst, int64_t n) {
 #define SLOP_MAP_GET_DEFINE(V, OptType) \
     static inline OptType map_get_##V(void* m, int64_t k) { \
         slop_gmap_option_raw raw = _slop_map_get_raw(m, k); \
-        OptType result; \
-        result.tag = raw.tag; \
-        if (raw.tag == 0) memcpy(&result.data.some, raw.data.some, sizeof(V)); \
+        OptType result = {0}; \
+        result.has_value = (raw.tag == 0); \
+        if (raw.tag == 0) memcpy(&result.value, raw.data.some, sizeof(V)); \
         return result; \
     }
 
@@ -575,6 +625,10 @@ SLOP_OPTION_DEFINE(int64_t, slop_option_int)
 SLOP_OPTION_DEFINE(double, slop_option_float)
 SLOP_OPTION_DEFINE(slop_string, slop_option_string)
 SLOP_OPTION_DEFINE(void*, slop_option_ptr)
+
+/* Pre-define common string-keyed maps (must come after SLOP_OPTION_DEFINE) */
+SLOP_STRING_MAP_DEFINE(slop_string, slop_map_string_string, slop_option_string)
+SLOP_STRING_MAP_DEFINE(int64_t, slop_map_string_int, slop_option_int)
 
 /* ============================================================
  * Result Type (generic via macros)
