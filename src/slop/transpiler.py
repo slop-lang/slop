@@ -383,8 +383,7 @@ class Transpiler:
             head = ret[0]
             if isinstance(head, Symbol) and head.name == 'List':
                 inner = ret[1]
-                if isinstance(inner, Symbol):
-                    return inner.name
+                # Always convert to C type (includes module prefix)
                 return self.to_c_type(inner)
         return None
 
@@ -1311,7 +1310,13 @@ class Transpiler:
         if is_form(type_expr, 'record'):
             self.transpile_record(raw_name, qualified_name, type_expr)
         elif is_form(type_expr, 'enum'):
-            self.transpile_enum(raw_name, qualified_name, type_expr)
+            # Check if this is actually a tagged union (enum with payload variants)
+            # e.g., (enum (literal String) (param String)) has SList variants
+            has_payloads = any(isinstance(v, SList) for v in type_expr.items[1:])
+            if has_payloads:
+                self.transpile_union(raw_name, qualified_name, type_expr)
+            else:
+                self.transpile_enum(raw_name, qualified_name, type_expr)
         elif is_form(type_expr, 'union'):
             self.transpile_union(raw_name, qualified_name, type_expr)
         else:
@@ -1699,7 +1704,9 @@ class Transpiler:
         elif is_form(expr, 'with-arena'):
             self.transpile_with_arena(expr, is_return)
         else:
-            code = self.transpile_expr(expr)
+            # Pass expected type for return expressions so Option/Result constructors work
+            expected = self.current_return_type if is_return else None
+            code = self.transpile_expr(expr, expected)
             if is_return:
                 self.emit(f"return {code};")
             else:
@@ -1804,9 +1811,10 @@ class Transpiler:
             return False
 
         if is_return and is_simple(then_branch) and (else_branch is None or is_simple(else_branch)):
-            # Use ternary for simple returns
-            then_expr = self.transpile_expr(then_branch)
-            else_expr = self.transpile_expr(else_branch) if else_branch else "0"
+            # Use ternary for simple returns - pass expected type for Option/Result
+            expected = self.current_return_type
+            then_expr = self.transpile_expr(then_branch, expected)
+            else_expr = self.transpile_expr(else_branch, expected) if else_branch else "0"
             self.emit(f"return ({cond}) ? {then_expr} : {else_expr};")
         else:
             self.emit(f"if ({cond}) {{")
@@ -2243,6 +2251,13 @@ class Transpiler:
                 return '1'
             if name == 'false':
                 return '0'
+            # Handle 'none' as Option constructor (requires expected_type)
+            if name == 'none':
+                option_type = self._get_option_c_type(expected_type)
+                if option_type:
+                    return f"(({option_type}){{ .has_value = false }})"
+                # Fallback for unknown type context
+                return "(slop_option_ptr){ .has_value = false }"
             if name.startswith("'"):
                 # Enum value - look up qualified name
                 enum_val = name[1:]
@@ -2312,8 +2327,8 @@ class Transpiler:
                 # If as expression (ternary)
                 if op == 'if':
                     cond = self.transpile_expr(expr[1])
-                    then_expr = self.transpile_expr(expr[2])
-                    else_expr = self.transpile_expr(expr[3]) if len(expr) > 3 else "0"
+                    then_expr = self.transpile_expr(expr[2], expected_type)
+                    else_expr = self.transpile_expr(expr[3], expected_type) if len(expr) > 3 else "0"
                     return f"(({cond}) ? ({then_expr}) : ({else_expr}))"
 
                 # Let as expression (GCC statement expression)
@@ -2501,11 +2516,32 @@ class Transpiler:
                         if var_type.startswith('slop_map_string_'):
                             # Use typed getter: slop_map_string_X_get(&map, key)
                             return f"{var_type}_get(&{m}, {key})"
-                    # Get the option type for the return value
-                    option_type = self._get_option_c_type(expected_type)
+
+                    # Get value type from context
                     value_type = self._get_map_value_type_from_context()
+                    if value_type:
+                        value_id = self._type_to_identifier(value_type)
+                        # Check if the key is a string (String variable or literal)
+                        key_expr = expr[2]
+                        key_is_string = False
+                        if isinstance(key_expr, String):
+                            key_is_string = True
+                        elif isinstance(key_expr, Symbol) and key_expr.name in self.var_types:
+                            var_type = self.var_types[key_expr.name]
+                            key_is_string = var_type in ('slop_string', 'string', 'String')
+
+                        if key_is_string:
+                            # String-keyed map - use typed string map getter
+                            # slop_map_string_{value_id}_get(&map, key)
+                            return f"slop_map_string_{value_id}_get(&{m}, {key})"
+                        else:
+                            # Non-string-keyed maps (int-keyed), use the generated typed wrapper
+                            # map_get_ValueType(map, key) from SLOP_MAP_GET_DEFINE macro
+                            return f"map_get_{value_type}({m}, {key})"
+
+                    # Fallback: try inline with slop_map_get for string-keyed
+                    option_type = self._get_option_c_type(expected_type)
                     if option_type and value_type:
-                        # Return typed Option with value from slop_map_get
                         return f"({{ void* _v = slop_map_get(&{m}, {key}); {option_type} _r = {{ .has_value = (_v != NULL) }}; if (_v) _r.value = *({value_type}*)_v; _r; }})"
                     # Fallback to generic map_get
                     return f"slop_map_get(&{m}, {key})"
@@ -2598,14 +2634,22 @@ class Transpiler:
                     # Fallback for unknown type context
                     return f"(slop_option_ptr){{ .has_value = true, .value = {val} }}"
 
-                # List construction
+                # List construction: (list-new arena Type)
                 if op == 'list-new':
                     arena = self.transpile_expr(expr[1])
+                    # Get element type from explicit type parameter (new syntax)
+                    if len(expr) > 2:
+                        elem_type_expr = expr[2]
+                        elem_c_type = self.to_c_type(elem_type_expr)
+                        elem_id = self._type_to_identifier(elem_c_type)
+                        list_type = f"slop_list_{elem_id}"
+                        return f"(({list_type}){{ .data = ({elem_c_type}*)slop_arena_alloc({arena}, 16 * sizeof({elem_c_type})), .len = 0, .cap = 16 }})"
+                    # Fallback: try to infer from expected_type (legacy support)
                     list_type = self._get_list_c_type(expected_type)
                     elem_type = self._get_list_element_c_type(expected_type)
                     if list_type and elem_type:
                         return f"(({list_type}){{ .data = ({elem_type}*)slop_arena_alloc({arena}, 16 * sizeof({elem_type})), .len = 0, .cap = 16 }})"
-                    # Fallback for unknown type context
+                    # Ultimate fallback for unknown type context
                     return f"(slop_list_ptr){{ .data = slop_arena_alloc({arena}, 16 * sizeof(void*)), .len = 0, .cap = 16 }}"
 
                 # List push - inline implementation
@@ -2615,14 +2659,44 @@ class Transpiler:
                     # Generate inline push: list.data[list.len++] = item
                     return f"(({lst}).data[({lst}).len++] = {item})"
 
-                # Map construction
+                # List get - returns Option<T> for bounds-checked access
+                if op == 'list-get':
+                    lst = self.transpile_expr(expr[1])
+                    idx = self.transpile_expr(expr[2])
+                    # Get the Option type for the return value
+                    option_type = self._get_option_c_type(expected_type)
+                    if option_type:
+                        # Generate bounds-checked access returning Option
+                        return f"({{ __auto_type _lst = {lst}; size_t _idx = (size_t){idx}; {option_type} _r; if (_idx < _lst.len) {{ _r.has_value = true; _r.value = _lst.data[_idx]; }} else {{ _r.has_value = false; }} _r; }})"
+                    # Fallback - direct access without Option wrapper (use with care)
+                    return f"(({lst}).data[{idx}])"
+
+                # List length
+                if op == 'list-len':
+                    lst = self.transpile_expr(expr[1])
+                    return f"(({lst}).len)"
+
+                # Map construction: (map-new arena KeyType ValueType)
                 if op == 'map-new':
                     arena = self.transpile_expr(expr[1])
-                    # Check if we have expected type context for typed map construction
+                    # Get key and value types from explicit type parameters (new syntax)
+                    if len(expr) >= 4:
+                        key_type_expr = expr[2]
+                        value_type_expr = expr[3]
+                        key_c_type = self.to_c_type(key_type_expr)
+                        value_c_type = self.to_c_type(value_type_expr)
+                        key_id = self._type_to_identifier(key_c_type)
+                        value_id = self._type_to_identifier(value_c_type)
+                        # String-keyed maps use specialized runtime functions
+                        if isinstance(key_type_expr, Symbol) and key_type_expr.name == 'String':
+                            map_type = f"slop_map_string_{value_id}"
+                            return f"{map_type}_new({arena}, 16)"
+                        # Non-string-keyed maps use generic void* map
+                        return f"slop_map_new({arena}, 16)"
+                    # Fallback: try to infer from expected_type (legacy support)
                     if expected_type and is_form(expected_type, 'Map') and len(expected_type) >= 3:
                         key_type = expected_type[1]
                         if isinstance(key_type, Symbol) and key_type.name == 'String':
-                            # String-keyed map - use typed constructor
                             value_type = self.to_c_type(expected_type[2])
                             value_id = self._type_to_identifier(value_type)
                             map_type = f"slop_map_string_{value_id}"
@@ -2737,13 +2811,14 @@ class Transpiler:
 
                 # Union construction: (union-new Type Tag value?)
                 if op == 'union-new':
-                    type_name = expr[1].name
+                    raw_type_name = expr[1].name
+                    c_type_name = self.to_c_type(expr[1])  # Qualified type name
                     tag = self.to_c_name(expr[2].name)
-                    tag_const = f"{type_name}_{tag}_TAG"
+                    tag_const = f"{c_type_name}_{tag}_TAG"
                     if len(expr) > 3:
                         value = self.transpile_expr(expr[3])
-                        return f"(({type_name}){{ .tag = {tag_const}, .data.{tag} = {value} }})"
-                    return f"(({type_name}){{ .tag = {tag_const} }})"
+                        return f"(({c_type_name}){{ .tag = {tag_const}, .data.{tag} = {value} }})"
+                    return f"(({c_type_name}){{ .tag = {tag_const} }})"
 
                 if op == 'put':
                     # Functional update: (put expr field value)
@@ -2832,6 +2907,21 @@ class Transpiler:
                 if op in self.enums:
                     # Just return the enum value, ignore any "arguments"
                     return self.enums[op]
+
+                # Check if it's a record type constructor: (TypeName val1 val2 ...)
+                # Record types are in self.types and have fields in record_fields
+                if op in self.record_fields:
+                    # Get the C type name and field names
+                    c_type = self.to_c_type(Symbol(op))
+                    fields = list(self.record_fields[op].keys())
+                    args = expr.items[1:]
+                    if len(args) == len(fields):
+                        # Positional constructor: (Point x y) -> ((math_Point){.x = x, .y = y})
+                        field_inits = []
+                        for i, (fname, arg) in enumerate(zip(fields, args)):
+                            fval = self.transpile_expr(arg)
+                            field_inits.append(f".{self.to_c_name(fname)} = {fval}")
+                        return f"(({c_type}){{{', '.join(field_inits)}}})"
 
                 # Function call (user-defined or imported)
                 fn_name = self.to_qualified_c_name(op)
@@ -2962,11 +3052,23 @@ class Transpiler:
             if head == 'Map':
                 key_type = self.to_c_type(type_expr[1])
                 value_type = self.to_c_type(type_expr[2]) if len(type_expr) > 2 else 'void*'
-                key_id = self._type_to_identifier(key_type)
-                value_id = self._type_to_identifier(value_type)
-                type_name = f"slop_map_{key_id}_{value_id}"
-                self.generated_map_types.add((type_name, key_type, value_type))
-                return type_name
+
+                # Check if string-keyed map (uses typed wrapper around slop_map)
+                key_sym = type_expr[1]
+                if isinstance(key_sym, Symbol) and key_sym.name == 'String':
+                    key_id = self._type_to_identifier(key_type)
+                    value_id = self._type_to_identifier(value_type)
+                    type_name = f"slop_map_{key_id}_{value_id}"
+                    self.generated_map_types.add((type_name, key_type, value_type))
+                    return type_name
+                else:
+                    # Non-string-keyed maps use runtime's generic slop_gmap_t via void*
+                    # Still track for SLOP_MAP_GET_DEFINE generation
+                    key_id = self._type_to_identifier(key_type)
+                    value_id = self._type_to_identifier(value_type)
+                    type_name = f"slop_map_{key_id}_{value_id}"
+                    self.generated_map_types.add((type_name, key_type, value_type))
+                    return "void*"
 
             if head == 'Array':
                 # (Array T size) -> T* (pointer to first element)
@@ -3034,8 +3136,36 @@ class Transpiler:
         'slop_map_string_string', 'slop_map_string_int',  # Typed string-keyed maps
     }
 
-    def _emit_generated_types(self):
-        """Emit type definitions for generated Option/List/Result/Map types."""
+    def _type_guard_name(self, type_name: str) -> str:
+        """Generate include guard name for a generated type."""
+        return type_name.upper().replace('*', '_PTR') + '_DEFINED'
+
+    def _emit_guarded_typedef(self, type_name: str, typedef_body: str):
+        """Emit a typedef wrapped with include guards to prevent duplicate definitions."""
+        guard = self._type_guard_name(type_name)
+        self.emit(f"#ifndef {guard}")
+        self.emit(f"#define {guard}")
+        self.emit(typedef_body)
+        self.emit("#endif")
+
+    def _is_record_type(self, c_type: str) -> bool:
+        """Check if a C type name refers to a record (struct) type."""
+        # Remove pointer suffix for checking
+        base_type = c_type.rstrip('*').strip()
+        # Check if it's in our known record types
+        for type_info in self.types.values():
+            if type_info.c_type == base_type:
+                return True
+        return False
+
+    def _emit_generated_types(self, phase: str = 'all'):
+        """Emit type definitions for generated Option/List/Result/Map types.
+
+        Args:
+            phase: 'pointer' = emit List/Map (use pointers)
+                   'value' = emit Option/Result that use record values
+                   'all' = emit everything (default, for backward compat)
+        """
         if not (self.generated_option_types or self.generated_list_types or self.generated_result_types or self.generated_map_types):
             return
 
@@ -3045,56 +3175,87 @@ class Transpiler:
         # Uses same layout as SLOP_OPTION_DEFINE: { bool has_value; T value; }
         for type_name, inner in sorted(self.generated_option_types):
             if type_name not in self.RUNTIME_PREDEFINED_TYPES and type_name not in self.emitted_generated_types:
+                # Option uses inner by value. If inner is a record (not pointer), defer to 'value' phase
+                uses_record_by_value = '*' not in inner and self._is_record_type(inner)
+                if phase == 'pointer' and uses_record_by_value:
+                    continue  # Defer to value phase
+                if phase == 'value' and not uses_record_by_value:
+                    continue  # Already emitted in pointer phase
                 if not emitted_any:
                     self.emit("/* Generated generic type definitions */")
                     emitted_any = True
-                self.emit(f"typedef struct {{ bool has_value; {inner} value; }} {type_name};")
+                self._emit_guarded_typedef(type_name,
+                    f"typedef struct {{ bool has_value; {inner} value; }} {type_name};")
                 self.emitted_generated_types.add(type_name)
 
         # Emit List types (skip pre-defined and already emitted ones)
-        for type_name, inner in sorted(self.generated_list_types):
-            if type_name not in self.RUNTIME_PREDEFINED_TYPES and type_name not in self.emitted_generated_types:
-                if not emitted_any:
-                    self.emit("/* Generated generic type definitions */")
-                    emitted_any = True
-                self.emit(f"typedef struct {{ {inner}* data; size_t len; size_t cap; }} {type_name};")
-                self.emitted_generated_types.add(type_name)
+        # List uses T* (pointer), so safe in pointer phase
+        if phase in ('pointer', 'all'):
+            for type_name, inner in sorted(self.generated_list_types):
+                if type_name not in self.RUNTIME_PREDEFINED_TYPES and type_name not in self.emitted_generated_types:
+                    if not emitted_any:
+                        self.emit("/* Generated generic type definitions */")
+                        emitted_any = True
+                    self._emit_guarded_typedef(type_name,
+                        f"typedef struct {{ {inner}* data; size_t len; size_t cap; }} {type_name};")
+                    self.emitted_generated_types.add(type_name)
 
         # Emit Map types (skip pre-defined and already emitted ones)
-        for type_name, key_type, value_type in sorted(self.generated_map_types):
-            if type_name not in self.RUNTIME_PREDEFINED_TYPES and type_name not in self.emitted_generated_types:
-                if not emitted_any:
-                    self.emit("/* Generated generic type definitions */")
-                    emitted_any = True
-                # For string-keyed maps, use the SLOP_STRING_MAP_DEFINE macro
-                if key_type == 'slop_string':
-                    # Find or create the corresponding option type
-                    value_id = self._type_to_identifier(value_type)
-                    option_type = f"slop_option_{value_id}"
-                    self.emit(f"SLOP_STRING_MAP_DEFINE({value_type}, {type_name}, {option_type})")
-                else:
-                    # For non-string keys, emit custom struct
-                    self.emit(f"typedef struct {{ {key_type} key; {value_type} value; bool occupied; }} {type_name}_entry;")
-                    self.emit(f"typedef struct {{ {type_name}_entry* entries; size_t len; size_t cap; }} {type_name};")
-                self.emitted_generated_types.add(type_name)
+        # Map uses pointers in entries, so safe in pointer phase
+        if phase in ('pointer', 'all'):
+            for type_name, key_type, value_type in sorted(self.generated_map_types):
+                if type_name not in self.RUNTIME_PREDEFINED_TYPES and type_name not in self.emitted_generated_types:
+                    if not emitted_any:
+                        self.emit("/* Generated generic type definitions */")
+                        emitted_any = True
+                    # For string-keyed maps, use the SLOP_STRING_MAP_DEFINE macro
+                    if key_type == 'slop_string':
+                        # Find or create the corresponding option type
+                        value_id = self._type_to_identifier(value_type)
+                        option_type = f"slop_option_{value_id}"
+                        guard = self._type_guard_name(type_name)
+                        self.emit(f"#ifndef {guard}")
+                        self.emit(f"#define {guard}")
+                        self.emit(f"SLOP_STRING_MAP_DEFINE({value_type}, {type_name}, {option_type})")
+                        self.emit("#endif")
+                    else:
+                        # For non-string keys, emit custom struct with guards
+                        guard = self._type_guard_name(type_name)
+                        self.emit(f"#ifndef {guard}")
+                        self.emit(f"#define {guard}")
+                        self.emit(f"typedef struct {{ {key_type} key; {value_type} value; bool occupied; }} {type_name}_entry;")
+                        self.emit(f"typedef struct {{ {type_name}_entry* entries; size_t len; size_t cap; }} {type_name};")
+                        self.emit("#endif")
+                    self.emitted_generated_types.add(type_name)
 
         # Emit Result types (skip pre-defined and already emitted ones)
         # Uses same layout as SLOP_RESULT_DEFINE: { bool is_ok; union { T ok; E err; } data; }
+        # Result uses ok_type by value in union, so defer if ok_type is a record
         for type_name, ok_type, err_type in sorted(self.generated_result_types):
             if type_name not in self.RUNTIME_PREDEFINED_TYPES and type_name not in self.emitted_generated_types:
+                # Result uses ok_type by value. If ok_type is a record (not pointer/void), defer to 'value' phase
+                uses_record_by_value = ok_type != 'void' and '*' not in ok_type and self._is_record_type(ok_type)
+                if phase == 'pointer' and uses_record_by_value:
+                    continue  # Defer to value phase
+                if phase == 'value' and not uses_record_by_value:
+                    continue  # Already emitted in pointer phase
                 if not emitted_any:
                     self.emit("/* Generated generic type definitions */")
                     emitted_any = True
                 # Handle void/Unit ok type specially - can't have void in union
                 if ok_type == 'void':
-                    self.emit(f"typedef struct {{ bool is_ok; union {{ uint8_t ok; {err_type} err; }} data; }} {type_name};")
+                    self._emit_guarded_typedef(type_name,
+                        f"typedef struct {{ bool is_ok; union {{ uint8_t ok; {err_type} err; }} data; }} {type_name};")
                 else:
-                    self.emit(f"typedef struct {{ bool is_ok; union {{ {ok_type} ok; {err_type} err; }} data; }} {type_name};")
+                    self._emit_guarded_typedef(type_name,
+                        f"typedef struct {{ bool is_ok; union {{ {ok_type} ok; {err_type} err; }} data; }} {type_name};")
                 self.emitted_generated_types.add(type_name)
 
         if emitted_any:
             self.emit("")
 
+    def _emit_map_wrappers(self):
+        """Emit map operation wrappers (should go in implementation file, not header)."""
         # Emit typed map operation wrappers for each Option/List type
         # NOTE: Only emit for non-pointer types since the runtime's slop_map_get uses string keys
         # Pointer types would need a different map implementation
@@ -3278,18 +3439,19 @@ def transpile_multi(modules: dict, order: list) -> str:
     transpiler.emit('#include <stdbool.h>')
     transpiler.emit("")
 
-    # Collect all FFI includes from all modules
+    # Collect all FFI includes from all modules (both ffi and ffi-struct)
     ffi_includes = set()
     for name in order:
         info = modules[name]
         for form in info.ast:
             if is_form(form, 'module'):
                 for item in form.items[2:]:
-                    if is_form(item, 'ffi') and len(item) > 1:
+                    # Check both ffi and ffi-struct
+                    if (is_form(item, 'ffi') or is_form(item, 'ffi-struct')) and len(item) > 1:
                         from slop.parser import String
                         if isinstance(item[1], String):
                             ffi_includes.add(item[1].value)
-            elif is_form(form, 'ffi') and len(form) > 1:
+            elif (is_form(form, 'ffi') or is_form(form, 'ffi-struct')) and len(form) > 1:
                 from slop.parser import String
                 if isinstance(form[1], String):
                     ffi_includes.add(form[1].value)
@@ -3374,9 +3536,10 @@ def transpile_multi(modules: dict, order: list) -> str:
             transpiler._scan_function_types(fn)
 
         # Emit types in order to resolve dependencies:
-        # 1. Enums and range types first (generated types may reference these)
-        # 2. Generated types (struct bodies may use these as field types)
-        # 3. Record/union bodies (may contain generated type fields)
+        # 1. Enums and range types first
+        # 2. Simple records (no generated type fields) - needed by generated types
+        # 3. Generated types (Option, List, Result, Map)
+        # 4. Complex records (with generated type fields)
 
         # Phase 1: Emit enums and range types
         for t in types:
@@ -3384,14 +3547,31 @@ def transpile_multi(modules: dict, order: list) -> str:
             if type_expr and (is_form(type_expr, 'enum') or not is_form(type_expr, 'record') and not is_form(type_expr, 'union')):
                 transpiler.transpile_type(t)
 
-        # Phase 2: Emit generated types
-        transpiler._emit_generated_types()
-
-        # Phase 3: Emit record and union bodies
+        # Split records into simple (no generated type fields) and complex
+        simple_records = []
+        complex_records = []
         for t in types:
             type_expr = t[2] if len(t) > 2 else None
-            if type_expr and (is_form(type_expr, 'record') or is_form(type_expr, 'union')):
-                transpiler.transpile_type(t)
+            if type_expr and is_form(type_expr, 'record'):
+                # Pass full type form (t), not just record expr (type_expr)
+                if transpiler._record_uses_generated_types(t):
+                    complex_records.append(t)
+                else:
+                    simple_records.append(t)
+            elif type_expr and is_form(type_expr, 'union'):
+                # Unions always go to complex for safety
+                complex_records.append(t)
+
+        # Phase 2: Emit simple records (generated types may wrap these)
+        for t in simple_records:
+            transpiler.transpile_type(t)
+
+        # Phase 3: Emit generated types
+        transpiler._emit_generated_types()
+
+        # Phase 4: Emit complex records and unions
+        for t in complex_records:
+            transpiler.transpile_type(t)
 
         # Emit function forward declarations
         if functions:
@@ -3405,6 +3585,231 @@ def transpile_multi(modules: dict, order: list) -> str:
             transpiler.transpile_function(fn)
 
     return '\n'.join(transpiler.output)
+
+
+def transpile_multi_split(modules: dict, order: list) -> dict:
+    """Transpile multiple modules to separate header/implementation pairs.
+
+    Args:
+        modules: Dict mapping module name to ModuleInfo
+        order: List of module names in topological order (dependencies first)
+
+    Returns:
+        Dict mapping module_name -> (header_code, impl_code)
+    """
+    from slop.parser import is_form, String
+
+    results = {}
+
+    # Accumulate enum definitions from all modules for cross-module lookup
+    all_enums = {}
+
+    for mod_name in order:
+        info = modules[mod_name]
+
+        # Create fresh transpiler for this module
+        transpiler = Transpiler()
+        transpiler.enable_prefixing = True
+
+        # Copy enum definitions from previously processed modules
+        transpiler.enums.update(all_enums)
+
+        # Set up module context with imports
+        imports = []
+        for imp in info.imports:
+            imports.append((imp.module_name, imp.symbols))
+        transpiler.setup_module_context(mod_name, imports)
+
+        # Get module forms (handle both wrapped and unwrapped)
+        module_forms = info.ast
+        for form in info.ast:
+            if is_form(form, 'module'):
+                module_forms = list(form.items[2:])
+                break
+
+        # Collect FFI includes for this module
+        ffi_includes = set()
+        for form in module_forms:
+            if is_form(form, 'ffi') and len(form) > 1:
+                if isinstance(form[1], String):
+                    ffi_includes.add(form[1].value)
+            elif is_form(form, 'ffi-struct') and len(form) > 1:
+                if isinstance(form[1], String):
+                    ffi_includes.add(form[1].value)
+
+        # Register FFI functions and structs
+        for form in module_forms:
+            if is_form(form, 'ffi'):
+                transpiler._register_ffi(form)
+            elif is_form(form, 'ffi-struct'):
+                transpiler._register_ffi_struct(form)
+
+        # Scan FFI function return types to discover Result/Option/List types
+        for func_info in transpiler.ffi_funcs.values():
+            if func_info.get('return_type'):
+                transpiler.to_c_type(func_info['return_type'])
+
+        # Collect types, functions, and constants
+        types = []
+        functions = []
+        constants = []
+        for form in module_forms:
+            if is_form(form, 'type'):
+                types.append(form)
+            elif is_form(form, 'fn'):
+                functions.append(form)
+            elif is_form(form, 'const'):
+                constants.append(form)
+
+        # Register record types early for forward references
+        record_types = []
+        for t in types:
+            if len(t) > 2 and is_form(t[2], 'record'):
+                type_name = t[1].name
+                c_type_name = f"{transpiler.to_c_name(mod_name)}_{transpiler.to_c_name(type_name)}"
+                record_types.append(c_type_name)
+                transpiler.types[type_name] = TypeInfo(name=type_name, c_type=c_type_name)
+
+        # Pre-scan types to discover needed generated types
+        for t in types:
+            if len(t) > 2 and is_form(t[2], 'record'):
+                record_def = t[2]
+                for field in record_def.items[1:]:
+                    if isinstance(field, SList) and len(field) >= 2:
+                        transpiler.to_c_type(field[1])
+            elif len(t) > 2 and is_form(t[2], 'union'):
+                union_def = t[2]
+                for variant in union_def.items[1:]:
+                    if isinstance(variant, SList) and len(variant) >= 2:
+                        transpiler.to_c_type(variant[1])
+
+        # Pre-scan function signatures
+        for fn in functions:
+            transpiler._scan_function_types(fn)
+
+        # ===== BUILD HEADER FILE =====
+        header_lines = []
+        guard_name = f"{mod_name.upper()}_H"
+
+        header_lines.append(f"#ifndef {guard_name}")
+        header_lines.append(f"#define {guard_name}")
+        header_lines.append("")
+        header_lines.append('#include "slop_runtime.h"')
+        header_lines.append('#include <stdint.h>')
+        header_lines.append('#include <stdbool.h>')
+
+        # FFI includes
+        for header in sorted(ffi_includes):
+            header_lines.append(f'#include <{header}>')
+
+        # Dependency headers
+        for imp in info.imports:
+            header_lines.append(f'#include "{imp.module_name}.h"')
+
+        header_lines.append("")
+
+        # Forward declarations for record types
+        if record_types:
+            for c_type_name in record_types:
+                header_lines.append(f"typedef struct {c_type_name} {c_type_name};")
+            header_lines.append("")
+
+        # Emit enums and range types to header
+        transpiler.output = []
+        for t in types:
+            type_expr = t[2] if len(t) > 2 else None
+            if type_expr and (is_form(type_expr, 'enum') or
+                              (not is_form(type_expr, 'record') and not is_form(type_expr, 'union'))):
+                transpiler.transpile_type(t)
+        if transpiler.output:
+            header_lines.extend(transpiler.output)
+            header_lines.append("")
+
+        # Split records into simple (no generated type fields) and complex
+        simple_records = []
+        complex_records = []
+        for t in types:
+            type_expr = t[2] if len(t) > 2 else None
+            if type_expr and is_form(type_expr, 'record'):
+                if transpiler._record_uses_generated_types(t):
+                    complex_records.append(t)
+                else:
+                    simple_records.append(t)
+            elif type_expr and is_form(type_expr, 'union'):
+                complex_records.append(t)
+
+        # Emit simple record bodies first
+        transpiler.output = []
+        for t in simple_records:
+            transpiler.transpile_type(t)
+        if transpiler.output:
+            header_lines.extend(transpiler.output)
+            header_lines.append("")
+
+        # Emit generated types that use pointers (List, Map, Option<ptr>, Result<ptr,...>)
+        transpiler.output = []
+        transpiler._emit_generated_types(phase='pointer')
+        if transpiler.output:
+            header_lines.extend(transpiler.output)
+
+        # Emit complex record and union bodies (use generated pointer types)
+        transpiler.output = []
+        for t in complex_records:
+            transpiler.transpile_type(t)
+        if transpiler.output:
+            header_lines.extend(transpiler.output)
+            header_lines.append("")
+
+        # Emit generated types that use record values (Option<Record>, Result<Record,...>)
+        transpiler.output = []
+        transpiler._emit_generated_types(phase='value')
+        if transpiler.output:
+            header_lines.extend(transpiler.output)
+
+        # Emit constants as #define to header
+        transpiler.output = []
+        for const in constants:
+            transpiler.transpile_const(const)
+        if transpiler.output:
+            header_lines.extend(transpiler.output)
+
+        # Function prototypes
+        if functions:
+            header_lines.append("")
+            header_lines.append("/* Function prototypes */")
+            transpiler.output = []
+            for fn in functions:
+                transpiler.emit_forward_declaration(fn)
+            header_lines.extend(transpiler.output)
+
+        header_lines.append("")
+        header_lines.append(f"#endif /* {guard_name} */")
+
+        # ===== BUILD IMPLEMENTATION FILE =====
+        impl_lines = []
+        impl_lines.append(f'#include "{mod_name}.h"')
+        impl_lines.append("")
+
+        # Map operation wrappers
+        transpiler.output = []
+        transpiler._emit_map_wrappers()
+        if transpiler.output:
+            impl_lines.extend(transpiler.output)
+            impl_lines.append("")
+
+        # Function bodies
+        transpiler.output = []
+        for fn in functions:
+            transpiler.transpile_function(fn)
+        if transpiler.output:
+            impl_lines.extend(transpiler.output)
+
+        results[mod_name] = ('\n'.join(header_lines), '\n'.join(impl_lines))
+
+        # Accumulate enum definitions for subsequent modules
+        all_enums.update(transpiler.enums)
+
+    return results
 
 
 if __name__ == '__main__':

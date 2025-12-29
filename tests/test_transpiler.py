@@ -49,6 +49,105 @@ class TestTypeDefinitions:
         assert '.x = 1' in result
         assert '.y = 2' in result
 
+    def test_record_positional_constructor(self):
+        """Test (TypeName val1 val2) generates C struct literal, not function call."""
+        source = '''
+        (module test
+          (type Point (record (x Int) (y Int)))
+          (fn make-point ((x Int) (y Int))
+            (@intent "Create a point")
+            (@spec ((Int Int) -> Point))
+            (Point x y)))
+        '''
+        result = transpile(source)
+        # Should generate C struct literal with designated initializers
+        assert '.x = x' in result
+        assert '.y = y' in result
+        # Should NOT generate a function call
+        assert 'test_Point(x, y)' not in result
+        assert 'Point(x, y)' not in result
+
+    def test_record_positional_constructor_with_expressions(self):
+        """Test positional constructor with complex expressions."""
+        source = '''
+        (module test
+          (type Point (record (x Int) (y Int)))
+          (fn make-doubled-point ((a Int) (b Int))
+            (@intent "Create a point with doubled values")
+            (@spec ((Int Int) -> Point))
+            (Point (* a 2) (+ b 1))))
+        '''
+        result = transpile(source)
+        # Should generate struct literal with expressions
+        assert '.x = (a * 2)' in result
+        assert '.y = (b + 1)' in result
+
+
+class TestOptionType:
+    """Test Option type transpilation"""
+
+    def test_none_symbol_in_if_expression(self):
+        """Test that 'none' as a symbol generates proper Option struct literal."""
+        source = '''
+        (module test
+          (fn safe-div ((a Int) (b Int))
+            (@intent "Safe division")
+            (@spec ((Int Int) -> (Option Int)))
+            (if (== b 0)
+                none
+                (some (/ a b)))))
+        '''
+        result = transpile(source)
+        # Should generate proper struct literal for none
+        assert '{ .has_value = false }' in result
+        # Should NOT have bare 'none' identifier
+        assert 'return' in result and 'none;' not in result
+
+    def test_some_with_value(self):
+        """Test that (some val) generates proper Option struct literal."""
+        source = '''
+        (module test
+          (fn make-some ((x Int))
+            (@intent "Wrap in Some")
+            (@spec ((Int) -> (Option Int)))
+            (some x)))
+        '''
+        result = transpile(source)
+        assert '{ .has_value = true' in result
+        assert '.value = x' in result
+
+
+class TestCollectionTypes:
+    """Test List and Map type transpilation"""
+
+    def test_list_new_with_type_parameter(self):
+        """Test (list-new arena Type) generates properly typed list."""
+        source = '''
+        (module test
+          (fn make-list ((arena Arena))
+            (@intent "Create an int list")
+            (@spec ((Arena) -> (List Int)))
+            (list-new arena Int)))
+        '''
+        result = transpile(source)
+        # Should generate typed list struct
+        assert 'slop_list_int64_t' in result
+        # Should cast data pointer to element type
+        assert 'int64_t*)slop_arena_alloc' in result
+
+    def test_map_new_with_type_parameters(self):
+        """Test (map-new arena KeyType ValueType) generates properly typed map."""
+        source = '''
+        (module test
+          (fn make-map ((arena Arena))
+            (@intent "Create a string->int map")
+            (@spec ((Arena) -> (Map String Int)))
+            (map-new arena String Int)))
+        '''
+        result = transpile(source)
+        # Should generate typed map constructor
+        assert 'slop_map_string_int64_t_new' in result
+
 
 class TestFunctionTranspilation:
     """Test function transpilation"""

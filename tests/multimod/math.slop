@@ -1,0 +1,51 @@
+(module math
+  (export add double Point make-point point-sum Direction direction-value safe-div list-size)
+
+  ;; Simple record type
+  (type Point (record
+    (x Int)
+    (y Int)))
+
+  ;; Simple enum type
+  (type Direction (enum north south east west))
+
+  (fn add ((a Int) (b Int))
+    (@intent "Add two integers")
+    (@spec ((Int Int) -> Int))
+    (+ a b))
+
+  (fn double ((x Int))
+    (@intent "Double a number")
+    (@spec ((Int) -> Int))
+    (* x 2))
+
+  (fn make-point ((x Int) (y Int))
+    (@intent "Create a point")
+    (@spec ((Int Int) -> Point))
+    (Point x y))
+
+  (fn point-sum ((p Point))
+    (@intent "Sum x and y of a point")
+    (@spec ((Point) -> Int))
+    (+ (. p x) (. p y)))
+
+  (fn direction-value ((d Direction))
+    (@intent "Get numeric value for direction")
+    (@spec ((Direction) -> Int))
+    (match d
+      (north 1)
+      (south 2)
+      (east 3)
+      (west 4)))
+
+  (fn safe-div ((a Int) (b Int))
+    (@intent "Safe division that returns None on divide by zero")
+    (@spec ((Int Int) -> (Option Int)))
+    (if (== b 0)
+        none
+        (some (/ a b))))
+
+  (fn list-size ((lst (List Int)))
+    (@intent "Get list length")
+    (@spec (((List Int)) -> Int))
+    (list-len lst)))

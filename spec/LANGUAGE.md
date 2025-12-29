@@ -516,15 +516,15 @@ Minimal runtime (~500 lines of C):
 (string-slice s start end) -> (Slice U8)
 (string-split arena s delimiter) -> (List String)  ; delimiter must be single char
 
-; Lists
-(list-new arena) -> (List T)
-(list-push arena list item) -> Unit
+; Lists (homogeneous, type-safe)
+(list-new arena Type) -> (List Type)   ; Type parameter required for type safety
+(list-push list item) -> Unit
 (list-get list index) -> (Option T)
 (list-len list) -> (Int 0 ..)
 
-; Maps
-(map-new arena) -> (Map K V)
-(map-put arena map key val) -> Unit
+; Maps (homogeneous, type-safe)
+(map-new arena KeyType ValueType) -> (Map KeyType ValueType)  ; Type parameters required
+(map-put map key val) -> Unit
 (map-get map key) -> (Option V)
 (map-has map key) -> Bool
 

@@ -1,0 +1,11 @@
+(module native
+  (export get-time)
+
+  ;; FFI declaration for time.h
+  (ffi "time.h"
+    (time (((Ptr Int)) -> Int)))
+
+  (fn get-time ()
+    (@intent "Get current Unix timestamp")
+    (@spec (() -> Int))
+    (time nil)))

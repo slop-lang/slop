@@ -107,12 +107,53 @@ def cmd_parse(args):
 
 
 def cmd_transpile(args):
-    """Transpile SLOP to C"""
-    try:
-        with open(args.input) as f:
-            source = f.read()
+    """Transpile SLOP to C (single or multi-module)"""
+    import os
+    from slop.transpiler import transpile_multi_split
 
-        c_code = transpile(source)
+    try:
+        input_path = Path(args.input)
+
+        # Parse entry file to check for imports
+        with open(input_path) as f:
+            source = f.read()
+        ast = parse(source)
+
+        if _has_imports(ast):
+            # Multi-module path
+            search_paths = [Path(p) for p in args.include]
+            resolver = ModuleResolver(search_paths)
+
+            graph = resolver.build_dependency_graph(input_path)
+            errors = resolver.validate_imports(graph)
+            if errors:
+                for e in errors:
+                    print(f"Import error: {e}", file=sys.stderr)
+                return 1
+
+            order = resolver.topological_sort(graph)
+
+            # Check if output is a directory (ends with /)
+            if args.output and args.output.endswith('/'):
+                # Multi-file output: separate .h/.c per module
+                os.makedirs(args.output, exist_ok=True)
+                results = transpile_multi_split(graph.modules, order)
+                for mod_name, (header, impl) in results.items():
+                    header_path = os.path.join(args.output, f"{mod_name}.h")
+                    impl_path = os.path.join(args.output, f"{mod_name}.c")
+                    with open(header_path, 'w') as f:
+                        f.write(header)
+                    with open(impl_path, 'w') as f:
+                        f.write(impl)
+                    print(f"Wrote {header_path}")
+                    print(f"Wrote {impl_path}")
+                return 0
+            else:
+                # Single combined file output
+                c_code = transpile_multi(graph.modules, order)
+        else:
+            # Single-file path (backward compatible)
+            c_code = transpile(source)
 
         if args.output:
             with open(args.output, 'w') as f:
@@ -122,6 +163,9 @@ def cmd_transpile(args):
             print(c_code)
 
         return 0
+    except ResolverError as e:
+        print(f"Module resolution error: {e}", file=sys.stderr)
+        return 1
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -1288,6 +1332,8 @@ def main():
     p = subparsers.add_parser('transpile', help='Convert to C')
     p.add_argument('input')
     p.add_argument('-o', '--output')
+    p.add_argument('-I', '--include', action='append', default=[],
+                   help='Add search path for module imports')
 
     # fill
     p = subparsers.add_parser('fill', help='Fill holes with LLM')

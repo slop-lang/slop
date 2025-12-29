@@ -1,0 +1,22 @@
+(module main
+  (import math (add double Point make-point point-sum Direction direction-value safe-div list-size))
+  (import native (get-time))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((p (make-point 10 20))
+            (d 'east)
+            (result (safe-div 100 5))
+            (nums (list-new arena Int))
+            (timestamp (get-time)))  ;; FFI call from another module
+        ;; Add 3 numbers, list-size should return 3
+        (list-push nums 1)
+        (list-push nums 2)
+        (list-push nums 3)
+        ;; Use timestamp > 0 as a sanity check (adds 1 if timestamp positive)
+        (match result
+          ((some val) (+ (+ (+ (+ (point-sum p) (direction-value d)) val) (list-size nums))
+                         (if (> timestamp 0) 1 0)))
+          (none 0))))))
