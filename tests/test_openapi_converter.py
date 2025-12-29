@@ -122,8 +122,8 @@ class TestOpenApiConverter:
         assert "(body (Ptr CreateUser))" in output
         # Check precondition for body
         assert "(@pre (!= body nil))" in output
-        # Check must-use
-        assert ":must-use (body)" in output
+        # Check context
+        assert ":context (body)" in output
 
     def test_error_type_generation(self):
         spec = {
@@ -340,7 +340,7 @@ class TestSlopFunctionOutput:
             intent="Get user by ID",
             hole_prompt="Fetch user from storage",
             hole_tier="tier-1",
-            must_use=["id"],
+            context=["id"],
             preconditions=["(>= id 1)"],
             postconditions=["(match $result ((ok u) (!= u nil)) ((error _) true))"],
             examples=[("42", "(ok user-42)")]
@@ -355,7 +355,7 @@ class TestSlopFunctionOutput:
         assert "(@post (match $result" in output
         assert "(@example 42 -> (ok user-42))" in output
         assert ':complexity tier-1' in output
-        assert ':must-use (id)' in output
+        assert ':context (id)' in output
 
     def test_function_without_optional_annotations(self):
         fn = SlopFunction(

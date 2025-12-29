@@ -89,8 +89,10 @@ def cmd_parse(args):
                     print(f"Hole: {info.prompt}")
                     print(f"  Type: {info.type_expr}")
                     print(f"  Tier: {tier.name}")
-                    if info.must_use:
-                        print(f"  Must use: {', '.join(info.must_use)}")
+                    if info.context:
+                        print(f"  Context: {', '.join(info.context)}")
+                    if info.required:
+                        print(f"  Required: {', '.join(info.required)}")
                     print()
             print(f"Found {total} holes", file=sys.stderr)
         else:
@@ -105,12 +107,53 @@ def cmd_parse(args):
 
 
 def cmd_transpile(args):
-    """Transpile SLOP to C"""
-    try:
-        with open(args.input) as f:
-            source = f.read()
+    """Transpile SLOP to C (single or multi-module)"""
+    import os
+    from slop.transpiler import transpile_multi_split
 
-        c_code = transpile(source)
+    try:
+        input_path = Path(args.input)
+
+        # Parse entry file to check for imports
+        with open(input_path) as f:
+            source = f.read()
+        ast = parse(source)
+
+        if _has_imports(ast):
+            # Multi-module path
+            search_paths = [Path(p) for p in args.include]
+            resolver = ModuleResolver(search_paths)
+
+            graph = resolver.build_dependency_graph(input_path)
+            errors = resolver.validate_imports(graph)
+            if errors:
+                for e in errors:
+                    print(f"Import error: {e}", file=sys.stderr)
+                return 1
+
+            order = resolver.topological_sort(graph)
+
+            # Check if output is a directory (ends with /)
+            if args.output and args.output.endswith('/'):
+                # Multi-file output: separate .h/.c per module
+                os.makedirs(args.output, exist_ok=True)
+                results = transpile_multi_split(graph.modules, order)
+                for mod_name, (header, impl) in results.items():
+                    header_path = os.path.join(args.output, f"{mod_name}.h")
+                    impl_path = os.path.join(args.output, f"{mod_name}.c")
+                    with open(header_path, 'w') as f:
+                        f.write(header)
+                    with open(impl_path, 'w') as f:
+                        f.write(impl)
+                    print(f"Wrote {header_path}")
+                    print(f"Wrote {impl_path}")
+                return 0
+            else:
+                # Single combined file output
+                c_code = transpile_multi(graph.modules, order)
+        else:
+            # Single-file path (backward compatible)
+            c_code = transpile(source)
 
         if args.output:
             with open(args.output, 'w') as f:
@@ -120,6 +163,9 @@ def cmd_transpile(args):
             print(c_code)
 
         return 0
+    except ResolverError as e:
+        print(f"Module resolution error: {e}", file=sys.stderr)
+        return 1
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -900,8 +946,8 @@ def cmd_check(args):
             for h in holes:
                 info = extract_hole(h)
                 errors.append(f"Unfilled hole: {info.prompt}")
-                if not info.must_use:
-                    warnings.append(f"Hole missing :must-use - add for better LLM context: {info.prompt[:50]}...")
+                if not info.context:
+                    warnings.append(f"Hole missing :context - add for better LLM guidance: {info.prompt[:50]}...")
 
             if is_form(form, 'fn') or is_form(form, 'impl'):
                 has_intent = any(is_form(item, '@intent') for item in form.items)
@@ -1039,9 +1085,81 @@ def cmd_build(args):
             else:
                 print("  Type check passed")
 
-            # Transpile all modules
+            # Transpile all modules to separate files
             print("  Transpiling to C...")
-            c_code = transpile_multi(graph.modules, order)
+            from slop.transpiler import transpile_multi_split
+            import tempfile
+            import subprocess
+
+            results = transpile_multi_split(graph.modules, order)
+
+            # Write to temp directory and compile
+            runtime_path = _get_runtime_path()
+            library_mode = getattr(args, 'library', None)
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                c_files = []
+                for mod_name, (header, impl) in results.items():
+                    header_path = os.path.join(tmpdir, f"{mod_name}.h")
+                    impl_path = os.path.join(tmpdir, f"{mod_name}.c")
+                    with open(header_path, 'w') as f:
+                        f.write(header)
+                    with open(impl_path, 'w') as f:
+                        f.write(impl)
+                    c_files.append(impl_path)
+
+                print("  Compiling...")
+
+                if library_mode == 'static':
+                    # Compile to object files, then create static library
+                    obj_files = []
+                    for c_file in c_files:
+                        obj_file = c_file.replace('.c', '.o')
+                        compile_cmd = ["cc", "-c", "-O2", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
+                        if args.debug:
+                            compile_cmd.insert(1, "-g")
+                            compile_cmd.insert(2, "-DSLOP_DEBUG")
+                        result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                        if result.returncode != 0:
+                            print(f"Compilation failed:\n{result.stderr}")
+                            return 1
+                        obj_files.append(obj_file)
+
+                    lib_file = f"{output}.a"
+                    ar_cmd = ["ar", "rcs", lib_file] + obj_files
+                    result = subprocess.run(ar_cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"Archive failed:\n{result.stderr}")
+                        return 1
+                    print(f"✓ Built {lib_file}")
+
+                elif library_mode == 'shared':
+                    ext = ".dylib" if sys.platform == "darwin" else ".so"
+                    lib_file = f"{output}{ext}"
+                    compile_cmd = ["cc", "-shared", "-fPIC", "-O2", "-I", str(runtime_path), "-I", tmpdir,
+                                  "-o", lib_file] + c_files
+                    if args.debug:
+                        compile_cmd.insert(1, "-g")
+                        compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"Compilation failed:\n{result.stderr}")
+                        return 1
+                    print(f"✓ Built {lib_file}")
+
+                else:
+                    # Default: build executable
+                    compile_cmd = ["cc", "-O2", "-I", str(runtime_path), "-I", tmpdir, "-o", output] + c_files
+                    if args.debug:
+                        compile_cmd.insert(1, "-g")
+                        compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                    if result.returncode != 0:
+                        print(f"Compilation failed:\n{result.stderr}")
+                        return 1
+                    print(f"✓ Built {output}")
+
+            return 0
 
         else:
             # Single-file build (backward compatible)
@@ -1286,6 +1404,8 @@ def main():
     p = subparsers.add_parser('transpile', help='Convert to C')
     p.add_argument('input')
     p.add_argument('-o', '--output')
+    p.add_argument('-I', '--include', action='append', default=[],
+                   help='Add search path for module imports')
 
     # fill
     p = subparsers.add_parser('fill', help='Fill holes with LLM')

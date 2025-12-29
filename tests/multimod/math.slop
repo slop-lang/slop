@@ -1,0 +1,176 @@
+(module math
+  (export add double Point make-point point-sum Direction direction-value safe-div list-size sum-first-n first-or-zero Score find-first-above count-map-entries Container make-container container-first Item make-item-list item-list-first test-map-ptr safe-sqrt make-pair)
+
+  ;; Level 9: Type alias for cross-module use
+  (type Score (Int 0 .. 100))
+
+  ;; Simple record type
+  (type Point (record
+    (x Int)
+    (y Int)))
+
+  ;; Simple enum type
+  (type Direction (enum north south east west))
+
+  (fn add ((a Int) (b Int))
+    (@intent "Add two integers")
+    (@spec ((Int Int) -> Int))
+    (+ a b))
+
+  (fn double ((x Int))
+    (@intent "Double a number")
+    (@spec ((Int) -> Int))
+    (* x 2))
+
+  (fn make-point ((x Int) (y Int))
+    (@intent "Create a point")
+    (@spec ((Int Int) -> Point))
+    (Point x y))
+
+  (fn point-sum ((p Point))
+    (@intent "Sum x and y of a point")
+    (@spec ((Point) -> Int))
+    (+ (. p x) (. p y)))
+
+  (fn direction-value ((d Direction))
+    (@intent "Get numeric value for direction")
+    (@spec ((Direction) -> Int))
+    (match d
+      ('north 1)
+      ('south 2)
+      ('east 3)
+      ('west 4)))
+
+  (fn safe-div ((a Int) (b Int))
+    (@intent "Safe division that returns None on divide by zero")
+    (@spec ((Int Int) -> (Option Int)))
+    (if (== b 0)
+        (none)
+        (some (/ a b))))
+
+  (fn list-size ((lst (List Int)))
+    (@intent "Get list length")
+    (@spec (((List Int)) -> Int))
+    (list-len lst))
+
+  ;; Level 7: list-get with match
+  (fn sum-first-n ((lst (List Int)) (n Int))
+    (@intent "Sum first n elements")
+    (@spec (((List Int) Int) -> Int))
+    (let ((total 0)
+          (len (list-len lst)))
+      (for (i 0 n)
+        (if (< i len)
+          (match (list-get lst i)
+            ((some val) (set! total (+ total val)))
+            ((none) ()))))
+      total))
+
+  ;; Level 8: unwrap on Option
+  (fn first-or-zero ((lst (List Int)))
+    (@intent "Get first element or 0")
+    (@spec (((List Int)) -> Int))
+    (if (> (list-len lst) 0)
+      (unwrap (list-get lst 0))
+      0))
+
+  ;; Level 10: match in while condition
+  (fn find-first-above ((lst (List Int)) (threshold Int))
+    (@intent "Find first element above threshold")
+    (@spec (((List Int) Int) -> (Option Int)))
+    (let ((i 0)
+          (len (list-len lst))
+          (result (none)))
+      (while (and (< i len) (match result ((none) true) (else false)))
+        (match (list-get lst i)
+          ((some val)
+            (if (> val threshold)
+              (set! result (some val))
+              (set! i (+ i 1))))
+          ((none) (set! i (+ i 1)))))
+      result))
+
+  ;; Level 11: Map with Ptr param
+  (fn count-map-entries ((m (Ptr (Map String Int))))
+    (@intent "Count map entries")
+    (@spec (((Ptr (Map String Int))) -> Int))
+    ;; Just return 1 for now (simplified test)
+    1)
+
+  ;; Level 12: Record with list field
+  (type Container (record
+    (items (List Int))
+    (count Int)))
+
+  (fn make-container ((arena Arena))
+    (@intent "Create a container with items")
+    (@spec ((Arena) -> (Ptr Container)))
+    (let ((c (arena-alloc arena Container)))
+      (set! (. c items) (list-new arena Int))
+      (set! (. c count) 0)
+      (list-push (. c items) 10)
+      (list-push (. c items) 20)
+      (set! (. c count) 2)
+      c))
+
+  ;; Level 12: list-get on field access
+  (fn container-first ((c (Ptr Container)))
+    (@intent "Get first item from container")
+    (@spec (((Ptr Container)) -> Int))
+    (let ((items (. c items)))
+      (match (list-get items 0)
+        ((some v) v)
+        (none 0))))
+
+  ;; Level 13: list-get on list of custom records
+  (type Item (record
+    (id Int)
+    (value Int)))
+
+  (fn make-item-list ((arena Arena))
+    (@intent "Create a list of items")
+    (@spec ((Arena) -> (List Item)))
+    (let ((items (list-new arena Item)))
+      (list-push items (Item 1 100))
+      (list-push items (Item 2 200))
+      items))
+
+  ;; Level 13: list-get on custom record list
+  (fn item-list-first ((items (List Item)))
+    (@intent "Get value of first item")
+    (@spec (((List Item)) -> Int))
+    (match (list-get items 0)
+      ((some item) (. item value))
+      (none 0)))
+
+  ;; Level 14: map-put on pointer to string-keyed map
+  ;; Tests: Ptr Map type tracking in _get_type_name, typed map-put generation
+  (fn add-to-map-ptr ((arena Arena) (m (Ptr (Map String String))) (key String) (val String))
+    (@intent "Add key-value pair to a map via pointer")
+    (@spec ((Arena (Ptr (Map String String)) String String) -> Int))
+    (map-put m key val)
+    1)
+
+  ;; Level 14: helper to test add-to-map-ptr
+  (fn test-map-ptr ((arena Arena))
+    (@intent "Test map operations via pointer")
+    (@spec ((Arena) -> Int))
+    (let ((m (map-new arena String String)))
+      (add-to-map-ptr arena (addr m) "test" "value")
+      1))
+
+  ;; Level 15: Result type with match bindings
+  (fn safe-sqrt ((x Int))
+    (@intent "Safe sqrt that returns error for negative")
+    (@spec ((Int) -> (Result Int String)))
+    (if (>= x 0)
+      (ok x)
+      (error "negative")))
+
+  ;; Level 16: Inline record type in Result
+  (fn make-pair ((a Int) (b Int))
+    (@intent "Create a pair as inline record in Result")
+    (@spec ((Int Int) -> (Result (record (first Int) (second Int)) String)))
+    (if (> a 0)
+      (ok (record-new (record (first Int) (second Int)) (first a) (second b)))
+      (error "a must be positive"))))

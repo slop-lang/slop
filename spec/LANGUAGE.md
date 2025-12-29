@@ -228,6 +228,7 @@ identifier               ; Variable reference
 (put expr field value)           ; Functional update (returns new)
 (set! expr field value)          ; Mutation (modifies in place)
 (deref ptr)                      ; Dereference pointer: (Ptr T) -> T
+(addr expr)                      ; Address-of: T -> (Ptr T)
 
 ; Field Access Semantics:
 ; The transpiler automatically selects -> vs . based on pointer tracking:
@@ -272,7 +273,8 @@ identifier               ; Variable reference
 (hole Type "prompt"
   :constraints (expr...)
   :examples ((input...) -> output)...
-  :must-use (identifier...)
+  :context (identifier...)      ; Whitelist of available identifiers
+  :required (identifier...)     ; Identifiers that must appear in output
   :complexity tier)
 
 ; Complexity tiers
@@ -323,8 +325,8 @@ before code can be filled or compiled. This is used by code generators (like
 1. **LLM/Claude Code**: When `:prompt` is present, the LLM should ask the user
    which option they prefer and generate appropriate code based on choice
 2. **`slop fill`**: Warns if unresolved `@requires` exist and suggests resolution
-3. **Type checker**: Can verify that `:must-use` in holes references functions
-   declared in `@requires`
+3. **Type checker**: Can verify that `:context` and `:required` in holes reference
+   functions declared in `@requires`
 
 ### 3.9 Patterns
 
@@ -349,6 +351,9 @@ are bindings (capture the value), not value matches.
   ('Buzz (println "Buzz"))     ; Match enum value Buzz
   (_ (println "other")))       ; Wildcard
 ```
+
+**Exhaustiveness**: Match expressions must be exhaustive—all variants of the
+matched type must be covered, or a wildcard (`_` or `else`) must be present.
 
 ## 4. Module System
 
@@ -513,16 +518,17 @@ Minimal runtime (~500 lines of C):
 (string-concat arena a b) -> String
 (string-eq a b) -> Bool
 (string-slice s start end) -> (Slice U8)
+(string-split arena s delimiter) -> (List String)  ; delimiter must be single char
 
-; Lists
-(list-new arena) -> (List T)
-(list-push arena list item) -> Unit
+; Lists (homogeneous, type-safe)
+(list-new arena Type) -> (List Type)   ; Type parameter required for type safety
+(list-push list item) -> Unit
 (list-get list index) -> (Option T)
 (list-len list) -> (Int 0 ..)
 
-; Maps
-(map-new arena) -> (Map K V)
-(map-put arena map key val) -> Unit
+; Maps (homogeneous, type-safe)
+(map-new arena KeyType ValueType) -> (Map KeyType ValueType)  ; Type parameters required
+(map-put map key val) -> Unit
 (map-get map key) -> (Option V)
 (map-has map key) -> Bool
 

@@ -204,3 +204,168 @@ class TestIsAllowableUnknown:
         filler = make_filler()
 
         assert filler._is_allowable_unknown(PrimitiveType('Int')) is False
+
+
+class TestExtractHole:
+    """Test the extract_hole function with new keywords."""
+
+    def test_extract_context(self):
+        """Test extracting :context keyword."""
+        hole_expr = parse('(hole Int "add" :context (a b c))')[0]
+        hole = extract_hole(hole_expr)
+
+        assert hole.context == ['a', 'b', 'c']
+        assert hole.required is None
+
+    def test_extract_required(self):
+        """Test extracting :required keyword."""
+        hole_expr = parse('(hole Int "add" :required (x y))')[0]
+        hole = extract_hole(hole_expr)
+
+        assert hole.required == ['x', 'y']
+        assert hole.context is None
+
+    def test_extract_both_context_and_required(self):
+        """Test extracting both :context and :required."""
+        hole_expr = parse('(hole Int "add" :context (a b c) :required (a))')[0]
+        hole = extract_hole(hole_expr)
+
+        assert hole.context == ['a', 'b', 'c']
+        assert hole.required == ['a']
+
+
+class TestContextValidation:
+    """Test :context whitelist validation."""
+
+    def test_context_allows_listed_functions(self):
+        """Calling functions in :context should be allowed."""
+        filler = make_filler()
+        # Expression: (foo x)
+        expr = SList([Symbol('foo'), Symbol('x')])
+        hole = Hole(
+            type_expr=Symbol('Int'),
+            prompt="test",
+            context=['foo', 'x']  # Both allowed
+        )
+        context = {'defined_functions': ['foo']}
+
+        valid, error = filler._validate(expr, hole, context)
+        # Should not complain about disallowed calls
+        assert valid or 'Disallowed calls' not in (error or '')
+
+    def test_context_blocks_unlisted_functions(self):
+        """Calling functions NOT in :context should be blocked."""
+        filler = make_filler()
+        # Expression: (bar x)
+        expr = SList([Symbol('bar'), Symbol('x')])
+        hole = Hole(
+            type_expr=Symbol('Int'),
+            prompt="test",
+            context=['foo']  # bar not listed
+        )
+        context = {'defined_functions': ['bar']}
+
+        valid, error = filler._validate(expr, hole, context)
+        assert not valid
+        assert 'Disallowed calls' in error
+        assert 'bar' in error
+
+    def test_context_allows_ffi_functions(self):
+        """FFI functions should be allowed even when not in :context."""
+        filler = make_filler()
+        # Expression: (printf msg)
+        expr = SList([Symbol('printf'), Symbol('msg')])
+        hole = Hole(
+            type_expr=Symbol('Int'),
+            prompt="test",
+            context=['msg']  # Only lists msg, not printf
+        )
+        context = {
+            'defined_functions': ['printf'],
+            'ffi_specs': [{'name': 'printf', 'params': [], 'return': 'Int'}]
+        }
+
+        valid, error = filler._validate(expr, hole, context)
+        # Should NOT complain about printf being disallowed
+        assert 'printf' not in (error or '')
+
+
+class TestRequiredValidation:
+    """Test :required validation."""
+
+    def test_required_passes_when_present(self):
+        """Expression using required identifiers should pass."""
+        filler = make_filler()
+        # Expression: (+ state-get x)
+        expr = SList([Symbol('+'), Symbol('state-get'), Symbol('x')])
+        hole = Hole(
+            type_expr=Symbol('Int'),
+            prompt="test",
+            required=['state-get']
+        )
+        context = {'defined_functions': ['state-get']}
+
+        valid, error = filler._validate(expr, hole, context)
+        # Should not fail on required check (other checks may still fail)
+        assert 'must use' not in (error or '').lower()
+
+    def test_required_fails_when_missing(self):
+        """Expression missing required identifiers should fail."""
+        filler = make_filler()
+        # Expression: (+ 1 2)
+        expr = SList([Symbol('+'), Number(1), Number(2)])
+        hole = Hole(
+            type_expr=Symbol('Int'),
+            prompt="test",
+            required=['state-get']  # Not used in expression
+        )
+        context = {}
+
+        valid, error = filler._validate(expr, hole, context)
+        assert not valid
+        assert 'must use' in error.lower()
+        assert 'state-get' in error
+
+
+class TestSyntaxValidation:
+    """Test structural syntax validation."""
+
+    def test_field_access_requires_symbol(self):
+        """Field access with number should fail validation."""
+        filler = make_filler()
+        # (. x 42) - invalid, field must be symbol
+        expr = SList([Symbol('.'), Symbol('x'), Number(42)])
+        hole = Hole(
+            type_expr=Symbol('Int'),
+            prompt="test"
+        )
+        valid, error = filler._validate(expr, hole, {})
+        assert not valid
+        assert "Field access requires symbol" in error
+
+    def test_nested_field_access_with_number(self):
+        """Nested field access with number should fail validation."""
+        filler = make_filler()
+        # (. (. x y) 0) - nested invalid field access
+        inner = SList([Symbol('.'), Symbol('x'), Symbol('y')])
+        expr = SList([Symbol('.'), inner, Number(0)])
+        hole = Hole(
+            type_expr=Symbol('Int'),
+            prompt="test"
+        )
+        valid, error = filler._validate(expr, hole, {})
+        assert not valid
+        assert "Field access requires symbol" in error
+
+    def test_valid_field_access_passes(self):
+        """Valid field access should pass syntax validation."""
+        filler = make_filler()
+        # (. x field) - valid
+        expr = SList([Symbol('.'), Symbol('x'), Symbol('field')])
+        hole = Hole(
+            type_expr=Symbol('Int'),
+            prompt="test"
+        )
+        # Syntax check passes (other checks may fail for undefined functions)
+        syntax_error = filler._check_syntax(expr)
+        assert syntax_error is None

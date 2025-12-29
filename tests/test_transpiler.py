@@ -3,7 +3,7 @@ Transpiler tests for SLOP
 """
 
 import pytest
-from slop.transpiler import transpile, Transpiler
+from slop.transpiler import transpile, Transpiler, TranspileError
 from slop.parser import parse
 
 
@@ -33,6 +33,120 @@ class TestTypeDefinitions:
         assert "typedef enum" in c_code
         assert "Status_active" in c_code
         assert "Status_inactive" in c_code
+
+    def test_record_new_with_inline_type(self):
+        """Test record-new with inline anonymous record type instead of named type."""
+        source = '''
+        (module test
+          (fn make-pair ()
+            (@intent "Create a pair")
+            (@spec (() -> (record (x Int) (y Int))))
+            (record-new (record (x Int) (y Int)) (x 1) (y 2))))
+        '''
+        result = transpile(source)
+        # Uses inline struct for anonymous record type
+        assert 'struct {' in result
+        assert '.x = 1' in result
+        assert '.y = 2' in result
+
+    def test_record_positional_constructor(self):
+        """Test (TypeName val1 val2) generates C struct literal, not function call."""
+        source = '''
+        (module test
+          (type Point (record (x Int) (y Int)))
+          (fn make-point ((x Int) (y Int))
+            (@intent "Create a point")
+            (@spec ((Int Int) -> Point))
+            (Point x y)))
+        '''
+        result = transpile(source)
+        # Should generate C struct literal with designated initializers
+        assert '.x = x' in result
+        assert '.y = y' in result
+        # Should NOT generate a function call
+        assert 'test_Point(x, y)' not in result
+        assert 'Point(x, y)' not in result
+
+    def test_record_positional_constructor_with_expressions(self):
+        """Test positional constructor with complex expressions."""
+        source = '''
+        (module test
+          (type Point (record (x Int) (y Int)))
+          (fn make-doubled-point ((a Int) (b Int))
+            (@intent "Create a point with doubled values")
+            (@spec ((Int Int) -> Point))
+            (Point (* a 2) (+ b 1))))
+        '''
+        result = transpile(source)
+        # Should generate struct literal with expressions
+        assert '.x = (a * 2)' in result
+        assert '.y = (b + 1)' in result
+
+
+class TestOptionType:
+    """Test Option type transpilation"""
+
+    def test_none_symbol_in_if_expression(self):
+        """Test that 'none' as a symbol generates proper Option struct literal."""
+        source = '''
+        (module test
+          (fn safe-div ((a Int) (b Int))
+            (@intent "Safe division")
+            (@spec ((Int Int) -> (Option Int)))
+            (if (== b 0)
+                none
+                (some (/ a b)))))
+        '''
+        result = transpile(source)
+        # Should generate proper struct literal for none
+        assert '{ .has_value = false }' in result
+        # Should NOT have bare 'none' identifier
+        assert 'return' in result and 'none;' not in result
+
+    def test_some_with_value(self):
+        """Test that (some val) generates proper Option struct literal."""
+        source = '''
+        (module test
+          (fn make-some ((x Int))
+            (@intent "Wrap in Some")
+            (@spec ((Int) -> (Option Int)))
+            (some x)))
+        '''
+        result = transpile(source)
+        assert '{ .has_value = true' in result
+        assert '.value = x' in result
+
+
+class TestCollectionTypes:
+    """Test List and Map type transpilation"""
+
+    def test_list_new_with_type_parameter(self):
+        """Test (list-new arena Type) generates properly typed list."""
+        source = '''
+        (module test
+          (fn make-list ((arena Arena))
+            (@intent "Create an int list")
+            (@spec ((Arena) -> (List Int)))
+            (list-new arena Int)))
+        '''
+        result = transpile(source)
+        # Should generate typed list struct (int64_t normalized to int in identifiers)
+        assert 'slop_list_int' in result
+        # Should cast data pointer to element type
+        assert 'int64_t*)slop_arena_alloc' in result
+
+    def test_map_new_with_type_parameters(self):
+        """Test (map-new arena KeyType ValueType) generates properly typed map."""
+        source = '''
+        (module test
+          (fn make-map ((arena Arena))
+            (@intent "Create a string->int map")
+            (@spec ((Arena) -> (Map String Int)))
+            (map-new arena String Int)))
+        '''
+        result = transpile(source)
+        # Should generate typed map constructor (int64_t normalized to int in identifiers)
+        assert 'slop_map_string_int_new' in result
 
 
 class TestFunctionTranspilation:
@@ -157,6 +271,48 @@ class TestEnumValues:
         c_code = transpile(source)
         assert "Result_success" in c_code
 
+    def test_match_enum_unquoted_variant(self):
+        """Test that unquoted enum variants in match generate correct case labels."""
+        source = """
+        (module test
+          (type Status (enum ok error))
+          (fn handle ((s Status))
+            (@intent "Handle status")
+            (@spec ((Status) -> Int))
+            (match s
+              (ok 1)
+              (error 0))))
+        """
+        c_code = transpile(source)
+        # Should use enum constant names, not indices
+        # Note: single-file transpile doesn't add module prefix
+        assert "case Status_ok:" in c_code
+        assert "case Status_error:" in c_code
+        assert "case 0:" not in c_code
+        assert "case 1:" not in c_code
+
+
+class TestPointerTypeIdentifiers:
+    """Test that pointer types generate valid C identifiers."""
+
+    def test_result_with_pointer_type(self):
+        """Test Result<Ptr<T>, E> generates valid type name."""
+        source = """
+        (module test
+          (type Pet (record (name String)))
+          (type ApiError (enum not-found))
+          (fn get-pet ()
+            (@intent "Get pet")
+            (@spec (() -> (Result (Ptr Pet) ApiError)))
+            (error 'not-found)))
+        """
+        c_code = transpile(source)
+        # Should have _ptr instead of * in type name
+        # Note: single-file transpile doesn't add module prefix
+        assert "slop_result_Pet_ptr_ApiError" in c_code
+        # Should NOT have * in identifier
+        assert "slop_result_Pet*" not in c_code
+
 
 class TestExamples:
     """Test transpilation of example files"""
@@ -206,11 +362,11 @@ class TestComprehensiveTranspilation:
         assert "__auto_type n = " in c_code  # binding from (number n)
 
         # Result constructors
-        assert ".tag = 0, .data.ok =" in c_code  # ok
-        assert ".tag = 1, .data.err =" in c_code  # error
+        assert ".is_ok = true, .data.ok =" in c_code  # ok
+        assert ".is_ok = false, .data.err =" in c_code  # error
 
         # Early return with ?
-        assert "if (_tmp.tag != 0) return _tmp" in c_code
+        assert "if (!_tmp.is_ok) return _tmp" in c_code
 
         # Array indexing
         assert "scores[i]" in c_code
@@ -467,3 +623,199 @@ class TestMapLiterals:
         c_code = transpile(source)
         # Should generate map type definition
         assert "slop_map_" in c_code or "entries" in c_code
+
+
+class TestListOperations:
+    """Test list operations transpilation"""
+
+    def test_list_get_with_match_infers_option_type(self):
+        """list-get with match should infer Option type from list element type"""
+        source = """
+        (module test
+          (fn sum-first ((lst (List Int)))
+            (@intent "Sum first element")
+            (@spec (((List Int)) -> Int))
+            (match (list-get lst 0)
+              ((some val) val)
+              ((none) 0))))
+        """
+        c_code = transpile(source)
+        # Should generate slop_option_int (int64_t normalized to int)
+        assert "slop_option_int" in c_code
+        assert ".has_value" in c_code
+        assert ".value" in c_code
+
+    def test_list_get_from_list_new_var(self):
+        """list-get on variable from list-new should infer element type"""
+        source = """
+        (module test
+          (fn test-list ((arena Arena))
+            (@intent "Test list operations")
+            (@spec ((Arena) -> Int))
+            (let ((nums (list-new arena Int)))
+              (list-push nums 42)
+              (match (list-get nums 0)
+                ((some v) v)
+                ((none) 0)))))
+        """
+        c_code = transpile(source)
+        # Should use slop_option_int (int64_t normalized to int)
+        assert "slop_option_int" in c_code
+
+    def test_unwrap_on_option_uses_value(self):
+        """unwrap on Option should use .value, not .data.ok"""
+        source = """
+        (module test
+          (fn first-or-zero ((lst (List Int)))
+            (@intent "Get first element or 0")
+            (@spec (((List Int)) -> Int))
+            (if (> (list-len lst) 0)
+              (unwrap (list-get lst 0))
+              0)))
+        """
+        c_code = transpile(source)
+        # Should use .value for Option, not .data.ok
+        assert ".value)" in c_code
+        assert ".data.ok" not in c_code
+
+
+class TestMatchExpressions:
+    """Test match expression transpilation"""
+
+    def test_match_in_while_with_bool_result(self):
+        """Match expression returning bool in while condition should use bool type"""
+        source = """
+        (module test
+          (fn find-above ((lst (List Int)) (threshold Int))
+            (@intent "Find first above threshold")
+            (@spec (((List Int) Int) -> (Option Int)))
+            (let ((result none))
+              (while (match result ((none) true) (else false))
+                (set! result (some 1)))
+              result)))
+        """
+        c_code = transpile(source)
+        # Should use bool type for match result, not slop_result
+        assert "bool _match_result" in c_code
+        assert "slop_result _match_result" not in c_code
+
+
+class TestFieldAccess:
+    """Test field access transpilation"""
+
+    def test_list_get_on_field_access_infers_element_type(self):
+        """list-get on list from record field should infer correct element type"""
+        source = """
+        (module test
+          (type Container (record (items (List Int))))
+          (fn first-item ((c (Ptr Container)))
+            (@intent "Get first item")
+            (@spec (((Ptr Container)) -> Int))
+            (let ((items (. c items)))
+              (match (list-get items 0)
+                ((some v) v)
+                (none 0)))))
+        """
+        c_code = transpile(source)
+        # Should use slop_option_int (int64_t normalized to int)
+        assert "slop_option_int" in c_code
+        assert ".has_value" in c_code
+
+
+class TestMapOperations:
+    """Test map operations transpilation"""
+
+    def test_map_put_uses_typed_function_for_string_keyed_maps(self):
+        """map-put on string-keyed map should use typed put function"""
+        source = """
+        (module test
+          (fn test-map ((arena Arena))
+            (@intent "Test map operations")
+            (@spec ((Arena) -> Int))
+            (let ((m (map-new arena String Int)))
+              (map-put m "key" 42)
+              1)))
+        """
+        c_code = transpile(source)
+        # Should use typed map functions, not generic map_put
+        assert "slop_map_string_int_put" in c_code
+        assert "&m" in c_code  # map passed by pointer
+
+
+class TestMultiModuleTypes:
+    """Test cross-module type resolution"""
+
+    def test_imported_type_alias_uses_source_module_prefix(self):
+        """Imported type alias should use source module prefix, not current module"""
+        from pathlib import Path
+        from slop.transpiler import transpile_multi_split
+        from slop.resolver import ModuleInfo
+        from slop.parser import ImportSpec
+
+        # Module 'math' defines Score type
+        math_source = """
+        (module math
+          (export Score)
+          (type Score (Int 0 .. 100)))
+        """
+        math_ast = parse(math_source)
+
+        # Module 'main' imports and uses Score
+        main_source = """
+        (module main
+          (import math (Score))
+          (fn process ((s Score))
+            (@intent "Process score")
+            (@spec ((Score) -> Int))
+            s))
+        """
+        main_ast = parse(main_source)
+
+        # Create module info
+        math_info = ModuleInfo(name='math', path=Path('math.slop'), ast=math_ast)
+        math_info.exports = {'Score'}
+        main_info = ModuleInfo(name='main', path=Path('main.slop'), ast=main_ast)
+        main_info.imports = [ImportSpec(module_name='math', symbols=[('Score', 0)])]
+
+        # Transpile multi-module
+        modules = {'math': math_info, 'main': main_info}
+        order = ['math', 'main']
+        results = transpile_multi_split(modules, order)
+
+        # main.h should have math_Score, not main_Score
+        main_header = results['main'][0]
+        assert 'math_Score' in main_header
+        assert 'main_Score' not in main_header
+
+
+class TestTranspilerValidation:
+    """Test that transpiler rejects malformed input instead of generating invalid C"""
+
+    def test_const_too_many_args_error(self):
+        """Malformed const with extra args should raise error."""
+        source = "(const FOO Bar Baz 42)"  # 4 args instead of 3
+        with pytest.raises(TranspileError) as exc:
+            transpile(source)
+        assert "3 arguments" in str(exc.value)
+
+    def test_const_too_few_args_error(self):
+        """Malformed const with missing args should raise error."""
+        source = "(const FOO Int)"  # 2 args instead of 3
+        with pytest.raises(TranspileError) as exc:
+            transpile(source)
+        assert "3 arguments" in str(exc.value)
+
+    def test_valid_const_works(self):
+        """Valid const should transpile without error."""
+        source = "(const FOO Int 42)"
+        c_code = transpile(source)
+        assert "FOO" in c_code
+        assert "42" in c_code
+
+    def test_field_access_requires_symbol(self):
+        """Field access with non-symbol should raise TranspileError with line."""
+        source = "(fn test () (@spec (() -> Int)) (. x 42))"
+        with pytest.raises(TranspileError) as exc:
+            transpile(source)
+        assert "Field name must be a symbol" in str(exc.value)
+        assert "line" in str(exc.value)

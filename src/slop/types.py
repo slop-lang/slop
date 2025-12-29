@@ -207,6 +207,21 @@ class ListType(Type):
             return self.element_type.equals(other.element_type)
         return False
 
+    def is_subtype_of(self, other: Type) -> bool:
+        """List is covariant: List<A> <: List<B> if A <: B.
+
+        Special case: UnknownType in element position matches any type.
+        This allows (List ?) from list-new to unify with (List T).
+        """
+        if self.equals(other):
+            return True
+        if isinstance(other, ListType):
+            # Allow UnknownType to match any element type
+            if isinstance(self.element_type, UnknownType) or isinstance(other.element_type, UnknownType):
+                return True
+            return self.element_type.is_subtype_of(other.element_type)
+        return False
+
 
 @dataclass(frozen=True)
 class ArrayType(Type):
@@ -236,6 +251,21 @@ class MapType(Type):
     def equals(self, other: Type) -> bool:
         if isinstance(other, MapType):
             return self.key_type.equals(other.key_type) and self.value_type.equals(other.value_type)
+        return False
+
+    def is_subtype_of(self, other: Type) -> bool:
+        """Map is covariant in both key and value types.
+
+        Special case: UnknownType in key or value position matches any type.
+        """
+        if self.equals(other):
+            return True
+        if isinstance(other, MapType):
+            if (isinstance(self.key_type, UnknownType) or isinstance(other.key_type, UnknownType) or
+                isinstance(self.value_type, UnknownType) or isinstance(other.value_type, UnknownType)):
+                return True
+            return (self.key_type.is_subtype_of(other.key_type) and
+                    self.value_type.is_subtype_of(other.value_type))
         return False
 
 
@@ -458,7 +488,7 @@ BUILTIN_FUNCTIONS = {
     'print', 'println',
     # String operations
     'string-len', 'string-concat', 'string-eq', 'string-new', 'string-slice',
-    'int-to-string',
+    'string-split', 'int-to-string',
     # Arena/memory operations
     'arena-new', 'arena-alloc', 'arena-free',
     # List operations

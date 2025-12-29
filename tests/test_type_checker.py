@@ -121,6 +121,31 @@ class TestEnumVariantInference:
         errors = [d for d in diagnostics if d.severity == 'error']
         assert len(errors) == 0
 
+    def test_ambiguous_enum_variants_error(self):
+        """Enum variants with same name in different types should be an error"""
+        source = """
+        (module test
+          (type Status (enum ok error))
+          (type Result (enum ok fail)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 1
+        assert "Ambiguous enum variant 'ok'" in errors[0].message
+        assert "Result" in errors[0].message
+        assert "Status" in errors[0].message
+
+    def test_non_overlapping_enum_variants_ok(self):
+        """Enum types with distinct variants should not error"""
+        source = """
+        (module test
+          (type HttpStatus (enum http-ok http-error))
+          (type ApiError (enum api-ok api-fail)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
 
 class TestPathSensitiveAnalysis:
     """Test path-sensitive type refinement"""
@@ -275,4 +300,166 @@ class TestParameterModes:
         diagnostics = check_source(source)
         errors = [d for d in diagnostics if d.severity == 'error']
         # No errors for mut read/write
+        assert len(errors) == 0
+
+
+class TestTypedCollections:
+    """Test typed list and map constructors"""
+
+    def test_list_new_with_type_parameter(self):
+        """(list-new arena Type) should infer (List Type)"""
+        source = """
+        (module test
+          (fn make-list ((arena Arena))
+            (@spec ((Arena) -> (List Int)))
+            (list-new arena Int)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_map_new_with_type_parameters(self):
+        """(map-new arena KeyType ValueType) should infer (Map KeyType ValueType)"""
+        source = """
+        (module test
+          (fn make-map ((arena Arena))
+            (@spec ((Arena) -> (Map String Int)))
+            (map-new arena String Int)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+
+class TestMatchExhaustiveness:
+    """Test exhaustiveness checking for match expressions"""
+
+    def test_enum_exhaustive_all_variants(self):
+        """Complete enum coverage should pass"""
+        source = """
+        (module test
+          (type Status (enum ok error))
+          (fn handle ((s Status))
+            (@spec ((Status) -> Int))
+            (match s ('ok 1) ('error 0))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_enum_non_exhaustive_error(self):
+        """Missing enum variant should error"""
+        source = """
+        (module test
+          (type Status (enum ok error pending))
+          (fn handle ((s Status))
+            (@spec ((Status) -> Int))
+            (match s ('ok 1) ('error 0))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) >= 1
+        assert any("pending" in e.message for e in errors)
+
+    def test_enum_wildcard_satisfies(self):
+        """Wildcard pattern should satisfy exhaustiveness"""
+        source = """
+        (module test
+          (type Status (enum ok error pending))
+          (fn handle ((s Status))
+            (@spec ((Status) -> Int))
+            (match s ('ok 1) (_ 0))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_option_exhaustive(self):
+        """Option with some and none should pass"""
+        source = """
+        (module test
+          (fn get-or-zero ((opt (Option Int)))
+            (@spec (((Option Int)) -> Int))
+            (match opt ((some v) v) (none 0))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_option_missing_none_error(self):
+        """Option missing none should error"""
+        source = """
+        (module test
+          (fn get-value ((opt (Option Int)))
+            (@spec (((Option Int)) -> Int))
+            (match opt ((some v) v))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) >= 1
+        assert any("none" in e.message for e in errors)
+
+    def test_result_exhaustive(self):
+        """Result with ok and error should pass"""
+        source = """
+        (module test
+          (fn unwrap-or-zero ((r (Result Int String)))
+            (@spec (((Result Int String)) -> Int))
+            (match r ((ok v) v) ((error e) 0))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_result_missing_error_branch(self):
+        """Result missing error branch should error"""
+        source = """
+        (module test
+          (fn unwrap ((r (Result Int String)))
+            (@spec (((Result Int String)) -> Int))
+            (match r ((ok v) v))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) >= 1
+        assert any("error" in e.message for e in errors)
+
+    def test_union_exhaustive(self):
+        """Union with all tags should pass"""
+        source = """
+        (module test
+          (type Value (union (number Int) (text String) (nothing)))
+          (fn extract ((v Value))
+            (@spec ((Value) -> Int))
+            (match v ((number n) n) ((text t) 0) ((nothing) -1))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_union_missing_tag_error(self):
+        """Union missing a tag should error"""
+        source = """
+        (module test
+          (type Value (union (number Int) (text String) (nothing)))
+          (fn extract ((v Value))
+            (@spec ((Value) -> Int))
+            (match v ((number n) n) ((text t) 0))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) >= 1
+        assert any("nothing" in e.message for e in errors)
+
+    def test_else_wildcard_satisfies(self):
+        """'else' keyword should also work as wildcard"""
+        source = """
+        (module test
+          (type Status (enum ok error pending))
+          (fn handle ((s Status))
+            (@spec ((Status) -> Int))
+            (match s ('ok 1) (else 0))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
         assert len(errors) == 0
