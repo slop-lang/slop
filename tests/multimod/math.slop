@@ -36,16 +36,16 @@
     (@intent "Get numeric value for direction")
     (@spec ((Direction) -> Int))
     (match d
-      (north 1)
-      (south 2)
-      (east 3)
-      (west 4)))
+      ('north 1)
+      ('south 2)
+      ('east 3)
+      ('west 4)))
 
   (fn safe-div ((a Int) (b Int))
     (@intent "Safe division that returns None on divide by zero")
     (@spec ((Int Int) -> (Option Int)))
     (if (== b 0)
-        none
+        (none)
         (some (/ a b))))
 
   (fn list-size ((lst (List Int)))
@@ -80,7 +80,7 @@
     (@spec (((List Int) Int) -> (Option Int)))
     (let ((i 0)
           (len (list-len lst))
-          (result none))
+          (result (none)))
       (while (and (< i len) (match result ((none) true) (else false)))
         (match (list-get lst i)
           ((some val)

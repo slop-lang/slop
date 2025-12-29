@@ -222,7 +222,7 @@ class TypeChecker:
         # List operations - return types use UNKNOWN for polymorphism
         self.env.register_function('list-new', FnType((ARENA,), ListType(UNKNOWN)))
         self.env.register_function('list-push', FnType((ListType(UNKNOWN), UNKNOWN), UNIT))
-        self.env.register_function('list-get', FnType((ListType(UNKNOWN), INT), UNKNOWN))
+        self.env.register_function('list-get', FnType((ListType(UNKNOWN), INT), OptionType(UNKNOWN)))
         self.env.register_function('list-len', FnType((ListType(UNKNOWN),), INT))
 
         # Map operations - use UNKNOWN for polymorphism
@@ -1086,6 +1086,10 @@ class TypeChecker:
             return UNKNOWN
 
         scrutinee_type = self.infer_expr(expr[1])
+
+        # Check exhaustiveness before processing branches
+        self._check_match_exhaustiveness(expr, scrutinee_type)
+
         branch_types: List[Type] = []
 
         for clause in expr.items[2:]:
@@ -1147,6 +1151,101 @@ class TypeChecker:
                         for var in pattern.items[1:]:
                             if isinstance(var, Symbol) and var.name != '_':
                                 self.env.bind_var(var.name, payload_type)
+
+    def _get_required_variants(self, scrutinee_type: Type) -> Optional[Set[str]]:
+        """Return the set of variant names that must be covered for exhaustiveness.
+
+        Returns None if the type doesn't require exhaustiveness checking.
+        """
+        if isinstance(scrutinee_type, EnumType):
+            return set(scrutinee_type.variants)
+        elif isinstance(scrutinee_type, UnionType):
+            return set(scrutinee_type.variants.keys())
+        elif isinstance(scrutinee_type, OptionType):
+            return {'some', 'none'}
+        elif isinstance(scrutinee_type, ResultType):
+            return {'ok', 'error'}
+        return None
+
+    def _extract_pattern_variant(self, pattern: SExpr, scrutinee_type: Type) -> Optional[str]:
+        """Extract the variant name from a match pattern.
+
+        Returns:
+            - The variant name (e.g., 'ok', 'some', 'number')
+            - '_' for wildcard patterns
+            - None if pattern is not recognized as a variant
+        """
+        if isinstance(pattern, Symbol):
+            name = pattern.name
+            # Wildcard patterns
+            if name == '_' or name == 'else':
+                return '_'
+            # Quoted symbol for enum values: 'ok -> ok
+            if name.startswith("'"):
+                return name[1:]
+            # Bare symbol: check if it's an enum variant or Option's 'none'
+            if isinstance(scrutinee_type, EnumType):
+                if scrutinee_type.has_variant(name):
+                    return name
+            if isinstance(scrutinee_type, OptionType) and name == 'none':
+                return 'none'
+            # Bare symbol is a binding variable, not a variant
+            return None
+
+        elif isinstance(pattern, SList) and len(pattern) >= 1:
+            # List pattern: (tag var) or (tag)
+            if isinstance(pattern[0], Symbol):
+                tag = pattern[0].name
+                # Remove quote if present
+                if tag.startswith("'"):
+                    tag = tag[1:]
+                return tag
+
+        return None
+
+    def _type_name_for_error(self, t: Type) -> str:
+        """Get a human-readable type name for error messages."""
+        if isinstance(t, EnumType):
+            return f"enum '{t.name}'" if t.name != '<anonymous>' else "enum"
+        elif isinstance(t, UnionType):
+            return f"union '{t.name}'" if t.name != '<anonymous>' else "union"
+        elif isinstance(t, OptionType):
+            return f"(Option {t.inner})"
+        elif isinstance(t, ResultType):
+            return f"(Result {t.ok_type} {t.err_type})"
+        return str(t)
+
+    def _check_match_exhaustiveness(self, expr: SList, scrutinee_type: Type):
+        """Check that a match expression covers all variants of the scrutinee type."""
+        required = self._get_required_variants(scrutinee_type)
+        if required is None:
+            return  # Not a type that requires exhaustiveness checking
+
+        covered: Set[str] = set()
+        has_wildcard = False
+
+        for clause in expr.items[2:]:
+            if isinstance(clause, SList) and len(clause) >= 2:
+                pattern = clause[0]
+                variant = self._extract_pattern_variant(pattern, scrutinee_type)
+
+                if variant == '_':
+                    has_wildcard = True
+                elif variant is not None:
+                    covered.add(variant)
+
+        if has_wildcard:
+            return  # Exhaustive via wildcard
+
+        missing = required - covered
+        if missing:
+            missing_list = ', '.join(sorted(missing))
+            type_name = self._type_name_for_error(scrutinee_type)
+            self.error(
+                f"Non-exhaustive match on {type_name}: missing variants {missing_list}",
+                expr,
+                hint=f"Add patterns for {missing_list} or use '_' / 'else' as a catch-all"
+            )
 
     def _infer_let(self, expr: SList) -> Type:
         """Infer type of let expression"""
@@ -1340,6 +1439,46 @@ class TypeChecker:
 
         fn_name = head.name
         args = expr.items[1:]
+
+        # Special handling for arena-alloc with type argument
+        # (arena-alloc arena TypeName) returns (Ptr TypeName)
+        if fn_name == 'arena-alloc' and len(args) == 2:
+            arena_arg = args[0]
+            size_arg = args[1]
+            # Check arena argument
+            arena_type = self.infer_expr(arena_arg)
+            self._check_assignable(arena_type, ARENA, "argument 1 to 'arena-alloc'", arena_arg)
+            # Check if second arg is a type name
+            if isinstance(size_arg, Symbol):
+                type_obj = self.env.lookup_type(size_arg.name)
+                if type_obj is not None:
+                    # Return pointer to that type
+                    return PtrType(type_obj)
+            # Otherwise infer as integer size
+            size_type = self.infer_expr(size_arg)
+            self._check_assignable(size_type, INT, "argument 2 to 'arena-alloc'", size_arg)
+            return PtrType(UNKNOWN)
+
+        # Special handling for map-put: accepts Map or Ptr<Map>
+        # (map-put map key val)
+        if fn_name == 'map-put' and len(args) == 3:
+            map_arg = args[0]
+            key_arg = args[1]
+            val_arg = args[2]
+            map_type = self.infer_expr(map_arg)
+            # Accept either Map or Ptr<Map>
+            if isinstance(map_type, PtrType) and isinstance(map_type.pointee, MapType):
+                # Pointer to map is valid
+                pass
+            elif isinstance(map_type, MapType):
+                # Direct map is valid
+                pass
+            elif not isinstance(map_type, UnknownType):
+                self.error(f"argument 1 to 'map-put': expected (Map K V) or (Ptr (Map K V)), got {map_type}", map_arg)
+            # Infer key and value types (no strict checking for polymorphic maps)
+            self.infer_expr(key_arg)
+            self.infer_expr(val_arg)
+            return UNIT
 
         fn_type = self.env.lookup_function(fn_name)
         if fn_type is None:

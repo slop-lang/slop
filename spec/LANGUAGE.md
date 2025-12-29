@@ -228,6 +228,7 @@ identifier               ; Variable reference
 (put expr field value)           ; Functional update (returns new)
 (set! expr field value)          ; Mutation (modifies in place)
 (deref ptr)                      ; Dereference pointer: (Ptr T) -> T
+(addr expr)                      ; Address-of: T -> (Ptr T)
 
 ; Field Access Semantics:
 ; The transpiler automatically selects -> vs . based on pointer tracking:
@@ -350,6 +351,9 @@ are bindings (capture the value), not value matches.
   ('Buzz (println "Buzz"))     ; Match enum value Buzz
   (_ (println "other")))       ; Wildcard
 ```
+
+**Exhaustiveness**: Match expressions must be exhaustive—all variants of the
+matched type must be covered, or a wildcard (`_` or `else`) must be present.
 
 ## 4. Module System
 
