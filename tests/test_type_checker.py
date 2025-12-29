@@ -301,3 +301,31 @@ class TestParameterModes:
         errors = [d for d in diagnostics if d.severity == 'error']
         # No errors for mut read/write
         assert len(errors) == 0
+
+
+class TestTypedCollections:
+    """Test typed list and map constructors"""
+
+    def test_list_new_with_type_parameter(self):
+        """(list-new arena Type) should infer (List Type)"""
+        source = """
+        (module test
+          (fn make-list ((arena Arena))
+            (@spec ((Arena) -> (List Int)))
+            (list-new arena Int)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_map_new_with_type_parameters(self):
+        """(map-new arena KeyType ValueType) should infer (Map KeyType ValueType)"""
+        source = """
+        (module test
+          (fn make-map ((arena Arena))
+            (@spec ((Arena) -> (Map String Int)))
+            (map-new arena String Int)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0

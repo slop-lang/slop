@@ -724,6 +724,22 @@ class TypeChecker:
         if op == 'none':
             return OptionType(self.fresh_type_var('T'))
 
+        # List and Map constructors with type parameters
+        if op == 'list-new':
+            # (list-new arena Type) -> (List Type)
+            if len(expr) >= 3:
+                element_type = self.parse_type_expr(expr[2])
+                return ListType(element_type)
+            return ListType(UNKNOWN)
+
+        if op == 'map-new':
+            # (map-new arena KeyType ValueType) -> (Map KeyType ValueType)
+            if len(expr) >= 4:
+                key_type = self.parse_type_expr(expr[2])
+                value_type = self.parse_type_expr(expr[3])
+                return MapType(key_type, value_type)
+            return MapType(UNKNOWN, UNKNOWN)
+
         # Map literal: (map (k1 v1) (k2 v2) ...)
         if op == 'map':
             return self._infer_map_literal(expr)
