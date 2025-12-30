@@ -339,6 +339,7 @@ Arena allocation handles 90% of cases:
 - ✓ Test suite
 
 **Not Yet Implemented:**
+- Concurrency primitives (Channel based)
 - Contract verification (SMT solver integration)
 - Property-based testing generation
 

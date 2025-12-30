@@ -763,9 +763,13 @@ class TypeChecker:
                 return MapType(key_type, value_type)
             return MapType(UNKNOWN, UNKNOWN)
 
-        # Map literal: (map (k1 v1) (k2 v2) ...)
+        # Map literal: (map [KeyType ValueType] (k1 v1) (k2 v2) ...)
         if op == 'map':
             return self._infer_map_literal(expr)
+
+        # List literal: (list [Type] e1 e2 ...)
+        if op == 'list':
+            return self._infer_list_literal(expr)
 
         # Quote - check if it's an enum variant
         if op == 'quote':
@@ -968,25 +972,59 @@ class TypeChecker:
             if not isinstance(typ, PrimitiveType) or typ.name != 'Bool':
                 self.warning(f"Boolean operator expects Bool, got {typ}", operand)
 
-    def _infer_map_literal(self, expr: SList) -> Type:
-        """Infer type of map literal: (map (k1 v1) (k2 v2) ...)"""
-        pairs = expr.items[1:]
+    def _infer_map_literal(self, expr: SList, expected_type: Optional[Type] = None) -> Type:
+        """Infer type of map literal: (map [KeyType ValueType] (k1 v1) (k2 v2) ...)
 
-        if not pairs:
-            # Empty map - use type variables for key/value types
+        Type can be:
+        1. Explicit: (map String Int ("a" 1)) - first two args are types
+        2. Inferred from context: expected_type from binding/param
+        3. Inferred from first pair: (map ("a" 1))
+        4. Empty with no context: use type variables
+        """
+        items = expr.items[1:]  # Skip 'map' keyword
+
+        # Check if first two items are explicit types
+        explicit_key_type = None
+        explicit_value_type = None
+        pairs_start = 0
+
+        if len(items) >= 2:
+            first = items[0]
+            second = items[1]
+            # Both must be symbols that look like types
+            if (isinstance(first, Symbol) and isinstance(second, Symbol)):
+                first_name = first.name
+                second_name = second.name
+                first_is_type = first_name in self.env.type_registry or (first_name[0].isupper() and first_name not in ['nil', 'true', 'false'])
+                second_is_type = second_name in self.env.type_registry or (second_name[0].isupper() and second_name not in ['nil', 'true', 'false'])
+                if first_is_type and second_is_type:
+                    explicit_key_type = self.parse_type_expr(first)
+                    explicit_value_type = self.parse_type_expr(second)
+                    pairs_start = 2
+
+        pairs = items[pairs_start:]
+
+        # Determine key/value types
+        if explicit_key_type and explicit_value_type:
+            key_type = explicit_key_type
+            value_type = explicit_value_type
+        elif expected_type and isinstance(expected_type, MapType):
+            key_type = expected_type.key_type
+            value_type = expected_type.value_type
+        elif pairs:
+            # Infer from first pair, but widen types for flexibility
+            first = pairs[0]
+            if not isinstance(first, SList) or len(first) < 2:
+                self.error("Map literal requires (key value) pairs", first if isinstance(first, SList) else expr)
+                return MapType(UNKNOWN, UNKNOWN)
+            key_type = self._widen_type(self.infer_expr(first[0]))
+            value_type = self._widen_type(self.infer_expr(first[1]))
+        else:
+            # Empty map with no explicit types - use type variables
             return MapType(self.fresh_type_var('K'), self.fresh_type_var('V'))
 
-        # Get types from first pair
-        first = pairs[0]
-        if not isinstance(first, SList) or len(first) < 2:
-            self.error("Map literal requires (key value) pairs", first if isinstance(first, SList) else expr)
-            return MapType(UNKNOWN, UNKNOWN)
-
-        key_type = self.infer_expr(first[0])
-        value_type = self.infer_expr(first[1])
-
-        # Check remaining pairs for type consistency
-        for pair in pairs[1:]:
+        # Validate all pairs match the types
+        for pair in pairs:
             if not isinstance(pair, SList) or len(pair) < 2:
                 self.error("Map literal requires (key value) pairs", pair if isinstance(pair, SList) else expr)
                 continue
@@ -994,12 +1032,58 @@ class TypeChecker:
             k_type = self.infer_expr(pair[0])
             v_type = self.infer_expr(pair[1])
 
-            if not k_type.equals(key_type):
-                self.error(f"Map key type mismatch: expected {key_type}, got {k_type}", pair[0])
-            if not v_type.equals(value_type):
-                self.error(f"Map value type mismatch: expected {value_type}, got {v_type}", pair[1])
+            if not isinstance(k_type, UnknownType):
+                self._check_assignable(k_type, key_type, "map key", pair[0])
+            if not isinstance(v_type, UnknownType):
+                self._check_assignable(v_type, value_type, "map value", pair[1])
 
         return MapType(key_type, value_type)
+
+    def _infer_list_literal(self, expr: SList, expected_type: Optional[Type] = None) -> Type:
+        """Infer type of list literal: (list [Type] e1 e2 ...)
+
+        Type can be:
+        1. Explicit: (list Int 1 2 3) - first arg is a type
+        2. Inferred from context: expected_type from binding/param
+        3. Inferred from first element: (list 1 2 3)
+        4. Empty with no context: error
+        """
+        items = expr.items[1:]  # Skip 'list' keyword
+
+        # Check if first item is an explicit type
+        explicit_type = None
+        elements_start = 0
+
+        if items and isinstance(items[0], Symbol):
+            type_name = items[0].name
+            # Check if it's a known type (in registry or starts with uppercase)
+            if type_name in self.env.type_registry or (type_name[0].isupper() and type_name not in ['nil', 'true', 'false']):
+                explicit_type = self.parse_type_expr(items[0])
+                elements_start = 1
+
+        elements = items[elements_start:]
+
+        # Determine element type
+        if explicit_type:
+            element_type = explicit_type
+        elif expected_type and isinstance(expected_type, ListType):
+            element_type = expected_type.element_type
+        elif elements:
+            # Infer from first element, but widen to base type for flexibility
+            inferred = self.infer_expr(elements[0])
+            element_type = self._widen_type(inferred)
+        else:
+            # Empty list with no context
+            self.error("Empty list literal requires explicit type: (list Type) or context from binding", expr)
+            return ListType(UNKNOWN)
+
+        # Validate all elements match the element type
+        for i, elem in enumerate(elements):
+            elem_type = self.infer_expr(elem)
+            if not isinstance(elem_type, UnknownType):
+                self._check_assignable(elem_type, element_type, f"list element at index {i + elements_start}", elem)
+
+        return ListType(element_type)
 
     def _infer_if(self, expr: SList) -> Type:
         """Infer type of if expression with path-sensitive refinement."""
@@ -1504,6 +1588,17 @@ class TypeChecker:
         """Check that actual type matches expected"""
         if isinstance(actual, Type) and not isinstance(actual, UnknownType):
             self._check_assignable(actual, expected, context, node)
+
+    def _widen_type(self, t: Type) -> Type:
+        """Widen a type for collection element inference.
+
+        Converts precise range types like (Int 1 .. 1) to their base type (Int).
+        This allows collections to hold values with compatible types.
+        """
+        if isinstance(t, RangeType):
+            # Widen to unbounded base type
+            return PrimitiveType(t.base)
+        return t
 
     def _get_type_name(self, t: Type) -> Optional[str]:
         """Get the name of a type for forward reference comparison"""

@@ -2916,10 +2916,28 @@ class Transpiler:
 
                 # Data construction
                 if op == 'list':
-                    elements = [self.transpile_expr(e) for e in expr.items[1:]]
+                    # Check for explicit type: (list Type e1 e2 ...)
+                    items = expr.items[1:]
+                    elements_start = 0
+                    explicit_elem_type = None
+
+                    if items and isinstance(items[0], Symbol):
+                        name = items[0].name
+                        if name[0].isupper() or name in self.types or name in self.builtin_types:
+                            # First arg is a type, skip it
+                            explicit_elem_type = self.to_c_type(items[0])
+                            elements_start = 1
+
+                    elements = [self.transpile_expr(e) for e in items[elements_start:]]
                     n = len(elements)
                     list_type = self._get_list_c_type(expected_type)
-                    elem_type = self._get_list_element_c_type(expected_type)
+                    elem_type = explicit_elem_type or self._get_list_element_c_type(expected_type)
+
+                    # If we have explicit element type but no list type, compute list type
+                    if explicit_elem_type and not list_type:
+                        inner_id = self._type_to_identifier(explicit_elem_type)
+                        list_type = f"slop_list_{inner_id}"
+                        self.generated_list_types.add((list_type, explicit_elem_type))
                     if n == 0:
                         if list_type:
                             return f"(({list_type}){{ .data = NULL, .len = 0, .cap = 0 }})"
@@ -2927,7 +2945,12 @@ class Transpiler:
                     elems_str = ", ".join(elements)
                     if list_type and elem_type:
                         return f"(({list_type}){{ .data = ({elem_type}[]){{{elems_str}}}, .len = {n}, .cap = {n} }})"
-                    return f"(slop_list_ptr){{ .data = (void*[]){{{elems_str}}}, .len = {n}, .cap = {n} }}"
+                    elif elem_type:
+                        # Have explicit element type but no list type context
+                        return f"(slop_list_ptr){{ .data = ({elem_type}[]){{{elems_str}}}, .len = {n}, .cap = {n} }}"
+                    # Fall back to void* array with casted elements
+                    casted_elems = ", ".join([f"(void*)(intptr_t)({e})" for e in elements])
+                    return f"(slop_list_ptr){{ .data = (void*[]){{{casted_elems}}}, .len = {n}, .cap = {n} }}"
 
                 if op == 'array':
                     # (array Type) with just a type = empty array, zero-initialized
@@ -2984,10 +3007,26 @@ class Transpiler:
                     # Fallback: use compound literal without type (requires assignment context)
                     return f"{{{', '.join(fields)}}}"
 
-                # Map literal: (map (k1 v1) (k2 v2) ...)
+                # Map literal: (map [KeyType ValueType] (k1 v1) (k2 v2) ...)
                 if op == 'map':
+                    items = expr.items[1:]
+                    pairs_start = 0
+
+                    # Check for explicit types: (map KeyType ValueType (k1 v1) ...)
+                    if len(items) >= 2:
+                        first = items[0]
+                        second = items[1]
+                        if isinstance(first, Symbol) and isinstance(second, Symbol):
+                            first_name = first.name
+                            second_name = second.name
+                            first_is_type = first_name[0].isupper() or first_name in self.types or first_name in self.builtin_types
+                            second_is_type = second_name[0].isupper() or second_name in self.types or second_name in self.builtin_types
+                            if first_is_type and second_is_type:
+                                # Skip the type arguments
+                                pairs_start = 2
+
                     pairs = []
-                    for item in expr.items[1:]:
+                    for item in items[pairs_start:]:
                         if isinstance(item, SList) and len(item) >= 2:
                             key_expr = self.transpile_expr(item[0])
                             value_expr = self.transpile_expr(item[1])
@@ -2999,7 +3038,8 @@ class Transpiler:
                         return "(slop_map){ .entries = NULL, .len = 0, .cap = 0 }"
 
                     # Generate compound literal with entries
-                    entries = ", ".join([f"{{ .key = {k}, .value = {v}, .occupied = true }}" for k, v in pairs])
+                    # Cast values to void* for slop_map_entry compatibility
+                    entries = ", ".join([f"{{ .key = {k}, .value = (void*)(intptr_t)({v}), .occupied = true }}" for k, v in pairs])
                     return f"(slop_map){{ .entries = (slop_map_entry[]){{{entries}}}, .len = {n}, .cap = {n} }}"
 
                 # Union construction: (union-new Type Tag value?)
