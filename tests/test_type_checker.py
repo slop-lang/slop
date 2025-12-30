@@ -330,6 +330,80 @@ class TestTypedCollections:
         errors = [d for d in diagnostics if d.severity == 'error']
         assert len(errors) == 0
 
+    def test_list_literal_explicit_type(self):
+        """(list Int 1 2 3) should infer (List Int)"""
+        source = """
+        (module test
+          (fn make-list ()
+            (@spec (() -> (List Int)))
+            (list Int 1 2 3)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_list_literal_inferred_type(self):
+        """(list 1 2 3) should infer (List Int) from first element"""
+        source = """
+        (module test
+          (fn make-list ()
+            (@spec (() -> (List Int)))
+            (list 1 2 3)))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_list_literal_string(self):
+        """(list String "a" "b") should infer (List String)"""
+        source = """
+        (module test
+          (fn make-list ()
+            (@spec (() -> (List String)))
+            (list String "a" "b")))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_list_literal_type_mismatch(self):
+        """(list Int 1 "string") should error on type mismatch"""
+        source = """
+        (module test
+          (fn make-list ()
+            (@spec (() -> (List Int)))
+            (list Int 1 "string")))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) > 0
+        # Error message says "expected Int, got String"
+        assert any('expected' in str(e.message).lower() and 'got' in str(e.message).lower() for e in errors)
+
+    def test_map_literal_explicit_types(self):
+        """(map String Int ("a" 1)) should infer (Map String Int)"""
+        source = """
+        (module test
+          (fn make-map ()
+            (@spec (() -> (Map String Int)))
+            (map String Int ("a" 1) ("b" 2))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
+    def test_map_literal_inferred_types(self):
+        """(map ("a" 1) ("b" 2)) should infer types from first pair"""
+        source = """
+        (module test
+          (fn make-map ()
+            (@spec (() -> (Map String Int)))
+            (map ("a" 1) ("b" 2))))
+        """
+        diagnostics = check_source(source)
+        errors = [d for d in diagnostics if d.severity == 'error']
+        assert len(errors) == 0
+
 
 class TestMatchExhaustiveness:
     """Test exhaustiveness checking for match expressions"""

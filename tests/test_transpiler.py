@@ -624,6 +624,50 @@ class TestMapLiterals:
         # Should generate map type definition
         assert "slop_map_" in c_code or "entries" in c_code
 
+    def test_map_literal_with_explicit_types(self):
+        """Map literal with explicit KeyType ValueType"""
+        source = """
+        (fn get-map ()
+          (@intent "Return map with explicit types")
+          (@spec (() -> (Map String Int)))
+          (map String Int ("a" 1) ("b" 2)))
+        """
+        c_code = transpile(source)
+        # Should have entries with keys and values (type args are stripped)
+        assert ".key = " in c_code
+        assert ".value = " in c_code
+
+
+class TestListLiterals:
+    """Test list literal transpilation"""
+
+    def test_list_literal_with_explicit_type(self):
+        """List literal with explicit element type"""
+        source = """
+        (fn get-list ()
+          (@intent "Return list with explicit type")
+          (@spec (() -> (List Int)))
+          (list Int 1 2 3))
+        """
+        c_code = transpile(source)
+        # Should have array with elements
+        assert "1" in c_code
+        assert "2" in c_code
+        assert "3" in c_code
+        assert ".len = 3" in c_code
+
+    def test_list_literal_inferred_type(self):
+        """List literal with inferred element type"""
+        source = """
+        (fn get-list ()
+          (@intent "Return list with inferred type")
+          (@spec (() -> (List Int)))
+          (list 1 2 3))
+        """
+        c_code = transpile(source)
+        # Should have array with elements
+        assert ".len = 3" in c_code
+
 
 class TestListOperations:
     """Test list operations transpilation"""

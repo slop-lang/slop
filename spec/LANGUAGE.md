@@ -214,11 +214,23 @@ identifier               ; Variable reference
 (name arg1 arg2...)              ; Application
 
 ; Data construction
-(array e1 e2...)                     ; Fixed array literal
-(list e1 e2...)                      ; Dynamic list
-(map (k1 v1) (k2 v2)...)             ; Map literal
-(record-new Type (f1 v1) (f2 v2)...) ; Struct construction
-(union-new Type Tag value)           ; Tagged union construction
+(array e1 e2...)                         ; Fixed array literal
+(list [Type] e1 e2...)                   ; Dynamic list (Type optional)
+(map [KeyType ValueType] (k1 v1)...)     ; Map literal (types optional)
+(record-new Type (f1 v1) (f2 v2)...)     ; Struct construction
+(union-new Type Tag value)               ; Tagged union construction
+
+; Collection Literal Type Inference:
+; When explicit type is provided, it is used directly:
+;   (list Int 1 2 3)              → (List Int)
+;   (map String Int ("a" 1))      → (Map String Int)
+;
+; When type is omitted, inference follows these rules:
+;   1. Binding with annotation: (let ((x (List Int) (list 1 2))) ...) → infer from binding
+;   2. Passed to typed param: (fn ((lst (List Int))) ...) called with (list 1 2) → infer from param
+;   3. Return with @spec: function returns (List Int), (list 1 2) → infer from spec
+;   4. Non-empty, no context: (list 1 2 3) → infer from first element
+;   5. Empty, no context: (list) → ERROR: explicit type required
 
 ; Data access
 (. expr field)                   ; Field access (see semantics below)
