@@ -111,6 +111,17 @@ TOPICS = {
   (@post (== (* $result b) a))
   (/ a b))
 
+### Assumptions (for FFI and trusted behavior)
+(@assume condition)        ; Trusted axiom for verification
+
+; Use @assume for FFI wrappers where behavior can't be verified
+; The verifier trusts @assume as an axiom, runtime still checks it
+(fn abs-float ((x Float))
+  (@intent "Return absolute value of float")
+  (@spec ((Float) -> Float))
+  (@assume (>= $result 0.0))   ; Tell verifier to trust this
+  (fabs x))                    ; FFI call - verifier can't analyze
+
 ### Function Properties
 (@pure)                    ; No side effects, deterministic
 (@alloc arena)             ; Allocates in specified arena

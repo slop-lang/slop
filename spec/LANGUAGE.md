@@ -158,6 +158,7 @@ literal     = number | string | 'true | 'false | 'nil
 ; Optional annotations
 (@pre boolean-expr)              ; Precondition
 (@post boolean-expr)             ; Postcondition ($result for return value)
+(@assume boolean-expr)           ; Trusted axiom for verification (e.g., FFI behavior)
 (@example (args...) -> result)   ; Example for testing
 (@property (forall (x T) expr))  ; Property that should hold
 (@deprecated "message")          ; Mark as deprecated with migration hint
