@@ -2289,8 +2289,25 @@ class TypeChecker:
     # Module-Level Checking
     # ========================================================================
 
+    def _validate_module_structure(self, ast: List[SExpr]):
+        """Validate that definitions are inside module forms when one exists."""
+        has_module = any(is_form(form, 'module') for form in ast)
+
+        if has_module:
+            for form in ast:
+                if isinstance(form, SList) and len(form) > 0:
+                    form_type = form[0].name if isinstance(form[0], Symbol) else str(form[0])
+                    if form_type in ('fn', 'impl', 'type', 'const'):
+                        self.error(
+                            f"'{form_type}' definition must be inside (module ...) form",
+                            form
+                        )
+
     def check_module(self, ast: List[SExpr]) -> List[TypeDiagnostic]:
         """Type check an entire module"""
+        # Validate module structure first
+        self._validate_module_structure(ast)
+
         # Flatten module forms - extract contents from (module name ...)
         forms = []
         for form in ast:
