@@ -595,28 +595,40 @@ class TypeChecker:
     # Expression Type Inference
     # ========================================================================
 
+    def _set_type(self, expr: SExpr, typ: Type) -> Type:
+        """Annotate expression with resolved type and return it.
+
+        This allows the transpiler to read types directly from AST nodes
+        instead of re-inferring them.
+        """
+        expr.resolved_type = typ
+        return typ
+
     def infer_expr(self, expr: SExpr) -> Type:
-        """Infer type of expression"""
+        """Infer type of expression and annotate the AST node."""
         if isinstance(expr, Number):
             if isinstance(expr.value, float) or '.' in str(expr.value):
-                return PrimitiveType('Float')
+                return self._set_type(expr, PrimitiveType('Float'))
             val = int(expr.value)
-            return RangeType('Int', RangeBounds(val, val))
+            return self._set_type(expr, RangeType('Int', RangeBounds(val, val)))
 
         if isinstance(expr, String):
             # Return registered String type (RecordType) for proper field access
-            return self.env.lookup_type('String') or PrimitiveType('String')
+            typ = self.env.lookup_type('String') or PrimitiveType('String')
+            return self._set_type(expr, typ)
 
         if isinstance(expr, Symbol):
-            return self._infer_symbol(expr)
+            typ = self._infer_symbol(expr)
+            return self._set_type(expr, typ)
 
         if isinstance(expr, SList):
             if len(expr) == 0:
                 # Empty list () is Unit
-                return PrimitiveType('Unit')
-            return self._infer_compound(expr)
+                return self._set_type(expr, PrimitiveType('Unit'))
+            typ = self._infer_compound(expr)
+            return self._set_type(expr, typ)
 
-        return UNKNOWN
+        return self._set_type(expr, UNKNOWN)
 
     def _infer_symbol(self, sym: Symbol) -> Type:
         """Infer type of symbol reference"""
@@ -2619,6 +2631,16 @@ def check_source(source: str, filename: str = "<string>") -> List[TypeDiagnostic
     from slop.parser import parse
     ast = parse(source)
     checker = TypeChecker(filename)
+    return checker.check_module(ast)
+
+
+def check_source_ast(ast: List, source_path: str = "<stdin>") -> List[TypeDiagnostic]:
+    """Type check an already-parsed AST.
+
+    This allows sharing AST between type checker and transpiler,
+    so resolved_type annotations can flow through.
+    """
+    checker = TypeChecker(source_path)
     return checker.check_module(ast)
 
 

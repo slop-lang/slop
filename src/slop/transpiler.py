@@ -58,7 +58,7 @@ class Transpiler:
     }
 
     # SLOP forms that should be transpiled as statements, not expressions
-    STATEMENT_FORMS = {'for-each', 'for', 'while', 'set!', 'if', 'when', 'unless'}
+    STATEMENT_FORMS = {'for-each', 'for', 'while', 'set!', 'if', 'when'}
 
     def __init__(self):
         self.types: Dict[str, TypeInfo] = {}
@@ -132,6 +132,55 @@ class Transpiler:
         """Strip leading quote from quoted symbols: 'Fizz -> Fizz"""
         return name[1:] if name.startswith("'") else name
 
+    # ========================================================================
+    # Resolved Type Helpers
+    # ========================================================================
+
+    def _get_resolved_type(self, expr: SExpr):
+        """Get resolved type from AST node if available (set by type checker)."""
+        return getattr(expr, 'resolved_type', None)
+
+    def _is_pointer_type_resolved(self, typ) -> bool:
+        """Check if a resolved Type is a pointer type."""
+        # Import here to avoid circular dependency
+        from slop.types import PtrType
+        return isinstance(typ, PtrType)
+
+    def _is_string_type_resolved(self, typ) -> bool:
+        """Check if a resolved Type is a string type."""
+        from slop.types import PrimitiveType, RecordType
+        if isinstance(typ, PrimitiveType) and typ.name == 'String':
+            return True
+        # String is also a RecordType with name 'String'
+        if isinstance(typ, RecordType) and typ.name == 'String':
+            return True
+        return False
+
+    def _type_to_print_category(self, typ) -> str:
+        """Convert a resolved Type to print category: 'String', 'Bool', 'Float', 'Char', or 'Int'."""
+        from slop.types import PrimitiveType, RangeType, RecordType
+        if isinstance(typ, PrimitiveType):
+            if typ.name == 'String':
+                return 'String'
+            elif typ.name == 'Bool':
+                return 'Bool'
+            elif typ.name == 'Float':
+                return 'Float'
+            elif typ.name == 'Char':
+                return 'Char'
+            else:
+                return 'Int'
+        elif isinstance(typ, RangeType):
+            if typ.base_type == 'Float':
+                return 'Float'
+            return 'Int'
+        elif isinstance(typ, RecordType):
+            if typ.name == 'String':
+                return 'String'
+        return 'Int'  # Default to Int
+
+    # ========================================================================
+
     def _is_pointer_type(self, type_expr: SExpr) -> bool:
         """Check if a type expression is a pointer type"""
         if isinstance(type_expr, SList) and len(type_expr) >= 1:
@@ -142,6 +191,12 @@ class Transpiler:
 
     def _is_pointer_expr(self, expr: SExpr) -> bool:
         """Check if an expression is known to return a pointer"""
+        # Try resolved type first (set by type checker)
+        resolved = self._get_resolved_type(expr)
+        if resolved is not None:
+            return self._is_pointer_type_resolved(resolved)
+
+        # Fall back to heuristics
         if isinstance(expr, Symbol):
             name = expr.name
             # Check explicit pointer tracking
@@ -377,6 +432,13 @@ class Transpiler:
 
         Returns: 'String', 'Bool', 'Float', 'Char', or 'Int' (default for integers/ranges)
         """
+        # Try resolved type first (set by type checker)
+        resolved = self._get_resolved_type(expr)
+        if resolved is not None:
+            return self._type_to_print_category(resolved)
+
+        # Fall back to heuristics
+
         # Number literal
         if isinstance(expr, Number):
             if isinstance(expr.value, float) or '.' in str(expr.value):
@@ -1095,6 +1157,12 @@ class Transpiler:
 
     def _is_string_expr(self, expr: SExpr) -> bool:
         """Check if expression is a string type"""
+        # Try resolved type first (set by type checker)
+        resolved = self._get_resolved_type(expr)
+        if resolved is not None:
+            return self._is_string_type_resolved(resolved)
+
+        # Fall back to heuristics
         if isinstance(expr, String):
             return True
         if isinstance(expr, Symbol):
@@ -1181,10 +1249,6 @@ class Transpiler:
                 constants.append(form)
             elif is_form(form, 'type'):
                 types.append(form)
-            elif is_form(form, 'record'):
-                types.append(form)
-            elif is_form(form, 'enum'):
-                types.append(form)
             elif is_form(form, 'fn'):
                 functions.append(form)
 
@@ -1211,28 +1275,20 @@ class Transpiler:
         # FIRST PASS: Emit range types and simple aliases
         # These must come before generated types like slop_list_Natural that reference them
         for form in types:
-            if is_form(form, 'type'):
-                type_expr = form[2]
-                # Only process range types/aliases (not records, enums, unions)
-                if not is_form(type_expr, 'record') and not is_form(type_expr, 'enum') and not is_form(type_expr, 'union'):
-                    self.transpile_type(form)
+            type_expr = form[2]
+            # Only process range types/aliases (not records, enums, unions)
+            if not is_form(type_expr, 'record') and not is_form(type_expr, 'enum') and not is_form(type_expr, 'union'):
+                self.transpile_type(form)
 
         # SECOND: Emit generated Option/List/Result types (now base types are defined)
         self._emit_generated_types()
 
         # THIRD PASS: Process records, enums, unions
         for form in types:
-            if is_form(form, 'type'):
-                type_expr = form[2]
-                # Process records, enums, unions (skip range types already processed)
-                if is_form(type_expr, 'record') or is_form(type_expr, 'enum') or is_form(type_expr, 'union'):
-                    self.transpile_type(form)
-            elif is_form(form, 'record'):
-                name = form[1].name if len(form) > 1 and isinstance(form[1], Symbol) else "unnamed"
-                self.transpile_record(name, form)
-            elif is_form(form, 'enum'):
-                name = form[1].name if len(form) > 1 and isinstance(form[1], Symbol) else "unnamed"
-                self.transpile_enum(name, form)
+            type_expr = form[2]
+            # Process records, enums, unions (skip range types already processed)
+            if is_form(type_expr, 'record') or is_form(type_expr, 'enum') or is_form(type_expr, 'union'):
+                self.transpile_type(form)
 
         # Track position where types end (for inserting static literals)
         types_end_pos = len(self.output)
@@ -1391,25 +1447,18 @@ class Transpiler:
         """Check if a record type uses generated types (List, Map, Option, Result) as fields.
 
         These records need to be emitted AFTER generated types.
-        Handles both wrapped (type Name (record ...)) and bare (record Name ...) forms.
+        Expects wrapped form: (type Name (record ...))
         """
-        # Determine the record expression and field start index
-        if is_form(form, 'record'):
-            # Bare form: (record Name (field Type) ...)
-            record_expr = form
-            field_start = 2  # Skip 'record' and name
-        elif is_form(form, 'type') and len(form) >= 3:
-            type_expr = form[2]
-            if not is_form(type_expr, 'record'):
-                return False
-            record_expr = type_expr
-            field_start = 1  # Skip 'record'
-        else:
+        if not is_form(form, 'type') or len(form) < 3:
+            return False
+
+        type_expr = form[2]
+        if not is_form(type_expr, 'record'):
             return False
 
         generated_type_heads = {'List', 'Map', 'Option', 'Result'}
 
-        for field in record_expr.items[field_start:]:
+        for field in type_expr.items[1:]:
             if isinstance(field, SList) and len(field) >= 2:
                 field_type = field[1]
                 if isinstance(field_type, SList) and len(field_type) >= 1:
@@ -1439,10 +1488,6 @@ class Transpiler:
                 constants.append(item)
             elif is_form(item, 'type'):
                 types.append(item)
-            elif is_form(item, 'record'):
-                types.append(item)
-            elif is_form(item, 'enum'):
-                types.append(item)
             elif is_form(item, 'fn'):
                 functions.append(item)
 
@@ -1457,17 +1502,7 @@ class Transpiler:
         enum_types = []
         other_types = []  # Range types, aliases, etc.
         for t in types:
-            # Handle bare (record Name ...) forms
-            if is_form(t, 'record'):
-                type_name = t[1].name
-                record_types.append(t)
-                qualified = self.to_qualified_type_name(type_name)
-                self.emit(f"typedef struct {qualified} {qualified};")
-            # Handle bare (enum Name ...) forms
-            elif is_form(t, 'enum'):
-                enum_types.append(t)
-            # Handle wrapped (type Name expr) forms
-            elif len(t) > 2:
+            if len(t) > 2:
                 type_expr = t[2]
                 if is_form(type_expr, 'record'):
                     type_name = t[1].name
@@ -1483,7 +1518,7 @@ class Transpiler:
 
         # Emit enum types FIRST (they may be referenced in generated result types)
         for t in enum_types:
-            self._transpile_type_or_bare(t)
+            self.transpile_type(t)
 
         # Emit other types (range types, aliases) BEFORE generated types
         for t in other_types:
@@ -1500,7 +1535,7 @@ class Transpiler:
 
         # Emit simple record types (e.g., Pet, NewPet - used by generated types)
         for t in simple_records:
-            self._transpile_type_or_bare(t)
+            self.transpile_type(t)
 
         # Pre-scan types and functions to discover needed generic types
         for t in types:
@@ -1513,7 +1548,7 @@ class Transpiler:
 
         # Emit complex record types (e.g., State - uses generated types)
         for t in complex_records:
-            self._transpile_type_or_bare(t)
+            self.transpile_type(t)
 
         # Pre-pass for functions: track which return pointers
         for fn in functions:
@@ -1661,31 +1696,6 @@ class Transpiler:
 
         # Fallback: stringify
         return str(expr)
-
-    def _transpile_type_or_bare(self, form: SList):
-        """Transpile type definition, handling both wrapped and bare forms.
-
-        Wrapped: (type Name (record ...)) or (type Name (enum ...))
-        Bare: (record Name ...) or (enum Name ...)
-        """
-        if is_form(form, 'record'):
-            # Bare record: (record Name (field Type) ...)
-            raw_name = form[1].name
-            qualified_name = self.to_qualified_type_name(raw_name)
-            self.transpile_record(raw_name, qualified_name, form)
-        elif is_form(form, 'enum'):
-            # Bare enum: (enum Name val1 val2 ...)
-            raw_name = form[1].name
-            qualified_name = self.to_qualified_type_name(raw_name)
-            # Check if this is a tagged union (enum with payload variants)
-            has_payloads = any(isinstance(v, SList) for v in form.items[2:])
-            if has_payloads:
-                self.transpile_union(raw_name, qualified_name, form)
-            else:
-                self.transpile_enum(raw_name, qualified_name, form)
-        else:
-            # Wrapped form: (type Name expr)
-            self.transpile_type(form)
 
     def transpile_type(self, form: SList):
         """Transpile type definition"""
@@ -4441,10 +4451,6 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
         for form in module_forms:
             if is_form(form, 'type'):
                 types.append(form)
-            elif is_form(form, 'record'):
-                types.append(form)
-            elif is_form(form, 'enum'):
-                types.append(form)
             elif is_form(form, 'fn'):
                 functions.append(form)
             elif is_form(form, 'const'):
@@ -4453,14 +4459,7 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
         # Register record types early for forward references
         record_types = []
         for t in types:
-            # Bare record form: (record Name ...)
-            if is_form(t, 'record'):
-                type_name = t[1].name
-                c_type_name = f"{transpiler.to_c_name(mod_name)}_{transpiler.to_c_name(type_name)}"
-                record_types.append(c_type_name)
-                transpiler.types[type_name] = TypeInfo(name=type_name, c_type=c_type_name)
-            # Wrapped form: (type Name (record ...))
-            elif len(t) > 2 and is_form(t[2], 'record'):
+            if len(t) > 2 and is_form(t[2], 'record'):
                 type_name = t[1].name
                 c_type_name = f"{transpiler.to_c_name(mod_name)}_{transpiler.to_c_name(type_name)}"
                 record_types.append(c_type_name)
@@ -4468,29 +4467,9 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
 
         # Pre-scan types to discover needed generated types
         for t in types:
-            # Determine record/union definition based on form type
-            record_def = None
-            union_def = None
-            if is_form(t, 'record'):
-                # Bare record: (record Name (field Type) ...)
-                record_def = t
-                field_start = 2  # Skip 'record' and name
-            elif len(t) > 2 and is_form(t[2], 'record'):
-                # Wrapped: (type Name (record ...))
+            if len(t) > 2 and is_form(t[2], 'record'):
                 record_def = t[2]
-                field_start = 1  # Skip 'record'
-            elif is_form(t, 'enum'):
-                # Bare enum with payloads is a union
-                has_payloads = any(isinstance(v, SList) for v in t.items[2:])
-                if has_payloads:
-                    union_def = t
-                    variant_start = 2
-            elif len(t) > 2 and is_form(t[2], 'union'):
-                union_def = t[2]
-                variant_start = 1
-
-            if record_def:
-                for field in record_def.items[field_start:]:
+                for field in record_def.items[1:]:
                     if isinstance(field, SList) and len(field) >= 2:
                         field_type_expr = field[1]
                         transpiler.to_c_type(field_type_expr)
@@ -4501,8 +4480,9 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
                             elem_id = transpiler._type_to_identifier(elem_c_type)
                             option_type = f"slop_option_{elem_id}"
                             transpiler.generated_option_types.add((option_type, elem_c_type))
-            elif union_def:
-                for variant in union_def.items[variant_start:]:
+            elif len(t) > 2 and is_form(t[2], 'union'):
+                union_def = t[2]
+                for variant in union_def.items[1:]:
                     if isinstance(variant, SList) and len(variant) >= 2:
                         transpiler.to_c_type(variant[1])
 
@@ -4542,14 +4522,7 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
         # Emit enums and range types to header
         transpiler.output = []
         for t in types:
-            # Skip bare record forms - they're handled separately
-            if is_form(t, 'record'):
-                continue
-            # Bare enum form
-            if is_form(t, 'enum'):
-                transpiler._transpile_type_or_bare(t)
-            # Wrapped form
-            elif len(t) > 2:
+            if len(t) > 2:
                 type_expr = t[2]
                 if is_form(type_expr, 'enum') or \
                    (not is_form(type_expr, 'record') and not is_form(type_expr, 'union')):
@@ -4562,14 +4535,7 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
         simple_records = []
         complex_records = []
         for t in types:
-            # Bare record form
-            if is_form(t, 'record'):
-                if transpiler._record_uses_generated_types(t):
-                    complex_records.append(t)
-                else:
-                    simple_records.append(t)
-            # Wrapped form
-            elif len(t) > 2:
+            if len(t) > 2:
                 type_expr = t[2]
                 if is_form(type_expr, 'record'):
                     if transpiler._record_uses_generated_types(t):
@@ -4582,7 +4548,7 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
         # Emit simple record bodies first
         transpiler.output = []
         for t in simple_records:
-            transpiler._transpile_type_or_bare(t)
+            transpiler.transpile_type(t)
         if transpiler.output:
             header_lines.extend(transpiler.output)
             header_lines.append("")
@@ -4596,7 +4562,7 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
         # Emit complex record and union bodies (use generated pointer types)
         transpiler.output = []
         for t in complex_records:
-            transpiler._transpile_type_or_bare(t)
+            transpiler.transpile_type(t)
         if transpiler.output:
             header_lines.extend(transpiler.output)
             header_lines.append("")
