@@ -16,6 +16,7 @@ class Symbol:
     name: str
     line: int = 0
     col: int = 0
+    resolved_type: Optional[Any] = None  # Set by type checker
     def __repr__(self): return self.name
 
 @dataclass
@@ -23,6 +24,7 @@ class String:
     value: str
     line: int = 0
     col: int = 0
+    resolved_type: Optional[Any] = None  # Set by type checker
     def __repr__(self):
         escaped = self.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
         return f'"{escaped}"'
@@ -32,6 +34,7 @@ class Number:
     value: Union[int, float]
     line: int = 0
     col: int = 0
+    resolved_type: Optional[Any] = None  # Set by type checker
     def __repr__(self): return str(self.value)
 
 @dataclass
@@ -39,6 +42,7 @@ class SList:
     items: List['SExpr']
     line: int = 0
     col: int = 0
+    resolved_type: Optional[Any] = None  # Set by type checker
 
     def __repr__(self):
         return f"({' '.join(repr(x) for x in self.items)})"

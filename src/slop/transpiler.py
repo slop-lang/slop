@@ -132,6 +132,55 @@ class Transpiler:
         """Strip leading quote from quoted symbols: 'Fizz -> Fizz"""
         return name[1:] if name.startswith("'") else name
 
+    # ========================================================================
+    # Resolved Type Helpers
+    # ========================================================================
+
+    def _get_resolved_type(self, expr: SExpr):
+        """Get resolved type from AST node if available (set by type checker)."""
+        return getattr(expr, 'resolved_type', None)
+
+    def _is_pointer_type_resolved(self, typ) -> bool:
+        """Check if a resolved Type is a pointer type."""
+        # Import here to avoid circular dependency
+        from slop.types import PtrType
+        return isinstance(typ, PtrType)
+
+    def _is_string_type_resolved(self, typ) -> bool:
+        """Check if a resolved Type is a string type."""
+        from slop.types import PrimitiveType, RecordType
+        if isinstance(typ, PrimitiveType) and typ.name == 'String':
+            return True
+        # String is also a RecordType with name 'String'
+        if isinstance(typ, RecordType) and typ.name == 'String':
+            return True
+        return False
+
+    def _type_to_print_category(self, typ) -> str:
+        """Convert a resolved Type to print category: 'String', 'Bool', 'Float', 'Char', or 'Int'."""
+        from slop.types import PrimitiveType, RangeType, RecordType
+        if isinstance(typ, PrimitiveType):
+            if typ.name == 'String':
+                return 'String'
+            elif typ.name == 'Bool':
+                return 'Bool'
+            elif typ.name == 'Float':
+                return 'Float'
+            elif typ.name == 'Char':
+                return 'Char'
+            else:
+                return 'Int'
+        elif isinstance(typ, RangeType):
+            if typ.base_type == 'Float':
+                return 'Float'
+            return 'Int'
+        elif isinstance(typ, RecordType):
+            if typ.name == 'String':
+                return 'String'
+        return 'Int'  # Default to Int
+
+    # ========================================================================
+
     def _is_pointer_type(self, type_expr: SExpr) -> bool:
         """Check if a type expression is a pointer type"""
         if isinstance(type_expr, SList) and len(type_expr) >= 1:
@@ -142,6 +191,12 @@ class Transpiler:
 
     def _is_pointer_expr(self, expr: SExpr) -> bool:
         """Check if an expression is known to return a pointer"""
+        # Try resolved type first (set by type checker)
+        resolved = self._get_resolved_type(expr)
+        if resolved is not None:
+            return self._is_pointer_type_resolved(resolved)
+
+        # Fall back to heuristics
         if isinstance(expr, Symbol):
             name = expr.name
             # Check explicit pointer tracking
@@ -377,6 +432,13 @@ class Transpiler:
 
         Returns: 'String', 'Bool', 'Float', 'Char', or 'Int' (default for integers/ranges)
         """
+        # Try resolved type first (set by type checker)
+        resolved = self._get_resolved_type(expr)
+        if resolved is not None:
+            return self._type_to_print_category(resolved)
+
+        # Fall back to heuristics
+
         # Number literal
         if isinstance(expr, Number):
             if isinstance(expr.value, float) or '.' in str(expr.value):
@@ -1095,6 +1157,12 @@ class Transpiler:
 
     def _is_string_expr(self, expr: SExpr) -> bool:
         """Check if expression is a string type"""
+        # Try resolved type first (set by type checker)
+        resolved = self._get_resolved_type(expr)
+        if resolved is not None:
+            return self._is_string_type_resolved(resolved)
+
+        # Fall back to heuristics
         if isinstance(expr, String):
             return True
         if isinstance(expr, Symbol):

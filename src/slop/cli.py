@@ -1362,9 +1362,11 @@ def cmd_build(args):
             if total_holes > 0:
                 print(f"  Warning: {total_holes} unfilled holes")
 
-            # Type check
+            # Type check using the already-parsed AST
+            # This annotates AST nodes with resolved_type for the transpiler to use
             print("  Type checking...")
-            diagnostics = check_file(str(input_path))
+            from slop.type_checker import check_source_ast
+            diagnostics = check_source_ast(ast, str(input_path))
             type_errors = [d for d in diagnostics if d.severity == 'error']
             type_warnings = [d for d in diagnostics if d.severity == 'warning']
 
@@ -1382,11 +1384,10 @@ def cmd_build(args):
             else:
                 print("  Type check passed")
 
-            # Transpile
+            # Transpile using the same AST (now has resolved_type annotations)
             print("  Transpiling to C...")
-            with open(input_path) as f:
-                source = f.read()
-            c_code = transpile(source)
+            from slop.transpiler import Transpiler
+            c_code = Transpiler().transpile(ast)
 
         c_file = f"{output}.c"
         with open(c_file, 'w') as f:
