@@ -110,6 +110,7 @@ class Transpiler:
             'U16': 'uint16_t',
             'U32': 'uint32_t',
             'U64': 'uint64_t',
+            'Char': 'char',  # For C string interop (strtol, etc.)
             'Float': 'double',
             'F32': 'float',
             'Bool': 'uint8_t',
@@ -2149,6 +2150,10 @@ class Transpiler:
         bindings = expr[1]
         body = expr.items[2:]
 
+        # Open a new C block scope - allows variable shadowing without redefinition errors
+        self.emit("{")
+        self.indent += 1
+
         # Push scope for ScopedPtr tracking
         self._push_scoped_scope()
 
@@ -2239,10 +2244,18 @@ class Transpiler:
             if scoped:
                 self._emit_scoped_cleanup(scoped)
 
+        # Close the C block scope
+        self.indent -= 1
+        self.emit("}")
+
     def transpile_let_with_capture(self, expr: SList, capture_var: str):
         """Transpile let binding, capturing the final value in a variable"""
         bindings = expr[1]
         body = expr.items[2:]
+
+        # Open a new C block scope - allows variable shadowing without redefinition errors
+        self.emit("{")
+        self.indent += 1
 
         # Push scope for ScopedPtr tracking
         self._push_scoped_scope()
@@ -2305,6 +2318,10 @@ class Transpiler:
         scoped = self._pop_scoped_scope()
         if scoped:
             self._emit_scoped_cleanup(scoped)
+
+        # Close the C block scope
+        self.indent -= 1
+        self.emit("}")
 
     def transpile_if(self, expr: SList, is_return: bool):
         """Transpile if expression"""
@@ -2886,9 +2903,17 @@ class Transpiler:
                     # Emit bindings
                     for binding in bindings.items:
                         if isinstance(binding, SList) and len(binding) >= 2:
-                            var_name = self.to_c_name(binding[0].name)
-                            # Handle typed bindings: (name Type init) vs untyped: (name init)
-                            init_expr = binding[2] if len(binding) >= 3 else binding[1]
+                            # Skip 'mut' keyword if present: (mut name init) or (mut name Type init)
+                            idx = 0
+                            if isinstance(binding[0], Symbol) and binding[0].name == 'mut':
+                                idx = 1
+
+                            var_name = self.to_c_name(binding[idx].name)
+                            # Handle typed bindings: (name Type init) or (mut name Type init) vs untyped
+                            if len(binding) >= idx + 3:
+                                init_expr = binding[idx + 2]  # typed: (name Type init)
+                            else:
+                                init_expr = binding[idx + 1]  # untyped: (name init)
                             val = self.transpile_expr(init_expr)
                             parts.append(f" __auto_type {var_name} = {val};")
 
@@ -3033,8 +3058,10 @@ class Transpiler:
                         c_type = self.to_c_type(size_expr)
                         return f"(({c_type}*)slop_arena_alloc({arena}, sizeof({c_type})))"
                     else:
+                        # No type info available - default to uint8_t* for byte-level access
+                        # This allows (@ buf i) to work without void* indexing errors
                         size = self.transpile_expr(size_expr)
-                        return f"slop_arena_alloc({arena}, {size})"
+                        return f"(uint8_t*)slop_arena_alloc({arena}, {size})"
 
                 if op == 'make-scoped':
                     # (make-scoped Type count) -> malloc allocation with auto-cleanup
