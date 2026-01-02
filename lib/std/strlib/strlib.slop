@@ -1,47 +1,47 @@
-;; ============================================================
-;; Strings Standard Library
-;;
-;; Advanced string and character operations for SLOP.
-;;
-;; Provides:
-;; - Character classification (is-alpha, is-digit, etc.)
-;; - Character case conversion
-;; - String searching (index-of, contains, starts-with, ends-with)
-;; - String manipulation (trim, pad, reverse, repeat)
-;; - String case conversion (to-upper, to-lower)
-;; - String parsing (parse-int, parse-float)
-;; - String formatting (join, replace)
-;; ============================================================
-
 (module strlib
   (export
-    ;; Types
-    ParseError AsciiChar
-    ;; Character classification
-    is-alpha is-digit is-alnum is-space is-upper is-lower
-    is-ascii is-printable is-control
-    ;; Character conversion
-    char-to-upper char-to-lower
-    ;; String searching
-    index-of last-index-of contains starts-with ends-with
+    ParseError
+    AsciiChar
+    is-alpha
+    is-digit
+    is-alnum
+    is-space
+    is-upper
+    is-lower
+    is-ascii
+    is-printable
+    is-control
+    char-to-upper
+    char-to-lower
+    index-of
+    last-index-of
+    contains
+    starts-with
+    ends-with
     count-occurrences
-    ;; String manipulation
-    trim trim-start trim-end
-    pad-start pad-end
-    reverse repeat
+    trim
+    trim-start
+    trim-end
+    pad-start
+    pad-end
+    reverse
+    repeat
     substring
-    ;; String case conversion
-    to-upper to-lower to-title capitalize
-    ;; String parsing
-    parse-int parse-float
-    ;; String formatting
-    join replace replace-all
-    ;; String comparison
-    compare compare-ignore-case)
-
-  ;; ============================================================
-  ;; FFI Declarations
-  ;; ============================================================
+    to-upper
+    to-lower
+    to-title
+    capitalize
+    parse-int
+    parse-float
+    join
+    replace
+    replace-all
+    compare
+    compare-ignore-case
+    string-char-at
+    char-is-symbol-start
+    char-is-symbol-char
+    char-is-operator)
 
   (ffi "ctype.h"
     (isalpha ((c Int)) Int)
@@ -66,74 +66,60 @@
     (strcmp ((s1 (Ptr U8)) (s2 (Ptr U8))) Int)
     (strncmp ((s1 (Ptr U8)) (s2 (Ptr U8)) (n U64)) Int))
 
-  ;; ============================================================
-  ;; Types
-  ;; ============================================================
+  (type ParseError (enum empty-string invalid-format overflow underflow))
 
-  ;; Parse errors
-  (type ParseError (enum
-    empty-string      ;; Input string is empty
-    invalid-format    ;; String is not valid for the target type
-    overflow          ;; Value too large for target type
-    underflow))       ;; Value too small for target type
-
-  ;; ASCII character range
   (type AsciiChar (Int 0 .. 127))
-
-  ;; ============================================================
-  ;; Character Classification
-  ;; ============================================================
 
   (fn is-alpha ((c AsciiChar))
     (@intent "Check if character is alphabetic (a-z, A-Z)")
     (@spec ((AsciiChar) -> Bool))
     (@pure)
-    (@example (65) -> true)   ;; 'A'
-    (@example (97) -> true)   ;; 'a'
-    (@example (48) -> false)  ;; '0'
+    (@example (65) -> true)
+    (@example (97) -> true)
+    (@example (48) -> false)
     (!= (isalpha (cast Int c)) 0))
 
   (fn is-digit ((c AsciiChar))
     (@intent "Check if character is a decimal digit (0-9)")
     (@spec ((AsciiChar) -> Bool))
     (@pure)
-    (@example (48) -> true)   ;; '0'
-    (@example (57) -> true)   ;; '9'
-    (@example (65) -> false)  ;; 'A'
+    (@example (48) -> true)
+    (@example (57) -> true)
+    (@example (65) -> false)
     (!= (isdigit (cast Int c)) 0))
 
   (fn is-alnum ((c AsciiChar))
     (@intent "Check if character is alphanumeric (a-z, A-Z, 0-9)")
     (@spec ((AsciiChar) -> Bool))
     (@pure)
-    (@example (65) -> true)   ;; 'A'
-    (@example (48) -> true)   ;; '0'
-    (@example (32) -> false)  ;; ' '
+    (@example (65) -> true)
+    (@example (48) -> true)
+    (@example (32) -> false)
     (!= (isalnum (cast Int c)) 0))
 
   (fn is-space ((c AsciiChar))
     (@intent "Check if character is whitespace (space, tab, newline, etc.)")
     (@spec ((AsciiChar) -> Bool))
     (@pure)
-    (@example (32) -> true)   ;; ' '
-    (@example (9) -> true)    ;; '\t'
-    (@example (65) -> false)  ;; 'A'
+    (@example (32) -> true)
+    (@example (9) -> true)
+    (@example (65) -> false)
     (!= (isspace (cast Int c)) 0))
 
   (fn is-upper ((c AsciiChar))
     (@intent "Check if character is uppercase (A-Z)")
     (@spec ((AsciiChar) -> Bool))
     (@pure)
-    (@example (65) -> true)   ;; 'A'
-    (@example (97) -> false)  ;; 'a'
+    (@example (65) -> true)
+    (@example (97) -> false)
     (!= (isupper (cast Int c)) 0))
 
   (fn is-lower ((c AsciiChar))
     (@intent "Check if character is lowercase (a-z)")
     (@spec ((AsciiChar) -> Bool))
     (@pure)
-    (@example (97) -> true)   ;; 'a'
-    (@example (65) -> false)  ;; 'A'
+    (@example (97) -> true)
+    (@example (65) -> false)
     (!= (islower (cast Int c)) 0))
 
   (fn is-ascii ((c Int))
@@ -149,48 +135,41 @@
     (@intent "Check if character is printable (visible or space)")
     (@spec ((AsciiChar) -> Bool))
     (@pure)
-    (@example (65) -> true)   ;; 'A'
-    (@example (32) -> true)   ;; ' '
-    (@example (0) -> false)   ;; NUL
+    (@example (65) -> true)
+    (@example (32) -> true)
+    (@example (0) -> false)
     (!= (isprint (cast Int c)) 0))
 
   (fn is-control ((c AsciiChar))
     (@intent "Check if character is a control character")
     (@spec ((AsciiChar) -> Bool))
     (@pure)
-    (@example (0) -> true)    ;; NUL
-    (@example (27) -> true)   ;; ESC
-    (@example (65) -> false)  ;; 'A'
+    (@example (0) -> true)
+    (@example (27) -> true)
+    (@example (65) -> false)
     (!= (iscntrl (cast Int c)) 0))
-
-  ;; ============================================================
-  ;; Character Conversion
-  ;; ============================================================
 
   (fn char-to-upper ((c AsciiChar))
     (@intent "Convert character to uppercase if alphabetic")
     (@spec ((AsciiChar) -> AsciiChar))
     (@pure)
-    (@example (97) -> 65)     ;; 'a' -> 'A'
-    (@example (65) -> 65)     ;; 'A' -> 'A'
-    (@example (48) -> 48)     ;; '0' -> '0'
+    (@example (97) -> 65)
+    (@example (65) -> 65)
+    (@example (48) -> 48)
     (cast AsciiChar (toupper (cast Int c))))
 
   (fn char-to-lower ((c AsciiChar))
     (@intent "Convert character to lowercase if alphabetic")
     (@spec ((AsciiChar) -> AsciiChar))
     (@pure)
-    (@example (65) -> 97)     ;; 'A' -> 'a'
-    (@example (97) -> 97)     ;; 'a' -> 'a'
-    (@example (48) -> 48)     ;; '0' -> '0'
+    (@example (65) -> 97)
+    (@example (97) -> 97)
+    (@example (48) -> 48)
     (cast AsciiChar (tolower (cast Int c))))
 
-  ;; ============================================================
-  ;; String Searching
-  ;; ============================================================
-
   (fn index-of ((haystack String) (needle String))
-    (@intent "Find first occurrence of needle in haystack, or none if not found")
+    (@intent
+      "Find first occurrence of needle in haystack, or none if not found")
     (@spec ((String String) -> (Option (Int 0 ..))))
     (@pure)
     (@example ("hello world" "world") -> (some 6))
@@ -207,13 +186,13 @@
               (let ((mut match-found true)
                     (mut j 0))
                 (while (and (< j nlen) match-found)
-                  (if (!= (cast Int (@ (. haystack data) (+ i j)))
-                          (cast Int (@ (. needle data) j)))
+                  (if (!=
+                      (cast Int (@ (. haystack data) (+ i j)))
+                      (cast Int (@ (. needle data) j)))
                     (set! match-found false)
                     (set! j (+ j 1))))
-                (if match-found
-                  (return (some (cast (Int 0 ..) i)))
-                  (set! i (+ i 1)))))
+                (when match-found (return (some (cast (Int 0 ..) i))))
+                (set! i (+ i 1))))
             none)))))
 
   (fn last-index-of ((haystack String) (needle String))
@@ -233,14 +212,14 @@
               (let ((mut match-found true)
                     (mut j 0))
                 (while (and (< j nlen) match-found)
-                  (if (!= (cast Int (@ (. haystack data) (+ i j)))
-                          (cast Int (@ (. needle data) j)))
+                  (if (!=
+                      (cast Int (@ (. haystack data) (+ i j)))
+                      (cast Int (@ (. needle data) j)))
                     (set! match-found false)
                     (set! j (+ j 1))))
-                (if match-found
-                  (return (some (cast (Int 0 ..) i)))
-                  (set! i (- i 1)))))
-            none)))))
+                (when match-found (return (some (cast (Int 0 ..) i))))
+                (set! i (- i 1))))
+                none)))))
 
   (fn contains ((haystack String) (needle String))
     (@intent "Check if string contains substring")
@@ -262,9 +241,12 @@
     (@example ("hi" "") -> true)
     (if (> (. prefix len) (. s len))
       false
-      (== (strncmp (cast (Ptr U8) (. s data))
-                   (cast (Ptr U8) (. prefix data))
-                   (. prefix len)) 0)))
+      (==
+        (strncmp
+          (cast (Ptr U8) (. s data))
+          (cast (Ptr U8) (. prefix data))
+          (. prefix len))
+        0)))
 
   (fn ends-with ((s String) (suffix String))
     (@intent "Check if string ends with suffix")
@@ -276,9 +258,12 @@
     (if (> (. suffix len) (. s len))
       false
       (let ((offset (- (. s len) (. suffix len))))
-        (== (strncmp (cast (Ptr U8) (+ (. s data) offset))
-                     (cast (Ptr U8) (. suffix data))
-                     (. suffix len)) 0))))
+        (==
+          (strncmp
+            (cast (Ptr U8) (+ (. s data) offset))
+            (cast (Ptr U8) (. suffix data))
+            (. suffix len))
+          0))))
 
   (fn count-occurrences ((haystack String) (needle String))
     (@intent "Count non-overlapping occurrences of needle in haystack")
@@ -297,20 +282,15 @@
           (let ((mut match-found true)
                 (mut j 0))
             (while (and (< j nlen) match-found)
-              (if (!= (cast Int (@ (. haystack data) (+ pos j)))
-                      (cast Int (@ (. needle data) j)))
+              (if (!=
+                  (cast Int (@ (. haystack data) (+ pos j)))
+                  (cast Int (@ (. needle data) j)))
                 (set! match-found false)
                 (set! j (+ j 1))))
             (if match-found
-              (do
-                (set! count (+ count 1))
-                (set! pos (+ pos nlen)))
+              (do (set! count (+ count 1)) (set! pos (+ pos nlen)))
               (set! pos (+ pos 1)))))
         (cast (Int 0 ..) count))))
-
-  ;; ============================================================
-  ;; String Manipulation
-  ;; ============================================================
 
   (fn trim ((arena Arena) (s String))
     (@intent "Remove leading and trailing whitespace")
@@ -325,21 +305,18 @@
         s
         (let ((mut start 0)
               (mut end slen))
-          ;; Find start (first non-whitespace)
-          (while (and (< start slen)
-                      (is-space (cast AsciiChar (@ (. s data) start))))
+          (while (and (< start slen) (is-space (cast AsciiChar (@ (. s data) start))))
             (set! start (+ start 1)))
-          ;; Find end (last non-whitespace + 1)
-          (while (and (> end start)
-                      (is-space (cast AsciiChar (@ (. s data) (- end 1)))))
+          (while (and (> end start) (is-space (cast AsciiChar (@ (. s data) (- end 1)))))
             (set! end (- end 1)))
           (let ((newlen (- end start)))
             (if (== newlen 0)
               (String (cast (Ptr U8) (arena-alloc arena 1)) (cast U64 0))
               (let ((buf (arena-alloc arena (+ newlen 1))))
-                (memcpy (cast (Ptr Void) buf)
-                        (cast (Ptr Void) (+ (. s data) start))
-                        (cast U64 newlen))
+                (memcpy
+                  (cast (Ptr Void) buf)
+                  (cast (Ptr Void) (+ (. s data) start))
+                  (cast U64 newlen))
                 (String (cast (Ptr U8) buf) (cast U64 newlen)))))))))
 
   (fn trim-start ((arena Arena) (s String))
@@ -353,16 +330,16 @@
       (if (== slen 0)
         s
         (let ((mut start 0))
-          (while (and (< start slen)
-                      (is-space (cast AsciiChar (@ (. s data) start))))
+          (while (and (< start slen) (is-space (cast AsciiChar (@ (. s data) start))))
             (set! start (+ start 1)))
           (let ((newlen (- slen start)))
             (if (== newlen 0)
               (String (cast (Ptr U8) (arena-alloc arena 1)) (cast U64 0))
               (let ((buf (arena-alloc arena (+ newlen 1))))
-                (memcpy (cast (Ptr Void) buf)
-                        (cast (Ptr Void) (+ (. s data) start))
-                        (cast U64 newlen))
+                (memcpy
+                  (cast (Ptr Void) buf)
+                  (cast (Ptr Void) (+ (. s data) start))
+                  (cast U64 newlen))
                 (String (cast (Ptr U8) buf) (cast U64 newlen)))))))))
 
   (fn trim-end ((arena Arena) (s String))
@@ -376,15 +353,15 @@
       (if (== slen 0)
         s
         (let ((mut end slen))
-          (while (and (> end 0)
-                      (is-space (cast AsciiChar (@ (. s data) (- end 1)))))
+          (while (and (> end 0) (is-space (cast AsciiChar (@ (. s data) (- end 1)))))
             (set! end (- end 1)))
           (if (== end 0)
             (String (cast (Ptr U8) (arena-alloc arena 1)) (cast U64 0))
             (let ((buf (arena-alloc arena (+ end 1))))
-              (memcpy (cast (Ptr Void) buf)
-                      (cast (Ptr Void) (. s data))
-                      (cast U64 end))
+              (memcpy
+                (cast (Ptr Void) buf)
+                (cast (Ptr Void) (. s data))
+                (cast U64 end))
               (String (cast (Ptr U8) buf) (cast U64 end))))))))
 
   (fn pad-start ((arena Arena) (s String) (target-len (Int 0 ..)) (pad-char AsciiChar))
@@ -399,10 +376,14 @@
         s
         (let ((pad-count (- target-len slen))
               (buf (arena-alloc arena (+ target-len 1))))
-          (memset (cast (Ptr Void) buf) (cast Int pad-char) (cast U64 pad-count))
-          (memcpy (cast (Ptr Void) (+ buf pad-count))
-                  (cast (Ptr Void) (. s data))
-                  (cast U64 slen))
+          (memset
+            (cast (Ptr Void) buf)
+            (cast Int pad-char)
+            (cast U64 pad-count))
+          (memcpy
+            (cast (Ptr Void) (+ buf pad-count))
+            (cast (Ptr Void) (. s data))
+            (cast U64 slen))
           (String (cast (Ptr U8) buf) (cast U64 target-len))))))
 
   (fn pad-end ((arena Arena) (s String) (target-len (Int 0 ..)) (pad-char AsciiChar))
@@ -417,10 +398,14 @@
         s
         (let ((pad-count (- target-len slen))
               (buf (arena-alloc arena (+ target-len 1))))
-          (memcpy (cast (Ptr Void) buf)
-                  (cast (Ptr Void) (. s data))
-                  (cast U64 slen))
-          (memset (cast (Ptr Void) (+ buf slen)) (cast Int pad-char) (cast U64 pad-count))
+          (memcpy
+            (cast (Ptr Void) buf)
+            (cast (Ptr Void) (. s data))
+            (cast U64 slen))
+          (memset
+            (cast (Ptr Void) (+ buf slen))
+            (cast Int pad-char)
+            (cast U64 pad-count))
           (String (cast (Ptr U8) buf) (cast U64 target-len))))))
 
   (fn reverse ((arena Arena) (s String))
@@ -458,9 +443,10 @@
               (mut i 0))
           (while (< i n)
             (do
-              (memcpy (cast (Ptr Void) (+ buf (* i slen)))
-                      (cast (Ptr Void) (. s data))
-                      (cast U64 slen))
+              (memcpy
+                (cast (Ptr Void) (+ buf (* i slen)))
+                (cast (Ptr Void) (. s data))
+                (cast U64 slen))
               (set! i (+ i 1))))
           (String (cast (Ptr U8) buf) (cast U64 total-len))))))
 
@@ -469,7 +455,7 @@
     (@spec ((Arena String (Int 0 ..) (Int 0 ..)) -> String))
     (@alloc arena)
     (@pure)
-    (@pre {start <= (. s len)})
+    (@pre (<= start (. s len)))
     (@example (arena "hello world" 0 5) -> "hello")
     (@example (arena "hello world" 6 5) -> "world")
     (let ((slen (cast Int (. s len)))
@@ -477,14 +463,11 @@
       (if (== actual-len 0)
         (String (cast (Ptr U8) (arena-alloc arena 1)) (cast U64 0))
         (let ((buf (arena-alloc arena (+ actual-len 1))))
-          (memcpy (cast (Ptr Void) buf)
-                  (cast (Ptr Void) (+ (. s data) start))
-                  (cast U64 actual-len))
+          (memcpy
+            (cast (Ptr Void) buf)
+            (cast (Ptr Void) (+ (. s data) start))
+            (cast U64 actual-len))
           (String (cast (Ptr U8) buf) (cast U64 actual-len))))))
-
-  ;; ============================================================
-  ;; String Case Conversion
-  ;; ============================================================
 
   (fn to-upper ((arena Arena) (s String))
     (@intent "Convert all characters to uppercase")
@@ -500,7 +483,9 @@
               (mut i 0))
           (while (< i slen)
             (do
-              (set! (@ buf i) (cast U8 (char-to-upper (cast AsciiChar (@ (. s data) i)))))
+              (set!
+                (@ buf i)
+                (cast U8 (char-to-upper (cast AsciiChar (@ (. s data) i)))))
               (set! i (+ i 1))))
           (String (cast (Ptr U8) buf) (cast U64 slen))))))
 
@@ -518,7 +503,9 @@
               (mut i 0))
           (while (< i slen)
             (do
-              (set! (@ buf i) (cast U8 (char-to-lower (cast AsciiChar (@ (. s data) i)))))
+              (set!
+                (@ buf i)
+                (cast U8 (char-to-lower (cast AsciiChar (@ (. s data) i)))))
               (set! i (+ i 1))))
           (String (cast (Ptr U8) buf) (cast U64 slen))))))
 
@@ -538,9 +525,7 @@
           (while (< i slen)
             (let ((c (cast AsciiChar (@ (. s data) i))))
               (if (is-space c)
-                (do
-                  (set! (@ buf i) (cast U8 c))
-                  (set! word-start true))
+                (do (set! (@ buf i) (cast U8 c)) (set! word-start true))
                 (if word-start
                   (do
                     (set! (@ buf i) (cast U8 (char-to-upper c)))
@@ -561,16 +546,15 @@
       (if (== slen 0)
         s
         (let ((buf (arena-alloc arena (+ slen 1))))
-          (set! (@ buf 0) (cast U8 (char-to-upper (cast AsciiChar (@ (. s data) 0)))))
+          (set!
+            (@ buf 0)
+            (cast U8 (char-to-upper (cast AsciiChar (@ (. s data) 0)))))
           (when (> slen 1)
-            (memcpy (cast (Ptr Void) (+ buf 1))
-                    (cast (Ptr Void) (+ (. s data) 1))
-                    (cast U64 (- slen 1))))
+            (memcpy
+              (cast (Ptr Void) (+ buf 1))
+              (cast (Ptr Void) (+ (. s data) 1))
+              (cast U64 (- slen 1))))
           (String (cast (Ptr U8) buf) (cast U64 slen))))))
-
-  ;; ============================================================
-  ;; String Parsing
-  ;; ============================================================
 
   (fn parse-int ((s String))
     (@intent "Parse string as decimal integer")
@@ -584,9 +568,7 @@
       (error 'empty-string)
       (with-arena 16
         (let ((endptr (arena-alloc arena 8))
-              (result (strtol (cast (Ptr Char) (. s data))
-                              (cast (Ptr (Ptr Char)) endptr)
-                              10)))
+              (result (strtol (cast (Ptr Char) (. s data)) (cast (Ptr (Ptr Char)) endptr) 10)))
           (let ((end-val (deref (cast (Ptr (Ptr Char)) endptr))))
             (if (== end-val (cast (Ptr Char) (. s data)))
               (error 'invalid-format)
@@ -604,16 +586,11 @@
       (error 'empty-string)
       (with-arena 16
         (let ((endptr (arena-alloc arena 8))
-              (result (strtod (cast (Ptr Char) (. s data))
-                              (cast (Ptr (Ptr Char)) endptr))))
+              (result (strtod (cast (Ptr Char) (. s data)) (cast (Ptr (Ptr Char)) endptr))))
           (let ((end-val (deref (cast (Ptr (Ptr Char)) endptr))))
             (if (== end-val (cast (Ptr Char) (. s data)))
               (error 'invalid-format)
               (ok result)))))))
-
-  ;; ============================================================
-  ;; String Formatting
-  ;; ============================================================
 
   (fn join ((arena Arena) (strings (List String)) (separator String))
     (@intent "Join list of strings with separator")
@@ -630,19 +607,17 @@
           (match (list-get strings 0)
             ((some first-str) first-str)
             ((none) (String (cast (Ptr U8) (arena-alloc arena 1)) (cast U64 0))))
-          ;; Calculate total length
           (let ((mut total-len 0)
                 (mut i 0)
                 (sep-len (cast Int (. separator len))))
             (while (< i count)
               (do
                 (match (list-get strings i)
-                  ((some str) (set! total-len (+ total-len (cast Int (. str len)))))
+                  ((some str)
+                    (set! total-len (+ total-len (cast Int (. str len)))))
                   ((none) (set! total-len total-len)))
                 (set! i (+ i 1))))
-            ;; Add separator lengths
             (set! total-len (+ total-len (* sep-len (- count 1))))
-            ;; Build result
             (let ((buf (arena-alloc arena (+ total-len 1)))
                   (mut pos 0)
                   (mut j 0))
@@ -652,17 +627,19 @@
                     ((some str)
                       (do
                         (when (> (. str len) 0)
-                          (memcpy (cast (Ptr Void) (+ buf pos))
-                                  (cast (Ptr Void) (. str data))
-                                  (. str len)))
+                          (memcpy
+                            (cast (Ptr Void) (+ buf pos))
+                            (cast (Ptr Void) (. str data))
+                            (. str len)))
                         (set! pos (+ pos (cast Int (. str len))))))
                     ((none) (set! pos pos)))
                   (when (< j (- count 1))
                     (do
                       (when (> sep-len 0)
-                        (memcpy (cast (Ptr Void) (+ buf pos))
-                                (cast (Ptr Void) (. separator data))
-                                (cast U64 sep-len)))
+                        (memcpy
+                          (cast (Ptr Void) (+ buf pos))
+                          (cast (Ptr Void) (. separator data))
+                          (cast U64 sep-len)))
                       (set! pos (+ pos sep-len))))
                   (set! j (+ j 1))))
               (String (cast (Ptr U8) buf) (cast U64 total-len))))))))
@@ -683,23 +660,23 @@
               (new-len (cast Int (. new len)))
               (result-len (+ (- slen old-len) new-len))
               (buf (arena-alloc arena (+ result-len 1))))
-          ;; Copy part before match
           (when (> idx 0)
-            (memcpy (cast (Ptr Void) buf)
-                    (cast (Ptr Void) (. s data))
-                    (cast U64 idx)))
-          ;; Copy new string
+            (memcpy
+              (cast (Ptr Void) buf)
+              (cast (Ptr Void) (. s data))
+              (cast U64 idx)))
           (when (> new-len 0)
-            (memcpy (cast (Ptr Void) (+ buf idx))
-                    (cast (Ptr Void) (. new data))
-                    (cast U64 new-len)))
-          ;; Copy part after match
+            (memcpy
+              (cast (Ptr Void) (+ buf idx))
+              (cast (Ptr Void) (. new data))
+              (cast U64 new-len)))
           (let ((after-idx (+ idx old-len))
                 (after-len (- slen after-idx)))
             (when (> after-len 0)
-              (memcpy (cast (Ptr Void) (+ buf (+ idx new-len)))
-                      (cast (Ptr Void) (+ (. s data) after-idx))
-                      (cast U64 after-len))))
+              (memcpy
+                (cast (Ptr Void) (+ buf (+ idx new-len)))
+                (cast (Ptr Void) (+ (. s data) after-idx))
+                (cast U64 after-len))))
           (String (cast (Ptr U8) buf) (cast U64 result-len))))))
 
   (fn replace-all ((arena Arena) (s String) (old String) (new String))
@@ -707,7 +684,10 @@
     (@spec ((Arena String String String) -> String))
     (@alloc arena)
     (@pure)
-    (@example (arena "hello world world" "world" "there") -> "hello there there")
+    (@example
+      (arena "hello world world" "world" "there")
+      ->
+      "hello there there")
     (@example (arena "aaa" "a" "b") -> "bbb")
     (@example (arena "hello" "xyz" "abc") -> "hello")
     (if (== (. old len) 0)
@@ -715,21 +695,19 @@
       (let ((old-len (cast Int (. old len)))
             (new-len (cast Int (. new len)))
             (slen (cast Int (. s len)))
-            ;; First pass: count occurrences
             (mut count 0)
             (mut pos 0))
         (while (<= pos (- slen old-len))
           (let ((mut match-found true)
                 (mut j 0))
             (while (and (< j old-len) match-found)
-              (if (!= (cast Int (@ (. s data) (+ pos j)))
-                      (cast Int (@ (. old data) j)))
+              (if (!=
+                  (cast Int (@ (. s data) (+ pos j)))
+                  (cast Int (@ (. old data) j)))
                 (set! match-found false)
                 (set! j (+ j 1))))
             (if match-found
-              (do
-                (set! count (+ count 1))
-                (set! pos (+ pos old-len)))
+              (do (set! count (+ count 1)) (set! pos (+ pos old-len)))
               (set! pos (+ pos 1)))))
         (if (== count 0)
           s
@@ -738,33 +716,30 @@
                 (mut src-pos 0)
                 (mut dst-pos 0))
             (while (< src-pos slen)
-              (if (and (<= (+ src-pos old-len) slen)
-                       (let ((mut match-found true)
-                             (mut k 0))
-                         (while (and (< k old-len) match-found)
-                           (if (!= (cast Int (@ (. s data) (+ src-pos k)))
-                                   (cast Int (@ (. old data) k)))
-                             (set! match-found false)
-                             (set! k (+ k 1))))
-                         match-found))
+              (if (and
+                  (<= (+ src-pos old-len) slen)
+                  (let ((mut match-found true)
+                        (mut k 0))
+                    (while (and (< k old-len) match-found)
+                      (if (!=
+                          (cast Int (@ (. s data) (+ src-pos k)))
+                          (cast Int (@ (. old data) k)))
+                        (set! match-found false)
+                        (set! k (+ k 1))))
+                    match-found))
                 (do
-                  ;; Copy new string
                   (when (> new-len 0)
-                    (memcpy (cast (Ptr Void) (+ buf dst-pos))
-                            (cast (Ptr Void) (. new data))
-                            (cast U64 new-len)))
+                    (memcpy
+                      (cast (Ptr Void) (+ buf dst-pos))
+                      (cast (Ptr Void) (. new data))
+                      (cast U64 new-len)))
                   (set! dst-pos (+ dst-pos new-len))
                   (set! src-pos (+ src-pos old-len)))
                 (do
-                  ;; Copy single char
                   (set! (@ buf dst-pos) (@ (. s data) src-pos))
                   (set! dst-pos (+ dst-pos 1))
                   (set! src-pos (+ src-pos 1)))))
             (String (cast (Ptr U8) buf) (cast U64 result-len)))))))
-
-  ;; ============================================================
-  ;; String Comparison
-  ;; ============================================================
 
   (fn compare ((a String) (b String))
     (@intent "Compare two strings lexicographically (-1, 0, or 1)")
@@ -773,8 +748,7 @@
     (@example ("abc" "abd") -> -1)
     (@example ("abc" "abc") -> 0)
     (@example ("abd" "abc") -> 1)
-    (let ((result (strcmp (cast (Ptr U8) (. a data))
-                          (cast (Ptr U8) (. b data)))))
+    (let ((result (strcmp (cast (Ptr U8) (. a data)) (cast (Ptr U8) (. b data)))))
       (cond
         ((< result 0) -1)
         ((> result 0) 1)
@@ -804,4 +778,79 @@
           ((< alen blen) -1)
           ((> alen blen) 1)
           (else 0)))))
-)
+
+  (fn string-char-at ((s String) (index (Int 0 ..)))
+    (@intent "Get character at index, or 0 if out of bounds")
+    (@spec ((String (Int 0 ..)) -> AsciiChar))
+    (@pure)
+    (@example ("hello" 0) -> 104)
+    (@example ("hello" 4) -> 111)
+    (@example ("hello" 5) -> 0)
+    (@example ("" 0) -> 0)
+    (if (>= index (cast Int (. s len))) 0 (cast AsciiChar (@ (. s data) index))))
+
+  (fn char-is-symbol-start ((c AsciiChar))
+    (@intent "Check if character can start a SLOP symbol (a-z, A-Z, _, @, $)")
+    (@spec ((AsciiChar) -> Bool))
+    (@pure)
+    (@example (97) -> true)
+    (@example (65) -> true)
+    (@example (95) -> true)
+    (@example (64) -> true)
+    (@example (36) -> true)
+    (@example (48) -> false)
+    (@example (45) -> false)
+    (or (is-alpha c) (== c 95) (== c 64) (== c 36)))
+
+  (fn char-is-symbol-char ((c AsciiChar))
+    (@intent "Check if character is valid in SLOP symbol body")
+    (@spec ((AsciiChar) -> Bool))
+    (@pure)
+    (@example (97) -> true)
+    (@example (48) -> true)
+    (@example (45) -> true)
+    (@example (47) -> true)
+    (@example (42) -> true)
+    (@example (63) -> true)
+    (@example (32) -> false)
+    (@example (40) -> false)
+    (or
+      (is-alnum c)
+      (== c 95)
+      (== c 45)
+      (== c 47)
+      (== c 42)
+      (== c 60)
+      (== c 62)
+      (== c 61)
+      (== c 33)
+      (== c 63)
+      (== c 46)
+      (== c 64)
+      (== c 36)))
+
+  (fn char-is-operator ((c AsciiChar))
+    (@intent "Check if character is a SLOP operator character")
+    (@spec ((AsciiChar) -> Bool))
+    (@pure)
+    (@example (43) -> true)
+    (@example (45) -> true)
+    (@example (42) -> true)
+    (@example (47) -> true)
+    (@example (97) -> false)
+    (@example (32) -> false)
+    (or
+      (== c 43)
+      (== c 45)
+      (== c 42)
+      (== c 47)
+      (== c 33)
+      (== c 60)
+      (== c 62)
+      (== c 61)
+      (== c 38)
+      (== c 124)
+      (== c 94)
+      (== c 37)
+      (== c 63)
+      (== c 46))))

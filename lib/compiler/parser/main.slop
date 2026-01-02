@@ -1,0 +1,63 @@
+;; ============================================================
+;; SLOP Parser CLI - Native parser binary entry point
+;;
+;; Usage: slop-parser <file.slop>
+;; Parses the input file and prints the AST.
+;; ============================================================
+
+(module parser-cli
+  (export (main 2))
+
+  (import file (FileMode FileError File
+                file-open file-close file-read-all))
+  (import parser (ParseResult ParseError SExpr
+                  parse pretty-print))
+
+  ;; FFI for strlen
+  (ffi "string.h"
+    (strlen ((s (Ptr U8))) U64))
+
+  (fn main ((argc Int) (argv (Ptr (Ptr U8))))
+    (@intent "Parse a SLOP file and print its AST")
+    (@spec ((Int (Ptr (Ptr U8))) -> Int))
+    (if (< argc 2)
+      (do
+        (println "Usage: slop-parser <file.slop>")
+        1)
+      (with-arena 2097152  ;; 2MB arena for parsing
+        (let ((path (String (@ argv 1) (strlen (@ argv 1)))))
+          (match (file-open path 'read)
+            ((error e)
+              (do
+                (println "Error: Could not open file")
+                1))
+            ((ok f)
+              (match (file-read-all arena (addr f))
+                ((error e)
+                  (do
+                    (file-close (addr f))
+                    (println "Error: Could not read file")
+                    1))
+                ((ok source)
+                  (do
+                    (file-close (addr f))
+                    (match (parse arena source)
+                      ((error e)
+                        (do
+                          (print "Parse error at line ")
+                          (print (. e line))
+                          (print ", col ")
+                          (print (. e col))
+                          (print ": ")
+                          (println (. e message))
+                          1))
+                      ((ok exprs)
+                        (let ((len (list-len exprs))
+                              (mut i 0))
+                          (while (< i len)
+                            (match (list-get exprs i)
+                              ((some expr)
+                                (println (pretty-print arena expr)))
+                              ((none) (do)))
+                            (set! i (+ i 1)))
+                          0)))))))))))))

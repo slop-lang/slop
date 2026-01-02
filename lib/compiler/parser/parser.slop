@@ -1,0 +1,1060 @@
+;; ============================================================
+;; SLOP Parser - Self-hosted S-expression parser
+;;
+;; Implements a lexer and parser for SLOP's S-expression syntax.
+;; This is the first step toward self-hosting the SLOP toolchain.
+;;
+;; Provides:
+;; - Lexer: tokenizes source into tokens
+;; - Parser: builds AST from tokens
+;; - Utilities: is-form, find-holes, pretty-print
+;; ============================================================
+
+(module parser
+  (export
+    ;; Types
+    TokenType Token
+    SExpr SExprSymbol SExprString SExprNumber SExprList
+    ParseError ParseResult
+    ;; Lexer
+    tokenize
+    ;; Parser
+    parse
+    ;; Utilities
+    is-form find-holes pretty-print
+    sexpr-line sexpr-col)
+
+  ;; Import string utilities from strlib
+  (import strlib (is-alpha is-digit is-alnum is-space
+                  string-char-at AsciiChar
+                  char-is-symbol-start char-is-symbol-char char-is-operator))
+
+  ;; ============================================================
+  ;; FFI Declarations
+  ;; ============================================================
+
+  ;; FFI for number parsing
+  ;; Note: Use (Ptr Char) for C string compatibility
+  (ffi "stdlib.h"
+    (strtoll ((s (Ptr Char)) (endptr (Ptr (Ptr Char))) (base Int)) I64)
+    (strtod ((s (Ptr Char)) (endptr (Ptr (Ptr Char)))) Float))
+
+
+  ;; ============================================================
+  ;; Parser-specific String Functions
+  ;; ============================================================
+
+  (fn string-contains-dot ((s String))
+    (@intent "Check if string contains a decimal point")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (let ((mut i 0)
+          (slen (cast Int (. s len)))
+          (mut found false))
+      (while (and (< i slen) (not found))
+        (if (== (string-char-at s (cast (Int 0 ..) i)) (cast AsciiChar 46))  ;; '.'
+          (set! found true)
+          (set! i (+ i 1))))
+      found))
+
+
+  (fn string-copy ((arena Arena) (s String))
+    (@intent "Copy string into arena-allocated buffer")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (let ((buf (cast (Ptr U8) (arena-alloc arena (+ (. s len) 1))))
+          (mut i 0)
+          (slen (cast Int (. s len))))
+      (while (< i slen)
+        (do
+          (set! (@ buf i) (@ (. s data) i))
+          (set! i (+ i 1))))
+      (set! (@ buf slen) 0)  ;; null terminate
+      (String buf (. s len))))
+
+
+  ;; ============================================================
+  ;; Token Types
+  ;; ============================================================
+
+  ;; Token types matching Python lexer
+  (type TokenType (enum
+    tok-lparen      ;; (
+    tok-rparen      ;; )
+    tok-lbrace      ;; {
+    tok-rbrace      ;; }
+    tok-quote       ;; '
+    tok-colon       ;; :
+    tok-range       ;; ..
+    tok-number      ;; -?[0-9]+\.?[0-9]*
+    tok-string      ;; "..."
+    tok-symbol      ;; identifier
+    tok-operator    ;; +, -, *, /, etc.
+    tok-eof))       ;; end of input
+
+  (type Token (record
+    (kind TokenType)
+    (value String)
+    (line (Int 1 ..))
+    (col (Int 1 ..))))
+
+  ;; ============================================================
+  ;; AST Types
+  ;; ============================================================
+
+  ;; AST node for symbols
+  (type SExprSymbol (record
+    (name String)
+    (line (Int 0 ..))
+    (col (Int 0 ..))))
+
+  ;; AST node for strings
+  (type SExprString (record
+    (value String)
+    (line (Int 0 ..))
+    (col (Int 0 ..))))
+
+  ;; AST node for numbers
+  (type SExprNumber (record
+    (int-value I64)
+    (float-value Float)
+    (is-float Bool)
+    (line (Int 0 ..))
+    (col (Int 0 ..))))
+
+  ;; Forward declare SExpr for recursive list type
+  ;; AST node for lists - contains pointers to SExpr
+  (type SExprList (record
+    (items (List (Ptr SExpr)))
+    (line (Int 0 ..))
+    (col (Int 0 ..))))
+
+  ;; Main AST type - discriminated union
+  (type SExpr (union
+    (symbol SExprSymbol)
+    (string SExprString)
+    (number SExprNumber)
+    (list SExprList)))
+
+  ;; ============================================================
+  ;; Error Types
+  ;; ============================================================
+
+  (type ParseError (record
+    (message String)
+    (line (Int 0 ..))
+    (col (Int 0 ..))))
+
+  (type ParseResult (Result (List (Ptr SExpr)) ParseError))
+
+  ;; ============================================================
+  ;; Lexer State
+  ;; ============================================================
+
+  (type LexerState (record
+    (source String)
+    (pos (Int 0 ..))
+    (line (Int 1 ..))
+    (col (Int 1 ..))))
+
+  ;; ============================================================
+  ;; Lexer Primitives
+  ;; ============================================================
+
+  (fn lexer-new ((source String))
+    (@intent "Create a new lexer state for the given source")
+    (@spec ((String) -> LexerState))
+    (@pure)
+    (LexerState source 0 1 1))
+
+  (fn lexer-at-end ((state (Ptr LexerState)))
+    (@intent "Check if lexer has reached end of input")
+    (@spec (((Ptr LexerState)) -> Bool))
+    (@pure)
+    (>= (. (deref state) pos) (cast Int (. (. (deref state) source) len))))
+
+  (fn lexer-peek ((state (Ptr LexerState)))
+    (@intent "Peek at current character without advancing")
+    (@spec (((Ptr LexerState)) -> AsciiChar))
+    (@pure)
+    (if (lexer-at-end state)
+      (cast AsciiChar 0)  ;; EOF represented as NUL
+      (string-char-at (. (deref state) source) (. (deref state) pos))))
+
+  (fn lexer-peek-next ((state (Ptr LexerState)))
+    (@intent "Peek at next character (one ahead)")
+    (@spec (((Ptr LexerState)) -> AsciiChar))
+    (@pure)
+    (let ((next-pos (+ (. (deref state) pos) 1)))
+      (if (>= next-pos (cast Int (. (. (deref state) source) len)))
+        (cast AsciiChar 0)
+        (string-char-at (. (deref state) source) next-pos))))
+
+  (fn lexer-advance ((state (Ptr LexerState)))
+    (@intent "Advance to next character, updating line/col")
+    (@spec (((Ptr LexerState)) -> Unit))
+    (@pre (not (lexer-at-end state)))
+    (let ((c (lexer-peek state)))
+      (set! (. (deref state) pos) (+ (. (deref state) pos) 1))
+      (if (== c 10)  ;; newline
+        (do
+          (set! (. (deref state) line) (+ (. (deref state) line) 1))
+          (set! (. (deref state) col) 1))
+        (set! (. (deref state) col) (+ (. (deref state) col) 1)))))
+
+  (fn lexer-skip-whitespace ((state (Ptr LexerState)))
+    (@intent "Skip whitespace characters")
+    (@spec (((Ptr LexerState)) -> Unit))
+    (while (and (not (lexer-at-end state))
+                (is-space (lexer-peek state)))
+      (lexer-advance state)))
+
+  (fn lexer-skip-comment ((state (Ptr LexerState)))
+    (@intent "Skip a line comment starting with ;")
+    (@spec (((Ptr LexerState)) -> Unit))
+    (@pre {(lexer-peek state) == 59})  ;; ';'
+    (while (and (not (lexer-at-end state))
+                (!= (lexer-peek state) 10))  ;; until newline
+      (lexer-advance state)))
+
+  (fn lexer-skip-whitespace-and-comments ((state (Ptr LexerState)))
+    (@intent "Skip all whitespace and comments")
+    (@spec (((Ptr LexerState)) -> Unit))
+    (let ((mut continue true))
+      (while continue
+        (let ((c (lexer-peek state)))
+          (cond
+            ((is-space c)
+              (lexer-skip-whitespace state))
+            ((== c 59)  ;; ';'
+              (lexer-skip-comment state))
+            (else
+              (set! continue false)))))))
+
+  ;; ============================================================
+  ;; Lexer Token Reading
+  ;; ============================================================
+
+  (fn lexer-read-string ((arena Arena) (state (Ptr LexerState)))
+    (@intent "Read a string literal with escape handling")
+    (@spec ((Arena (Ptr LexerState)) -> (Result Token ParseError)))
+    (@alloc arena)
+    (@pre {(lexer-peek state) == 34})  ;; '"'
+    (let ((start-line (. (deref state) line))
+          (start-col (. (deref state) col))
+          ;; Allocate buffer for string content (max 4KB)
+          (buf (cast (Ptr U8) (arena-alloc arena 4096)))
+          (mut buf-pos 0))
+      ;; Consume opening quote
+      (lexer-advance state)
+      ;; Read characters until closing quote
+      (let ((mut done false)
+            (mut has-error false))
+        (while (and (not done) (not has-error) (not (lexer-at-end state)))
+          (let ((c (lexer-peek state)))
+            (cond
+              ;; Closing quote
+              ((== c 34)
+                (do
+                  (lexer-advance state)
+                  (set! done true)))
+              ;; Escape sequence
+              ((== c 92)  ;; '\'
+                (do
+                  (lexer-advance state)
+                  (if (lexer-at-end state)
+                    (set! has-error true)
+                    (let ((next (lexer-peek state)))
+                      (lexer-advance state)
+                      (cond
+                        ((== next 110)  ;; 'n' -> newline
+                          (do (set! (@ buf buf-pos) (cast U8 10))
+                              (set! buf-pos (+ buf-pos 1))))
+                        ((== next 116)  ;; 't' -> tab
+                          (do (set! (@ buf buf-pos) (cast U8 9))
+                              (set! buf-pos (+ buf-pos 1))))
+                        ((== next 114)  ;; 'r' -> carriage return
+                          (do (set! (@ buf buf-pos) (cast U8 13))
+                              (set! buf-pos (+ buf-pos 1))))
+                        ((== next 34)   ;; '"' -> quote
+                          (do (set! (@ buf buf-pos) (cast U8 34))
+                              (set! buf-pos (+ buf-pos 1))))
+                        ((== next 92)   ;; '\' -> backslash
+                          (do (set! (@ buf buf-pos) (cast U8 92))
+                              (set! buf-pos (+ buf-pos 1))))
+                        (else
+                          ;; Unknown escape - keep as-is
+                          (do (set! (@ buf buf-pos) (cast U8 92))
+                              (set! buf-pos (+ buf-pos 1))
+                              (set! (@ buf buf-pos) (cast U8 next))
+                              (set! buf-pos (+ buf-pos 1)))))))))
+              ;; Regular character
+              (else
+                (do
+                  (set! (@ buf buf-pos) (cast U8 c))
+                  (set! buf-pos (+ buf-pos 1))
+                  (lexer-advance state))))))
+        (if (and (not done) (not has-error))
+          (error (ParseError "Unterminated string" start-line start-col))
+          (if has-error
+            (error (ParseError "Invalid escape sequence" start-line start-col))
+            (ok (Token 'tok-string
+                       (String buf (cast U64 buf-pos))
+                       start-line start-col)))))))
+
+  (fn lexer-read-number ((arena Arena) (state (Ptr LexerState)))
+    (@intent "Read a numeric literal (integer or float)")
+    (@spec ((Arena (Ptr LexerState)) -> (Result Token ParseError)))
+    (@alloc arena)
+    (@pre (or (is-digit (lexer-peek state))
+              (and (== (lexer-peek state) 45)  ;; '-'
+                   (is-digit (lexer-peek-next state)))))
+    (let ((start-line (. (deref state) line))
+          (start-col (. (deref state) col))
+          (buf (cast (Ptr U8) (arena-alloc arena 64)))
+          (mut buf-pos 0))
+      ;; Optional minus sign
+      (when (== (lexer-peek state) 45)
+        (set! (@ buf buf-pos) (cast U8 45))
+        (set! buf-pos (+ buf-pos 1))
+        (lexer-advance state))
+      ;; Integer part
+      (while (and (not (lexer-at-end state)) (is-digit (lexer-peek state)))
+        (set! (@ buf buf-pos) (cast U8 (lexer-peek state)))
+        (set! buf-pos (+ buf-pos 1))
+        (lexer-advance state))
+      ;; Check for decimal point followed by digit
+      (when (and (not (lexer-at-end state))
+                 (== (lexer-peek state) 46)
+                 (is-digit (lexer-peek-next state)))
+        (set! (@ buf buf-pos) (cast U8 46))
+        (set! buf-pos (+ buf-pos 1))
+        (lexer-advance state)
+        ;; Fractional part
+        (while (and (not (lexer-at-end state)) (is-digit (lexer-peek state)))
+          (set! (@ buf buf-pos) (cast U8 (lexer-peek state)))
+          (set! buf-pos (+ buf-pos 1))
+          (lexer-advance state)))
+      (ok (Token 'tok-number
+                 (String buf (cast U64 buf-pos))
+                 start-line start-col))))
+
+  (fn lexer-read-symbol ((arena Arena) (state (Ptr LexerState)))
+    (@intent "Read a symbol token")
+    (@spec ((Arena (Ptr LexerState)) -> Token))
+    (@alloc arena)
+    (@pre (char-is-symbol-start (lexer-peek state)))
+    (let ((start-line (. (deref state) line))
+          (start-col (. (deref state) col))
+          (buf (cast (Ptr U8) (arena-alloc arena 256)))
+          (mut buf-pos 0))
+      ;; Read all symbol characters
+      (while (and (not (lexer-at-end state))
+                  (char-is-symbol-char (lexer-peek state)))
+        (set! (@ buf buf-pos) (cast U8 (lexer-peek state)))
+        (set! buf-pos (+ buf-pos 1))
+        (lexer-advance state))
+      (Token 'tok-symbol
+             (String buf (cast U64 buf-pos))
+             start-line start-col)))
+
+  (fn lexer-read-operator ((arena Arena) (state (Ptr LexerState)))
+    (@intent "Read an operator token")
+    (@spec ((Arena (Ptr LexerState)) -> Token))
+    (@alloc arena)
+    (@pre (char-is-operator (lexer-peek state)))
+    (let ((start-line (. (deref state) line))
+          (start-col (. (deref state) col))
+          (buf (cast (Ptr U8) (arena-alloc arena 16)))
+          (mut buf-pos 0))
+      ;; Read operator characters
+      (while (and (not (lexer-at-end state))
+                  (char-is-operator (lexer-peek state)))
+        (set! (@ buf buf-pos) (cast U8 (lexer-peek state)))
+        (set! buf-pos (+ buf-pos 1))
+        (lexer-advance state))
+      (Token 'tok-operator
+             (String buf (cast U64 buf-pos))
+             start-line start-col)))
+
+  (fn lexer-next-token ((arena Arena) (state (Ptr LexerState)))
+    (@intent "Get the next token from source")
+    (@spec ((Arena (Ptr LexerState)) -> (Result Token ParseError)))
+    (@alloc arena)
+    (do
+      (lexer-skip-whitespace-and-comments state)
+      (let ((line (. (deref state) line))
+            (col (. (deref state) col))
+            (c (lexer-peek state)))
+        (cond
+          ;; EOF
+          ((== c 0)
+            (ok (Token 'tok-eof "" line col)))
+          ;; Single-character tokens
+          ((== c 40)  ;; '('
+            (do (lexer-advance state)
+                (ok (Token 'tok-lparen "(" line col))))
+          ((== c 41)  ;; ')'
+            (do (lexer-advance state)
+                (ok (Token 'tok-rparen ")" line col))))
+          ((== c 123)  ;; '{'
+            (do (lexer-advance state)
+                (ok (Token 'tok-lbrace "{" line col))))
+          ((== c 125)  ;; '}'
+            (do (lexer-advance state)
+                (ok (Token 'tok-rbrace "}" line col))))
+          ((== c 39)  ;; '\''
+            (do (lexer-advance state)
+                (ok (Token 'tok-quote "'" line col))))
+          ((== c 58)  ;; ':'
+            (do (lexer-advance state)
+                (ok (Token 'tok-colon ":" line col))))
+          ;; String literal
+          ((== c 34)  ;; '"'
+            (lexer-read-string arena state))
+          ;; Number (including negative)
+          ((or (is-digit c)
+               (and (== c 45) (is-digit (lexer-peek-next state))))
+            (lexer-read-number arena state))
+          ;; Symbol
+          ((char-is-symbol-start c)
+            (ok (lexer-read-symbol arena state)))
+          ;; Range (..) or operator (.)
+          ((== c 46)  ;; '.'
+            (if (== (lexer-peek-next state) 46)
+              (do (lexer-advance state)
+                  (lexer-advance state)
+                  (ok (Token 'tok-range ".." line col)))
+              (ok (lexer-read-operator arena state))))
+          ;; Other operators
+          ((char-is-operator c)
+            (ok (lexer-read-operator arena state)))
+          ;; Unexpected character
+          (else
+            (error (ParseError "Unexpected character" line col)))))))
+
+  (fn tokenize ((arena Arena) (source String))
+    (@intent "Tokenize source into list of tokens")
+    (@spec ((Arena String) -> (Result (List Token) ParseError)))
+    (@alloc arena)
+    (let ((state (lexer-new source))
+          (tokens (list-new arena Token))
+          (mut done false)
+          (mut has-error false)
+          (mut error-val (ParseError "" 0 0)))
+      (while (and (not done) (not has-error))
+        (match (lexer-next-token arena (addr state))
+          ((ok tok)
+            (do
+              (list-push tokens tok)
+              (when (== (. tok kind) 'tok-eof)
+                (set! done true))))
+          ((error e)
+            (do
+              (set! has-error true)
+              (set! error-val e)))))
+      (if has-error
+        (error error-val)
+        (ok tokens))))
+
+  ;; ============================================================
+  ;; Parser State
+  ;; ============================================================
+
+  (type ParserState (record
+    (tokens (List Token))
+    (pos (Int 0 ..))
+    (in-infix Bool)))  ;; true when inside {...}
+
+  ;; ============================================================
+  ;; Parser Primitives
+  ;; ============================================================
+
+  (fn parser-new ((tokens (List Token)))
+    (@intent "Create a new parser state")
+    (@spec (((List Token)) -> ParserState))
+    (@pure)
+    (ParserState tokens 0 false))
+
+  (fn parser-at-end ((state (Ptr ParserState)))
+    (@intent "Check if parser has consumed all tokens")
+    (@spec (((Ptr ParserState)) -> Bool))
+    (@pure)
+    (>= (. (deref state) pos) (list-len (. (deref state) tokens))))
+
+  (fn parser-peek ((state (Ptr ParserState)))
+    (@intent "Peek at current token without advancing")
+    (@spec (((Ptr ParserState)) -> Token))
+    (@pure)
+    (match (list-get (. (deref state) tokens) (. (deref state) pos))
+      ((some tok) tok)
+      ((none) (Token 'tok-eof "" 1 1))))
+
+  (fn parser-advance ((state (Ptr ParserState)))
+    (@intent "Advance to next token")
+    (@spec (((Ptr ParserState)) -> Unit))
+    (@pre (not (parser-at-end state)))
+    (set! (. (deref state) pos) (+ (. (deref state) pos) 1)))
+
+  (fn parser-expect ((state (Ptr ParserState)) (expected TokenType))
+    (@intent "Expect a specific token type, advance if matched")
+    (@spec (((Ptr ParserState) TokenType) -> (Result Token ParseError)))
+    (let ((tok (parser-peek state)))
+      (if (== (. tok kind) expected)
+        (do (parser-advance state)
+            (ok tok))
+        (error (ParseError "Unexpected token" (. tok line) (. tok col))))))
+
+  ;; ============================================================
+  ;; Parser - Expression Parsing
+  ;; ============================================================
+
+  (fn parse-expr ((arena Arena) (state (Ptr ParserState)))
+    (@intent "Parse a single S-expression")
+    (@spec ((Arena (Ptr ParserState)) -> (Result (Ptr SExpr) ParseError)))
+    (@alloc arena)
+    (let ((tok (parser-peek state)))
+      (cond
+        ;; List: ( ... )
+        ((== (. tok kind) 'tok-lparen)
+          (parse-list arena state))
+
+        ;; Infix expression: { ... }
+        ((== (. tok kind) 'tok-lbrace)
+          (parse-infix arena state))
+
+        ;; Number literal
+        ((== (. tok kind) 'tok-number)
+          (do
+            (parser-advance state)
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                  (is-float (string-contains-dot (. tok value))))
+              (if is-float
+                (set! (deref node)
+                      (union-new SExpr number
+                        (SExprNumber
+                          0  ;; int-value (unused for float)
+                          (strtod (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0))
+                          true
+                          (. tok line)
+                          (. tok col))))
+                (set! (deref node)
+                      (union-new SExpr number
+                        (SExprNumber
+                          (strtoll (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0) 10)
+                          0.0
+                          false
+                          (. tok line)
+                          (. tok col)))))
+              (ok node))))
+
+        ;; String literal
+        ((== (. tok kind) 'tok-string)
+          (do
+            (parser-advance state)
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+              (set! (deref node)
+                    (union-new SExpr string
+                      (SExprString (. tok value) (. tok line) (. tok col))))
+              (ok node))))
+
+        ;; Quote: 'expr -> (quote expr)
+        ((== (. tok kind) 'tok-quote)
+          (do
+            (parser-advance state)
+            (match (parse-expr arena state)
+              ((ok quoted-expr)
+                (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                      (quote-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
+                      (items (list-new arena (Ptr SExpr))))
+                  ;; Create quote symbol
+                  (set! (deref quote-sym)
+                        (union-new SExpr symbol
+                          (SExprSymbol "quote" (. tok line) (. tok col))))
+                  (list-push items quote-sym)
+                  (list-push items quoted-expr)
+                  (set! (deref node)
+                        (union-new SExpr list
+                          (SExprList items (. tok line) (. tok col))))
+                  (ok node)))
+              ((error e) (error e)))))
+
+        ;; Symbol
+        ((== (. tok kind) 'tok-symbol)
+          (do
+            (parser-advance state)
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+              (set! (deref node)
+                    (union-new SExpr symbol
+                      (SExprSymbol (. tok value) (. tok line) (. tok col))))
+              (ok node))))
+
+        ;; Operator (treated as symbol in AST)
+        ((== (. tok kind) 'tok-operator)
+          (do
+            (parser-advance state)
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+              (set! (deref node)
+                    (union-new SExpr symbol
+                      (SExprSymbol (. tok value) (. tok line) (. tok col))))
+              (ok node))))
+
+        ;; Keyword: :name -> keyword symbol
+        ((== (. tok kind) 'tok-colon)
+          (do
+            (parser-advance state)
+            (let ((next-tok (parser-peek state)))
+              (if (== (. next-tok kind) 'tok-symbol)
+                (do
+                  (parser-advance state)
+                  ;; Create keyword by prepending :
+                  (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                        (kw-buf (cast (Ptr U8) (arena-alloc arena 256))))
+                    (set! (@ kw-buf 0) (cast U8 58))  ;; ':'
+                    ;; Copy symbol name
+                    (let ((mut i 0)
+                          (slen (cast Int (. (. next-tok value) len))))
+                      (while (< i slen)
+                        (do
+                          (set! (@ kw-buf (+ i 1)) (@ (. (. next-tok value) data) i))
+                          (set! i (+ i 1))))
+                      (set! (deref node)
+                            (union-new SExpr symbol
+                              (SExprSymbol
+                                (String kw-buf (cast U64 (+ slen 1)))
+                                (. tok line)
+                                (. tok col))))
+                      (ok node))))
+                (error (ParseError "Expected symbol after :" (. tok line) (. tok col)))))))
+
+        ;; Range: .. -> symbol
+        ((== (. tok kind) 'tok-range)
+          (do
+            (parser-advance state)
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+              (set! (deref node)
+                    (union-new SExpr symbol
+                      (SExprSymbol ".." (. tok line) (. tok col))))
+              (ok node))))
+
+        ;; Unexpected token
+        (else
+          (error (ParseError "Unexpected token" (. tok line) (. tok col)))))))
+
+  (fn parse-list ((arena Arena) (state (Ptr ParserState)))
+    (@intent "Parse a list: ( expr* )")
+    (@spec ((Arena (Ptr ParserState)) -> (Result (Ptr SExpr) ParseError)))
+    (@alloc arena)
+    (@pre {(. (parser-peek state) kind) == 'tok-lparen})
+    (let ((start-tok (parser-peek state)))
+      ;; Consume opening paren
+      (parser-advance state)
+      (let ((items (list-new arena (Ptr SExpr)))
+            (mut done false)
+            (mut has-error false)
+            (mut error-val (ParseError "" 0 0)))
+        ;; Parse expressions until closing paren or EOF
+        (while (and (not done) (not has-error))
+          (let ((tok (parser-peek state)))
+            (cond
+              ((== (. tok kind) 'tok-rparen)
+                (do
+                  (parser-advance state)
+                  (set! done true)))
+              ((== (. tok kind) 'tok-eof)
+                (do
+                  (set! has-error true)
+                  (set! error-val (ParseError "Unterminated list"
+                                              (. start-tok line)
+                                              (. start-tok col)))))
+              (else
+                (match (parse-expr arena state)
+                  ((ok expr) (list-push items expr))
+                  ((error e)
+                    (do
+                      (set! has-error true)
+                      (set! error-val e))))))))
+        (if has-error
+          (error error-val)
+          (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+            (set! (deref node)
+                  (union-new SExpr list
+                    (SExprList items
+                               (. start-tok line)
+                               (. start-tok col))))
+            (ok node))))))
+
+  ;; ============================================================
+  ;; Infix Expression Parsing
+  ;; ============================================================
+
+  ;; Operator precedence levels (higher = tighter binding)
+  (const PREC_OR Int 1)
+  (const PREC_AND Int 2)
+  (const PREC_COMPARE Int 3)  ;; ==, !=, <, >, <=, >=
+  (const PREC_ADD Int 4)      ;; +, -
+  (const PREC_MUL Int 5)      ;; *, /, %
+  (const PREC_UNARY Int 6)    ;; not, -
+
+  (fn get-precedence ((op String))
+    (@intent "Get precedence level for an operator")
+    (@spec ((String) -> Int))
+    (@pure)
+    (cond
+      ((string-eq op "or") PREC_OR)
+      ((string-eq op "and") PREC_AND)
+      ((string-eq op "==") PREC_COMPARE)
+      ((string-eq op "!=") PREC_COMPARE)
+      ((string-eq op "<") PREC_COMPARE)
+      ((string-eq op ">") PREC_COMPARE)
+      ((string-eq op "<=") PREC_COMPARE)
+      ((string-eq op ">=") PREC_COMPARE)
+      ((string-eq op "+") PREC_ADD)
+      ((string-eq op "-") PREC_ADD)
+      ((string-eq op "*") PREC_MUL)
+      ((string-eq op "/") PREC_MUL)
+      ((string-eq op "%") PREC_MUL)
+      (else 0)))
+
+  ;; Helper: Parse a primary expression in infix context
+  ;; Primary = number | symbol | '(' list ')'
+  (fn parse-infix-primary ((arena Arena) (state (Ptr ParserState)))
+    (@intent "Parse primary expression in infix context")
+    (@spec ((Arena (Ptr ParserState)) -> (Result (Ptr SExpr) ParseError)))
+    (@alloc arena)
+    (let ((tok (parser-peek state)))
+      (cond
+        ;; Number
+        ((== (. tok kind) 'tok-number)
+          (do
+            (parser-advance state)
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+              (if (string-contains-dot (. tok value))
+                (set! (deref node)
+                      (union-new SExpr number
+                        (SExprNumber 0
+                                     (strtod (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0))
+                                     true
+                                     (. tok line) (. tok col))))
+                (set! (deref node)
+                      (union-new SExpr number
+                        (SExprNumber (strtoll (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0) 10)
+                                     0.0
+                                     false
+                                     (. tok line) (. tok col)))))
+              (ok node))))
+
+        ;; Symbol (includes keywords like 'and', 'or')
+        ((== (. tok kind) 'tok-symbol)
+          (do
+            (parser-advance state)
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+              (set! (deref node)
+                    (union-new SExpr symbol
+                      (SExprSymbol (. tok value) (. tok line) (. tok col))))
+              (ok node))))
+
+        ;; Operator used as unary or standalone (like 'not')
+        ((== (. tok kind) 'tok-operator)
+          (do
+            (parser-advance state)
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+              (set! (deref node)
+                    (union-new SExpr symbol
+                      (SExprSymbol (. tok value) (. tok line) (. tok col))))
+              (ok node))))
+
+        ;; Parenthesized subexpression (could be regular prefix list or grouping)
+        ((== (. tok kind) 'tok-lparen)
+          (parse-list arena state))
+
+        ;; Quoted expression (e.g., 'tok-lparen for enum values)
+        ((== (. tok kind) 'tok-quote)
+          (do
+            (parser-advance state)  ;; consume quote
+            (match (parse-infix-primary arena state)
+              ((error e) (error e))
+              ((ok quoted-expr)
+                (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                      (quote-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
+                      (items (list-new arena (Ptr SExpr))))
+                  (set! (deref quote-sym)
+                        (union-new SExpr symbol
+                          (SExprSymbol "quote" (. tok line) (. tok col))))
+                  (list-push items quote-sym)
+                  (list-push items quoted-expr)
+                  (set! (deref node)
+                        (union-new SExpr list
+                          (SExprList items (. tok line) (. tok col))))
+                  (ok node))))))
+
+        (else
+          (error (ParseError "Expected expression in infix" (. tok line) (. tok col)))))))
+
+  ;; Helper: Parse infix expression with precedence climbing
+  ;; min-prec is the minimum precedence to parse at this level
+  (fn parse-infix-prec ((arena Arena) (state (Ptr ParserState)) (min-prec Int))
+    (@intent "Parse infix expression with precedence climbing")
+    (@spec ((Arena (Ptr ParserState) Int) -> (Result (Ptr SExpr) ParseError)))
+    (@alloc arena)
+    ;; Parse left-hand side (primary)
+    (match (parse-infix-primary arena state)
+      ((error e) (error e))
+      ((ok left)
+        (let ((mut result left)
+              (mut done false)
+              (mut has-error false)
+              (mut error-val (ParseError "" 0 0)))
+          ;; While current token is operator with prec >= min-prec
+          (while (and (not done) (not has-error))
+            (let ((tok (parser-peek state)))
+              ;; Check if it's an operator or keyword like 'and', 'or'
+              (if (or (== (. tok kind) 'tok-operator)
+                      (and (== (. tok kind) 'tok-symbol)
+                           (or (string-eq (. tok value) "and")
+                               (string-eq (. tok value) "or"))))
+                (let ((op-prec (get-precedence (. tok value))))
+                  (if (< op-prec min-prec)
+                    (set! done true)  ;; Lower precedence, stop
+                    (do
+                      ;; Save operator info
+                      (let ((op-tok tok))
+                        ;; Advance past operator
+                        (parser-advance state)
+                        ;; Parse right side with higher min-prec for left associativity
+                        (match (parse-infix-prec arena state (+ op-prec 1))
+                          ((error e)
+                            (do
+                              (set! has-error true)
+                              (set! error-val e)))
+                          ((ok right)
+                            ;; Build (op left right) list
+                            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                                  (op-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
+                                  (items (list-new arena (Ptr SExpr))))
+                              ;; Create operator symbol
+                              (set! (deref op-sym)
+                                    (union-new SExpr symbol
+                                      (SExprSymbol (. op-tok value) (. op-tok line) (. op-tok col))))
+                              (list-push items op-sym)
+                              (list-push items result)
+                              (list-push items right)
+                              (set! (deref node)
+                                    (union-new SExpr list
+                                      (SExprList items (. op-tok line) (. op-tok col))))
+                              (set! result node))))))))
+                ;; Not an operator, stop
+                (set! done true))))
+          (if has-error
+            (error error-val)
+            (ok result))))))
+
+  (fn parse-infix ((arena Arena) (state (Ptr ParserState)))
+    (@intent "Parse an infix expression: { expr }")
+    (@spec ((Arena (Ptr ParserState)) -> (Result (Ptr SExpr) ParseError)))
+    (@alloc arena)
+    (@pre {(. (parser-peek state) kind) == 'tok-lbrace})
+    (let ((start-tok (parser-peek state)))
+      ;; Consume opening brace
+      (parser-advance state)
+      ;; Set in-infix mode
+      (set! (deref state) in-infix true)
+      ;; Parse the infix expression with minimum precedence 0
+      (let ((result (parse-infix-prec arena state 0)))
+        ;; Reset in-infix mode
+        (set! (deref state) in-infix false)
+        ;; Expect and consume closing brace
+        (match result
+          ((error e) (error e))
+          ((ok expr)
+            (let ((tok (parser-peek state)))
+              (if (== (. tok kind) 'tok-rbrace)
+                (do
+                  (parser-advance state)
+                  (ok expr))
+                (error (ParseError "Expected '}' to close infix expression"
+                                   (. tok line) (. tok col))))))))))
+
+  ;; ============================================================
+  ;; Main Parse Function
+  ;; ============================================================
+
+  (fn parse ((arena Arena) (source String))
+    (@intent "Parse SLOP source into list of S-expressions")
+    (@spec ((Arena String) -> ParseResult))
+    (@alloc arena)
+    (match (tokenize arena source)
+      ((ok tokens)
+        (let ((state (parser-new tokens))
+              (result (list-new arena (Ptr SExpr)))
+              (mut done false)
+              (mut has-error false)
+              (mut error-val (ParseError "" 0 0)))
+          (while (and (not done) (not has-error))
+            (let ((tok (parser-peek (addr state))))
+              (if (== (. tok kind) 'tok-eof)
+                (set! done true)
+                (match (parse-expr arena (addr state))
+                  ((ok expr)
+                    (list-push result expr))
+                  ((error e)
+                    (do
+                      (set! has-error true)
+                      (set! error-val e)))))))
+          (if has-error
+            (error error-val)
+            (ok result))))
+      ((error e) (error e))))
+
+  ;; ============================================================
+  ;; Utility Functions
+  ;; ============================================================
+
+  (fn sexpr-line ((expr (Ptr SExpr)))
+    (@intent "Get line number of S-expression")
+    (@spec (((Ptr SExpr)) -> (Int 0 ..)))
+    (@pure)
+    (match (deref expr)
+      ((symbol s) (. s line))
+      ((string s) (. s line))
+      ((number n) (. n line))
+      ((list l) (. l line))))
+
+  (fn sexpr-col ((expr (Ptr SExpr)))
+    (@intent "Get column number of S-expression")
+    (@spec (((Ptr SExpr)) -> (Int 0 ..)))
+    (@pure)
+    (match (deref expr)
+      ((symbol s) (. s col))
+      ((string s) (. s col))
+      ((number n) (. n col))
+      ((list l) (. l col))))
+
+  (fn sexpr-is-symbol-with-name ((expr (Ptr SExpr)) (name String))
+    (@intent "Check if expression is a symbol with given name")
+    (@spec (((Ptr SExpr) String) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((symbol sym) (string-eq (. sym name) name))
+      (_ false)))
+
+  (fn is-form ((expr (Ptr SExpr)) (keyword String))
+    (@intent "Check if expression is a list starting with given keyword")
+    (@spec (((Ptr SExpr) String) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((list l)
+        (if (== (list-len (. l items)) 0)
+          false
+          (match (list-get (. l items) 0)
+            ((some first) (sexpr-is-symbol-with-name first keyword))
+            ((none) false))))
+      (_ false)))
+
+  (fn find-holes ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Find all hole expressions in AST")
+    (@spec ((Arena (Ptr SExpr)) -> (List (Ptr SExpr))))
+    (@alloc arena)
+    (let ((result (list-new arena (Ptr SExpr))))
+      ;; Check if this expression itself is a hole
+      (when (is-form expr "hole")
+        (list-push result expr))
+      ;; If it's a list, recursively check children
+      (match (deref expr)
+        ((list l)
+          (let ((items (. l items))
+                (len (list-len items))
+                (mut i 0))
+            (while (< i len)
+              (match (list-get items i)
+                ((some child)
+                  ;; Recursively find holes in child
+                  (let ((child-holes (find-holes arena child))
+                        (child-len (list-len child-holes))
+                        (mut j 0))
+                    (while (< j child-len)
+                      (match (list-get child-holes j)
+                        ((some h) (list-push result h))
+                        ((none) (do)))
+                      (set! j (+ j 1)))))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        (_ (do)))
+      result))
+
+  (fn pretty-print ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Pretty-print S-expression as string")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@alloc arena)
+    (match (deref expr)
+      ;; Symbol: return the name
+      ((symbol sym)
+        (string-copy arena (. sym name)))
+
+      ;; String: return quoted with escapes
+      ((string str)
+        (let ((val (. str value))
+              (slen (cast Int (. val len)))
+              ;; Allocate extra space for quotes and potential escapes
+              (buf (cast (Ptr U8) (arena-alloc arena (+ (* slen 2) 3))))
+              (mut i 0)
+              (mut out 1))
+          (set! (@ buf 0) 34)  ;; opening quote
+          (while (< i slen)
+            (let ((c (@ (. val data) i)))
+              (cond
+                ((== c 10)  ;; newline
+                  (do
+                    (set! (@ buf out) 92)       ;; backslash
+                    (set! (@ buf (+ out 1)) 110) ;; 'n'
+                    (set! out (+ out 2))))
+                ((== c 9)   ;; tab
+                  (do
+                    (set! (@ buf out) 92)
+                    (set! (@ buf (+ out 1)) 116) ;; 't'
+                    (set! out (+ out 2))))
+                ((== c 34)  ;; quote
+                  (do
+                    (set! (@ buf out) 92)
+                    (set! (@ buf (+ out 1)) 34)
+                    (set! out (+ out 2))))
+                ((== c 92)  ;; backslash
+                  (do
+                    (set! (@ buf out) 92)
+                    (set! (@ buf (+ out 1)) 92)
+                    (set! out (+ out 2))))
+                (else
+                  (do
+                    (set! (@ buf out) c)
+                    (set! out (+ out 1))))))
+            (set! i (+ i 1)))
+          (set! (@ buf out) 34)  ;; closing quote
+          (set! (@ buf (+ out 1)) 0)  ;; null terminate
+          (String buf (cast U64 (+ out 1)))))
+
+      ;; Number: convert to string
+      ((number num)
+        (if (. num is-float)
+          ;; For floats, just return a placeholder (float-to-string is complex)
+          (string-copy arena "<float>")
+          (int-to-string arena (. num int-value))))
+
+      ;; List: ( children... )
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (== len 0)
+            (string-copy arena "()")
+            (let ((mut result (string-copy arena "("))
+                  (mut i 0))
+              (while (< i len)
+                (match (list-get items i)
+                  ((some child)
+                    (let ((child-str (pretty-print arena child)))
+                      (when (> i 0)
+                        (set! result (string-concat arena result " ")))
+                      (set! result (string-concat arena result child-str))))
+                  ((none) (do)))
+                (set! i (+ i 1)))
+              (string-concat arena result ")")))))))
+)

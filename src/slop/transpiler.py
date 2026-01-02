@@ -75,6 +75,8 @@ class Transpiler:
         self.record_fields: Dict[str, Dict[str, dict]] = {}  # type_name -> {field_name -> {'is_pointer': bool, 'type': SExpr}}
         self.func_returns_pointer: Dict[str, bool] = {}  # func_name -> returns_pointer
         self.func_returns_string: Set[str] = set()  # func_name -> returns String
+        self.func_return_types: Dict[str, SExpr] = {}  # func_name -> return type expression
+        self.functions: Dict[str, dict] = {}  # func_name -> {'return_type': SExpr} for compatibility
         self.current_return_type: Optional[SExpr] = None  # Current function's return type for context
         self.generated_option_types: Set[str] = set()  # Track generated Option<T> types
         self.generated_result_types: Set[str] = set()  # Track generated Result<T, E> types
@@ -82,6 +84,8 @@ class Transpiler:
         self.generated_map_types: Set[tuple] = set()  # Track generated Map<K, V> types: (type_name, key_c_type, value_c_type)
         self.generated_inline_records: Dict[str, str] = {}  # Track inline record types: type_name -> struct_body
         self.emitted_generated_types: Set[str] = set()  # Track which generated types have been emitted (to avoid duplicates)
+        self.type_alias_defs: Dict[str, SExpr] = {}  # Track type alias definitions: alias_name -> underlying type expr
+        self.union_variants: Dict[str, Dict[str, SExpr]] = {}  # Track union variant types: union_name -> {variant_tag -> payload_type_expr}
 
         # Static literal tracking for immutable collection literals
         self.literal_counter: int = 0  # Counter for unique static literal names
@@ -172,7 +176,7 @@ class Transpiler:
             else:
                 return 'Int'
         elif isinstance(typ, RangeType):
-            if typ.base_type == 'Float':
+            if typ.base == 'Float':
                 return 'Float'
             return 'Int'
         elif isinstance(typ, RecordType):
@@ -369,6 +373,11 @@ class Transpiler:
             return "slop_result"
 
         ret = self.current_return_type
+
+        # Resolve type aliases (e.g., ParseResult -> (Result ...))
+        if isinstance(ret, Symbol) and ret.name in self.type_alias_defs:
+            ret = self.type_alias_defs[ret.name]
+
         if isinstance(ret, SList) and len(ret) >= 1:
             head = ret[0]
             if isinstance(head, Symbol) and head.name == 'Result':
@@ -1136,6 +1145,19 @@ class Transpiler:
                                 return f"slop_option_{value_id}"
                     return None
 
+                # Dereference: (deref ptr) -> pointed-to type
+                if op == 'deref' and len(expr) >= 2:
+                    ptr_expr = expr[1]
+                    ptr_type = self._infer_type(ptr_expr)
+                    if ptr_type:
+                        # Remove pointer suffix to get base type
+                        if ptr_type.endswith('*'):
+                            return ptr_type[:-1].strip()
+                        # Handle slop_list_X* -> slop_list_X
+                        if '*' in ptr_type:
+                            return ptr_type.replace('*', '').strip()
+                    return None
+
                 # Field access: (. obj field) -> field's type
                 if op == '.' and len(expr) >= 3:
                     base = expr[1]
@@ -1153,6 +1175,15 @@ class Transpiler:
                                     return f"List[{elem_c_type}]"
                                 return self.to_c_type(field_type)
                     return None
+
+                # Function call: check return type
+                if op in self.func_return_types:
+                    ret_type = self.func_return_types[op]
+                    # For list types, return List[elem_c_type] format
+                    if is_form(ret_type, 'List') and len(ret_type) >= 2:
+                        elem_c_type = self.to_c_type(ret_type[1])
+                        return f"List[{elem_c_type}]"
+                    return self.to_c_type(ret_type)
 
         return None
 
@@ -1573,7 +1604,9 @@ class Transpiler:
         # Emit forward declarations for record types (needed for mutual references)
         record_types = []
         enum_types = []
-        other_types = []  # Range types, aliases, etc.
+        union_types = []  # Unions may contain records, emit after records
+        other_types = []  # Range types, simple aliases, etc.
+        wrapper_alias_types = []  # Type aliases for Result/Option/List (emit after generic types)
         for t in types:
             if len(t) > 2:
                 type_expr = t[2]
@@ -1583,10 +1616,28 @@ class Transpiler:
                     qualified = self.to_qualified_type_name(type_name)
                     self.emit(f"typedef struct {qualified} {qualified};")
                 elif is_form(type_expr, 'enum'):
-                    enum_types.append(t)
+                    # Check if this is actually a tagged union (enum with payload variants)
+                    has_payloads = any(isinstance(v, SList) for v in type_expr.items[1:])
+                    if has_payloads:
+                        union_types.append(t)
+                        # Forward declare tagged union type for pointer references
+                        type_name = t[1].name
+                        qualified = self.to_qualified_type_name(type_name)
+                        self.emit(f"typedef struct {qualified} {qualified};")
+                    else:
+                        enum_types.append(t)
+                elif is_form(type_expr, 'union'):
+                    union_types.append(t)
+                    # Forward declare union type for pointer references
+                    type_name = t[1].name
+                    qualified = self.to_qualified_type_name(type_name)
+                    self.emit(f"typedef struct {qualified} {qualified};")
+                elif is_form(type_expr, 'Result') or is_form(type_expr, 'Option') or is_form(type_expr, 'List'):
+                    # Type alias for generic wrapper types - emit after generic types are defined
+                    wrapper_alias_types.append(t)
                 else:
                     other_types.append(t)
-        if record_types:
+        if record_types or union_types:
             self.emit("")
 
         # Emit enum types FIRST (they may be referenced in generated result types)
@@ -1619,8 +1670,16 @@ class Transpiler:
         # Emit generated Option/List/Result types AFTER simple records
         self._emit_generated_types()
 
+        # Emit wrapper alias types (type aliases for Result/Option/List) AFTER generated types
+        for t in wrapper_alias_types:
+            self.transpile_type(t)
+
         # Emit complex record types (e.g., State - uses generated types)
         for t in complex_records:
+            self.transpile_type(t)
+
+        # Emit union types AFTER all records (unions may contain records by value)
+        for t in union_types:
             self.transpile_type(t)
 
         # Pre-pass for functions: track which return pointers
@@ -1788,6 +1847,15 @@ class Transpiler:
                 self.transpile_enum(raw_name, qualified_name, type_expr)
         elif is_form(type_expr, 'union'):
             self.transpile_union(raw_name, qualified_name, type_expr)
+        elif is_form(type_expr, 'Result') or is_form(type_expr, 'Option') or is_form(type_expr, 'List'):
+            # Type alias for a generic wrapper type (Result, Option, List)
+            # Call to_c_type to register the generic type, then emit a typedef alias
+            c_type = self.to_c_type(type_expr)
+            self.emit(f"typedef {c_type} {qualified_name};")
+            self.emit("")
+            self.types[raw_name] = TypeInfo(raw_name, qualified_name)
+            # Store the alias definition for later resolution (e.g., in ok/error constructors)
+            self.type_alias_defs[raw_name] = type_expr
         else:
             # Range type or alias
             self.transpile_range_type(raw_name, qualified_name, type_expr)
@@ -1908,11 +1976,15 @@ class Transpiler:
 
     def transpile_union(self, raw_name: str, qualified_name: str, form: SList):
         """Transpile tagged union"""
-        self.emit(f"typedef struct {{")
+        # Use struct tag name so it works with forward declarations
+        self.emit(f"struct {qualified_name} {{")
         self.indent += 1
         self.emit("uint8_t tag;")
         self.emit("union {")
         self.indent += 1
+
+        # Track variant payload types for type inference
+        variants = {}
 
         for i, variant in enumerate(form.items[1:]):
             if isinstance(variant, SList) and len(variant) >= 1:
@@ -1920,12 +1992,16 @@ class Transpiler:
                 if len(variant) >= 2:
                     var_type = self.to_c_type(variant[1])
                     self.emit(f"{var_type} {tag};")
+                    # Store the original type expression for later type inference
+                    variants[tag] = variant[1]
                 # else: empty variant, no field needed
 
         self.indent -= 1
         self.emit("} data;")
         self.indent -= 1
-        self.emit(f"}} {qualified_name};")
+        self.emit(f"}};")
+        # Add typedef so we can use just 'Name' instead of 'struct Name'
+        self.emit(f"typedef struct {qualified_name} {qualified_name};")
         self.emit("")
 
         # Generate tag constants with qualified name
@@ -1937,6 +2013,8 @@ class Transpiler:
 
         # Track with raw name for lookup, but store qualified C type
         self.types[raw_name] = TypeInfo(raw_name, qualified_name)
+        # Track variant payload types for type inference in match expressions
+        self.union_variants[raw_name] = variants
 
     def transpile_range_type(self, raw_name: str, qualified_name: str, type_expr: SExpr):
         """Transpile range type to typedef + constructor"""
@@ -2054,6 +2132,11 @@ class Transpiler:
 
         # Track current return type for context (used by ok/error/record)
         self.current_return_type = ret_type_expr
+
+        # Register function return type for type inference in function calls
+        if ret_type_expr:
+            self.func_return_types[raw_name] = ret_type_expr
+            self.functions[raw_name] = {'return_type': ret_type_expr}
 
         # Extract annotations and body
         annotations = {}
@@ -2597,7 +2680,10 @@ class Transpiler:
 
     def transpile_match(self, expr: SList, is_return: bool):
         """Transpile match expression"""
-        scrutinee = self.transpile_expr(expr[1])
+        scrutinee_expr = expr[1]
+        scrutinee = self.transpile_expr(scrutinee_expr)
+        # Infer the type of the scrutinee for union match type tracking
+        scrutinee_type = self._infer_type(scrutinee_expr)
 
         # Check for Option/Result match patterns (some/none/ok/error)
         # BUT first check if these are actually registered enum values
@@ -2717,6 +2803,14 @@ class Transpiler:
                     self.indent += 1
                     if var_name and not is_simple_enum:
                         self.emit(f"__auto_type {var_name} = {scrutinee}.data.{tag};")
+                        # Track the type of the bound variable for type flow analysis
+                        if scrutinee_type:
+                            # Get unqualified union type name for lookup
+                            union_type = scrutinee_type.replace('*', '').strip()
+                            if union_type in self.union_variants and tag in self.union_variants[union_type]:
+                                payload_type_expr = self.union_variants[union_type][tag]
+                                payload_c_type = self.to_c_type(payload_type_expr)
+                                self.var_types[var_name] = payload_c_type
                     for j, item in enumerate(body):
                         is_last = (j == len(body) - 1)
                         self.transpile_statement(item, is_return and is_last)
@@ -2737,6 +2831,10 @@ class Transpiler:
         # (e.g., file reads should only happen once)
         self.emit(f"__auto_type _match_scrutinee = {scrutinee};")
         scrutinee = "_match_scrutinee"
+
+        # Check if scrutinee is a pointer type - need -> instead of .
+        is_pointer = scrutinee_type and (scrutinee_type.endswith('*') or scrutinee_type.startswith('(Ptr '))
+        access_op = "->" if is_pointer else "."
 
         # Collect clauses
         some_ok_clause = None
@@ -2763,7 +2861,7 @@ class Transpiler:
                 none_err_clause = (var_name, body, tag)
 
         # Generate if-else
-        check_field = f"{scrutinee}.has_value" if is_option else f"{scrutinee}.is_ok"
+        check_field = f"{scrutinee}{access_op}has_value" if is_option else f"{scrutinee}{access_op}is_ok"
 
         if some_ok_clause:
             var_name, body, tag = some_ok_clause
@@ -2771,14 +2869,14 @@ class Transpiler:
             self.indent += 1
             if var_name and var_name != '_':
                 if is_option:
-                    self.emit(f"__auto_type {var_name} = {scrutinee}.value;")
+                    self.emit(f"__auto_type {var_name} = {scrutinee}{access_op}value;")
                     # Track the type of the bound variable for type flow analysis
                     if scrutinee_type and scrutinee_type.startswith('slop_option_'):
                         # Extract inner type: slop_option_string -> slop_string
                         inner_type = 'slop_' + scrutinee_type[len('slop_option_'):]
                         self.var_types[var_name] = inner_type
                 else:
-                    self.emit(f"__auto_type {var_name} = {scrutinee}.data.ok;")
+                    self.emit(f"__auto_type {var_name} = {scrutinee}{access_op}data.ok;")
             for j, item in enumerate(body):
                 is_last = (j == len(body) - 1)
                 self.transpile_statement(item, is_return and is_last)
@@ -2792,7 +2890,7 @@ class Transpiler:
                 self.emit(f"if (!{check_field}) {{")
             self.indent += 1
             if var_name and var_name != '_' and not is_option:
-                self.emit(f"__auto_type {var_name} = {scrutinee}.data.err;")
+                self.emit(f"__auto_type {var_name} = {scrutinee}{access_op}data.err;")
             for j, item in enumerate(body):
                 is_last = (j == len(body) - 1)
                 self.transpile_statement(item, is_return and is_last)
@@ -3365,12 +3463,24 @@ class Transpiler:
                     # Ultimate fallback for unknown type context
                     return f"(slop_list_ptr){{ .data = slop_arena_alloc({arena}, 16 * sizeof(void*)), .len = 0, .cap = 16 }}"
 
-                # List push - inline implementation
+                # List push - inline implementation with growth support
                 if op == 'list-push':
                     lst = self.transpile_expr(expr[1])
                     item = self.transpile_expr(expr[2])
-                    # Generate inline push: list.data[list.len++] = item
-                    return f"(({lst}).data[({lst}).len++] = {item})"
+                    # Generate inline push with capacity check and growth
+                    # Uses arena (assumed in scope from @alloc annotation)
+                    return f"""({{ \\
+    __auto_type _lst_p = &({lst}); \\
+    __auto_type _item = ({item}); \\
+    if (_lst_p->len >= _lst_p->cap) {{ \\
+        size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; \\
+        __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); \\
+        if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); \\
+        _lst_p->data = _new_data; \\
+        _lst_p->cap = _new_cap; \\
+    }} \\
+    _lst_p->data[_lst_p->len++] = _item; \\
+}})"""
 
                 # List get - returns Option<T> for bounds-checked access
                 if op == 'list-get':
@@ -3404,8 +3514,9 @@ class Transpiler:
                     if option_type:
                         # Generate bounds-checked access returning Option
                         return f"({{ __auto_type _lst = {lst}; size_t _idx = (size_t){idx}; {option_type} _r; if (_idx < _lst.len) {{ _r.has_value = true; _r.value = _lst.data[_idx]; }} else {{ _r.has_value = false; }} _r; }})"
-                    # Fallback - direct access without Option wrapper (use with care)
-                    return f"(({lst}).data[{idx}])"
+                    # Fallback - generate generic option using __typeof__
+                    # This creates an anonymous struct that works with has_value/value access
+                    return f"({{ __auto_type _lst = {lst}; size_t _idx = (size_t){idx}; struct {{ bool has_value; __typeof__(_lst.data[0]) value; }} _r = {{0}}; if (_idx < _lst.len) {{ _r.has_value = true; _r.value = _lst.data[_idx]; }} else {{ _r.has_value = false; }} _r; }})"
 
                 # List length
                 if op == 'list-len':
@@ -3958,6 +4069,9 @@ class Transpiler:
             type_expr = form[2] if len(form) > 2 else None
             if type_expr and is_form(type_expr, 'record'):
                 self._scan_record_fields(type_expr)
+            elif type_expr and (is_form(type_expr, 'Result') or is_form(type_expr, 'Option') or is_form(type_expr, 'List')):
+                # Type alias for generic wrapper type - call to_c_type to register the generic type
+                self.to_c_type(type_expr)
         elif is_form(form, 'record'):
             self._scan_record_fields(form)
 
@@ -4178,11 +4292,12 @@ class Transpiler:
             if type_name not in self.RUNTIME_PREDEFINED_TYPES and wrapper_key not in self.emitted_generated_types:
                 if '*' in inner:
                     # Pointer types break the macro's token pasting, emit inline function directly
+                    # Use _slop_map_values_raw which handles iteration properly
                     if not emitted_wrappers:
                         self.emit("/* Generated map operation wrappers */")
                         emitted_wrappers = True
                     inner_id = self._type_to_identifier(inner)
-                    self.emit(f"static inline {type_name} map_values_{inner_id}(void* m) {{ {type_name} r = {{0}}; size_t cap = slop_map_len(m); r.data = malloc(cap * sizeof({inner})); r.cap = cap; for (size_t i = 0; i < cap; i++) {{ void* v = slop_map_get(m, i); if (v) {{ r.data[r.len++] = *({inner}*)v; }} }} return r; }}")
+                    self.emit(f"static inline {type_name} map_values_{inner_id}(void* m) {{ slop_gmap_list raw = _slop_map_values_raw(m, sizeof({inner})); return ({type_name}){{({inner}*)raw.data, raw.len, raw.cap}}; }}")
                 else:
                     if not emitted_wrappers:
                         self.emit("/* Generated map operation wrappers */")
@@ -4402,28 +4517,39 @@ def transpile_multi(modules: dict, order: list) -> str:
             if func_info.get('return_type'):
                 transpiler.to_c_type(func_info['return_type'])
 
-        # Collect types and functions
+        # Collect constants, types and functions
+        constants = []
         types = []
         functions = []
         for form in module_forms:
-            if is_form(form, 'type'):
+            if is_form(form, 'const'):
+                constants.append(form)
+            elif is_form(form, 'type'):
                 types.append(form)
             elif is_form(form, 'fn'):
                 functions.append(form)
 
-        # Emit forward declarations for record types and register them early
+        # Emit constants first (before types, since types may reference them)
+        for c in constants:
+            transpiler.transpile_const(c)
+        if constants:
+            transpiler.emit("")
+
+        # Emit forward declarations for record and union types and register them early
         # so that forward references resolve correctly
-        record_types = []
+        forward_decl_types = []
         for t in types:
-            if len(t) > 2 and is_form(t[2], 'record'):
+            if len(t) > 2:
                 type_name = t[1].name
-                # Prefix type names too for multi-module builds
-                c_type_name = f"{transpiler.to_c_name(mod_name)}_{transpiler.to_c_name(type_name)}"
-                record_types.append(c_type_name)
-                # Register in self.types early for forward references
-                transpiler.types[type_name] = TypeInfo(name=type_name, c_type=c_type_name)
-                transpiler.emit(f"typedef struct {c_type_name} {c_type_name};")
-        if record_types:
+                type_expr = t[2]
+                if is_form(type_expr, 'record') or is_form(type_expr, 'union'):
+                    # Prefix type names too for multi-module builds
+                    c_type_name = f"{transpiler.to_c_name(mod_name)}_{transpiler.to_c_name(type_name)}"
+                    forward_decl_types.append(c_type_name)
+                    # Register in self.types early for forward references
+                    transpiler.types[type_name] = TypeInfo(name=type_name, c_type=c_type_name)
+                    transpiler.emit(f"typedef struct {c_type_name} {c_type_name};")
+        if forward_decl_types:
             transpiler.emit("")
 
         # Pre-scan types to discover needed generated types (Option, List, Result, Map)
@@ -4439,6 +4565,25 @@ def transpile_multi(modules: dict, order: list) -> str:
                 for variant in union_def.items[1:]:
                     if isinstance(variant, SList) and len(variant) >= 2:
                         transpiler.to_c_type(variant[1])
+            elif len(t) > 2 and (is_form(t[2], 'Result') or is_form(t[2], 'Option') or is_form(t[2], 'List')):
+                # Pre-scan Result/Option/List type aliases to register the generated types
+                type_expr = t[2]
+                transpiler.to_c_type(type_expr)
+                # For List types and Result<List<T>,...>, also register Option<T> since list-get returns Option
+                if is_form(type_expr, 'List') and len(type_expr) >= 2:
+                    elem_type = type_expr[1]
+                    elem_c_type = transpiler.to_c_type(elem_type)
+                    elem_id = transpiler._type_to_identifier(elem_c_type)
+                    option_type = f"slop_option_{elem_id}"
+                    transpiler.generated_option_types.add((option_type, elem_c_type))
+                elif is_form(type_expr, 'Result') and len(type_expr) >= 2:
+                    ok_type = type_expr[1]
+                    if is_form(ok_type, 'List') and len(ok_type) >= 2:
+                        elem_type = ok_type[1]
+                        elem_c_type = transpiler.to_c_type(elem_type)
+                        elem_id = transpiler._type_to_identifier(elem_c_type)
+                        option_type = f"slop_option_{elem_id}"
+                        transpiler.generated_option_types.add((option_type, elem_c_type))
 
         # Pre-scan function signatures to discover Result/Option/List types in return types and params
         for fn in functions:
@@ -4450,11 +4595,19 @@ def transpile_multi(modules: dict, order: list) -> str:
         # 3. Generated types (Option, List, Result, Map)
         # 4. Complex records (with generated type fields)
 
-        # Phase 1: Emit enums and range types
+        # Collect wrapper alias types (Result/Option/List) - emit after generated types
+        wrapper_alias_types = []
+
+        # Phase 1: Emit enums and range types (but NOT Result/Option/List aliases)
         for t in types:
             type_expr = t[2] if len(t) > 2 else None
-            if type_expr and (is_form(type_expr, 'enum') or not is_form(type_expr, 'record') and not is_form(type_expr, 'union')):
-                transpiler.transpile_type(t)
+            if type_expr:
+                # Skip Result/Option/List type aliases - they need generated types first
+                if is_form(type_expr, 'Result') or is_form(type_expr, 'Option') or is_form(type_expr, 'List'):
+                    wrapper_alias_types.append(t)
+                    continue
+                if is_form(type_expr, 'enum') or (not is_form(type_expr, 'record') and not is_form(type_expr, 'union')):
+                    transpiler.transpile_type(t)
 
         # Split records into simple (no generated type fields) and complex
         simple_records = []
@@ -4477,6 +4630,10 @@ def transpile_multi(modules: dict, order: list) -> str:
 
         # Phase 3: Emit generated types
         transpiler._emit_generated_types()
+
+        # Phase 3.5: Emit wrapper alias types (Result/Option/List type aliases)
+        for t in wrapper_alias_types:
+            transpiler.transpile_type(t)
 
         # Phase 4: Emit complex records and unions
         for t in complex_records:
@@ -4512,6 +4669,8 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
 
     # Accumulate enum definitions from all modules for cross-module lookup
     all_enums = {}
+    # Accumulate type alias definitions (Result/Option/List) for cross-module lookup
+    all_type_alias_defs = {}
 
     for mod_name in order:
         info = modules[mod_name]
@@ -4522,6 +4681,8 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
 
         # Copy enum definitions from previously processed modules
         transpiler.enums.update(all_enums)
+        # Copy type alias definitions from previously processed modules
+        transpiler.type_alias_defs.update(all_type_alias_defs)
 
         # Set up module context with imports
         imports = []
@@ -4575,14 +4736,16 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
             elif is_form(form, 'const'):
                 constants.append(form)
 
-        # Register record types early for forward references
-        record_types = []
+        # Register record and union types early for forward references
+        forward_decl_types = []
         for t in types:
-            if len(t) > 2 and is_form(t[2], 'record'):
-                type_name = t[1].name
-                c_type_name = f"{transpiler.to_c_name(mod_name)}_{transpiler.to_c_name(type_name)}"
-                record_types.append(c_type_name)
-                transpiler.types[type_name] = TypeInfo(name=type_name, c_type=c_type_name)
+            if len(t) > 2:
+                type_expr = t[2]
+                if is_form(type_expr, 'record') or is_form(type_expr, 'union'):
+                    type_name = t[1].name
+                    c_type_name = f"{transpiler.to_c_name(mod_name)}_{transpiler.to_c_name(type_name)}"
+                    forward_decl_types.append(c_type_name)
+                    transpiler.types[type_name] = TypeInfo(name=type_name, c_type=c_type_name)
 
         # Pre-scan types to discover needed generated types
         for t in types:
@@ -4604,6 +4767,25 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
                 for variant in union_def.items[1:]:
                     if isinstance(variant, SList) and len(variant) >= 2:
                         transpiler.to_c_type(variant[1])
+            elif len(t) > 2 and (is_form(t[2], 'Result') or is_form(t[2], 'Option') or is_form(t[2], 'List')):
+                # Pre-scan Result/Option/List type aliases to register the generated types
+                type_expr = t[2]
+                transpiler.to_c_type(type_expr)
+                # For List types and Result<List<T>,...>, also register Option<T> since list-get returns Option
+                if is_form(type_expr, 'List') and len(type_expr) >= 2:
+                    elem_type = type_expr[1]
+                    elem_c_type = transpiler.to_c_type(elem_type)
+                    elem_id = transpiler._type_to_identifier(elem_c_type)
+                    option_type = f"slop_option_{elem_id}"
+                    transpiler.generated_option_types.add((option_type, elem_c_type))
+                elif is_form(type_expr, 'Result') and len(type_expr) >= 2:
+                    ok_type = type_expr[1]
+                    if is_form(ok_type, 'List') and len(ok_type) >= 2:
+                        elem_type = ok_type[1]
+                        elem_c_type = transpiler.to_c_type(elem_type)
+                        elem_id = transpiler._type_to_identifier(elem_c_type)
+                        option_type = f"slop_option_{elem_id}"
+                        transpiler.generated_option_types.add((option_type, elem_c_type))
 
         # Pre-scan function signatures
         for fn in functions:
@@ -4632,17 +4814,24 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
 
         header_lines.append("")
 
-        # Forward declarations for record types
-        if record_types:
-            for c_type_name in record_types:
+        # Forward declarations for record and union types
+        if forward_decl_types:
+            for c_type_name in forward_decl_types:
                 header_lines.append(f"typedef struct {c_type_name} {c_type_name};")
             header_lines.append("")
 
-        # Emit enums and range types to header
+        # Collect wrapper alias types (Result/Option/List) - emit after generated types
+        wrapper_alias_types = []
+
+        # Emit enums and range types to header (but NOT Result/Option/List aliases)
         transpiler.output = []
         for t in types:
             if len(t) > 2:
                 type_expr = t[2]
+                # Skip Result/Option/List type aliases - they need generated types first
+                if is_form(type_expr, 'Result') or is_form(type_expr, 'Option') or is_form(type_expr, 'List'):
+                    wrapper_alias_types.append(t)
+                    continue
                 if is_form(type_expr, 'enum') or \
                    (not is_form(type_expr, 'record') and not is_form(type_expr, 'union')):
                     transpiler.transpile_type(t)
@@ -4691,6 +4880,14 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
         transpiler._emit_generated_types(phase='value')
         if transpiler.output:
             header_lines.extend(transpiler.output)
+
+        # Emit wrapper alias types (Result/Option/List type aliases) AFTER generated types
+        transpiler.output = []
+        for t in wrapper_alias_types:
+            transpiler.transpile_type(t)
+        if transpiler.output:
+            header_lines.extend(transpiler.output)
+            header_lines.append("")
 
         # Emit constants as #define to header
         transpiler.output = []
@@ -4741,6 +4938,8 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
 
         # Accumulate enum definitions for subsequent modules
         all_enums.update(transpiler.enums)
+        # Accumulate type alias definitions for subsequent modules
+        all_type_alias_defs.update(transpiler.type_alias_defs)
 
     return results
 

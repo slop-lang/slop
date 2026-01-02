@@ -74,9 +74,108 @@ def extract_requires_blocks(ast):
     return requires
 
 
+def find_native_component(name: str):
+    """Find a native SLOP component binary.
+
+    Args:
+        name: Component name (e.g., 'parser', 'transpiler')
+
+    Returns:
+        Path to binary if found, None otherwise
+    """
+    from pathlib import Path
+
+    binary_name = f"slop-{name}"
+    locations = [
+        Path(__file__).parent / "bin" / binary_name,
+        Path.cwd() / binary_name,
+        Path.cwd() / "build" / binary_name,
+    ]
+
+    for loc in locations:
+        if loc.exists():
+            return loc
+    return None
+
+
+def parse_native(input_file: str):
+    """Parse using native parser, returns (ast_json, success).
+
+    Returns tuple of (output, success). If native parser isn't available,
+    returns (None, False).
+    """
+    import subprocess
+
+    parser_bin = find_native_component('parser')
+    if not parser_bin:
+        return None, False
+
+    try:
+        result = subprocess.run(
+            [str(parser_bin), input_file, '--json'],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            return result.stdout, True
+        return None, False
+    except Exception:
+        return None, False
+
+
+def parse_with_fallback(input_file: str, prefer_native: bool = False, verbose: bool = False):
+    """Parse a file, optionally trying native parser first.
+
+    Args:
+        input_file: Path to .slop file
+        prefer_native: If True, try native parser first
+        verbose: If True, print which parser is being used
+
+    Returns:
+        Parsed AST (list of SExpr)
+    """
+    if prefer_native:
+        output, success = parse_native(input_file)
+        if success:
+            if verbose:
+                print("Using native parser", file=sys.stderr)
+            # For now, native parser outputs pretty-printed s-expressions
+            # We'd need to re-parse or have it output JSON
+            # Fall through to Python parser for AST
+        elif verbose:
+            print("Native parser not available, using Python parser", file=sys.stderr)
+
+    # Use Python parser (always, for now, since we need the AST objects)
+    return parse_file(input_file)
+
+
 def cmd_parse(args):
     """Parse and display SLOP file"""
+    use_native = getattr(args, 'native', False)
+
     try:
+        # When --native, try to use native parser for display output
+        if use_native:
+            import subprocess
+            parser_bin = find_native_component('parser')
+            if parser_bin:
+                print(f"[native] Using {parser_bin} for parsing", file=sys.stderr)
+                result = subprocess.run(
+                    [str(parser_bin), args.input],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    if result.stdout:
+                        print(result.stdout, end='')
+                    return 0
+                else:
+                    # Native parser failed, fall back to Python
+                    print("[native] Native parser failed, falling back to Python", file=sys.stderr)
+            else:
+                print("[native] Parser: not found, using Python", file=sys.stderr)
+
+        # Python parser
         ast = parse_file(args.input)
 
         if args.holes:
@@ -1534,6 +1633,19 @@ def cmd_build(args):
 
         print(f"Building {input_path} -> {output}")
 
+        # Check for --native flag
+        use_native = getattr(args, 'native', False)
+        if use_native:
+            # Report which native components are available
+            parser_bin = find_native_component('parser')
+            if parser_bin:
+                print(f"  [native] Parser: {parser_bin}")
+            else:
+                print("  [native] Parser: not found, using Python")
+            # Future: add transpiler, type-checker, etc.
+            print("  [native] Type checker: using Python")
+            print("  [native] Transpiler: using Python")
+
         # Create output directory if needed
         output_dir = Path(output).parent
         if output_dir and str(output_dir) != '.':
@@ -2029,6 +2141,8 @@ def main():
     p = subparsers.add_parser('parse', help='Parse SLOP file')
     p.add_argument('input')
     p.add_argument('--holes', action='store_true', help='Show only holes')
+    p.add_argument('--native', action='store_true',
+                   help='Use native components where available, fall back to Python')
 
     # transpile
     p = subparsers.add_parser('transpile', help='Convert to C')
@@ -2086,6 +2200,8 @@ def main():
     p.add_argument('--debug', action='store_true')
     p.add_argument('--library', choices=['static', 'shared'],
                    help='Build as library instead of executable')
+    p.add_argument('--native', action='store_true',
+                   help='Use native components where available, fall back to Python')
 
     # derive
     p = subparsers.add_parser('derive', help='Generate SLOP from schemas')
