@@ -101,8 +101,8 @@ NATIVE_BIN_DIR = src/slop/bin
 NATIVE_PARSER = $(NATIVE_BIN_DIR)/slop-parser
 
 # Parser source files
-PARSER_SOURCES = lib/std/parser/main.slop \
-                 lib/std/parser/parser.slop \
+PARSER_SOURCES = lib/compiler/parser/main.slop \
+                 lib/compiler/parser/parser.slop \
                  lib/std/strlib/strlib.slop \
                  lib/std/io/file.slop \
                  lib/std/os/env.slop
@@ -121,7 +121,7 @@ native-parser: $(NATIVE_PARSER)
 $(NATIVE_PARSER): $(PARSER_SOURCES)
 	@echo "Building native parser..."
 	@mkdir -p $(NATIVE_BIN_DIR)
-	cd lib/std/parser && uv run slop build -o ../../../$(NATIVE_PARSER)
+	cd lib/compiler/parser && uv run slop build -o ../../../$(NATIVE_PARSER)
 	@echo "Native parser installed to $(NATIVE_PARSER)"
 
 # Clean native binaries only
