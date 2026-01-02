@@ -490,8 +490,10 @@ class TestModuleTypePrefixing:
         t.current_module = "mymod"
         c_code = t.transpile(ast)
 
+        # Union struct should be prefixed
+        assert "struct mymod_Result {" in c_code
         # Union typedef should be prefixed
-        assert "} mymod_Result;" in c_code
+        assert "typedef struct mymod_Result mymod_Result;" in c_code
         # Tag constants should be prefixed
         assert "mymod_Result_ok_TAG" in c_code
         assert "mymod_Result_err_TAG" in c_code

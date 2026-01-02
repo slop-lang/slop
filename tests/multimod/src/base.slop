@@ -1,0 +1,17 @@
+(module base
+  (export BaseError ComputeResult compute)
+
+  ;; Error type for computations
+  (type BaseError (record
+    (message String)
+    (code Int)))
+
+  ;; Result type alias - like ParseResult in parser
+  (type ComputeResult (Result Int BaseError))
+
+  (fn compute ((x Int))
+    (@intent "Compute a value, returning error if negative")
+    (@spec ((Int) -> ComputeResult))
+    (if (< x 0)
+      (error (BaseError "Negative input" (- 0 x)))
+      (ok (* x x)))))

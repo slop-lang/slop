@@ -19,15 +19,23 @@ help:
 	@echo "Usage: make <target> FILE=<path/to/file.slop>"
 	@echo ""
 	@echo "Targets:"
-	@echo "  parse      Parse and display AST"
-	@echo "  holes      Show holes in file"
-	@echo "  transpile  Convert to C"
-	@echo "  check      Validate file"
-	@echo "  fill       Fill holes with LLM"
-	@echo "  build      Full pipeline to binary"
-	@echo "  clean      Remove build artifacts"
-	@echo "  test       Run pytest test suite"
-	@echo "  install    Install package in dev mode"
+	@echo "  parse         Parse and display AST"
+	@echo "  holes         Show holes in file"
+	@echo "  transpile     Convert to C"
+	@echo "  check         Validate file"
+	@echo "  fill          Fill holes with LLM"
+	@echo "  build         Full pipeline to binary"
+	@echo "  clean         Remove build artifacts"
+	@echo "  test          Run pytest test suite"
+	@echo "  install       Install package in dev mode"
+	@echo ""
+	@echo "Native Toolchain:"
+	@echo "  native        Build all native components"
+	@echo "  native-parser Build native parser only"
+	@echo "  clean-native  Remove native binaries"
+	@echo ""
+	@echo "Native binaries are installed to src/slop/bin/"
+	@echo "Use 'slop --native' to use native components where available"
 
 install:
 	uv pip install -e ".[dev]"
@@ -80,7 +88,50 @@ example-rate-limiter:
 	$(PYTHON) -m slop.cli transpile examples/rate-limiter.slop -o build/rate_limiter.c
 	$(CC) $(CFLAGS) -Isrc/slop/runtime -DRATE_LIMITER_TEST build/rate_limiter.c -o build/rate_limiter
 
-# Self-hosted parser
+# ==============================================================================
+# Native Toolchain Build
+# ==============================================================================
+# These targets build native SLOP components that can be used by the CLI
+# with the --native flag for improved performance.
+
+# Directory where native binaries are installed for CLI use
+NATIVE_BIN_DIR = src/slop/bin
+
+# Native component binaries
+NATIVE_PARSER = $(NATIVE_BIN_DIR)/slop-parser
+
+# Parser source files
+PARSER_SOURCES = lib/std/parser/main.slop \
+                 lib/std/parser/parser.slop \
+                 lib/std/strlib/strlib.slop \
+                 lib/std/io/file.slop \
+                 lib/std/os/env.slop
+
+.PHONY: native native-parser clean-native
+
+# Build all native components
+native: native-parser
+	@echo "Native toolchain built successfully"
+	@echo "Components installed to $(NATIVE_BIN_DIR)/"
+	@echo "Use 'slop --native' to use native components"
+
+# Build the native parser
+native-parser: $(NATIVE_PARSER)
+
+$(NATIVE_PARSER): $(PARSER_SOURCES)
+	@echo "Building native parser..."
+	@mkdir -p $(NATIVE_BIN_DIR)
+	cd lib/std/parser && uv run slop build -o ../../../$(NATIVE_PARSER)
+	@echo "Native parser installed to $(NATIVE_PARSER)"
+
+# Clean native binaries only
+clean-native:
+	rm -f $(NATIVE_BIN_DIR)/slop-*
+	@echo "Native binaries cleaned"
+
+# ==============================================================================
+# Legacy Self-hosted Parser (deprecated - use native-parser instead)
+# ==============================================================================
 parser-transpile:
 	$(PYTHON) -m slop.cli transpile lib/parser/slop-parser.slop -o build/slop_parser.c
 
