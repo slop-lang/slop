@@ -249,6 +249,7 @@ class TypeChecker:
         # List operations - return types use UNKNOWN for polymorphism
         self.env.register_function('list-new', FnType((ARENA,), ListType(UNKNOWN)))
         self.env.register_function('list-push', FnType((ListType(UNKNOWN), UNKNOWN), UNIT))
+        self.env.register_function('list-pop', FnType((ListType(UNKNOWN),), OptionType(UNKNOWN)))
         self.env.register_function('list-get', FnType((ListType(UNKNOWN), INT), OptionType(UNKNOWN)))
         self.env.register_function('list-len', FnType((ListType(UNKNOWN),), INT))
 
@@ -826,7 +827,7 @@ class TypeChecker:
                 return UNIT
             result = result_types[0]
             for t in result_types[1:]:
-                result = self._unify_branch_types(result, t)
+                result = self._unify_branch_types(result, t, expr)
             return result
 
         # Match expression
@@ -1467,6 +1468,13 @@ class TypeChecker:
                         for var in pattern.items[1:]:
                             if isinstance(var, Symbol) and var.name != '_':
                                 self.env.bind_var(var.name, payload_type)
+                else:
+                    # Scrutinee type not fully known (e.g., imported union type)
+                    # Still bind pattern variables to UNKNOWN to avoid spurious errors
+                    if len(pattern) > 1:
+                        for var in pattern.items[1:]:
+                            if isinstance(var, Symbol) and var.name != '_':
+                                self.env.bind_var(var.name, UNKNOWN)
 
     def _get_required_variants(self, scrutinee_type: Type) -> Optional[Set[str]]:
         """Return the set of variant names that must be covered for exhaustiveness.
@@ -2023,6 +2031,29 @@ class TypeChecker:
                         hint="Use (list-new arena Type) to create a mutable list"
                     )
             return UNIT
+
+        # Special handling for list-pop: requires mutable list
+        # (list-pop list) -> (Option T)
+        if fn_name == 'list-pop' and len(args) >= 1:
+            list_arg = args[0]
+            list_type = self.infer_expr(list_arg)
+
+            # Check mutability - list literals are immutable
+            if isinstance(list_arg, Symbol):
+                is_ptr_type = isinstance(list_type, PtrType)
+                if not is_ptr_type and list_arg.name not in self._mutable_collections:
+                    self.error(
+                        f"cannot pop from immutable list '{list_arg.name}'",
+                        list_arg,
+                        hint="Use (list-new arena Type) to create a mutable list"
+                    )
+
+            # Return Option<element-type>
+            if isinstance(list_type, ListType):
+                return OptionType(list_type.element_type)
+            elif isinstance(list_type, PtrType) and isinstance(list_type.pointee, ListType):
+                return OptionType(list_type.pointee.element_type)
+            return OptionType(UNKNOWN)
 
         # Special handling for map-put: requires mutable map
         # (map-put map key val)
@@ -2605,14 +2636,31 @@ def parse_type_expr(expr: SExpr, type_registry: Optional[Dict[str, 'Type']] = No
     return checker.parse_type_expr(expr)
 
 
+def _find_project_config(start_path: 'Path') -> 'Optional[Path]':
+    """Search upward from start_path for a slop.toml file."""
+    current = start_path.resolve()
+    # Search up to 10 parent directories
+    for _ in range(10):
+        config_path = current / "slop.toml"
+        if config_path.exists():
+            return config_path
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
 def check_file(path: str) -> List[TypeDiagnostic]:
     """Type check a SLOP file.
 
     If the file has imports, performs full module resolution to get
     imported function signatures for accurate type checking.
+    Uses slop.toml configuration if found for module search paths.
     """
     from slop.parser import parse_file, is_form
     from pathlib import Path
+    import sys
 
     ast = parse_file(path)
 
@@ -2626,9 +2674,34 @@ def check_file(path: str) -> List[TypeDiagnostic]:
     if has_imports:
         # Use full module resolution to get imported signatures
         from slop.resolver import ModuleResolver
-        # Add parent directory to search paths to find sibling/parent modules
+        from slop.providers import load_project_config
+
         file_path = Path(path).resolve()
-        search_paths = [file_path.parent, file_path.parent.parent]
+
+        # Build search paths from multiple sources
+        search_paths = []
+
+        # 1. Try to find project-local slop.toml by searching upward
+        project_config_path = _find_project_config(file_path.parent)
+        if project_config_path:
+            # Load config from the found slop.toml
+            _, build_cfg = load_project_config(str(project_config_path))
+            if build_cfg and build_cfg.include:
+                # Include paths are relative to the config file's directory
+                config_dir = project_config_path.parent
+                for p in build_cfg.include:
+                    search_paths.append((config_dir / p).resolve())
+
+        # 2. Also try loading from CWD (for backward compatibility)
+        if not search_paths:
+            _, build_cfg = load_project_config()
+            if build_cfg and build_cfg.include:
+                for p in build_cfg.include:
+                    search_paths.append(Path(p).resolve())
+
+        # 3. Add parent directories as fallback
+        search_paths.extend([file_path.parent, file_path.parent.parent])
+
         resolver = ModuleResolver(search_paths)
         try:
             graph = resolver.build_dependency_graph(Path(path))
@@ -2641,8 +2714,9 @@ def check_file(path: str) -> List[TypeDiagnostic]:
                     return results.get(mod_name, [])
             # Fallback to filename stem
             return results.get(Path(path).stem, [])
-        except Exception:
-            # Fall back to single-file check if resolution fails
+        except Exception as e:
+            # Log error and fall back to single-file check
+            print(f"warning: Module resolution failed ({e}), falling back to single-file check", file=sys.stderr)
             checker = TypeChecker(path)
             return checker.check_module(ast)
     else:

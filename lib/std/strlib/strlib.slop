@@ -33,6 +33,7 @@
     capitalize
     parse-int
     parse-float
+    float-to-string
     join
     replace
     replace-all
@@ -65,6 +66,9 @@
     (memset ((s (Ptr Void)) (c Int) (n U64)) (Ptr Void))
     (strcmp ((s1 (Ptr U8)) (s2 (Ptr U8))) Int)
     (strncmp ((s1 (Ptr U8)) (s2 (Ptr U8)) (n U64)) Int))
+
+  (ffi "stdio.h"
+    (snprintf ((buf (Ptr Char)) (size U64) (fmt (Ptr Char)) (val Float)) Int))
 
   (type ParseError (enum empty-string invalid-format overflow underflow))
 
@@ -591,6 +595,33 @@
             (if (== end-val (cast (Ptr Char) (. s data)))
               (error 'invalid-format)
               (ok result)))))))
+
+  (fn float-to-string ((arena Arena) (f Float) (precision (Int 0 .. 20)))
+    (@intent "Convert floating-point number to string with given precision")
+    (@spec ((Arena Float (Int 0 .. 20)) -> String))
+    (@alloc arena)
+    (@pure)
+    (@assume {(. $result len) >= 1})
+    (@example (arena 3.14159 2) -> "3.14")
+    (@example (arena -2.5 1) -> "-2.5")
+    (@example (arena 100.0 0) -> "100")
+    (@example (arena 0.0 2) -> "0.00")
+    (let ((fmt-buf (arena-alloc arena 8))
+          (out-buf (arena-alloc arena 64)))
+      (set! (@ fmt-buf 0) (cast U8 37))
+      (set! (@ fmt-buf 1) (cast U8 46))
+      (if (< precision 10)
+        (do
+          (set! (@ fmt-buf 2) (cast U8 (+ 48 precision)))
+          (set! (@ fmt-buf 3) (cast U8 102))
+          (set! (@ fmt-buf 4) (cast U8 0)))
+        (do
+          (set! (@ fmt-buf 2) (cast U8 (+ 48 (/ precision 10))))
+          (set! (@ fmt-buf 3) (cast U8 (+ 48 (% precision 10))))
+          (set! (@ fmt-buf 4) (cast U8 102))
+          (set! (@ fmt-buf 5) (cast U8 0))))
+      (let ((len (snprintf (cast (Ptr Char) out-buf) (cast U64 64) (cast (Ptr Char) fmt-buf) f)))
+        (String (cast (Ptr U8) out-buf) (cast U64 len)))))
 
   (fn join ((arena Arena) (strings (List String)) (separator String))
     (@intent "Join list of strings with separator")

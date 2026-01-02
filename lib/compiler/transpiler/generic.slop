@@ -1,0 +1,259 @@
+;; ============================================================
+;; SLOP Transpiler - Generic Type Instantiation
+;;
+;; Generate C code for Option, Result, List, and Map types
+;; that were registered during type conversion.
+;; ============================================================
+
+(module generic
+  (export
+    emit-generated-types
+    is-runtime-predefined
+    make-option-name make-result-name make-list-name make-map-name)
+
+  (import context (TranspileContext
+                   ctx-get-options ctx-get-results
+                   ctx-get-lists ctx-get-maps
+                   ctx-is-emitted ctx-mark-emitted))
+  (import emit (Emitter emit-line emit-blank emit-guard-start emit-guard-end))
+  (import names (type-to-identifier))
+  (import strlib (string-eq string-concat string-upper))
+
+  ;; ============================================================
+  ;; Runtime Predefined Types
+  ;; ============================================================
+
+  ;; Types already defined in slop_runtime.h - don't emit
+  (const RUNTIME_PREDEFINED (List String)
+    (list
+      ;; Option types
+      "slop_option_int" "slop_option_float" "slop_option_string"
+      "slop_option_ptr" "slop_option_bool"
+      ;; Result types
+      "slop_result_int" "slop_result_ptr" "slop_result_string"
+      "slop_result_void"
+      ;; List types
+      "slop_list_int" "slop_list_float" "slop_list_string"
+      "slop_list_ptr" "slop_list_u8"
+      ;; Map types
+      "slop_map_string_string" "slop_map_string_int"
+      "slop_map_string_ptr"))
+
+  (fn is-runtime-predefined ((type-name String))
+    (@intent "Check if type is predefined in slop_runtime.h")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (hole Bool
+      "Check if type-name is in RUNTIME_PREDEFINED list"
+      :complexity tier-1
+      :context (type-name)
+      :required (RUNTIME_PREDEFINED)))
+
+  ;; ============================================================
+  ;; Type Name Generation
+  ;; ============================================================
+
+  (fn make-option-name ((inner-type String))
+    (@intent "Generate Option type name from inner type")
+    (@spec ((String) -> String))
+    (@pure)
+    ;; slop_option_<normalized_inner>
+    (hole String
+      "Normalize inner type and build slop_option_X name"
+      :complexity tier-1
+      :context (inner-type)
+      :required (type-to-identifier)))
+
+  (fn make-result-name ((ok-type String) (err-type String))
+    (@intent "Generate Result type name from ok and error types")
+    (@spec ((String String) -> String))
+    (@pure)
+    ;; slop_result_<ok>_<err>
+    (hole String
+      "Normalize types and build slop_result_X_Y name"
+      :complexity tier-1
+      :context (ok-type err-type)
+      :required (type-to-identifier)))
+
+  (fn make-list-name ((elem-type String))
+    (@intent "Generate List type name from element type")
+    (@spec ((String) -> String))
+    (@pure)
+    ;; slop_list_<normalized_elem>
+    (hole String
+      "Normalize elem type and build slop_list_X name"
+      :complexity tier-1
+      :context (elem-type)
+      :required (type-to-identifier)))
+
+  (fn make-map-name ((key-type String) (val-type String))
+    (@intent "Generate Map type name from key and value types")
+    (@spec ((String String) -> String))
+    (@pure)
+    ;; slop_map_<key>_<val>
+    (hole String
+      "Normalize types and build slop_map_X_Y name"
+      :complexity tier-1
+      :context (key-type val-type)
+      :required (type-to-identifier)))
+
+  ;; ============================================================
+  ;; Main Emission
+  ;; ============================================================
+
+  (fn emit-generated-types ((ctx (Ptr TranspileContext)) (em (Ptr Emitter)))
+    (@intent "Emit all registered generated type definitions")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter)) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (do
+      (emit-line em "/* ===== Generated Generic Types ===== */")
+      (emit-blank em)
+
+      ;; Emit Option types first (no dependencies)
+      (emit-option-types ctx em)
+
+      ;; Emit List types (may depend on Options for list-get)
+      (emit-list-types ctx em)
+
+      ;; Emit Result types
+      (emit-result-types ctx em)
+
+      ;; Emit Map types last (most complex)
+      (emit-map-types ctx em)
+
+      (emit-blank em)))
+
+  ;; ============================================================
+  ;; Option Type Emission
+  ;; ============================================================
+
+  (fn emit-option-types ((ctx (Ptr TranspileContext)) (em (Ptr Emitter)))
+    (@intent "Emit all registered Option type definitions")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter)) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (hole Unit
+      "Iterate ctx-get-options, emit each if not predefined/emitted"
+      :complexity tier-2
+      :context (ctx em)
+      :required (ctx-get-options is-runtime-predefined ctx-is-emitted
+                 emit-option-type ctx-mark-emitted)))
+
+  (fn emit-option-type ((em (Ptr Emitter)) (type-name String) (inner-type String))
+    (@intent "Emit single Option<T> typedef")
+    (@spec (((Ptr Emitter) String String) -> Unit))
+    (@pre (!= em nil))
+    (let ((guard (make-guard-name type-name)))
+      ;; #ifndef GUARD
+      ;; #define GUARD
+      ;; typedef struct { bool has_value; T value; } type_name;
+      ;; #endif
+      (hole Unit
+        "Emit guarded Option typedef struct"
+        :complexity tier-2
+        :context (em guard type-name inner-type)
+        :required (emit-guard-start emit-guard-end emit-line emit-blank))))
+
+  ;; ============================================================
+  ;; List Type Emission
+  ;; ============================================================
+
+  (fn emit-list-types ((ctx (Ptr TranspileContext)) (em (Ptr Emitter)))
+    (@intent "Emit all registered List type definitions")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter)) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (hole Unit
+      "Iterate ctx-get-lists, emit each if not predefined/emitted"
+      :complexity tier-2
+      :context (ctx em)
+      :required (ctx-get-lists is-runtime-predefined ctx-is-emitted
+                 emit-list-type ctx-mark-emitted)))
+
+  (fn emit-list-type ((em (Ptr Emitter)) (type-name String) (elem-type String))
+    (@intent "Emit single List<T> typedef")
+    (@spec (((Ptr Emitter) String String) -> Unit))
+    (@pre (!= em nil))
+    (let ((guard (make-guard-name type-name)))
+      ;; typedef struct { T* data; size_t len; size_t cap; } type_name;
+      (hole Unit
+        "Emit guarded List typedef struct with data/len/cap fields"
+        :complexity tier-2
+        :context (em guard type-name elem-type)
+        :required (emit-guard-start emit-guard-end emit-line emit-blank))))
+
+  ;; ============================================================
+  ;; Result Type Emission
+  ;; ============================================================
+
+  (fn emit-result-types ((ctx (Ptr TranspileContext)) (em (Ptr Emitter)))
+    (@intent "Emit all registered Result type definitions")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter)) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (hole Unit
+      "Iterate ctx-get-results, emit each if not predefined/emitted"
+      :complexity tier-2
+      :context (ctx em)
+      :required (ctx-get-results is-runtime-predefined ctx-is-emitted
+                 emit-result-type ctx-mark-emitted)))
+
+  (fn emit-result-type ((em (Ptr Emitter)) (type-name String)
+                        (ok-type String) (err-type String))
+    (@intent "Emit single Result<T, E> typedef")
+    (@spec (((Ptr Emitter) String String String) -> Unit))
+    (@pre (!= em nil))
+    (let ((guard (make-guard-name type-name)))
+      ;; typedef struct { bool is_ok; union { T ok; E err; } data; } type_name;
+      ;; Handle void ok type (use uint8_t placeholder)
+      (hole Unit
+        "Emit guarded Result typedef with ok/err union, handle void ok"
+        :complexity tier-2
+        :context (em guard type-name ok-type err-type)
+        :required (emit-guard-start emit-guard-end emit-line emit-blank string-eq))))
+
+  ;; ============================================================
+  ;; Map Type Emission
+  ;; ============================================================
+
+  (fn emit-map-types ((ctx (Ptr TranspileContext)) (em (Ptr Emitter)))
+    (@intent "Emit all registered Map type definitions")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter)) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (hole Unit
+      "Iterate ctx-get-maps, emit each if not predefined/emitted"
+      :complexity tier-2
+      :context (ctx em)
+      :required (ctx-get-maps is-runtime-predefined ctx-is-emitted
+                 emit-map-type ctx-mark-emitted)))
+
+  (fn emit-map-type ((em (Ptr Emitter)) (type-name String)
+                     (key-type String) (val-type String))
+    (@intent "Emit single Map<K, V> typedef")
+    (@spec (((Ptr Emitter) String String String) -> Unit))
+    (@pre (!= em nil))
+    (let ((guard (make-guard-name type-name)))
+      ;; For string keys, use SLOP_STRING_MAP_DEFINE macro
+      ;; For other keys, emit custom struct
+      (hole Unit
+        "Emit guarded Map typedef, use SLOP_STRING_MAP_DEFINE for string keys"
+        :complexity tier-2
+        :context (em guard type-name key-type val-type)
+        :required (emit-guard-start emit-guard-end emit-line emit-blank string-eq))))
+
+  ;; ============================================================
+  ;; Helper Functions
+  ;; ============================================================
+
+  (fn make-guard-name ((type-name String))
+    (@intent "Generate include guard name from type name")
+    (@spec ((String) -> String))
+    (@pure)
+    ;; slop_option_string -> SLOP_OPTION_STRING_DEFINED
+    (hole String
+      "Uppercase type name and append _DEFINED"
+      :complexity tier-1
+      :context (type-name)
+      :required (string-upper))))

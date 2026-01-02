@@ -3482,6 +3482,51 @@ class Transpiler:
     _lst_p->data[_lst_p->len++] = _item; \\
 }})"""
 
+                # List pop - removes and returns last element as Option<T>
+                if op == 'list-pop':
+                    lst_expr = expr[1]
+                    lst = self.transpile_expr(lst_expr)
+
+                    # Try to infer element type from the list expression
+                    option_type = None
+                    list_type = self._infer_type(lst_expr)
+
+                    if list_type and list_type.startswith('List[') and list_type.endswith(']'):
+                        elem_c_type = list_type[5:-1]
+                        elem_id = self._type_to_identifier(elem_c_type)
+                        option_type = f"slop_option_{elem_id}"
+                        self.generated_option_types.add((option_type, elem_c_type))
+                    elif list_type and list_type.startswith('slop_list_'):
+                        elem_id = list_type[10:]
+                        option_type = f"slop_option_{elem_id}"
+                        self.generated_option_types.add((option_type, elem_id))
+
+                    if not option_type:
+                        option_type = self._get_option_c_type(expected_type)
+
+                    if option_type:
+                        return f"""({{ \\
+    __auto_type _lst_p = &({lst}); \\
+    {option_type} _r = {{0}}; \\
+    if (_lst_p->len > 0) {{ \\
+        _lst_p->len--; \\
+        _r.has_value = true; \\
+        _r.value = _lst_p->data[_lst_p->len]; \\
+    }} \\
+    _r; \\
+}})"""
+                    # Fallback with __typeof__
+                    return f"""({{ \\
+    __auto_type _lst_p = &({lst}); \\
+    struct {{ bool has_value; __typeof__(_lst_p->data[0]) value; }} _r = {{0}}; \\
+    if (_lst_p->len > 0) {{ \\
+        _lst_p->len--; \\
+        _r.has_value = true; \\
+        _r.value = _lst_p->data[_lst_p->len]; \\
+    }} \\
+    _r; \\
+}})"""
+
                 # List get - returns Option<T> for bounds-checked access
                 if op == 'list-get':
                     lst_expr = expr[1]

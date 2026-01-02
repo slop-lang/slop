@@ -1,0 +1,73 @@
+(module types
+  (export TypeKind RangeBounds FieldDef VariantDef TypeDef)
+  (import parser (SExpr))
+
+  (type TypeKind (enum kind-primitive kind-range kind-record kind-enum kind-union kind-alias kind-option kind-result kind-list kind-map kind-ptr kind-array kind-function kind-ffi))
+
+  (type RangeBounds (record
+      (has-min Bool)
+      (has-max Bool)
+      (min-val I64)
+      (max-val I64)))
+
+  (type FieldDef (record (name String) (type-expr (Ptr SExpr))))
+
+  (type VariantDef (record (tag String) (payload (Option (Ptr SExpr)))))
+
+  (type TypeDef (record
+      (name String)
+      (kind TypeKind)
+      (source-expr (Ptr SExpr))
+      (range (Option RangeBounds))
+      (fields (Option (List FieldDef)))
+      (variants (Option (List VariantDef)))
+      (type-params (Option (List String)))))
+
+  (fn range-bounds-new ((has-min Bool) (min-val I64) (has-max Bool) (max-val I64))
+    (@intent "Create RangeBounds from components")
+    (@spec ((Bool I64 Bool I64) -> RangeBounds))
+    (@pure)
+    (RangeBounds has-min has-max min-val max-val))
+
+  (fn range-bounds-unbounded ()
+    (@intent "Create unbounded range (full Int)")
+    (@spec (() -> RangeBounds))
+    (@pure)
+    (RangeBounds false false 0 0))
+
+  (fn range-contains ((bounds RangeBounds) (value I64))
+    (@intent "Check if value is within range bounds")
+    (@spec ((RangeBounds I64) -> Bool))
+    (@pure)
+    (and
+      (or (not (. bounds has-min)) (>= value (. bounds min-val)))
+      (or (not (. bounds has-max)) (<= value (. bounds max-val)))))
+
+  (fn range-intersect ((a RangeBounds) (b RangeBounds))
+    (@intent "Compute intersection of two ranges")
+    (@spec ((RangeBounds RangeBounds) -> RangeBounds))
+    (@pure)
+    ;; Intersection = tighter bounds. If only one has a bound, use it.
+    (let ((new-has-min (or (. a has-min) (. b has-min)))
+          (new-has-max (or (. a has-max) (. b has-max)))
+          (new-min-val (if (. a has-min)
+                         (if (. b has-min)
+                           (max (. a min-val) (. b min-val))
+                           (. a min-val))
+                         (. b min-val)))
+          (new-max-val (if (. a has-max)
+                         (if (. b has-max)
+                           (min (. a max-val) (. b max-val))
+                           (. a max-val))
+                         (. b max-val))))
+      (RangeBounds new-has-min new-has-max new-min-val new-max-val)))
+
+  (fn range-union ((a RangeBounds) (b RangeBounds))
+    (@intent "Compute union of two ranges")
+    (@spec ((RangeBounds RangeBounds) -> RangeBounds))
+    (@pure)
+    (let ((new-has-min (and (. a has-min) (. b has-min)))
+          (new-has-max (and (. a has-max) (. b has-max)))
+          (new-min-val (if (and (. a has-min) (. b has-min)) (min (. a min-val) (. b min-val)) 0))
+          (new-max-val (if (and (. a has-max) (. b has-max)) (max (. a max-val) (. b max-val)) 0)))
+      (RangeBounds new-has-min new-has-max new-min-val new-max-val))))

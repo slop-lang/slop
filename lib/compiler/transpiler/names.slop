@@ -1,0 +1,158 @@
+;; ============================================================
+;; SLOP Transpiler - Name Mangling
+;;
+;; Convert SLOP identifiers to valid C identifiers with proper
+;; qualification and keyword escaping.
+;; ============================================================
+
+(module names
+  (export
+    to-c-name to-c-type-name
+    to-qualified-name to-qualified-type-name
+    type-to-identifier
+    is-c-keyword is-runtime-builtin)
+
+  (import context (TranspileContext ctx-get-module ctx-lookup-import
+                   ctx-get-prefixing))
+  (import strlib (string-eq string-concat string-char-at string-len))
+
+  ;; ============================================================
+  ;; C Reserved Keywords
+  ;; ============================================================
+
+  ;; Keywords that must be prefixed with slop_ to avoid conflicts
+  (const C_KEYWORDS (List String)
+    (list "auto" "break" "case" "char" "const" "continue" "default"
+          "do" "double" "else" "enum" "extern" "float" "for" "goto"
+          "if" "int" "long" "register" "return" "short" "signed"
+          "sizeof" "static" "struct" "switch" "typedef" "union"
+          "unsigned" "void" "volatile" "while" "inline" "restrict"
+          "_Bool" "_Complex" "_Imaginary"))
+
+  ;; ============================================================
+  ;; Runtime Builtin Functions
+  ;; ============================================================
+
+  ;; Functions defined in slop_runtime.h - never prefixed
+  (const RUNTIME_BUILTINS (List String)
+    (list "print" "println" "string-len" "string-concat" "string-eq"
+          "string-slice" "int-to-string" "float-to-string"
+          "arena-alloc" "with-arena"
+          "list-new" "list-push" "list-pop" "list-get" "list-len" "list-set"
+          "map-new" "map-put" "map-get" "map-has" "map-del"
+          "is-ok" "is-err" "unwrap" "unwrap-err"
+          "is-some" "is-none"
+          "now-ms" "sleep-ms"
+          "assert" "panic"))
+
+  ;; ============================================================
+  ;; Basic Name Conversion
+  ;; ============================================================
+
+  (fn to-c-name ((name String))
+    (@intent "Convert SLOP identifier to valid C identifier")
+    (@spec ((String) -> String))
+    (@pure)
+    (@pre (> (string-len name) 0))
+    (@post (> (string-len $result) 0))
+    ;; Conversion rules:
+    ;; - Replace '-' with '_'
+    ;; - Replace '?' with '_p' (predicate suffix)
+    ;; - Replace '!' with '_x' (mutation suffix)
+    ;; - Replace '$' with '_'
+    ;; - Replace '@' with '_at_'
+    ;; - Prepend 'slop_' if result is a C keyword
+    (hole String
+      "Apply character replacements, check keywords, return mangled name"
+      :complexity tier-2
+      :context (name)
+      :required (C_KEYWORDS is-c-keyword)))
+
+  (fn to-c-type-name ((name String))
+    (@intent "Convert SLOP type name to C type name")
+    (@spec ((String) -> String))
+    (@pure)
+    (@pre (> (string-len name) 0))
+    ;; Same rules as to-c-name but for types
+    (to-c-name name))
+
+  ;; ============================================================
+  ;; Qualified Name Conversion
+  ;; ============================================================
+
+  (fn to-qualified-name ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Convert function name to qualified C name with module prefix")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre (!= ctx nil))
+    (@pre (> (string-len name) 0))
+    (@pure)
+    ;; Rules (in order):
+    ;; 1. "main" is never prefixed
+    ;; 2. Runtime builtins are never prefixed
+    ;; 3. Check import map for explicit qualification
+    ;; 4. If prefixing enabled and in module, prefix with module_
+    ;; 5. Otherwise use base name
+    (hole String
+      "Apply qualification rules in order"
+      :complexity tier-2
+      :context (ctx name)
+      :required (RUNTIME_BUILTINS is-runtime-builtin to-c-name
+                 ctx-get-module ctx-lookup-import ctx-get-prefixing)))
+
+  (fn to-qualified-type-name ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Convert type name to qualified C type name with module prefix")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre (!= ctx nil))
+    (@pre (> (string-len name) 0))
+    (@pure)
+    ;; Similar to to-qualified-name but for types
+    ;; Built-in types (Int, Bool, String, etc.) are never prefixed
+    (hole String
+      "Apply type qualification rules"
+      :complexity tier-2
+      :context (ctx name)
+      :required (to-c-type-name ctx-get-module ctx-get-prefixing)))
+
+  ;; ============================================================
+  ;; Type to Identifier Conversion
+  ;; ============================================================
+
+  (fn type-to-identifier ((c-type String))
+    (@intent "Convert C type to valid identifier component for generated types")
+    (@spec ((String) -> String))
+    (@pure)
+    (@pre (> (string-len c-type) 0))
+    ;; Used for generating names like slop_option_string, slop_list_int
+    ;; Rules:
+    ;; - Replace '*' with '_ptr'
+    ;; - Strip 'slop_' prefix if present
+    ;; - Normalize: int64_t -> int, uint8_t -> u8, etc.
+    ;; - Replace spaces with '_'
+    (hole String
+      "Normalize type name for use in generated type identifiers"
+      :complexity tier-2
+      :context (c-type)))
+
+  ;; ============================================================
+  ;; Keyword and Builtin Checks
+  ;; ============================================================
+
+  (fn is-c-keyword ((name String))
+    (@intent "Check if name is a C reserved keyword")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (hole Bool
+      "Check if name is in C_KEYWORDS list"
+      :complexity tier-1
+      :context (name)
+      :required (C_KEYWORDS)))
+
+  (fn is-runtime-builtin ((name String))
+    (@intent "Check if name is a runtime builtin function")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (hole Bool
+      "Check if name is in RUNTIME_BUILTINS list"
+      :complexity tier-1
+      :context (name)
+      :required (RUNTIME_BUILTINS))))

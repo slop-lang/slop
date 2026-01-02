@@ -902,6 +902,7 @@ def verify_file(path: str, mode: str = "error",
     try:
         with open(path) as f:
             source = f.read()
+        ast = parse(source)
     except Exception as e:
         return [VerificationResult(
             name="file",
@@ -910,4 +911,29 @@ def verify_file(path: str, mode: str = "error",
             message=f"Could not read file: {e}"
         )]
 
-    return verify_source(source, path, mode, timeout_ms)
+    # Use check_file which handles import resolution from slop.toml
+    diagnostics = check_file(path)
+
+    # Check for type errors
+    type_errors = [d for d in diagnostics if d.severity == 'error']
+    if type_errors:
+        return [VerificationResult(
+            name="typecheck",
+            verified=False,
+            status="error",
+            message=f"Type errors found: {len(type_errors)} error(s)"
+        )]
+
+    # Create type checker for contract verification (already type-checked via check_file)
+    type_checker = TypeChecker(path)
+    type_checker.check_module(ast)
+
+    # Run contract verification
+    contract_verifier = ContractVerifier(type_checker, timeout_ms)
+    results = contract_verifier.verify_all(ast)
+
+    # Run range verification
+    range_verifier = RangeVerifier(type_checker, timeout_ms)
+    results.extend(range_verifier.verify_range_safety(ast))
+
+    return results

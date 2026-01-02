@@ -1,0 +1,396 @@
+;; ============================================================
+;; SLOP Transpiler - Statement Transpilation
+;;
+;; Convert SLOP statements to C statements.
+;; Handles let bindings, control flow, loops, match, and
+;; assignment.
+;; ============================================================
+
+(module stmt
+  (export
+    transpile-stmt)
+
+  (import parser (SExpr SExprList SExprSymbol is-form
+                  sexpr-line sexpr-col))
+  (import context (TranspileContext ctx-push-scope ctx-pop-scope
+                   ctx-register-var ctx-lookup-var ctx-mark-pointer))
+  (import transpiler-types (VarEntry))
+  (import emit (Emitter emit-line emit-blank indent dedent))
+  (import expr (transpile-expr is-pointer-expr))
+  (import ctype (to-c-type is-pointer-type is-option-type is-result-type))
+  (import names (to-c-name to-qualified-name))
+  (import strlib (string-eq string-concat))
+
+  ;; ============================================================
+  ;; Main Statement Transpilation
+  ;; ============================================================
+
+  (fn transpile-stmt ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                      (stmt (Ptr SExpr)) (is-return Bool))
+    (@intent "Transpile statement to C code")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) (Ptr SExpr) Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (!= stmt nil))
+    ;; is-return: if true and this is last expr, emit "return expr;"
+    (match (deref stmt)
+      ((list l)
+        (if (== (list-len (. l items)) 0)
+          (emit-line em "/* empty list */")
+          (transpile-list-stmt ctx em l is-return)))
+      ;; Non-list statements are expression statements
+      (_ (transpile-expr-stmt ctx em stmt is-return))))
+
+  (fn transpile-list-stmt ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                           (lst SExprList) (is-return Bool))
+    (@intent "Transpile list form as statement")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (match (list-get (. lst items) 0)
+      ((none) (emit-line em "/* empty */"))
+      ((some head)
+        (match (deref head)
+          ((symbol sym)
+            (let ((op (. sym name)))
+              (cond
+                ;; Let bindings
+                ((string-eq op "let") (transpile-let ctx em lst is-return))
+                ((string-eq op "let*") (transpile-let-star ctx em lst is-return))
+
+                ;; Control flow
+                ((string-eq op "if") (transpile-if ctx em lst is-return))
+                ((string-eq op "when") (transpile-when ctx em lst))
+                ((string-eq op "unless") (transpile-unless ctx em lst))
+                ((string-eq op "cond") (transpile-cond ctx em lst is-return))
+
+                ;; Loops
+                ((string-eq op "while") (transpile-while ctx em lst))
+                ((string-eq op "for") (transpile-for ctx em lst))
+                ((string-eq op "for-each") (transpile-for-each ctx em lst))
+
+                ;; Pattern matching
+                ((string-eq op "match") (transpile-match ctx em lst is-return))
+
+                ;; Mutation
+                ((string-eq op "set!") (transpile-set ctx em lst))
+
+                ;; Sequencing
+                ((string-eq op "do") (transpile-do ctx em lst is-return))
+
+                ;; Arena scope
+                ((string-eq op "with-arena") (transpile-with-arena ctx em lst is-return))
+
+                ;; Control transfer
+                ((string-eq op "return") (transpile-return ctx em lst))
+                ((string-eq op "break") (emit-line em "break;"))
+                ((string-eq op "continue") (emit-line em "continue;"))
+
+                ;; Default: expression statement
+                (else (transpile-expr-stmt ctx em (addr (deref (cast (Ptr SExpr)
+                         (addr (union-new SExpr list lst))))) is-return)))))
+          ;; Head is not a symbol
+          (_ (transpile-expr-stmt ctx em (addr (deref (cast (Ptr SExpr)
+               (addr (union-new SExpr list lst))))) is-return))))))
+
+  (fn transpile-expr-stmt ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                           (expr (Ptr SExpr)) (is-return Bool))
+    (@intent "Transpile expression as statement")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) (Ptr SExpr) Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (!= expr nil))
+    (hole Unit
+      "Emit expression as statement, with return if is-return is true"
+      :complexity tier-1
+      :context (ctx em expr is-return)
+      :required (transpile-expr emit-line)))
+
+  ;; ============================================================
+  ;; Let Bindings
+  ;; ============================================================
+
+  (fn transpile-let ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                     (lst SExprList) (is-return Bool))
+    (@intent "Transpile let binding: (let ((var expr)...) body...)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (>= (list-len (. lst items)) 3))
+    ;; Structure: (let ((bindings)) body...)
+    (do
+      (emit-line em "{")
+      (indent em)
+      (ctx-push-scope ctx)
+
+      ;; Process bindings
+      (hole Unit
+        "Parse bindings list, detect mut, emit C declarations, register vars"
+        :complexity tier-3
+        :context (ctx em lst)
+        :required (to-c-type transpile-expr ctx-register-var to-c-name
+                   is-pointer-expr ctx-mark-pointer))
+
+      ;; Process body
+      (transpile-body ctx em lst 2 is-return)
+
+      (ctx-pop-scope ctx)
+      (dedent em)
+      (emit-line em "}")))
+
+  (fn transpile-let-star ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                          (lst SExprList) (is-return Bool))
+    (@intent "Transpile let* (sequential bindings)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; Same as let but bindings are in scope immediately
+    (transpile-let ctx em lst is-return))
+
+  (fn transpile-body ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                      (lst SExprList) (start-idx Int) (is-return Bool))
+    (@intent "Transpile body statements from index, last may be return")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList Int Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (hole Unit
+      "Iterate from start-idx to end, transpile each stmt, mark last for return"
+      :complexity tier-2
+      :context (ctx em lst start-idx is-return)
+      :required (transpile-stmt)))
+
+  ;; ============================================================
+  ;; Control Flow
+  ;; ============================================================
+
+  (fn transpile-if ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                    (lst SExprList) (is-return Bool))
+    (@intent "Transpile if: (if cond then else?)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (>= (list-len (. lst items)) 3))
+    (hole Unit
+      "Get cond/then/else from lst, emit if statement with optional else"
+      :complexity tier-2
+      :context (ctx em lst is-return)
+      :required (transpile-expr transpile-stmt emit-line indent dedent)))
+
+  (fn transpile-when ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                      (lst SExprList))
+    (@intent "Transpile when: (when cond body...)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (>= (list-len (. lst items)) 3))
+    (hole Unit
+      "Get condition from lst, emit if statement without else"
+      :complexity tier-2
+      :context (ctx em lst)
+      :required (transpile-expr transpile-body emit-line)))
+
+  (fn transpile-unless ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                        (lst SExprList))
+    (@intent "Transpile unless: (unless cond body...)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (>= (list-len (. lst items)) 3))
+    (hole Unit
+      "Get condition from lst, emit if (!condition) statement"
+      :complexity tier-2
+      :context (ctx em lst)
+      :required (transpile-expr transpile-body emit-line)))
+
+  (fn transpile-cond ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                      (lst SExprList) (is-return Bool))
+    (@intent "Transpile cond: (cond (test1 body1) (test2 body2) (else bodyN))")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; Emit as if/else if/else chain
+    (hole Unit
+      "Iterate clauses, emit if/else if/else chain"
+      :complexity tier-2
+      :context (ctx em lst is-return)
+      :required (transpile-expr transpile-stmt)))
+
+  ;; ============================================================
+  ;; Loops
+  ;; ============================================================
+
+  (fn transpile-while ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                       (lst SExprList))
+    (@intent "Transpile while: (while cond body...)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (>= (list-len (. lst items)) 3))
+    (hole Unit
+      "Get condition from lst, emit while loop"
+      :complexity tier-2
+      :context (ctx em lst)
+      :required (transpile-expr transpile-body emit-line)))
+
+  (fn transpile-for ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                     (lst SExprList))
+    (@intent "Transpile for: (for (var start end) body...) or (for (var start end step) body...)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; Emit as: for (int64_t var = start; var < end; var += step)
+    (hole Unit
+      "Parse range spec, emit C for loop"
+      :complexity tier-2
+      :context (ctx em lst)
+      :required (transpile-expr to-c-name ctx-push-scope ctx-pop-scope ctx-register-var)))
+
+  (fn transpile-for-each ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                          (lst SExprList))
+    (@intent "Transpile for-each: (for-each (var list) body...)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; Emit as: for (size_t i = 0; i < list.len; i++) { type var = list.data[i]; body }
+    (hole Unit
+      "Parse binding, emit indexed for loop"
+      :complexity tier-3
+      :context (ctx em lst)
+      :required (transpile-expr to-c-name infer-expr-c-type)))
+
+  ;; ============================================================
+  ;; Pattern Matching
+  ;; ============================================================
+
+  (fn transpile-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                       (lst SExprList) (is-return Bool))
+    (@intent "Transpile match: (match expr ((pattern) body)...)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (>= (list-len (. lst items)) 3))
+    ;; Dispatch based on matched expression type:
+    ;; - Option: if/else with has_value check
+    ;; - Result: if/else with is_ok check
+    ;; - Enum: switch on value
+    ;; - Union: switch on tag
+    (hole Unit
+      "Analyze match target type, dispatch to appropriate handler"
+      :complexity tier-4
+      :context (ctx em lst is-return)
+      :required (transpile-expr infer-expr-c-type
+                 transpile-option-match transpile-result-match
+                 transpile-enum-match transpile-union-match)))
+
+  (fn transpile-option-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                              (target-code String) (clauses (List (Ptr SExpr)))
+                              (is-return Bool))
+    (@intent "Transpile match on Option type")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (List (Ptr SExpr)) Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; if (target.has_value) { some_binding = target.value; ... } else { ... }
+    (hole Unit
+      "Emit if/else for Option matching"
+      :complexity tier-3
+      :context (ctx em target-code clauses is-return)))
+
+  (fn transpile-result-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                              (target-code String) (clauses (List (Ptr SExpr)))
+                              (is-return Bool))
+    (@intent "Transpile match on Result type")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (List (Ptr SExpr)) Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; if (target.is_ok) { ok_binding = target.data.ok; ... } else { ... }
+    (hole Unit
+      "Emit if/else for Result matching"
+      :complexity tier-3
+      :context (ctx em target-code clauses is-return)))
+
+  (fn transpile-enum-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                            (target-code String) (clauses (List (Ptr SExpr)))
+                            (is-return Bool))
+    (@intent "Transpile match on simple enum")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (List (Ptr SExpr)) Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; switch (target) { case VAL1: ...; break; ... }
+    (hole Unit
+      "Emit switch statement for enum"
+      :complexity tier-2
+      :context (ctx em target-code clauses is-return)))
+
+  (fn transpile-union-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                             (target-code String) (clauses (List (Ptr SExpr)))
+                             (is-return Bool))
+    (@intent "Transpile match on tagged union")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (List (Ptr SExpr)) Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; switch (target.tag) { case TAG_variant: binding = target.data.variant; ... }
+    (hole Unit
+      "Emit switch on tag with payload extraction"
+      :complexity tier-3
+      :context (ctx em target-code clauses is-return)))
+
+  ;; ============================================================
+  ;; Mutation
+  ;; ============================================================
+
+  (fn transpile-set ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                     (lst SExprList))
+    (@intent "Transpile set!: (set! target value)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (>= (list-len (. lst items)) 3))
+    ;; Handles:
+    ;; - Simple variable: (set! x value) -> x = value
+    ;; - Field: (set! (. obj field) value) -> obj.field = value
+    ;; - Index: (set! (@ arr i) value) -> arr[i] = value
+    ;; - Deref: (set! (deref ptr) value) -> *ptr = value
+    (hole Unit
+      "Analyze target, emit appropriate assignment"
+      :complexity tier-2
+      :context (ctx em lst)
+      :required (transpile-expr to-c-name)))
+
+  ;; ============================================================
+  ;; Sequencing and Scopes
+  ;; ============================================================
+
+  (fn transpile-do ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                    (lst SExprList) (is-return Bool))
+    (@intent "Transpile do: (do stmt1 stmt2 ... stmtN)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; Just emit statements in sequence
+    (transpile-body ctx em lst 1 is-return))
+
+  (fn transpile-with-arena ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                            (lst SExprList) (is-return Bool))
+    (@intent "Transpile with-arena: (with-arena size body...)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (>= (list-len (. lst items)) 3))
+    ;; Emit: { slop_arena* arena = slop_arena_new(size); ... slop_arena_free(arena); }
+    (hole Unit
+      "Emit arena scope with cleanup"
+      :complexity tier-2
+      :context (ctx em lst is-return)
+      :required (transpile-expr ctx-push-scope ctx-pop-scope ctx-register-var)))
+
+  (fn transpile-return ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                        (lst SExprList))
+    (@intent "Transpile explicit return: (return value)")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) SExprList) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (hole Unit
+      "If value provided, emit return expr; otherwise emit return;"
+      :complexity tier-1
+      :context (ctx em lst)
+      :required (transpile-expr emit-line))))

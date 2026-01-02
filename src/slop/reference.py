@@ -291,6 +291,7 @@ tier-4: 70B+ models   ; Complex algorithms, multi-step logic
 (list-new arena Type) -> (List Type)
 (list Type e1 e2...) -> (List Type)     ; Literal
 (list-push list item) -> Unit
+(list-pop list) -> (Option T)
 (list-get list idx) -> (Option T)
 (list-len list) -> (Int 0 ..)
 (list-set list idx val) -> Unit

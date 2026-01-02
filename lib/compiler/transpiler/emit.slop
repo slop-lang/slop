@@ -1,0 +1,208 @@
+;; ============================================================
+;; SLOP Transpiler - Code Emission
+;;
+;; Utilities for emitting C code with proper indentation,
+;; includes, comments, and include guards.
+;; ============================================================
+
+(module emit
+  (export
+    ;; Emitter type
+    Emitter
+    ;; Lifecycle
+    emitter-new emitter-output
+    ;; Basic emission
+    emit emit-line emit-blank
+    ;; Indentation
+    indent dedent get-indent
+    ;; Structured emission
+    emit-include emit-comment
+    emit-guard-start emit-guard-end
+    emit-block-start emit-block-end)
+
+  (import strlib (string-concat string-len))
+
+  ;; ============================================================
+  ;; Emitter State
+  ;; ============================================================
+
+  (type Emitter (record
+    (arena Arena)
+    (lines (List String))         ;; Accumulated output lines
+    (indent-level (Int 0 ..))     ;; Current indentation level
+    (indent-str String)           ;; Indentation string (default: 4 spaces)
+    (current-line String)))       ;; Partial line being built
+
+  ;; ============================================================
+  ;; Lifecycle
+  ;; ============================================================
+
+  (fn emitter-new ((arena Arena))
+    (@intent "Create a new code emitter")
+    (@spec ((Arena) -> (Ptr Emitter)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((em (cast (Ptr Emitter) (arena-alloc arena 128))))
+      (set! (deref em) (Emitter
+        arena
+        (list-new arena String)
+        0
+        "    "
+        ""))
+      em))
+
+  (fn emitter-output ((em (Ptr Emitter)))
+    (@intent "Get accumulated output as single string with newlines")
+    (@spec (((Ptr Emitter)) -> String))
+    (@pre (!= em nil))
+    (let ((lines (. (deref em) lines))
+          (arena (. (deref em) arena))
+          (len (list-len lines))
+          (mut result ""))
+      (do
+        (for (i 0 len)
+          (match (list-get lines i)
+            ((some line)
+              (if (== i 0)
+                (set! result line)
+                (set! result (string-concat arena result (string-concat arena "\n" line)))))
+            ((none) (do))))
+        result)))
+
+  ;; ============================================================
+  ;; Basic Emission
+  ;; ============================================================
+
+  (fn emit ((em (Ptr Emitter)) (text String))
+    (@intent "Emit text without newline (for building lines)")
+    (@spec (((Ptr Emitter) String) -> Unit))
+    (@pre (!= em nil))
+    ;; Appends to current-line buffer
+    (set! (. (deref em) current-line)
+          (string-concat (. (deref em) arena)
+                         (. (deref em) current-line)
+                         text)))
+
+  (fn emit-line ((em (Ptr Emitter)) (line String))
+    (@intent "Emit complete line with current indentation")
+    (@spec (((Ptr Emitter) String) -> Unit))
+    (@pre (!= em nil))
+    (let ((indented (build-indented-line em line)))
+      ;; Flush any partial line first
+      (when (> (string-len (. (deref em) current-line)) 0)
+        (list-push (. (deref em) lines) (. (deref em) current-line))
+        (set! (. (deref em) current-line) ""))
+      ;; Add the new line
+      (list-push (. (deref em) lines) indented)))
+
+  (fn emit-blank ((em (Ptr Emitter)))
+    (@intent "Emit empty line")
+    (@spec (((Ptr Emitter)) -> Unit))
+    (@pre (!= em nil))
+    (list-push (. (deref em) lines) ""))
+
+  ;; ============================================================
+  ;; Indentation
+  ;; ============================================================
+
+  (fn indent ((em (Ptr Emitter)))
+    (@intent "Increase indentation level by one")
+    (@spec (((Ptr Emitter)) -> Unit))
+    (@pre (!= em nil))
+    (set! (. (deref em) indent-level)
+          (+ (. (deref em) indent-level) 1)))
+
+  (fn dedent ((em (Ptr Emitter)))
+    (@intent "Decrease indentation level by one")
+    (@spec (((Ptr Emitter)) -> Unit))
+    (@pre (!= em nil))
+    (@pre (> (. (deref em) indent-level) 0))
+    (set! (. (deref em) indent-level)
+          (- (. (deref em) indent-level) 1)))
+
+  (fn get-indent ((em (Ptr Emitter)))
+    (@intent "Get current indentation level")
+    (@spec (((Ptr Emitter)) -> (Int 0 ..)))
+    (@pre (!= em nil))
+    (@pure)
+    (. (deref em) indent-level))
+
+  ;; ============================================================
+  ;; Structured Emission
+  ;; ============================================================
+
+  (fn emit-include ((em (Ptr Emitter)) (header String) (system Bool))
+    (@intent "Emit #include directive")
+    (@spec (((Ptr Emitter) String Bool) -> Unit))
+    (@pre (!= em nil))
+    ;; system=true:  #include <header>
+    ;; system=false: #include "header"
+    (let ((arena (. (deref em) arena)))
+      (if system
+        (emit-line em (string-concat arena
+                        (string-concat arena "#include <" header)
+                        ">"))
+        (emit-line em (string-concat arena
+                        (string-concat arena "#include \"" header)
+                        "\"")))))
+
+  (fn emit-comment ((em (Ptr Emitter)) (text String))
+    (@intent "Emit C comment")
+    (@spec (((Ptr Emitter) String) -> Unit))
+    (@pre (!= em nil))
+    (let ((arena (. (deref em) arena)))
+      (emit-line em (string-concat arena
+                      (string-concat arena "/* " text)
+                      " */"))))
+
+  (fn emit-guard-start ((em (Ptr Emitter)) (name String))
+    (@intent "Emit include guard start: #ifndef NAME / #define NAME")
+    (@spec (((Ptr Emitter) String) -> Unit))
+    (@pre (!= em nil))
+    (let ((arena (. (deref em) arena)))
+      (emit-line em (string-concat arena "#ifndef " name))
+      (emit-line em (string-concat arena "#define " name))))
+
+  (fn emit-guard-end ((em (Ptr Emitter)))
+    (@intent "Emit include guard end: #endif")
+    (@spec (((Ptr Emitter)) -> Unit))
+    (@pre (!= em nil))
+    (emit-line em "#endif"))
+
+  (fn emit-block-start ((em (Ptr Emitter)) (header String))
+    (@intent "Emit block start: header followed by { and indent")
+    (@spec (((Ptr Emitter) String) -> Unit))
+    (@pre (!= em nil))
+    ;; Emits: "header {"
+    (let ((arena (. (deref em) arena)))
+      (emit-line em (string-concat arena header " {"))
+      (indent em)))
+
+  (fn emit-block-end ((em (Ptr Emitter)))
+    (@intent "Emit block end: dedent and }")
+    (@spec (((Ptr Emitter)) -> Unit))
+    (@pre (!= em nil))
+    (@pre (> (. (deref em) indent-level) 0))
+    (do
+      (dedent em)
+      (emit-line em "}")))
+
+  ;; ============================================================
+  ;; Internal Helpers
+  ;; ============================================================
+
+  (fn build-indented-line ((em (Ptr Emitter)) (line String))
+    (@intent "Build line with current indentation prepended")
+    (@spec (((Ptr Emitter) String) -> String))
+    (@pre (!= em nil))
+    (@pure)
+    (if (== (. (deref em) indent-level) 0)
+      line
+      (let ((arena (. (deref em) arena))
+            (indent-level (. (deref em) indent-level))
+            (indent-str (. (deref em) indent-str))
+            (mut prefix ""))
+        (do
+          (for (i 0 indent-level)
+            (set! prefix (string-concat arena prefix indent-str)))
+          (string-concat arena prefix line))))))
