@@ -40,7 +40,7 @@
                    ctx-push-scope ctx-pop-scope ctx-register-var))
   (import transpiler-types (CTypeInfo CRangeInfo CFieldInfo CVariantInfo
                             FuncEntry FFIFuncEntry FFIStructEntry VarEntry))
-  (import emit (Emitter emit-line emit-blank indent dedent
+  (import emit (Emitter emit emit-line emit-blank indent dedent
                 emit-block-start emit-block-end))
   (import stmt (transpile-stmt))
   (import expr (transpile-expr))
@@ -124,15 +124,14 @@
     (@pre (!= em nil))
     (let ((len (list-len params)))
       (if (== len 0)
-        (emit-line em "void")
+        (emit em "void")
         (for (i 0 len)
           (match (list-get params i)
             ((some param-expr)
               (do
                 (emit-param ctx em param-expr)
-                (if (< i (- len 1))
-                  (emit-line em ", ")
-                  (do))))
+                (when (< i (- len 1))
+                  (emit em ", "))))
             ((none) (do)))))))
 
   (fn emit-param ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
@@ -155,7 +154,7 @@
                       ((some type-expr)
                         (let ((c-type (to-c-type ctx type-expr))
                               (c-name (to-c-name (. sym name))))
-                          (emit-line em (string-concat arena c-type (string-concat arena " " c-name)))))
+                          (emit em (string-concat arena c-type (string-concat arena " " c-name)))))
                       ((none) (do))))
                   (_ (do))))
               ((none) (do)))))
@@ -185,8 +184,7 @@
                                   ((none) none)))
 
       ;; Emit signature
-      (emit-function-signature ctx em name params return-type)
-      (emit-line em " {")
+      (emit-function-signature ctx em name params return-type " {")
       (indent em)
 
       ;; Emit precondition checks
@@ -222,29 +220,73 @@
           (name (get-function-name form))
           (params (get-function-params arena form))
           (return-type (extract-return-type form)))
-      (emit-function-signature ctx em name params return-type)
-      (emit-line em ";")))
+      (emit-function-signature ctx em name params return-type ";")))
 
   (fn emit-function-signature ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
                                (name String) (params (List (Ptr SExpr)))
-                               (return-type (Option (Ptr SExpr))))
-    (@intent "Emit function signature (without body)")
+                               (return-type (Option (Ptr SExpr))) (suffix String))
+    (@intent "Emit function signature with suffix (e.g. \" {\" or \";\")")
     (@spec (((Ptr TranspileContext) (Ptr Emitter) String (List (Ptr SExpr))
-             (Option (Ptr SExpr))) -> Unit))
+             (Option (Ptr SExpr)) String) -> Unit))
     (@pre (!= ctx nil))
     (@pre (!= em nil))
-    ;; Format: return_type function_name(param1_type param1_name, ...)
+    ;; Format: return_type function_name(param1_type param1_name, ...)suffix
+    ;; Build as single string to avoid newlines between parts
     (let ((arena (. (deref ctx) arena))
           (ret-str (match return-type
                      ((some rt) (to-c-type ctx rt))
                      ((none) "void")))
-          (c-name (to-qualified-name ctx name)))
-      (do
-        (emit-line em (string-concat arena ret-str " "))
-        (emit-line em c-name)
-        (emit-line em "(")
-        (emit-param-list ctx em params)
-        (emit-line em ")"))))
+          (c-name (to-qualified-name ctx name))
+          (params-str (build-params-string ctx params)))
+      (emit-line em (string-concat arena ret-str
+                      (string-concat arena " "
+                        (string-concat arena c-name
+                          (string-concat arena "("
+                            (string-concat arena params-str
+                              (string-concat arena ")" suffix)))))))))
+
+  (fn build-params-string ((ctx (Ptr TranspileContext)) (params (List (Ptr SExpr))))
+    (@intent "Build comma-separated parameter string")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre (!= ctx nil))
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len params)))
+      (if (== len 0)
+        "void"
+        (let ((mut result ""))
+          (do
+            (for (i 0 len)
+              (match (list-get params i)
+                ((some param-expr)
+                  (let ((param-str (build-param-string ctx param-expr)))
+                    (if (== i 0)
+                      (set! result param-str)
+                      (set! result (string-concat arena result (string-concat arena ", " param-str))))))
+                ((none) (do))))
+            result)))))
+
+  (fn build-param-string ((ctx (Ptr TranspileContext)) (param (Ptr SExpr)))
+    (@intent "Build single parameter string: type name")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre (!= ctx nil))
+    (@pre (!= param nil))
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref param)
+        ((list lst)
+          (let ((items (. lst items)))
+            (match (list-get items 0)
+              ((some name-expr)
+                (match (deref name-expr)
+                  ((symbol sym)
+                    (match (list-get items 1)
+                      ((some type-expr)
+                        (let ((c-type (to-c-type ctx type-expr))
+                              (c-name (to-c-name (. sym name))))
+                          (string-concat arena c-type (string-concat arena " " c-name))))
+                      ((none) "")))
+                  (_ "")))
+              ((none) ""))))
+        (_ ""))))
 
   (fn emit-preconditions ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
                           (preconditions (List (Ptr SExpr))))

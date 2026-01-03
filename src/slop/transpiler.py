@@ -86,6 +86,7 @@ class Transpiler:
         self.emitted_generated_types: Set[str] = set()  # Track which generated types have been emitted (to avoid duplicates)
         self.type_alias_defs: Dict[str, SExpr] = {}  # Track type alias definitions: alias_name -> underlying type expr
         self.union_variants: Dict[str, Dict[str, SExpr]] = {}  # Track union variant types: union_name -> {variant_tag -> payload_type_expr}
+        self.union_variant_indices: Dict[str, Dict[str, int]] = {}  # Track union variant indices: union_name -> {variant_tag -> index}
 
         # Static literal tracking for immutable collection literals
         self.literal_counter: int = 0  # Counter for unique static literal names
@@ -834,6 +835,15 @@ class Transpiler:
         scrutinee = self.transpile_expr(expr[1])
         clauses = expr.items[2:]
 
+        # Infer scrutinee type for union variant index lookup
+        scrutinee_type = self._infer_type(expr[1])
+        union_c_type = None
+        variant_indices = None
+        if scrutinee_type and scrutinee_type in self.union_variant_indices:
+            variant_indices = self.union_variant_indices[scrutinee_type]
+            if scrutinee_type in self.types:
+                union_c_type = self.types[scrutinee_type].c_type
+
         # Detect pattern type from first clause
         first_clause = clauses[0] if clauses else None
         if first_clause and isinstance(first_clause, SList):
@@ -906,6 +916,9 @@ class Transpiler:
                         unquoted = self._unquote_symbol(pattern.name)
                         if unquoted in self.enums:
                             parts.append(f"case {self.enums[unquoted]}: {{ ")
+                        elif variant_indices and unquoted in variant_indices and union_c_type:
+                            # Use proper union variant tag constant
+                            parts.append(f"case {union_c_type}_{unquoted}_TAG: {{ ")
                         else:
                             parts.append(f"case {i}: {{ ")
 
@@ -927,6 +940,9 @@ class Transpiler:
                     # Check for enum variant - allow both quoted ('ok) and unquoted (ok)
                     if is_simple_enum and tag in self.enums:
                         parts.append(f"case {self.enums[tag]}: {{ ")
+                    elif variant_indices and tag in variant_indices and union_c_type:
+                        # Use proper union variant tag constant
+                        parts.append(f"case {union_c_type}_{tag}_TAG: {{ ")
                     else:
                         parts.append(f"case {i}: {{ ")
 
@@ -2171,6 +2187,13 @@ class Transpiler:
         self.types[raw_name] = TypeInfo(raw_name, qualified_name)
         # Track variant payload types for type inference in match expressions
         self.union_variants[raw_name] = variants
+        # Track variant indices for match expression generation
+        variant_indices = {}
+        for i, variant in enumerate(form.items[1:]):
+            if isinstance(variant, SList) and len(variant) >= 1:
+                tag = variant[0].name
+                variant_indices[tag] = i
+        self.union_variant_indices[raw_name] = variant_indices
 
     def transpile_range_type(self, raw_name: str, qualified_name: str, type_expr: SExpr):
         """Transpile range type to typedef + constructor"""
@@ -2875,6 +2898,14 @@ class Transpiler:
         # Infer the type of the scrutinee for union match type tracking
         scrutinee_type = self._infer_type(scrutinee_expr)
 
+        # Look up union variant indices for proper tag constant generation
+        union_c_type = None
+        variant_indices = None
+        if scrutinee_type and scrutinee_type in self.union_variant_indices:
+            variant_indices = self.union_variant_indices[scrutinee_type]
+            if scrutinee_type in self.types:
+                union_c_type = self.types[scrutinee_type].c_type
+
         # Check for Option/Result match patterns (some/none/ok/error)
         # BUT first check if these are actually registered enum values
         is_option_match = False
@@ -3000,6 +3031,9 @@ class Transpiler:
                         if unquoted in self.enums:
                             enum_const = self.enums[unquoted]
                             self.emit(f"case {enum_const}: {{")
+                        elif variant_indices and unquoted in variant_indices and union_c_type:
+                            # Use proper union variant tag constant
+                            self.emit(f"case {union_c_type}_{unquoted}_TAG: {{")
                         else:
                             # Unknown pattern, use index as fallback
                             self.emit(f"case {i}: {{")
@@ -3022,6 +3056,9 @@ class Transpiler:
                     if is_simple_enum and tag in self.enums:
                         enum_const = self.enums[tag]
                         self.emit(f"case {enum_const}: {{")
+                    elif variant_indices and tag in variant_indices and union_c_type:
+                        # Use proper union variant tag constant
+                        self.emit(f"case {union_c_type}_{tag}_TAG: {{")
                     else:
                         self.emit(f"case {i}: {{")
                     self.indent += 1

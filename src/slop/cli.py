@@ -123,6 +123,31 @@ def parse_native(input_file: str):
         return None, False
 
 
+def transpile_native(input_file: str):
+    """Transpile using native transpiler, returns (c_code, success).
+
+    Returns tuple of (output, success). If native transpiler isn't available,
+    returns (None, False).
+    """
+    import subprocess
+
+    transpiler_bin = find_native_component('transpiler')
+    if not transpiler_bin:
+        return None, False
+
+    try:
+        result = subprocess.run(
+            [str(transpiler_bin), input_file],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            return result.stdout, True
+        return result.stderr, False
+    except Exception as e:
+        return str(e), False
+
+
 def parse_with_fallback(input_file: str, prefer_native: bool = False, verbose: bool = False):
     """Parse a file, optionally trying native parser first.
 
@@ -1673,6 +1698,7 @@ def cmd_build(args):
 
         # Check for --native flag
         use_native = getattr(args, 'native', False)
+        native_transpiler_bin = None
         if use_native:
             # Report which native components are available
             parser_bin = find_native_component('parser')
@@ -1680,9 +1706,12 @@ def cmd_build(args):
                 print(f"  [native] Parser: {parser_bin}")
             else:
                 print("  [native] Parser: not found, using Python")
-            # Future: add transpiler, type-checker, etc.
             print("  [native] Type checker: using Python")
-            print("  [native] Transpiler: using Python")
+            native_transpiler_bin = find_native_component('transpiler')
+            if native_transpiler_bin:
+                print(f"  [native] Transpiler: {native_transpiler_bin}")
+            else:
+                print("  [native] Transpiler: not found, using Python")
 
         # Create output directory if needed
         output_dir = Path(output).parent
@@ -1863,10 +1892,18 @@ def cmd_build(args):
             else:
                 print("  Type check passed")
 
-            # Transpile using the same AST (now has resolved_type annotations)
+            # Transpile using native transpiler if available, else Python
             print("  Transpiling to C...")
-            from slop.transpiler import Transpiler
-            c_code = Transpiler().transpile(ast)
+            if native_transpiler_bin:
+                c_code, success = transpile_native(str(input_path))
+                if not success:
+                    print(f"  Native transpiler failed: {c_code}")
+                    print("  Falling back to Python transpiler...")
+                    from slop.transpiler import Transpiler
+                    c_code = Transpiler().transpile(ast)
+            else:
+                from slop.transpiler import Transpiler
+                c_code = Transpiler().transpile(ast)
 
         c_file = f"{output}.c"
         with open(c_file, 'w') as f:
@@ -2084,6 +2121,274 @@ def cmd_ref(args):
     return 0
 
 
+def cmd_test(args):
+    """Run tests from @example annotations"""
+    import subprocess
+    import tempfile
+    from slop.parser import Symbol, Number, String
+
+    try:
+        input_path = Path(args.input)
+        ast = parse_file(str(input_path))
+
+        # Extract functions with @example annotations
+        test_cases = []
+
+        def extract_examples_from_fn(fn_form, module_name=None):
+            """Extract test cases from a function with @example annotations."""
+            if len(fn_form) < 3:
+                return
+
+            fn_name = fn_form[1].name if isinstance(fn_form[1], Symbol) else str(fn_form[1])
+
+            # Get return type from @spec if available
+            return_type = None
+            for item in fn_form.items[3:]:
+                if is_form(item, '@spec') and len(item) > 1:
+                    spec = item[1]
+                    if hasattr(spec, 'items') and len(spec.items) >= 3:
+                        return_type = pretty_print(spec.items[-1])
+                    break
+
+            # Find @example annotations
+            for item in fn_form.items[3:]:
+                if is_form(item, '@example') and len(item) > 1:
+                    # Format: (@example arg1 arg2 ... -> expected)
+                    # or: (@example (arg1 arg2) -> expected)
+                    example_items = list(item.items[1:])
+
+                    # Find the -> separator
+                    arrow_idx = None
+                    for i, ex_item in enumerate(example_items):
+                        if isinstance(ex_item, Symbol) and ex_item.name == '->':
+                            arrow_idx = i
+                            break
+
+                    if arrow_idx is not None and arrow_idx < len(example_items) - 1:
+                        args_part = example_items[:arrow_idx]
+                        expected = example_items[arrow_idx + 1]
+
+                        test_cases.append({
+                            'fn_name': fn_name,
+                            'module': module_name,
+                            'args': args_part,
+                            'expected': expected,
+                            'return_type': return_type,
+                        })
+
+        # Process top-level and module forms
+        for form in ast:
+            if is_form(form, 'fn'):
+                extract_examples_from_fn(form)
+            elif is_form(form, 'module'):
+                module_name = form[1].name if isinstance(form[1], Symbol) else None
+                for item in form.items:
+                    if is_form(item, 'fn'):
+                        extract_examples_from_fn(item, module_name)
+
+        if not test_cases:
+            print("No @example annotations found")
+            return 0
+
+        print(f"Found {len(test_cases)} test case(s)")
+
+        # Transpile the source
+        print("  Transpiling...")
+        from slop.transpiler import transpile
+        with open(input_path) as f:
+            source = f.read()
+        c_code = transpile(source)
+
+        # Generate test harness
+        print("  Generating test harness...")
+        test_code = generate_test_harness(test_cases, c_code)
+
+        # Write to temp file and compile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_c_path = os.path.join(tmpdir, "test.c")
+            test_bin_path = os.path.join(tmpdir, "test_runner")
+
+            with open(test_c_path, 'w') as f:
+                f.write(test_code)
+
+            # Compile
+            print("  Compiling...")
+            runtime_path = _get_runtime_path()
+            compile_cmd = [
+                "cc", "-O0", "-g",
+                "-I", str(runtime_path),
+                "-o", test_bin_path,
+                test_c_path
+            ]
+
+            result = subprocess.run(compile_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"Compilation failed:\n{result.stderr}")
+                if args.verbose:
+                    print("\n--- Generated test code ---")
+                    print(test_code)
+                return 1
+
+            # Run tests
+            print("  Running tests...")
+            result = subprocess.run([test_bin_path], capture_output=True, text=True)
+            print(result.stdout, end='')
+            if result.stderr:
+                print(result.stderr, end='', file=sys.stderr)
+
+            return result.returncode
+
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
+def generate_test_harness(test_cases, c_code):
+    """Generate C test harness code from test cases."""
+    from slop.parser import Symbol, Number, String as SlopString
+
+    lines = []
+
+    # Include the transpiled code inline
+    lines.append("// ===== Transpiled SLOP code =====")
+    lines.append(c_code)
+    lines.append("")
+    lines.append("// ===== Test harness =====")
+    lines.append("#include <stdio.h>")
+    lines.append("#include <string.h>")
+    lines.append("")
+
+    # Test result tracking
+    lines.append("static int tests_passed = 0;")
+    lines.append("static int tests_failed = 0;")
+    lines.append("")
+
+    # Generate test functions
+    for i, tc in enumerate(test_cases):
+        fn_name = tc['fn_name']
+        c_fn_name = fn_name.replace('-', '_')
+        if tc['module']:
+            c_fn_name = f"{tc['module'].replace('-', '_')}_{c_fn_name}"
+
+        # Convert args to C expressions
+        c_args = []
+        for arg in tc['args']:
+            c_args.append(sexpr_to_c(arg))
+
+        # Convert expected to C expression
+        c_expected = sexpr_to_c(tc['expected'])
+
+        # Determine comparison based on return type
+        return_type = tc.get('return_type', 'Int')
+        if return_type and 'String' in return_type:
+            compare_expr = f'slop_string_eq(result, {c_expected})'
+            result_fmt = '"%.*s"'
+            result_args = '(int)result.len, result.data'
+            expected_fmt = '"%.*s"'
+            expected_args = f'(int)({c_expected}).len, ({c_expected}).data'
+        elif return_type and 'Bool' in return_type:
+            compare_expr = f'result == {c_expected}'
+            result_fmt = '%s'
+            result_args = 'result ? "true" : "false"'
+            expected_fmt = '%s'
+            expected_args = f'{c_expected} ? "true" : "false"'
+        else:
+            # Default to integer comparison
+            compare_expr = f'result == {c_expected}'
+            result_fmt = '%lld'
+            result_args = '(long long)result'
+            expected_fmt = '%lld'
+            expected_args = f'(long long){c_expected}'
+
+        args_str = ', '.join(c_args) if c_args else ''
+
+        lines.append(f"void test_{i}(void) {{")
+        lines.append(f'    printf("  {fn_name}({", ".join(pretty_print(a) for a in tc["args"])}) -> ");')
+        lines.append(f"    typeof({c_fn_name}({args_str})) result = {c_fn_name}({args_str});")
+        lines.append(f"    if ({compare_expr}) {{")
+        lines.append(f'        printf("PASS\\n");')
+        lines.append(f"        tests_passed++;")
+        lines.append(f"    }} else {{")
+        lines.append(f'        printf("FAIL (got {result_fmt}, expected {expected_fmt})\\n", {result_args}, {expected_args});')
+        lines.append(f"        tests_failed++;")
+        lines.append(f"    }}")
+        lines.append(f"}}")
+        lines.append("")
+
+    # Main function
+    lines.append("int main(void) {")
+    lines.append('    printf("Running %d test(s)...\\n", ' + str(len(test_cases)) + ');')
+    for i in range(len(test_cases)):
+        lines.append(f"    test_{i}();")
+    lines.append('    printf("\\n%d passed, %d failed\\n", tests_passed, tests_failed);')
+    lines.append("    return tests_failed > 0 ? 1 : 0;")
+    lines.append("}")
+
+    return '\n'.join(lines)
+
+
+def sexpr_to_c(expr):
+    """Convert a SLOP s-expression to a C expression string."""
+    from slop.parser import Symbol, Number, String as SlopString
+
+    if isinstance(expr, Number):
+        return str(expr.value)
+    elif isinstance(expr, SlopString):
+        # Return as SLOP_STR macro
+        return f'SLOP_STR("{expr.value}")'
+    elif isinstance(expr, Symbol):
+        name = expr.name
+        if name == 'true':
+            return 'true'
+        elif name == 'false':
+            return 'false'
+        elif name == 'nil':
+            return 'NULL'
+        else:
+            return name.replace('-', '_')
+    elif isinstance(expr, SList):
+        if len(expr) == 0:
+            return '(void)0'
+
+        head = expr[0]
+        if isinstance(head, Symbol):
+            op = head.name
+
+            # Arithmetic operators
+            if op in ('+', '-', '*', '/', '%'):
+                if len(expr) == 2:
+                    # Unary
+                    return f"({op}{sexpr_to_c(expr[1])})"
+                else:
+                    # Binary
+                    return f"({sexpr_to_c(expr[1])} {op} {sexpr_to_c(expr[2])})"
+
+            # Comparison operators
+            if op in ('==', '!=', '<', '<=', '>', '>='):
+                return f"({sexpr_to_c(expr[1])} {op} {sexpr_to_c(expr[2])})"
+
+            # Logical operators
+            if op == 'and':
+                return f"({sexpr_to_c(expr[1])} && {sexpr_to_c(expr[2])})"
+            if op == 'or':
+                return f"({sexpr_to_c(expr[1])} || {sexpr_to_c(expr[2])})"
+            if op == 'not':
+                return f"(!{sexpr_to_c(expr[1])})"
+
+            # Function call
+            c_fn = op.replace('-', '_')
+            args = ', '.join(sexpr_to_c(a) for a in expr.items[1:])
+            return f"{c_fn}({args})"
+
+        # Fallback
+        return pretty_print(expr)
+    else:
+        return str(expr)
+
+
 def cmd_verify(args):
     """Verify contracts and range safety with Z3"""
     try:
@@ -2287,6 +2592,12 @@ def main():
     p.add_argument('-f', '--format', choices=['markdown', 'json'], default='markdown',
         help='Output format (default: markdown)')
 
+    # test
+    p = subparsers.add_parser('test', help='Run tests from @example annotations')
+    p.add_argument('input', help='Input SLOP file')
+    p.add_argument('-v', '--verbose', action='store_true',
+        help='Show generated C code on failure')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2305,6 +2616,7 @@ def main():
         'verify': cmd_verify,
         'ref': cmd_ref,
         'doc': cmd_doc,
+        'test': cmd_test,
     }
 
     return commands[args.command](args)

@@ -92,9 +92,9 @@
           (em (emitter-new arena)))
 
       ;; ========================================
-      ;; Pass 0: Categorize forms
+      ;; Pass 0: Categorize forms (with module expansion)
       ;; ========================================
-      (let ((forms (categorize-forms arena ast)))
+      (let ((forms (categorize-forms-with-modules arena ctx ast)))
 
         ;; ========================================
         ;; Pass 1: Register FFI declarations
@@ -204,6 +204,84 @@
             ;; Ignore other forms (imports handled at module level)
             (do))))
       (FormCategories modules ffis ffi-structs constants types functions)))
+
+  ;; ============================================================
+  ;; Form Categorization with Module Expansion
+  ;; ============================================================
+
+  (fn categorize-forms-with-modules ((arena Arena) (ctx (Ptr TranspileContext))
+                                     (ast (List (Ptr SExpr))))
+    (@intent "Categorize forms, expanding module bodies into the main categories")
+    (@spec ((Arena (Ptr TranspileContext) (List (Ptr SExpr))) -> FormCategories))
+    (@alloc arena)
+    ;; First do basic categorization
+    (let ((initial (categorize-forms arena ast)))
+      ;; If there are modules, expand their contents
+      (if (> (list-len (. initial modules)) 0)
+        ;; Process each module and merge its forms
+        (let ((ffis (list-new arena (Ptr SExpr)))
+              (ffi-structs (list-new arena (Ptr SExpr)))
+              (constants (list-new arena (Ptr SExpr)))
+              (types (list-new arena (Ptr SExpr)))
+              (functions (list-new arena (Ptr SExpr))))
+          (do
+            ;; Copy any top-level forms (outside modules)
+            (for-each (f (. initial ffis)) (list-push ffis f))
+            (for-each (f (. initial ffi-structs)) (list-push ffi-structs f))
+            (for-each (f (. initial constants)) (list-push constants f))
+            (for-each (f (. initial types)) (list-push types f))
+            (for-each (f (. initial functions)) (list-push functions f))
+            ;; Process each module
+            (for-each (mod-form (. initial modules))
+              (match (deref mod-form)
+                ((list mod-lst)
+                  ;; Extract module name and set context
+                  (match (list-get (. mod-lst items) 1)
+                    ((some name-expr)
+                      (match (deref name-expr)
+                        ((symbol sym)
+                          (do
+                            (ctx-set-module ctx (some (. sym name)))
+                            (ctx-set-prefixing ctx true)))
+                        (_ (do))))
+                    ((none) (do)))
+                  ;; Extract body forms (skip: module, name, export)
+                  (let ((body (extract-module-body arena mod-form)))
+                    ;; Categorize module body and merge
+                    (let ((mod-forms (categorize-forms arena body)))
+                      (do
+                        (for-each (f (. mod-forms ffis)) (list-push ffis f))
+                        (for-each (f (. mod-forms ffi-structs)) (list-push ffi-structs f))
+                        (for-each (f (. mod-forms constants)) (list-push constants f))
+                        (for-each (f (. mod-forms types)) (list-push types f))
+                        (for-each (f (. mod-forms functions)) (list-push functions f))))))
+                (_ (do))))
+            ;; Return merged categories (modules list left empty since processed)
+            (FormCategories (list-new arena (Ptr SExpr)) ffis ffi-structs
+                           constants types functions)))
+        ;; No modules, return as-is
+        initial)))
+
+  (fn extract-module-body ((arena Arena) (mod-form (Ptr SExpr)))
+    (@intent "Extract body forms from a module, skipping name, export, and import")
+    (@spec ((Arena (Ptr SExpr)) -> (List (Ptr SExpr))))
+    (@alloc arena)
+    (@pre (!= mod-form nil))
+    (let ((body (list-new arena (Ptr SExpr))))
+      (match (deref mod-form)
+        ((list mod-lst)
+          (let ((items (. mod-lst items))
+                (len (list-len items)))
+            ;; Iterate from index 2 onwards (skip 'module' and name)
+            ;; Collect all forms except export and import
+            (for (i 2 len)
+              (match (list-get items i)
+                ((some form)
+                  (when (not (or (is-form form "export") (is-form form "import")))
+                    (list-push body form)))
+                ((none) (do))))))
+        (_ (do)))
+      body))
 
   ;; ============================================================
   ;; Hole Collection
