@@ -549,6 +549,7 @@ Minimal runtime (~500 lines of C):
 (list-new arena Type) -> (List Type)   ; Type parameter required for type safety
 (list-push list item) -> Unit
 (list-get list index) -> (Option T)
+(list-pop list) -> (Option T)          ; Remove and return last element
 (list-len list) -> (Int 0 ..)
 
 ; Maps (homogeneous, type-safe)
@@ -556,6 +557,8 @@ Minimal runtime (~500 lines of C):
 (map-put map key val) -> Unit
 (map-get map key) -> (Option V)
 (map-has map key) -> Bool
+(map-keys map) -> (List K)               ; Return list of all keys
+(map-remove map key) -> Unit             ; Remove key from mutable map
 
 ; Results
 (ok val) -> (Result T E)

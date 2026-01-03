@@ -302,7 +302,8 @@ tier-4: 70B+ models   ; Complex algorithms, multi-step logic
 (map-put map k v) -> Unit
 (map-get map k) -> (Option V)
 (map-has map k) -> Bool
-(map-delete map k) -> Unit
+(map-keys map) -> (List K)
+(map-remove map k) -> Unit              ; Requires mutable map
 
 ### Results
 (ok val) -> (Result T E)

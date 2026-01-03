@@ -221,6 +221,25 @@ class Z3Translator:
                 if op == '.':
                     return self._translate_field_access(expr)
 
+                # List length - equivalent to (. list len)
+                if op == 'list-len':
+                    if len(expr) >= 2:
+                        lst = self.translate_expr(expr[1])
+                        if lst is None:
+                            return None
+                        # Use the same field accessor pattern as _translate_field_access
+                        func_name = "field_len"
+                        if func_name not in self.variables:
+                            func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
+                            self.variables[func_name] = func
+                        else:
+                            func = self.variables[func_name]
+                        result = func(lst)
+                        # List length is always non-negative
+                        self.constraints.append(result >= 0)
+                        return result
+                    return None
+
                 # Pointer dereference - pass through to inner expression
                 if op == 'deref':
                     if len(expr) >= 2:

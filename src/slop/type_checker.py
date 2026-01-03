@@ -258,6 +258,8 @@ class TypeChecker:
         self.env.register_function('map-put', FnType((MapType(UNKNOWN, UNKNOWN), UNKNOWN, UNKNOWN), UNIT))
         self.env.register_function('map-get', FnType((MapType(UNKNOWN, UNKNOWN), UNKNOWN), OptionType(UNKNOWN)))
         self.env.register_function('map-has', FnType((MapType(UNKNOWN, UNKNOWN), UNKNOWN), BOOL))
+        self.env.register_function('map-keys', FnType((MapType(UNKNOWN, UNKNOWN),), ListType(UNKNOWN)))
+        self.env.register_function('map-remove', FnType((MapType(UNKNOWN, UNKNOWN), UNKNOWN), UNIT))
 
     def error(self, message: str, node: Optional[SExpr] = None, hint: Optional[str] = None):
         line = getattr(node, 'line', 0) if node else 0
@@ -2086,6 +2088,44 @@ class TypeChecker:
             # Infer key and value types (no strict checking for polymorphic maps)
             self.infer_expr(key_arg)
             self.infer_expr(val_arg)
+            return UNIT
+
+        # Special handling for map-keys: (map-keys map) -> (List K)
+        if fn_name == 'map-keys' and len(args) == 1:
+            map_arg = args[0]
+            map_type = self.infer_expr(map_arg)
+            if isinstance(map_type, MapType):
+                return ListType(map_type.key_type)
+            elif isinstance(map_type, PtrType) and isinstance(map_type.pointee, MapType):
+                return ListType(map_type.pointee.key_type)
+            return ListType(UNKNOWN)
+
+        # Special handling for map-remove: requires mutable map
+        # (map-remove map key) -> Unit
+        if fn_name == 'map-remove' and len(args) == 2:
+            map_arg = args[0]
+            key_arg = args[1]
+            map_type = self.infer_expr(map_arg)
+
+            # Check mutability - map literals are immutable
+            if isinstance(map_arg, Symbol):
+                is_ptr_type = isinstance(map_type, PtrType)
+                if not is_ptr_type and map_arg.name not in self._mutable_collections:
+                    self.error(
+                        f"cannot remove from immutable map '{map_arg.name}'",
+                        map_arg,
+                        hint="Use (map-new arena K V) to create a mutable map"
+                    )
+
+            # Accept either Map or Ptr<Map>
+            if isinstance(map_type, PtrType) and isinstance(map_type.pointee, MapType):
+                pass
+            elif isinstance(map_type, MapType):
+                pass
+            elif not isinstance(map_type, UnknownType):
+                self.error(f"argument 1 to 'map-remove': expected (Map K V) or (Ptr (Map K V)), got {map_type}", map_arg)
+
+            self.infer_expr(key_arg)
             return UNIT
 
         # Special handling for print/println - accept primitives (Int, Bool, String)

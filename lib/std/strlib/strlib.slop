@@ -602,6 +602,7 @@
     (@alloc arena)
     (@pure)
     (@assume {(. $result len) >= 1})
+    (@assume {(. $result data) != nil})
     (@example (arena 3.14159 2) -> "3.14")
     (@example (arena -2.5 1) -> "-2.5")
     (@example (arena 100.0 0) -> "100")

@@ -22,7 +22,7 @@
                  is-option-type is-result-type))
   (import names (to-c-name to-qualified-name))
   (import emit (Emitter))
-  (import strlib (string-eq string-concat int-to-string))
+  (import strlib (string-eq string-concat int-to-string float-to-string))
 
   ;; ============================================================
   ;; Main Expression Transpilation
@@ -38,8 +38,7 @@
       ;; Number literal
       ((number n)
         (if (. n is-float)
-          ;; TODO: Add float-to-string to strlib
-          (int-to-string (. (deref ctx) arena) (cast I64 (. n float-value)))
+          (float-to-string (. (deref ctx) arena) (. n float-value) 6)
           (int-to-string (. (deref ctx) arena) (. n int-value))))
 
       ;; String literal
@@ -159,6 +158,8 @@
                 ;; Map operations
                 ((string-eq op "map-get") (transpile-map-get ctx lst))
                 ((string-eq op "map-has") (transpile-map-has ctx lst))
+                ((string-eq op "map-keys") (transpile-map-keys ctx lst))
+                ((string-eq op "map-remove") (transpile-map-remove ctx lst))
 
                 ;; Record construction
                 ((string-eq op "record-new") (transpile-record-new ctx lst))
@@ -532,41 +533,137 @@
           ((none) "")))
       ((none) "")))
 
+  (fn transpile-map-keys ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile map-keys (map-keys map)")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    (match (list-get (. lst items) 1)
+      ((some map-expr)
+        (let ((map-str (transpile-expr ctx map-expr (none)))
+              (arena (. (deref ctx) arena)))
+          (string-concat arena "slop_map_keys(arena, &"
+            (string-concat arena map-str ")"))))
+      ((none) "")))
+
+  (fn transpile-map-remove ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile map-remove (map-remove map key)")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    (match (list-get (. lst items) 1)
+      ((some map-expr)
+        (match (list-get (. lst items) 2)
+          ((some key-expr)
+            (let ((map-str (transpile-expr ctx map-expr (none)))
+                  (key-str (transpile-expr ctx key-expr (none)))
+                  (arena (. (deref ctx) arena)))
+              (string-concat arena "slop_map_remove(&"
+                (string-concat arena map-str
+                  (string-concat arena ", " (string-concat arena key-str ")"))))))
+          ((none) "")))
+      ((none) "")))
+
   ;; ============================================================
   ;; Record and Union Construction
   ;; ============================================================
 
   (fn transpile-record-new ((ctx (Ptr TranspileContext)) (lst SExprList))
-    (@intent "Transpile record constructor (TypeName field1 val1 ...)")
+    (@intent "Transpile record constructor (record-new Type (field val) ...)")
     (@spec (((Ptr TranspileContext) SExprList) -> String))
     (@pre (!= ctx nil))
+    ;; Syntax: (record-new Type (field1 val1) (field2 val2) ...)
     ;; Output: ((TypeName){ .field1 = val1, .field2 = val2 })
-    ;; TODO: Add field initializers
-    (match (list-get (. lst items) 1)
-      ((some type-expr)
-        (match (deref type-expr)
-          ((symbol s)
-            (let ((type-name (to-c-name (. s name)))
-                  (arena (. (deref ctx) arena)))
-              (string-concat arena "((" (string-concat arena type-name "){0})"))))
-          (_ "/* invalid record-new */")))
-      ((none) "")))
+    (let ((items (. lst items))
+          (arena (. (deref ctx) arena))
+          (len (list-len items)))
+      (match (list-get items 1)
+        ((some type-expr)
+          (match (deref type-expr)
+            ((symbol s)
+              (let ((type-name (to-c-name (. s name)))
+                    (mut fields-str ""))
+                (do
+                  ;; Iterate over field pairs starting at index 2
+                  (for (i 2 len)
+                    (match (list-get items i)
+                      ((some field-pair)
+                        (match (deref field-pair)
+                          ((list pair-lst)
+                            (match (list-get (. pair-lst items) 0)
+                              ((some fname-expr)
+                                (match (deref fname-expr)
+                                  ((symbol fname-sym)
+                                    (match (list-get (. pair-lst items) 1)
+                                      ((some fval-expr)
+                                        (let ((fname (to-c-name (. fname-sym name)))
+                                              (fval (transpile-expr ctx fval-expr (none)))
+                                              (init (string-concat arena "."
+                                                      (string-concat arena fname
+                                                        (string-concat arena " = " fval)))))
+                                          (if (== i 2)
+                                            (set! fields-str init)
+                                            (set! fields-str (string-concat arena fields-str
+                                                               (string-concat arena ", " init))))))
+                                      ((none) (do))))
+                                  (_ (do))))
+                              ((none) (do))))
+                          (_ (do))))
+                      ((none) (do))))
+                  ;; Build final output: ((TypeName){ fields })
+                  (string-concat arena "(("
+                    (string-concat arena type-name
+                      (string-concat arena "){"
+                        (string-concat arena fields-str "})")))))))
+            (_ "/* invalid record-new */")))
+        ((none) ""))))
 
   (fn transpile-union-new ((ctx (Ptr TranspileContext)) (lst SExprList))
-    (@intent "Transpile union constructor (union-new Type tag payload)")
+    (@intent "Transpile union constructor (union-new Type tag value?)")
     (@spec (((Ptr TranspileContext) SExprList) -> String))
     (@pre (!= ctx nil))
-    ;; Output: ((Type){ .tag = TAG_variant, .data.variant = payload })
-    ;; TODO: Add proper tagged union support
-    (match (list-get (. lst items) 1)
-      ((some type-expr)
-        (match (deref type-expr)
-          ((symbol s)
-            (let ((type-name (to-c-name (. s name)))
-                  (arena (. (deref ctx) arena)))
-              (string-concat arena "((" (string-concat arena type-name "){0})"))))
-          (_ "/* invalid union-new */")))
-      ((none) "")))
+    ;; Syntax: (union-new Type Tag value?)
+    ;; Output with value: ((TypeName){ .tag = TypeName_tag_TAG, .data.tag = value })
+    ;; Output without value: ((TypeName){ .tag = TypeName_tag_TAG })
+    (let ((items (. lst items))
+          (arena (. (deref ctx) arena))
+          (len (list-len items)))
+      (match (list-get items 1)
+        ((some type-expr)
+          (match (deref type-expr)
+            ((symbol type-sym)
+              (let ((type-name (to-c-name (. type-sym name))))
+                (match (list-get items 2)
+                  ((some tag-expr)
+                    (match (deref tag-expr)
+                      ((symbol tag-sym)
+                        (let ((tag (to-c-name (. tag-sym name)))
+                              ;; Build tag constant: TypeName_tag_TAG
+                              (tag-const (string-concat arena type-name
+                                           (string-concat arena "_"
+                                             (string-concat arena tag "_TAG")))))
+                          (if (> len 3)
+                            ;; Has payload value
+                            (match (list-get items 3)
+                              ((some val-expr)
+                                (let ((val (transpile-expr ctx val-expr (none))))
+                                  ;; ((TypeName){ .tag = TAG, .data.tag = val })
+                                  (string-concat arena "(("
+                                    (string-concat arena type-name
+                                      (string-concat arena "){ .tag = "
+                                        (string-concat arena tag-const
+                                          (string-concat arena ", .data."
+                                            (string-concat arena tag
+                                              (string-concat arena " = "
+                                                (string-concat arena val " })"))))))))))
+                              ((none) "/* missing union value */"))
+                            ;; No payload
+                            (string-concat arena "(("
+                              (string-concat arena type-name
+                                (string-concat arena "){ .tag = "
+                                  (string-concat arena tag-const " })")))))))
+                      (_ "/* invalid union tag */")))
+                  ((none) "/* missing union tag */"))))
+            (_ "/* invalid union-new */")))
+        ((none) ""))))
 
   ;; ============================================================
   ;; Quote (Enum Literals)

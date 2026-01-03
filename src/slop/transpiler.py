@@ -3372,7 +3372,23 @@ class Transpiler:
                 if op == 'map-remove':
                     m = self.transpile_expr(expr[1])
                     key = self.transpile_expr(expr[2])
+                    map_var = expr[1]
+                    if isinstance(map_var, Symbol) and map_var.name in self.var_types:
+                        var_type = self.var_types[map_var.name]
+                        if 'slop_map_string_' in var_type:
+                            if var_type.endswith('*'):
+                                return f"slop_map_remove({m}, {key})"
+                            return f"slop_map_remove(&{m}, {key})"
                     return f"map_remove({m}, {key})"
+
+                if op == 'map-keys':
+                    m = self.transpile_expr(expr[1])
+                    map_var = expr[1]
+                    if isinstance(map_var, Symbol) and map_var.name in self.var_types:
+                        var_type = self.var_types[map_var.name]
+                        if var_type.startswith('slop_map_string_'):
+                            return f"slop_map_keys(arena, &{m})"
+                    return f"map_keys({m})"
 
                 if op == 'map-values':
                     m = self.transpile_expr(expr[1])
