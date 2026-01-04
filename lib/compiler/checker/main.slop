@@ -12,8 +12,9 @@
     type-check TypeCheckResult (main 2))
 
   (import parser (SExpr parse is-form))
-  (import types (TypeError TypeErrorKind type-error-new))
-  (import env (TypeEnv env-new))
+  (import types (TypeError TypeErrorKind type-error-new
+                 Diagnostic DiagnosticLevel))
+  (import env (TypeEnv env-new env-get-diagnostics))
   (import collect (collect-module))
   (import resolve (resolve-imports))
   (import infer (infer-fn-body))
@@ -61,6 +62,28 @@
           ((none) (do))))))
 
   ;; ============================================================
+  ;; Diagnostic Printing
+  ;; ============================================================
+
+  (fn print-diagnostic ((arena Arena) (filename String) (diag Diagnostic))
+    (@intent "Print a diagnostic message with location info")
+    (@spec ((Arena String Diagnostic) -> Unit))
+    (let ((msg (. diag message))
+          (line (. diag line))
+          (col (. diag col))
+          (level (. diag level)))
+      (print filename)
+      (print ":")
+      (print line)
+      (print ":")
+      (print col)
+      (print ": ")
+      (match level
+        ('diag-warning (print "warning: "))
+        ('diag-error (print "error: ")))
+      (println msg)))
+
+  ;; ============================================================
   ;; Main - CLI Entry Point
   ;; ============================================================
 
@@ -92,9 +115,38 @@
                       ((ok ast)
                         (match (type-check arena ast)
                           ((ok env)
-                            (do
-                              (println "Type check passed")
-                              0))
+                            (let ((diagnostics (env-get-diagnostics env))
+                                  (num-diags (list-len diagnostics))
+                                  (mut num-warnings 0)
+                                  (mut num-errors 0))
+                              ;; Count and print diagnostics
+                              (for (i 0 num-diags)
+                                (match (list-get diagnostics i)
+                                  ((some diag)
+                                    (do
+                                      (print-diagnostic arena filename diag)
+                                      (match (. diag level)
+                                        ('diag-warning
+                                          (set! num-warnings (+ num-warnings 1)))
+                                        ('diag-error
+                                          (set! num-errors (+ num-errors 1))))))
+                                  ((none) (do))))
+                              ;; Print summary
+                              (if (> num-errors 0)
+                                (do
+                                  (print "Type check failed: ")
+                                  (print num-errors)
+                                  (println " error(s)")
+                                  1)
+                                (if (> num-warnings 0)
+                                  (do
+                                    (print "OK with ")
+                                    (print num-warnings)
+                                    (println " warning(s)")
+                                    0)
+                                  (do
+                                    (println "Type check passed")
+                                    0)))))
                           ((error err)
                             (do
                               (print "Type error: ")

@@ -8,10 +8,12 @@
     ParamInfo FnSignature
     ;; Type errors
     TypeError TypeErrorKind
+    ;; Diagnostics
+    Diagnostic DiagnosticLevel
     ;; Constructors
     range-bounds-new range-bounds-unbounded
     resolved-type-new resolved-variant-new resolved-field-new
-    param-info-new fn-signature-new type-error-new
+    param-info-new fn-signature-new type-error-new diagnostic-new
     ;; Predicates
     range-contains is-primitive-kind is-container-kind
     resolved-type-is-pointer resolved-type-is-union resolved-type-is-record
@@ -130,6 +132,20 @@
 
   (type TypeError (record
     (kind TypeErrorKind)
+    (message String)
+    (line Int)
+    (col Int)))
+
+  ;; ============================================================
+  ;; Diagnostics (warnings and errors)
+  ;; ============================================================
+
+  (type DiagnosticLevel (enum
+    diag-warning
+    diag-error))
+
+  (type Diagnostic (record
+    (level DiagnosticLevel)
     (message String)
     (line Int)
     (col Int)))
@@ -258,6 +274,13 @@
     (@pure)
     ;; Example: (type-error-new 'te-undefined-type "Unknown type: Foo" 10 5)
     (TypeError kind message line col))
+
+  (fn diagnostic-new ((level DiagnosticLevel) (message String) (line Int) (col Int))
+    (@intent "Create a diagnostic with location info")
+    (@spec ((DiagnosticLevel String Int Int) -> Diagnostic))
+    (@pure)
+    ;; Example: (diagnostic-new 'diag-warning "Branch types differ" 10 5)
+    (Diagnostic level message line col))
 
   ;; ============================================================
   ;; Type Kind Predicates
