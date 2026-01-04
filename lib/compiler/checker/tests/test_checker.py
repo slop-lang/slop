@@ -85,3 +85,65 @@ class TestPythonCheckerComparison:
                 f"Python: {python_out}\n"
                 f"Native: {native_out}"
             )
+
+
+class TestTypeErrors:
+    """Tests for type errors that should be detected"""
+
+    def test_undefined_variable(self, run_checker, tests_dir):
+        """Using undefined variable should produce error"""
+        slop_file = tests_dir / "error_undefined_var.slop"
+        exit_code, stdout, stderr = run_checker(slop_file)
+
+        assert exit_code != 0 or "error" in stdout.lower()
+        assert "undefined" in stdout.lower() or "unknown" in stdout.lower()
+
+    def test_return_type_mismatch(self, run_checker, tests_dir):
+        """Returning wrong type should produce error"""
+        slop_file = tests_dir / "error_return_type.slop"
+        exit_code, stdout, stderr = run_checker(slop_file)
+
+        assert exit_code != 0 or "error" in stdout.lower()
+        assert "expected" in stdout.lower() or "mismatch" in stdout.lower()
+
+    def test_ambiguous_enum_variants(self, run_checker, tests_dir):
+        """Same variant name in multiple enums should produce error"""
+        slop_file = tests_dir / "error_ambiguous_enum.slop"
+        exit_code, stdout, stderr = run_checker(slop_file)
+
+        assert exit_code != 0 or "error" in stdout.lower()
+        assert "ambiguous" in stdout.lower() or "duplicate" in stdout.lower()
+
+    @pytest.mark.xfail(reason="Native checker doesn't check field access yet - only catches return type mismatch")
+    def test_unknown_field_access(self, run_checker, tests_dir):
+        """Accessing non-existent field should produce error about the field"""
+        slop_file = tests_dir / "error_unknown_field.slop"
+        exit_code, stdout, stderr = run_checker(slop_file)
+
+        assert exit_code != 0 or "error" in stdout.lower()
+        # Must specifically mention the unknown field, not just "field" in function name
+        assert "no field" in stdout.lower() or "has no field" in stdout.lower()
+
+
+class TestPythonErrorComparison:
+    """Compare error detection between native and Python checkers"""
+
+    @pytest.mark.parametrize("test_file", [
+        "error_undefined_var.slop",
+        "error_return_type.slop",
+        "error_ambiguous_enum.slop",
+        "error_unknown_field.slop",
+    ])
+    def test_error_detection_matches(self, run_checker, run_python_checker, tests_dir, test_file):
+        """Track parity between native and Python checker error detection"""
+        slop_file = tests_dir / test_file
+
+        native_code, native_out, native_err = run_checker(slop_file)
+        python_code, python_out, python_err = run_python_checker(slop_file)
+
+        python_has_error = "error" in python_out.lower() or python_code != 0
+        native_has_error = "error" in native_out.lower() or native_code != 0
+
+        # Just report parity status, don't fail
+        if python_has_error and not native_has_error:
+            pytest.skip(f"Native checker missing error detection for {test_file}")

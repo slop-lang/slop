@@ -19,7 +19,7 @@
   (import env (TypeEnv env-arena env-register-type env-lookup-type
                env-register-function env-set-module env-get-module
                env-get-int-type env-get-bool-type env-get-string-type
-               env-get-unit-type))
+               env-get-unit-type env-register-variant env-check-variant-collisions))
 
   ;; ============================================================
   ;; Main Collection Functions
@@ -31,6 +31,8 @@
     (@pre (!= env nil))
     ;; First pass: collect all type definitions
     (collect-types env ast)
+    ;; Check for ambiguous enum variants (same name in different enums)
+    (env-check-variant-collisions env)
     ;; Second pass: collect function signatures
     (collect-functions env ast))
 
@@ -43,23 +45,79 @@
       (for (i 0 len)
         (match (list-get ast i)
           ((some expr)
-            (when (is-form expr "type")
-              (match (deref expr)
-                ((list lst)
-                  (let ((items (. lst items)))
-                    ;; Extract type name from position 1: (type NAME TYPE-EXPR)
-                    (match (list-get items 1)
-                      ((some name-expr)
-                        (match (deref name-expr)
-                          ((symbol sym)
-                            ;; Create a placeholder resolved type
-                            (let ((type-name (. sym name))
-                                  (resolved (resolved-type-new arena 'rk-primitive type-name (none) type-name)))
-                              (env-register-type env resolved)))
-                          (_ (do))))
-                      ((none) (do)))))
-                (_ (do)))))
+            (cond
+              ;; Direct type definition
+              ((is-form expr "type")
+                (collect-type-def env arena expr))
+              ;; Module - scan inside for types
+              ((is-form expr "module")
+                (collect-module-types env expr))
+              (else (do))))
           ((none) (do))))))
+
+  (fn collect-type-def ((env (Ptr TypeEnv)) (arena Arena) (expr (Ptr SExpr)))
+    (@intent "Collect a single type definition")
+    (@spec (((Ptr TypeEnv) Arena (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items)))
+          ;; Extract type name from position 1: (type NAME TYPE-EXPR)
+          (match (list-get items 1)
+            ((some name-expr)
+              (match (deref name-expr)
+                ((symbol sym)
+                  (let ((type-name (. sym name))
+                        (resolved (resolved-type-new arena 'rk-primitive type-name (none) type-name)))
+                    (env-register-type env resolved)
+                    ;; Check if position 2 is an enum: (type Name (enum v1 v2 ...))
+                    (match (list-get items 2)
+                      ((some type-expr)
+                        (when (is-form type-expr "enum")
+                          (collect-enum-variants env type-name type-expr)))
+                      ((none) (do)))))
+                (_ (do))))
+            ((none) (do)))))
+      (_ (do))))
+
+  (fn collect-module-types ((env (Ptr TypeEnv)) (module-form (Ptr SExpr)))
+    (@intent "Collect type definitions from inside a module")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= module-form nil))
+    (let ((arena (env-arena env)))
+      (match (deref module-form)
+        ((list lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            ;; Skip module name and export, start at index 2
+            (for (i 2 len)
+              (match (list-get items i)
+                ((some item)
+                  (when (is-form item "type")
+                    (collect-type-def env arena item)))
+                ((none) (do))))))
+        (_ (do)))))
+
+  (fn collect-enum-variants ((env (Ptr TypeEnv)) (enum-name String) (enum-expr (Ptr SExpr)))
+    (@intent "Extract variant names from an enum definition and register them")
+    (@spec (((Ptr TypeEnv) String (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= enum-expr nil))
+    (match (deref enum-expr)
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          ;; Skip index 0 (the "enum" keyword), iterate variants from index 1
+          (for (i 1 len)
+            (match (list-get items i)
+              ((some variant-expr)
+                (match (deref variant-expr)
+                  ((symbol sym)
+                    (env-register-variant env (. sym name) enum-name))
+                  (_ (do))))
+              ((none) (do))))))
+      (_ (do))))
 
   (fn collect-functions ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
     (@intent "Scan AST for function definitions and register signatures")

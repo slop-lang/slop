@@ -16,7 +16,7 @@
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
                env-bind-var env-lookup-var env-lookup-type
                env-lookup-function env-get-int-type env-get-bool-type
-               env-get-string-type env-get-unit-type env-add-warning))
+               env-get-string-type env-get-unit-type env-add-warning env-add-error))
 
   ;; ============================================================
   ;; Type Comparison
@@ -57,31 +57,38 @@
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (@pre (!= expr nil))
-    (match (deref expr)
-      ((symbol sym)
-        (let ((name (. sym name)))
-          (cond
-            ;; Boolean literals
-            ((or (string-eq name "true") (string-eq name "false"))
-              (env-get-bool-type env))
-            ;; nil
-            ((string-eq name "nil")
-              (env-get-unit-type env))
-            ;; Variable lookup
-            (else
-              (match (env-lookup-var env name)
-                ((some t) t)
-                ((none)
-                  ;; Try looking up as a function
-                  (match (env-lookup-function env name)
-                    ((some sig) (. (deref sig) return-type))
-                    ((none) (env-get-int-type env)))))))))
-      ((number num)
-        (env-get-int-type env))
-      ((string str)
-        (env-get-string-type env))
-      ((list lst)
-        (infer-list-expr env expr lst))))
+    (let ((line (sexpr-line expr))
+          (col (sexpr-col expr)))
+      (match (deref expr)
+        ((symbol sym)
+          (let ((name (. sym name)))
+            (cond
+              ;; Boolean literals
+              ((or (string-eq name "true") (string-eq name "false"))
+                (env-get-bool-type env))
+              ;; nil
+              ((string-eq name "nil")
+                (env-get-unit-type env))
+              ;; Variable lookup
+              (else
+                (match (env-lookup-var env name)
+                  ((some t) t)
+                  ((none)
+                    ;; Try looking up as a function
+                    (match (env-lookup-function env name)
+                      ((some sig) (. (deref sig) return-type))
+                      ((none)
+                        ;; Undefined variable - emit error
+                        (let ((arena (env-arena env))
+                              (msg (string-concat arena "Undefined variable: " name)))
+                          (env-add-error env msg line col)
+                          (env-get-int-type env))))))))))
+        ((number num)
+          (env-get-int-type env))
+        ((string str)
+          (env-get-string-type env))
+        ((list lst)
+          (infer-list-expr env expr lst)))))
 
   (fn infer-list-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of a list expression (call or special form)")
@@ -186,6 +193,11 @@
              (string-eq op "*") (string-eq op "/") (string-eq op "%"))
           (env-get-int-type env))
 
+        ;; (quote symbol) - quoted enum variant, infer as Int for now
+        ;; TODO: Look up which enum type contains this variant
+        ((string-eq op "quote")
+          (env-get-int-type env))
+
         ;; Function call - look up return type
         (else
           (match (env-lookup-function env op)
@@ -258,13 +270,131 @@
         (env-get-unit-type env)
         result-type)))
 
+  (fn check-return-type ((env (Ptr TypeEnv)) (fn-form (Ptr SExpr))
+                         (fn-name String) (inferred-type (Ptr ResolvedType))
+                         (fn-line Int) (fn-col Int))
+    (@intent "Check if inferred return type matches declared @spec return type")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) String (Ptr ResolvedType) Int Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= fn-form nil))
+    (@pre (!= inferred-type nil))
+    (match (deref fn-form)
+      ((list fn-lst)
+        (let ((items (. fn-lst items))
+              (len (list-len items)))
+          ;; Search through function body elements for @spec
+          (for (i 3 len)
+            (match (list-get items i)
+              ((some item)
+                (when (is-form item "@spec")
+                  (check-spec-return-type env item fn-name inferred-type fn-line fn-col)))
+              ((none) (do))))))
+      (_ (do))))
+
+  (fn check-spec-return-type ((env (Ptr TypeEnv)) (spec-form (Ptr SExpr))
+                              (fn-name String) (inferred-type (Ptr ResolvedType))
+                              (fn-line Int) (fn-col Int))
+    (@intent "Check return type from a @spec form")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) String (Ptr ResolvedType) Int Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= spec-form nil))
+    (match (deref spec-form)
+      ((list spec-lst)
+        ;; (@spec ((Types) -> RetType))
+        (let ((spec-items (. spec-lst items)))
+          (match (list-get spec-items 1)
+            ((some spec-body)
+              (check-spec-body-return env spec-body fn-name inferred-type fn-line fn-col))
+            ((none) (do)))))
+      (_ (do))))
+
+  (fn check-spec-body-return ((env (Ptr TypeEnv)) (spec-body (Ptr SExpr))
+                              (fn-name String) (inferred-type (Ptr ResolvedType))
+                              (fn-line Int) (fn-col Int))
+    (@intent "Check return type from spec body ((Types) -> RetType)")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) String (Ptr ResolvedType) Int Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= spec-body nil))
+    (match (deref spec-body)
+      ((list body-lst)
+        ;; ((Types) -> RetType) - last element is return type
+        (let ((body-items (. body-lst items))
+              (body-len (list-len body-items)))
+          (match (list-get body-items (- body-len 1))
+            ((some ret-expr)
+              (check-return-expr env ret-expr fn-name inferred-type fn-line fn-col))
+            ((none) (do)))))
+      (_ (do))))
+
+  (fn is-primitive-type ((name String))
+    (@intent "Check if type name is a known primitive")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Int")
+        (or (string-eq name "Bool")
+            (or (string-eq name "String")
+                (or (string-eq name "Unit")
+                    (or (string-eq name "Arena")
+                        (or (string-eq name "I8")
+                            (or (string-eq name "I16")
+                                (or (string-eq name "I32")
+                                    (or (string-eq name "I64")
+                                        (or (string-eq name "U8")
+                                            (or (string-eq name "U16")
+                                                (or (string-eq name "U32")
+                                                    (or (string-eq name "U64")
+                                                        (or (string-eq name "F32")
+                                                            (string-eq name "F64"))))))))))))))))
+
+  (fn check-return-expr ((env (Ptr TypeEnv)) (ret-expr (Ptr SExpr))
+                         (fn-name String) (inferred-type (Ptr ResolvedType))
+                         (fn-line Int) (fn-col Int))
+    (@intent "Check if return type expression matches inferred type")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) String (Ptr ResolvedType) Int Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= ret-expr nil))
+    (match (deref ret-expr)
+      ((symbol ret-sym)
+        (let ((declared-name (. ret-sym name))
+              (inferred-name (. (deref inferred-type) name)))
+          ;; Only check if types differ AND both are primitives
+          ;; Custom types (enums, records) need proper variant tracking
+          (when (and (not (string-eq declared-name inferred-name))
+                     (and (is-primitive-type declared-name)
+                          (is-primitive-type inferred-name)))
+            (let ((arena (env-arena env))
+                  (msg (string-concat arena "return value of '"
+                         (string-concat arena fn-name
+                           (string-concat arena "': expected "
+                             (string-concat arena declared-name
+                               (string-concat arena ", got " inferred-name)))))))
+              (env-add-error env msg fn-line fn-col)))))
+      (_ (do))))
+
+  (fn get-fn-name ((fn-form (Ptr SExpr)))
+    (@intent "Extract function name from fn form")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pre (!= fn-form nil))
+    (match (deref fn-form)
+      ((list fn-lst)
+        (let ((items (. fn-lst items)))
+          (match (list-get items 1)
+            ((some name-expr)
+              (match (deref name-expr)
+                ((symbol sym) (. sym name))
+                (_ "unknown")))
+            ((none) "unknown"))))
+      (_ "unknown")))
+
   (fn infer-fn-body ((env (Ptr TypeEnv)) (fn-form (Ptr SExpr)))
     (@intent "Type check a function body, binding parameters and inferring body type")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (@pre (!= fn-form nil))
     (@pre (is-form fn-form "fn"))
-    (do
+    (let ((fn-name (get-fn-name fn-form))
+          (fn-line (sexpr-line fn-form))
+          (fn-col (sexpr-col fn-form)))
       (env-push-scope env)
       ;; Extract and bind parameters from fn-form
       (match (deref fn-form)
@@ -306,6 +436,8 @@
                                  ((some body) (infer-expr env body))
                                  ((none) (env-get-unit-type env)))))
                            (_ (env-get-unit-type env)))))
+        ;; Check return type matches declared spec
+        (check-return-type env fn-form fn-name result-type fn-line fn-col)
         (env-pop-scope env)
         result-type)))
 
