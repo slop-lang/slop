@@ -114,7 +114,6 @@ class TestTypeErrors:
         assert exit_code != 0 or "error" in stdout.lower()
         assert "ambiguous" in stdout.lower() or "duplicate" in stdout.lower()
 
-    @pytest.mark.xfail(reason="Native checker doesn't check field access yet - only catches return type mismatch")
     def test_unknown_field_access(self, run_checker, tests_dir):
         """Accessing non-existent field should produce error about the field"""
         slop_file = tests_dir / "error_unknown_field.slop"

@@ -21,7 +21,8 @@
                env-bind-var env-lookup-var env-lookup-type
                env-lookup-function env-lookup-variant
                env-get-int-type env-get-bool-type
-               env-get-string-type env-get-unit-type env-add-warning env-add-error))
+               env-get-string-type env-get-unit-type env-get-arena-type
+               env-add-warning env-add-error))
 
   ;; ============================================================
   ;; Type Comparison
@@ -207,6 +208,10 @@
         ;; (while ...) - returns Unit
         ((string-eq op "while")
           (env-get-unit-type env))
+
+        ;; (with-arena size body...) - binds 'arena' and returns last body type
+        ((string-eq op "with-arena")
+          (infer-with-arena-expr env expr))
 
         ;; (set! var expr) - infer expr for error checking, returns Unit
         ((string-eq op "set!")
@@ -743,6 +748,26 @@
                     ((none) (env-get-unit-type env)))
                   (env-get-unit-type env)))
               (env-get-unit-type env))))
+      (env-pop-scope env)
+      result-type))
+
+  (fn infer-with-arena-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
+    (@intent "Infer type of with-arena expression, binding 'arena' variable")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= expr nil))
+    ;; (with-arena size body...) - size at index 1, body starts at index 2
+    (env-push-scope env)
+    ;; Bind 'arena' to Arena type
+    (env-bind-var env "arena" (env-get-arena-type env))
+    ;; Infer all body expressions, return type of last one
+    (let ((len (sexpr-list-len expr))
+          (mut result-type (Ptr ResolvedType) (env-get-unit-type env)))
+      (for (i 2 len)
+        (match (sexpr-list-get expr i)
+          ((some body-expr)
+            (set! result-type (infer-expr env body-expr)))
+          ((none) (do))))
       (env-pop-scope env)
       result-type))
 
