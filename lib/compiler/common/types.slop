@@ -18,7 +18,8 @@
     range-contains is-primitive-kind is-container-kind
     resolved-type-is-pointer resolved-type-is-union resolved-type-is-record
     ;; Accessors
-    resolved-type-get-variant-index resolved-type-has-field)
+    resolved-type-get-variant-index resolved-type-get-variant-payload
+    resolved-type-has-field)
   (import parser (SExpr))
 
   (type TypeKind (enum kind-primitive kind-range kind-record kind-enum kind-union kind-alias kind-option kind-result kind-list kind-map kind-ptr kind-array kind-function kind-ffi))
@@ -364,6 +365,30 @@
           ((none) (do)))
         (set! i (+ i 1)))
       found))
+
+  (fn resolved-type-get-variant-payload ((t (Ptr ResolvedType)) (name String))
+    (@intent "Get the payload type of a variant by name in a union type")
+    (@spec (((Ptr ResolvedType) String) -> (Option (Ptr ResolvedType))))
+    (@pure)
+    (@pre (!= t nil))
+    ;; Returns (some payload-type) if variant found and has payload, (none) otherwise
+    (if (== (. (deref t) kind) 'rk-union)
+      (let ((variants (. (deref t) variants))
+            (len (list-len variants))
+            (mut i 0)
+            (mut done false)
+            (mut found (Option (Ptr ResolvedType)) (none)))
+        (while (and (< i len) (not done))
+          (match (list-get variants i)
+            ((some v)
+              (when (string-eq (. v name) name)
+                (do
+                  (set! done true)
+                  (set! found (. v payload-type)))))
+            ((none) (do)))
+          (set! i (+ i 1)))
+        found)
+      (none)))
 
   (fn resolved-type-has-field ((t (Ptr ResolvedType)) (name String))
     (@intent "Check if a record type has a field with the given name")

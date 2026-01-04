@@ -10,12 +10,17 @@
     infer-expr infer-fn-body check-match-patterns)
 
   (import parser (SExpr SExprList SExprSymbol is-form
-                  sexpr-line sexpr-col))
-  (import types (ResolvedType ResolvedTypeKind ResolvedVariant
-                 resolved-type-is-union resolved-type-get-variant-index))
+                  sexpr-line sexpr-col
+                  sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name))
+  (import types (ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
+                 FnSignature ParamInfo
+                 resolved-type-is-pointer resolved-type-is-union
+                 resolved-type-get-variant-index resolved-type-get-variant-payload
+                 resolved-type-is-record resolved-type-has-field))
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
                env-bind-var env-lookup-var env-lookup-type
-               env-lookup-function env-get-int-type env-get-bool-type
+               env-lookup-function env-lookup-variant
+               env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-add-warning env-add-error))
 
   ;; ============================================================
@@ -149,13 +154,9 @@
               ((none) (env-get-unit-type env)))
             (env-get-unit-type env)))
 
-        ;; (let ((bindings)) body...) - type is last body expr
+        ;; (let ((bindings)) body...) - bind variables and infer body type
         ((string-eq op "let")
-          (if (> len 2)
-            (match (list-get items (- len 1))
-              ((some last) (infer-expr env last))
-              ((none) (env-get-unit-type env)))
-            (env-get-unit-type env)))
+          (infer-let-expr env expr))
 
         ;; (when cond body...) - returns Unit
         ((string-eq op "when")
@@ -165,12 +166,54 @@
         ((string-eq op "for")
           (env-get-unit-type env))
 
+        ;; (for-each (item collection) body...) - bind item to element type
+        ((string-eq op "for-each")
+          (if (>= len 3)
+            (match (list-get items 1)
+              ((some binding-form)
+                ;; binding-form is (item collection)
+                (if (sexpr-is-list binding-form)
+                  (let ((bind-len (sexpr-list-len binding-form)))
+                    (if (>= bind-len 2)
+                      (match (sexpr-list-get binding-form 0)
+                        ((some var-expr)
+                          (let ((var-name (sexpr-get-symbol-name var-expr)))
+                            (if (string-eq var-name "")
+                              (env-get-unit-type env)
+                              (match (sexpr-list-get binding-form 1)
+                                ((some coll-expr)
+                                  (let ((coll-type (infer-expr env coll-expr)))
+                                    ;; Get element type from collection's inner-type
+                                    (let ((elem-type (match (. (deref coll-type) inner-type)
+                                                       ((some inner) inner)
+                                                       ((none) (env-get-int-type env)))))
+                                      ;; Push scope, bind var, infer body, pop scope
+                                      (env-push-scope env)
+                                      (env-bind-var env var-name elem-type)
+                                      ;; Infer all body expressions
+                                      (for (body-idx 2 len)
+                                        (match (list-get items body-idx)
+                                          ((some body-expr) (infer-expr env body-expr))
+                                          ((none) (do))))
+                                      (env-pop-scope env)
+                                      (env-get-unit-type env))))
+                                ((none) (env-get-unit-type env))))))
+                        ((none) (env-get-unit-type env)))
+                      (env-get-unit-type env)))
+                  (env-get-unit-type env)))
+              ((none) (env-get-unit-type env)))
+            (env-get-unit-type env)))
+
         ;; (while ...) - returns Unit
         ((string-eq op "while")
           (env-get-unit-type env))
 
-        ;; (set! ...) - returns Unit
+        ;; (set! var expr) - infer expr for error checking, returns Unit
         ((string-eq op "set!")
+          (when (>= len 3)
+            (match (list-get items 2)
+              ((some val-expr) (infer-expr env val-expr))
+              ((none) (do))))
           (env-get-unit-type env))
 
         ;; (return expr) - type of expr
@@ -193,16 +236,198 @@
              (string-eq op "*") (string-eq op "/") (string-eq op "%"))
           (env-get-int-type env))
 
-        ;; (quote symbol) - quoted enum variant, infer as Int for now
-        ;; TODO: Look up which enum type contains this variant
-        ((string-eq op "quote")
-          (env-get-int-type env))
+        ;; (deref ptr-expr) - dereference pointer, returns inner type
+        ((string-eq op "deref")
+          (if (>= len 2)
+            (match (list-get items 1)
+              ((some ptr-expr)
+                (let ((ptr-type (infer-expr env ptr-expr)))
+                  ;; Check if it's a pointer type and get the inner type
+                  (if (resolved-type-is-pointer ptr-type)
+                    (match (. (deref ptr-type) inner-type)
+                      ((some inner) inner)
+                      ((none) (env-get-unit-type env)))
+                    ;; Not a pointer - return the type as-is (may want to add warning later)
+                    ptr-type)))
+              ((none) (env-get-unit-type env)))
+            (env-get-unit-type env)))
 
-        ;; Function call - look up return type
+        ;; (cast TargetType expr) - cast expression to target type
+        ((string-eq op "cast")
+          (if (>= len 2)
+            (match (list-get items 1)
+              ((some type-expr)
+                ;; Get the target type name and look it up
+                (let ((type-name (sexpr-get-symbol-name type-expr)))
+                  (if (string-eq type-name "")
+                    ;; Complex type like (Ptr T) - for now return Int
+                    (env-get-int-type env)
+                    ;; Simple type name - look it up
+                    (match (env-lookup-type env type-name)
+                      ((some t) t)
+                      ((none)
+                        (cond
+                          ((string-eq type-name "Int") (env-get-int-type env))
+                          ((string-eq type-name "Bool") (env-get-bool-type env))
+                          ((string-eq type-name "String") (env-get-string-type env))
+                          ((string-eq type-name "Unit") (env-get-unit-type env))
+                          (else (env-get-int-type env))))))))
+              ((none) (env-get-int-type env)))
+            (env-get-int-type env)))
+
+        ;; (quote symbol) - quoted enum variant, look up the enum type
+        ((string-eq op "quote")
+          (if (>= len 2)
+            (match (list-get items 1)
+              ((some variant-expr)
+                (let ((variant-name (sexpr-get-symbol-name variant-expr)))
+                  (if (string-eq variant-name "")
+                    (env-get-int-type env)
+                    ;; Look up which enum contains this variant
+                    (match (env-lookup-variant env variant-name)
+                      ((some enum-name)
+                        ;; Look up the enum type
+                        (match (env-lookup-type env enum-name)
+                          ((some enum-type) enum-type)
+                          ((none) (env-get-int-type env))))
+                      ((none) (env-get-int-type env))))))
+              ((none) (env-get-int-type env)))
+            (env-get-int-type env)))
+
+        ;; (. obj field) - field access
+        ((string-eq op ".")
+          (infer-field-access env expr lst line col))
+
+        ;; Function call - look up return type and check arguments
         (else
           (match (env-lookup-function env op)
-            ((some sig) (. (deref sig) return-type))
+            ((some sig)
+              (check-fn-call-args env sig expr line col)
+              (. (deref sig) return-type))
             ((none) (env-get-unit-type env)))))))
+
+  (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
+                           (line Int) (col Int))
+    (@intent "Check function call argument types match parameter types")
+    (@spec (((Ptr TypeEnv) (Ptr FnSignature) (Ptr SExpr) Int Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= sig nil))
+    (@pre (!= expr nil))
+    (let ((fn-name (. (deref sig) name))
+          (params (. (deref sig) params))
+          (num-params (list-len params))
+          (arena (env-arena env)))
+      ;; expr is (fn-name arg1 arg2 ...) - args start at index 1
+      (when (sexpr-is-list expr)
+        (let ((num-args (- (sexpr-list-len expr) 1)))
+          ;; Check argument count
+          (cond
+            ((< num-args num-params)
+              (let ((msg (string-concat arena "'"
+                           (string-concat arena fn-name
+                             (string-concat arena "' expects "
+                               (string-concat arena (int-to-string arena num-params)
+                                 (string-concat arena " argument(s), got "
+                                   (int-to-string arena num-args))))))))
+                (env-add-error env msg line col)))
+            ((> num-args num-params)
+              (let ((msg (string-concat arena "'"
+                           (string-concat arena fn-name
+                             (string-concat arena "' expects "
+                               (string-concat arena (int-to-string arena num-params)
+                                 (string-concat arena " argument(s), got "
+                                   (int-to-string arena num-args))))))))
+                (env-add-error env msg line col)))
+            ;; Counts match - check individual argument types
+            (else
+              (for (i 0 num-params)
+                (check-single-arg env sig expr i line col))))))))
+
+  (fn check-single-arg ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
+                         (arg-idx Int) (line Int) (col Int))
+    (@intent "Check a single argument type against expected parameter type")
+    (@spec (((Ptr TypeEnv) (Ptr FnSignature) (Ptr SExpr) Int Int Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= sig nil))
+    (let ((params (. (deref sig) params))
+          (fn-name (. (deref sig) name))
+          (arena (env-arena env)))
+      ;; Get expected parameter type
+      (match (list-get params arg-idx)
+        ((some param-info)
+          (let ((expected-type (. param-info param-type)))
+            ;; Get actual argument at position arg-idx + 1 (skip fn name)
+            (match (sexpr-list-get expr (+ arg-idx 1))
+              ((some arg-expr)
+                (let ((actual-type (infer-expr env arg-expr))
+                      (expected-name (. (deref expected-type) name))
+                      (actual-name (. (deref actual-type) name)))
+                  ;; Only warn if types differ and both are concrete primitives
+                  (when (and (not (string-eq expected-name actual-name))
+                             (and (is-primitive-type expected-name)
+                                  (is-primitive-type actual-name)))
+                    (let ((msg (string-concat arena "argument "
+                                 (string-concat arena (int-to-string arena (+ arg-idx 1))
+                                   (string-concat arena " of '"
+                                     (string-concat arena fn-name
+                                       (string-concat arena "': expected "
+                                         (string-concat arena expected-name
+                                           (string-concat arena ", got " actual-name)))))))))
+                      (env-add-warning env msg line col)))))
+              ((none) (do)))))
+        ((none) (do)))))
+
+  (fn infer-field-access ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList)
+                           (line Int) (col Int))
+    (@intent "Infer type of field access (. obj field), checking field exists")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) SExprList Int Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (let ((items (. lst items))
+          (len (list-len items)))
+      (if (< len 3)
+        ;; Not enough arguments for field access
+        (env-get-unit-type env)
+        ;; Get object (index 1) and field name (index 2)
+        (match (list-get items 1)
+          ((none) (env-get-unit-type env))
+          ((some obj-expr)
+            (let ((obj-type (infer-expr env obj-expr)))
+              ;; Get field name
+              (match (list-get items 2)
+                ((none) (env-get-unit-type env))
+                ((some field-expr)
+                  (match (deref field-expr)
+                    ((symbol field-sym)
+                      (let ((field-name (. field-sym name)))
+                        (check-field-exists env obj-type field-name line col)))
+                    ;; Non-symbol field - return unit
+                    (_ (env-get-unit-type env)))))))))))
+
+  (fn check-field-exists ((env (Ptr TypeEnv)) (obj-type (Ptr ResolvedType))
+                           (field-name String) (line Int) (col Int))
+    (@intent "Check if field exists on type, emit error if not")
+    (@spec (((Ptr TypeEnv) (Ptr ResolvedType) String Int Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= obj-type nil))
+    (let ((type-name (. (deref obj-type) name))
+          (arena (env-arena env)))
+      ;; Check if it's a record type
+      (if (resolved-type-is-record obj-type)
+        ;; Check if field exists
+        (if (resolved-type-has-field obj-type field-name)
+          ;; Field exists - return field's type (for now return Int as placeholder)
+          ;; TODO: Look up actual field type from resolved type
+          (env-get-int-type env)
+          ;; Field doesn't exist - emit error
+          (let ((msg (string-concat arena "Record '"
+                       (string-concat arena type-name
+                         (string-concat arena "' has no field '"
+                           (string-concat arena field-name "'"))))))
+            (env-add-error env msg line col)
+            (env-get-unit-type env)))
+        ;; Not a record type - could be accessing field on unknown type
+        ;; For now, silently return Int (we don't have full type info)
+        (env-get-int-type env))))
 
   (fn infer-cond-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of cond expression, checking branch types")
@@ -237,6 +462,35 @@
         (env-get-unit-type env)
         result-type)))
 
+  (fn bind-match-pattern ((env (Ptr TypeEnv)) (scrutinee-type (Ptr ResolvedType)) (pattern (Ptr SExpr)))
+    (@intent "Bind pattern variables from a match pattern")
+    (@spec (((Ptr TypeEnv) (Ptr ResolvedType) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= pattern nil))
+    ;; Pattern is either (variant-name binding) or (variant-name) or _ or symbol
+    (when (sexpr-is-list pattern)
+      (when (> (sexpr-list-len pattern) 0)
+        ;; Get variant name
+        (match (sexpr-list-get pattern 0)
+          ((some variant-expr)
+            (let ((variant-name (sexpr-get-symbol-name variant-expr)))
+              (when (not (string-eq variant-name ""))
+                ;; If there's a binding variable at position 1
+                (when (> (sexpr-list-len pattern) 1)
+                  (match (sexpr-list-get pattern 1)
+                    ((some binding-expr)
+                      (let ((binding-name (sexpr-get-symbol-name binding-expr)))
+                        (when (not (string-eq binding-name ""))
+                          ;; Look up payload type from scrutinee type
+                          (match (resolved-type-get-variant-payload scrutinee-type variant-name)
+                            ((some payload-type)
+                              (env-bind-var env binding-name payload-type))
+                            ((none)
+                              ;; No payload - bind to unit type
+                              (env-bind-var env binding-name (env-get-unit-type env)))))))
+                    ((none) (do)))))))
+          ((none) (do))))))
+
   (fn infer-match-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of match expression, checking branch types")
     (@spec (((Ptr TypeEnv) (Ptr SExpr) SExprList) -> (Ptr ResolvedType)))
@@ -246,6 +500,12 @@
           (line (sexpr-line expr))
           (col (sexpr-col expr))
           (mut result-type (Ptr ResolvedType) nil)
+          ;; Get scrutinee type for pattern binding
+          (scrutinee-type (if (>= len 2)
+                            (match (list-get items 1)
+                              ((some scrutinee) (infer-expr env scrutinee))
+                              ((none) (env-get-unit-type env)))
+                            (env-get-unit-type env)))
           (mut i 2))  ;; Skip 'match' and scrutinee
       ;; Process each clause
       (while (< i len)
@@ -256,13 +516,22 @@
                 (let ((clause-items (. clause-lst items))
                       (clause-len (list-len clause-items)))
                   (when (> clause-len 1)
+                    ;; Push scope for this clause's pattern bindings
+                    (env-push-scope env)
+                    ;; Bind pattern variables from first element
+                    (match (list-get clause-items 0)
+                      ((some pattern) (bind-match-pattern env scrutinee-type pattern))
+                      ((none) (do)))
+                    ;; Infer body type
                     (match (list-get clause-items (- clause-len 1))
                       ((some body)
                         (let ((body-type (infer-expr env body)))
                           (if (== result-type nil)
                             (set! result-type body-type)
                             (set! result-type (unify-branch-types env result-type body-type line col)))))
-                      ((none) (do))))))
+                      ((none) (do)))
+                    ;; Pop scope
+                    (env-pop-scope env))))
               (_ (do))))
           ((none) (do)))
         (set! i (+ i 1)))
@@ -371,6 +640,112 @@
               (env-add-error env msg fn-line fn-col)))))
       (_ (do))))
 
+  (fn bind-param-from-form ((env (Ptr TypeEnv)) (param-form (Ptr SExpr)))
+    (@intent "Bind a function parameter from its form (param-name Type)")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= param-form nil))
+    ;; Use helper functions to avoid cross-module union matching issues
+    (when (and (sexpr-is-list param-form) (>= (sexpr-list-len param-form) 2))
+      (match (sexpr-list-get param-form 0)
+        ((some name-expr)
+          (let ((param-name (sexpr-get-symbol-name name-expr)))
+            (when (not (string-eq param-name ""))
+              (let ((param-type (get-param-type-from-form env param-form)))
+                (env-bind-var env param-name param-type)))))
+        ((none) (do)))))
+
+  (fn get-param-type-from-form ((env (Ptr TypeEnv)) (param-form (Ptr SExpr)))
+    (@intent "Get the type for a function parameter from its form expression")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= param-form nil))
+    ;; param-form is (param-name Type) - extract Type from position 1
+    (match (sexpr-list-get param-form 1)
+      ((some type-expr)
+        (let ((type-name (sexpr-get-symbol-name type-expr)))
+          (if (string-eq type-name "")
+            ;; Not a simple symbol type, fall back to Int
+            (env-get-int-type env)
+            ;; Look up the type
+            (match (env-lookup-type env type-name)
+              ((some t) t)
+              ((none)
+                (cond
+                  ((string-eq type-name "Int") (env-get-int-type env))
+                  ((string-eq type-name "Bool") (env-get-bool-type env))
+                  ((string-eq type-name "String") (env-get-string-type env))
+                  ((string-eq type-name "Unit") (env-get-unit-type env))
+                  (else (env-get-int-type env))))))))
+      ((none) (env-get-int-type env))))
+
+  ;; ============================================================
+  ;; Let Binding Support
+  ;; ============================================================
+
+  (fn bind-let-binding ((env (Ptr TypeEnv)) (binding-form (Ptr SExpr)))
+    (@intent "Bind a let variable from its form (name expr)")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= binding-form nil))
+    ;; binding-form is (name expr) or (mut name expr) or (mut name Type expr)
+    (when (and (sexpr-is-list binding-form) (>= (sexpr-list-len binding-form) 2))
+      (match (sexpr-list-get binding-form 0)
+        ((some first-expr)
+          (let ((first-name (sexpr-get-symbol-name first-expr)))
+            (if (string-eq first-name "mut")
+              ;; Mutable: (mut name expr) or (mut name Type expr)
+              (when (>= (sexpr-list-len binding-form) 3)
+                (match (sexpr-list-get binding-form 1)
+                  ((some name-expr)
+                    (let ((var-name (sexpr-get-symbol-name name-expr)))
+                      (when (not (string-eq var-name ""))
+                        ;; Get the value expression (last element)
+                        (match (sexpr-list-get binding-form (- (sexpr-list-len binding-form) 1))
+                          ((some val-expr)
+                            (let ((val-type (infer-expr env val-expr)))
+                              (env-bind-var env var-name val-type)))
+                          ((none) (do))))))
+                  ((none) (do))))
+              ;; Immutable: (name expr)
+              (when (not (string-eq first-name ""))
+                (match (sexpr-list-get binding-form 1)
+                  ((some val-expr)
+                    (let ((val-type (infer-expr env val-expr)))
+                      (env-bind-var env first-name val-type)))
+                  ((none) (do)))))))
+        ((none) (do)))))
+
+  (fn infer-let-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
+    (@intent "Infer type of a let expression with proper variable binding")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= expr nil))
+    (env-push-scope env)
+    ;; Get bindings list at position 1
+    (when (sexpr-is-list expr)
+      (match (sexpr-list-get expr 1)
+        ((some bindings-expr)
+          (when (sexpr-is-list bindings-expr)
+            (let ((num-bindings (sexpr-list-len bindings-expr)))
+              (for (i 0 num-bindings)
+                (match (sexpr-list-get bindings-expr i)
+                  ((some binding) (bind-let-binding env binding))
+                  ((none) (do)))))))
+        ((none) (do))))
+    ;; Infer type of last body expression
+    (let ((result-type
+            (if (sexpr-is-list expr)
+              (let ((len (sexpr-list-len expr)))
+                (if (> len 2)
+                  (match (sexpr-list-get expr (- len 1))
+                    ((some last-body) (infer-expr env last-body))
+                    ((none) (env-get-unit-type env)))
+                  (env-get-unit-type env)))
+              (env-get-unit-type env))))
+      (env-pop-scope env)
+      result-type))
+
   (fn get-fn-name ((fn-form (Ptr SExpr)))
     (@intent "Extract function name from fn form")
     (@spec (((Ptr SExpr)) -> String))
@@ -396,37 +771,22 @@
           (fn-line (sexpr-line fn-form))
           (fn-col (sexpr-col fn-form)))
       (env-push-scope env)
-      ;; Extract and bind parameters from fn-form
-      (match (deref fn-form)
-        ((list fn-lst)
-          (let ((items (. fn-lst items)))
-            ;; Get params from element 2: (fn name ((param Type) ...) ...)
-            (match (list-get items 2)
+      ;; Extract and bind parameters using helper functions to avoid cross-module issues
+      ;; fn-form is (fn name ((param Type) ...) ...)
+      (when (sexpr-is-list fn-form)
+        (let ((params-len (sexpr-list-len fn-form)))
+          (when (> params-len 2)
+            (match (sexpr-list-get fn-form 2)
               ((some params-expr)
-                (match (deref params-expr)
-                  ((list params-lst)
-                    (let ((params (. params-lst items))
-                          (param-len (list-len params)))
-                      (for (k 0 param-len)
-                        (match (list-get params k)
-                          ((some param-form)
-                            (match (deref param-form)
-                              ((list param-lst)
-                                (let ((param-items (. param-lst items)))
-                                  (match (list-get param-items 0)
-                                    ((some name-expr)
-                                      (match (deref name-expr)
-                                        ((symbol name-sym)
-                                          (let ((param-name (. name-sym name)))
-                                            ;; Bind with placeholder type
-                                            (env-bind-var env param-name (env-get-int-type env))))
-                                        (_ (do))))
-                                    ((none) (do)))))
-                              (_ (do))))
-                          ((none) (do))))))
-                  (_ (do))))
-              ((none) (do)))))
-        (_ (do)))
+                ;; params-expr is ((param Type) ...)
+                (when (sexpr-is-list params-expr)
+                  (let ((num-params (sexpr-list-len params-expr)))
+                    (for (k 0 num-params)
+                      (match (sexpr-list-get params-expr k)
+                        ((some param-form)
+                          (bind-param-from-form env param-form))
+                        ((none) (do)))))))
+              ((none) (do))))))
       ;; Infer body type (last element)
       (let ((result-type (match (deref fn-form)
                            ((list fn-lst)
@@ -473,20 +833,23 @@
                                     (match (deref variant-name-expr)
                                       ((symbol variant-sym)
                                         (let ((variant-name (. variant-sym name)))
-                                          ;; Verify variant exists
-                                          (match (resolved-type-get-variant-index scrutinee-type variant-name)
-                                            ((some variant-idx)
-                                              ;; If there's a binding variable, bind it
+                                          ;; Verify variant exists and get payload type
+                                          (match (resolved-type-get-variant-payload scrutinee-type variant-name)
+                                            ((some payload-type)
+                                              ;; Variant has payload - bind variable to payload type
                                               (when (> (list-len variant-items) 1)
                                                 (match (list-get variant-items 1)
                                                   ((some binding-expr)
                                                     (match (deref binding-expr)
                                                       ((symbol binding-sym)
-                                                        ;; Bind with scrutinee type as placeholder
-                                                        (env-bind-var env (. binding-sym name) scrutinee-type))
+                                                        (env-bind-var env (. binding-sym name) payload-type))
                                                       (_ (do))))
                                                   ((none) (do)))))
-                                            ((none) (do)))))
+                                            ((none)
+                                              ;; Variant has no payload or doesn't exist - just verify it exists
+                                              (match (resolved-type-get-variant-index scrutinee-type variant-name)
+                                                ((some _) (do))
+                                                ((none) (do)))))))
                                       (_ (do))))
                                   ((none) (do))))))
                           (_ (do))))
