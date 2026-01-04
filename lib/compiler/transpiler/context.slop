@@ -104,6 +104,8 @@
     (@spec ((Arena) -> (Ptr TranspileContext)))
     (@alloc arena)
     (@post (!= $result nil))
+    (@example (arena) -> (!= nil))
+    (@example (arena) -> (-> enable-prefixing false))
     (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena 2048))))
       (set! (deref ctx) (TranspileContext
         arena

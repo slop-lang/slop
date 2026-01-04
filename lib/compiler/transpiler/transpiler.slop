@@ -21,7 +21,7 @@
                    ctx-set-module ctx-set-prefixing
                    ctx-register-type ctx-register-function))
   (import transpiler-types (CTypeInfo FuncEntry))
-  (import emit (Emitter emitter-new emitter-output
+  (import emit (Emitter emitter-new emitter-output emitter-line-count
                 emit-line emit-blank emit-include emit-comment))
   (import defn (transpile-function transpile-type transpile-const
                 register-ffi register-ffi-struct emit-forward-decl

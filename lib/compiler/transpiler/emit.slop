@@ -10,7 +10,7 @@
     ;; Emitter type
     Emitter
     ;; Lifecycle
-    emitter-new emitter-output
+    emitter-new emitter-output emitter-line-count
     ;; Basic emission
     emit emit-line emit-blank
     ;; Indentation
@@ -40,6 +40,8 @@
     (@spec ((Arena) -> (Ptr Emitter)))
     (@alloc arena)
     (@post (!= $result nil))
+    (@example (arena) -> (!= nil))
+    (@example (arena) -> (-> indent-level 0))
     (let ((em (cast (Ptr Emitter) (arena-alloc arena 128))))
       (set! (deref em) (Emitter
         arena
@@ -49,23 +51,54 @@
         ""))
       em))
 
+  (fn emitter-line-count ((em (Ptr Emitter)))
+    (@intent "Get number of lines in emitter (for debugging)")
+    (@spec (((Ptr Emitter)) -> Int))
+    (@pre (!= em nil))
+    (@pure)
+    (list-len (. (deref em) lines)))
+
   (fn emitter-output ((em (Ptr Emitter)))
     (@intent "Get accumulated output as single string with newlines")
     (@spec (((Ptr Emitter)) -> String))
     (@pre (!= em nil))
+    ;; Calculate total length needed
     (let ((lines (. (deref em) lines))
           (arena (. (deref em) arena))
-          (len (list-len lines))
-          (mut result ""))
-      (do
-        (for (i 0 len)
-          (match (list-get lines i)
-            ((some line)
-              (if (== i 0)
-                (set! result line)
-                (set! result (string-concat arena result (string-concat arena "\n" line)))))
-            ((none) (do))))
-        result)))
+          (len (list-len lines)))
+      (if (== len 0)
+        ""
+        ;; Calculate total size: sum of all line lengths + (len-1) newlines
+        (let ((mut total-len 0))
+          (do
+            (for (i 0 len)
+              (match (list-get lines i)
+                ((some line)
+                  (set! total-len (+ total-len (cast Int (string-len line)))))
+                ((none) (do))))
+            ;; Add space for newlines between lines
+            (set! total-len (+ total-len (- len 1)))
+            ;; Allocate single buffer
+            (let ((buf (arena-alloc arena (+ total-len 1)))
+                  (mut offset 0))
+              (do
+                (for (i 0 len)
+                  (match (list-get lines i)
+                    ((some line)
+                      (let ((line-len (cast Int (string-len line))))
+                        (do
+                          ;; Add newline before all lines except first
+                          (when (> i 0)
+                            (set! (@ buf offset) (cast U8 10))  ;; '\n'
+                            (set! offset (+ offset 1)))
+                          ;; Copy line content
+                          (for (j 0 line-len)
+                            (do
+                              (set! (@ buf offset) (@ (. line data) j))
+                              (set! offset (+ offset 1)))))))
+                    ((none) (do))))
+                ;; Return as string
+                (String (cast (Ptr U8) buf) (cast U64 offset)))))))))
 
   ;; ============================================================
   ;; Basic Emission

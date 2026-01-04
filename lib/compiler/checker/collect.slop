@@ -1,0 +1,92 @@
+;; ============================================================
+;; Type Collection Pass
+;;
+;; Scans AST for type and function definitions, building
+;; the type environment with resolved type information.
+;; ============================================================
+
+(module collect
+  (export
+    ;; Main collection functions
+    collect-types collect-functions collect-module)
+
+  (import parser (SExpr SExprList SExprSymbol is-form
+                  sexpr-line sexpr-col))
+  (import types (ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
+                 FnSignature ParamInfo
+                 resolved-type-new resolved-variant-new resolved-field-new
+                 fn-signature-new param-info-new))
+  (import env (TypeEnv env-arena env-register-type env-lookup-type
+               env-register-function env-set-module env-get-module
+               env-get-int-type env-get-bool-type env-get-string-type
+               env-get-unit-type))
+
+  ;; ============================================================
+  ;; Main Collection Functions
+  ;; ============================================================
+
+  (fn collect-module ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
+    (@intent "Collect all types and functions from a module AST")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr))) -> Unit))
+    (@pre (!= env nil))
+    ;; First pass: collect all type definitions
+    (collect-types env ast)
+    ;; Second pass: collect function signatures
+    (collect-functions env ast))
+
+  (fn collect-types ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
+    (@intent "Scan AST for type definitions and register them")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr))) -> Unit))
+    (@pre (!= env nil))
+    (let ((arena (env-arena env))
+          (len (list-len ast)))
+      (for (i 0 len)
+        (match (list-get ast i)
+          ((some expr)
+            (when (is-form expr "type")
+              (match (deref expr)
+                ((list lst)
+                  (let ((items (. lst items)))
+                    ;; Extract type name from position 1: (type NAME TYPE-EXPR)
+                    (match (list-get items 1)
+                      ((some name-expr)
+                        (match (deref name-expr)
+                          ((symbol sym)
+                            ;; Create a placeholder resolved type
+                            (let ((type-name (. sym name))
+                                  (resolved (resolved-type-new arena 'rk-primitive type-name (none) type-name)))
+                              (env-register-type env resolved)))
+                          (_ (do))))
+                      ((none) (do)))))
+                (_ (do)))))
+          ((none) (do))))))
+
+  (fn collect-functions ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
+    (@intent "Scan AST for function definitions and register signatures")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr))) -> Unit))
+    (@pre (!= env nil))
+    (let ((arena (env-arena env))
+          (len (list-len ast)))
+      (for (i 0 len)
+        (match (list-get ast i)
+          ((some expr)
+            (when (is-form expr "fn")
+              (match (deref expr)
+                ((list lst)
+                  (let ((items (. lst items)))
+                    ;; Extract function name from position 1: (fn NAME params ...)
+                    (match (list-get items 1)
+                      ((some name-expr)
+                        (match (deref name-expr)
+                          ((symbol sym)
+                            ;; Create a placeholder function signature
+                            (let ((fn-name (. sym name))
+                                  (params (list-new arena ParamInfo))
+                                  (ret-type (env-get-unit-type env))
+                                  (sig (fn-signature-new arena fn-name fn-name params ret-type)))
+                              (env-register-function env sig)))
+                          (_ (do))))
+                      ((none) (do)))))
+                (_ (do)))))
+          ((none) (do))))))
+)

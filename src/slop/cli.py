@@ -2345,6 +2345,116 @@ def cmd_test(args):
         return 1
 
 
+def _is_pointer_predicate(expected):
+    """Check if expected value is a pointer predicate like (!= nil) or (-> field val)."""
+    from slop.parser import Symbol, SList
+
+    if not isinstance(expected, SList) or len(expected) < 2:
+        return False
+
+    head = expected[0]
+    if not isinstance(head, Symbol):
+        return False
+
+    op = head.name
+    # (!= nil) or (== nil) - null checks
+    if op in ('!=', '==') and len(expected) == 2:
+        arg = expected[1]
+        if isinstance(arg, Symbol) and arg.name == 'nil':
+            return True
+
+    # (-> field expected) - dereference and field access
+    if op == '->' and len(expected) == 3:
+        return True
+
+    # (. field expected) - same as -> but using dot notation
+    if op == '.' and len(expected) == 3:
+        return True
+
+    return False
+
+
+def _parse_pointer_predicate(expected, return_type):
+    """Parse a pointer predicate and return comparison info for test harness."""
+    from slop.parser import Symbol, SList
+
+    head = expected[0]
+    op = head.name
+
+    if op == '!=' and len(expected) == 2:
+        arg = expected[1]
+        if isinstance(arg, Symbol) and arg.name == 'nil':
+            # (!= nil) - check pointer is not null
+            return {
+                'compare_expr': 'result != NULL',
+                'result_fmt': '%p',
+                'result_args': '(void*)result',
+                'expected_fmt': '%s',
+                'expected_args': '"!= NULL"',
+            }
+
+    if op == '==' and len(expected) == 2:
+        arg = expected[1]
+        if isinstance(arg, Symbol) and arg.name == 'nil':
+            # (== nil) - check pointer is null
+            return {
+                'compare_expr': 'result == NULL',
+                'result_fmt': '%p',
+                'result_args': '(void*)result',
+                'expected_fmt': '%s',
+                'expected_args': '"NULL"',
+            }
+
+    if op in ('->', '.') and len(expected) == 3:
+        # (-> field expected) or (. field expected) - dereference and check field
+        field = expected[1]
+        field_expected = expected[2]
+
+        if isinstance(field, Symbol):
+            field_name = field.name.replace('-', '_')
+            c_expected_val = sexpr_to_c(field_expected)
+
+            # Determine field type from expected value
+            if isinstance(field_expected, Symbol):
+                if field_expected.name in ('true', 'false'):
+                    return {
+                        'compare_expr': f'result != NULL && result->{field_name} == {c_expected_val}',
+                        'result_fmt': '%s',
+                        'result_args': f'result ? (result->{field_name} ? "true" : "false") : "NULL"',
+                        'expected_fmt': '%s',
+                        'expected_args': f'{c_expected_val} ? "true" : "false"',
+                    }
+
+            # Check if expected is a string
+            from slop.parser import String as SlopString
+            if isinstance(field_expected, SlopString):
+                return {
+                    'compare_expr': f'result != NULL && slop_string_eq(result->{field_name}, {c_expected_val})',
+                    'result_fmt': '%s',
+                    'result_args': f'result ? "..." : "NULL"',
+                    'expected_fmt': '%s',
+                    'expected_args': f'"{field_expected.value}"',
+                }
+
+            # Default: integer comparison
+            return {
+                'compare_expr': f'result != NULL && result->{field_name} == {c_expected_val}',
+                'result_fmt': '%lld',
+                'result_args': f'result ? (long long)result->{field_name} : 0',
+                'expected_fmt': '%lld',
+                'expected_args': f'(long long){c_expected_val}',
+            }
+
+    # Fallback - should not reach here if _is_pointer_predicate was true
+    return {
+        'compare_expr': 'false',
+        'result_fmt': '%s',
+        'result_args': '"error"',
+        'expected_fmt': '%s',
+        'expected_args': '"error"',
+    }
+
+
 def generate_test_harness(test_cases, c_code, enable_prefixing=True):
     """Generate C test harness code from test cases.
 
@@ -2398,12 +2508,12 @@ def generate_test_harness(test_cases, c_code, enable_prefixing=True):
         for arg in tc['args']:
             c_args.append(sexpr_to_c(arg))
 
-        # Convert expected to C expression
-        c_expected = sexpr_to_c(tc['expected'])
-
         # Determine comparison based on return type
         return_type = tc.get('return_type', 'Int')
         expected = tc['expected']
+
+        # Convert expected to C expression (skip for pointer predicates - handled separately)
+        c_expected = sexpr_to_c(expected) if not _is_pointer_predicate(expected) else None
 
         # Check if this is an Option type
         is_option_type = return_type and 'Option' in return_type
@@ -2472,6 +2582,14 @@ def generate_test_harness(test_cases, c_code, enable_prefixing=True):
                 result_args = 'result.has_value ? "some(...)" : "none"'
                 expected_fmt = '%s'
                 expected_args = '"some(...)"'
+        elif _is_pointer_predicate(expected):
+            # Handle pointer predicates: (!= nil), (== nil), (-> field expected)
+            pred_info = _parse_pointer_predicate(expected, return_type)
+            compare_expr = pred_info['compare_expr']
+            result_fmt = pred_info['result_fmt']
+            result_args = pred_info['result_args']
+            expected_fmt = pred_info['expected_fmt']
+            expected_args = pred_info['expected_args']
         elif return_type and 'String' in return_type:
             compare_expr = f'slop_string_eq(result, {c_expected})'
             result_fmt = '\\\"%.*s\\\"'  # Escaped quotes for printf inside C string

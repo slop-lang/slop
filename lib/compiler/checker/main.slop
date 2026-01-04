@@ -1,0 +1,59 @@
+;; ============================================================
+;; Type Checker - Main Entry Point
+;;
+;; Orchestrates the type checking pipeline:
+;; 1. Collect type definitions
+;; 2. Resolve imports
+;; 3. Infer expression types
+;; ============================================================
+
+(module checker
+  (export
+    type-check TypeCheckResult)
+
+  (import parser (SExpr parse is-form))
+  (import types (TypeError TypeErrorKind type-error-new))
+  (import env (TypeEnv env-new))
+  (import collect (collect-module))
+  (import resolve (resolve-imports))
+  (import infer (infer-fn-body))
+
+  ;; ============================================================
+  ;; Result Type
+  ;; ============================================================
+
+  (type TypeCheckResult (Result (Ptr TypeEnv) TypeError))
+
+  ;; ============================================================
+  ;; Main Entry Point
+  ;; ============================================================
+
+  (fn type-check ((arena Arena) (ast (List (Ptr SExpr))))
+    (@intent "Type check an AST and return populated type environment")
+    (@spec ((Arena (List (Ptr SExpr))) -> TypeCheckResult))
+    (@alloc arena)
+    (@pre (> (list-len ast) 0))
+    ;; Create type environment with builtins
+    (let ((env (env-new arena)))
+      ;; Phase 1: Collect all type and function definitions
+      (collect-module env ast)
+      ;; Phase 2: Resolve imports
+      (resolve-imports env ast)
+      ;; Phase 3: Type check function bodies
+      (check-all-functions env ast)
+      ;; Return populated environment
+      (ok env)))
+
+  (fn check-all-functions ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
+    (@intent "Type check all function bodies in the AST")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr))) -> Unit))
+    (@pre (!= env nil))
+    (let ((len (list-len ast)))
+      (for (i 0 len)
+        (match (list-get ast i)
+          ((some expr)
+            (when (is-form expr "fn")
+              (let ((_ (infer-fn-body env expr)))
+                (do))))
+          ((none) (do))))))
+)
