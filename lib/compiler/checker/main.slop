@@ -9,7 +9,7 @@
 
 (module checker
   (export
-    type-check TypeCheckResult)
+    type-check TypeCheckResult (main 2))
 
   (import parser (SExpr parse is-form))
   (import types (TypeError TypeErrorKind type-error-new))
@@ -17,6 +17,9 @@
   (import collect (collect-module))
   (import resolve (resolve-imports))
   (import infer (infer-fn-body))
+  (import file (FileMode FileError File
+                file-open file-close file-read-all))
+  (import strlib (cstring-to-string))
 
   ;; ============================================================
   ;; Result Type
@@ -56,4 +59,50 @@
               (let ((_ (infer-fn-body env expr)))
                 (do))))
           ((none) (do))))))
+
+  ;; ============================================================
+  ;; Main - CLI Entry Point
+  ;; ============================================================
+
+  (fn main ((argc Int) (argv (Ptr (Ptr U8))))
+    (@intent "Entry point for the type checker CLI")
+    (@spec ((Int (Ptr (Ptr U8))) -> Int))
+    (if (< argc 2)
+      (do
+        (println "Usage: slop-checker <file.slop>")
+        1)
+      (with-arena 2097152
+        (let ((filename (cstring-to-string (@ argv 1))))
+          (match (file-open filename 'read)
+            ((error e)
+              (do
+                (println "Error: Could not open file")
+                1))
+            ((ok f)
+              (match (file-read-all arena (addr f))
+                ((error e)
+                  (do
+                    (file-close (addr f))
+                    (println "Error: Could not read file")
+                    1))
+                ((ok source)
+                  (do
+                    (file-close (addr f))
+                    (match (parse arena source)
+                      ((ok ast)
+                        (match (type-check arena ast)
+                          ((ok env)
+                            (do
+                              (println "Type check passed")
+                              0))
+                          ((error err)
+                            (do
+                              (print "Type error: ")
+                              (println (. err message))
+                              1))))
+                      ((error parse-err)
+                        (do
+                          (print "Parse error: ")
+                          (println (. parse-err message))
+                          1))))))))))))
 )

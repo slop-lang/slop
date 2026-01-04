@@ -368,6 +368,74 @@ class Transpiler:
                     return f"slop_map_{key_id}_{val_id}"
         return None
 
+    def _infer_expr_type(self, expr: SExpr) -> Optional[str]:
+        """Infer the C type of an expression.
+
+        Returns the C type string or None if it cannot be determined.
+        """
+        # String literal -> slop_string
+        if isinstance(expr, String):
+            return "slop_string"
+        # Number literal -> int64_t
+        elif isinstance(expr, Number):
+            return "int64_t"
+        # Boolean literal -> bool
+        elif isinstance(expr, Symbol) and expr.name in ('true', 'false'):
+            return "bool"
+        # nil -> void*
+        elif isinstance(expr, Symbol) and expr.name == 'nil':
+            return "void*"
+        # List expressions - check for various forms
+        elif isinstance(expr, SList) and len(expr) >= 1:
+            if isinstance(expr[0], Symbol):
+                head_name = expr[0].name
+                # (do ...) - check last expression
+                if head_name == 'do':
+                    if len(expr) > 1:
+                        return self._infer_expr_type(expr[-1])
+                    return "void"
+                # (let ((bindings)) body) - check last body expression
+                elif head_name == 'let':
+                    if len(expr) >= 3:
+                        return self._infer_expr_type(expr[-1])
+                # Nested match - recurse
+                elif head_name == 'match':
+                    return self._infer_match_result_type(expr)
+                # (if cond then else) - check then branch
+                elif head_name == 'if' and len(expr) >= 3:
+                    return self._infer_expr_type(expr[2])
+                # (when cond body...) - returns void
+                elif head_name == 'when':
+                    return "void"
+                # (for ...) - returns void
+                elif head_name == 'for':
+                    return "void"
+                # (while ...) - returns void
+                elif head_name == 'while':
+                    return "void"
+                # (set! ...) - returns void
+                elif head_name == 'set!':
+                    return "void"
+                # Function call - look up return type
+                else:
+                    fn_name = head_name
+                    # Try direct lookup
+                    if fn_name in self.functions and 'return_type' in self.functions[fn_name]:
+                        ret_type = self.functions[fn_name]['return_type']
+                        if ret_type:
+                            return self.to_c_type(ret_type)
+                    # Try with current module prefix
+                    if self.current_module:
+                        prefixed_name = f"{self.current_module}_{fn_name}"
+                        if prefixed_name in self.functions and 'return_type' in self.functions[prefixed_name]:
+                            ret_type = self.functions[prefixed_name]['return_type']
+                            if ret_type:
+                                return self.to_c_type(ret_type)
+                    # Check for known builtins
+                    if fn_name in ('cast',) and len(expr) >= 2:
+                        return self.to_c_type(expr[1])
+        return None
+
     def _infer_match_result_type(self, match_expr: SExpr) -> Optional[str]:
         """Infer the result C type from a match expression by checking its branches.
 
@@ -383,21 +451,9 @@ class Transpiler:
                 body = clause.items[1:]
                 if body:
                     last_expr = body[-1]
-                    # String literal -> slop_string
-                    if isinstance(last_expr, String):
-                        return "slop_string"
-                    # Number literal -> int64_t
-                    elif isinstance(last_expr, Number):
-                        return "int64_t"
-                    # Boolean literal -> bool
-                    elif isinstance(last_expr, Symbol) and last_expr.name in ('true', 'false'):
-                        return "bool"
-                    # Nested match - recurse
-                    elif isinstance(last_expr, SList) and len(last_expr) >= 1:
-                        if isinstance(last_expr[0], Symbol) and last_expr[0].name == 'match':
-                            nested_type = self._infer_match_result_type(last_expr)
-                            if nested_type:
-                                return nested_type
+                    inferred = self._infer_expr_type(last_expr)
+                    if inferred:
+                        return inferred
 
         return None
 
@@ -935,15 +991,7 @@ class Transpiler:
                 first_body = first_clause.items[1:]
                 if first_body:
                     last_expr = first_body[-1]
-                    # Check for string literal
-                    if isinstance(last_expr, String):
-                        result_c_type = "slop_string"
-                    # Check for number literal
-                    elif isinstance(last_expr, Number):
-                        result_c_type = "int64_t"
-                    # Check for boolean literal (true/false)
-                    elif isinstance(last_expr, Symbol) and last_expr.name in ('true', 'false'):
-                        result_c_type = "bool"
+                    result_c_type = self._infer_expr_type(last_expr)
 
         # Fall back to function's result type if we couldn't infer
         if result_c_type is None:
@@ -1053,20 +1101,8 @@ class Transpiler:
                     body = clause.items[1:]
                     if body:
                         last_expr = body[-1]
-                        # Check for string literal
-                        if isinstance(last_expr, String):
-                            result_c_type = "slop_string"
-                            break
-                        # Check for number literal
-                        elif isinstance(last_expr, Number):
-                            result_c_type = "int64_t"
-                            break
-                        # Check for boolean literal (true/false)
-                        elif isinstance(last_expr, Symbol) and last_expr.name in ('true', 'false'):
-                            result_c_type = "bool"
-                            break
                         # Check for (none) - result is an Option type
-                        elif isinstance(last_expr, Symbol) and last_expr.name == 'none':
+                        if isinstance(last_expr, Symbol) and last_expr.name == 'none':
                             result_c_type = "slop_option_int"  # Default, will be refined below
                             break
                         # Check for (some val) - result is an Option type
@@ -1093,11 +1129,11 @@ class Transpiler:
                             elif isinstance(last_expr[0], Symbol) and last_expr[0].name == 'none':
                                 result_c_type = "slop_option_int"
                                 break
-                            elif isinstance(last_expr[0], Symbol) and last_expr[0].name == 'match':
-                                # Nested match - check if any of its branches return a string
-                                result_c_type = self._infer_match_result_type(last_expr)
-                                if result_c_type:
-                                    break
+                        # Try generic expression type inference (handles function calls, etc.)
+                        inferred = self._infer_expr_type(last_expr)
+                        if inferred:
+                            result_c_type = inferred
+                            break
                         # For symbols/variables, continue checking other branches
 
         # If still None and this is an Option match with bound variable,

@@ -2,6 +2,7 @@
   (export
     ParseError
     AsciiChar
+    cstring-to-string
     is-alpha
     is-digit
     is-alnum
@@ -73,6 +74,12 @@
   (type ParseError (enum empty-string invalid-format overflow underflow))
 
   (type AsciiChar (Int 0 .. 127))
+
+  (fn cstring-to-string ((cstr (Ptr U8)))
+    (@intent "Convert null-terminated C string to SLOP String")
+    (@spec (((Ptr U8)) -> String))
+    (@pure)
+    (String cstr (strlen cstr)))
 
   (fn is-alpha ((c AsciiChar))
     (@intent "Check if character is alphabetic (a-z, A-Z)")
