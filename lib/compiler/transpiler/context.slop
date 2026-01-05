@@ -29,7 +29,7 @@
     ;; FFI registry
     ctx-register-ffi-func ctx-lookup-ffi-func
     ctx-register-ffi-struct ctx-lookup-ffi-struct
-    ctx-add-include ctx-get-includes
+    ctx-add-include ctx-get-includes ctx-clear-includes
     ;; Module context
     ctx-set-module ctx-get-module
     ctx-set-prefixing ctx-get-prefixing
@@ -357,6 +357,13 @@
     (@pre (!= ctx nil))
     (@pure)
     (. (deref ctx) ffi-includes))
+
+  (fn ctx-clear-includes ((ctx (Ptr TranspileContext)))
+    (@intent "Clear FFI include headers for new module")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre (!= ctx nil))
+    ;; Reset length to 0 (keeps capacity)
+    (set! (. (. (deref ctx) ffi-includes) len) 0))
 
   ;; ============================================================
   ;; Module Context
