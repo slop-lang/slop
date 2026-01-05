@@ -509,6 +509,62 @@ These ARE in strlib and need `(import strlib ...)`:
 | `compare`, `compare-ignore-case` | String comparison |
 | `join`, `reverse`, `repeat` | Advanced operations |
 """,
+
+    'cli': """## CLI Reference
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `slop parse FILE` | Parse and display AST |
+| `slop check FILE` | Type check without transpiling |
+| `slop transpile FILE` | Convert to C source |
+| `slop build FILE` | Full pipeline: parse, check, transpile, compile |
+| `slop fill FILE` | Fill holes with LLM-generated code |
+| `slop verify FILE` | Verify contracts with Z3 |
+| `slop ref [TOPIC]` | Show language reference |
+| `slop doc FILE` | Generate documentation |
+
+### Native Components (--native flag)
+
+SLOP includes self-hosted compiler components written in SLOP. Use `--native` to use these instead of Python implementations:
+
+```bash
+slop parse FILE --native      # Use native parser
+slop check FILE --native      # Use native type checker
+slop build FILE --native      # Use native parser + transpiler
+```
+
+Native components are in `lib/compiler/`:
+- `slop-parser` - S-expression parser (outputs JSON AST)
+- `slop-checker` - Type checker with diagnostics
+- `slop-transpiler` - SLOP to C transpiler
+
+If a native component isn't found, falls back to Python.
+
+### Common Options
+
+| Option | Commands | Description |
+|--------|----------|-------------|
+| `-o, --output` | transpile, build | Output file path |
+| `-I, --include` | transpile, build | Add module search path |
+| `--native` | parse, check, build | Use native components |
+| `--debug` | build | Include debug symbols |
+| `--holes` | parse | Show only holes |
+| `-v, --verbose` | fill, verify | Increase verbosity |
+
+### Build Configuration
+
+With `slop.toml`, commands use project settings:
+
+```bash
+slop build                    # Uses [project].entry
+slop build --native           # Native components + config
+slop fill                     # Uses entry from config
+```
+
+See `slop.toml.example` for configuration options.
+""",
 }
 
 # Ordered list of topics for display
@@ -523,6 +579,7 @@ TOPIC_ORDER = [
     'expressions',
     'patterns',
     'mistakes',
+    'cli',
 ]
 
 
