@@ -25,7 +25,7 @@
                  is-option-type is-result-type))
   (import names (to-c-name to-qualified-name to-qualified-type-name))
   (import emit (Emitter))
-  (import strlib (float-to-string substring))
+  (import strlib (float-to-string substring ends-with))
   (import transpiler-types (CFieldInfo))
 
   ;; ============================================================
@@ -228,6 +228,16 @@
                   (transpile-set-expr ctx lst))
                 ((string-eq op "if")
                   (transpile-if-expr ctx lst))
+                ((or (string-eq op "let") (string-eq op "let*"))
+                  (transpile-let-expr ctx lst))
+                ((string-eq op "while")
+                  (transpile-while-expr ctx lst))
+                ((string-eq op "for")
+                  (transpile-for-expr ctx lst))
+                ((string-eq op "for-each")
+                  (transpile-for-each-expr ctx lst))
+                ((string-eq op "do")
+                  (transpile-do-expr ctx lst))
 
                 ;; Default: check if record constructor or function call
                 (else
@@ -960,17 +970,22 @@
                 ;; nil
                 ((string-eq name "nil")
                   (some "void*"))
-                ;; Variable lookup
+                ;; Variable lookup - try context first (for local vars)
                 (else
-                  (match (env-lookup-var type-env name)
-                    ((some resolved-type)
-                      (some (. (deref resolved-type) c-name)))
+                  (match (ctx-lookup-var ctx name)
+                    ((some var-entry)
+                      (some (. var-entry c-type)))
                     ((none)
-                      ;; Try as function (return type)
-                      (match (env-lookup-function type-env name)
-                        ((some fn-sig)
-                          (some (. (deref (. (deref fn-sig) return-type)) c-name)))
-                        ((none) (none)))))))))
+                      ;; Try type environment
+                      (match (env-lookup-var type-env name)
+                        ((some resolved-type)
+                          (some (. (deref resolved-type) c-name)))
+                        ((none)
+                          ;; Try as function (return type)
+                          (match (env-lookup-function type-env name)
+                            ((some fn-sig)
+                              (some (. (deref (. (deref fn-sig) return-type)) c-name)))
+                            ((none) (none)))))))))))
           ;; List expression (function call, operator, etc)
           ((list lst)
             (infer-list-c-type ctx type-env lst))))))
@@ -1002,6 +1017,21 @@
                     ((or (string-eq op "+") (string-eq op "-")
                          (string-eq op "*") (string-eq op "/") (string-eq op "%"))
                       (some "int64_t"))
+                    ;; Deref returns pointed-to type
+                    ((string-eq op "deref")
+                      (match (list-get items 1)
+                        ((none) (none))
+                        ((some arg-expr)
+                          (match (infer-expr-c-type ctx arg-expr)
+                            ((none) (none))
+                            ((some ptr-type)
+                              ;; Strip trailing * if present
+                              (let ((tlen (cast Int (string-len ptr-type))))
+                                (if (ends-with ptr-type "*")
+                                  (if (>= tlen 1)
+                                    (some (substring (. (deref ctx) arena) ptr-type 0 (- tlen 1)))
+                                    (some ptr-type))
+                                  (some ptr-type))))))))
                     ;; Function call - look up return type
                     (else
                       (match (env-lookup-function type-env op)
@@ -1060,6 +1090,41 @@
                           (string-concat arena then-str " : (void)0)"))))))))
             ((none) "/* missing if then */")))
         ((none) "/* missing if cond */"))))
+
+  (fn transpile-let-expr ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile let as expression using GCC statement expression")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    ;; TODO: implement properly - for now return placeholder
+    "({ /* let expr */ 0; })")
+
+  (fn transpile-while-expr ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile while as expression: ({ while(cond) { body }; 0; })")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    ;; TODO: implement properly - for now return placeholder
+    "({ /* while expr */ 0; })")
+
+  (fn transpile-for-expr ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile for as expression: ({ for(i=start; i<end; i++) { body }; 0; })")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    ;; TODO: implement properly - for now return placeholder
+    "({ /* for expr */ 0; })")
+
+  (fn transpile-for-each-expr ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile for-each as expression")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    ;; TODO: implement properly - for now return placeholder
+    "({ /* for-each expr */ 0; })")
+
+  (fn transpile-do-expr ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile do as expression: sequence returning last value")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    ;; TODO: implement properly - for now return placeholder
+    "({ /* do expr */ 0; })")
 
   ;; ============================================================
   ;; Positional Record Constructor

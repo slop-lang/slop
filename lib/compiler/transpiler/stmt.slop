@@ -536,6 +536,7 @@
     (match (list-get (. lst items) 1)
       ((some target-expr)
         (let ((target-code (transpile-expr ctx target-expr (none)))
+              (target-type (infer-expr-c-type ctx target-expr))
               (arena (. (deref em) arena))
               (clauses (list-new arena (Ptr SExpr)))
               (len (list-len (. lst items))))
@@ -569,9 +570,9 @@
                                         ((string-eq head-name "error")
                                           (transpile-result-match ctx em target-code clauses is-return))
                                         ((string-eq head-name "list")
-                                          (transpile-union-match ctx em target-code clauses is-return))
+                                          (transpile-union-match ctx em target-code target-type clauses is-return))
                                         ((string-eq head-name "symbol")
-                                          (transpile-union-match ctx em target-code clauses is-return))
+                                          (transpile-union-match ctx em target-code target-type clauses is-return))
                                         (else
                                           (transpile-enum-match ctx em target-code clauses is-return)))))
                                   (_ (transpile-enum-match ctx em target-code clauses is-return))))
@@ -841,15 +842,18 @@
         (emit-line em "}"))))
 
   (fn transpile-union-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
-                             (target-code String) (clauses (List (Ptr SExpr)))
-                             (is-return Bool))
+                             (target-code String) (union-type (Option String))
+                             (clauses (List (Ptr SExpr))) (is-return Bool))
     (@intent "Transpile match on tagged union")
-    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (Option String) (List (Ptr SExpr)) Bool) -> Unit))
     (@pre (!= ctx nil))
     (@pre (!= em nil))
     ;; switch (target.tag) { case TAG_variant: binding = target.data.variant; ... }
     (let ((arena (. (deref em) arena))
           (len (list-len clauses))
+          (type-prefix (match union-type
+                         ((some t) t)
+                         ((none) "")))
           (mut i 0))
       (do
         (emit-line em (string-concat arena "switch (" (string-concat arena target-code ".tag) {")))
@@ -876,7 +880,10 @@
                               (dedent em)
                               (emit-line em "}"))
                             (let ((tag-name (to-c-name arena (. pat-sym name))))
-                              (emit-line em (string-concat arena "case " (string-concat arena tag-name "_TAG: {")))
+                              (emit-line em (string-concat arena "case "
+                                (string-concat arena type-prefix
+                                  (string-concat arena "_"
+                                    (string-concat arena tag-name "_TAG: {")))))
                               (indent em)
                               (ctx-push-scope ctx)
                               (match (list-get (. clause-lst items) 1)
@@ -892,7 +899,10 @@
                               (match (deref variant-expr)
                                 ((symbol variant-sym)
                                   (let ((tag-name (to-c-name arena (. variant-sym name))))
-                                    (emit-line em (string-concat arena "case " (string-concat arena tag-name "_TAG: {")))
+                                    (emit-line em (string-concat arena "case "
+                                      (string-concat arena type-prefix
+                                        (string-concat arena "_"
+                                          (string-concat arena tag-name "_TAG: {")))))
                                     (indent em)
                                     (ctx-push-scope ctx)
                                     ;; Extract binding if present
