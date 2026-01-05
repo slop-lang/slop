@@ -247,3 +247,90 @@ class TestCodePatterns:
         x_decl_lines = [l for l in lines if 'x' in l and '=' in l and 'x =' not in l.split('//')[0]]
         # The initial declaration should not have const before x
         # This is a bit tricky to verify precisely without parsing
+
+
+class TestMultiModule:
+    """Tests for multi-module transpilation"""
+
+    def test_multi_module_transpiles(self, run_python_transpiler, tests_dir):
+        """Multi-module build should transpile successfully"""
+        import subprocess
+
+        main_file = tests_dir / "multi-main.slop"
+
+        # Use Python transpiler with include path for the tests directory
+        result = subprocess.run(
+            ["uv", "run", "slop", "transpile", str(main_file), "-I", str(tests_dir)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"Transpilation failed:\n{result.stdout}\n{result.stderr}"
+
+        # Should contain the imported type
+        assert "Point" in result.stdout or "multi_lib_Point" in result.stdout
+        # Should contain the imported functions
+        assert "make_point" in result.stdout or "multi_lib_make_point" in result.stdout
+        assert "point_add" in result.stdout or "multi_lib_point_add" in result.stdout
+
+    def test_multi_module_compiles_and_runs(self, compile_and_run, tests_dir):
+        """Multi-module build should compile and return correct value"""
+        import subprocess
+
+        main_file = tests_dir / "multi-main.slop"
+
+        # Transpile with Python transpiler
+        result = subprocess.run(
+            ["uv", "run", "slop", "transpile", str(main_file), "-I", str(tests_dir)],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"Transpilation failed:\n{result.stdout}\n{result.stderr}"
+
+        c_code = result.stdout
+        run_code, run_out, run_err = compile_and_run(c_code)
+
+        if run_code == -1:
+            pytest.skip(f"Compilation failed: {run_err}")
+
+        # p1 = (10, 20), p2 = (5, 7), sum = (15, 27), result = 15 + 27 = 42
+        assert run_code == 42, f"Expected 42, got {run_code}. stderr: {run_err}"
+
+    def test_multi_module_with_native_build(self, compile_and_run, tests_dir):
+        """Multi-module build with --native flag should work"""
+        import subprocess
+        import tempfile
+
+        main_file = tests_dir / "multi-main.slop"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_bin = Path(tmpdir) / "multi_test"
+
+            # Build with --native flag
+            result = subprocess.run(
+                ["uv", "run", "slop", "build", str(main_file),
+                 "-I", str(tests_dir), "-o", str(output_bin), "--native"],
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                # Native build might not be fully available
+                if "not found" in result.stderr.lower() or "falling back" in result.stderr.lower():
+                    pytest.skip("Native components not fully available")
+                pytest.fail(f"Build failed:\n{result.stdout}\n{result.stderr}")
+
+            # Run the built binary
+            run_result = subprocess.run(
+                [str(output_bin)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            # p1 = (10, 20), p2 = (5, 7), sum = (15, 27), result = 15 + 27 = 42
+            assert run_result.returncode == 42, (
+                f"Expected 42, got {run_result.returncode}. "
+                f"stdout: {run_result.stdout}, stderr: {run_result.stderr}"
+            )

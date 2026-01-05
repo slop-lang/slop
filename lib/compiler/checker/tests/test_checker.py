@@ -146,3 +146,63 @@ class TestPythonErrorComparison:
         # Just report parity status, don't fail
         if python_has_error and not native_has_error:
             pytest.skip(f"Native checker missing error detection for {test_file}")
+
+
+class TestMultiModule:
+    """Tests for multi-module type checking"""
+
+    def test_multi_module_passes(self, run_python_checker, tests_dir):
+        """Multi-module import should type check successfully"""
+        import subprocess
+
+        main_file = tests_dir / "multi-main.slop"
+
+        # Use slop check with include path
+        result = subprocess.run(
+            ["uv", "run", "slop", "check", str(main_file)],
+            capture_output=True,
+            text=True,
+            cwd=tests_dir,  # Run from tests dir so import resolves
+        )
+
+        assert result.returncode == 0, f"Type check failed:\n{result.stdout}\n{result.stderr}"
+        assert "passed" in result.stdout.lower() or "ok" in result.stdout.lower()
+
+    def test_multi_module_with_native_checker(self, tests_dir):
+        """Multi-module check with --native flag should work"""
+        import subprocess
+
+        main_file = tests_dir / "multi-main.slop"
+
+        # Use slop check --native with include path
+        result = subprocess.run(
+            ["uv", "run", "slop", "check", "--native", str(main_file)],
+            capture_output=True,
+            text=True,
+            cwd=tests_dir,
+        )
+
+        # Native checker might not support multi-module yet
+        if "not found" in result.stderr.lower() or "falling back" in result.stderr.lower():
+            pytest.skip("Native checker not available or falling back to Python")
+
+        # If it ran, should pass (or we're testing that it handles modules)
+        assert result.returncode == 0, f"Native check failed:\n{result.stdout}\n{result.stderr}"
+
+    def test_multi_module_type_error_detected(self, run_python_checker, tests_dir):
+        """Multi-module with type error should be caught"""
+        import subprocess
+
+        error_file = tests_dir / "multi-error.slop"
+
+        # Use slop check with include path
+        result = subprocess.run(
+            ["uv", "run", "slop", "check", str(error_file)],
+            capture_output=True,
+            text=True,
+            cwd=tests_dir,
+        )
+
+        # Should detect the type error (get-status returns Status, not Int)
+        has_error = result.returncode != 0 or "error" in result.stdout.lower()
+        assert has_error, f"Expected type error but got:\n{result.stdout}\n{result.stderr}"
