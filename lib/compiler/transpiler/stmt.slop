@@ -141,50 +141,93 @@
                                   (let ((var-name (. var-sym name))
                                         (is-mut (string-eq var-name "mut")))
                                     (if is-mut
-                                      ;; (mut name init) - mutable binding
-                                      (match (list-get (. binding-lst items) 1)
-                                        ((some real-name-expr)
-                                          (match (deref real-name-expr)
-                                            ((symbol real-name-sym)
-                                              (let ((real-name (. real-name-sym name))
-                                                    (c-name (to-c-name arena real-name)))
-                                                (match (list-get (. binding-lst items) 2)
-                                                  ((some init-expr)
-                                                    (let ((init-code (transpile-expr ctx init-expr (none)))
-                                                          (is-ptr (is-pointer-expr ctx init-expr))
-                                                          (inferred-type (match (infer-expr-c-type ctx init-expr)
-                                                                           ((some t) t)
-                                                                           ((none) "auto"))))
-                                                      (do
-                                                        (emit-line em (string-concat arena inferred-type
+                                      ;; (mut name init) or (mut name type init) - mutable binding
+                                      (let ((binding-len (list-len (. binding-lst items))))
+                                        (match (list-get (. binding-lst items) 1)
+                                          ((some real-name-expr)
+                                            (match (deref real-name-expr)
+                                              ((symbol real-name-sym)
+                                                (let ((real-name (. real-name-sym name))
+                                                      (c-name (to-c-name arena real-name)))
+                                                  (if (== binding-len 4)
+                                                    ;; (mut name type init) - has explicit type annotation
+                                                    (match (list-get (. binding-lst items) 2)
+                                                      ((some type-expr)
+                                                        (match (list-get (. binding-lst items) 3)
+                                                          ((some init-expr)
+                                                            (let ((init-code (transpile-expr ctx init-expr (none)))
+                                                                  (is-ptr (is-pointer-type type-expr))
+                                                                  (explicit-type (to-c-type ctx type-expr)))
+                                                              (do
+                                                                (emit-line em (string-concat arena explicit-type
+                                                                  (string-concat arena " "
+                                                                    (string-concat arena c-name
+                                                                      (string-concat arena " = "
+                                                                        (string-concat arena init-code ";"))))))
+                                                                (ctx-register-var ctx (VarEntry real-name c-name explicit-type is-ptr true))
+                                                                (when is-ptr (ctx-mark-pointer ctx c-name)))))
+                                                          ((none) (do))))
+                                                      ((none) (do)))
+                                                    ;; (mut name init) - infer type from init
+                                                    (match (list-get (. binding-lst items) 2)
+                                                      ((some init-expr)
+                                                        (let ((init-code (transpile-expr ctx init-expr (none)))
+                                                              (is-ptr (is-pointer-expr ctx init-expr))
+                                                              (inferred-type (match (infer-expr-c-type ctx init-expr)
+                                                                               ((some t) t)
+                                                                               ((none) "auto"))))
+                                                          (do
+                                                            (emit-line em (string-concat arena inferred-type
+                                                              (string-concat arena " "
+                                                                (string-concat arena c-name
+                                                                  (string-concat arena " = "
+                                                                    (string-concat arena init-code ";"))))))
+                                                            (ctx-register-var ctx (VarEntry real-name c-name inferred-type is-ptr true))
+                                                            (when is-ptr (ctx-mark-pointer ctx c-name)))))
+                                                      ((none) (do))))))
+                                              (_ (do))))
+                                          ((none) (do))))
+                                      ;; (name init) or (name type init) - immutable binding
+                                      (let ((c-name (to-c-name arena var-name))
+                                            (binding-len (list-len (. binding-lst items))))
+                                        (if (== binding-len 3)
+                                          ;; (name type init) - has explicit type annotation
+                                          (match (list-get (. binding-lst items) 1)
+                                            ((some type-expr)
+                                              (match (list-get (. binding-lst items) 2)
+                                                ((some init-expr)
+                                                  (let ((init-code (transpile-expr ctx init-expr (none)))
+                                                        (is-ptr (is-pointer-type type-expr))
+                                                        (explicit-type (to-c-type ctx type-expr)))
+                                                    (do
+                                                      (emit-line em (string-concat arena "const "
+                                                        (string-concat arena explicit-type
                                                           (string-concat arena " "
                                                             (string-concat arena c-name
                                                               (string-concat arena " = "
-                                                                (string-concat arena init-code ";"))))))
-                                                        (ctx-register-var ctx (VarEntry real-name c-name inferred-type is-ptr true))
-                                                        (when is-ptr (ctx-mark-pointer ctx c-name)))))
-                                                  ((none) (do)))))
-                                            (_ (do))))
-                                        ((none) (do)))
-                                      ;; (name init) - immutable binding
-                                      (let ((c-name (to-c-name arena var-name)))
-                                        (match (list-get (. binding-lst items) 1)
-                                          ((some init-expr)
-                                            (let ((init-code (transpile-expr ctx init-expr (none)))
-                                                  (is-ptr (is-pointer-expr ctx init-expr))
-                                                  (inferred-type (match (infer-expr-c-type ctx init-expr)
-                                                                   ((some t) t)
-                                                                   ((none) "auto"))))
-                                              (do
-                                                (emit-line em (string-concat arena "const "
-                                                  (string-concat arena inferred-type
-                                                    (string-concat arena " "
-                                                      (string-concat arena c-name
-                                                        (string-concat arena " = "
-                                                          (string-concat arena init-code ";")))))))
-                                                (ctx-register-var ctx (VarEntry var-name c-name inferred-type is-ptr false))
-                                                (when is-ptr (ctx-mark-pointer ctx c-name)))))
-                                          ((none) (do)))))))
+                                                                (string-concat arena init-code ";")))))))
+                                                      (ctx-register-var ctx (VarEntry var-name c-name explicit-type is-ptr false))
+                                                      (when is-ptr (ctx-mark-pointer ctx c-name)))))
+                                                ((none) (do))))
+                                            ((none) (do)))
+                                          ;; (name init) - infer type from init
+                                          (match (list-get (. binding-lst items) 1)
+                                            ((some init-expr)
+                                              (let ((init-code (transpile-expr ctx init-expr (none)))
+                                                    (is-ptr (is-pointer-expr ctx init-expr))
+                                                    (inferred-type (match (infer-expr-c-type ctx init-expr)
+                                                                     ((some t) t)
+                                                                     ((none) "auto"))))
+                                                (do
+                                                  (emit-line em (string-concat arena "const "
+                                                    (string-concat arena inferred-type
+                                                      (string-concat arena " "
+                                                        (string-concat arena c-name
+                                                          (string-concat arena " = "
+                                                            (string-concat arena init-code ";")))))))
+                                                  (ctx-register-var ctx (VarEntry var-name c-name inferred-type is-ptr false))
+                                                  (when is-ptr (ctx-mark-pointer ctx c-name)))))
+                                            ((none) (do))))))))
                                 (_ (do))))
                             ((none) (do))))
                         (_ (do))))

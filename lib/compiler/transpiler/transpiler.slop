@@ -18,9 +18,13 @@
                   sexpr-line sexpr-col))
   (import context (TranspileContext context-new
                    ctx-add-include ctx-get-includes
-                   ctx-set-module ctx-set-prefixing
+                   ctx-set-module ctx-set-prefixing ctx-get-module
                    ctx-register-type ctx-register-function
+                   ctx-register-import ctx-clear-import-map ctx-register-type-def
+                   ctx-register-fn-module ctx-lookup-fn-module
+                   ctx-lookup-type-module
                    ctx-set-type-env))
+  (import names (make-type-c-name))
   ;; Import type checker for type inference
   (import env (TypeEnv env-new))
   (import collect (collect-module))
@@ -145,15 +149,29 @@
 
         ;; ========================================
         ;; Pass 4: Pre-scan types for generic registration
+        ;; Set module context before scanning each type
         ;; ========================================
         (for-each (type-form (. forms types))
-          (scan-type-for-generics ctx type-form))
+          (do
+            (match (ctx-lookup-type-module ctx arena (cast Int type-form))
+              ((some mod-name)
+                (ctx-set-module ctx (some mod-name))
+                (ctx-set-prefixing ctx true))
+              ((none) ()))
+            (scan-type-for-generics ctx type-form)))
 
         ;; ========================================
         ;; Pass 5: Pre-scan functions for return types
+        ;; Set module context before scanning each function
         ;; ========================================
         (for-each (fn-form (. forms functions))
-          (scan-function-signature ctx fn-form))
+          (do
+            (match (ctx-lookup-fn-module ctx arena (cast Int fn-form))
+              ((some mod-name)
+                (ctx-set-module ctx (some mod-name))
+                (ctx-set-prefixing ctx true))
+              ((none) ()))
+            (scan-function-signature ctx fn-form)))
 
         ;; ========================================
         ;; Pass 6: Emit ALL types in topologically sorted order
@@ -167,7 +185,13 @@
         (when (> (list-len (. forms functions)) 0)
           (emit-comment em "Forward declarations")
           (for-each (fn-form (. forms functions))
-            (emit-forward-decl ctx em fn-form))
+            (do
+              (match (ctx-lookup-fn-module ctx arena (cast Int fn-form))
+                ((some mod-name)
+                  (ctx-set-module ctx (some mod-name))
+                  (ctx-set-prefixing ctx true))
+                ((none) ()))
+              (emit-forward-decl ctx em fn-form)))
           (emit-blank em))
 
         ;; ========================================
@@ -176,7 +200,13 @@
         (when (> (list-len (. forms functions)) 0)
           (emit-comment em "Function implementations")
           (for-each (fn-form (. forms functions))
-            (transpile-function ctx em fn-form))))
+            (do
+              (match (ctx-lookup-fn-module ctx arena (cast Int fn-form))
+                ((some mod-name)
+                  (ctx-set-module ctx (some mod-name))
+                  (ctx-set-prefixing ctx true))
+                ((none) ()))
+              (transpile-function ctx em fn-form)))))
 
       ;; Return generated C code
       (ok (emitter-output em))))
@@ -252,19 +282,38 @@
                         ((symbol sym)
                           (do
                             (ctx-set-module ctx (some (. sym name)))
-                            (ctx-set-prefixing ctx true)))
+                            (ctx-set-prefixing ctx true)
+                            ;; NOTE: We do NOT clear import-map here. Imports accumulate across modules.
+                            ;; This is safe because:
+                            ;; 1. Each module registers its own imports with qualified names
+                            ;; 2. In collect-all-types (Pass 6), we set current_module per type
+                            ;; 3. If a type is imported, import_map has the correct qualified name
+                            ;; 4. If a type is local, current_module provides the correct prefix
+                            ;; Process imports to register qualified names
+                            (process-module-imports arena ctx mod-form)))
                         (_ (do))))
                     ((none) (do)))
                   ;; Extract body forms (skip: module, name, export)
                   (let ((body (extract-module-body arena mod-form)))
                     ;; Categorize module body and merge
-                    (let ((mod-forms (categorize-forms arena body)))
+                    (let ((mod-forms (categorize-forms arena body))
+                          (mod-name (match (ctx-get-module ctx)
+                                      ((some n) n)
+                                      ((none) ""))))
                       (do
                         (for-each (f (. mod-forms ffis)) (list-push ffis f))
                         (for-each (f (. mod-forms ffi-structs)) (list-push ffi-structs f))
                         (for-each (f (. mod-forms constants)) (list-push constants f))
-                        (for-each (f (. mod-forms types)) (list-push types f))
-                        (for-each (f (. mod-forms functions)) (list-push functions f))))))
+                        (for-each (f (. mod-forms types))
+                          (do
+                            ;; Register type definition with its C name
+                            (register-type-module ctx arena f mod-name)
+                            (list-push types f)))
+                        (for-each (f (. mod-forms functions))
+                          (do
+                            ;; Register function's module
+                            (ctx-register-fn-module ctx arena (cast Int f) mod-name)
+                            (list-push functions f)))))))
                 (_ (do))))
             ;; Return merged categories (modules list left empty since processed)
             (FormCategories (list-new arena (Ptr SExpr)) ffis ffi-structs
@@ -292,6 +341,82 @@
                 ((none) (do))))))
         (_ (do)))
       body))
+
+  (fn register-type-module ((ctx (Ptr TranspileContext)) (arena Arena)
+                            (type-form (Ptr SExpr)) (mod-name String))
+    (@intent "Register a type name with its module-qualified C name")
+    (@spec (((Ptr TranspileContext) Arena (Ptr SExpr) String) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= type-form nil))
+    ;; Extract type name from (type Name ...) form
+    (match (deref type-form)
+      ((list lst)
+        (match (list-get (. lst items) 1)
+          ((some name-expr)
+            (match (deref name-expr)
+              ((symbol sym)
+                (let ((type-name (. sym name))
+                      (c-name (make-type-c-name arena type-name mod-name)))
+                  ;; Register type definition keyed by form pointer
+                  (ctx-register-type-def ctx arena (cast Int type-form) c-name mod-name)))
+              (_ (do))))
+          ((none) (do))))
+      (_ (do))))
+
+  (fn process-module-imports ((arena Arena) (ctx (Ptr TranspileContext))
+                              (mod-form (Ptr SExpr)))
+    (@intent "Process import statements in a module and register imported names")
+    (@spec ((Arena (Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= mod-form nil))
+    ;; Find and process all (import module-name (sym1 sym2 ...)) forms
+    (match (deref mod-form)
+      ((list mod-lst)
+        (let ((items (. mod-lst items))
+              (len (list-len items)))
+          ;; Iterate through module body looking for import forms
+          (for (i 2 len)
+            (match (list-get items i)
+              ((some form)
+                (when (is-form form "import")
+                  ;; (import module-name (sym1 sym2 ...))
+                  (match (deref form)
+                    ((list import-lst)
+                      (let ((import-items (. import-lst items)))
+                        ;; Get module name from index 1
+                        (match (list-get import-items 1)
+                          ((some mod-name-expr)
+                            (match (deref mod-name-expr)
+                              ((symbol mod-sym)
+                                (let ((mod-name (. mod-sym name))
+                                      (mod-c-name (to-c-name arena mod-name)))
+                                  ;; Get symbols list from index 2
+                                  (match (list-get import-items 2)
+                                    ((some syms-expr)
+                                      (match (deref syms-expr)
+                                        ((list syms-lst)
+                                          ;; Register each imported symbol
+                                          (let ((sym-items (. syms-lst items))
+                                                (sym-len (list-len sym-items)))
+                                            (for (j 0 sym-len)
+                                              (match (list-get sym-items j)
+                                                ((some sym-expr)
+                                                  (match (deref sym-expr)
+                                                    ((symbol s)
+                                                      (let ((local-name (. s name))
+                                                            (local-c-name (to-c-name arena local-name))
+                                                            (qualified (string-concat arena mod-c-name
+                                                                        (string-concat arena "_" local-c-name))))
+                                                        (ctx-register-import ctx local-name qualified)))
+                                                    (_ (do))))
+                                                ((none) (do))))))
+                                        (_ (do))))
+                                    ((none) (do)))))
+                              (_ (do))))
+                          ((none) (do)))))
+                    (_ (do)))))
+              ((none) (do))))))
+      (_ (do))))
 
   ;; ============================================================
   ;; Hole Collection
