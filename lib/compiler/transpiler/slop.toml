@@ -1,0 +1,12 @@
+# Native SLOP Transpiler
+# Build with: uv run slop build (from this directory)
+
+[project]
+name = "slop-transpiler"
+version = "0.1.0"
+entry = "main.slop"
+
+[build]
+output = "slop-transpiler"
+include = ["../parser", "../common", "../checker", "../../std", "../../std/strlib", "../../std/io", "../../std/os"]
+type = "executable"

@@ -1,0 +1,172 @@
+# SLOP Configuration Example
+# Copy to slop.toml and customize for your setup
+
+# ============================================================================
+# PROJECT
+# Basic project metadata and entry point
+# ============================================================================
+
+[project]
+name = "multimod-test"
+version = "0.1.0"
+entry = "src/main.slop"        # Main module (used by `slop build` with no args)
+
+# ============================================================================
+# BUILD
+# Build settings for `slop build` command
+# ============================================================================
+
+[build]
+output = "build/multimod"         # Output path (binary, .a, or .so/.dylib)
+include = ["src", "lib"]       # Search paths for module imports (-I)
+type = "executable"            # "executable" (default), "static", or "shared"
+debug = false                  # Include debug symbols and SLOP_DEBUG
+
+[build.link]
+libraries = []                 # Libraries to link (-l flags)
+library_paths = []             # Library search paths (-L flags)
+
+# ============================================================================
+# PROVIDERS
+# Define LLM providers. Each provider can be referenced by tiers below.
+# ============================================================================
+
+[providers.ollama]
+type = "ollama"
+base_url = "http://localhost:11434"
+
+[providers.openai]
+type = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+api_key = "${OPENAI_API_KEY}"
+
+# Anthropic via OpenAI-compatible endpoint
+[providers.anthropic]
+type = "openai-compatible"
+base_url = "https://api.anthropic.com/v1"
+api_key = "${ANTHROPIC_API_KEY}"
+
+# Local vLLM server
+# [providers.vllm]
+# type = "openai-compatible"
+# base_url = "http://localhost:8000/v1"
+# api_key = ""
+
+# LM Studio
+# [providers.lmstudio]
+# type = "openai-compatible"
+# base_url = "http://localhost:1234/v1"
+# api_key = ""
+
+# OpenRouter - access many models through one API
+[providers.openrouter]
+type = "openai-compatible"
+base_url = "https://openrouter.ai/api/v1"
+api_key = "${OPENROUTER_API_KEY}"
+
+# Interactive - Route to Claude Code, Cursor, Aider, etc.
+# Uses your existing AI tool subscriptions instead of API calls.
+[providers.claude-code]
+type = "interactive"
+command = "claude"      # Tool name shown in prompts
+mode = "clipboard"      # "clipboard" or "file"
+
+# Alternate: file-based handoff
+# [providers.cursor]
+# type = "interactive"
+# command = "cursor"
+# mode = "file"
+
+# ============================================================================
+# TIERS
+# Configure which provider and model to use for each complexity tier.
+# Holes are classified by complexity and routed to the appropriate tier.
+# ============================================================================
+
+[tiers.tier-1]
+# Simple: boolean expressions, arithmetic, field access
+provider = "ollama"
+model = "phi3:mini"
+context_length = 2048
+temperature = 0.3
+
+[tiers.tier-2]
+# Moderate: conditionals, Result construction, simple transforms
+provider = "ollama"
+model = "llama3:8b"
+context_length = 4096
+temperature = 0.4
+
+[tiers.tier-3]
+# Complex: loops, multiple conditionals, state manipulation
+provider = "ollama"
+model = "llama3:70b-q4"
+context_length = 8192
+temperature = 0.5
+
+[tiers.tier-4]
+# Advanced: algorithms, state machines, complex logic
+provider = "openai"
+model = "gpt-4o"
+context_length = 128000
+temperature = 0.6
+
+# ============================================================================
+# ROUTING
+# Control how holes are routed and retried across tiers.
+# ============================================================================
+
+[routing]
+max_retries = 2
+escalate_on_failure = true
+
+# ============================================================================
+# EXAMPLE: SUBSCRIPTION-MAXIMIZING CONFIG
+# Use local models for simple tasks, leverage your Claude Code subscription
+# for complex ones. Run with: slop fill app.slop --batch-interactive
+# ============================================================================
+#
+# [tiers.tier-1]
+# provider = "ollama"
+# model = "phi3:mini"
+# context_length = 2048
+# temperature = 0.3
+#
+# [tiers.tier-2]
+# provider = "ollama"
+# model = "llama3:8b"
+# context_length = 4096
+# temperature = 0.4
+#
+# [tiers.tier-3]
+# provider = "claude-code"
+# model = "interactive"
+# context_length = 128000
+# temperature = 0.5
+#
+# [tiers.tier-4]
+# provider = "claude-code"
+# model = "interactive"
+# context_length = 128000
+# temperature = 0.6
+
+# ============================================================================
+# EXAMPLE: PRIVACY-FIRST CONFIG
+# Never leaves your machine. Requires sufficient VRAM for larger models.
+# ============================================================================
+#
+# [tiers.tier-1]
+# provider = "ollama"
+# model = "phi3:mini"
+#
+# [tiers.tier-2]
+# provider = "ollama"
+# model = "llama3:8b"
+#
+# [tiers.tier-3]
+# provider = "ollama"
+# model = "deepseek-coder:33b"
+#
+# [tiers.tier-4]
+# provider = "ollama"
+# model = "llama3:70b-q4"

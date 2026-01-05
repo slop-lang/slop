@@ -1,0 +1,12 @@
+# Build configuration for the self-hosted SLOP compiler
+#
+# This enables `slop check` to resolve imports between compiler modules.
+
+[build]
+include = [
+    "parser",
+    "transpiler",
+    "common",
+    "checker",
+    "../../lib/std/strlib"
+]

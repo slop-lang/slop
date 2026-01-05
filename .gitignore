@@ -18,9 +18,6 @@ ENV/
 *.out
 a.out
 
-# User configuration (keep the .example)
-slop.toml
-
 # IDE / Editors
 .idea/
 .vscode/
@@ -45,4 +42,5 @@ htmlcov/
 # code tools
 .claude/
 
+slop.toml.james
 james-tests/
