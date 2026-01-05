@@ -182,6 +182,12 @@
                 ;; Arena allocation
                 ((string-eq op "arena-alloc") (transpile-arena-alloc ctx lst))
 
+                ;; Primitive type constructors: (String data len), (Bytes data len cap)
+                ((string-eq op "String")
+                  (transpile-string-constructor ctx lst))
+                ((string-eq op "Bytes")
+                  (transpile-bytes-constructor ctx lst))
+
                 ;; Default: function call
                 (else (transpile-function-call ctx op lst)))))
           ;; Head is not a symbol - treat as computed function call
@@ -738,6 +744,54 @@
       ((none) "")))
 
   ;; ============================================================
+  ;; Primitive Type Constructors
+  ;; ============================================================
+
+  (fn transpile-string-constructor ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile String constructor: (String data len)")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    (@pre (== (list-len (. lst items)) 3))
+    (let ((arena (. (deref ctx) arena)))
+      (match (list-get (. lst items) 1)
+        ((some data-arg)
+          (match (list-get (. lst items) 2)
+            ((some len-arg)
+              (let ((data-str (transpile-expr ctx data-arg (none)))
+                    (len-str (transpile-expr ctx len-arg (none))))
+                (string-concat arena "((slop_string){.data = "
+                  (string-concat arena data-str
+                    (string-concat arena ", .len = "
+                      (string-concat arena len-str "})"))))))
+            ((none) "/* missing len arg */")))
+        ((none) "/* missing data arg */"))))
+
+  (fn transpile-bytes-constructor ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile Bytes constructor: (Bytes data len cap)")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    (@pre (== (list-len (. lst items)) 4))
+    (let ((arena (. (deref ctx) arena)))
+      (match (list-get (. lst items) 1)
+        ((some data-arg)
+          (match (list-get (. lst items) 2)
+            ((some len-arg)
+              (match (list-get (. lst items) 3)
+                ((some cap-arg)
+                  (let ((data-str (transpile-expr ctx data-arg (none)))
+                        (len-str (transpile-expr ctx len-arg (none)))
+                        (cap-str (transpile-expr ctx cap-arg (none))))
+                    (string-concat arena "((slop_bytes){.data = "
+                      (string-concat arena data-str
+                        (string-concat arena ", .len = "
+                          (string-concat arena len-str
+                            (string-concat arena ", .cap = "
+                              (string-concat arena cap-str "})"))))))))
+                ((none) "/* missing cap arg */")))
+            ((none) "/* missing len arg */")))
+        ((none) "/* missing data arg */"))))
+
+  ;; ============================================================
   ;; Function Calls
   ;; ============================================================
 
@@ -747,7 +801,10 @@
     (@spec (((Ptr TranspileContext) String SExprList) -> String))
     (@pre (!= ctx nil))
     (let ((arena (. (deref ctx) arena))
-          (c-name (to-qualified-name arena ctx fn-name))
+          ;; Check if this is an FFI function - use C name directly, no prefix
+          (c-name (match (ctx-lookup-ffi-func ctx fn-name)
+                    ((some ffi-entry) (. ffi-entry c-name))
+                    ((none) (to-qualified-name arena ctx fn-name))))
           (items (. lst items))
           (len (list-len items))
           (mut result ""))
