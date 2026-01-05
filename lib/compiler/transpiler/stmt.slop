@@ -16,7 +16,7 @@
                    ctx-register-var ctx-lookup-var ctx-mark-pointer))
   (import transpiler-types (VarEntry))
   (import emit (Emitter emit-line emit-blank indent dedent))
-  (import expr (transpile-expr is-pointer-expr))
+  (import expr (transpile-expr is-pointer-expr infer-expr-c-type))
   (import ctype (to-c-type is-pointer-type is-option-type is-result-type))
   (import names (to-c-name to-qualified-name))
 
@@ -151,13 +151,17 @@
                                                 (match (list-get (. binding-lst items) 2)
                                                   ((some init-expr)
                                                     (let ((init-code (transpile-expr ctx init-expr (none)))
-                                                          (is-ptr (is-pointer-expr ctx init-expr)))
+                                                          (is-ptr (is-pointer-expr ctx init-expr))
+                                                          (inferred-type (match (infer-expr-c-type ctx init-expr)
+                                                                           ((some t) t)
+                                                                           ((none) "auto"))))
                                                       (do
-                                                        (emit-line em (string-concat arena "auto "
-                                                          (string-concat arena c-name
-                                                            (string-concat arena " = "
-                                                              (string-concat arena init-code ";")))))
-                                                        (ctx-register-var ctx (VarEntry real-name c-name "auto" is-ptr true))
+                                                        (emit-line em (string-concat arena inferred-type
+                                                          (string-concat arena " "
+                                                            (string-concat arena c-name
+                                                              (string-concat arena " = "
+                                                                (string-concat arena init-code ";"))))))
+                                                        (ctx-register-var ctx (VarEntry real-name c-name inferred-type is-ptr true))
                                                         (when is-ptr (ctx-mark-pointer ctx c-name)))))
                                                   ((none) (do)))))
                                             (_ (do))))
@@ -167,13 +171,18 @@
                                         (match (list-get (. binding-lst items) 1)
                                           ((some init-expr)
                                             (let ((init-code (transpile-expr ctx init-expr (none)))
-                                                  (is-ptr (is-pointer-expr ctx init-expr)))
+                                                  (is-ptr (is-pointer-expr ctx init-expr))
+                                                  (inferred-type (match (infer-expr-c-type ctx init-expr)
+                                                                   ((some t) t)
+                                                                   ((none) "auto"))))
                                               (do
-                                                (emit-line em (string-concat arena "const auto "
-                                                  (string-concat arena c-name
-                                                    (string-concat arena " = "
-                                                      (string-concat arena init-code ";")))))
-                                                (ctx-register-var ctx (VarEntry var-name c-name "auto" is-ptr false))
+                                                (emit-line em (string-concat arena "const "
+                                                  (string-concat arena inferred-type
+                                                    (string-concat arena " "
+                                                      (string-concat arena c-name
+                                                        (string-concat arena " = "
+                                                          (string-concat arena init-code ";")))))))
+                                                (ctx-register-var ctx (VarEntry var-name c-name inferred-type is-ptr false))
                                                 (when is-ptr (ctx-mark-pointer ctx c-name)))))
                                           ((none) (do)))))))
                                 (_ (do))))

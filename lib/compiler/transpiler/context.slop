@@ -39,7 +39,9 @@
     ctx-register-list ctx-register-map
     ctx-get-options ctx-get-results
     ctx-get-lists ctx-get-maps
-    ctx-is-emitted ctx-mark-emitted)
+    ctx-is-emitted ctx-mark-emitted
+    ;; Type environment access
+    ctx-set-type-env ctx-get-type-env)
 
   ;; Import shared types from common
   (import types (TypeKind RangeBounds FieldDef VariantDef))
@@ -48,6 +50,9 @@
   (import transpiler-types (CTypeInfo CFieldInfo CVariantInfo
                             VarEntry FuncEntry
                             FFIFuncEntry FFIStructEntry))
+
+  ;; Import type environment from checker
+  (import env (TypeEnv env-lookup-var env-lookup-type env-lookup-function))
 
   ;; ============================================================
   ;; Helper Types for Generic Tracking
@@ -69,6 +74,8 @@
 
   (type TranspileContext (record
     (arena Arena)
+    ;; Type environment from checker (for type inference)
+    (type-env (Option (Ptr TypeEnv)))
     ;; Type registry (C-specific representations)
     (types (Map String CTypeInfo))
     (enums (Map String String))           ;; value -> qualified C name
@@ -109,6 +116,7 @@
     (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena 2048))))
       (set! (deref ctx) (TranspileContext
         arena
+        (none)                       ;; type-env (set by ctx-set-type-env)
         (map-new arena)              ;; types
         (map-new arena)              ;; enums
         (map-new arena)              ;; record-fields
@@ -454,4 +462,22 @@
     (@intent "Mark type guard as emitted")
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (@pre (!= ctx nil))
-    (map-put (. (deref ctx) emitted-guards) guard true)))
+    (map-put (. (deref ctx) emitted-guards) guard true))
+
+  ;; ============================================================
+  ;; Type Environment Access
+  ;; ============================================================
+
+  (fn ctx-set-type-env ((ctx (Ptr TranspileContext)) (tenv (Ptr TypeEnv)))
+    (@intent "Set the type environment from the type checker")
+    (@spec (((Ptr TranspileContext) (Ptr TypeEnv)) -> Unit))
+    (@pre (!= ctx nil))
+    (let ((opt (Option (Ptr TypeEnv)) (some tenv)))
+      (set! (. (deref ctx) type-env) opt)))
+
+  (fn ctx-get-type-env ((ctx (Ptr TranspileContext)))
+    (@intent "Get the type environment if set")
+    (@spec (((Ptr TranspileContext)) -> (Option (Ptr TypeEnv))))
+    (@pre (!= ctx nil))
+    (@pure)
+    (. (deref ctx) type-env)))

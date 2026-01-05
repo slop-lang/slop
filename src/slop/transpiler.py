@@ -2175,7 +2175,9 @@ class Transpiler:
         self.indent += 1
 
         # Track field types for pointer detection
+        # Key by both raw name (for local lookups) and qualified name (for cross-module lookups)
         self.record_fields[raw_name] = {}
+        self.record_fields[qualified_name] = self.record_fields[raw_name]
 
         # Track ScopedPtr fields for destructor generation
         scoped_fields = []
@@ -2209,7 +2211,9 @@ class Transpiler:
         self.emit("")
 
         # Track with raw name for lookup, but store qualified C type
+        # Key by both raw name (for local lookups) and qualified name (for cross-module lookups)
         self.types[raw_name] = TypeInfo(raw_name, qualified_name)
+        self.types[qualified_name] = TypeInfo(raw_name, qualified_name)
 
         # Generate destructor if record has ScopedPtr fields
         if scoped_fields:
@@ -2274,7 +2278,9 @@ class Transpiler:
         self.emit("")
 
         # Track with raw name for lookup, but store qualified C type
+        # Key by both raw name (for local lookups) and qualified name (for cross-module lookups)
         self.types[raw_name] = TypeInfo(raw_name, qualified_name)
+        self.types[qualified_name] = TypeInfo(raw_name, qualified_name)
         self.simple_enums.add(raw_name)
 
     def transpile_union(self, raw_name: str, qualified_name: str, form: SList):
@@ -2315,9 +2321,12 @@ class Transpiler:
         self.emit("")
 
         # Track with raw name for lookup, but store qualified C type
+        # Key by both raw name (for local lookups) and qualified name (for cross-module lookups)
         self.types[raw_name] = TypeInfo(raw_name, qualified_name)
+        self.types[qualified_name] = TypeInfo(raw_name, qualified_name)
         # Track variant payload types for type inference in match expressions
         self.union_variants[raw_name] = variants
+        self.union_variants[qualified_name] = variants
         # Track variant indices for match expression generation
         variant_indices = {}
         for i, variant in enumerate(form.items[1:]):
@@ -2325,6 +2334,7 @@ class Transpiler:
                 tag = variant[0].name
                 variant_indices[tag] = i
         self.union_variant_indices[raw_name] = variant_indices
+        self.union_variant_indices[qualified_name] = variant_indices
 
     def transpile_range_type(self, raw_name: str, qualified_name: str, type_expr: SExpr):
         """Transpile range type to typedef + constructor"""
@@ -3208,7 +3218,8 @@ class Transpiler:
                     raw_tag = pattern[0].name if isinstance(pattern[0], Symbol) else None
                     is_quoted_tag = raw_tag and raw_tag.startswith("'")
                     tag = self._unquote_symbol(raw_tag) if raw_tag else None
-                    var_name = self.to_c_name(pattern[1].name) if len(pattern) > 1 else None
+                    raw_var_name = pattern[1].name if len(pattern) > 1 and isinstance(pattern[1], Symbol) else None
+                    var_name = self.to_c_name(raw_var_name) if raw_var_name else None
 
                     # Check for enum variant - allow both quoted ('ok) and unquoted (ok)
                     if is_simple_enum and tag in self.enums:
@@ -3226,13 +3237,14 @@ class Transpiler:
                     if var_name and not is_simple_enum:
                         self.emit(f"__auto_type {var_name} = {scrutinee}.data.{tag};")
                         # Track the type of the bound variable for type flow analysis
-                        if scrutinee_type:
+                        # Use raw_var_name (SLOP name) since _infer_type looks up SLOP names
+                        if scrutinee_type and raw_var_name:
                             # Get unqualified union type name for lookup
                             union_type = scrutinee_type.replace('*', '').strip()
                             if union_type in self.union_variants and tag in self.union_variants[union_type]:
                                 payload_type_expr = self.union_variants[union_type][tag]
                                 payload_c_type = self.to_c_type(payload_type_expr)
-                                self.var_types[var_name] = payload_c_type
+                                self.var_types[raw_var_name] = payload_c_type
                     for j, item in enumerate(body):
                         is_last = (j == len(body) - 1)
                         self.transpile_statement(item, is_return and is_last)
@@ -3274,30 +3286,33 @@ class Transpiler:
             body = clause.items[1:]
             tag = None
             var_name = None
+            raw_var_name = None
 
             if isinstance(pattern, SList) and len(pattern) >= 1:
                 tag = pattern[0].name if isinstance(pattern[0], Symbol) else None
-                var_name = self.to_c_name(pattern[1].name) if len(pattern) > 1 else None
+                raw_var_name = pattern[1].name if len(pattern) > 1 and isinstance(pattern[1], Symbol) else None
+                var_name = self.to_c_name(raw_var_name) if raw_var_name else None
             elif isinstance(pattern, Symbol):
                 tag = pattern.name
 
             if tag in ('some', 'ok'):
-                some_ok_clause = (var_name, body, tag)
+                some_ok_clause = (var_name, raw_var_name, body, tag)
             elif tag in ('none', 'error'):
-                none_err_clause = (var_name, body, tag)
+                none_err_clause = (var_name, raw_var_name, body, tag)
 
         # Generate if-else
         check_field = f"{scrutinee}{access_op}has_value" if is_option else f"{scrutinee}{access_op}is_ok"
 
         if some_ok_clause:
-            var_name, body, tag = some_ok_clause
+            var_name, raw_var_name, body, tag = some_ok_clause
             self.emit(f"if ({check_field}) {{")
             self.indent += 1
             if var_name and var_name != '_':
                 if is_option:
                     self.emit(f"__auto_type {var_name} = {scrutinee}{access_op}value;")
                     # Track the type of the bound variable for type flow analysis
-                    if scrutinee_type and scrutinee_type.startswith('slop_option_'):
+                    # Use raw_var_name (SLOP name) as key since _infer_type looks up SLOP names
+                    if scrutinee_type and scrutinee_type.startswith('slop_option_') and raw_var_name:
                         # Extract inner type from option type
                         inner_part = scrutinee_type[len('slop_option_'):]
                         # For pointer types like slop_option_parser_SExpr_ptr -> parser_SExpr*
@@ -3306,7 +3321,7 @@ class Transpiler:
                         else:
                             # slop_option_string -> slop_string
                             inner_type = 'slop_' + inner_part
-                        self.var_types[var_name] = inner_type
+                        self.var_types[raw_var_name] = inner_type
                 else:
                     self.emit(f"__auto_type {var_name} = {scrutinee}{access_op}data.ok;")
             for j, item in enumerate(body):
@@ -3315,7 +3330,7 @@ class Transpiler:
             self.indent -= 1
 
         if none_err_clause:
-            var_name, body, tag = none_err_clause
+            var_name, raw_var_name, body, tag = none_err_clause
             if some_ok_clause:
                 self.emit("} else {")
             else:
@@ -5894,6 +5909,8 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
     all_record_fields = {}
     # Accumulate union variant info for cross-module type inference in match expressions
     all_union_variants = {}
+    # Accumulate type info for cross-module type lookups
+    all_types = {}
 
     for mod_name in order:
         info = modules[mod_name]
@@ -5912,6 +5929,8 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
         transpiler.record_fields.update(all_record_fields)
         # Copy union variant info from previously processed modules
         transpiler.union_variants.update(all_union_variants)
+        # Copy type info from previously processed modules
+        transpiler.types.update(all_types)
 
         # Set up module context with imports
         imports = []
@@ -6160,6 +6179,8 @@ def transpile_multi_split(modules: dict, order: list) -> dict:
         all_record_fields.update(transpiler.record_fields)
         # Accumulate union variant info for subsequent modules
         all_union_variants.update(transpiler.union_variants)
+        # Accumulate type info for subsequent modules
+        all_types.update(transpiler.types)
 
     return results
 

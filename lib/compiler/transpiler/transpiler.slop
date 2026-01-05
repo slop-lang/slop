@@ -19,7 +19,11 @@
   (import context (TranspileContext context-new
                    ctx-add-include ctx-get-includes
                    ctx-set-module ctx-set-prefixing
-                   ctx-register-type ctx-register-function))
+                   ctx-register-type ctx-register-function
+                   ctx-set-type-env))
+  ;; Import type checker for type inference
+  (import env (TypeEnv env-new))
+  (import collect (collect-module))
   (import transpiler-types (CTypeInfo FuncEntry))
   (import emit (Emitter emitter-new emitter-output emitter-line-count
                 emit-line emit-blank emit-include emit-comment))
@@ -89,7 +93,13 @@
     (@alloc arena)
     (@pre (> (list-len ast) 0))
     (let ((ctx (context-new arena))
-          (em (emitter-new arena)))
+          (em (emitter-new arena))
+          ;; Create type environment and run type checker
+          (type-env (env-new arena)))
+      ;; Collect types and functions into type environment
+      (collect-module type-env ast)
+      ;; Make type environment available to transpiler
+      (ctx-set-type-env ctx type-env)
 
       ;; ========================================
       ;; Pass 0: Categorize forms (with module expansion)

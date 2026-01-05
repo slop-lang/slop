@@ -17,7 +17,10 @@
   (import context (TranspileContext ctx-lookup-var ctx-lookup-enum
                    ctx-lookup-function ctx-lookup-ffi-func
                    ctx-is-pointer ctx-get-return-type
-                   ctx-lookup-fields))
+                   ctx-lookup-fields ctx-get-type-env))
+  ;; Import type checker for type inference
+  (import env (TypeEnv env-lookup-var env-lookup-function))
+  (import types (ResolvedType FnSignature))
   (import ctype (to-c-type is-pointer-type is-string-type
                  is-option-type is-result-type))
   (import names (to-c-name to-qualified-name))
@@ -809,10 +812,83 @@
       (_ false)))
 
   (fn infer-expr-c-type ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
-    (@intent "Infer the C type of an expression")
+    (@intent "Infer the C type of an expression using type environment")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> (Option String)))
     (@pre (!= ctx nil))
     (@pre (!= expr nil))
     (@pure)
-    ;; TODO: Implement proper type inference
-    (none)))
+    (match (ctx-get-type-env ctx)
+      ((none)
+        ;; No type environment available, fall back to none
+        (none))
+      ((some type-env)
+        ;; Use type environment for inference
+        (match (deref expr)
+          ;; Number literal -> int64_t or double
+          ((number n)
+            (if (. n is-float)
+              (some "double")
+              (some "int64_t")))
+          ;; String literal -> slop_string_t
+          ((string s)
+            (some "slop_string_t"))
+          ;; Symbol -> look up variable type
+          ((symbol sym)
+            (let ((name (. sym name)))
+              (cond
+                ;; Boolean literals
+                ((or (string-eq name "true") (string-eq name "false"))
+                  (some "bool"))
+                ;; nil
+                ((string-eq name "nil")
+                  (some "void*"))
+                ;; Variable lookup
+                (else
+                  (match (env-lookup-var type-env name)
+                    ((some resolved-type)
+                      (some (. (deref resolved-type) c-name)))
+                    ((none)
+                      ;; Try as function (return type)
+                      (match (env-lookup-function type-env name)
+                        ((some fn-sig)
+                          (some (. (deref (. (deref fn-sig) return-type)) c-name)))
+                        ((none) (none)))))))))
+          ;; List expression (function call, operator, etc)
+          ((list lst)
+            (infer-list-c-type ctx type-env lst))))))
+
+  (fn infer-list-c-type ((ctx (Ptr TranspileContext)) (type-env (Ptr TypeEnv)) (lst SExprList))
+    (@intent "Infer C type of a list expression")
+    (@spec (((Ptr TranspileContext) (Ptr TypeEnv) SExprList) -> (Option String)))
+    (@pre (!= ctx nil))
+    (@pre (!= type-env nil))
+    (@pure)
+    (let ((items (. lst items))
+          (len (list-len items)))
+      (if (== len 0)
+        (some "void")
+        (match (list-get items 0)
+          ((none) (none))
+          ((some head)
+            (match (deref head)
+              ((symbol sym)
+                (let ((op (. sym name)))
+                  (cond
+                    ;; Comparison operators return bool
+                    ((or (string-eq op "==") (string-eq op "!=")
+                         (string-eq op "<") (string-eq op "<=")
+                         (string-eq op ">") (string-eq op ">=")
+                         (string-eq op "and") (string-eq op "or") (string-eq op "not"))
+                      (some "bool"))
+                    ;; Arithmetic operators return int64_t
+                    ((or (string-eq op "+") (string-eq op "-")
+                         (string-eq op "*") (string-eq op "/") (string-eq op "%"))
+                      (some "int64_t"))
+                    ;; Function call - look up return type
+                    (else
+                      (match (env-lookup-function type-env op)
+                        ((some fn-sig)
+                          (some (. (deref (. (deref fn-sig) return-type)) c-name)))
+                        ((none) (none)))))))
+              (_ (none))))))))
+)
