@@ -78,7 +78,7 @@ def find_native_component(name: str):
     """Find a native SLOP component binary.
 
     Args:
-        name: Component name (e.g., 'parser', 'transpiler')
+        name: Component name (e.g., 'parser', 'transpiler', 'checker')
 
     Returns:
         Path to binary if found, None otherwise
@@ -90,6 +90,8 @@ def find_native_component(name: str):
         Path(__file__).parent / "bin" / binary_name,
         Path.cwd() / binary_name,
         Path.cwd() / "build" / binary_name,
+        # Native components built in lib/compiler/{name}/
+        Path.cwd() / "lib" / "compiler" / name / binary_name,
     ]
 
     for loc in locations:
@@ -1529,6 +1531,27 @@ def _extract_context(form: SList) -> dict:
 def cmd_check(args):
     """Validate SLOP file with type checking"""
     try:
+        use_native = getattr(args, 'native', False)
+
+        # Check for native checker
+        if use_native:
+            checker_bin = find_native_component('checker')
+            if checker_bin:
+                import subprocess
+                result = subprocess.run(
+                    [str(checker_bin), args.input],
+                    capture_output=True,
+                    text=True,
+                )
+                # Print native checker output
+                if result.stdout:
+                    print(result.stdout, end='')
+                if result.stderr:
+                    print(result.stderr, end='', file=sys.stderr)
+                return result.returncode
+            else:
+                print("Native checker not found, falling back to Python", file=sys.stderr)
+
         ast = parse_file(args.input)
 
         errors = []
@@ -2835,6 +2858,8 @@ def main():
     # check
     p = subparsers.add_parser('check', help='Validate')
     p.add_argument('input')
+    p.add_argument('--native', action='store_true',
+                   help='Use native type checker')
 
     # check-hole
     p = subparsers.add_parser('check-hole', help='Validate expression against expected type')
