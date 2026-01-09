@@ -321,20 +321,26 @@
                              (string-eq key-type "String"))))
       ;; For string keys, use SLOP_STRING_MAP_DEFINE macro
       ;; For other keys, emit custom struct
-      (do
-        (emit-guard-start em guard)
-        (if is-string-key
-          ;; Use SLOP_STRING_MAP_DEFINE(ValType, MapName, OptName)
-          ;; For now, just typedef to slop_map since the macro generates typed accessors
-          (emit-line em
-            (string-concat arena "typedef slop_map " (string-concat arena type-name ";")))
-          (emit-line em
-            (string-concat arena "typedef struct { "
-              (string-concat arena key-type
-                (string-concat arena "* keys; "
-                  (string-concat arena val-type
-                    (string-concat arena "* vals; size_t len; size_t cap; } "
-                      (string-concat arena type-name ";"))))))))
+      (let ((val-id (type-to-identifier arena val-type))
+            (opt-name (string-concat arena "slop_option_" val-id)))
+        (do
+          (emit-guard-start em guard)
+          (if is-string-key
+            ;; Use SLOP_STRING_MAP_DEFINE(ValType, MapName, OptName) macro
+            (emit-line em
+              (string-concat arena "SLOP_STRING_MAP_DEFINE("
+                (string-concat arena val-type
+                  (string-concat arena ", "
+                    (string-concat arena type-name
+                      (string-concat arena ", "
+                        (string-concat arena opt-name ")")))))))
+            (emit-line em
+              (string-concat arena "typedef struct { "
+                (string-concat arena key-type
+                  (string-concat arena "* keys; "
+                    (string-concat arena val-type
+                      (string-concat arena "* vals; size_t len; size_t cap; } "
+                        (string-concat arena type-name ";")))))))))
         (emit-blank em)
         (emit-guard-end em))))
 

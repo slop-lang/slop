@@ -134,9 +134,12 @@
                             ((some elem-expr)
                               (let ((elem-c (to-c-type ctx elem-expr))
                                     (elem-id (type-to-identifier arena elem-c))
-                                    (list-name (string-concat arena "slop_list_" elem-id)))
+                                    (list-name (string-concat arena "slop_list_" elem-id))
+                                    (opt-name (string-concat arena "slop_option_" elem-id)))
                                 (do
                                   (ctx-register-list ctx list-name elem-c)
+                                  ;; Also register Option<T> since list-get returns Option
+                                  (ctx-register-option ctx opt-name elem-c)
                                   list-name)))
                             ((none) "slop_list_void")))
                         ((string-eq op "Map")

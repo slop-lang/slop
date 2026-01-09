@@ -14,13 +14,15 @@
                   sexpr-line sexpr-col))
   (import context (TranspileContext ctx-push-scope ctx-pop-scope
                    ctx-register-var ctx-lookup-var ctx-mark-pointer
-                   ctx-get-return-type ctx-lookup-variants))
+                   ctx-get-return-type ctx-lookup-variants ctx-get-type-env))
   (import transpiler-types (VarEntry CVariantInfo))
   (import emit (Emitter emit-line emit-blank indent dedent))
   (import expr (transpile-expr is-pointer-expr infer-expr-c-type))
   (import ctype (to-c-type is-pointer-type is-option-type is-result-type))
   (import names (to-c-name to-qualified-name))
-  (import strlib (ends-with substring))
+  (import strlib (ends-with substring string-eq))
+  (import env (env-lookup-type))
+  (import types (ResolvedType ResolvedVariant))
 
   ;; ============================================================
   ;; Helper Functions
@@ -122,8 +124,8 @@
     (match union-type
       ((none) (none))
       ((some type-name)
+        ;; First try the transpile context's variant registry
         (match (ctx-lookup-variants ctx type-name)
-          ((none) (none))
           ((some variants)
             (let ((len (list-len variants))
                   (mut result (Option String) (none))
@@ -137,7 +139,31 @@
                           (set! result (some (. v c-payload-type))))))
                     ((none) (do)))
                   (set! i (+ i 1)))
-                result)))))))
+                result)))
+          ;; Fall back to type environment for imported types
+          ((none)
+            (match (ctx-get-type-env ctx)
+              ((none) (none))
+              ((some type-env)
+                (match (env-lookup-type type-env type-name)
+                  ((none) (none))
+                  ((some resolved)
+                    (let ((variants (. (deref resolved) variants))
+                          (len (list-len variants))
+                          (mut result (Option String) (none))
+                          (mut i 0))
+                      (do
+                        (while (< i len)
+                          (match (list-get variants i)
+                            ((some v)
+                              (when (string-eq (. v name) variant-name)
+                                (match (. v payload-type)
+                                  ((some payload-t)
+                                    (set! result (some (. (deref payload-t) c-name))))
+                                  ((none) (do)))))
+                            ((none) (do)))
+                          (set! i (+ i 1)))
+                        result)))))))))))
 
   ;; ============================================================
   ;; Main Statement Transpilation
@@ -615,7 +641,22 @@
                           (c-var (to-c-name arena var-name)))
                       (match (list-get (. binding-lst items) 1)
                         ((some coll-expr)
-                          (let ((coll-code (transpile-expr ctx coll-expr (none))))
+                          (let ((coll-code (transpile-expr ctx coll-expr (none)))
+                                ;; Infer element type from collection to determine if pointer
+                                (is-elem-ptr (match (infer-expr-c-type ctx coll-expr)
+                                               ((none) false)
+                                               ((some coll-type)
+                                                 ;; Extract element type from slop_list_X
+                                                 (let ((prefix "slop_list_")
+                                                       (prefix-len (string-len prefix)))
+                                                   (if (>= (string-len coll-type) prefix-len)
+                                                     ;; Check if element type ends with _ptr or *
+                                                     (let ((elem-type (substring arena coll-type
+                                                                        (cast (Int 0 ..) prefix-len)
+                                                                        (cast (Int 0 ..) (- (string-len coll-type) prefix-len)))))
+                                                       (or (ends-with elem-type "_ptr")
+                                                           (ends-with elem-type "*")))
+                                                     false))))))
                             (do
                               (emit-line em "{")
                               (indent em)
@@ -623,7 +664,7 @@
                               (emit-line em "for (size_t _foreach_i = 0; _foreach_i < _foreach_list.len; _foreach_i++) {")
                               (indent em)
                               (ctx-push-scope ctx)
-                              (ctx-register-var ctx (VarEntry var-name c-var "__auto_type" false false))
+                              (ctx-register-var ctx (VarEntry var-name c-var "__auto_type" is-elem-ptr false))
                               (emit-line em (string-concat arena "__auto_type " (string-concat arena c-var " = _foreach_list.data[_foreach_i];")))
                               (transpile-body ctx em lst 2 false)
                               (ctx-pop-scope ctx)
@@ -803,11 +844,15 @@
                 (let ((binding-c-name (to-c-name arena some-binding))
                       (var-type (match element-type
                                   ((some t) t)
-                                  ((none) "__auto_type"))))
+                                  ((none) "__auto_type")))
+                      ;; Check if element type is a pointer (ends with *)
+                      (is-elem-ptr (match element-type
+                                     ((some t) (ends-with t "*"))
+                                     ((none) false))))
                   (do
                     (emit-line em (string-concat arena "__auto_type "
                       (string-concat arena binding-c-name " = _match_opt.value;")))
-                    (ctx-register-var ctx (VarEntry some-binding binding-c-name var-type false false)))))
+                    (ctx-register-var ctx (VarEntry some-binding binding-c-name var-type is-elem-ptr false)))))
               (transpile-stmt ctx em body-expr is-return)
               (ctx-pop-scope ctx)))
           ((none) (do)))

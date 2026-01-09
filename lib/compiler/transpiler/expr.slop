@@ -17,7 +17,7 @@
   (import context (TranspileContext ctx-lookup-var ctx-lookup-enum
                    ctx-lookup-function ctx-lookup-ffi-func
                    ctx-is-pointer ctx-get-return-type
-                   ctx-lookup-fields ctx-get-type-env))
+                   ctx-lookup-fields ctx-get-type-env ctx-register-option))
   ;; Import type checker for type inference
   (import env (TypeEnv env-lookup-var env-lookup-function))
   (import types (ResolvedType FnSignature))
@@ -693,13 +693,32 @@
           (match (list-get (. lst items) 2)
             ((some idx-expr)
               (let ((list-str (transpile-expr ctx list-expr (none)))
-                    (idx-str (transpile-expr ctx idx-expr (none))))
-                ;; Generate inline bounds-checked access returning Option using __typeof__
+                    (idx-str (transpile-expr ctx idx-expr (none)))
+                    ;; Infer the Option type from the list type
+                    (option-type (match (infer-expr-c-type ctx list-expr)
+                                   ((none) "struct { bool has_value; __typeof__(_lst.data[0]) value; }")
+                                   ((some list-type)
+                                     ;; Extract element type from slop_list_X -> slop_option_X
+                                     (let ((prefix "slop_list_")
+                                           (prefix-len (string-len prefix)))
+                                       (if (>= (string-len list-type) prefix-len)
+                                         (let ((elem-type (substring arena list-type
+                                                            (cast (Int 0 ..) prefix-len)
+                                                            (cast (Int 0 ..) (- (string-len list-type) prefix-len))))
+                                               (opt-name (string-concat arena "slop_option_" elem-type)))
+                                           ;; Register the Option type for header emission
+                                           (do
+                                             (ctx-register-option ctx opt-name elem-type)
+                                             opt-name))
+                                         "struct { bool has_value; __typeof__(_lst.data[0]) value; }"))))))
+                ;; Generate inline bounds-checked access returning Option with named type
                 (string-concat arena "({ __auto_type _lst = "
                   (string-concat arena list-str
                     (string-concat arena "; size_t _idx = (size_t)"
                       (string-concat arena idx-str
-                        "; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } _r; })"))))))
+                        (string-concat arena "; "
+                          (string-concat arena option-type
+                            " _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; })"))))))))
             ((none) "")))
         ((none) ""))))
 
@@ -728,16 +747,22 @@
                   (let ((map-str (transpile-expr ctx map-expr (none)))
                         (key-str (transpile-expr ctx key-expr (none)))
                         (val-str (transpile-expr ctx val-expr (none)))
-                        (arena-str (get-arena-from-expr ctx map-expr)))
-                    ;; Generate: slop_map_put(arena_expr, &map, key, &val)
-                    (string-concat arena "slop_map_put("
-                      (string-concat arena arena-str
-                        (string-concat arena ", &"
-                          (string-concat arena map-str
-                            (string-concat arena ", "
-                              (string-concat arena key-str
-                                (string-concat arena ", &"
-                                  (string-concat arena val-str ")"))))))))))
+                        (arena-str (get-arena-from-expr ctx map-expr))
+                        ;; Infer map type to generate typed put function
+                        (map-type (infer-expr-c-type ctx map-expr))
+                        (fn-name (match map-type
+                                   ((some mt) (string-concat arena mt "_put"))
+                                   ((none) "slop_map_put"))))
+                    ;; Generate: map_type_put(arena_expr, &map, key, val)
+                    (string-concat arena fn-name
+                      (string-concat arena "("
+                        (string-concat arena arena-str
+                          (string-concat arena ", &"
+                            (string-concat arena map-str
+                              (string-concat arena ", "
+                                (string-concat arena key-str
+                                  (string-concat arena ", "
+                                    (string-concat arena val-str ")")))))))))))
                 ((none) "")))
             ((none) "")))
         ((none) ""))))
@@ -752,10 +777,16 @@
           ((some key-expr)
             (let ((map-str (transpile-expr ctx map-expr (none)))
                   (key-str (transpile-expr ctx key-expr (none)))
-                  (arena (. (deref ctx) arena)))
-              (string-concat arena "slop_map_get(&"
-                (string-concat arena map-str
-                  (string-concat arena ", " (string-concat arena key-str ")"))))))
+                  (arena (. (deref ctx) arena))
+                  ;; Infer map type to generate typed get function
+                  (map-type (infer-expr-c-type ctx map-expr))
+                  (fn-name (match map-type
+                             ((some mt) (string-concat arena mt "_get"))
+                             ((none) "slop_map_get"))))
+              (string-concat arena fn-name
+                (string-concat arena "(&"
+                  (string-concat arena map-str
+                    (string-concat arena ", " (string-concat arena key-str ")")))))))
           ((none) "")))
       ((none) "")))
 
@@ -769,10 +800,16 @@
           ((some key-expr)
             (let ((map-str (transpile-expr ctx map-expr (none)))
                   (key-str (transpile-expr ctx key-expr (none)))
-                  (arena (. (deref ctx) arena)))
-              (string-concat arena "slop_map_has(&"
-                (string-concat arena map-str
-                  (string-concat arena ", " (string-concat arena key-str ")"))))))
+                  (arena (. (deref ctx) arena))
+                  ;; Infer map type to generate typed has function
+                  (map-type (infer-expr-c-type ctx map-expr))
+                  (fn-name (match map-type
+                             ((some mt) (string-concat arena mt "_has"))
+                             ((none) "slop_map_has"))))
+              (string-concat arena fn-name
+                (string-concat arena "(&"
+                  (string-concat arena map-str
+                    (string-concat arena ", " (string-concat arena key-str ")")))))))
           ((none) "")))
       ((none) "")))
 
@@ -953,10 +990,11 @@
                         (string-concat arena escaped "\")"))))))
               (_
                 (let ((arg-str (transpile-expr ctx arg-expr (none))))
-                  (string-concat arena "printf(\"%s"
+                  (string-concat arena "printf(\"%.*s"
                     (string-concat arena nl
-                      (string-concat arena "\", ("
-                        (string-concat arena arg-str ").data)"))))))))
+                      (string-concat arena "\", (int)("
+                        (string-concat arena arg-str ").len, ("
+                          (string-concat arena arg-str ").data)")))))))))
           ((none) "0")))))
 
   ;; ============================================================
@@ -1185,7 +1223,13 @@
                 (else
                   (match (ctx-lookup-var ctx name)
                     ((some var-entry)
-                      (some (. var-entry c-type)))
+                      ;; If c-type is __auto_type, try type environment for specific type
+                      (if (string-eq (. var-entry c-type) "__auto_type")
+                        (match (env-lookup-var type-env name)
+                          ((some resolved-type)
+                            (some (. (deref resolved-type) c-name)))
+                          ((none) (some "__auto_type")))
+                        (some (. var-entry c-type))))
                     ((none)
                       ;; Try type environment
                       (match (env-lookup-var type-env name)
@@ -1261,6 +1305,15 @@
                                                      (cast (Int 0 ..) (- (string-len list-type) prefix-len)))))
                                     (some (string-concat arena "slop_option_" elem-type)))
                                   (none))))))))
+                    ;; list-new returns List type based on element type
+                    ((string-eq op "list-new")
+                      (match (list-get items 2)
+                        ((none) (none))
+                        ((some type-expr)
+                          (let ((arena (. (deref ctx) arena))
+                                (elem-c-type (to-c-type ctx type-expr))
+                                (elem-id (type-to-identifier arena elem-c-type)))
+                            (some (string-concat arena "slop_list_" elem-id))))))
                     ;; Field access - look up field type from struct
                     ((string-eq op ".")
                       (match (list-get items 1)

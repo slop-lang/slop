@@ -276,11 +276,12 @@
     (@spec (((Ptr TranspileContext) String) -> Bool))
     (@pre (!= ctx nil))
     (@pure)
-    (if (map-has (. (deref ctx) pointer-vars) name)
-      true
-      (match (ctx-lookup-var ctx name)
-        ((some entry) (. entry is-pointer))
-        ((none) false))))
+    ;; Check scoped variables FIRST - they take precedence over global pointer-vars
+    (match (ctx-lookup-var ctx name)
+      ((some entry) (. entry is-pointer))
+      ((none)
+        ;; Fall back to pointer-vars for unscoped/global pointers
+        (map-has (. (deref ctx) pointer-vars) name))))
 
   ;; ============================================================
   ;; Function Registry
