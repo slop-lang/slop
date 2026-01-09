@@ -501,7 +501,7 @@ class Transpiler:
         """Transpile print/println with type-aware format specifier.
 
         Supports:
-        - String: printf("%s", arg.data)
+        - String: printf("%.*s", (int)arg.len, arg.data) - uses %.*s since slop_string is NOT null-terminated
         - Int/range types: printf("%lld", (long long)arg)
         - Bool: printf("%s", arg ? "true" : "false")
         - Float: printf("%f", arg)
@@ -519,7 +519,8 @@ class Transpiler:
         arg_type = self._get_print_arg_type(arg_expr)
 
         if arg_type == 'String':
-            return f'printf("%s{nl}", ({arg}).data)'
+            # Use %.*s format since slop_string is NOT null-terminated
+            return f'printf("%.*s{nl}", (int)({arg}).len, ({arg}).data)'
         elif arg_type == 'Bool':
             return f'printf("%s{nl}", ({arg}) ? "true" : "false")'
         elif arg_type == 'Float':

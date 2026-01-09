@@ -20,7 +20,7 @@
   (import expr (transpile-expr is-pointer-expr infer-expr-c-type))
   (import ctype (to-c-type is-pointer-type is-option-type is-result-type))
   (import names (to-c-name to-qualified-name))
-  (import strlib (ends-with substring string-eq))
+  (import strlib (ends-with substring))
   (import env (env-lookup-type))
   (import types (ResolvedType ResolvedVariant))
 

@@ -683,34 +683,57 @@
                 "); struct { bool has_value; __typeof__(_lst_p->data[0]) value; } _r = {0}; if (_lst_p->len > 0) { _lst_p->len--; _r.has_value = true; _r.value = _lst_p->data[_lst_p->len]; } _r; })"))))
         ((none) ""))))
 
+  (fn infer-list-get-option-type ((ctx (Ptr TranspileContext)) (arena Arena)
+                                   (list-expr (Ptr SExpr)) (fallback String))
+    (@intent "Infer Option type for list-get, falling back to return type or anonymous struct")
+    (@spec (((Ptr TranspileContext) Arena (Ptr SExpr) String) -> String))
+    (@pre (!= ctx nil))
+    (@pre (!= list-expr nil))
+    (match (infer-expr-c-type ctx list-expr)
+      ((some list-type)
+        ;; Extract element type from slop_list_X -> slop_option_X
+        (let ((prefix "slop_list_")
+              (prefix-len (string-len prefix)))
+          (if (>= (string-len list-type) prefix-len)
+            (let ((elem-type (substring arena list-type
+                               (cast (Int 0 ..) prefix-len)
+                               (cast (Int 0 ..) (- (string-len list-type) prefix-len))))
+                  (opt-name (string-concat arena "slop_option_" elem-type)))
+              ;; Register the Option type for header emission
+              (do
+                (ctx-register-option ctx opt-name elem-type)
+                opt-name))
+            ;; List type doesn't match expected prefix, try return type
+            (infer-option-from-return-type ctx fallback))))
+      ((none)
+        ;; Type inference failed, try return type
+        (infer-option-from-return-type ctx fallback))))
+
+  (fn infer-option-from-return-type ((ctx (Ptr TranspileContext)) (fallback String))
+    (@intent "Get Option type from function return type if it's an Option")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre (!= ctx nil))
+    (match (ctx-get-return-type ctx)
+      ((some ret-type)
+        (if (starts-with ret-type "slop_option_")
+          ret-type
+          fallback))
+      ((none) fallback)))
+
   (fn transpile-list-get ((ctx (Ptr TranspileContext)) (lst SExprList))
     (@intent "Transpile list-get (list-get list index) - returns Option")
     (@spec (((Ptr TranspileContext) SExprList) -> String))
     (@pre (!= ctx nil))
-    (let ((arena (. (deref ctx) arena)))
+    (let ((arena (. (deref ctx) arena))
+          (anon-struct "struct { bool has_value; __typeof__(_lst.data[0]) value; }"))
       (match (list-get (. lst items) 1)
         ((some list-expr)
           (match (list-get (. lst items) 2)
             ((some idx-expr)
               (let ((list-str (transpile-expr ctx list-expr (none)))
                     (idx-str (transpile-expr ctx idx-expr (none)))
-                    ;; Infer the Option type from the list type
-                    (option-type (match (infer-expr-c-type ctx list-expr)
-                                   ((none) "struct { bool has_value; __typeof__(_lst.data[0]) value; }")
-                                   ((some list-type)
-                                     ;; Extract element type from slop_list_X -> slop_option_X
-                                     (let ((prefix "slop_list_")
-                                           (prefix-len (string-len prefix)))
-                                       (if (>= (string-len list-type) prefix-len)
-                                         (let ((elem-type (substring arena list-type
-                                                            (cast (Int 0 ..) prefix-len)
-                                                            (cast (Int 0 ..) (- (string-len list-type) prefix-len))))
-                                               (opt-name (string-concat arena "slop_option_" elem-type)))
-                                           ;; Register the Option type for header emission
-                                           (do
-                                             (ctx-register-option ctx opt-name elem-type)
-                                             opt-name))
-                                         "struct { bool has_value; __typeof__(_lst.data[0]) value; }"))))))
+                    ;; Infer the Option type from the list type, fall back to return type or anon struct
+                    (option-type (infer-list-get-option-type ctx arena list-expr anon-struct)))
                 ;; Generate inline bounds-checked access returning Option with named type
                 (string-concat arena "({ __auto_type _lst = "
                   (string-concat arena list-str
@@ -993,8 +1016,9 @@
                   (string-concat arena "printf(\"%.*s"
                     (string-concat arena nl
                       (string-concat arena "\", (int)("
-                        (string-concat arena arg-str ").len, ("
-                          (string-concat arena arg-str ").data)")))))))))
+                        (string-concat arena arg-str
+                          (string-concat arena ").len, ("
+                            (string-concat arena arg-str ").data)"))))))))))
           ((none) "0")))))
 
   ;; ============================================================
@@ -1280,13 +1304,22 @@
                           (match (infer-expr-c-type ctx arg-expr)
                             ((none) (none))
                             ((some ptr-type)
-                              ;; Strip trailing * if present
-                              (let ((tlen (cast Int (string-len ptr-type))))
-                                (if (ends-with ptr-type "*")
-                                  (if (>= tlen 1)
-                                    (some (substring (. (deref ctx) arena) ptr-type 0 (- tlen 1)))
-                                    (some ptr-type))
-                                  (some ptr-type))))))))
+                              ;; Strip trailing _ptr or * to get base type
+                              (let ((tlen (cast Int (string-len ptr-type)))
+                                    (arena (. (deref ctx) arena)))
+                                (cond
+                                  ;; Check for _ptr suffix first (slop style)
+                                  ((ends-with ptr-type "_ptr")
+                                    (if (>= tlen 4)
+                                      (some (substring arena ptr-type 0 (- tlen 4)))
+                                      (some ptr-type)))
+                                  ;; Check for * suffix (C style)
+                                  ((ends-with ptr-type "*")
+                                    (if (>= tlen 1)
+                                      (some (substring arena ptr-type 0 (- tlen 1)))
+                                      (some ptr-type)))
+                                  ;; Not a pointer type we recognize
+                                  (else (some ptr-type)))))))))
                     ;; list-get returns Option of element type
                     ((string-eq op "list-get")
                       (match (list-get items 1)
@@ -1329,11 +1362,15 @@
                                     (match (infer-expr-c-type ctx base-expr)
                                       ((none) (none))
                                       ((some base-type)
-                                        ;; Strip pointer suffix if present
-                                        (let ((clean-type (if (ends-with base-type "*")
-                                                             (substring arena base-type 0
-                                                               (cast (Int 0 ..) (- (string-len base-type) 1)))
-                                                             base-type)))
+                                        ;; Strip pointer suffix if present (_ptr or *)
+                                        (let ((clean-type (cond
+                                                            ((ends-with base-type "_ptr")
+                                                              (substring arena base-type 0
+                                                                (cast (Int 0 ..) (- (string-len base-type) 4))))
+                                                            ((ends-with base-type "*")
+                                                              (substring arena base-type 0
+                                                                (cast (Int 0 ..) (- (string-len base-type) 1))))
+                                                            (else base-type))))
                                           ;; Look up fields for this type
                                           (match (ctx-lookup-fields ctx clean-type)
                                             ((none) (none))
