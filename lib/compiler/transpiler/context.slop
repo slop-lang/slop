@@ -42,6 +42,8 @@
     ctx-get-options ctx-get-results
     ctx-get-lists ctx-get-maps
     ctx-is-emitted ctx-mark-emitted
+    ;; Array type tracking
+    ctx-register-array-element ctx-lookup-array-element
     ;; Type environment access
     ctx-set-type-env ctx-get-type-env)
 
@@ -105,7 +107,9 @@
     (generated-results (Map String ResultTypeInfo))
     (generated-lists (Map String String))    ;; type_name -> elem_type
     (generated-maps (Map String MapTypeInfo))
-    (emitted-guards (Map String Bool))))     ;; Include guard tracking
+    (emitted-guards (Map String Bool))       ;; Include guard tracking
+    ;; Array type tracking
+    (array-element-types (Map String String)))) ;; array_type_name -> element_c_type
 
   ;; ============================================================
   ;; Lifecycle
@@ -145,7 +149,8 @@
         (map-new arena)              ;; generated-results
         (map-new arena)              ;; generated-lists
         (map-new arena)              ;; generated-maps
-        (map-new arena)))            ;; emitted-guards
+        (map-new arena)              ;; emitted-guards
+        (map-new arena)))            ;; array-element-types
       ctx))
 
   ;; ============================================================
@@ -552,4 +557,22 @@
     (@spec (((Ptr TranspileContext)) -> (Option (Ptr TypeEnv))))
     (@pre (!= ctx nil))
     (@pure)
-    (. (deref ctx) type-env)))
+    (. (deref ctx) type-env))
+
+  ;; ============================================================
+  ;; Array Element Type Tracking
+  ;; ============================================================
+
+  (fn ctx-register-array-element ((ctx (Ptr TranspileContext))
+                                   (type-name String) (element-type String))
+    (@intent "Register array type's element type for Ptr handling")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@pre (!= ctx nil))
+    (map-put (. (deref ctx) array-element-types) type-name element-type))
+
+  (fn ctx-lookup-array-element ((ctx (Ptr TranspileContext)) (type-name String))
+    (@intent "Look up element type for an array type alias")
+    (@spec (((Ptr TranspileContext) String) -> (Option String)))
+    (@pre (!= ctx nil))
+    (@pure)
+    (map-get (. (deref ctx) array-element-types) type-name)))

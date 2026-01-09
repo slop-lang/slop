@@ -573,6 +573,9 @@ class Transpiler:
                 # Arithmetic returns the type of operands (assume Int for now)
                 if op in ('+', '-', '*', '/', '%'):
                     return 'Int'
+                # String constructor
+                if op == 'String':
+                    return 'String'
                 # String operations (built-in)
                 if op in ('string-concat', 'int-to-string'):
                     return 'String'
@@ -3338,6 +3341,66 @@ class Transpiler:
             self.indent += 1
             if var_name and var_name != '_' and not is_option:
                 self.emit(f"__auto_type {var_name} = {scrutinee}{access_op}data.err;")
+                # Track the type of the error bound variable for type flow analysis
+                # scrutinee_type might be:
+                # - slop_result_X_Y (resolved type)
+                # - module_TypeAlias (type alias for a Result type)
+                resolved_scrutinee_type = scrutinee_type
+                # Check if scrutinee_type is a type alias and resolve it
+                if scrutinee_type and not scrutinee_type.startswith('slop_result_'):
+                    # Try to find the underlying type from type_alias_defs
+                    alias_name = scrutinee_type
+                    # Strip module prefix: module_TypeName -> TypeName
+                    if '_' in alias_name:
+                        base_alias = alias_name.split('_', 1)[1] if '_' in alias_name else alias_name
+                        # Check both the full name and base name in type_alias_defs
+                        for key in [alias_name, base_alias]:
+                            if key in self.type_alias_defs:
+                                resolved_expr = self.type_alias_defs[key]
+                                # type_alias_defs contains SExpr objects, convert to C type
+                                resolved = self.to_c_type(resolved_expr)
+                                if resolved and resolved.startswith('slop_result_'):
+                                    resolved_scrutinee_type = resolved
+                                    break
+
+                # Try to extract error type from the original Result type expression
+                # First, check if we have the original type alias expression
+                err_type_registered = False
+                if scrutinee_type and not scrutinee_type.startswith('slop_result_') and raw_var_name:
+                    # scrutinee_type is a type alias like transpiler_TranspileResult
+                    alias_name = scrutinee_type
+                    if '_' in alias_name:
+                        base_alias = alias_name.split('_', 1)[1]
+                        for key in [alias_name, base_alias]:
+                            if key in self.type_alias_defs:
+                                from slop.parser import is_form
+                                type_expr = self.type_alias_defs[key]
+                                # type_expr should be (Result OkType ErrType)
+                                if is_form(type_expr, 'Result') and len(type_expr) >= 3:
+                                    err_type_expr = type_expr[2]
+                                    err_c_type = self.to_c_type(err_type_expr)
+                                    self.var_types[raw_var_name] = err_c_type
+                                    err_type_registered = True
+                                    break
+
+                if not err_type_registered and resolved_scrutinee_type and resolved_scrutinee_type.startswith('slop_result_') and raw_var_name:
+                    # Fallback: try to extract error type from the C type name
+                    # Pattern: slop_result_<ok_type>_<err_type>
+                    result_part = resolved_scrutinee_type[len('slop_result_'):]
+                    # Look for common error type patterns
+                    # e.g., slop_result_list_transpiler_ModuleOutput_transpiler_TranspileError
+                    # Error types usually end in 'Error' or are 'string'
+                    if 'Error' in result_part:
+                        # Find the start of the error type name (module_TypeNameError)
+                        # Look for pattern: _module_TypeName where TypeName ends in Error
+                        import re
+                        match = re.search(r'_([a-z]+_\w*Error)$', result_part, re.IGNORECASE)
+                        if match:
+                            err_type = match.group(1)
+                            self.var_types[raw_var_name] = err_type
+                    elif result_part.endswith('_string') or result_part.endswith('_String'):
+                        # Error type is string
+                        self.var_types[raw_var_name] = 'slop_string'
             for j, item in enumerate(body):
                 is_last = (j == len(body) - 1)
                 self.transpile_statement(item, is_return and is_last)

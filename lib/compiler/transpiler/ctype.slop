@@ -15,7 +15,8 @@
     get-map-types)
   (import parser (SExpr SExprList SExprSymbol SExprNumber is-form))
   (import context
-    (TranspileContext ctx-lookup-type ctx-register-option ctx-register-result ctx-register-list ctx-register-map))
+    (TranspileContext ctx-lookup-type ctx-register-option ctx-register-result ctx-register-list ctx-register-map
+     ctx-lookup-array-element))
   (import names (to-c-type-name to-qualified-type-name type-to-identifier))
 
   (type ResultTypePair (record (ok (Ptr SExpr)) (err (Ptr SExpr))))
@@ -87,7 +88,19 @@
                         ((string-eq op "Ptr")
                           (match (list-get items 1)
                             ((some inner)
-                              (string-concat arena (to-c-type ctx inner) "*"))
+                              ;; Check if inner type is an array type alias
+                              (match (deref inner)
+                                ((symbol inner-sym)
+                                  ;; Look up if this is an array type
+                                  (match (ctx-lookup-array-element ctx (. inner-sym name))
+                                    ((some elem-type)
+                                      ;; Array type - use element pointer: int64_t*
+                                      (string-concat arena elem-type "*"))
+                                    ((none)
+                                      ;; Not an array type - normal handling
+                                      (string-concat arena (to-c-type ctx inner) "*"))))
+                                (_ ;; Inner is a complex expression, use normal handling
+                                   (string-concat arena (to-c-type ctx inner) "*"))))
                             ((none) "void*")))
                         ((string-eq op "Option")
                           (match (list-get items 1)

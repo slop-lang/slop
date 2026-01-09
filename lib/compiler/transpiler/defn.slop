@@ -37,7 +37,8 @@
                    ctx-register-ffi-func ctx-register-ffi-struct
                    ctx-add-include
                    ctx-set-return-type
-                   ctx-push-scope ctx-pop-scope ctx-register-var))
+                   ctx-push-scope ctx-pop-scope ctx-register-var
+                   ctx-register-array-element))
   (import transpiler-types (CTypeInfo CRangeInfo CFieldInfo CVariantInfo
                             FuncEntry FFIFuncEntry FFIStructEntry VarEntry))
   (import emit (Emitter emit emit-line emit-blank indent dedent
@@ -272,20 +273,36 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
     (@pre (!= ctx nil))
     (@pre (!= param nil))
+    ;; Handle both (name Type) and (mut name Type) forms
     (let ((arena (. (deref ctx) arena)))
       (match (deref param)
         ((list lst)
           (let ((items (. lst items)))
             (match (list-get items 0)
-              ((some name-expr)
-                (match (deref name-expr)
-                  ((symbol sym)
-                    (match (list-get items 1)
-                      ((some type-expr)
-                        (let ((c-type (to-c-type ctx type-expr))
-                              (c-name (to-c-name arena (. sym name))))
-                          (string-concat arena c-type (string-concat arena " " c-name))))
-                      ((none) "")))
+              ((some first-expr)
+                (match (deref first-expr)
+                  ((symbol first-sym)
+                    (if (string-eq (. first-sym name) "mut")
+                      ;; Mutable param: (mut name Type) - skip 'mut', get name from items[1], type from items[2]
+                      (match (list-get items 1)
+                        ((some name-expr)
+                          (match (deref name-expr)
+                            ((symbol name-sym)
+                              (match (list-get items 2)
+                                ((some type-expr)
+                                  (let ((c-type (to-c-type ctx type-expr))
+                                        (c-name (to-c-name arena (. name-sym name))))
+                                    (string-concat arena c-type (string-concat arena " " c-name))))
+                                ((none) "")))
+                            (_ "")))
+                        ((none) ""))
+                      ;; Regular param: (name Type) - name from items[0], type from items[1]
+                      (match (list-get items 1)
+                        ((some type-expr)
+                          (let ((c-type (to-c-type ctx type-expr))
+                                (c-name (to-c-name arena (. first-sym name))))
+                            (string-concat arena c-type (string-concat arena " " c-name))))
+                        ((none) ""))))
                   (_ "")))
               ((none) ""))))
         (_ ""))))
@@ -358,28 +375,47 @@
     (@intent "Register function parameters in current scope")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
     (@pre (!= ctx nil))
+    ;; Handle both (name Type) and (mut name Type) forms
     (let ((len (list-len params)))
       (for (i 0 len)
         (match (list-get params i)
           ((some param-expr)
-            ;; Each param is (name Type)
             (match (deref param-expr)
               ((list lst)
                 (let ((items (. lst items)))
                   (match (list-get items 0)
-                    ((some name-expr)
-                      (match (deref name-expr)
-                        ((symbol sym)
-                          (match (list-get items 1)
-                            ((some type-expr)
-                              (let ((arena (. (deref ctx) arena))
-                                    (name (. sym name))
-                                    (c-name (to-c-name arena name))
-                                    (c-type (to-c-type ctx type-expr))
-                                    (is-ptr (is-pointer-type type-expr)))
-                                ;; Parameters are immutable by default
-                                (ctx-register-var ctx (VarEntry name c-name c-type is-ptr false))))
-                            ((none) (do))))
+                    ((some first-expr)
+                      (match (deref first-expr)
+                        ((symbol first-sym)
+                          (if (string-eq (. first-sym name) "mut")
+                            ;; Mutable param: (mut name Type)
+                            (match (list-get items 1)
+                              ((some name-expr)
+                                (match (deref name-expr)
+                                  ((symbol name-sym)
+                                    (match (list-get items 2)
+                                      ((some type-expr)
+                                        (let ((arena (. (deref ctx) arena))
+                                              (name (. name-sym name))
+                                              (c-name (to-c-name arena name))
+                                              (c-type (to-c-type ctx type-expr))
+                                              (is-ptr (is-pointer-type type-expr)))
+                                          ;; Mutable parameters
+                                          (ctx-register-var ctx (VarEntry name c-name c-type is-ptr true))))
+                                      ((none) (do))))
+                                  (_ (do))))
+                              ((none) (do)))
+                            ;; Regular param: (name Type)
+                            (match (list-get items 1)
+                              ((some type-expr)
+                                (let ((arena (. (deref ctx) arena))
+                                      (name (. first-sym name))
+                                      (c-name (to-c-name arena name))
+                                      (c-type (to-c-type ctx type-expr))
+                                      (is-ptr (is-pointer-type type-expr)))
+                                  ;; Immutable parameter
+                                  (ctx-register-var ctx (VarEntry name c-name c-type is-ptr false))))
+                              ((none) (do)))))
                         (_ (do))))
                     ((none) (do)))))
               (_ (do))))
@@ -566,6 +602,9 @@
         ;; Range type: (Int min .. max)
         ((is-form type-expr "Int")
           (transpile-range-type ctx em name type-expr))
+        ;; Array type: (Array T size)
+        ((is-form type-expr "Array")
+          (transpile-array-type ctx em name type-expr))
         ;; Type alias (for Option, Result, List, Map)
         (else
           (transpile-type-alias ctx em name type-expr)))))
@@ -763,6 +802,43 @@
         (emit-line em (string-concat arena "typedef " (string-concat arena c-base
                         (string-concat arena " " (string-concat arena c-name ";")))))
         (emit-blank em))))
+
+  (fn transpile-array-type ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                            (name String) (type-expr (Ptr SExpr)))
+    (@intent "Transpile array type: (Array T size) -> typedef T name[size];")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (Ptr SExpr)) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    (@pre (!= type-expr nil))
+    (let ((arena (. (deref ctx) arena))
+          (c-name (to-qualified-type-name arena ctx name)))
+      ;; (Array T size) -> typedef T name[size];
+      (match (deref type-expr)
+        ((list lst)
+          (let ((items (. lst items)))
+            (match (list-get items 1)
+              ((some elem-type-expr)
+                (let ((elem-c-type (to-c-type ctx elem-type-expr)))
+                  (do
+                    ;; Register element type for (Ptr ArrayType) handling
+                    (ctx-register-array-element ctx name elem-c-type)
+                    (match (list-get items 2)
+                      ((some size-expr)
+                        (match (deref size-expr)
+                          ((number size-num)
+                            (let ((size-str (int-to-string arena (. size-num int-value))))
+                              (do
+                                (emit-line em (string-concat arena "typedef "
+                                  (string-concat arena elem-c-type
+                                    (string-concat arena " "
+                                      (string-concat arena c-name
+                                        (string-concat arena "["
+                                          (string-concat arena size-str "];")))))))
+                                (emit-blank em))))
+                          (_ (do))))  ;; Non-numeric size
+                      ((none) (do))))))  ;; No size
+              ((none) (do)))))  ;; No element type
+        (_ (do)))))  ;; Not a list
 
   (fn transpile-type-alias ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
                             (name String) (type-expr (Ptr SExpr)))

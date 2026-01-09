@@ -269,6 +269,9 @@
         (emit-all-types-sorted ctx em (. mod types))
         (emit-blank em))
 
+      ;; Generated generic types (Option, Result, List, Map used in signatures)
+      (emit-generated-types ctx em)
+
       ;; Constants
       (when (> (list-len (. mod constants)) 0)
         (for-each (const-form (. mod constants))

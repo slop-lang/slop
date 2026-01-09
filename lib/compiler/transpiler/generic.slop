@@ -20,7 +20,8 @@
                    ctx-is-emitted ctx-mark-emitted
                    ctx-lookup-type-def ctx-lookup-type-module
                    ctx-set-module ctx-set-prefixing
-                   ctx-register-enum-value ctx-register-fields))
+                   ctx-register-enum-value ctx-register-fields
+                   ctx-register-array-element))
   (import transpiler-types (CFieldInfo))
   (import emit (Emitter emit-line emit-blank emit-guard-start emit-guard-end indent dedent))
   (import names (type-to-identifier to-qualified-type-name to-c-name))
@@ -41,7 +42,8 @@
     kind-record
     kind-union
     kind-enum
-    kind-range))
+    kind-range
+    kind-array))
 
   ;; Entry for topological sort - holds type info and dependencies
   (type TypeEntry (record
@@ -49,13 +51,14 @@
     (kind TypeKindEnum)                ;; What kind of type
     (deps (List String))               ;; By-value dependencies (C type names)
     (ast (Option (Ptr SExpr)))         ;; AST for record/union types
-    (inner (Option String))            ;; For Option/List: inner type
+    (inner (Option String))            ;; For Option/List/Array: inner/element type
     (ok-type (Option String))          ;; For Result: ok type
     (err-type (Option String))         ;; For Result: err type
     (key-type (Option String))         ;; For Map: key type
     (val-type (Option String))         ;; For Map: value type
     (module-name (Option String))
-    (base-type (Option String))))
+    (base-type (Option String))
+    (array-size (Option I64))))
 
   ;; ============================================================
   ;; Runtime Predefined Types
@@ -178,13 +181,11 @@
           (keys (map-keys options)))
       (for-each (type-name keys)
         (when (not (is-runtime-predefined type-name))
-          (when (not (ctx-is-emitted ctx type-name))
-            (match (map-get options type-name)
-              ((some inner-type)
-               (do
-                 (emit-option-type em type-name inner-type)
-                 (ctx-mark-emitted ctx type-name)))
-              ((none) ())))))))
+          ;; Always emit - include guards prevent redefinition
+          (match (map-get options type-name)
+            ((some inner-type)
+              (emit-option-type em type-name inner-type))
+            ((none) ()))))))
 
   (fn emit-option-type ((em (Ptr Emitter)) (type-name String) (inner-type String))
     (@intent "Emit single Option<T> typedef")
@@ -222,13 +223,11 @@
           (keys (map-keys lists)))
       (for-each (type-name keys)
         (when (not (is-runtime-predefined type-name))
-          (when (not (ctx-is-emitted ctx type-name))
-            (match (map-get lists type-name)
-              ((some elem-type)
-               (do
-                 (emit-list-type em type-name elem-type)
-                 (ctx-mark-emitted ctx type-name)))
-              ((none) ())))))))
+          ;; Always emit - include guards prevent redefinition
+          (match (map-get lists type-name)
+            ((some elem-type)
+              (emit-list-type em type-name elem-type))
+            ((none) ()))))))
 
   (fn emit-list-type ((em (Ptr Emitter)) (type-name String) (elem-type String))
     (@intent "Emit single List<T> typedef")
@@ -263,13 +262,11 @@
           (keys (map-keys results)))
       (for-each (type-name keys)
         (when (not (is-runtime-predefined type-name))
-          (when (not (ctx-is-emitted ctx type-name))
-            (match (map-get results type-name)
-              ((some info)
-               (do
-                 (emit-result-type em type-name (. info ok) (. info err))
-                 (ctx-mark-emitted ctx type-name)))
-              ((none) ())))))))
+          ;; Always emit - include guards prevent redefinition
+          (match (map-get results type-name)
+            ((some info)
+              (emit-result-type em type-name (. info ok) (. info err)))
+            ((none) ()))))))
 
   (fn emit-result-type ((em (Ptr Emitter)) (type-name String)
                         (ok-type String) (err-type String))
@@ -306,13 +303,11 @@
           (keys (map-keys maps)))
       (for-each (type-name keys)
         (when (not (is-runtime-predefined type-name))
-          (when (not (ctx-is-emitted ctx type-name))
-            (match (map-get maps type-name)
-              ((some info)
-               (do
-                 (emit-map-type em type-name (. info key) (. info val))
-                 (ctx-mark-emitted ctx type-name)))
-              ((none) ())))))))
+          ;; Always emit - include guards prevent redefinition
+          (match (map-get maps type-name)
+            ((some info)
+              (emit-map-type em type-name (. info key) (. info val)))
+            ((none) ()))))))
 
   (fn emit-map-type ((em (Ptr Emitter)) (type-name String)
                      (key-type String) (val-type String))
@@ -596,6 +591,7 @@
                                                  (none)
                                                  (none)
                                                  (none)
+                                                 (none)
                                                  (none))))
                                     (list-push entries entry))))
                               (is-enum
@@ -611,8 +607,43 @@
                                                (none)
                                                (none)
                                                (none)
+                                               (none)
                                                (none))))
                                   (list-push entries entry)))
+                              ((is-form type-expr "Array")
+                                ;; Array type: (type Scores (Array Int 10))
+                                (match (deref type-expr)
+                                  ((list arr-lst)
+                                    (let ((arr-items (. arr-lst items)))
+                                      (match (list-get arr-items 1)
+                                        ((some elem-type-expr)
+                                          (let ((elem-c-type (to-c-type ctx elem-type-expr))
+                                                (slop-name (. sym name)))
+                                            (do
+                                              ;; Register SLOP name -> element type for (Ptr ArrayType) handling
+                                              (ctx-register-array-element ctx slop-name elem-c-type)
+                                              (match (list-get arr-items 2)
+                                                ((some size-expr)
+                                                  (match (deref size-expr)
+                                                    ((number size-num)
+                                                      (let ((entry (TypeEntry
+                                                                     c-name
+                                                                     'kind-array
+                                                                     (list-new arena String)
+                                                                     (some form)
+                                                                     (some elem-c-type)
+                                                                     (none)
+                                                                     (none)
+                                                                     (none)
+                                                                     (none)
+                                                                     (none)
+                                                                     (none)
+                                                                     (some (. size-num int-value)))))
+                                                        (list-push entries entry)))
+                                                    (_ ())))
+                                                ((none) ())))))
+                                        ((none) ()))))
+                                  (_ ())))
                               (else
                                 ;; Range type or simple alias - e.g., (type AsciiChar (Int 0 .. 127))
                                 ;; Set module context for this type before processing
@@ -643,7 +674,8 @@
                                                  (none)
                                                  (none)
                                                  (none)
-                                                 (some base-c-type))))
+                                                 (some base-c-type)
+                                                 (none))))
                                     (list-push entries entry)))))))
                         ((none) ())))
                     (_ ())))
@@ -651,100 +683,104 @@
           (_ ())))
 
       ;; Collect Option types
+      ;; Always collect - include guards prevent redefinition
       (let ((options (ctx-get-options ctx))
             (opt-keys (map-keys options)))
         (for-each (type-name opt-keys)
           (when (not (is-runtime-predefined type-name))
-            (when (not (ctx-is-emitted ctx type-name))
-              (match (map-get options type-name)
-                ((some inner-type)
-                  (let ((deps (get-option-deps arena inner-type))
-                        (entry (TypeEntry
-                                 type-name
-                                 'kind-option
-                                 deps
-                                 (none)
-                                 (some inner-type)
-                                 (none)
-                                 (none)
-                                 (none)
-                                 (none)
-                                 (none)
-                                 (none))))
-                    (list-push entries entry)))
-                ((none) ()))))))
+            (match (map-get options type-name)
+              ((some inner-type)
+                (let ((deps (get-option-deps arena inner-type))
+                      (entry (TypeEntry
+                               type-name
+                               'kind-option
+                               deps
+                               (none)
+                               (some inner-type)
+                               (none)
+                               (none)
+                               (none)
+                               (none)
+                               (none)
+                               (none)
+                               (none))))
+                  (list-push entries entry)))
+              ((none) ())))))
 
       ;; Collect Result types
+      ;; Always collect - include guards prevent redefinition
       (let ((results (ctx-get-results ctx))
             (res-keys (map-keys results)))
         (for-each (type-name res-keys)
           (when (not (is-runtime-predefined type-name))
-            (when (not (ctx-is-emitted ctx type-name))
-              (match (map-get results type-name)
-                ((some info)
-                  (let ((deps (get-result-deps arena (. info ok) (. info err)))
-                        (entry (TypeEntry
-                                 type-name
-                                 'kind-result
-                                 deps
-                                 (none)
-                                 (none)
-                                 (some (. info ok))
-                                 (some (. info err))
-                                 (none)
-                                 (none)
-                                 (none)
-                                 (none))))
-                    (list-push entries entry)))
-                ((none) ()))))))
+            (match (map-get results type-name)
+              ((some info)
+                (let ((deps (get-result-deps arena (. info ok) (. info err)))
+                      (entry (TypeEntry
+                               type-name
+                               'kind-result
+                               deps
+                               (none)
+                               (none)
+                               (some (. info ok))
+                               (some (. info err))
+                               (none)
+                               (none)
+                               (none)
+                               (none)
+                               (none))))
+                  (list-push entries entry)))
+              ((none) ())))))
 
       ;; Collect List types
+      ;; Always collect - include guards prevent redefinition
       (let ((lists (ctx-get-lists ctx))
             (list-keys (map-keys lists)))
         (for-each (type-name list-keys)
           (when (not (is-runtime-predefined type-name))
-            (when (not (ctx-is-emitted ctx type-name))
-              (match (map-get lists type-name)
-                ((some elem-type)
-                  (let ((deps (get-list-deps arena elem-type))
-                        (entry (TypeEntry
-                                 type-name
-                                 'kind-list
-                                 deps
-                                 (none)
-                                 (some elem-type)
-                                 (none)
-                                 (none)
-                                 (none)
-                                 (none)
-                                 (none)
-                                 (none))))
-                    (list-push entries entry)))
-                ((none) ()))))))
+            (match (map-get lists type-name)
+              ((some elem-type)
+                (let ((deps (get-list-deps arena elem-type))
+                      (entry (TypeEntry
+                               type-name
+                               'kind-list
+                               deps
+                               (none)
+                               (some elem-type)
+                               (none)
+                               (none)
+                               (none)
+                               (none)
+                               (none)
+                               (none)
+                               (none))))
+                  (list-push entries entry)))
+              ((none) ())))))
 
       ;; Collect Map types
+      ;; Always collect - include guards prevent redefinition
       (let ((maps (ctx-get-maps ctx))
             (map-keys-list (map-keys maps)))
         (for-each (type-name map-keys-list)
           (when (not (is-runtime-predefined type-name))
-            (when (not (ctx-is-emitted ctx type-name))
-              (match (map-get maps type-name)
-                ((some info)
-                  (let ((deps (get-map-deps arena (. info key) (. info val)))
-                        (entry (TypeEntry
-                                 type-name
-                                 'kind-map
-                                 deps
-                                 (none)
-                                 (none)
-                                 (none)
-                                 (none)
-                                 (some (. info key))
-                                 (some (. info val))
-                                 (none)
-                                 (none))))
-                    (list-push entries entry)))
-                ((none) ()))))))
+            (match (map-get maps type-name)
+              ((some info)
+                (let ((deps (get-map-deps arena (. info key) (. info val)))
+                      (entry (TypeEntry
+                               type-name
+                               'kind-map
+                               deps
+                               (none)
+                               (none)
+                               (none)
+                               (none)
+                               (some (. info key))
+                               (some (. info val))
+                               (none)
+                               (none)
+                               (none))))
+                  (list-push entries entry)))
+              ((none) ())))))
 
       entries))
 
@@ -948,6 +984,25 @@
                                   (string-concat arena (. entry name) ";")))))
               (emit-blank em)
               (ctx-mark-emitted ctx (. entry name)))
+            ((none) ())))
+
+        ('kind-array
+          ;; Array type: emit typedef elem_type name[size];
+          (match (. entry inner)
+            ((some elem-type)
+              (match (. entry array-size)
+                ((some size-val)
+                  (let ((size-str (int-to-string arena size-val)))
+                    (do
+                      (emit-line em (string-concat arena "typedef "
+                                      (string-concat arena elem-type
+                                        (string-concat arena " "
+                                          (string-concat arena (. entry name)
+                                            (string-concat arena "["
+                                              (string-concat arena size-str "];")))))))
+                      (emit-blank em)
+                      (ctx-mark-emitted ctx (. entry name)))))
+                ((none) ())))
             ((none) ()))))))
 
   (fn emit-record-type ((ctx (Ptr TranspileContext)) (em (Ptr Emitter)) (form (Ptr SExpr)) (c-name String))
@@ -1174,8 +1229,8 @@
                 ((some entry)
                   (let ((kind (. entry kind))
                         (has-deps (> (list-len (. entry deps)) 0)))
-                    ;; Only emit range/enum types that have NO dependencies here
-                    (when (and (or (== kind 'kind-range) (== kind 'kind-enum))
+                    ;; Only emit range/enum/array types that have NO dependencies here
+                    (when (and (or (== kind 'kind-range) (== kind 'kind-enum) (== kind 'kind-array))
                                (not has-deps))
                       (emit-type-entry ctx em entry))))
                 ((none) ())))
@@ -1207,8 +1262,8 @@
                 ((some entry)
                   (let ((kind (. entry kind))
                         (has-deps (> (list-len (. entry deps)) 0)))
-                    ;; Emit if: not a range/enum, OR is a range/enum WITH deps
-                    (when (or (and (!= kind 'kind-range) (!= kind 'kind-enum))
+                    ;; Emit if: not a range/enum/array, OR is a range/enum/array WITH deps
+                    (when (or (and (!= kind 'kind-range) (!= kind 'kind-enum) (!= kind 'kind-array))
                               has-deps)
                       (emit-type-entry ctx em entry))))
                 ((none) ()))))))))

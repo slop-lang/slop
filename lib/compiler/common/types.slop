@@ -175,6 +175,19 @@
       (or (not (. bounds has-min)) (>= value (. bounds min-val)))
       (or (not (. bounds has-max)) (<= value (. bounds max-val)))))
 
+  ;; Internal helpers for range arithmetic
+  (fn min ((a I64) (b I64))
+    (@intent "Return the smaller of two integers")
+    (@spec ((I64 I64) -> I64))
+    (@pure)
+    (if (< a b) a b))
+
+  (fn max ((a I64) (b I64))
+    (@intent "Return the larger of two integers")
+    (@spec ((I64 I64) -> I64))
+    (@pure)
+    (if (> a b) a b))
+
   (fn range-intersect ((a RangeBounds) (b RangeBounds))
     (@intent "Compute intersection of two ranges")
     (@spec ((RangeBounds RangeBounds) -> RangeBounds))

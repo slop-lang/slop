@@ -14,12 +14,130 @@
                   sexpr-line sexpr-col))
   (import context (TranspileContext ctx-push-scope ctx-pop-scope
                    ctx-register-var ctx-lookup-var ctx-mark-pointer
-                   ctx-get-return-type))
-  (import transpiler-types (VarEntry))
+                   ctx-get-return-type ctx-lookup-variants))
+  (import transpiler-types (VarEntry CVariantInfo))
   (import emit (Emitter emit-line emit-blank indent dedent))
   (import expr (transpile-expr is-pointer-expr infer-expr-c-type))
   (import ctype (to-c-type is-pointer-type is-option-type is-result-type))
   (import names (to-c-name to-qualified-name))
+  (import strlib (ends-with substring))
+
+  ;; ============================================================
+  ;; Helper Functions
+  ;; ============================================================
+
+  (fn is-c-pointer-type ((type-str (Option String)))
+    (@intent "Check if C type string represents a pointer type")
+    (@spec (((Option String)) -> Bool))
+    (@pure)
+    (match type-str
+      ((none) false)
+      ((some s)
+        (if (== (string-len s) 0)
+          false
+          (ends-with s "*")))))
+
+  (fn extract-option-element-type ((arena Arena) (option-type (Option String)))
+    (@intent "Extract element type from Option type name")
+    (@spec ((Arena (Option String)) -> (Option String)))
+    (@pure)
+    (@alloc arena)
+    ;; slop_option_X -> X with _ptr suffix converted to *
+    (match option-type
+      ((none) (none))
+      ((some type-str)
+        (let ((prefix "slop_option_")
+              (prefix-len (string-len prefix))
+              (type-len (string-len type-str)))
+          (if (< type-len prefix-len)
+            (none)
+            (let ((suffix-len (cast (Int 0 ..) (- type-len prefix-len)))
+                  (suffix (substring arena type-str (cast (Int 0 ..) prefix-len) suffix-len)))
+              ;; Convert _ptr suffix back to * pointer
+              (if (ends-with suffix "_ptr")
+                (let ((base-len (cast (Int 0 ..) (- (string-len suffix) 4))))
+                  (some (string-concat arena
+                          (substring arena suffix 0 base-len)
+                          "*")))
+                (some suffix))))))))
+
+  (fn extract-result-ok-type ((arena Arena) (result-type (Option String)))
+    (@intent "Extract ok type from Result type name")
+    (@spec ((Arena (Option String)) -> (Option String)))
+    (@pure)
+    (@alloc arena)
+    ;; slop_result_X_Y -> ok type is X with _ptr suffix converted to *
+    (match result-type
+      ((none) (none))
+      ((some type-str)
+        (let ((prefix "slop_result_")
+              (prefix-len (string-len prefix))
+              (type-len (string-len type-str)))
+          (if (< type-len prefix-len)
+            (none)
+            (let ((suffix (substring arena type-str (cast (Int 0 ..) prefix-len)
+                            (cast (Int 0 ..) (- type-len prefix-len)))))
+              ;; Find the last underscore to split ok from err type
+              ;; For now, use a simple heuristic: find common err type suffixes
+              (cond
+                ;; Common error type: _string
+                ((ends-with suffix "_string")
+                  (let ((ok-len (cast (Int 0 ..) (- (string-len suffix) 7)))
+                        (ok-part (substring arena suffix 0 ok-len)))
+                    (if (ends-with ok-part "_ptr")
+                      (let ((base-len (cast (Int 0 ..) (- (string-len ok-part) 4))))
+                        (some (string-concat arena
+                                (substring arena ok-part 0 base-len) "*")))
+                      (some ok-part))))
+                ;; Common error type: _ParseError
+                ((ends-with suffix "_ParseError")
+                  (let ((ok-len (cast (Int 0 ..) (- (string-len suffix) 11)))
+                        (ok-part (substring arena suffix 0 ok-len)))
+                    (if (ends-with ok-part "_ptr")
+                      (let ((base-len (cast (Int 0 ..) (- (string-len ok-part) 4))))
+                        (some (string-concat arena
+                                (substring arena ok-part 0 base-len) "*")))
+                      (some ok-part))))
+                (else (none)))))))))
+
+  (fn extract-result-err-type ((arena Arena) (result-type (Option String)))
+    (@intent "Extract error type from Result type name")
+    (@spec ((Arena (Option String)) -> (Option String)))
+    (@pure)
+    (@alloc arena)
+    ;; For now just return some common error types
+    (match result-type
+      ((none) (none))
+      ((some type-str)
+        (cond
+          ((ends-with type-str "_string") (some "slop_string"))
+          ((ends-with type-str "_ParseError") (some "parser_ParseError"))
+          (else (none))))))
+
+  (fn lookup-variant-payload-type ((ctx (Ptr TranspileContext)) (union-type (Option String)) (variant-name String))
+    (@intent "Look up the payload type for a union variant")
+    (@spec (((Ptr TranspileContext) (Option String) String) -> (Option String)))
+    (@pre (!= ctx nil))
+    (@pure)
+    (match union-type
+      ((none) (none))
+      ((some type-name)
+        (match (ctx-lookup-variants ctx type-name)
+          ((none) (none))
+          ((some variants)
+            (let ((len (list-len variants))
+                  (mut result (Option String) (none))
+                  (mut i 0))
+              (do
+                (while (< i len)
+                  (match (list-get variants i)
+                    ((some v)
+                      (when (string-eq (. v tag) variant-name)
+                        (when (. v has-payload)
+                          (set! result (some (. v c-payload-type))))))
+                    ((none) (do)))
+                  (set! i (+ i 1)))
+                result)))))))
 
   ;; ============================================================
   ;; Main Statement Transpilation
@@ -501,12 +619,12 @@
                             (do
                               (emit-line em "{")
                               (indent em)
-                              (emit-line em (string-concat arena "auto _foreach_list = " (string-concat arena coll-code ";")))
+                              (emit-line em (string-concat arena "__auto_type _foreach_list = " (string-concat arena coll-code ";")))
                               (emit-line em "for (size_t _foreach_i = 0; _foreach_i < _foreach_list.len; _foreach_i++) {")
                               (indent em)
                               (ctx-push-scope ctx)
-                              (ctx-register-var ctx (VarEntry var-name c-var "auto" false false))
-                              (emit-line em (string-concat arena "auto " (string-concat arena c-var " = _foreach_list.data[_foreach_i];")))
+                              (ctx-register-var ctx (VarEntry var-name c-var "__auto_type" false false))
+                              (emit-line em (string-concat arena "__auto_type " (string-concat arena c-var " = _foreach_list.data[_foreach_i];")))
                               (transpile-body ctx em lst 2 false)
                               (ctx-pop-scope ctx)
                               (dedent em)
@@ -561,23 +679,29 @@
                               ((some head-expr)
                                 (match (deref head-expr)
                                   ((symbol head-sym)
-                                    (let ((head-name (. head-sym name)))
+                                    (let ((head-name (. head-sym name))
+                                          (is-ptr (is-c-pointer-type target-type)))
                                       (cond
                                         ((string-eq head-name "some")
-                                          (transpile-option-match ctx em target-code clauses is-return))
+                                          (if is-ptr
+                                            (transpile-pointer-match ctx em target-code target-type clauses is-return)
+                                            (transpile-option-match ctx em target-code target-type clauses is-return)))
                                         ((string-eq head-name "none")
-                                          (transpile-option-match ctx em target-code clauses is-return))
+                                          (if is-ptr
+                                            (transpile-pointer-match ctx em target-code target-type clauses is-return)
+                                            (transpile-option-match ctx em target-code target-type clauses is-return)))
                                         ((string-eq head-name "ok")
-                                          (transpile-result-match ctx em target-code clauses is-return))
+                                          (transpile-result-match ctx em target-code target-type clauses is-return))
                                         ((string-eq head-name "error")
-                                          (transpile-result-match ctx em target-code clauses is-return))
+                                          (transpile-result-match ctx em target-code target-type clauses is-return))
                                         ((string-eq head-name "list")
                                           (transpile-union-match ctx em target-code target-type clauses is-return))
                                         ((string-eq head-name "symbol")
                                           (transpile-union-match ctx em target-code target-type clauses is-return))
                                         (else
-                                          (transpile-enum-match ctx em target-code clauses is-return)))))
-                                  (_ (transpile-enum-match ctx em target-code clauses is-return))))
+                                          ;; Pattern is a list with custom head - assume union variant
+                                          (transpile-union-match ctx em target-code target-type clauses is-return)))))
+                                  (_ (transpile-union-match ctx em target-code target-type clauses is-return))))
                               ((none) (transpile-enum-match ctx em target-code clauses is-return))))
                           ;; Pattern is a symbol - likely enum
                           (_ (transpile-enum-match ctx em target-code clauses is-return))))
@@ -587,21 +711,23 @@
       ((none) (emit-line em "/* match: missing target */"))))
 
   (fn transpile-option-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
-                              (target-code String) (clauses (List (Ptr SExpr)))
-                              (is-return Bool))
+                              (target-code String) (target-type (Option String))
+                              (clauses (List (Ptr SExpr))) (is-return Bool))
     (@intent "Transpile match on Option type")
-    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (Option String) (List (Ptr SExpr)) Bool) -> Unit))
     (@pre (!= ctx nil))
     (@pre (!= em nil))
     ;; if (target.has_value) { some_binding = target.value; ... } else { ... }
+    ;; Store body pointers directly to avoid deref issues
     (let ((arena (. (deref em) arena))
           (len (list-len clauses))
-          (mut some-clause (Ptr SExpr) nil)
+          (element-type (extract-option-element-type arena target-type))
+          (mut some-body (Ptr SExpr) nil)
           (mut some-binding "")
-          (mut none-clause (Ptr SExpr) nil)
+          (mut none-body (Ptr SExpr) nil)
           (mut i 0))
       (do
-        ;; Find some and none clauses
+        ;; Find some and none clauses, extract body pointers directly
         (while (< i len)
           (match (list-get clauses i)
             ((some clause-expr)
@@ -618,7 +744,11 @@
                                   (cond
                                     ((string-eq (. head-sym name) "some")
                                       (do
-                                        (set! some-clause clause-expr)
+                                        ;; Get body directly from clause
+                                        (match (list-get (. clause-lst items) 1)
+                                          ((some body-ptr) (set! some-body body-ptr))
+                                          ((none) (do)))
+                                        ;; Get binding name
                                         (match (list-get (. pattern-lst items) 1)
                                           ((some binding-expr)
                                             (match (deref binding-expr)
@@ -627,13 +757,32 @@
                                               (_ (do))))
                                           ((none) (do)))))
                                     ((string-eq (. head-sym name) "none")
-                                      (set! none-clause clause-expr))
+                                      ;; Get body directly from clause
+                                      (match (list-get (. clause-lst items) 1)
+                                        ((some body-ptr) (set! none-body body-ptr))
+                                        ((none) (do))))
+                                    ((string-eq (. head-sym name) "quote")
+                                      ;; Quoted pattern like 'none - check what's being quoted
+                                      (match (list-get (. pattern-lst items) 1)
+                                        ((some quoted-expr)
+                                          (match (deref quoted-expr)
+                                            ((symbol quoted-sym)
+                                              (when (string-eq (. quoted-sym name) "none")
+                                                ;; 'none pattern - get body directly
+                                                (match (list-get (. clause-lst items) 1)
+                                                  ((some body-ptr) (set! none-body body-ptr))
+                                                  ((none) (do)))))
+                                            (_ (do))))
+                                        ((none) (do))))
                                     (else (do))))
                                 (_ (do))))
                             ((none) (do))))
                         ((symbol wild-sym)
                           (when (string-eq (. wild-sym name) "_")
-                            (set! none-clause clause-expr)))
+                            ;; Wildcard acts like none - get body directly
+                            (match (list-get (. clause-lst items) 1)
+                              ((some body-ptr) (set! none-body body-ptr))
+                              ((none) (do)))))
                         (_ (do))))
                     ((none) (do))))
                 (_ (do))))
@@ -646,56 +795,51 @@
         (emit-line em (string-concat arena target-code ";"))
         (emit-line em "if (_match_opt.has_value) {")
         (indent em)
-        (match some-clause
-          ((some some-c)
+        (match some-body
+          ((some body-expr)
             (do
               (ctx-push-scope ctx)
               (when (> (string-len some-binding) 0)
-                (let ((binding-c-name (to-c-name arena some-binding)))
+                (let ((binding-c-name (to-c-name arena some-binding))
+                      (var-type (match element-type
+                                  ((some t) t)
+                                  ((none) "__auto_type"))))
                   (do
                     (emit-line em (string-concat arena "__auto_type "
                       (string-concat arena binding-c-name " = _match_opt.value;")))
-                    (ctx-register-var ctx (VarEntry some-binding binding-c-name "__auto_type" false false)))))
-              (match (deref some-c)
-                ((list some-lst)
-                  (match (list-get (. some-lst items) 1)
-                    ((some body-expr) (transpile-stmt ctx em body-expr is-return))
-                    ((none) (do))))
-                (_ (do)))
+                    (ctx-register-var ctx (VarEntry some-binding binding-c-name var-type false false)))))
+              (transpile-stmt ctx em body-expr is-return)
               (ctx-pop-scope ctx)))
           ((none) (do)))
         (dedent em)
         (emit-line em "} else {")
         (indent em)
-        (match none-clause
-          ((some none-c)
-            (match (deref none-c)
-              ((list none-lst)
-                (match (list-get (. none-lst items) 1)
-                  ((some body-expr) (transpile-stmt ctx em body-expr is-return))
-                  ((none) (do))))
-              (_ (do))))
+        (match none-body
+          ((some body-expr) (transpile-stmt ctx em body-expr is-return))
           ((none) (do)))
         (dedent em)
         (emit-line em "} }"))))  ;; Close else and outer block
 
   (fn transpile-result-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
-                              (target-code String) (clauses (List (Ptr SExpr)))
-                              (is-return Bool))
+                              (target-code String) (target-type (Option String))
+                              (clauses (List (Ptr SExpr))) (is-return Bool))
     (@intent "Transpile match on Result type")
-    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (Option String) (List (Ptr SExpr)) Bool) -> Unit))
     (@pre (!= ctx nil))
     (@pre (!= em nil))
     ;; if (target.is_ok) { ok_binding = target.data.ok; ... } else { ... }
+    ;; Store body pointers directly to avoid deref issues
     (let ((arena (. (deref em) arena))
           (len (list-len clauses))
-          (mut ok-clause (Ptr SExpr) nil)
+          (ok-type (extract-result-ok-type arena target-type))
+          (err-type (extract-result-err-type arena target-type))
+          (mut ok-body (Ptr SExpr) nil)
           (mut ok-binding "")
-          (mut err-clause (Ptr SExpr) nil)
+          (mut err-body (Ptr SExpr) nil)
           (mut err-binding "")
           (mut i 0))
       (do
-        ;; Find ok and error clauses
+        ;; Find ok and error clauses, extract body pointers directly
         (while (< i len)
           (match (list-get clauses i)
             ((some clause-expr)
@@ -712,7 +856,11 @@
                                   (cond
                                     ((string-eq (. head-sym name) "ok")
                                       (do
-                                        (set! ok-clause clause-expr)
+                                        ;; Get body directly from clause
+                                        (match (list-get (. clause-lst items) 1)
+                                          ((some body-ptr) (set! ok-body body-ptr))
+                                          ((none) (do)))
+                                        ;; Get binding name
                                         (match (list-get (. pattern-lst items) 1)
                                           ((some binding-expr)
                                             (match (deref binding-expr)
@@ -722,7 +870,11 @@
                                           ((none) (do)))))
                                     ((string-eq (. head-sym name) "error")
                                       (do
-                                        (set! err-clause clause-expr)
+                                        ;; Get body directly from clause
+                                        (match (list-get (. clause-lst items) 1)
+                                          ((some body-ptr) (set! err-body body-ptr))
+                                          ((none) (do)))
+                                        ;; Get binding name
                                         (match (list-get (. pattern-lst items) 1)
                                           ((some binding-expr)
                                             (match (deref binding-expr)
@@ -735,7 +887,10 @@
                             ((none) (do))))
                         ((symbol wild-sym)
                           (when (string-eq (. wild-sym name) "_")
-                            (set! err-clause clause-expr)))
+                            ;; Wildcard acts like error - get body directly
+                            (match (list-get (. clause-lst items) 1)
+                              ((some body-ptr) (set! err-body body-ptr))
+                              ((none) (do)))))
                         (_ (do))))
                     ((none) (do))))
                 (_ (do))))
@@ -747,44 +902,134 @@
         (emit-line em (string-concat arena target-code ";"))
         (emit-line em "if (_match_res.is_ok) {")
         (indent em)
-        (match ok-clause
-          ((some ok-c)
+        (match ok-body
+          ((some body-expr)
             (do
               (ctx-push-scope ctx)
               (when (> (string-len ok-binding) 0)
-                (let ((binding-c-name (to-c-name arena ok-binding)))
+                (let ((binding-c-name (to-c-name arena ok-binding))
+                      (var-type (match ok-type
+                                  ((some t) t)
+                                  ((none) "__auto_type"))))
                   (do
                     (emit-line em (string-concat arena "__auto_type "
                       (string-concat arena binding-c-name " = _match_res.data.ok;")))
-                    (ctx-register-var ctx (VarEntry ok-binding binding-c-name "__auto_type" false false)))))
-              (match (deref ok-c)
-                ((list ok-lst)
-                  (match (list-get (. ok-lst items) 1)
-                    ((some body-expr) (transpile-stmt ctx em body-expr is-return))
-                    ((none) (do))))
-                (_ (do)))
+                    (ctx-register-var ctx (VarEntry ok-binding binding-c-name var-type false false)))))
+              (transpile-stmt ctx em body-expr is-return)
               (ctx-pop-scope ctx)))
           ((none) (do)))
         (dedent em)
         (emit-line em "} else {")
         (indent em)
-        (match err-clause
-          ((some err-c)
+        (match err-body
+          ((some body-expr)
             (do
               (ctx-push-scope ctx)
               (when (> (string-len err-binding) 0)
-                (let ((binding-c-name (to-c-name arena err-binding)))
+                (let ((binding-c-name (to-c-name arena err-binding))
+                      (var-type (match err-type
+                                  ((some t) t)
+                                  ((none) "__auto_type"))))
                   (do
                     (emit-line em (string-concat arena "__auto_type "
                       (string-concat arena binding-c-name " = _match_res.data.err;")))
-                    (ctx-register-var ctx (VarEntry err-binding binding-c-name "__auto_type" false false)))))
-              (match (deref err-c)
-                ((list err-lst)
-                  (match (list-get (. err-lst items) 1)
-                    ((some body-expr) (transpile-stmt ctx em body-expr is-return))
-                    ((none) (do))))
-                (_ (do)))
+                    (ctx-register-var ctx (VarEntry err-binding binding-c-name var-type false false)))))
+              (transpile-stmt ctx em body-expr is-return)
               (ctx-pop-scope ctx)))
+          ((none) (do)))
+        (dedent em)
+        (emit-line em "} }"))))  ;; Close else and outer block
+
+  (fn transpile-pointer-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
+                               (target-code String) (target-type (Option String))
+                               (clauses (List (Ptr SExpr))) (is-return Bool))
+    (@intent "Transpile match on nullable pointer using NULL check")
+    (@spec (((Ptr TranspileContext) (Ptr Emitter) String (Option String) (List (Ptr SExpr)) Bool) -> Unit))
+    (@pre (!= ctx nil))
+    (@pre (!= em nil))
+    ;; if (target != NULL) { binding = target; ... } else { ... }
+    ;; Store body pointers directly to avoid deref issues
+    (let ((arena (. (deref em) arena))
+          (len (list-len clauses))
+          (mut some-body (Ptr SExpr) nil)
+          (mut some-binding "")
+          (mut none-body (Ptr SExpr) nil)
+          (mut i 0))
+      (do
+        ;; Find some and none clauses, extract body pointers directly
+        (while (< i len)
+          (match (list-get clauses i)
+            ((some clause-expr)
+              (match (deref clause-expr)
+                ((list clause-lst)
+                  (match (list-get (. clause-lst items) 0)
+                    ((some pattern-expr)
+                      (match (deref pattern-expr)
+                        ((list pattern-lst)
+                          (match (list-get (. pattern-lst items) 0)
+                            ((some head-expr)
+                              (match (deref head-expr)
+                                ((symbol head-sym)
+                                  (cond
+                                    ((string-eq (. head-sym name) "some")
+                                      (do
+                                        ;; Get body directly from clause
+                                        (match (list-get (. clause-lst items) 1)
+                                          ((some body-ptr) (set! some-body body-ptr))
+                                          ((none) (do)))
+                                        ;; Get binding name
+                                        (match (list-get (. pattern-lst items) 1)
+                                          ((some binding-expr)
+                                            (match (deref binding-expr)
+                                              ((symbol binding-sym)
+                                                (set! some-binding (. binding-sym name)))
+                                              (_ (do))))
+                                          ((none) (do)))))
+                                    ((string-eq (. head-sym name) "none")
+                                      ;; Get body directly from clause
+                                      (match (list-get (. clause-lst items) 1)
+                                        ((some body-ptr) (set! none-body body-ptr))
+                                        ((none) (do))))
+                                    (else (do))))
+                                (_ (do))))
+                            ((none) (do))))
+                        ((symbol wild-sym)
+                          (when (string-eq (. wild-sym name) "_")
+                            ;; Wildcard acts like none - get body directly
+                            (match (list-get (. clause-lst items) 1)
+                              ((some body-ptr) (set! none-body body-ptr))
+                              ((none) (do)))))
+                        (_ (do))))
+                    ((none) (do))))
+                (_ (do))))
+            ((none) (do)))
+          (set! i (+ i 1)))
+
+        ;; Emit if/else structure with NULL check
+        (emit-line em (string-concat arena "{ __auto_type _match_ptr = " (string-concat arena target-code ";")))
+        (emit-line em "if (_match_ptr != NULL) {")
+        (indent em)
+        (match some-body
+          ((some body-expr)
+            (do
+              (ctx-push-scope ctx)
+              (when (> (string-len some-binding) 0)
+                (let ((binding-c-name (to-c-name arena some-binding))
+                      (c-type (match target-type
+                                ((some t) t)
+                                ((none) "__auto_type"))))
+                  (do
+                    (emit-line em (string-concat arena c-type
+                      (string-concat arena " " (string-concat arena binding-c-name " = _match_ptr;"))))
+                    (ctx-register-var ctx (VarEntry some-binding binding-c-name c-type true false)))))
+              (transpile-stmt ctx em body-expr is-return)
+              (ctx-pop-scope ctx)))
+          ((none) (do)))
+        (dedent em)
+        (emit-line em "} else {")
+        (indent em)
+        (match none-body
+          ((some body-expr) (transpile-stmt ctx em body-expr is-return))
           ((none) (do)))
         (dedent em)
         (emit-line em "} }"))))  ;; Close else and outer block
@@ -913,13 +1158,17 @@
                                         (match (deref var-expr)
                                           ((symbol var-sym)
                                             (let ((var-name (to-c-name arena (. var-sym name)))
-                                                  (payload-access (string-concat arena target-code (string-concat arena ".data." tag-name))))
+                                                  (payload-access (string-concat arena target-code (string-concat arena ".data." tag-name)))
+                                                  (payload-type (lookup-variant-payload-type ctx union-type (. variant-sym name)))
+                                                  (var-type (match payload-type
+                                                              ((some t) t)
+                                                              ((none) "__auto_type"))))
                                               (do
-                                                (emit-line em (string-concat arena "auto "
+                                                (emit-line em (string-concat arena "__auto_type "
                                                   (string-concat arena var-name
                                                     (string-concat arena " = "
                                                       (string-concat arena payload-access ";")))))
-                                                (ctx-register-var ctx (VarEntry (. var-sym name) var-name "auto" false false)))))
+                                                (ctx-register-var ctx (VarEntry (. var-sym name) var-name var-type false false)))))
                                           (_ (do))))
                                       ((none) (do)))
                                     (match (list-get (. clause-lst items) 1)

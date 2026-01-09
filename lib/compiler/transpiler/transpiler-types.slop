@@ -39,7 +39,8 @@
     (is-pointer Bool)           ;; Is this a pointer type?
     (range (Option CRangeInfo)) ;; For range types
     (fields (Option (List CFieldInfo)))     ;; For records
-    (variants (Option (List CVariantInfo))))) ;; For unions
+    (variants (Option (List CVariantInfo))) ;; For unions
+    (element-type (Option String)))) ;; Element type for arrays (e.g., "int64_t" for Array Int)
 
   ;; ============================================================
   ;; C Field Information
