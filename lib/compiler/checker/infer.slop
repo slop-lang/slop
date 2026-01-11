@@ -22,6 +22,7 @@
                env-lookup-function env-lookup-variant
                env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
+               env-make-option-type env-get-generic-type
                env-add-warning env-add-error))
 
   ;; ============================================================
@@ -29,12 +30,54 @@
   ;; ============================================================
 
   (fn types-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
-    (@intent "Check if two types are equal by comparing names")
+    (@intent "Check if two types are equal, handling generics and aliases")
     (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
     (@pure)
     (@pre (!= a nil))
     (@pre (!= b nil))
-    (string-eq (. (deref a) name) (. (deref b) name)))
+    (let ((a-kind (. (deref a) kind))
+          (b-kind (. (deref b) kind))
+          (a-name (. (deref a) name))
+          (b-name (. (deref b) name)))
+      (cond
+        ;; Same name - definitely equal
+        ((string-eq a-name b-name) true)
+
+        ;; Generic type variable "T" matches anything
+        ((or (string-eq a-name "T") (string-eq b-name "T")) true)
+
+        ;; Both Option types - check if one is generic (Option_T)
+        ((and (== a-kind 'rk-option) (== b-kind 'rk-option))
+          (or (string-eq a-name "Option_T")
+              (string-eq b-name "Option_T")))
+
+        ;; Range type vs its base type (e.g., AsciiChar vs Int)
+        ((or (== a-kind 'rk-range) (== b-kind 'rk-range))
+          (types-compatible-with-range a b))
+
+        ;; Different names, not special case - not equal
+        (else false))))
+
+  (fn types-compatible-with-range ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
+    (@intent "Check if types are compatible considering range types")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
+    (@pure)
+    (@pre (!= a nil))
+    (@pre (!= b nil))
+    (let ((a-kind (. (deref a) kind))
+          (b-kind (. (deref b) kind)))
+      (cond
+        ;; If a is range type, check if b matches its base type
+        ((== a-kind 'rk-range)
+          (match (. (deref a) inner-type)
+            ((some base) (string-eq (. (deref base) name) (. (deref b) name)))
+            ((none) false)))
+        ;; If b is range type, check if a matches its base type
+        ((== b-kind 'rk-range)
+          (match (. (deref b) inner-type)
+            ((some base) (string-eq (. (deref a) name) (. (deref base) name)))
+            ((none) false)))
+        (else false))))
 
   (fn unify-branch-types ((env (Ptr TypeEnv)) (a (Ptr ResolvedType)) (b (Ptr ResolvedType))
                           (line Int) (col Int))
@@ -75,6 +118,9 @@
               ;; nil
               ((string-eq name "nil")
                 (env-get-unit-type env))
+              ;; none - Option type with unknown inner type
+              ((string-eq name "none")
+                (env-make-option-type env nil))
               ;; Variable lookup
               (else
                 (match (env-lookup-var env name)
@@ -303,13 +349,44 @@
         ((string-eq op ".")
           (infer-field-access env expr lst line col))
 
+        ;; (some x) - Option type constructor
+        ((string-eq op "some")
+          (if (>= len 2)
+            (match (list-get items 1)
+              ((some inner-expr)
+                (let ((inner-type (infer-expr env inner-expr)))
+                  (env-make-option-type env inner-type)))
+              ((none) (env-make-option-type env nil)))
+            (env-make-option-type env nil)))
+
+        ;; (none) - Option type with unknown inner
+        ((string-eq op "none")
+          (env-make-option-type env nil))
+
         ;; Function call - look up return type and check arguments
         (else
           (match (env-lookup-function env op)
             ((some sig)
               (check-fn-call-args env sig expr line col)
               (. (deref sig) return-type))
-            ((none) (env-get-unit-type env)))))))
+            ;; Not a function - check if it's a type constructor or builtin
+            ((none)
+              (match (env-lookup-type env op)
+                ;; Type constructor - return the type itself
+                ((some the-type) the-type)
+                ;; Check for built-in list functions
+                ((none)
+                  (cond
+                    ;; list-get returns Option_T (generic Option)
+                    ((string-eq op "list-get") (env-make-option-type env nil))
+                    ;; list-len returns Int
+                    ((string-eq op "list-len") (env-get-int-type env))
+                    ;; arena-alloc returns Int (pointer)
+                    ((string-eq op "arena-alloc") (env-get-int-type env))
+                    ;; cast returns Int (approximation)
+                    ((string-eq op "cast") (env-get-int-type env))
+                    ;; Unknown function - return Int as fallback
+                    (else (env-get-int-type env)))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
                            (line Int) (col Int))
@@ -486,13 +563,21 @@
                     ((some binding-expr)
                       (let ((binding-name (sexpr-get-symbol-name binding-expr)))
                         (when (not (string-eq binding-name ""))
-                          ;; Look up payload type from scrutinee type
-                          (match (resolved-type-get-variant-payload scrutinee-type variant-name)
-                            ((some payload-type)
-                              (env-bind-var env binding-name payload-type))
-                            ((none)
-                              ;; No payload - bind to unit type
-                              (env-bind-var env binding-name (env-get-unit-type env)))))))
+                          ;; Special case for Option types: "some" variant gets inner-type
+                          (if (and (== (. (deref scrutinee-type) kind) 'rk-option)
+                                   (string-eq variant-name "some"))
+                            ;; For Option types, payload is the inner-type
+                            (match (. (deref scrutinee-type) inner-type)
+                              ((some inner) (env-bind-var env binding-name inner))
+                              ;; Generic Option_T - bind to generic T type that matches anything
+                              ((none) (env-bind-var env binding-name (env-get-generic-type env))))
+                            ;; Normal variant lookup for non-Option types
+                            (match (resolved-type-get-variant-payload scrutinee-type variant-name)
+                              ((some payload-type)
+                                (env-bind-var env binding-name payload-type))
+                              ((none)
+                                ;; No payload - bind to unit type
+                                (env-bind-var env binding-name (env-get-unit-type env))))))))
                     ((none) (do)))))))
           ((none) (do))))))
 

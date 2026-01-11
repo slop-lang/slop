@@ -1,8 +1,5 @@
 # Native SLOP Transpiler
 # Build with: uv run slop build (from this directory)
-#
-# Transpiles SLOP source to C code (split compilation).
-# Each module produces separate .h and .c files.
 
 [project]
 name = "slop-transpiler"
@@ -11,5 +8,5 @@ entry = "main.slop"
 
 [build]
 output = "slop-transpiler"
-include = ["../common", "../parser", "../../std", "../../std/strlib", "../../std/io"]
+include = ["../parser", "../common", "../checker", "../../std", "../../std/strlib", "../../std/io", "../../std/os"]
 type = "executable"

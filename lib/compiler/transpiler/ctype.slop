@@ -1,345 +1,301 @@
+;; ============================================================
+;; SLOP Native Transpiler - C Type Mapping
+;;
+;; Converts SLOP types to C type strings. Handles:
+;; - Primitive types (Int, Bool, String, U8, I64, etc.)
+;; - Range types with optimal C integer selection
+;; - Pointer, array, and container types
+;; - Module-qualified naming
+;; ============================================================
+
 (module ctype
   (export
-    to-c-type
-    is-pointer-type
-    is-string-type
-    is-void-type
-    is-option-type
-    is-result-type
-    is-list-type
-    is-map-type
-    get-range-bounds
-    select-int-type
-    get-inner-type
-    get-result-types
-    get-map-types)
-  (import parser (SExpr SExprList SExprSymbol SExprNumber is-form))
-  (import context
-    (TranspileContext ctx-lookup-type ctx-register-option ctx-register-result ctx-register-list ctx-register-map
-     ctx-lookup-array-element))
-  (import names (to-c-type-name to-qualified-type-name type-to-identifier))
+    ;; Primitive type conversion
+    slop-type-to-c primitive-to-c
+    ;; Range type optimization
+    range-to-c-int optimal-int-type
+    ;; Name mangling
+    mangle-identifier mangle-type-name mangle-fn-name
+    ;; Qualified names
+    qualified-type-name qualified-fn-name
+    ;; Type predicates
+    is-primitive-type is-builtin-type needs-pointer-access)
 
-  (type ResultTypePair (record (ok (Ptr SExpr)) (err (Ptr SExpr))))
+  (import types (SExpr RangeBounds ResolvedType ResolvedTypeKind))
+  (import context (TranspileContext ctx-get-module ctx-prefixing-enabled))
+  (import strlib (char-at AsciiChar))
 
-  (type MapTypePair (record (key (Ptr SExpr)) (val (Ptr SExpr))))
+  ;; ============================================================
+  ;; Primitive Type Mapping
+  ;; ============================================================
 
-  (type RangeBoundsInfo (record
-      (has-min Bool)
-      (min-val I64)
-      (has-max Bool)
-      (max-val I64)))
-
-  ;; Helper function to look up builtin type mappings
-  ;; Uses cond chain because const map literals can't be transpiled to C
-  (fn lookup-builtin-type ((name String))
-    (@intent "Look up C type for a builtin SLOP type")
-    (@spec ((String) -> (Option String)))
+  (fn primitive-to-c ((name String))
+    (@intent "Convert SLOP primitive type name to C type")
+    (@spec ((String) -> String))
     (@pure)
-    (@example "Int" -> (some "int64_t"))
-    (@example "Bool" -> (some "bool"))
-    (@example "String" -> (some "slop_string"))
-    (@example "U8" -> (some "uint8_t"))
-    (@example "Unknown" -> (none))
+    (@example ("Int") -> "int64_t")
+    (@example ("Bool") -> "uint8_t")
+    (@example ("String") -> "slop_string")
+    (@example ("Float") -> "double")
+    (@example ("U8") -> "uint8_t")
+    (@example ("I64") -> "int64_t")
     (cond
-      ((string-eq name "Int") (some "int64_t"))
-      ((string-eq name "I8") (some "int8_t"))
-      ((string-eq name "I16") (some "int16_t"))
-      ((string-eq name "I32") (some "int32_t"))
-      ((string-eq name "I64") (some "int64_t"))
-      ((string-eq name "U8") (some "uint8_t"))
-      ((string-eq name "U16") (some "uint16_t"))
-      ((string-eq name "U32") (some "uint32_t"))
-      ((string-eq name "U64") (some "uint64_t"))
-      ((string-eq name "Char") (some "char"))
-      ((string-eq name "Float") (some "double"))
-      ((string-eq name "F32") (some "float"))
-      ((string-eq name "F64") (some "double"))
-      ((string-eq name "Bool") (some "bool"))
-      ((string-eq name "String") (some "slop_string"))
-      ((string-eq name "Bytes") (some "slop_bytes"))
-      ((string-eq name "Unit") (some "void"))
-      ((string-eq name "Void") (some "void"))
-      ((string-eq name "Arena") (some "slop_arena*"))
-      ((string-eq name "Milliseconds") (some "int64_t"))
-      (else (none))))
+      ((string-eq name "Int") "int64_t")
+      ((string-eq name "I8") "int8_t")
+      ((string-eq name "I16") "int16_t")
+      ((string-eq name "I32") "int32_t")
+      ((string-eq name "I64") "int64_t")
+      ((string-eq name "U8") "uint8_t")
+      ((string-eq name "U16") "uint16_t")
+      ((string-eq name "U32") "uint32_t")
+      ((string-eq name "U64") "uint64_t")
+      ((string-eq name "Bool") "uint8_t")
+      ((string-eq name "Float") "double")
+      ((string-eq name "Char") "char")
+      ((string-eq name "String") "slop_string")
+      ((string-eq name "Unit") "void")
+      ((string-eq name "Arena") "slop_arena*")
+      (else name)))
 
-  (fn to-c-type ((ctx (Ptr TranspileContext)) (type-expr (Ptr SExpr)))
-    (@intent "Convert SLOP type expression to C type string")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
-    (@pre (!= ctx nil))
-    (@pre (!= type-expr nil))
-    (let ((arena (. (deref ctx) arena)))
-      (match (deref type-expr)
-        ((symbol sym)
-          (let ((name (. sym name)))
-            (match (lookup-builtin-type name)
-              ((some c-type) c-type)
-              ((none)
-                ;; User-defined type - use qualified name with module prefix
-                (to-qualified-type-name arena ctx name)))))
-        ((list lst)
-          (let ((items (. lst items)))
-            (match (list-get items 0)
-              ((some head)
-                (match (deref head)
-                  ((symbol s)
-                    (let ((op (. s name)))
-                      (cond
-                        ((string-eq op "Ptr")
-                          (match (list-get items 1)
-                            ((some inner)
-                              ;; Check if inner type is an array type alias
-                              (match (deref inner)
-                                ((symbol inner-sym)
-                                  ;; Look up if this is an array type
-                                  (match (ctx-lookup-array-element ctx (. inner-sym name))
-                                    ((some elem-type)
-                                      ;; Array type - use element pointer: int64_t*
-                                      (string-concat arena elem-type "*"))
-                                    ((none)
-                                      ;; Not an array type - normal handling
-                                      (string-concat arena (to-c-type ctx inner) "*"))))
-                                (_ ;; Inner is a complex expression, use normal handling
-                                   (string-concat arena (to-c-type ctx inner) "*"))))
-                            ((none) "void*")))
-                        ((string-eq op "Option")
-                          (match (list-get items 1)
-                            ((some inner)
-                              (let ((inner-c (to-c-type ctx inner))
-                                    (inner-id (type-to-identifier arena inner-c))
-                                    (opt-name (string-concat arena "slop_option_" inner-id)))
-                                (do
-                                  (ctx-register-option ctx opt-name inner-c)
-                                  opt-name)))
-                            ((none) "slop_option_void")))
-                        ((string-eq op "Result")
-                          (match (list-get items 1)
-                            ((some ok-expr)
-                              (match (list-get items 2)
-                                ((some err-expr)
-                                  (let ((ok-c (to-c-type ctx ok-expr))
-                                        (err-c (to-c-type ctx err-expr))
-                                        (ok-id (type-to-identifier arena ok-c))
-                                        (err-id (type-to-identifier arena err-c))
-                                        (mid (string-concat arena ok-id "_"))
-                                        (suffix (string-concat arena mid err-id))
-                                        (res-name (string-concat arena "slop_result_" suffix)))
-                                    (do
-                                      (ctx-register-result ctx res-name ok-c err-c)
-                                      res-name)))
-                                ((none) "slop_result_void_void")))
-                            ((none) "slop_result_void_void")))
-                        ((string-eq op "List")
-                          (match (list-get items 1)
-                            ((some elem-expr)
-                              (let ((elem-c (to-c-type ctx elem-expr))
-                                    (elem-id (type-to-identifier arena elem-c))
-                                    (list-name (string-concat arena "slop_list_" elem-id))
-                                    (opt-name (string-concat arena "slop_option_" elem-id)))
-                                (do
-                                  (ctx-register-list ctx list-name elem-c)
-                                  ;; Also register Option<T> since list-get returns Option
-                                  (ctx-register-option ctx opt-name elem-c)
-                                  list-name)))
-                            ((none) "slop_list_void")))
-                        ((string-eq op "Map")
-                          (match (list-get items 1)
-                            ((some key-expr)
-                              (match (list-get items 2)
-                                ((some val-expr)
-                                  (let ((key-c (to-c-type ctx key-expr))
-                                        (val-c (to-c-type ctx val-expr))
-                                        (key-id (type-to-identifier arena key-c))
-                                        (val-id (type-to-identifier arena val-c))
-                                        (mid (string-concat arena key-id "_"))
-                                        (suffix (string-concat arena mid val-id))
-                                        (map-name (string-concat arena "slop_map_" suffix)))
-                                    (do
-                                      (ctx-register-map ctx map-name key-c val-c)
-                                      map-name)))
-                                ((none) "slop_map_void_void")))
-                            ((none) "slop_map_void_void")))
-                        ((string-eq op "Int")
-                          (if (> (list-len items) 1)
-                            (let ((bounds (get-range-bounds type-expr)))
-                              (select-int-type
-                                (. bounds has-min)
-                                (. bounds min-val)
-                                (. bounds has-max)
-                                (. bounds max-val)))
-                            "int64_t"))
-                        ((string-eq op "Array") (to-c-type-name arena "array"))
-                        (else (to-c-type-name arena op)))))
-                  (_ "void")))
-              ((none) "void"))))
-        (_ "void"))))
-
-  (fn is-pointer-type ((type-expr (Ptr SExpr)))
-    (@intent "Check if type expression is (Ptr T)")
-    (@spec (((Ptr SExpr)) -> Bool))
-    (@pre (!= type-expr nil))
+  (fn is-primitive-type ((name String))
+    (@intent "Check if type name is a primitive type")
+    (@spec ((String) -> Bool))
     (@pure)
-    (is-form type-expr "Ptr"))
+    (@example ("Int") -> true)
+    (@example ("MyRecord") -> false)
+    (or (string-eq name "Int")
+        (string-eq name "I8")
+        (string-eq name "I16")
+        (string-eq name "I32")
+        (string-eq name "I64")
+        (string-eq name "U8")
+        (string-eq name "U16")
+        (string-eq name "U32")
+        (string-eq name "U64")
+        (string-eq name "Bool")
+        (string-eq name "Float")
+        (string-eq name "Char")
+        (string-eq name "String")
+        (string-eq name "Unit")
+        (string-eq name "Arena")))
 
-  (fn is-string-type ((type-expr (Ptr SExpr)))
-    (@intent "Check if type expression is String")
-    (@spec (((Ptr SExpr)) -> Bool))
-    (@pre (!= type-expr nil))
+  (fn is-builtin-type ((name String))
+    (@intent "Check if type name is a builtin (primitive or container)")
+    (@spec ((String) -> Bool))
     (@pure)
-    (match (deref type-expr)
-      ((symbol sym) (string-eq (. sym name) "String"))
-      (_ false)))
+    (@example ("Int") -> true)
+    (@example ("List") -> true)
+    (@example ("MyRecord") -> false)
+    (or (is-primitive-type name)
+        (string-eq name "Ptr")
+        (string-eq name "List")
+        (string-eq name "Map")
+        (string-eq name "Option")
+        (string-eq name "Result")
+        (string-eq name "Array")))
 
-  (fn is-void-type ((type-expr (Ptr SExpr)))
-    (@intent "Check if type expression is Unit or Void")
-    (@spec (((Ptr SExpr)) -> Bool))
-    (@pre (!= type-expr nil))
-    (@pure)
-    (match (deref type-expr)
-      ((symbol sym)
-        (or (string-eq (. sym name) "Unit") (string-eq (. sym name) "Void")))
-      (_ false)))
+  ;; ============================================================
+  ;; Range Type Optimization
+  ;; ============================================================
 
-  (fn is-option-type ((type-expr (Ptr SExpr)))
-    (@intent "Check if type expression is (Option T)")
-    (@spec (((Ptr SExpr)) -> Bool))
-    (@pre (!= type-expr nil))
+  (fn optimal-int-type ((bounds RangeBounds))
+    (@intent "Select smallest C integer type that can hold the range")
+    (@spec ((RangeBounds) -> String))
     (@pure)
-    (is-form type-expr "Option"))
-
-  (fn is-result-type ((type-expr (Ptr SExpr)))
-    (@intent "Check if type expression is (Result T E)")
-    (@spec (((Ptr SExpr)) -> Bool))
-    (@pre (!= type-expr nil))
-    (@pure)
-    (is-form type-expr "Result"))
-
-  (fn is-list-type ((type-expr (Ptr SExpr)))
-    (@intent "Check if type expression is (List T)")
-    (@spec (((Ptr SExpr)) -> Bool))
-    (@pre (!= type-expr nil))
-    (@pure)
-    (is-form type-expr "List"))
-
-  (fn is-map-type ((type-expr (Ptr SExpr)))
-    (@intent "Check if type expression is (Map K V)")
-    (@spec (((Ptr SExpr)) -> Bool))
-    (@pre (!= type-expr nil))
-    (@pure)
-    (is-form type-expr "Map"))
-
-  (fn get-inner-type ((type-expr (Ptr SExpr)))
-    (@intent "Get inner type from Option, List, or Ptr")
-    (@spec (((Ptr SExpr)) -> (Option (Ptr SExpr))))
-    (@pre (!= type-expr nil))
-    (@pure)
-    (match (deref type-expr)
-      ((list lst) (list-get (. lst items) 1))
-      (_ (none))))
-
-  (fn get-result-types ((type-expr (Ptr SExpr)))
-    (@intent "Get Ok and Error types from Result")
-    (@spec (((Ptr SExpr)) -> (Option ResultTypePair)))
-    (@pre (!= type-expr nil))
-    (@pure)
-    (match (deref type-expr)
-      ((list lst)
-        (let ((items (. lst items)))
-          (if (>= (list-len items) 3)
-            (match (list-get items 1)
-              ((some ok-type)
-                (match (list-get items 2)
-                  ((some err-type) (some (ResultTypePair ok-type err-type)))
-                  ((none) (none))))
-              ((none) (none)))
-            (none))))
-      (_ (none))))
-
-  (fn get-map-types ((type-expr (Ptr SExpr)))
-    (@intent "Get Key and Value types from Map")
-    (@spec (((Ptr SExpr)) -> (Option MapTypePair)))
-    (@pre (!= type-expr nil))
-    (@pure)
-    (match (deref type-expr)
-      ((list lst)
-        (let ((items (. lst items)))
-          (if (>= (list-len items) 3)
-            (match (list-get items 1)
-              ((some key-type)
-                (match (list-get items 2)
-                  ((some val-type) (some (MapTypePair key-type val-type)))
-                  ((none) (none))))
-              ((none) (none)))
-            (none))))
-      (_ (none))))
-
-  (fn get-range-bounds ((type-expr (Ptr SExpr)))
-    (@intent "Extract min/max bounds from range type (Int min .. max)")
-    (@spec (((Ptr SExpr)) -> RangeBoundsInfo))
-    (@pre (!= type-expr nil))
-    (@pure)
-    (match (deref type-expr)
-      ((list lst)
-        (let ((items (. lst items))
-              (len (list-len items)))
+    (@example ((RangeBounds true false 0 0)) -> "uint64_t")
+    (@example ((RangeBounds true true 0 255)) -> "uint8_t")
+    (@example ((RangeBounds true true -128 127)) -> "int8_t")
+    (let ((has-min (. bounds has-min))
+          (has-max (. bounds has-max))
+          (min-val (. bounds min-val))
+          (max-val (. bounds max-val)))
+      (cond
+        ;; Unbounded or semi-bounded - use int64_t
+        ((not has-max) "int64_t")
+        ((not has-min) "int64_t")
+        ;; Check if unsigned (min >= 0)
+        ((>= min-val 0)
           (cond
-            ((== len 4)
-              (match (list-get items 1)
-                ((some min-expr)
-                  (match (deref min-expr)
-                    ((number n)
-                      (match (list-get items 3)
-                        ((some max-expr)
-                          (match (deref max-expr)
-                            ((number m)
-                              (RangeBoundsInfo
-                                true
-                                (. n int-value)
-                                true
-                                (. m int-value)))
-                            (_ (RangeBoundsInfo true (. n int-value) false 0))))
-                        ((none) (RangeBoundsInfo true (. n int-value) false 0))))
-                    (_ (RangeBoundsInfo false 0 false 0))))
-                ((none) (RangeBoundsInfo false 0 false 0))))
-            ((== len 3)
-              (match (list-get items 1)
-                ((some second)
-                  (match (deref second)
-                    ((number n) (RangeBoundsInfo true (. n int-value) false 0))
-                    ((symbol s)
-                      (if (string-eq (. s name) "..")
-                        (match (list-get items 2)
-                          ((some max-expr)
-                            (match (deref max-expr)
-                              ((number m)
-                                (RangeBoundsInfo false 0 true (. m int-value)))
-                              (_ (RangeBoundsInfo false 0 false 0))))
-                          ((none) (RangeBoundsInfo false 0 false 0)))
-                        (RangeBoundsInfo false 0 false 0)))
-                    (_ (RangeBoundsInfo false 0 false 0))))
-                ((none) (RangeBoundsInfo false 0 false 0))))
-            (else (RangeBoundsInfo false 0 false 0)))))
-      (_ (RangeBoundsInfo false 0 false 0))))
+            ((<= max-val 255) "uint8_t")
+            ((<= max-val 65535) "uint16_t")
+            ((<= max-val 4294967295) "uint32_t")
+            (else "uint64_t")))
+        ;; Signed types
+        (else
+          (cond
+            ((and (>= min-val -128) (<= max-val 127)) "int8_t")
+            ((and (>= min-val -32768) (<= max-val 32767)) "int16_t")
+            ((and (>= min-val -2147483648) (<= max-val 2147483647)) "int32_t")
+            (else "int64_t"))))))
 
-  (fn select-int-type ((has-min Bool) (min-val I64) (has-max Bool) (max-val I64))
-    (@intent "Select smallest C integer type that fits the range")
-    (@spec ((Bool I64 Bool I64) -> String))
+  (fn range-to-c-int ((bounds RangeBounds))
+    (@intent "Convert range bounds to optimal C integer type")
+    (@spec ((RangeBounds) -> String))
     (@pure)
-    (@example true 0 true 255 -> "uint8_t")
-    (@example true 0 true 65535 -> "uint16_t")
-    (@example true -128 true 127 -> "int8_t")
-    (@example false 0 false 0 -> "int64_t")
-    (cond
-      ((and has-min (>= min-val 0))
-        (cond
-          ((and has-max (<= max-val 255)) "uint8_t")
-          ((and has-max (<= max-val 65535)) "uint16_t")
-          ((and has-max (<= max-val 4294967295)) "uint32_t")
-          (else "uint64_t")))
-      ((and has-min (>= min-val -128) has-max (<= max-val 127))
-        "int8_t")
-      ((and has-min (>= min-val -32768) has-max (<= max-val 32767))
-        "int16_t")
-      ((and has-min (>= min-val -2147483648) has-max (<= max-val 2147483647))
-        "int32_t")
-      (else "int64_t"))))
+    (optimal-int-type bounds))
+
+  ;; ============================================================
+  ;; Name Mangling
+  ;; ============================================================
+
+  (fn mangle-identifier ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Convert SLOP identifier to valid C identifier")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (@pre {(string-len name) > 0})
+    (@example (ctx "my-func") -> "my_func")
+    (@example (ctx "set!") -> "set_bang")
+    (@example (ctx "nil?") -> "nil_p")
+    (let ((arena (. (deref ctx) arena))
+          (len (string-len name))
+          (mut result "")
+          (mut i 0))
+      (while (< i len)
+        (let ((c (char-at name (cast (Int 0 ..) i))))
+          (cond
+            ((== c 45)  ;; '-' -> '_'
+              (set! result (string-concat arena result "_")))
+            ((== c 33)  ;; '!' -> '_bang'
+              (set! result (string-concat arena result "_bang")))
+            ((== c 63)  ;; '?' -> '_p'
+              (set! result (string-concat arena result "_p")))
+            ((== c 62)  ;; '>' -> '_gt'
+              (set! result (string-concat arena result "_gt")))
+            ((== c 60)  ;; '<' -> '_lt'
+              (set! result (string-concat arena result "_lt")))
+            ((== c 61)  ;; '=' -> '_eq'
+              (set! result (string-concat arena result "_eq")))
+            ((== c 43)  ;; '+' -> '_plus'
+              (set! result (string-concat arena result "_plus")))
+            ((== c 42)  ;; '*' -> '_star'
+              (set! result (string-concat arena result "_star")))
+            ((== c 47)  ;; '/' -> '_slash'
+              (set! result (string-concat arena result "_slash")))
+            (else
+              ;; Use string-slice to get single character as string
+              (set! result (string-concat arena result (string-slice name i (+ i 1)))))))
+        (set! i (+ i 1)))
+      result))
+
+  (fn mangle-type-name ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Convert SLOP type name to C type identifier")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (@pre {(string-len name) > 0})
+    (@example (ctx "MyType") -> "MyType")
+    (@example (ctx "parse-result") -> "parse_result")
+    (mangle-identifier ctx name))
+
+  (fn mangle-fn-name ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Convert SLOP function name to C function identifier")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (@pre {(string-len name) > 0})
+    (@example (ctx "my-function") -> "my_function")
+    (@example (ctx "empty?") -> "empty_p")
+    (mangle-identifier ctx name))
+
+  ;; ============================================================
+  ;; Qualified Names
+  ;; ============================================================
+
+  (fn qualified-type-name ((ctx (Ptr TranspileContext)) (type-name String))
+    (@intent "Generate qualified C type name with module prefix if enabled")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (@example (ctx "SExpr") -> "parser_SExpr")
+    (let ((arena (. (deref ctx) arena))
+          (mangled (mangle-type-name ctx type-name)))
+      (if (ctx-prefixing-enabled ctx)
+        (match (ctx-get-module ctx)
+          ((some mod-name)
+            (string-concat arena (string-concat arena (mangle-identifier ctx mod-name) "_") mangled))
+          ((none) mangled))
+        mangled)))
+
+  (fn qualified-fn-name ((ctx (Ptr TranspileContext)) (fn-name String))
+    (@intent "Generate qualified C function name with module prefix if enabled")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (@example (ctx "parse") -> "parser_parse")
+    (let ((arena (. (deref ctx) arena))
+          (mangled (mangle-fn-name ctx fn-name)))
+      (if (ctx-prefixing-enabled ctx)
+        (match (ctx-get-module ctx)
+          ((some mod-name)
+            (string-concat arena (string-concat arena (mangle-identifier ctx mod-name) "_") mangled))
+          ((none) mangled))
+        mangled)))
+
+  ;; ============================================================
+  ;; Type Conversion
+  ;; ============================================================
+
+  (fn slop-type-to-c ((ctx (Ptr TranspileContext)) (typ (Ptr ResolvedType)))
+    (@intent "Convert resolved SLOP type to C type string")
+    (@spec (((Ptr TranspileContext) (Ptr ResolvedType)) -> String))
+    (@pre {ctx != nil})
+    (@pre {typ != nil})
+    (@example (ctx int-type) -> "int64_t")
+    (@example (ctx ptr-to-sexpr) -> "parser_SExpr*")
+    (let ((arena (. (deref ctx) arena))
+          (kind (. (deref typ) kind))
+          (name (. (deref typ) name)))
+      (cond
+        ;; Primitive types
+        ((== kind 'rk-primitive)
+          (primitive-to-c name))
+        ;; Range types
+        ((== kind 'rk-range)
+          (match (. (deref typ) range)
+            ((some bounds) (range-to-c-int bounds))
+            ((none) "int64_t")))
+        ;; Pointer types
+        ((== kind 'rk-ptr)
+          (match (. (deref typ) inner-type)
+            ((some inner)
+              (string-concat arena (slop-type-to-c ctx inner) "*"))
+            ((none) "void*")))
+        ;; List types
+        ((== kind 'rk-list)
+          (match (. (deref typ) inner-type)
+            ((some inner)
+              (string-concat arena "slop_list_" (slop-type-to-c ctx inner)))
+            ((none) "slop_list")))
+        ;; Option types
+        ((== kind 'rk-option)
+          (match (. (deref typ) inner-type)
+            ((some inner)
+              (string-concat arena "slop_option_" (slop-type-to-c ctx inner)))
+            ((none) "slop_option")))
+        ;; Result types
+        ((== kind 'rk-result)
+          (match (. (deref typ) inner-type)
+            ((some ok-type)
+              (match (. (deref typ) inner-type2)
+                ((some err-type)
+                  (string-concat arena (string-concat arena "slop_result_" (slop-type-to-c ctx ok-type))
+                                 (string-concat arena "_" (slop-type-to-c ctx err-type))))
+                ((none) (string-concat arena "slop_result_" (slop-type-to-c ctx ok-type)))))
+            ((none) "slop_result")))
+        ;; Map types
+        ((== kind 'rk-map)
+          "slop_map")
+        ;; Array types
+        ((== kind 'rk-array)
+          (match (. (deref typ) inner-type)
+            ((some inner)
+              (string-concat arena (slop-type-to-c ctx inner) "*"))
+            ((none) "void*")))
+        ;; User-defined types (record, union, enum)
+        (else
+          (qualified-type-name ctx name)))))
+
+  (fn needs-pointer-access ((typ (Ptr ResolvedType)))
+    (@intent "Check if field access on this type needs -> instead of .")
+    (@spec (((Ptr ResolvedType)) -> Bool))
+    (@pure)
+    (@pre {typ != nil})
+    (@example (ptr-type) -> true)
+    (@example (record-type) -> false)
+    (== (. (deref typ) kind) 'rk-ptr)))

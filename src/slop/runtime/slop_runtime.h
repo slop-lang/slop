@@ -328,6 +328,13 @@ static inline slop_map slop_map_new(slop_arena* arena, size_t capacity) {
     return (slop_map){0, capacity, entries};
 }
 
+/* Return pointer to arena-allocated map (for slop_map* type) */
+static inline slop_map* slop_map_new_ptr(slop_arena* arena, size_t capacity) {
+    slop_map* map = (slop_map*)slop_arena_alloc(arena, sizeof(slop_map));
+    *map = slop_map_new(arena, capacity);
+    return map;
+}
+
 static inline void* slop_map_get(slop_map* map, slop_string key) {
     uint64_t hash = slop_hash_string(key);
     size_t idx = hash % map->cap;
@@ -690,6 +697,7 @@ SLOP_OPTION_DEFINE(int64_t, slop_option_int)
 SLOP_OPTION_DEFINE(double, slop_option_float)
 SLOP_OPTION_DEFINE(slop_string, slop_option_string)
 SLOP_OPTION_DEFINE(void*, slop_option_ptr)
+SLOP_OPTION_DEFINE(bool, slop_option_bool)
 
 /* Pre-define common string-keyed maps (must come after SLOP_OPTION_DEFINE) */
 SLOP_STRING_MAP_DEFINE(slop_string, slop_map_string_string, slop_option_string)

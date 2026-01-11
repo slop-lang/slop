@@ -707,7 +707,8 @@
     (@pre (!= em nil))
     (@pre (!= type-expr nil))
     (let ((arena (. (deref ctx) arena))
-          (c-name (to-qualified-type-name arena ctx name)))
+          (c-name (to-qualified-type-name arena ctx name))
+          (variants (list-new arena CVariantInfo)))
       ;; struct Name { uint8_t tag; union { T1 v1; T2 v2; } data; };
       ;; #define Name_v1_TAG 0
       ;; #define Name_v2_TAG 1
@@ -755,7 +756,7 @@
                         (string-concat arena c-name
                           (string-concat arena " " (string-concat arena c-name ";")))))
         (emit-blank em)
-        ;; Emit tag #defines: #define Type_variant_TAG n
+        ;; Emit tag #defines and register variants: #define Type_variant_TAG n
         (match (deref type-expr)
           ((list lst)
             (let ((items (. lst items))
@@ -773,16 +774,26 @@
                                 (let ((vname (. vsym name))
                                       (tag (string-concat arena c-name
                                               (string-concat arena "_"
-                                                (string-concat arena (to-c-name arena vname) "_TAG")))))
+                                                (string-concat arena (to-c-name arena vname) "_TAG"))))
+                                      (has-payload (> (list-len (. vlist items)) 1))
+                                      (payload-type (if has-payload
+                                                      (match (list-get (. vlist items) 1)
+                                                        ((some t-expr) (to-c-type ctx t-expr))
+                                                        ((none) "void"))
+                                                      "void")))
                                   (emit-line em (string-concat arena "#define "
                                                   (string-concat arena tag
                                                     (string-concat arena " " (int-to-string arena idx)))))
+                                  ;; Register variant info with original name for lookup
+                                  (list-push variants (CVariantInfo vname tag idx has-payload payload-type))
                                   (set! idx (+ idx 1))))
                               (_ (do))))
                           ((none) (do))))
                       (_ (do))))
                   ((none) (do))))))
           (_ (do)))
+        ;; Register all variants for this union type
+        (ctx-register-variants ctx c-name variants)
         (emit-blank em))))
 
   (fn transpile-range-type ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))

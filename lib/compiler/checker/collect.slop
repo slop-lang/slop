@@ -16,6 +16,7 @@
   (import types (ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
                  FnSignature ParamInfo
                  resolved-type-new resolved-variant-new resolved-field-new
+                 resolved-type-set-inner
                  fn-signature-new param-info-new))
   (import env (TypeEnv env-arena env-register-type env-lookup-type
                env-register-function env-set-module env-get-module
@@ -88,6 +89,12 @@
                             (let ((resolved (resolved-type-new arena 'rk-union type-name (none) type-name)))
                               (env-register-type env resolved)
                               (collect-union-variants env arena resolved type-expr)))
+                          ;; Range: (type Name (BaseType min .. max))
+                          ((is-range-type-expr type-expr)
+                            (let ((base-type (get-range-base-type env arena type-expr))
+                                  (resolved (resolved-type-new arena 'rk-range type-name (none) type-name)))
+                              (resolved-type-set-inner resolved base-type)
+                              (env-register-type env resolved)))
                           ;; Other - use placeholder
                           (else
                             (let ((resolved (resolved-type-new arena 'rk-primitive type-name (none) type-name)))
@@ -193,6 +200,40 @@
             ((string-eq type-name "Bool") (some (env-get-bool-type env)))
             ((string-eq type-name "String") (some (env-get-string-type env)))
             (else (none)))))))
+
+  (fn is-range-type-expr ((type-expr (Ptr SExpr)))
+    (@intent "Check if expression is a range type like (Int 0 .. 127)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    ;; Range type is a list like (Int 0 .. 127) or (Int 0 127)
+    ;; First element is the base type (a symbol like Int)
+    (if (not (sexpr-is-list type-expr))
+      false
+      (if (< (sexpr-list-len type-expr) 2)
+        false
+        (match (sexpr-list-get type-expr 0)
+          ((some first-elem)
+            (let ((base-name (sexpr-get-symbol-name first-elem)))
+              ;; Check if it's a known base type for ranges
+              (or (string-eq base-name "Int")
+                  (string-eq base-name "Float"))))
+          ((none) false)))))
+
+  (fn get-range-base-type ((env (Ptr TypeEnv)) (arena Arena) (type-expr (Ptr SExpr)))
+    (@intent "Get the base type from a range expression like (Int 0 .. 127)")
+    (@spec (((Ptr TypeEnv) Arena (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (match (sexpr-list-get type-expr 0)
+      ((some first-elem)
+        (let ((base-name (sexpr-get-symbol-name first-elem)))
+          (cond
+            ((string-eq base-name "Int") (env-get-int-type env))
+            ((string-eq base-name "Float")
+              (match (env-lookup-type env "Float")
+                ((some t) t)
+                ((none) (env-get-int-type env))))
+            (else (env-get-int-type env)))))
+      ((none) (env-get-int-type env))))
 
   (fn get-type-name-from-expr ((expr (Ptr SExpr)))
     (@intent "Extract type name from an expression")

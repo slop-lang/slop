@@ -14,7 +14,8 @@
                   sexpr-line sexpr-col))
   (import context (TranspileContext ctx-push-scope ctx-pop-scope
                    ctx-register-var ctx-lookup-var ctx-mark-pointer
-                   ctx-get-return-type ctx-lookup-variants ctx-get-type-env))
+                   ctx-get-return-type ctx-lookup-variants ctx-get-type-env
+                   ctx-find-union-with-variant))
   (import transpiler-types (VarEntry CVariantInfo))
   (import emit (Emitter emit-line emit-blank indent dedent))
   (import expr (transpile-expr is-pointer-expr infer-expr-c-type))
@@ -1133,6 +1134,82 @@
         (dedent em)
         (emit-line em "}"))))
 
+  (fn extract-variant-from-pattern ((pattern-expr (Ptr SExpr)))
+    (@intent "Extract variant name from a pattern expression")
+    (@spec (((Ptr SExpr)) -> (Option String)))
+    (@pure)
+    (match (deref pattern-expr)
+      ;; Simple symbol pattern: symbol or _
+      ((symbol pat-sym)
+        (if (string-eq (. pat-sym name) "_")
+          (none)  ;; Wildcard, not useful
+          (some (. pat-sym name))))
+      ;; Binding pattern: (variant binding) - a list where first item is the variant
+      ((list pattern-lst)
+        (match (list-get (. pattern-lst items) 0)
+          ((some variant-expr)
+            ;; Recursively extract from the inner element
+            (extract-variant-from-pattern variant-expr))
+          ((none) (none))))
+      (_ (none))))
+
+  (fn extract-first-variant-from-clauses ((arena Arena) (clauses (List (Ptr SExpr))))
+    (@intent "Extract the first variant name from match clauses for type inference")
+    (@spec ((Arena (List (Ptr SExpr))) -> (Option String)))
+    (@pure)
+    ;; Look at first clause pattern to get variant name
+    ;; Try multiple clauses if first is a wildcard
+    (let ((len (list-len clauses)))
+      (for (i 0 len)
+        (match (list-get clauses i)
+          ((some clause-expr)
+            (match (deref clause-expr)
+              ((list clause-lst)
+                (match (list-get (. clause-lst items) 0)
+                  ((some pattern-expr)
+                    (match (extract-variant-from-pattern pattern-expr)
+                      ((some name) (return (some name)))
+                      ((none) (do))))  ;; Try next clause
+                  ((none) (do))))
+              (_ (do))))
+          ((none) (do))))
+      (none)))
+
+  (fn is-known-sexpr-variant ((name String))
+    (@intent "Check if name is a known parser SExpr variant for bootstrapping")
+    (@spec ((String) -> Bool))
+    (@pure)
+    ;; Hardcoded list of parser_SExpr variants for bootstrap
+    (or (string-eq name "symbol")
+        (or (string-eq name "string")
+            (or (string-eq name "number")
+                (string-eq name "list")))))
+
+  (fn resolve-union-type ((ctx (Ptr TranspileContext)) (arena Arena)
+                          (union-type (Option String)) (clauses (List (Ptr SExpr))))
+    (@intent "Resolve actual union type, using pattern-based inference if needed")
+    (@spec (((Ptr TranspileContext) Arena (Option String) (List (Ptr SExpr))) -> String))
+    (@pre (!= ctx nil))
+    ;; Check if provided type is usable
+    (let ((raw-type (match union-type
+                      ((some t) t)
+                      ((none) ""))))
+      ;; If type is __auto_type or empty, try to infer from patterns
+      (if (or (string-eq raw-type "")
+              (string-eq raw-type "__auto_type"))
+        (match (extract-first-variant-from-clauses arena clauses)
+          ((some variant-name)
+            ;; First try context lookup
+            (match (ctx-find-union-with-variant ctx variant-name)
+              ((some found-type) found-type)
+              ((none)
+                ;; Bootstrap fallback: if it's a known SExpr variant, use parser_SExpr
+                (if (is-known-sexpr-variant variant-name)
+                  "parser_SExpr"
+                  raw-type))))
+          ((none) raw-type))  ;; Fall back if can't extract variant
+        raw-type)))
+
   (fn transpile-union-match ((ctx (Ptr TranspileContext)) (em (Ptr Emitter))
                              (target-code String) (union-type (Option String))
                              (clauses (List (Ptr SExpr))) (is-return Bool))
@@ -1143,9 +1220,7 @@
     ;; switch (target.tag) { case TAG_variant: binding = target.data.variant; ... }
     (let ((arena (. (deref em) arena))
           (len (list-len clauses))
-          (type-prefix (match union-type
-                         ((some t) t)
-                         ((none) "")))
+          (type-prefix (resolve-union-type ctx arena union-type clauses))
           (mut i 0))
       (do
         (emit-line em (string-concat arena "switch (" (string-concat arena target-code ".tag) {")))

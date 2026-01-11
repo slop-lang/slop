@@ -33,44 +33,43 @@
   ;; ============================================================
 
   (fn get-arena-from-expr ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
-    (@intent "Extract arena expression from field access base")
+    (@intent "Get arena for list/map operations - extracts from ctx->arena or uses 'arena'")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
     (@pre (!= ctx nil))
     (@pre (!= expr nil))
-    ;; For (. (deref ptr) field) -> ptr->arena
-    ;; For (. obj field) -> obj.arena
-    ;; Otherwise fallback to "arena"
     (let ((arena (. (deref ctx) arena)))
+      ;; For field access patterns like (. (deref ptr) field), use ptr->arena
+      ;; This handles cases where the object has an arena field
       (match (deref expr)
         ((list lst)
           (let ((items (. lst items)))
             (match (list-get items 0)
-              ((some head-expr)
-                (match (deref head-expr)
-                  ((symbol head-sym)
-                    (if (string-eq (. head-sym name) ".")
-                      ;; This is a field access
+              ((some first)
+                (match (deref first)
+                  ((symbol sym)
+                    (if (string-eq (. sym name) ".")
+                      ;; Field access: (. obj field) or (. (deref ptr) field)
                       (match (list-get items 1)
-                        ((some base-expr)
-                          (match (deref base-expr)
-                            ((list base-lst)
-                              ;; Check if base is (deref ptr)
-                              (match (list-get (. base-lst items) 0)
-                                ((some base-head)
-                                  (match (deref base-head)
-                                    ((symbol base-sym)
-                                      (if (string-eq (. base-sym name) "deref")
-                                        ;; (deref ptr) -> ptr->arena
-                                        (match (list-get (. base-lst items) 1)
-                                          ((some ptr-expr)
-                                            (string-concat arena (transpile-expr ctx ptr-expr (none)) "->arena"))
-                                          ((none) "arena"))
-                                        "arena"))
-                                    (_ "arena")))
-                                ((none) "arena")))
-                            ((symbol base-sym)
-                              ;; Simple variable: var.arena
-                              (string-concat arena (to-c-name arena (. base-sym name)) ".arena"))
+                        ((some obj-expr)
+                          (match (deref obj-expr)
+                            ;; (. (deref ptr) field) -> ptr->arena
+                            ((list inner-lst)
+                              (let ((inner-items (. inner-lst items)))
+                                (match (list-get inner-items 0)
+                                  ((some inner-first)
+                                    (match (deref inner-first)
+                                      ((symbol inner-sym)
+                                        (if (string-eq (. inner-sym name) "deref")
+                                          (match (list-get inner-items 1)
+                                            ((some ptr-expr)
+                                              (match (deref ptr-expr)
+                                                ((symbol ptr-sym)
+                                                  (string-concat arena (. ptr-sym name) "->arena"))
+                                                (_ "arena")))
+                                            ((none) "arena"))
+                                          "arena"))
+                                      (_ "arena")))
+                                  ((none) "arena"))))
                             (_ "arena")))
                         ((none) "arena"))
                       "arena"))
@@ -256,6 +255,7 @@
                 ((string-eq op "list-len") (transpile-list-len ctx lst))
 
                 ;; Map operations
+                ((string-eq op "map-new") (transpile-map-new ctx lst))
                 ((string-eq op "map-put") (transpile-map-put ctx lst))
                 ((string-eq op "map-get") (transpile-map-get ctx lst))
                 ((string-eq op "map-has") (transpile-map-has ctx lst))
@@ -754,6 +754,20 @@
       ((some expr)
         (let ((list-expr (transpile-expr ctx expr (none))))
           (string-concat (. (deref ctx) arena) list-expr ".len")))))
+
+  (fn transpile-map-new ((ctx (Ptr TranspileContext)) (lst SExprList))
+    (@intent "Transpile map-new (map-new arena) -> slop_map_new(arena, 16)")
+    (@spec (((Ptr TranspileContext) SExprList) -> String))
+    (@pre (!= ctx nil))
+    (let ((items (. lst items))
+          (arena (. (deref ctx) arena)))
+      ;; map-new takes an arena argument
+      (match (list-get items 1)
+        ((some arena-expr)
+          (let ((arena-str (transpile-expr ctx arena-expr (none))))
+            (string-concat arena "slop_map_new("
+              (string-concat arena arena-str ", 16)"))))
+        ((none) "slop_map_new(arena, 16)"))))
 
   (fn transpile-map-put ((ctx (Ptr TranspileContext)) (lst SExprList))
     (@intent "Transpile map-put (map-put map key val)")
