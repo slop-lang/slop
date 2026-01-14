@@ -1,0 +1,890 @@
+;; ============================================================
+;; SLOP Native Transpiler - Statement Module
+;;
+;; Transpiles SLOP statements to C code.
+;; ============================================================
+
+(module stmt
+  (export
+    ;; Main entry point
+    transpile-stmt
+    ;; Individual statement handlers
+    transpile-let transpile-if transpile-while
+    transpile-set transpile-when transpile-do
+    transpile-with-arena transpile-cond
+    transpile-for transpile-for-each
+    ;; Statement form detection
+    is-stmt-form)
+
+  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
+  (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
+                   ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
+                   ctx-get-current-return-type
+                   to-c-type-prefixed))
+  (import ctype (to-c-type to-c-name))
+  (import expr (transpile-expr))
+  (import strlib (starts-with ends-with))
+  (import match (transpile-match))
+
+  ;; ============================================================
+  ;; Arena-alloc Pointer Type Detection
+  ;; ============================================================
+
+  (fn get-arena-alloc-ptr-type ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Extract pointer type from arena-alloc call: (arena-alloc arena (sizeof Type)) -> Some(Type*)")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> (Option String)))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref expr)
+        ((list lst)
+          (let ((items (. lst items)))
+            (if (>= (list-len items) 3)
+              (match (list-get items 0)
+                ((some head-ptr)
+                  (match (deref head-ptr)
+                    ((symbol head-sym)
+                      (if (string-eq (. head-sym name) "arena-alloc")
+                        ;; Found arena-alloc, check size arg for sizeof
+                        (match (list-get items 2)
+                          ((some size-expr)
+                            (extract-sizeof-type-opt ctx size-expr))
+                          ((none) (none)))
+                        (none)))
+                    (_ (none))))
+                ((none) (none)))
+              (none))))
+        (_ (none)))))
+
+  (fn extract-sizeof-type-opt ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Extract type from (sizeof Type) or bare type symbol and return Some(Type*)")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> (Option String)))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref expr)
+        ;; Check for bare type symbol (arena-alloc arena TypeName)
+        ((symbol sym)
+          (let ((type-name (. sym name)))
+            (match (ctx-lookup-type ctx type-name)
+              ((some entry)
+                ;; Known type - return pointer type
+                (some (ctx-str ctx (. entry c-name) "*")))
+              ((none) (none)))))
+        ;; Check for (sizeof Type) expression
+        ((list lst)
+          (let ((items (. lst items)))
+            (if (>= (list-len items) 2)
+              (match (list-get items 0)
+                ((some head-ptr)
+                  (match (deref head-ptr)
+                    ((symbol head-sym)
+                      (if (string-eq (. head-sym name) "sizeof")
+                        (match (list-get items 1)
+                          ((some type-expr)
+                            (let ((c-type (to-c-type-prefixed ctx type-expr)))
+                              (some (ctx-str ctx c-type "*"))))
+                          ((none) (none)))
+                        (none)))
+                    (_ (none))))
+                ((none) (none)))
+              (none))))
+        (_ (none)))))
+
+  ;; ============================================================
+  ;; Statement Form Detection
+  ;; ============================================================
+
+  (fn is-stmt-form ((expr (Ptr SExpr)))
+    (@intent "Check if expression should be transpiled as a statement")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 1)
+            false
+            (match (list-get items 0)
+              ((some head-expr)
+                (match (deref head-expr)
+                  ((symbol sym)
+                    (let ((name (. sym name)))
+                      (or (string-eq name "let")
+                          (string-eq name "let*")
+                          (string-eq name "if")
+                          (string-eq name "when")
+                          (string-eq name "while")
+                          (string-eq name "for")
+                          (string-eq name "for-each")
+                          (string-eq name "set!")
+                          (string-eq name "do")
+                          (string-eq name "match")
+                          (string-eq name "cond")
+                          (string-eq name "with-arena"))))
+                  (else false)))
+              ((none) false)))))
+      (else false)))
+
+  ;; ============================================================
+  ;; Let Binding
+  ;; ============================================================
+
+  (fn transpile-let ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (is-return Bool))
+    (@intent "Transpile a let binding")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref expr)
+        ((list lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            (if (< len 2)
+              (ctx-emit ctx "/* invalid let: missing bindings */")
+              (do
+                ;; Open new C block scope
+                (ctx-emit ctx "{")
+                (ctx-indent ctx)
+                (ctx-push-scope ctx)
+                ;; Get bindings list
+                (match (list-get items 1)
+                  ((some bindings-expr)
+                    (match (deref bindings-expr)
+                      ((list bindings-lst)
+                        ;; Process each binding
+                        (transpile-bindings ctx (. bindings-lst items)))
+                      (else (ctx-emit ctx "/* invalid bindings */"))))
+                  ((none) (ctx-emit ctx "/* missing bindings */")))
+                ;; Process body statements
+                (let ((mut i 2))
+                  (while (< i len)
+                    (match (list-get items i)
+                      ((some body-expr)
+                        (let ((is-last (== i (- len 1))))
+                          (transpile-stmt ctx body-expr (and is-return is-last))))
+                      ((none) (do)))
+                    (set! i (+ i 1))))
+                ;; Close scope
+                (ctx-pop-scope ctx)
+                (ctx-dedent ctx)
+                (ctx-emit ctx "}")))))
+        (else (ctx-emit ctx "/* invalid let */")))))
+
+  (fn transpile-bindings ((ctx (Ptr TranspileContext)) (bindings (List (Ptr SExpr))))
+    (@intent "Transpile let bindings")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len bindings))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get bindings i)
+          ((some binding-expr)
+            (transpile-single-binding ctx binding-expr))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn transpile-single-binding ((ctx (Ptr TranspileContext)) (binding (Ptr SExpr)))
+    (@intent "Transpile a single let binding")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {binding != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref binding)
+        ((list binding-lst)
+          (let ((items (. binding-lst items))
+                (len (list-len items)))
+            ;; Skip 'mut' keyword if present
+            (let ((has-mut (binding-has-mut items))
+                  (start-idx (if (binding-has-mut items) 1 0)))
+              (if (< (- len start-idx) 2)
+                (ctx-emit ctx "/* invalid binding: need name and value */")
+                (match (list-get items start-idx)
+                  ((some name-expr)
+                    (match (deref name-expr)
+                      ((symbol name-sym)
+                        (let ((raw-name (. name-sym name))
+                              (var-name (to-c-name arena raw-name)))
+                          ;; Check for typed binding: (name Type init) or (mut name Type init)
+                          (if (>= (- len start-idx) 3)
+                            ;; Typed binding
+                            (match (list-get items (+ start-idx 1))
+                              ((some type-expr)
+                                (match (list-get items (+ start-idx 2))
+                                  ((some init-expr)
+                                    (let ((c-type (to-c-type-prefixed ctx type-expr))
+                                          (init-c (transpile-expr ctx init-expr)))
+                                      ;; Special case: if init is "none" and type is an option type,
+                                      ;; generate typed compound literal
+                                      (let ((final-init (if (and (string-eq init-c "none")
+                                                                 (starts-with c-type "slop_option_"))
+                                                          (ctx-str3 ctx "(" c-type "){.has_value = false}")
+                                                          init-c)))
+                                        ;; Emit declaration with type
+                                        (ctx-emit ctx (ctx-str5 ctx c-type " " var-name " = " (ctx-str ctx final-init ";")))
+                                        ;; Bind variable in scope
+                                        (ctx-bind-var ctx (VarEntry raw-name var-name c-type false has-mut)))))
+                                  ((none) (ctx-emit ctx "/* missing init */"))))
+                              ((none) (ctx-emit ctx "/* missing type */")))
+                            ;; Untyped binding: (name init)
+                            (match (list-get items (+ start-idx 1))
+                              ((some init-expr)
+                                (let ((init-c (transpile-expr ctx init-expr))
+                                      ;; Check if init is arena-alloc to get proper pointer type
+                                      (ptr-type-opt (get-arena-alloc-ptr-type ctx init-expr)))
+                                  (match ptr-type-opt
+                                    ((some ptr-type)
+                                      ;; Arena-alloc returns pointer - register as pointer type
+                                      (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
+                                      (ctx-bind-var ctx (VarEntry raw-name var-name ptr-type true has-mut)))
+                                    ((none)
+                                      ;; Regular binding
+                                      (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
+                                      (ctx-bind-var ctx (VarEntry raw-name var-name "auto" false has-mut))))))
+                              ((none) (ctx-emit ctx "/* missing init */"))))))
+                      (else (ctx-emit ctx "/* binding name must be symbol */"))))
+                  ((none) (ctx-emit ctx "/* missing binding name */")))))))
+        (else (ctx-emit ctx "/* binding must be a list */")))))
+
+  (fn binding-has-mut ((items (List (Ptr SExpr))))
+    (@intent "Check if binding starts with 'mut'")
+    (@spec (((List (Ptr SExpr))) -> Bool))
+    (if (< (list-len items) 1)
+      false
+      (match (list-get items 0)
+        ((some first)
+          (match (deref first)
+            ((symbol sym) (string-eq (. sym name) "mut"))
+            (else false)))
+        ((none) false))))
+
+  ;; ============================================================
+  ;; If Statement
+  ;; ============================================================
+
+  (fn transpile-if ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (is-return Bool))
+    (@intent "Transpile an if statement")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (< len 3)
+            (ctx-emit ctx "/* invalid if: need condition and then-branch */")
+            (do
+              ;; Get condition
+              (match (list-get items 1)
+                ((some cond-expr)
+                  (let ((cond-c (transpile-expr ctx cond-expr)))
+                    ;; Emit if
+                    (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))
+                    (ctx-indent ctx)
+                    ;; Emit then branch
+                    (match (list-get items 2)
+                      ((some then-expr)
+                        (transpile-stmt ctx then-expr is-return))
+                      ((none) (do)))
+                    (ctx-dedent ctx)
+                    ;; Emit else branch if present
+                    (if (>= len 4)
+                      (do
+                        (ctx-emit ctx "} else {")
+                        (ctx-indent ctx)
+                        (match (list-get items 3)
+                          ((some else-expr)
+                            (transpile-stmt ctx else-expr is-return))
+                          ((none) (do)))
+                        (ctx-dedent ctx)
+                        (ctx-emit ctx "}"))
+                      (ctx-emit ctx "}"))))
+                ((none) (ctx-emit ctx "/* missing if condition */")))))))
+      (else (ctx-emit ctx "/* invalid if */"))))
+
+  ;; ============================================================
+  ;; When Statement
+  ;; ============================================================
+
+  (fn transpile-when ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Transpile a when statement (if without else)")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (< len 3)
+            (ctx-emit ctx "/* invalid when: need condition and body */")
+            (match (list-get items 1)
+              ((some cond-expr)
+                (let ((cond-c (transpile-expr ctx cond-expr)))
+                  (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))
+                  (ctx-indent ctx)
+                  ;; Process body statements
+                  (let ((mut i 2))
+                    (while (< i len)
+                      (match (list-get items i)
+                        ((some body-expr)
+                          (transpile-stmt ctx body-expr false))
+                        ((none) (do)))
+                      (set! i (+ i 1))))
+                  (ctx-dedent ctx)
+                  (ctx-emit ctx "}")))
+              ((none) (ctx-emit ctx "/* missing when condition */"))))))
+      (else (ctx-emit ctx "/* invalid when */"))))
+
+  ;; ============================================================
+  ;; While Loop
+  ;; ============================================================
+
+  (fn transpile-while ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Transpile a while loop")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (< len 3)
+            (ctx-emit ctx "/* invalid while: need condition and body */")
+            (match (list-get items 1)
+              ((some cond-expr)
+                (let ((cond-c (transpile-expr ctx cond-expr)))
+                  (ctx-emit ctx (ctx-str3 ctx "while (" cond-c ") {"))
+                  (ctx-indent ctx)
+                  ;; Process body statements
+                  (let ((mut i 2))
+                    (while (< i len)
+                      (match (list-get items i)
+                        ((some body-expr)
+                          (transpile-stmt ctx body-expr false))
+                        ((none) (do)))
+                      (set! i (+ i 1))))
+                  (ctx-dedent ctx)
+                  (ctx-emit ctx "}")))
+              ((none) (ctx-emit ctx "/* missing while condition */"))))))
+      (else (ctx-emit ctx "/* invalid while */"))))
+
+  ;; ============================================================
+  ;; Set! Assignment
+  ;; ============================================================
+
+  (fn transpile-set ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Transpile a set! assignment")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref expr)
+        ((list lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            (cond
+              ;; 4-arg form: (set! target field value) - field assignment
+              ((== len 4)
+                (transpile-field-set ctx items))
+              ;; 3-arg form: (set! target value) - simple assignment
+              ((== len 3)
+                (match (list-get items 1)
+                  ((some target-expr)
+                    (match (list-get items 2)
+                      ((some value-expr)
+                        (let ((target-c (transpile-expr ctx target-expr))
+                              (value-c (transpile-expr ctx value-expr)))
+                          (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";"))))
+                      ((none) (ctx-emit ctx "/* missing set! value */"))))
+                  ((none) (ctx-emit ctx "/* missing set! target */"))))
+              (else (ctx-emit ctx "/* invalid set!: need target and value */")))))
+        (else (ctx-emit ctx "/* invalid set! */")))))
+
+  (fn is-pointer-target ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Check if expression is a pointer variable")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Bool))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((symbol sym)
+        ;; Look up variable type in context
+        (let ((name (. sym name)))
+          (match (ctx-lookup-var ctx name)
+            ((some var-entry)
+              (let ((c-type (. var-entry c-type)))
+                (ends-with c-type "*")))
+            ((none) false))))
+      (_ false)))
+
+  (fn transpile-field-set ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile field assignment: (set! target field value)")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; (set! (deref ptr) field value) -> (*ptr).field = value;
+    ;; (set! ptr field value) -> ptr->field = value; (if ptr is pointer)
+    ;; (set! target field value) -> target.field = value;
+    (let ((arena (. (deref ctx) arena)))
+      (match (list-get items 1)
+        ((some target-expr)
+          (match (list-get items 2)
+            ((some field-expr)
+              (match (list-get items 3)
+                ((some value-expr)
+                  (let ((field-name (get-symbol-name arena field-expr))
+                        (value-c (transpile-expr ctx value-expr)))
+                  ;; Check if target is (deref x)
+                  (if (is-deref-expr target-expr)
+                    ;; (set! (deref ptr) field value) -> (*ptr).field = value;
+                    (let ((inner-expr (get-deref-inner target-expr))
+                          (inner-c (transpile-expr ctx inner-expr)))
+                      (ctx-emit ctx (ctx-str ctx "(*" (ctx-str ctx inner-c (ctx-str ctx ")." (ctx-str ctx field-name (ctx-str ctx " = " (ctx-str ctx value-c ";"))))))))
+                    ;; Check if target is a pointer variable
+                    (let ((target-c (transpile-expr ctx target-expr))
+                          (is-ptr (is-pointer-target ctx target-expr)))
+                      (if is-ptr
+                        ;; Pointer access: target->field = value;
+                        (ctx-emit ctx (ctx-str ctx target-c (ctx-str ctx "->" (ctx-str ctx field-name (ctx-str ctx " = " (ctx-str ctx value-c ";"))))))
+                        ;; Value access: target.field = value;
+                        (ctx-emit ctx (ctx-str ctx target-c (ctx-str ctx "." (ctx-str ctx field-name (ctx-str ctx " = " (ctx-str ctx value-c ";")))))))))))
+              ((none) (ctx-emit ctx "/* missing set! value */"))))
+            ((none) (ctx-emit ctx "/* missing set! field */"))))
+        ((none) (ctx-emit ctx "/* missing set! target */")))))
+
+  (fn is-deref-expr ((expr (Ptr SExpr)))
+    (@intent "Check if expression is (deref x)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 1)
+            false
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((symbol sym) (string-eq (. sym name) "deref"))
+                  (else false)))
+              ((none) false)))))
+      (else false)))
+
+  (fn get-deref-inner ((expr (Ptr SExpr)))
+    (@intent "Get the inner expression from (deref x)")
+    (@spec (((Ptr SExpr)) -> (Ptr SExpr)))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items)))
+          (match (list-get items 1)
+            ((some inner) inner)
+            ;; Return expr as fallback (should not happen)
+            ((none) expr))))
+      (else expr)))
+
+  (fn get-symbol-name ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Get name from a symbol expression, converted to C identifier")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((symbol sym) (to-c-name arena (. sym name)))
+      (else "/* unknown field */")))
+
+  ;; ============================================================
+  ;; Do Block
+  ;; ============================================================
+
+  (fn transpile-do ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (is-return Bool))
+    (@intent "Transpile a do block")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items))
+              (mut i 1))
+          (while (< i len)
+            (match (list-get items i)
+              ((some body-expr)
+                (let ((is-last (== i (- len 1))))
+                  (transpile-stmt ctx body-expr (and is-return is-last))))
+              ((none) (do)))
+            (set! i (+ i 1)))))
+      (else (do))))
+
+  ;; ============================================================
+  ;; With-Arena Block
+  ;; ============================================================
+
+  (fn transpile-with-arena ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (is-return Bool))
+    (@intent "Transpile a with-arena block")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    ;; (with-arena size body...)
+    ;; Generates:
+    ;; {
+    ;;     slop_arena _arena = slop_arena_new(size);
+    ;;     slop_arena* arena = &_arena;
+    ;;     <body statements>
+    ;;     slop_arena_free(arena);
+    ;; }
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (< len 2)
+            (ctx-emit ctx "/* invalid with-arena: need size */")
+            (do
+              ;; Open block
+              (ctx-emit ctx "{")
+              (ctx-indent ctx)
+              (ctx-push-scope ctx)
+              ;; Get size expression
+              (match (list-get items 1)
+                ((some size-expr)
+                  (let ((size-c (transpile-expr ctx size-expr)))
+                    ;; Emit arena creation
+                    (ctx-emit ctx (ctx-str3 ctx "slop_arena _arena = slop_arena_new(" size-c ");"))
+                    (ctx-emit ctx "slop_arena* arena = &_arena;")))
+                ((none) (ctx-emit ctx "/* missing size */")))
+              ;; Bind arena variable in scope
+              (ctx-bind-var ctx (VarEntry "arena" "arena" "slop_arena*" true false))
+              ;; Process body statements (items 2 onwards)
+              (let ((mut i 2))
+                (while (< i len)
+                  (match (list-get items i)
+                    ((some body-expr)
+                      (let ((is-last (== i (- len 1))))
+                        (transpile-stmt ctx body-expr (and is-return is-last))))
+                    ((none) (do)))
+                  (set! i (+ i 1))))
+              ;; Free arena
+              (ctx-emit ctx "slop_arena_free(arena);")
+              ;; Close scope
+              (ctx-pop-scope ctx)
+              (ctx-dedent ctx)
+              (ctx-emit ctx "}")))))
+      (else (ctx-emit ctx "/* invalid with-arena */"))))
+
+  ;; ============================================================
+  ;; Cond Statement
+  ;; ============================================================
+
+  (fn transpile-cond ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (is-return Bool))
+    (@intent "Transpile a cond expression - chained if/else if/else")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    ;; (cond (test1 body1...) (test2 body2...) (else body...))
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items))
+              (mut i 1)
+              (mut first true))
+          (while (< i len)
+            (match (list-get items i)
+              ((some clause-expr)
+                (match (deref clause-expr)
+                  ((list clause-lst)
+                    (let ((clause-items (. clause-lst items))
+                          (clause-len (list-len clause-items)))
+                      (if (< clause-len 1)
+                        (ctx-emit ctx "/* invalid cond clause */")
+                        (match (list-get clause-items 0)
+                          ((some test-expr)
+                            (match (deref test-expr)
+                              ;; Check for 'else' keyword
+                              ((symbol sym)
+                                (if (string-eq (. sym name) "else")
+                                  (do
+                                    ;; else clause
+                                    (ctx-emit ctx "} else {")
+                                    (ctx-indent ctx)
+                                    (transpile-cond-body ctx clause-items 1 is-return)
+                                    (ctx-dedent ctx))
+                                  (do
+                                    ;; Regular test clause
+                                    (let ((cond-c (transpile-expr ctx test-expr)))
+                                      (if first
+                                        (do
+                                          (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))
+                                          (set! first false))
+                                        (ctx-emit ctx (ctx-str3 ctx "} else if (" cond-c ") {")))
+                                      (ctx-indent ctx)
+                                      (transpile-cond-body ctx clause-items 1 is-return)
+                                      (ctx-dedent ctx)))))
+                              ;; Non-symbol test - evaluate as expression
+                              (_
+                                (let ((cond-c (transpile-expr ctx test-expr)))
+                                  (if first
+                                    (do
+                                      (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))
+                                      (set! first false))
+                                    (ctx-emit ctx (ctx-str3 ctx "} else if (" cond-c ") {")))
+                                  (ctx-indent ctx)
+                                  (transpile-cond-body ctx clause-items 1 is-return)
+                                  (ctx-dedent ctx)))))
+                          ((none) (ctx-emit ctx "/* missing test */"))))))
+                  (else (ctx-emit ctx "/* cond clause must be list */"))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          ;; Close final brace
+          (when (not first)
+            (ctx-emit ctx "}"))))
+      (else (ctx-emit ctx "/* invalid cond */"))))
+
+  (fn transpile-cond-body ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start Int) (is-return Bool))
+    (@intent "Transpile body statements of a cond clause")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int Bool) -> Unit))
+    (@pre {ctx != nil})
+    (let ((len (list-len items))
+          (mut i start))
+      (while (< i len)
+        (match (list-get items i)
+          ((some body-expr)
+            (let ((is-last (== i (- len 1))))
+              (transpile-stmt ctx body-expr (and is-return is-last))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  ;; ============================================================
+  ;; For Loop
+  ;; ============================================================
+
+  (fn transpile-for ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Transpile a for loop: (for (i start end) body)")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref expr)
+        ((list lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            (if (< len 2)
+              (ctx-emit ctx "/* invalid for: need binding */")
+              (match (list-get items 1)
+                ((some binding-expr)
+                  (match (deref binding-expr)
+                    ((list binding-lst)
+                      (let ((binding-items (. binding-lst items))
+                            (binding-len (list-len binding-items)))
+                        (if (< binding-len 3)
+                          (ctx-emit ctx "/* for binding needs (var start end) */")
+                          (match (list-get binding-items 0)
+                            ((some var-expr)
+                              (match (deref var-expr)
+                                ((symbol var-sym)
+                                  (let ((var-name (to-c-name arena (. var-sym name))))
+                                    (match (list-get binding-items 1)
+                                      ((some start-expr)
+                                        (match (list-get binding-items 2)
+                                          ((some end-expr)
+                                            (let ((start-c (transpile-expr ctx start-expr))
+                                                  (end-c (transpile-expr ctx end-expr)))
+                                              ;; Emit: for (int64_t var = start; var < end; var++)
+                                              (ctx-emit ctx (ctx-str5 ctx "for (int64_t " var-name " = " start-c
+                                                              (ctx-str5 ctx "; " var-name " < " end-c
+                                                                (ctx-str3 ctx "; " var-name "++) {"))))
+                                              (ctx-indent ctx)
+                                              ;; Bind loop variable
+                                              (ctx-push-scope ctx)
+                                              (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" false false))
+                                              ;; Process body
+                                              (let ((mut i 2))
+                                                (while (< i len)
+                                                  (match (list-get items i)
+                                                    ((some body-expr)
+                                                      (transpile-stmt ctx body-expr false))
+                                                    ((none) (do)))
+                                                  (set! i (+ i 1))))
+                                              (ctx-pop-scope ctx)
+                                              (ctx-dedent ctx)
+                                              (ctx-emit ctx "}")))
+                                          ((none) (ctx-emit ctx "/* missing end */"))))
+                                      ((none) (ctx-emit ctx "/* missing start */")))))
+                                (else (ctx-emit ctx "/* for var must be symbol */"))))
+                            ((none) (ctx-emit ctx "/* missing var */"))))))
+                    (else (ctx-emit ctx "/* for binding must be list */"))))
+                ((none) (ctx-emit ctx "/* missing binding */"))))))
+        (else (ctx-emit ctx "/* invalid for */")))))
+
+  ;; ============================================================
+  ;; For-Each Loop
+  ;; ============================================================
+
+  (fn transpile-for-each ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Transpile a for-each loop: (for-each (item coll) body)")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref expr)
+        ((list lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            (if (< len 2)
+              (ctx-emit ctx "/* invalid for-each: need binding */")
+              (match (list-get items 1)
+                ((some binding-expr)
+                  (match (deref binding-expr)
+                    ((list binding-lst)
+                      (let ((binding-items (. binding-lst items))
+                            (binding-len (list-len binding-items)))
+                        (if (< binding-len 2)
+                          (ctx-emit ctx "/* for-each binding needs (var coll) */")
+                          (match (list-get binding-items 0)
+                            ((some var-expr)
+                              (match (deref var-expr)
+                                ((symbol var-sym)
+                                  (let ((var-name (to-c-name arena (. var-sym name))))
+                                    (match (list-get binding-items 1)
+                                      ((some coll-expr)
+                                        (let ((coll-c (transpile-expr ctx coll-expr)))
+                                          ;; Emit: for (size_t _i = 0; _i < coll.len; _i++)
+                                          (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < " coll-c ".len; _i++) {"))
+                                          (ctx-indent ctx)
+                                          ;; Emit: __auto_type var = coll.data[_i];
+                                          (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " coll-c ".data[_i];"))
+                                          ;; Bind loop variable
+                                          (ctx-push-scope ctx)
+                                          (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" false false))
+                                          ;; Process body
+                                          (let ((mut i 2))
+                                            (while (< i len)
+                                              (match (list-get items i)
+                                                ((some body-expr)
+                                                  (transpile-stmt ctx body-expr false))
+                                                ((none) (do)))
+                                              (set! i (+ i 1))))
+                                          (ctx-pop-scope ctx)
+                                          (ctx-dedent ctx)
+                                          (ctx-emit ctx "}")))
+                                      ((none) (ctx-emit ctx "/* missing collection */")))))
+                                (else (ctx-emit ctx "/* for-each var must be symbol */"))))
+                            ((none) (ctx-emit ctx "/* missing var */"))))))
+                    (else (ctx-emit ctx "/* for-each binding must be list */"))))
+                ((none) (ctx-emit ctx "/* missing binding */"))))))
+        (else (ctx-emit ctx "/* invalid for-each */")))))
+
+  ;; ============================================================
+  ;; Main Statement Dispatcher
+  ;; ============================================================
+
+  (fn transpile-stmt ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (is-return Bool))
+    (@intent "Transpile a SLOP statement to C code")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 1)
+            (ctx-emit ctx "/* empty list */")
+            (match (list-get items 0)
+              ((some head-expr)
+                (match (deref head-expr)
+                  ((symbol sym)
+                    (let ((op (. sym name)))
+                      (cond
+                        ((or (string-eq op "let") (string-eq op "let*"))
+                          (transpile-let ctx expr is-return))
+                        ((string-eq op "if")
+                          (transpile-if ctx expr is-return))
+                        ((string-eq op "when")
+                          (transpile-when ctx expr))
+                        ((string-eq op "while")
+                          (transpile-while ctx expr))
+                        ((string-eq op "cond")
+                          (transpile-cond ctx expr is-return))
+                        ((string-eq op "for")
+                          (transpile-for ctx expr))
+                        ((string-eq op "for-each")
+                          (transpile-for-each ctx expr))
+                        ((string-eq op "match")
+                          (transpile-match ctx expr is-return))
+                        ((string-eq op "set!")
+                          (transpile-set ctx expr))
+                        ((string-eq op "do")
+                          (transpile-do ctx expr is-return))
+                        ((string-eq op "with-arena")
+                          (transpile-with-arena ctx expr is-return))
+                        ((string-eq op "return")
+                          (if (< (list-len items) 2)
+                            (ctx-emit ctx "return;")
+                            (match (list-get items 1)
+                              ((some val-expr)
+                                (let ((val-c (transpile-expr ctx val-expr)))
+                                  ;; Check if returning none and we know the return type is an option
+                                  (let ((final-val (if (string-eq val-c "none")
+                                                     (match (ctx-get-current-return-type ctx)
+                                                       ((some ret-type)
+                                                         (if (starts-with ret-type "slop_option_")
+                                                           (ctx-str3 ctx "(" ret-type "){.has_value = false}")
+                                                           val-c))
+                                                       ((none) val-c))
+                                                     val-c)))
+                                    (ctx-emit ctx (ctx-str3 ctx "return " final-val ";")))))
+                              ((none) (ctx-emit ctx "return;")))))
+                        ((string-eq op "break")
+                          (ctx-emit ctx "break;"))
+                        ((string-eq op "continue")
+                          (ctx-emit ctx "continue;"))
+                        ;; Default: expression statement
+                        (else
+                          (let ((code (transpile-expr ctx expr)))
+                            (if is-return
+                              (emit-return-with-typed-none ctx code)
+                              (ctx-emit ctx (ctx-str ctx code ";"))))))))
+                  ;; Non-symbol head: expression statement
+                  (else
+                    (let ((code (transpile-expr ctx expr)))
+                      (if is-return
+                        (emit-return-with-typed-none ctx code)
+                        (ctx-emit ctx (ctx-str ctx code ";")))))))
+              ((none) (ctx-emit ctx "/* empty */"))))))
+      ;; Non-list: expression statement
+      (else
+        (let ((code (transpile-expr ctx expr)))
+          (if is-return
+            (emit-return-with-typed-none ctx code)
+            (ctx-emit ctx (ctx-str ctx code ";")))))))
+
+  ;; Helper to emit return with typed none when needed
+  (fn emit-return-with-typed-none ((ctx (Ptr TranspileContext)) (code String))
+    (@intent "Emit return statement, using typed none if returning from option-returning function")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    ;; Use sequential if statements to avoid complex cond type inference issues
+    (let ((mut final-code code))
+      ;; Literal none -> convert to typed option if needed
+      (if (string-eq code "none")
+        (match (ctx-get-current-return-type ctx)
+          ((some ret-type)
+            (when (starts-with ret-type "slop_option_")
+              (set! final-code (ctx-str3 ctx "(" ret-type "){.has_value = false}"))))
+          ((none) (do)))
+        ;; Check if returning a variable of generic option type
+        (match (ctx-get-current-return-type ctx)
+          ((some ret-type)
+            (when (starts-with ret-type "slop_option_")
+              ;; Check if code is a simple variable name that's a generic option
+              (match (ctx-lookup-var ctx code)
+                ((some var-entry)
+                  (let ((var-type (. var-entry c-type)))
+                    (when (or (string-eq var-type "_slop_option_generic")
+                              (string-eq var-type "auto"))
+                      ;; Convert generic option to typed option
+                      (let ((s1 (ctx-str ctx "((" ret-type))
+                            (s2 (ctx-str ctx s1 "){.has_value = "))
+                            (s3 (ctx-str ctx s2 code))
+                            (s4 (ctx-str ctx s3 ".has_value, .value = "))
+                            (s5 (ctx-str ctx s4 code))
+                            (s6 (ctx-str ctx s5 ".value})")))
+                        (set! final-code s6)))))
+                ((none) (do)))))
+          ((none) (do))))
+      (ctx-emit ctx (ctx-str3 ctx "return " final-code ";"))))
+
+) ;; end module

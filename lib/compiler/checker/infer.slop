@@ -731,18 +731,33 @@
       (_ (do))))
 
   (fn bind-param-from-form ((env (Ptr TypeEnv)) (param-form (Ptr SExpr)))
-    (@intent "Bind a function parameter from its form (param-name Type)")
+    (@intent "Bind a function parameter from its form (param-name Type) or (mode param-name Type)")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
     (@pre (!= env nil))
     (@pre (!= param-form nil))
     ;; Use helper functions to avoid cross-module union matching issues
+    ;; Handle both (name Type) and (mode name Type) forms
     (when (and (sexpr-is-list param-form) (>= (sexpr-list-len param-form) 2))
       (match (sexpr-list-get param-form 0)
-        ((some name-expr)
-          (let ((param-name (sexpr-get-symbol-name name-expr)))
-            (when (not (string-eq param-name ""))
-              (let ((param-type (get-param-type-from-form env param-form)))
-                (env-bind-var env param-name param-type)))))
+        ((some first-expr)
+          (let ((first-name (sexpr-get-symbol-name first-expr)))
+            ;; Check if first element is a mode annotation (in, out, mut)
+            (if (or (string-eq first-name "in")
+                    (string-eq first-name "out")
+                    (string-eq first-name "mut"))
+              ;; Mode form: (mode name Type) - get name from position 1
+              (when (>= (sexpr-list-len param-form) 3)
+                (match (sexpr-list-get param-form 1)
+                  ((some name-expr)
+                    (let ((param-name (sexpr-get-symbol-name name-expr)))
+                      (when (not (string-eq param-name ""))
+                        (let ((param-type (get-param-type-from-form env param-form)))
+                          (env-bind-var env param-name param-type)))))
+                  ((none) (do))))
+              ;; Regular form: (name Type) - first element is name
+              (when (not (string-eq first-name ""))
+                (let ((param-type (get-param-type-from-form env param-form)))
+                  (env-bind-var env first-name param-type))))))
         ((none) (do)))))
 
   (fn get-param-type-from-form ((env (Ptr TypeEnv)) (param-form (Ptr SExpr)))
@@ -750,24 +765,80 @@
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (@pre (!= param-form nil))
-    ;; param-form is (param-name Type) - extract Type from position 1
-    (match (sexpr-list-get param-form 1)
-      ((some type-expr)
-        (let ((type-name (sexpr-get-symbol-name type-expr)))
-          (if (string-eq type-name "")
-            ;; Not a simple symbol type, fall back to Int
-            (env-get-int-type env)
-            ;; Look up the type
-            (match (env-lookup-type env type-name)
-              ((some t) t)
-              ((none)
-                (cond
-                  ((string-eq type-name "Int") (env-get-int-type env))
-                  ((string-eq type-name "Bool") (env-get-bool-type env))
-                  ((string-eq type-name "String") (env-get-string-type env))
-                  ((string-eq type-name "Unit") (env-get-unit-type env))
-                  (else (env-get-int-type env))))))))
+    ;; param-form is (param-name Type) or (mode param-name Type)
+    ;; Determine type position based on whether first element is a mode
+    (let ((type-pos (match (sexpr-list-get param-form 0)
+                      ((some first-expr)
+                        (let ((first-name (sexpr-get-symbol-name first-expr)))
+                          (if (or (string-eq first-name "in")
+                                  (string-eq first-name "out")
+                                  (string-eq first-name "mut"))
+                            2  ;; Mode form: type at position 2
+                            1))) ;; Regular form: type at position 1
+                      ((none) 1))))
+      (match (sexpr-list-get param-form type-pos)
+        ((some type-expr)
+          (let ((type-name (sexpr-get-symbol-name type-expr)))
+            (if (string-eq type-name "")
+              ;; Complex type expression like (Option Int), (Ptr T), (List T)
+              (if (sexpr-is-list type-expr)
+                (resolve-complex-type-expr env type-expr)
+                (env-get-int-type env))
+              ;; Simple symbol type - look it up
+              (match (env-lookup-type env type-name)
+                ((some t) t)
+                ((none)
+                  (cond
+                    ((string-eq type-name "Int") (env-get-int-type env))
+                    ((string-eq type-name "Bool") (env-get-bool-type env))
+                    ((string-eq type-name "String") (env-get-string-type env))
+                    ((string-eq type-name "Unit") (env-get-unit-type env))
+                    (else (env-get-int-type env))))))))
+        ((none) (env-get-int-type env)))))
+
+  (fn resolve-complex-type-expr ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
+    (@intent "Resolve a complex type expression like (Option Int)")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= type-expr nil))
+    (match (sexpr-list-get type-expr 0)
+      ((some head-expr)
+        (let ((head-name (sexpr-get-symbol-name head-expr)))
+          (cond
+            ;; Option type: (Option InnerType)
+            ((string-eq head-name "Option")
+              (let ((inner-type (resolve-option-inner-type env type-expr)))
+                (env-make-option-type env inner-type)))
+            ;; Other complex types - fall back to Int
+            (else (env-get-int-type env)))))
       ((none) (env-get-int-type env))))
+
+  (fn resolve-option-inner-type ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
+    (@intent "Resolve the inner type of an Option type expression")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (if (< (sexpr-list-len type-expr) 2)
+      nil
+      (match (sexpr-list-get type-expr 1)
+        ((some inner-expr)
+          (let ((inner-name (sexpr-get-symbol-name inner-expr)))
+            (if (string-eq inner-name "")
+              nil
+              (resolve-simple-type env inner-name))))
+        ((none) nil))))
+
+  (fn resolve-simple-type ((env (Ptr TypeEnv)) (type-name String))
+    (@intent "Resolve a simple type by name")
+    (@spec (((Ptr TypeEnv) String) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (match (env-lookup-type env type-name)
+      ((some t) t)
+      ((none)
+        (cond
+          ((string-eq type-name "Int") (env-get-int-type env))
+          ((string-eq type-name "Bool") (env-get-bool-type env))
+          ((string-eq type-name "String") (env-get-string-type env))
+          (else nil)))))
 
   ;; ============================================================
   ;; Let Binding Support

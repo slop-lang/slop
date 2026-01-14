@@ -21,7 +21,8 @@
   (import env (TypeEnv env-arena env-register-type env-lookup-type
                env-register-function env-set-module env-get-module
                env-get-int-type env-get-bool-type env-get-string-type
-               env-get-unit-type env-register-variant env-check-variant-collisions))
+               env-get-unit-type env-register-variant env-check-variant-collisions
+               env-make-option-type))
 
   ;; ============================================================
   ;; Main Collection Functions
@@ -164,7 +165,31 @@
                 ((string-eq type-name "Unit") (env-get-unit-type env))
                 ;; Unknown type - create placeholder
                 (else (resolved-type-new arena 'rk-primitive type-name (none) type-name)))))))
-      ;; Complex type expression - return placeholder for now
+      ((list lst)
+        ;; Complex type expression like (Option Int), (Ptr T), (List T)
+        (let ((items (. lst items)))
+          (match (list-get items 0)
+            ((some head-expr)
+              (let ((head-name (sexpr-get-symbol-name head-expr)))
+                (cond
+                  ;; Option type: (Option InnerType)
+                  ((string-eq head-name "Option")
+                    (let ((inner-type (if (>= (list-len items) 2)
+                                        (match (list-get items 1)
+                                          ((some inner-expr) (get-field-type env arena inner-expr))
+                                          ((none) nil))
+                                        nil)))
+                      (env-make-option-type env inner-type)))
+                  ;; Ptr type: (Ptr PointeeType) - return placeholder
+                  ((string-eq head-name "Ptr")
+                    (resolved-type-new arena 'rk-primitive "Ptr" (none) "void*"))
+                  ;; List type: (List ElemType) - return placeholder
+                  ((string-eq head-name "List")
+                    (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*"))
+                  ;; Unknown complex type
+                  (else (resolved-type-new arena 'rk-primitive head-name (none) head-name)))))
+            ((none) (env-get-unit-type env)))))
+      ;; Other expression types
       (_ (env-get-unit-type env))))
 
   (fn collect-module-types ((env (Ptr TypeEnv)) (module-form (Ptr SExpr)))
@@ -385,18 +410,36 @@
               (for (i 0 num-params)
                 (match (sexpr-list-get params-expr i)
                   ((some param-form)
-                    ;; param-form is (param-name Type)
+                    ;; param-form is (param-name Type) or (mode param-name Type)
                     (when (and (sexpr-is-list param-form) (>= (sexpr-list-len param-form) 2))
                       (match (sexpr-list-get param-form 0)
-                        ((some name-expr)
-                          (let ((param-name (sexpr-get-symbol-name name-expr)))
-                            (when (not (string-eq param-name ""))
-                              (match (sexpr-list-get param-form 1)
-                                ((some type-expr)
-                                  (let ((param-type (get-field-type env arena type-expr))
-                                        (info (param-info-new arena param-name param-type)))
-                                    (list-push params (deref info))))
-                                ((none) (do))))))
+                        ((some first-expr)
+                          (let ((first-name (sexpr-get-symbol-name first-expr)))
+                            ;; Check if first element is a mode annotation (in, out, mut)
+                            (if (or (string-eq first-name "in")
+                                    (string-eq first-name "out")
+                                    (string-eq first-name "mut"))
+                              ;; Mode form: (mode name Type) - need at least 3 elements
+                              (when (>= (sexpr-list-len param-form) 3)
+                                (match (sexpr-list-get param-form 1)
+                                  ((some name-expr)
+                                    (let ((param-name (sexpr-get-symbol-name name-expr)))
+                                      (when (not (string-eq param-name ""))
+                                        (match (sexpr-list-get param-form 2)
+                                          ((some type-expr)
+                                            (let ((param-type (get-field-type env arena type-expr))
+                                                  (info (param-info-new arena param-name param-type)))
+                                              (list-push params (deref info))))
+                                          ((none) (do))))))
+                                  ((none) (do))))
+                              ;; Regular form: (name Type) - first element is name
+                              (when (not (string-eq first-name ""))
+                                (match (sexpr-list-get param-form 1)
+                                  ((some type-expr)
+                                    (let ((param-type (get-field-type env arena type-expr))
+                                          (info (param-info-new arena first-name param-type)))
+                                      (list-push params (deref info))))
+                                  ((none) (do)))))))
                         ((none) (do)))))
                   ((none) (do)))))))
         ((none) (do)))

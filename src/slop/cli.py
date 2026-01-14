@@ -132,6 +132,7 @@ def transpile_native(input_file: str):
     returns (None, False).
     """
     import subprocess
+    import json
 
     transpiler_bin = find_native_component('transpiler')
     if not transpiler_bin:
@@ -144,8 +145,27 @@ def transpile_native(input_file: str):
             text=True
         )
         if result.returncode == 0:
-            return result.stdout, True
+            # Parse JSON output and combine into single C file
+            data = json.loads(result.stdout)
+            c_parts = ['#include "slop_runtime.h"', '']
+            main_mod = None
+            for mod_name, mod_data in data.items():
+                c_parts.append(mod_data['header'])
+                # Strip self-include from impl when combining into single file
+                impl = mod_data['impl']
+                c_mod_name = mod_name.replace('-', '_')
+                impl = impl.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                c_parts.append(impl)
+                # Check if this module exports main
+                if f'{mod_name}_main' in mod_data['header']:
+                    main_mod = mod_name
+            # Add main wrapper if module exports main
+            if main_mod:
+                c_parts.append(f'\nint main(void) {{ return (int){main_mod}_main(); }}\n')
+            return '\n'.join(c_parts), True
         return result.stderr, False
+    except json.JSONDecodeError as e:
+        return f"Failed to parse transpiler output: {e}", False
     except Exception as e:
         return str(e), False
 
@@ -1847,6 +1867,10 @@ def cmd_build(args):
                     with open(header_path, 'w') as f:
                         f.write(header)
                     with open(impl_path, 'w') as f:
+                        # Native transpiler impl doesn't include headers, add them
+                        if native_transpiler_bin:
+                            f.write('#include "slop_runtime.h"\n')
+                            f.write(f'#include "slop_{c_mod_name}.h"\n\n')
                         f.write(impl)
                     c_files.append(impl_path)
 

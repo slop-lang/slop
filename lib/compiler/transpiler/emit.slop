@@ -1,355 +1,225 @@
 ;; ============================================================
-;; SLOP Native Transpiler - C Code Emission
+;; SLOP Native Transpiler - Emit Module
 ;;
-;; High-level functions for emitting C code constructs:
-;; - Type definitions (struct, enum, union, typedef)
-;; - Function declarations and definitions
-;; - Statements (if, while, let, match, etc.)
-;; - Expressions
+;; Higher-level code emission helpers built on context module.
+;; Handles includes, declarations, and block structures.
 ;; ============================================================
 
 (module emit
   (export
-    ;; Type definitions
-    emit-record-def emit-enum-def emit-union-def emit-typedef
-    emit-forward-decl
-    ;; Function emission
-    emit-fn-decl emit-fn-def-start emit-fn-def-end
-    ;; Statement emission
-    emit-block-start emit-block-end
-    emit-if emit-while emit-for emit-return
-    emit-var-decl emit-assignment
-    ;; Expression emission
-    emit-call emit-field-access emit-index
-    emit-binary-op emit-unary-op
-    emit-literal emit-cast
-    ;; Match emission
-    emit-match-start emit-match-case emit-match-end
-    ;; Utility
-    emit-comment emit-blank-line
-    emit-include emit-guard-start emit-guard-end)
+    ;; Include emission
+    emit-include emit-standard-includes
+    ;; Declaration emission
+    emit-forward-decl emit-var-decl emit-const-decl
+    ;; Block helpers
+    emit-block-open emit-block-close
+    emit-if-open emit-else emit-while-open
+    ;; Type emission helpers
+    emit-struct-open emit-struct-close
+    emit-enum-open emit-enum-close
+    emit-typedef)
 
-  (import types (SExpr ResolvedType ResolvedVariant ResolvedField))
-  (import context (TranspileContext ctx-emit ctx-emit-header ctx-indent ctx-dedent
-                   ctx-str ctx-str3 ctx-str4 ctx-str5))
-  (import ctype (slop-type-to-c qualified-type-name mangle-identifier))
+  (import types (SExpr SExprList SExprSymbol))
+  (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-add-include))
+  (import ctype (to-c-type to-c-name))
+  (import strlib (replace))
 
   ;; ============================================================
-  ;; Type Definitions
+  ;; Include Emission
   ;; ============================================================
-
-  (fn emit-record-def ((ctx (Ptr TranspileContext)) (name String) (fields (List ResolvedField)))
-    (@intent "Emit a C struct definition for a SLOP record type")
-    (@spec (((Ptr TranspileContext) String (List ResolvedField)) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit-header ctx (ctx-str3 ctx "typedef struct " name " {"))
-      (let ((len (list-len fields))
-            (mut i 0))
-        (while (< i len)
-          (match (list-get fields i)
-            ((some f)
-              (let ((field-type (slop-type-to-c ctx (. f field-type)))
-                    (field-name (mangle-identifier ctx (. f name))))
-                (ctx-emit-header ctx (ctx-str5 ctx "    " field-type " " field-name ";"))))
-            ((none) (do)))
-          (set! i (+ i 1))))
-      (ctx-emit-header ctx (ctx-str3 ctx "} " name ";"))))
-
-  (fn emit-enum-def ((ctx (Ptr TranspileContext)) (name String) (variants (List ResolvedVariant)))
-    (@intent "Emit a C enum definition for a SLOP enum type")
-    (@spec (((Ptr TranspileContext) String (List ResolvedVariant)) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit-header ctx (ctx-str3 ctx "typedef enum " name " {"))
-      (let ((len (list-len variants))
-            (mut i 0))
-        (while (< i len)
-          (match (list-get variants i)
-            ((some v)
-              (let ((tag-name (. v tag-constant))
-                    (suffix (if (< i (- len 1)) "," "")))
-                (ctx-emit-header ctx (ctx-str3 ctx "    " tag-name suffix))))
-            ((none) (do)))
-          (set! i (+ i 1))))
-      (ctx-emit-header ctx (ctx-str3 ctx "} " name ";"))))
-
-  (fn emit-union-def ((ctx (Ptr TranspileContext)) (name String) (variants (List ResolvedVariant)))
-    (@intent "Emit a C tagged union definition for a SLOP union type")
-    (@spec (((Ptr TranspileContext) String (List ResolvedVariant)) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      ;; First emit the tag enum
-      (ctx-emit-header ctx (ctx-str3 ctx "typedef enum " name "_tag {"))
-      (let ((len (list-len variants))
-            (mut i 0))
-        (while (< i len)
-          (match (list-get variants i)
-            ((some v)
-              (let ((tag-name (. v tag-constant))
-                    (suffix (if (< i (- len 1)) "," "")))
-                (ctx-emit-header ctx (ctx-str3 ctx "    " tag-name suffix))))
-            ((none) (do)))
-          (set! i (+ i 1))))
-      (ctx-emit-header ctx (ctx-str3 ctx "} " name "_tag;"))
-      (ctx-emit-header ctx "")
-      ;; Now emit the struct with tag and union
-      (ctx-emit-header ctx (ctx-str3 ctx "typedef struct " name " {"))
-      (ctx-emit-header ctx (ctx-str3 ctx "    " name "_tag tag;"))
-      (ctx-emit-header ctx "    union {")
-      (let ((len (list-len variants))
-            (mut i 0))
-        (while (< i len)
-          (match (list-get variants i)
-            ((some v)
-              (match (. v payload-type)
-                ((some payload)
-                  (let ((payload-c-type (slop-type-to-c ctx payload))
-                        (field-name (mangle-identifier ctx (. v name))))
-                    (ctx-emit-header ctx (ctx-str5 ctx "        " payload-c-type " " field-name ";"))))
-                ((none) (do))))  ;; No payload for this variant
-            ((none) (do)))
-          (set! i (+ i 1))))
-      (ctx-emit-header ctx "    } data;")
-      (ctx-emit-header ctx (ctx-str3 ctx "} " name ";"))))
-
-  (fn emit-typedef ((ctx (Ptr TranspileContext)) (new-name String) (existing-type String))
-    (@intent "Emit a simple typedef alias")
-    (@spec (((Ptr TranspileContext) String String) -> Unit))
-    (@pre {ctx != nil})
-    (ctx-emit-header ctx (ctx-str5 ctx "typedef " existing-type " " new-name ";")))
-
-  (fn emit-forward-decl ((ctx (Ptr TranspileContext)) (name String))
-    (@intent "Emit a forward declaration for a type")
-    (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit-header ctx (ctx-str3 ctx "struct " name ";"))
-      (ctx-emit-header ctx (ctx-str5 ctx "typedef struct " name " " name ";"))))
-
-  ;; ============================================================
-  ;; Function Emission
-  ;; ============================================================
-
-  (fn emit-fn-decl ((ctx (Ptr TranspileContext)) (name String) (params String) (ret-type String))
-    (@intent "Emit a function declaration to header")
-    (@spec (((Ptr TranspileContext) String String String) -> Unit))
-    (@pre {ctx != nil})
-    (ctx-emit-header ctx (ctx-str5 ctx ret-type " " name "(" (ctx-str ctx params ");"))))
-
-  (fn emit-fn-def-start ((ctx (Ptr TranspileContext)) (name String) (params String) (ret-type String))
-    (@intent "Emit function definition start")
-    (@spec (((Ptr TranspileContext) String String String) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit ctx (ctx-str5 ctx ret-type " " name "(" (ctx-str ctx params ") {")))
-      (ctx-indent ctx)))
-
-  (fn emit-fn-def-end ((ctx (Ptr TranspileContext)))
-    (@intent "Emit function definition end")
-    (@spec (((Ptr TranspileContext)) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-dedent ctx)
-      (ctx-emit ctx "}")))
-
-  ;; ============================================================
-  ;; Statement Emission
-  ;; ============================================================
-
-  (fn emit-block-start ((ctx (Ptr TranspileContext)))
-    (@intent "Emit block start '{'")
-    (@spec (((Ptr TranspileContext)) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit ctx "{")
-      (ctx-indent ctx)))
-
-  (fn emit-block-end ((ctx (Ptr TranspileContext)))
-    (@intent "Emit block end '}'")
-    (@spec (((Ptr TranspileContext)) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-dedent ctx)
-      (ctx-emit ctx "}")))
-
-  (fn emit-if ((ctx (Ptr TranspileContext)) (cond String))
-    (@intent "Emit if statement start")
-    (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit ctx (ctx-str3 ctx "if (" cond ") {"))
-      (ctx-indent ctx)))
-
-  (fn emit-while ((ctx (Ptr TranspileContext)) (cond String))
-    (@intent "Emit while loop start")
-    (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit ctx (ctx-str3 ctx "while (" cond ") {"))
-      (ctx-indent ctx)))
-
-  (fn emit-for ((ctx (Ptr TranspileContext)) (init String) (cond String) (update String))
-    (@intent "Emit for loop start")
-    (@spec (((Ptr TranspileContext) String String String) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit ctx (ctx-str5 ctx "for (" init "; " (ctx-str3 ctx cond "; " update) ") {"))
-      (ctx-indent ctx)))
-
-  (fn emit-return ((ctx (Ptr TranspileContext)) (expr String))
-    (@intent "Emit return statement")
-    (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@pre {ctx != nil})
-    (ctx-emit ctx (ctx-str3 ctx "return " expr ";")))
-
-  (fn emit-var-decl ((ctx (Ptr TranspileContext)) (c-type String) (name String) (init (Option String)))
-    (@intent "Emit variable declaration with optional initializer")
-    (@spec (((Ptr TranspileContext) String String (Option String)) -> Unit))
-    (@pre {ctx != nil})
-    (match init
-      ((some init-val)
-        (ctx-emit ctx (ctx-str5 ctx c-type " " name " = " (ctx-str ctx init-val ";"))))
-      ((none)
-        (ctx-emit ctx (ctx-str4 ctx c-type " " name ";")))))
-
-  (fn emit-assignment ((ctx (Ptr TranspileContext)) (lhs String) (rhs String))
-    (@intent "Emit assignment statement")
-    (@spec (((Ptr TranspileContext) String String) -> Unit))
-    (@pre {ctx != nil})
-    (ctx-emit ctx (ctx-str4 ctx lhs " = " rhs ";")))
-
-  ;; ============================================================
-  ;; Expression Emission (return strings, need ctx for arena)
-  ;; ============================================================
-
-  (fn emit-call ((ctx (Ptr TranspileContext)) (fn-name String) (args (List String)))
-    (@intent "Generate function call expression")
-    (@spec (((Ptr TranspileContext) String (List String)) -> String))
-    (@pre {ctx != nil})
-    (@example (ctx "foo" args) -> "foo(a, b)")
-    (let ((len (list-len args))
-          (mut args-str "")
-          (mut i 0))
-      (while (< i len)
-        (match (list-get args i)
-          ((some arg)
-            (do
-              (when (> i 0)
-                (set! args-str (ctx-str ctx args-str ", ")))
-              (set! args-str (ctx-str ctx args-str arg))))
-          ((none) (do)))
-        (set! i (+ i 1)))
-      (ctx-str4 ctx fn-name "(" args-str ")")))
-
-  (fn emit-field-access ((ctx (Ptr TranspileContext)) (obj String) (field String) (is-ptr Bool))
-    (@intent "Generate field access expression")
-    (@spec (((Ptr TranspileContext) String String Bool) -> String))
-    (@pre {ctx != nil})
-    (@example (ctx "x" "foo" false) -> "x.foo")
-    (@example (ctx "x" "foo" true) -> "x->foo")
-    (if is-ptr
-      (ctx-str3 ctx obj "->" field)
-      (ctx-str3 ctx obj "." field)))
-
-  (fn emit-index ((ctx (Ptr TranspileContext)) (arr String) (idx String))
-    (@intent "Generate array index expression")
-    (@spec (((Ptr TranspileContext) String String) -> String))
-    (@pre {ctx != nil})
-    (@example (ctx "arr" "i") -> "arr[i]")
-    (ctx-str4 ctx arr "[" idx "]"))
-
-  (fn emit-binary-op ((ctx (Ptr TranspileContext)) (left String) (op String) (right String))
-    (@intent "Generate binary operator expression")
-    (@spec (((Ptr TranspileContext) String String String) -> String))
-    (@pre {ctx != nil})
-    (@example (ctx "a" "+" "b") -> "(a + b)")
-    (ctx-str5 ctx "(" left " " (ctx-str3 ctx op " " right) ")"))
-
-  (fn emit-unary-op ((ctx (Ptr TranspileContext)) (op String) (operand String))
-    (@intent "Generate unary operator expression")
-    (@spec (((Ptr TranspileContext) String String) -> String))
-    (@pre {ctx != nil})
-    (@example (ctx "!" "x") -> "(!x)")
-    (ctx-str4 ctx "(" op operand ")"))
-
-  (fn emit-literal ((value String))
-    (@intent "Generate literal expression (numbers, strings)")
-    (@spec ((String) -> String))
-    (@pure)
-    value)
-
-  (fn emit-cast ((ctx (Ptr TranspileContext)) (c-type String) (expr String))
-    (@intent "Generate cast expression")
-    (@spec (((Ptr TranspileContext) String String) -> String))
-    (@pre {ctx != nil})
-    (@example (ctx "int64_t" "x") -> "((int64_t)(x))")
-    (ctx-str5 ctx "((" c-type ")(" expr "))"))
-
-  ;; ============================================================
-  ;; Match Emission
-  ;; ============================================================
-
-  (fn emit-match-start ((ctx (Ptr TranspileContext)) (expr String) (tag-field String))
-    (@intent "Emit start of match statement as switch")
-    (@spec (((Ptr TranspileContext) String String) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit ctx (ctx-str5 ctx "switch (" expr "." tag-field ") {"))
-      (ctx-indent ctx)))
-
-  (fn emit-match-case ((ctx (Ptr TranspileContext)) (tag-constant String))
-    (@intent "Emit a case in match statement")
-    (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-emit ctx (ctx-str3 ctx "case " tag-constant ": {"))
-      (ctx-indent ctx)))
-
-  (fn emit-match-end ((ctx (Ptr TranspileContext)))
-    (@intent "Emit end of match statement")
-    (@spec (((Ptr TranspileContext)) -> Unit))
-    (@pre {ctx != nil})
-    (do
-      (ctx-dedent ctx)
-      (ctx-emit ctx "}")))
-
-  ;; ============================================================
-  ;; Utility Functions
-  ;; ============================================================
-
-  (fn emit-comment ((ctx (Ptr TranspileContext)) (comment String))
-    (@intent "Emit a C comment")
-    (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@pre {ctx != nil})
-    (ctx-emit ctx (ctx-str3 ctx "/* " comment " */")))
-
-  (fn emit-blank-line ((ctx (Ptr TranspileContext)))
-    (@intent "Emit a blank line")
-    (@spec (((Ptr TranspileContext)) -> Unit))
-    (@pre {ctx != nil})
-    (ctx-emit ctx ""))
 
   (fn emit-include ((ctx (Ptr TranspileContext)) (header String) (is-system Bool))
     (@intent "Emit an include directive")
     (@spec (((Ptr TranspileContext) String Bool) -> Unit))
     (@pre {ctx != nil})
-    (@example (ctx "stdio.h" true) -> "#include <stdio.h>")
-    (@example (ctx "myheader.h" false) -> "#include \"myheader.h\"")
     (if is-system
-      (ctx-emit-header ctx (ctx-str3 ctx "#include <" header ">"))
-      (ctx-emit-header ctx (ctx-str3 ctx "#include \"" header "\""))))
+      (ctx-emit ctx (ctx-str3 ctx "#include <" header ">"))
+      (ctx-emit ctx (ctx-str3 ctx "#include \"" header "\""))))
 
-  (fn emit-guard-start ((ctx (Ptr TranspileContext)) (guard-name String))
-    (@intent "Emit header guard start")
+  (fn emit-standard-includes ((ctx (Ptr TranspileContext)))
+    (@intent "Emit standard include headers for SLOP runtime")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (ctx-emit ctx "#include \"slop_runtime.h\"")
+    (ctx-emit ctx "#include <stdint.h>")
+    (ctx-emit ctx "#include <stdbool.h>")
+    (ctx-emit ctx ""))
+
+  ;; ============================================================
+  ;; Declaration Emission
+  ;; ============================================================
+
+  (fn emit-forward-decl ((ctx (Ptr TranspileContext)) (return-type String) (name String) (params String))
+    (@intent "Emit a function forward declaration")
+    (@spec (((Ptr TranspileContext) String String String) -> Unit))
+    (@example (ctx "int" "foo" "int x, int y") -> "int foo(int x, int y);")
+    (@pre {ctx != nil})
+    (let ((param-str (if (string-eq params "")
+                        "void"
+                        params)))
+      (ctx-emit ctx (ctx-str5 ctx return-type " " name "(" (ctx-str3 ctx param-str ")" ";")))))
+
+  (fn emit-var-decl ((ctx (Ptr TranspileContext)) (c-type String) (name String))
+    (@intent "Emit a variable declaration without initializer")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@example (ctx "int64_t" "x") -> "int64_t x;")
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str4 ctx c-type " " name ";")))
+
+  (fn emit-var-decl-init ((ctx (Ptr TranspileContext)) (c-type String) (name String) (init String))
+    (@intent "Emit a variable declaration with initializer")
+    (@spec (((Ptr TranspileContext) String String String) -> Unit))
+    (@example (ctx "int64_t" "x" "42") -> "int64_t x = 42;")
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str5 ctx c-type " " name " = " (ctx-str ctx init ";"))))
+
+  (fn emit-const-decl ((ctx (Ptr TranspileContext)) (c-type String) (name String) (value String) (is-int Bool))
+    (@intent "Emit a constant declaration")
+    (@spec (((Ptr TranspileContext) String String String Bool) -> Unit))
+    (@example (ctx "int64_t" "MAX_SIZE" "1024" true) -> "#define MAX_SIZE (1024)")
+    (@pre {ctx != nil})
+    (if is-int
+      ;; Integer constants use #define
+      (ctx-emit ctx (ctx-str4 ctx "#define " name " (" (ctx-str ctx value ")")))
+      ;; Other constants use static const
+      (ctx-emit ctx (ctx-str5 ctx "static const " c-type " " name (ctx-str3 ctx " = " value ";")))))
+
+  ;; ============================================================
+  ;; Block Helpers
+  ;; ============================================================
+
+  (fn emit-block-open ((ctx (Ptr TranspileContext)))
+    (@intent "Emit opening brace and increase indent")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (ctx-emit ctx "{")
+    (ctx-indent ctx))
+
+  (fn emit-block-close ((ctx (Ptr TranspileContext)))
+    (@intent "Emit closing brace and decrease indent")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (ctx-dedent ctx)
+    (ctx-emit ctx "}"))
+
+  (fn emit-if-open ((ctx (Ptr TranspileContext)) (condition String))
+    (@intent "Emit if statement opening")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@example (ctx "x > 0") -> "if (x > 0) {")
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str3 ctx "if (" condition ") {"))
+    (ctx-indent ctx))
+
+  (fn emit-else ((ctx (Ptr TranspileContext)))
+    (@intent "Emit else clause opening")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (ctx-dedent ctx)
+    (ctx-emit ctx "} else {")
+    (ctx-indent ctx))
+
+  (fn emit-else-if ((ctx (Ptr TranspileContext)) (condition String))
+    (@intent "Emit else-if clause opening")
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (@pre {ctx != nil})
-    (do
-      (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
-      (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))))
+    (ctx-dedent ctx)
+    (ctx-emit ctx (ctx-str3 ctx "} else if (" condition ") {"))
+    (ctx-indent ctx))
 
-  (fn emit-guard-end ((ctx (Ptr TranspileContext)) (guard-name String))
-    (@intent "Emit header guard end")
+  (fn emit-while-open ((ctx (Ptr TranspileContext)) (condition String))
+    (@intent "Emit while loop opening")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@example (ctx "i < n") -> "while (i < n) {")
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str3 ctx "while (" condition ") {"))
+    (ctx-indent ctx))
+
+  (fn emit-for-open ((ctx (Ptr TranspileContext)) (init String) (cond String) (incr String))
+    (@intent "Emit for loop opening")
+    (@spec (((Ptr TranspileContext) String String String) -> Unit))
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str5 ctx "for (" init "; " cond (ctx-str3 ctx "; " incr ") {")))
+    (ctx-indent ctx))
+
+  ;; ============================================================
+  ;; Type Emission Helpers
+  ;; ============================================================
+
+  (fn emit-typedef ((ctx (Ptr TranspileContext)) (c-type String) (name String))
+    (@intent "Emit a typedef")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@example (ctx "struct Foo" "Foo") -> "typedef struct Foo Foo;")
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str4 ctx "typedef " c-type " " (ctx-str ctx name ";"))))
+
+  (fn emit-struct-open ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Emit struct definition opening")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@example (ctx "MyRecord") -> "struct MyRecord {")
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str3 ctx "struct " name " {"))
+    (ctx-indent ctx))
+
+  (fn emit-struct-close ((ctx (Ptr TranspileContext)))
+    (@intent "Emit struct definition closing")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (ctx-dedent ctx)
+    (ctx-emit ctx "};"))
+
+  (fn emit-struct-field ((ctx (Ptr TranspileContext)) (c-type String) (name String))
+    (@intent "Emit a struct field")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@example (ctx "int64_t" "value") -> "int64_t value;")
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str4 ctx "    " c-type " " (ctx-str ctx name ";"))))
+
+  (fn emit-enum-open ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Emit enum definition opening")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@example (ctx "Color") -> "typedef enum {")
+    (@pre {ctx != nil})
+    (ctx-emit ctx "typedef enum {")
+    (ctx-indent ctx))
+
+  (fn emit-enum-value ((ctx (Ptr TranspileContext)) (name String) (is-last Bool))
+    (@intent "Emit an enum value")
+    (@spec (((Ptr TranspileContext) String Bool) -> Unit))
+    (@pre {ctx != nil})
+    (if is-last
+      (ctx-emit ctx (ctx-str ctx "    " name))
+      (ctx-emit ctx (ctx-str3 ctx "    " name ","))))
+
+  (fn emit-enum-close ((ctx (Ptr TranspileContext)) (type-name String))
+    (@intent "Emit enum definition closing with typedef")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@example (ctx "Color") -> "} Color;")
+    (@pre {ctx != nil})
+    (ctx-dedent ctx)
+    (ctx-emit ctx (ctx-str3 ctx "} " type-name ";")))
+
+  ;; ============================================================
+  ;; Expression Helpers
+  ;; ============================================================
+
+  (fn emit-return ((ctx (Ptr TranspileContext)) (value String))
+    (@intent "Emit a return statement")
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (@pre {ctx != nil})
-    (ctx-emit-header ctx (ctx-str3 ctx "#endif /* " guard-name " */"))))
+    (if (string-eq value "")
+      (ctx-emit ctx "return;")
+      (ctx-emit ctx (ctx-str3 ctx "return " value ";"))))
+
+  (fn emit-assignment ((ctx (Ptr TranspileContext)) (lhs String) (rhs String))
+    (@intent "Emit an assignment statement")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str4 ctx lhs " = " rhs ";")))
+
+  (fn emit-call ((ctx (Ptr TranspileContext)) (fn-name String) (args String))
+    (@intent "Emit a function call statement")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@pre {ctx != nil})
+    (ctx-emit ctx (ctx-str4 ctx fn-name "(" args ");")))
+
+) ;; end module

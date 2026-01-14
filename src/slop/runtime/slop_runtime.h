@@ -133,6 +133,23 @@ typedef struct {
 
 #define SLOP_STR(literal) ((slop_string){sizeof(literal)-1, literal})
 
+/* String constructor macro for native transpiler: String(data, len) -> slop_string */
+#define String(data, len) ((slop_string){(len), (const char*)(data)})
+
+/* Generic Option constructors for native transpiler */
+/* These use anonymous struct literals compatible with slop_option types */
+typedef struct { bool has_value; int64_t value; } _slop_option_generic;
+#define some(v) ((_slop_option_generic){true, (int64_t)(v)})
+#define none ((_slop_option_generic){false, 0})
+/* Generic unwrap for any Option type */
+#define unwrap(opt) ({ __auto_type _opt = (opt); SLOP_PRE(_opt.has_value, "unwrap on None"); _opt.value; })
+
+/* Generic Result type for native transpiler */
+/* ok/error constructors produce generic result that can be assigned to typed results */
+typedef struct { bool is_ok; union { int64_t ok; int64_t err; } data; } _slop_result_generic;
+#define ok(v) ((_slop_result_generic){true, {.ok = (int64_t)(v)}})
+#define error(e) ((_slop_result_generic){false, {.err = (int64_t)(e)}})
+
 static inline slop_string slop_string_new(slop_arena* arena, const char* cstr) {
     size_t len = strlen(cstr);
     char* data = (char*)slop_arena_alloc(arena, len + 1);

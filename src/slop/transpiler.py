@@ -1310,6 +1310,13 @@ class Transpiler:
                     if isinstance(expr[1], Symbol):
                         return expr[1].name
 
+                # Direct record construction: (RecordType field1 field2 ...) -> RecordType
+                # Check if op is a known record type
+                if op in self.types:
+                    c_type = self.to_c_type(Symbol(op))
+                    if self._is_record_type(c_type):
+                        return c_type
+
                 # Arena allocation: (arena-alloc arena TypeName) -> TypeName*
                 if op == 'arena-alloc' and len(expr) >= 3:
                     type_expr = expr[2]
@@ -1369,6 +1376,10 @@ class Transpiler:
                                 return f"slop_option_{value_id}"
                     return None
 
+                # Map keys: (map-keys map) -> List[String] (all SLOP maps are string-keyed)
+                if op == 'map-keys':
+                    return 'List[slop_string]'
+
                 # Dereference: (deref ptr) -> pointed-to type
                 if op == 'deref' and len(expr) >= 2:
                     ptr_expr = expr[1]
@@ -1397,27 +1408,90 @@ class Transpiler:
                                 if is_form(field_type, 'List') and len(field_type) >= 2:
                                     elem_c_type = self.to_c_type(field_type[1])
                                     return f"List[{elem_c_type}]"
+                                # For map types, check if it's a typed map or generic
+                                if is_form(field_type, 'Map') and len(field_type) >= 3:
+                                    key_sym = field_type[1]
+                                    value_c_type = self.to_c_type(field_type[2])
+                                    value_id = self._type_to_identifier(value_c_type)
+                                    # For String-keyed maps with predefined value types, return typed map
+                                    if isinstance(key_sym, Symbol) and key_sym.name == 'String':
+                                        if value_id in ('string', 'int'):
+                                            return f"slop_map_string_{value_id}"
+                                    # For generic maps, return Map[value_c_type] format
+                                    return f"Map[{value_c_type}]"
                                 return self.to_c_type(field_type)
                     return None
 
                 # Function call: check return type
                 ret_type = None
+                ret_type_c = None
                 if op in self.func_return_types:
                     ret_type = self.func_return_types[op]
                 elif op in self.functions and 'return_type' in self.functions[op]:
                     # Check cross-module functions from all_functions
                     ret_type = self.functions[op]['return_type']
+                    # Use pre-resolved C type if available (for correct cross-module type resolution)
+                    ret_type_c = self.functions[op].get('return_type_c')
+
+                # If we have a pre-resolved C type for Map/List, use it directly
+                if ret_type_c:
+                    return ret_type_c
+
                 if ret_type:
                     # For list types, return List[elem_c_type] format
                     if is_form(ret_type, 'List') and len(ret_type) >= 2:
                         elem_c_type = self.to_c_type(ret_type[1])
                         return f"List[{elem_c_type}]"
-                    # For map types, use to_c_type which handles predefined vs generic
+                    # For map types, check if it's a typed map or generic
                     if is_form(ret_type, 'Map') and len(ret_type) >= 3:
-                        return self.to_c_type(ret_type)
+                        c_type = self.to_c_type(ret_type)
+                        # If it's a predefined typed map (slop_map_string_X), return that
+                        if c_type.startswith('slop_map_string_') and c_type != 'slop_map*':
+                            return c_type
+                        # For generic maps (slop_map*), return Map[value_c_type] format
+                        value_c_type = self.to_c_type(ret_type[2])
+                        return f"Map[{value_c_type}]"
                     return self.to_c_type(ret_type)
 
         return None
+
+    def _infer_to_c_type(self, expr: SExpr) -> Optional[str]:
+        """Infer the type of an expression and convert to valid C type.
+
+        This wraps _infer_type and converts formats like List[X] to slop_list_X.
+        """
+        inferred = self._infer_type(expr)
+        if not inferred:
+            return None
+
+        # Convert List[X] format to slop_list_X
+        if inferred.startswith('List[') and inferred.endswith(']'):
+            elem_type = inferred[5:-1]
+            # Convert element type to C-safe name (replace * with _ptr)
+            elem_c = elem_type.replace('*', '_ptr').replace(' ', '')
+            return f"slop_list_{elem_c}"
+
+        # Convert Result[O,E] format to slop_result_X_Y
+        if inferred.startswith('Result[') and inferred.endswith(']'):
+            inner = inferred[7:-1]
+            # Split on comma, handling nested types
+            parts = inner.split(',', 1)
+            if len(parts) == 2:
+                ok_type = parts[0].strip().replace('*', '_ptr').replace(' ', '')
+                err_type = parts[1].strip().replace('*', '_ptr').replace(' ', '')
+                return f"slop_result_{ok_type}_{err_type}"
+
+        # Convert Option[X] format to slop_option_X
+        if inferred.startswith('Option[') and inferred.endswith(']'):
+            elem_type = inferred[7:-1]
+            elem_c = elem_type.replace('*', '_ptr').replace(' ', '')
+            return f"slop_option_{elem_c}"
+
+        # Convert Map[V] format to slop_map* (C type, value type tracked separately)
+        if inferred.startswith('Map[') and inferred.endswith(']'):
+            return 'slop_map*'
+
+        return inferred
 
     def _get_arena_from_expr(self, expr: SExpr) -> str:
         """Get the arena expression for an expression that's a field access.
@@ -2471,7 +2545,23 @@ class Transpiler:
         # Register function return type and parameters for type inference in function calls
         if ret_type_expr:
             self.func_return_types[raw_name] = ret_type_expr
-            self.functions[raw_name] = {'return_type': ret_type_expr, 'params': params}
+            # Store both raw SExpr and resolved C type for cross-module type inference
+            # The C type is resolved in the defining module's context (correct import_map)
+            ret_type_c = None
+            if is_form(ret_type_expr, 'Map') and len(ret_type_expr) >= 3:
+                # For Map types, check if it's a predefined typed map first
+                c_type = self.to_c_type(ret_type_expr)
+                if c_type.startswith('slop_map_string_') and c_type != 'slop_map*':
+                    # Predefined typed map - use the C type directly
+                    ret_type_c = c_type
+                else:
+                    # Generic map - store Map[value_c_type] format
+                    value_c_type = self.to_c_type(ret_type_expr[2])
+                    ret_type_c = f"Map[{value_c_type}]"
+            elif is_form(ret_type_expr, 'List') and len(ret_type_expr) >= 2:
+                elem_c_type = self.to_c_type(ret_type_expr[1])
+                ret_type_c = f"List[{elem_c_type}]"
+            self.functions[raw_name] = {'return_type': ret_type_expr, 'return_type_c': ret_type_c, 'params': params}
 
         # Extract annotations and body
         annotations = {}
@@ -2964,6 +3054,15 @@ class Transpiler:
                     expected_type = None
                     if isinstance(base, Symbol):
                         expected_type = self._get_field_type(base.name, field_name)
+                    elif is_form(base, 'deref') and len(base) >= 2:
+                        # Handle (deref var) - get field type from the pointed-to type
+                        inner = base[1]
+                        if isinstance(inner, Symbol):
+                            ptr_type = self.var_types.get(inner.name) or self.current_func_params.get(inner.name)
+                            if ptr_type:
+                                # ptr_type might be 'context_TranspileContext*' or the record type name
+                                base_type = ptr_type.rstrip('*').strip()
+                                expected_type = self._get_type_field(base_type, field_name)
                     value = self.transpile_expr(expr[2], expected_type)
                     base_code = self.transpile_expr(base)
                     # Check if base is a pointer (use -> instead of .)
@@ -3051,6 +3150,9 @@ class Transpiler:
                 if elem_type.endswith('_ptr'):
                     elem_type = elem_type[:-4] + '*'
                 self.var_types[raw_var_name] = elem_type
+            elif collection_type == 'slop_string':
+                # Iterating over string characters
+                self.var_types[raw_var_name] = 'char'
 
         self.emit(f"for (size_t _i = 0; _i < {collection}.len; _i++) {{")
         self.indent += 1
@@ -3895,9 +3997,10 @@ class Transpiler:
                 if op == 'map-get':
                     m = self.transpile_expr(expr[1])
                     key = self.transpile_expr(expr[2])
-                    # Check if map variable has a known string-keyed map type
+                    # Check if map variable has a known map type
                     map_var = expr[1]
                     map_type = None
+                    value_type = None
 
                     if isinstance(map_var, Symbol) and map_var.name in self.var_types:
                         map_type = self.var_types[map_var.name]
@@ -3907,26 +4010,37 @@ class Transpiler:
                         if inferred:
                             map_type = inferred
 
+                    # Extract value type from Map[V] format
+                    if map_type and map_type.startswith('Map[') and map_type.endswith(']'):
+                        value_type = map_type[4:-1]
+                        map_type = 'slop_map*'  # Convert to C type for pointer check
+
+                    # Determine if map expression is already a pointer
+                    is_pointer = map_type and (map_type.endswith('*') or 'slop_map*' in map_type)
+                    map_arg = m if is_pointer else f"&{m}"
+
                     # Only use typed getters for predefined map types (string, int values)
                     if map_type and ('slop_map_string_string' in map_type or 'slop_map_string_int' in map_type):
                         base_type = map_type.rstrip('*')
-                        return f"{base_type}_get(&{m}, {key})"
+                        return f"{base_type}_get({map_arg}, {key})"
 
-                    # Get value type from context for generating inline option wrapper
-                    value_type = self._get_map_value_type_from_context()
+                    # Get value type from context if not already known
+                    if not value_type:
+                        value_type = self._get_map_value_type_from_context()
+
                     if value_type:
                         value_id = self._type_to_identifier(value_type)
                         # Use typed wrappers for predefined value types
                         if value_id in ('string', 'int'):
-                            return f"slop_map_string_{value_id}_get(&{m}, {key})"
-                        # For generic maps with custom value types, wrap void* in option
-                        # The map stores &value, so map_get returns pointer to value
-                        # We need to dereference to get the actual value
+                            return f"slop_map_string_{value_id}_get({map_arg}, {key})"
+                        # For generic maps with custom value types, generate proper Option wrapper
+                        # Register the Option type for emission in the header
                         option_type = f"slop_option_{value_id}"
+                        self.generated_option_types.add((option_type, value_type))
                         return f"({{ void* _r = slop_map_get({m}, {key}); _r ? (({option_type}){{ .has_value = true, .value = *({value_type}*)_r }}) : (({option_type}){{ .has_value = false }}); }})"
 
-                    # For generic maps without known value type, just return void*
-                    return f"slop_map_get({m}, {key})"
+                    # For generic maps without known value type, fall back to option_ptr
+                    return f"({{ void* _r = slop_map_get({m}, {key}); _r ? ((slop_option_ptr){{ .has_value = true, .value = _r }}) : ((slop_option_ptr){{ .has_value = false }}); }})"
 
                 if op == 'map-put':
                     # (map-put map key val) - 3 args
@@ -3946,17 +4060,22 @@ class Transpiler:
                             return f"{base_type}_put({arena_expr}, &{m}, {key}, {val})"
                     # Generic slop_map* - use slop_map_put with value pointer
                     # IMPORTANT: Must allocate storage on arena, not stack, to avoid dangling pointers
-                    if map_type and ('slop_map*' in map_type or map_type == 'slop_map'):
-                        val_type = self._infer_type(expr[3])
+                    # Check for Map[...] format from _infer_type (indicates generic map from field access)
+                    is_generic_map = (map_type and
+                        ('slop_map*' in map_type or map_type == 'slop_map' or
+                         (map_type.startswith('Map[') and map_type.endswith(']'))))
+                    if is_generic_map:
+                        val_type = self._infer_to_c_type(expr[3])
                         if val_type:
                             # Allocate on arena and store value, then put pointer
                             return f"{{ {val_type}* _stored_val = ({val_type}*)slop_arena_alloc({arena_expr}, sizeof({val_type})); *_stored_val = {val}; slop_map_put({arena_expr}, {m}, {key}, _stored_val); }}"
                         return f"slop_map_put({arena_expr}, {m}, {key}, &({val}))"
                     # Fallback for generic maps - check if expression is already a pointer
-                    # (deref ...) yields slop_map*, so don't add &
+                    # (deref ...) yields slop_map*, field access to Map field also yields pointer
                     is_deref = is_form(map_expr, 'deref')
-                    map_arg = m if is_deref else f"&{m}"
-                    val_type = self._infer_type(expr[3])
+                    is_field_access = is_form(map_expr, '.') and len(map_expr) >= 3
+                    map_arg = m if (is_deref or is_field_access) else f"&{m}"
+                    val_type = self._infer_to_c_type(expr[3])
                     if val_type:
                         # Allocate on arena and store value, then put pointer
                         return f"{{ {val_type}* _stored_val = ({val_type}*)slop_arena_alloc({arena_expr}, sizeof({val_type})); *_stored_val = {val}; slop_map_put({arena_expr}, {map_arg}, {key}, _stored_val); }}"
@@ -3988,32 +4107,24 @@ class Transpiler:
 
                 if op == 'map-keys':
                     m = self.transpile_expr(expr[1])
-                    map_var = expr[1]
-                    # Check if this is a string-keyed map
-                    is_string_map = False
-                    if isinstance(map_var, Symbol) and map_var.name in self.var_types:
-                        var_type = self.var_types[map_var.name]
-                        if 'map_string' in var_type.lower() or 'slop_map_string' in var_type:
-                            is_string_map = True
-                    # Also try to infer from the expression type (returns C type string)
+                    # In SLOP, all maps are string-keyed, so always use slop_map_keys
+                    # Get arena from context (function param with arena field, or explicit arena in scope)
+                    arena = self._get_arena_from_expr(expr[1])
+                    # Check if map expression is a pointer - don't add & if already pointer
+                    # Map[V] format indicates a generic slop_map* (pointer)
+                    # slop_map_string_X is NOT a pointer (it's the struct type)
                     map_type = self._infer_type(expr[1])
-                    if map_type and isinstance(map_type, str):
-                        # Check for C type name containing map_string
-                        if 'map_string' in map_type.lower():
-                            is_string_map = True
-                    # Check if expr is a function call and the function returns a Map String type
-                    if isinstance(expr[1], SList) and len(expr[1]) >= 1:
-                        fn_head = expr[1][0]
-                        if isinstance(fn_head, Symbol) and fn_head.name in self.functions:
-                            ret_type = self.functions[fn_head.name].get('return_type')
-                            if ret_type and is_form(ret_type, 'Map') and len(ret_type) >= 2:
-                                if isinstance(ret_type[1], Symbol) and ret_type[1].name == 'String':
-                                    is_string_map = True
-                    if is_string_map:
-                        # Get arena from context (function param with arena field, or explicit arena in scope)
-                        arena = self._get_arena_from_expr(expr[1])
-                        return f"slop_map_keys({arena}, &{m})"
-                    return f"map_keys({m})"
+                    is_pointer = map_type and (
+                        map_type.endswith('*') or
+                        'slop_map*' in map_type or
+                        map_type.startswith('Map[')
+                    )
+                    # slop_map_string_X without * is a struct, not pointer
+                    if map_type and map_type.startswith('slop_map_string_') and not map_type.endswith('*'):
+                        is_pointer = False
+                    if is_pointer:
+                        return f"slop_map_keys({arena}, {m})"
+                    return f"slop_map_keys({arena}, &{m})"
 
                 if op == 'map-values':
                     m = self.transpile_expr(expr[1])
@@ -4838,6 +4949,9 @@ class Transpiler:
                 if pname:
                     param_types[pname] = ptype
 
+        # Track variable types during scanning for map-get type discovery
+        self._scan_var_types = {}
+
         def scan_expr(expr):
             """Recursively scan expression for type-creating forms."""
             if isinstance(expr, SList) and len(expr) >= 1:
@@ -4869,6 +4983,34 @@ class Transpiler:
                         # Also ensure Option type for element exists (for list-get)
                         option_type = f"slop_option_{elem_id}"
                         self.generated_option_types.add((option_type, elem_type))
+                    # Check for map-get: (map-get map key) - returns Option<ValueType>
+                    elif head.name == 'map-get' and len(expr) >= 2:
+                        map_expr = expr[1]
+                        # Try to infer map type from the expression
+                        # Case 1: Direct function call (map-get (func args...) key)
+                        if isinstance(map_expr, SList) and len(map_expr) >= 1:
+                            func_head = map_expr[0]
+                            if isinstance(func_head, Symbol):
+                                func_name = func_head.name
+                                # Check if function has return_type_c in functions dict
+                                if func_name in self.functions:
+                                    ret_type_c = self.functions[func_name].get('return_type_c')
+                                    if ret_type_c and ret_type_c.startswith('Map[') and ret_type_c.endswith(']'):
+                                        value_type = ret_type_c[4:-1]
+                                        value_id = self._type_to_identifier(value_type)
+                                        option_type = f"slop_option_{value_id}"
+                                        self.generated_option_types.add((option_type, value_type))
+                        # Case 2: Variable - need to track let bindings in scan_expr
+                        elif isinstance(map_expr, Symbol):
+                            # Look up in local_var_types (populated from let bindings during scan)
+                            var_name = map_expr.name
+                            if hasattr(self, '_scan_var_types') and var_name in self._scan_var_types:
+                                map_type = self._scan_var_types[var_name]
+                                if map_type and map_type.startswith('Map[') and map_type.endswith(']'):
+                                    value_type = map_type[4:-1]
+                                    value_id = self._type_to_identifier(value_type)
+                                    option_type = f"slop_option_{value_id}"
+                                    self.generated_option_types.add((option_type, value_type))
                     # Check for list-pop/list-get on fields: (list-pop (. obj field))
                     # These return Option<T> where T is the list element type
                     elif head.name in ('list-pop', 'list-get') and len(expr) >= 2:
@@ -4909,6 +5051,27 @@ class Transpiler:
                                             elem_id = self._type_to_identifier(elem_type)
                                             option_type = f"slop_option_{elem_id}"
                                             self.generated_option_types.add((option_type, elem_type))
+                    # Check for let bindings to track variable types during scan
+                    elif head.name == 'let' and len(expr) >= 2:
+                        bindings = expr[1]
+                        if isinstance(bindings, SList):
+                            for binding in bindings.items:
+                                if isinstance(binding, SList) and len(binding) >= 2:
+                                    var_name_expr = binding[0]
+                                    init_expr = binding[1]
+                                    if isinstance(var_name_expr, Symbol):
+                                        var_name = var_name_expr.name
+                                        # If init is a function call, try to get return type
+                                        if isinstance(init_expr, SList) and len(init_expr) >= 1:
+                                            func_head = init_expr[0]
+                                            if isinstance(func_head, Symbol):
+                                                func_name = func_head.name
+                                                if func_name in self.functions:
+                                                    ret_type_c = self.functions[func_name].get('return_type_c')
+                                                    if ret_type_c:
+                                                        if not hasattr(self, '_scan_var_types'):
+                                                            self._scan_var_types = {}
+                                                        self._scan_var_types[var_name] = ret_type_c
                 # Recurse into all sub-expressions
                 for item in expr.items:
                     scan_expr(item)
