@@ -18,7 +18,7 @@
   (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
                    ctx-get-current-result-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry TypeEntry
-                   to-c-type-prefixed))
+                   to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var))
   (import ctype (to-c-type to-c-name type-to-identifier))
   (import strlib (replace starts-with substring char-at count-occurrences index-of contains))
 
@@ -1530,6 +1530,8 @@
                   (build-option-match-expr ctx scrutinee-c items))
                 ((is-result-patterns patterns)
                   (build-result-match-expr ctx scrutinee-c items))
+                ((is-union-expr-patterns ctx patterns)
+                  (build-union-match-expr ctx scrutinee-c items))
                 (else
                   (build-ternary-match-expr ctx scrutinee-c items)))))
           ((none) "/* missing match scrutinee */")))))
@@ -1607,6 +1609,34 @@
         (set! i (+ i 1)))
       found))
 
+  (fn is-union-expr-patterns ((ctx (Ptr TranspileContext)) (patterns (List (Ptr SExpr))))
+    (@intent "Check if patterns are union match (tagged union variants)")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Bool))
+    (@pre {ctx != nil})
+    ;; Union patterns are lists like (variant-name binding) where variant-name
+    ;; is registered as an enum/union variant (and not one of special forms)
+    (let ((len (list-len patterns))
+          (mut has-union-variant false)
+          (mut i 0))
+      (while (and (< i len) (not has-union-variant))
+        (match (list-get patterns i)
+          ((some pat-expr)
+            (let ((tag (get-expr-pattern-tag pat-expr)))
+              ;; Check if it's a registered variant (not special forms)
+              (when (and (not (string-eq tag ""))
+                         (not (string-eq tag "some"))
+                         (not (string-eq tag "none"))
+                         (not (string-eq tag "ok"))
+                         (not (string-eq tag "error"))
+                         (not (string-eq tag "else"))
+                         (not (string-eq tag "_")))
+                (match (ctx-lookup-enum-variant ctx tag)
+                  ((some _) (set! has-union-variant true))
+                  ((none) (do))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      has-union-variant))
+
   (fn get-expr-binding-name ((pat-expr (Ptr SExpr)))
     (@intent "Extract binding name from pattern like (ok x)")
     (@spec (((Ptr SExpr)) -> (Option String)))
@@ -1636,6 +1666,24 @@
             (transpile-expr ctx body-expr))
           ((none) "0")))))
 
+  (fn transpile-branch-body-with-binding ((ctx (Ptr TranspileContext)) (branch-items (List (Ptr SExpr)))
+                                          (binding-name String))
+    (@intent "Transpile branch body with proper variable binding in scope")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) String) -> String))
+    (@pre {ctx != nil})
+    ;; Push scope to contain the binding
+    (ctx-push-scope ctx)
+    ;; Bind the variable if non-empty
+    (when (not (string-eq binding-name ""))
+      (let ((arena (. (deref ctx) arena))
+            (c-name (to-c-name arena binding-name)))
+        (ctx-bind-var ctx (VarEntry binding-name c-name "auto" false false))))
+    ;; Transpile body expression
+    (let ((result (get-match-branch-body ctx branch-items)))
+      ;; Pop scope
+      (ctx-pop-scope ctx)
+      result))
+
   (fn build-option-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build Option match as GCC statement expression")
     (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
@@ -1659,9 +1707,13 @@
                           (cond
                             ((string-eq tag "some")
                               (match (get-expr-binding-name pattern)
-                                ((some name) (set! some-binding name))
-                                ((none) (do)))
-                              (set! some-body (get-match-branch-body ctx branch-items)))
+                                ((some name)
+                                  (set! some-binding name)
+                                  ;; Transpile body with binding in scope
+                                  (set! some-body (transpile-branch-body-with-binding ctx branch-items name)))
+                                ((none)
+                                  ;; No binding - transpile normally
+                                  (set! some-body (get-match-branch-body ctx branch-items)))))
                             ((string-eq tag "none")
                               (set! none-body (get-match-branch-body ctx branch-items)))
                             (else (do)))))
@@ -1731,14 +1783,22 @@
                           (cond
                             ((string-eq tag "ok")
                               (match (get-expr-binding-name pattern)
-                                ((some name) (set! ok-binding name))
-                                ((none) (do)))
-                              (set! ok-body (get-match-branch-body ctx branch-items)))
+                                ((some name)
+                                  (set! ok-binding name)
+                                  ;; Transpile body with binding in scope
+                                  (set! ok-body (transpile-branch-body-with-binding ctx branch-items name)))
+                                ((none)
+                                  ;; No binding - transpile normally
+                                  (set! ok-body (get-match-branch-body ctx branch-items)))))
                             ((string-eq tag "error")
                               (match (get-expr-binding-name pattern)
-                                ((some name) (set! err-binding name))
-                                ((none) (do)))
-                              (set! err-body (get-match-branch-body ctx branch-items)))
+                                ((some name)
+                                  (set! err-binding name)
+                                  ;; Transpile body with binding in scope
+                                  (set! err-body (transpile-branch-body-with-binding ctx branch-items name)))
+                                ((none)
+                                  ;; No binding - transpile normally
+                                  (set! err-body (get-match-branch-body ctx branch-items)))))
                             (else (do)))))
                       ((none) (do))))))
               (else (do))))
@@ -1763,6 +1823,81 @@
                     (ctx-str ctx err-bind
                       (ctx-str ctx "_mr = "
                         (ctx-str ctx err-body "; } _mr; })"))))))))))))
+
+  (fn build-union-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
+    (@intent "Build union (tagged union) match as GCC statement expression with switch")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; Generate: ({ __auto_type _mv = scrutinee; __auto_type _mr;
+    ;;              switch (_mv.tag) { case T_v: { __auto_type b = _mv.data.v; _mr = body; break; } ... } _mr; })
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          (mut cases "")
+          (mut i 2))
+      ;; Build switch cases
+      (while (< i len)
+        (match (list-get items i)
+          ((some branch)
+            (match (deref branch)
+              ((list branch-lst)
+                (let ((branch-items (. branch-lst items)))
+                  (when (>= (list-len branch-items) 2)
+                    (match (list-get branch-items 0)
+                      ((some pattern)
+                        (set! cases (build-union-case-expr ctx arena cases pattern branch-items)))
+                      ((none) (do))))))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      ;; Build the full expression
+      (let ((s1 (ctx-str ctx "({ __auto_type _mv = " scrutinee-c))
+            (s2 (ctx-str ctx s1 "; __auto_type _mr; switch (_mv.tag) { "))
+            (s3 (ctx-str ctx s2 cases))
+            (s4 (ctx-str ctx s3 " } _mr; })")))
+        s4)))
+
+  (fn build-union-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String)
+                             (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))))
+    (@intent "Build a single union case for expression-level match")
+    (@spec (((Ptr TranspileContext) Arena String (Ptr SExpr) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((tag (get-expr-pattern-tag pattern)))
+      (cond
+        ((or (string-eq tag "else") (string-eq tag "_"))
+          ;; Default case
+          (let ((body (get-match-branch-body ctx branch-items)))
+            (ctx-str ctx cases (ctx-str3 ctx "default: { _mr = " body "; break; } "))))
+        (else
+          ;; Regular variant case
+          (match (ctx-lookup-enum-variant ctx tag)
+            ((some type-name)
+              (let ((case-label (ctx-str4 ctx type-name "_" tag ""))
+                    (binding-opt (get-expr-binding-name pattern)))
+                (match binding-opt
+                  ((some binding-name)
+                    ;; Has binding - need to bind variable and transpile body with scope
+                    (let ((c-binding (to-c-name arena binding-name))
+                          (body (transpile-branch-body-with-binding ctx branch-items binding-name))
+                          (s1 (ctx-str ctx cases "case "))
+                          (s2 (ctx-str ctx s1 case-label))
+                          (s3 (ctx-str ctx s2 ": { __auto_type "))
+                          (s4 (ctx-str ctx s3 c-binding))
+                          (s5 (ctx-str ctx s4 " = _mv.data."))
+                          (s6 (ctx-str ctx s5 tag))
+                          (s7 (ctx-str ctx s6 "; _mr = "))
+                          (s8 (ctx-str ctx s7 body))
+                          (s9 (ctx-str ctx s8 "; break; } ")))
+                      s9))
+                  ((none)
+                    ;; No binding
+                    (let ((body (get-match-branch-body ctx branch-items))
+                          (s1 (ctx-str ctx cases "case "))
+                          (s2 (ctx-str ctx s1 case-label))
+                          (s3 (ctx-str ctx s2 ": { _mr = "))
+                          (s4 (ctx-str ctx s3 body))
+                          (s5 (ctx-str ctx s4 "; break; } ")))
+                      s5)))))
+            ((none) cases))))))
 
   (fn build-ternary-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build match as ternary chain for literals/enums")
