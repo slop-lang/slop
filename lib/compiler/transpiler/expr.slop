@@ -486,8 +486,55 @@
                   (else (ctx-str3 ctx "slop_option_" c-type "")))))
             ;; Default to int
             ((none) "slop_option_int"))))
-      ;; For complex expressions, default to int
-      ((list _) "slop_option_int")))
+      ;; For complex expressions, try to infer type from the structure
+      ((list lst)
+        (infer-list-expr-option-type ctx (. lst items)))))
+
+  (fn infer-list-expr-option-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Infer Option type for a list expression (field access, function call, etc.)")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items))
+          (arena (. (deref ctx) arena)))
+      (if (< len 1)
+        "slop_option_int"
+        (match (list-get items 0)
+          ((some head-expr)
+            (match (deref head-expr)
+              ((symbol sym)
+                (let ((op (. sym name)))
+                  (cond
+                    ;; Field access: (. obj field) - try to infer field type
+                    ((string-eq op ".")
+                      (if (< len 3)
+                        "slop_option_int"
+                        (match (list-get items 2)
+                          ((some field-expr)
+                            (match (deref field-expr)
+                              ((symbol field-sym)
+                                (let ((field-name (. field-sym name)))
+                                  ;; Known string fields from common types
+                                  (cond
+                                    ((string-eq field-name "name") "slop_option_string")
+                                    ((string-eq field-name "value") "slop_option_string")
+                                    ((string-eq field-name "message") "slop_option_string")
+                                    ((string-eq field-name "c-name") "slop_option_string")
+                                    ((string-eq field-name "c-type") "slop_option_string")
+                                    ((string-eq field-name "slop-name") "slop_option_string")
+                                    ;; Default to int for unknown fields
+                                    (else "slop_option_int"))))
+                              (else "slop_option_int")))
+                          ((none) "slop_option_int"))))
+                    ;; String functions that return strings
+                    ((or (string-eq op "string-concat")
+                         (or (string-eq op "string-copy")
+                             (or (string-eq op "int-to-string")
+                                 (string-eq op "substring"))))
+                      "slop_option_string")
+                    ;; Default to int for other expressions
+                    (else "slop_option_int"))))
+              (else "slop_option_int")))
+          ((none) "slop_option_int")))))
 
   (fn ends-with ((s String) (suffix String))
     (@intent "Check if string ends with suffix")
