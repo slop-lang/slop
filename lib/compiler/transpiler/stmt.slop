@@ -815,17 +815,8 @@
                             (ctx-emit ctx "return;")
                             (match (list-get items 1)
                               ((some val-expr)
-                                (let ((val-c (transpile-expr ctx val-expr)))
-                                  ;; Check if returning none and we know the return type is an option
-                                  (let ((final-val (if (string-eq val-c "none")
-                                                     (match (ctx-get-current-return-type ctx)
-                                                       ((some ret-type)
-                                                         (if (starts-with ret-type "slop_option_")
-                                                           (ctx-str3 ctx "(" ret-type "){.has_value = false}")
-                                                           val-c))
-                                                       ((none) val-c))
-                                                     val-c)))
-                                    (ctx-emit ctx (ctx-str3 ctx "return " final-val ";")))))
+                                ;; Use helper that handles (some ..), (none), and regular expressions
+                                (emit-typed-return-expr ctx val-expr))
                               ((none) (ctx-emit ctx "return;")))))
                         ((string-eq op "break")
                           (ctx-emit ctx "break;"))
@@ -833,23 +824,67 @@
                           (ctx-emit ctx "continue;"))
                         ;; Default: expression statement
                         (else
-                          (let ((code (transpile-expr ctx expr)))
-                            (if is-return
-                              (emit-return-with-typed-none ctx code)
-                              (ctx-emit ctx (ctx-str ctx code ";"))))))))
+                          (if is-return
+                            (emit-typed-return-expr ctx expr)
+                            (ctx-emit ctx (ctx-str ctx (transpile-expr ctx expr) ";")))))))
                   ;; Non-symbol head: expression statement
                   (else
-                    (let ((code (transpile-expr ctx expr)))
-                      (if is-return
-                        (emit-return-with-typed-none ctx code)
-                        (ctx-emit ctx (ctx-str ctx code ";")))))))
+                    (if is-return
+                      (emit-typed-return-expr ctx expr)
+                      (ctx-emit ctx (ctx-str ctx (transpile-expr ctx expr) ";"))))))
               ((none) (ctx-emit ctx "/* empty */"))))))
       ;; Non-list: expression statement
       (else
-        (let ((code (transpile-expr ctx expr)))
-          (if is-return
-            (emit-return-with-typed-none ctx code)
-            (ctx-emit ctx (ctx-str ctx code ";")))))))
+        (if is-return
+          (emit-typed-return-expr ctx expr)
+          (ctx-emit ctx (ctx-str ctx (transpile-expr ctx expr) ";"))))))
+
+  ;; Helper to emit typed return from expression (handles some/none with proper typing)
+  (fn emit-typed-return-expr ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Emit return statement, handling (some ..) and (none) with proper Option typing")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    ;; Check if expression is (some ...) or (none) and use proper typing
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 1)
+            (emit-return-with-typed-none ctx (transpile-expr ctx expr))
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((symbol sym)
+                    (let ((op (. sym name)))
+                      (cond
+                        ;; (some value) - use return type for proper Option type
+                        ((string-eq op "some")
+                          (match (ctx-get-current-return-type ctx)
+                            ((some ret-type)
+                              (if (starts-with ret-type "slop_option_")
+                                (if (< (list-len items) 2)
+                                  (emit-return-with-typed-none ctx (transpile-expr ctx expr))
+                                  (match (list-get items 1)
+                                    ((some inner-expr)
+                                      (let ((inner-c (transpile-expr ctx inner-expr)))
+                                        (ctx-emit ctx (ctx-str5 ctx "return (" ret-type "){.has_value = 1, .value = " inner-c "};"))))
+                                    ((none) (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))
+                                (emit-return-with-typed-none ctx (transpile-expr ctx expr))))
+                            ((none) (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))
+                        ;; (none) - use return type for proper Option type
+                        ((string-eq op "none")
+                          (match (ctx-get-current-return-type ctx)
+                            ((some ret-type)
+                              (if (starts-with ret-type "slop_option_")
+                                (ctx-emit ctx (ctx-str3 ctx "return (" ret-type "){.has_value = false};"))
+                                (emit-return-with-typed-none ctx (transpile-expr ctx expr))))
+                            ((none) (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))
+                        ;; Other expressions - use existing helper
+                        (else (emit-return-with-typed-none ctx (transpile-expr ctx expr))))))
+                  (else (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))
+              ((none) (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))))
+      ;; Non-list: use existing helper
+      (else (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))
 
   ;; Helper to emit return with typed none when needed
   (fn emit-return-with-typed-none ((ctx (Ptr TranspileContext)) (code String))
