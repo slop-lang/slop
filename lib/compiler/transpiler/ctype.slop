@@ -291,6 +291,28 @@
                             (string-concat arena (to-c-type arena inner) "*"))
                           ((none) "void*"))))
 
+                    ;; (Chan T) -> slop_chan_<inner>
+                    ((string-eq head "Chan")
+                      (if (< len 2)
+                        "slop_chan_void"
+                        (match (list-get items 1)
+                          ((some inner)
+                            (let ((inner-c (to-c-type arena inner))
+                                  (inner-id (type-to-identifier arena inner-c)))
+                              (string-concat arena "slop_chan_" inner-id)))
+                          ((none) "slop_chan_void"))))
+
+                    ;; (Thread T) -> slop_thread_<inner>
+                    ((string-eq head "Thread")
+                      (if (< len 2)
+                        "slop_thread_void"
+                        (match (list-get items 1)
+                          ((some inner)
+                            (let ((inner-c (to-c-type arena inner))
+                                  (inner-id (type-to-identifier arena inner-c)))
+                              (string-concat arena "slop_thread_" inner-id)))
+                          ((none) "slop_thread_void"))))
+
                     ;; Default: treat as type name
                     (else
                       (match (builtin-type-c arena head)

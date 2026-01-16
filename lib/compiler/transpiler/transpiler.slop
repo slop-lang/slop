@@ -25,6 +25,8 @@
                    ctx-set-current-result-type ctx-get-current-result-type ctx-clear-current-result-type
                    ctx-register-option-type ctx-has-option-type ctx-get-option-types OptionType
                    ctx-register-list-type ctx-has-list-type ctx-get-list-types ListType
+                   ctx-register-chan-type ctx-has-chan-type ctx-get-chan-types ChanType
+                   ctx-register-thread-type ctx-has-thread-type ctx-get-thread-types ThreadType
                    ctx-register-result-type-alias ctx-lookup-result-type-alias ResultTypeAlias
                    ctx-get-inline-records InlineRecord
                    ctx-add-import ctx-get-imports
@@ -1058,6 +1060,10 @@
                 (emit-list-types-header ctx)
                 ;; Emit pointer-element Option types (only need forward decls)
                 (emit-option-types-header ctx)
+                ;; Emit Chan types (require slop_thread.h)
+                (emit-chan-types-header ctx)
+                ;; Emit Thread types (require slop_thread.h)
+                (emit-thread-types-header ctx)
                 ;; Emit simple type aliases (range types, etc.) before struct types that may use them
                 (emit-simple-type-aliases-header ctx items body-start)
                 ;; Emit simple struct/union types (those without value List/Option fields)
@@ -1190,6 +1196,28 @@
                             (when (>= len 3)
                               (match (list-get items 2)
                                 ((some err) (scan-type-for-generics ctx err))
+                                ((none) (do)))))
+                          ;; Chan type
+                          ((string-eq op "Chan")
+                            (when (>= len 2)
+                              (match (list-get items 1)
+                                ((some elem)
+                                  (let ((elem-c (to-c-type-prefixed ctx elem))
+                                        (elem-id (type-to-identifier arena elem-c))
+                                        (c-name (ctx-str ctx "slop_chan_" elem-id)))
+                                    (ctx-register-chan-type ctx elem-c c-name)
+                                    (scan-type-for-generics ctx elem)))
+                                ((none) (do)))))
+                          ;; Thread type
+                          ((string-eq op "Thread")
+                            (when (>= len 2)
+                              (match (list-get items 1)
+                                ((some result)
+                                  (let ((result-c (to-c-type-prefixed ctx result))
+                                        (result-id (type-to-identifier arena result-c))
+                                        (c-name (ctx-str ctx "slop_thread_" result-id)))
+                                    (ctx-register-thread-type ctx result-c c-name)
+                                    (scan-type-for-generics ctx result)))
                                 ((none) (do)))))
                           (else (do)))))
                     (else (do))))
@@ -1931,6 +1959,86 @@
         (or (string-eq name "slop_list_float")
             (or (string-eq name "slop_list_string")
                 (string-eq name "slop_list_ptr")))))
+
+  (fn emit-chan-types-header ((ctx (Ptr TranspileContext)))
+    (@intent "Emit Chan types to header using SLOP_CHAN_DEFINE macro")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((chan-types (ctx-get-chan-types ctx))
+          (len (list-len chan-types))
+          (mut i 0)
+          (mut emitted-any false))
+      (while (< i len)
+        (match (list-get chan-types i)
+          ((some ct)
+            (let ((elem-type (. ct elem-type))
+                  (c-name (. ct c-name)))
+              ;; Skip types already defined in slop_thread.h
+              (when (not (is-runtime-chan-type c-name))
+                ;; Include slop_thread.h on first chan type
+                (when (not emitted-any)
+                  (ctx-emit-header ctx "#include \"slop_thread.h\"")
+                  (ctx-emit-header ctx "")
+                  (set! emitted-any true))
+                (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-name) "_DEFINED" "")))
+                  ;; #ifndef GUARD_DEFINED
+                  (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
+                  ;; #define GUARD_DEFINED
+                  (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+                  ;; SLOP_CHAN_DEFINE(elem_type, c_name)
+                  (ctx-emit-header ctx (ctx-str5 ctx "SLOP_CHAN_DEFINE(" elem-type ", " c-name ")"))
+                  ;; #endif
+                  (ctx-emit-header ctx "#endif")
+                  (ctx-emit-header ctx "")))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn emit-thread-types-header ((ctx (Ptr TranspileContext)))
+    (@intent "Emit Thread types to header using SLOP_THREAD_DEFINE macro")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((thread-types (ctx-get-thread-types ctx))
+          (len (list-len thread-types))
+          (mut i 0)
+          (mut emitted-any false))
+      (while (< i len)
+        (match (list-get thread-types i)
+          ((some tt)
+            (let ((result-type (. tt result-type))
+                  (c-name (. tt c-name)))
+              ;; Skip types already defined in slop_thread.h
+              (when (not (is-runtime-thread-type c-name))
+                ;; Include slop_thread.h on first thread type (if not already included by chan)
+                (when (and (not emitted-any) (== (list-len (ctx-get-chan-types ctx)) 0))
+                  (ctx-emit-header ctx "#include \"slop_thread.h\"")
+                  (ctx-emit-header ctx "")
+                  (set! emitted-any true))
+                (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-name) "_DEFINED" "")))
+                  ;; #ifndef GUARD_DEFINED
+                  (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
+                  ;; #define GUARD_DEFINED
+                  (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+                  ;; SLOP_THREAD_DEFINE(result_type, c_name)
+                  (ctx-emit-header ctx (ctx-str5 ctx "SLOP_THREAD_DEFINE(" result-type ", " c-name ")"))
+                  ;; #endif
+                  (ctx-emit-header ctx "#endif")
+                  (ctx-emit-header ctx "")))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn is-runtime-chan-type ((name String))
+    (@intent "Check if Chan type is already defined in slop_thread.h")
+    (@spec ((String) -> Bool))
+    (or (string-eq name "slop_chan_int64_t")
+        (or (string-eq name "slop_chan_double")
+            (string-eq name "slop_chan_ptr"))))
+
+  (fn is-runtime-thread-type ((name String))
+    (@intent "Check if Thread type is already defined in slop_thread.h")
+    (@spec ((String) -> Bool))
+    (or (string-eq name "slop_thread_int64_t")
+        (or (string-eq name "slop_thread_double")
+            (string-eq name "slop_thread_ptr"))))
 
   (fn uppercase-name ((ctx (Ptr TranspileContext)) (name String))
     (@intent "Convert name to uppercase for use in guard macros")
