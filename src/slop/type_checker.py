@@ -17,6 +17,7 @@ from slop.types import (
     RangeBounds, Constraint,
     Type, PrimitiveType, RangeType, ListType, ArrayType, MapType,
     RecordType, EnumType, UnionType, OptionType, ResultType, PtrType,
+    ChanType, ThreadType,
     FnType, TypeVar, UnknownType, UNKNOWN,
     STRING, INT, BOOL, UNIT, ARENA, BUILTIN_FUNCTIONS,
 )
@@ -468,6 +469,14 @@ class TypeChecker:
                     key_type = self.parse_type_expr(expr[1]) if len(expr) > 1 else UNKNOWN
                     value_type = self.parse_type_expr(expr[2]) if len(expr) > 2 else UNKNOWN
                     return MapType(key_type, value_type)
+
+                if name == 'Chan':
+                    element_type = self.parse_type_expr(expr[1]) if len(expr) > 1 else UNKNOWN
+                    return ChanType(element_type)
+
+                if name == 'Thread':
+                    result_type = self.parse_type_expr(expr[1]) if len(expr) > 1 else UNKNOWN
+                    return ThreadType(result_type)
 
                 if name == 'Ptr':
                     pointee = self.parse_type_expr(expr[1]) if len(expr) > 1 else UNKNOWN

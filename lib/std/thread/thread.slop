@@ -1,0 +1,138 @@
+;; ============================================================
+;; Thread and Channel Concurrency Primitives
+;;
+;; Type-safe SLOP concurrency built on pthreads.
+;;
+;; Provides:
+;; - Typed channels: (Chan T) for thread-safe communication
+;; - Typed threads: (Thread T) for spawning and joining
+;; - Arena-based allocation for all concurrency primitives
+;;
+;; Usage pattern:
+;;   (with-arena 4096
+;;     (let ((ch (chan arena)))    ;; Creates (Ptr (Chan Int))
+;;       (spawn arena (fn () (send ch 42)))
+;;       (recv ch)))               ;; Blocks until value available
+;; ============================================================
+
+(module thread
+  (export
+    ;; Error type
+    ChanError
+    ;; Channel creation
+    chan chan-buffered chan-close
+    ;; Channel operations
+    send recv try-recv
+    ;; Thread operations
+    spawn join)
+
+  ;; ============================================================
+  ;; FFI: pthreads
+  ;; ============================================================
+
+  (ffi "pthread.h"
+    (pthread-create ((thread (Ptr U64)) (attr (Ptr Void))
+                     (start (Ptr Void)) (arg (Ptr Void))) Int)
+    (pthread-join ((thread U64) (retval (Ptr (Ptr Void)))) Int)
+    (pthread-mutex-init ((mutex (Ptr Void)) (attr (Ptr Void))) Int)
+    (pthread-mutex-destroy ((mutex (Ptr Void))) Int)
+    (pthread-mutex-lock ((mutex (Ptr Void))) Int)
+    (pthread-mutex-unlock ((mutex (Ptr Void))) Int)
+    (pthread-cond-init ((cond (Ptr Void)) (attr (Ptr Void))) Int)
+    (pthread-cond-destroy ((cond (Ptr Void))) Int)
+    (pthread-cond-wait ((cond (Ptr Void)) (mutex (Ptr Void))) Int)
+    (pthread-cond-signal ((cond (Ptr Void))) Int)
+    (pthread-cond-broadcast ((cond (Ptr Void))) Int))
+
+  ;; ============================================================
+  ;; Types
+  ;; ============================================================
+
+  (type ChanError (enum
+    closed           ;; Channel has been closed
+    would-block      ;; try-recv on empty channel
+    send-on-closed)) ;; Attempted send on closed channel
+
+  ;; Note: (Chan T) and (Thread T) are built-in parameterized types
+  ;; like (List T). The transpiler generates type-specific structs.
+
+  ;; ============================================================
+  ;; Channel Creation
+  ;; ============================================================
+
+  (fn chan ((arena Arena))
+    (@intent "Create an unbuffered channel - sends block until received")
+    (@spec ((Arena) -> (Ptr (Chan Int))))
+    (@alloc arena)
+    (@post {$result != nil})
+    (hole (Ptr (Chan Int)) "allocate and initialize unbuffered channel"
+      :complexity tier-2
+      :required (arena)))
+
+  (fn chan-buffered ((arena Arena) (capacity (Int 1 ..)))
+    (@intent "Create a buffered channel with given capacity")
+    (@spec ((Arena (Int 1 ..)) -> (Ptr (Chan Int))))
+    (@alloc arena)
+    (@pre {capacity >= 1})
+    (@post {$result != nil})
+    (hole (Ptr (Chan Int)) "allocate and initialize buffered channel"
+      :complexity tier-2
+      :required (arena capacity)))
+
+  (fn chan-close ((ch (Ptr (Chan Int))))
+    (@intent "Close channel - subsequent sends fail, recvs drain then return error")
+    (@spec (((Ptr (Chan Int))) -> Unit))
+    (@pre {ch != nil})
+    (hole Unit "set closed flag and wake all waiters"
+      :complexity tier-2
+      :required (ch)))
+
+  ;; ============================================================
+  ;; Channel Operations
+  ;; ============================================================
+
+  (fn send ((ch (Ptr (Chan Int))) (value Int))
+    (@intent "Send value to channel, blocking if full/unbuffered")
+    (@spec (((Ptr (Chan Int)) Int) -> (Result Unit ChanError)))
+    (@pre {ch != nil})
+    (hole (Result Unit ChanError) "block until space, copy value, signal receivers"
+      :complexity tier-3
+      :required (ch value)))
+
+  (fn recv ((ch (Ptr (Chan Int))))
+    (@intent "Receive from channel, blocking if empty")
+    (@spec (((Ptr (Chan Int))) -> (Result Int ChanError)))
+    (@pre {ch != nil})
+    (hole (Result Int ChanError) "block until data, return value, signal senders"
+      :complexity tier-3
+      :required (ch)))
+
+  (fn try-recv ((ch (Ptr (Chan Int))))
+    (@intent "Non-blocking receive - returns immediately")
+    (@spec (((Ptr (Chan Int))) -> (Result Int ChanError)))
+    (@pre {ch != nil})
+    (hole (Result Int ChanError) "check if data available, return if so"
+      :complexity tier-2
+      :required (ch)))
+
+  ;; ============================================================
+  ;; Thread Operations
+  ;; ============================================================
+
+  (fn spawn ((arena Arena) (func (Fn () Int)))
+    (@intent "Spawn a new thread running func()")
+    (@spec ((Arena (Fn () Int)) -> (Ptr (Thread Int))))
+    (@alloc arena)
+    (@post {$result != nil})
+    (hole (Ptr (Thread Int)) "create pthread running func"
+      :complexity tier-3
+      :required (arena func)))
+
+  (fn join ((thread (Ptr (Thread Int))))
+    (@intent "Wait for thread to complete and return its result")
+    (@spec (((Ptr (Thread Int))) -> Int))
+    (@pre {thread != nil})
+    (hole Int "pthread_join and return result"
+      :complexity tier-2
+      :required (thread)))
+)
