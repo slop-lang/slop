@@ -228,14 +228,60 @@
                       ;; Add module prefix EXCEPT for main function
                       (c-name (if (string-eq base-name "main")
                                 base-name
-                                (ctx-prefix-type ctx base-name))))
-                  (ctx-register-func ctx (FuncEntry fn-name c-name false false))
+                                (ctx-prefix-type ctx base-name)))
+                      ;; Check if function returns String
+                      (returns-str (fn-returns-string items)))
+                  (ctx-register-func ctx (FuncEntry fn-name c-name false returns-str))
                   ;; Scan param types for List/Option generics
                   (prescan-fn-params ctx items)
                   ;; Check for Result type and other generics in @spec
                   (prescan-fn-result-type ctx items)))
               (else (do))))
           ((none) (do))))))
+
+  (fn fn-returns-string ((items (List (Ptr SExpr))))
+    (@intent "Check if function returns String by examining @spec annotation")
+    (@spec (((List (Ptr SExpr))) -> Bool))
+    ;; Look for @spec annotation and check if return type is String
+    (let ((len (list-len items))
+          (mut i 3)  ;; Start after fn, name, params
+          (mut result false))
+      (while (and (< i len) (not result))
+        (match (list-get items i)
+          ((some item)
+            (match (deref item)
+              ((list lst)
+                (let ((sub-items (. lst items)))
+                  (when (>= (list-len sub-items) 2)
+                    (match (list-get sub-items 0)
+                      ((some head)
+                        (match (deref head)
+                          ((symbol sym)
+                            (when (string-eq (. sym name) "@spec")
+                              ;; Found @spec, check return type
+                              (match (list-get sub-items 1)
+                                ((some spec-body)
+                                  (match (deref spec-body)
+                                    ((list body-lst)
+                                      (let ((body-items (. body-lst items))
+                                            (body-len (list-len body-items)))
+                                        ;; Return type is last element
+                                        (when (>= body-len 1)
+                                          (match (list-get body-items (- body-len 1))
+                                            ((some ret-type)
+                                              (match (deref ret-type)
+                                                ((symbol ret-sym)
+                                                  (set! result (string-eq (. ret-sym name) "String")))
+                                                (else (do))))
+                                            ((none) (do))))))
+                                    (else (do))))
+                                ((none) (do)))))
+                          (else (do))))
+                      ((none) (do))))))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
 
   (fn prescan-fn-params ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Prescan function parameter types for List/Option generics")

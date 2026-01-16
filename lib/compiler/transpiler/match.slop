@@ -15,7 +15,7 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
-                   ctx-bind-var ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
+                   ctx-bind-var ctx-lookup-var ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
                    ctx-lookup-enum-variant ctx-get-current-return-type ctx-gensym))
   (import strlib (starts-with char-at))
   (import ctype (to-c-name to-c-type))
@@ -904,6 +904,41 @@
           (ctx-dedent ctx)
           (ctx-emit ctx "}")))))
 
+  (fn get-var-c-type-inline ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Get the C type of a variable expression")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> (Option String)))
+    (@pre {ctx != nil})
+    (match (deref expr)
+      ((symbol sym)
+        (let ((name (. sym name)))
+          (match (ctx-lookup-var ctx name)
+            ((some var-entry) (some (. var-entry c-type)))
+            ((none) none))))
+      (else none)))
+
+  (fn get-some-value-inline ((expr (Ptr SExpr)))
+    (@intent "Extract value from (some value) expression")
+    (@spec (((Ptr SExpr)) -> (Option (Ptr SExpr))))
+    (@pre {expr != nil})
+    (let ((mut result (Option (Ptr SExpr)) none))
+      (match (deref expr)
+        ((list lst)
+          (let ((items (. lst items)))
+            (when (>= (list-len items) 2)
+              (match (list-get items 0)
+                ((some head)
+                  (match (deref head)
+                    ((symbol sym)
+                      (when (string-eq (. sym name) "some")
+                        (match (list-get items 1)
+                          ((some val)
+                            (set! result (some val)))
+                          ((none) (do)))))
+                    (else (do))))
+                ((none) (do))))))
+        (else (do)))
+      result))
+
   (fn emit-inline-set ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Emit inline set! assignment")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
@@ -940,8 +975,31 @@
               (match (list-get items 2)
                 ((some val-expr)
                   (let ((target-c (transpile-expr ctx target-expr))
-                        (val-c (transpile-expr ctx val-expr)))
-                    (ctx-emit ctx (ctx-str4 ctx target-c " = " val-c ";"))))
+                        (target-type-opt (get-var-c-type-inline ctx target-expr)))
+                    ;; Check if target is Option type
+                    (match target-type-opt
+                      ((some target-type)
+                        (if (starts-with target-type "slop_option_")
+                          ;; Option type - handle (some ...) specially
+                          (let ((some-val-opt (get-some-value-inline val-expr)))
+                            (match some-val-opt
+                              ((some inner-expr)
+                                ;; (some value) - generate typed Option literal
+                                (let ((inner-c (transpile-expr ctx inner-expr)))
+                                  (ctx-emit ctx (ctx-str ctx target-c (ctx-str5 ctx " = (" target-type "){.has_value = 1, .value = " inner-c "};")))))
+                              ((none)
+                                ;; Check for none
+                                (let ((val-c (transpile-expr ctx val-expr)))
+                                  (if (string-eq val-c "none")
+                                    (ctx-emit ctx (ctx-str ctx target-c (ctx-str3 ctx " = (" target-type "){.has_value = false};")))
+                                    (ctx-emit ctx (ctx-str4 ctx target-c " = " val-c ";")))))))
+                          ;; Not Option type - regular assignment
+                          (let ((val-c (transpile-expr ctx val-expr)))
+                            (ctx-emit ctx (ctx-str4 ctx target-c " = " val-c ";")))))
+                      ;; Couldn't get target type - regular assignment
+                      ((none)
+                        (let ((val-c (transpile-expr ctx val-expr)))
+                          (ctx-emit ctx (ctx-str4 ctx target-c " = " val-c ";")))))))
                 ((none) (ctx-emit ctx "/* missing set! value */;"))))
             ((none) (ctx-emit ctx "/* missing set! target */;"))))
         (else (ctx-emit ctx "/* invalid set! */")))))

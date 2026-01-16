@@ -20,7 +20,8 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
-                   ctx-register-type ctx-register-func ctx-str ctx-str3 ctx-str4 ctx-str5
+                   ctx-register-type ctx-register-func ctx-register-field-type
+                   ctx-str ctx-str3 ctx-str4 ctx-str5
                    ctx-set-current-result-type ctx-clear-current-result-type
                    ctx-set-current-return-type ctx-get-current-return-type ctx-clear-current-return-type
                    ctx-lookup-result-type-alias ctx-lookup-type
@@ -118,6 +119,28 @@
               ((some head)
                 (match (deref head)
                   ((symbol sym) (string-eq (. sym name) "ffi-struct"))
+                  (else false)))
+              ((none) false)))))
+      (else false)))
+
+  ;; ============================================================
+  ;; Type Expression Helpers
+  ;; ============================================================
+
+  (fn is-pointer-type-expr ((type-expr (Ptr SExpr)))
+    (@intent "Check if a type expression represents a pointer type (Ptr T)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (match (deref type-expr)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 1)
+            false
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((symbol sym)
+                    (or (string-eq (. sym name) "Ptr")
+                        (string-eq (. sym name) "ScopedPtr")))
                   (else false)))
               ((none) false)))))
       (else false)))
@@ -386,8 +409,8 @@
           (let ((items (. lst items)))
             ;; Emit struct definition to main output
             (ctx-emit ctx (ctx-str3 ctx "struct " qualified-name " {"))
-            ;; Emit fields
-            (emit-record-fields ctx items 1)  ;; Start at index 1 to skip 'record'
+            ;; Emit fields and register their types
+            (emit-record-fields ctx raw-name qualified-name items 1)  ;; Start at index 1 to skip 'record'
             (ctx-emit ctx "};")
             ;; Emit typedef
             (ctx-emit ctx (ctx-str5 ctx "typedef struct " qualified-name " " qualified-name ";"))
@@ -396,9 +419,9 @@
             (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false true false))))
         (else (ctx-emit ctx "/* invalid record form */")))))
 
-  (fn emit-record-fields ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start-idx Int))
-    (@intent "Emit struct fields")
-    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> Unit))
+  (fn emit-record-fields ((ctx (Ptr TranspileContext)) (raw-type-name String) (qualified-type-name String) (items (List (Ptr SExpr))) (start-idx Int))
+    (@intent "Emit struct fields and register their types")
+    (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr)) Int) -> Unit))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
@@ -406,13 +429,13 @@
       (while (< i len)
         (match (list-get items i)
           ((some field-expr)
-            (emit-record-field ctx field-expr))
+            (emit-record-field ctx raw-type-name qualified-type-name field-expr))
           ((none) (do)))
         (set! i (+ i 1)))))
 
-  (fn emit-record-field ((ctx (Ptr TranspileContext)) (field (Ptr SExpr)))
-    (@intent "Emit a single struct field")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+  (fn emit-record-field ((ctx (Ptr TranspileContext)) (raw-type-name String) (qualified-type-name String) (field (Ptr SExpr)))
+    (@intent "Emit a single struct field and register its type")
+    (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> Unit))
     (@pre {ctx != nil})
     (@pre {field != nil})
     (let ((arena (. (deref ctx) arena)))
@@ -428,9 +451,15 @@
                     ((symbol name-sym)
                       (match (list-get items 1)
                         ((some type-expr)
-                          (let ((field-name (to-c-name arena (. name-sym name)))
-                                (field-type (to-c-type-prefixed ctx type-expr)))
-                            (ctx-emit ctx (ctx-str5 ctx "    " field-type " " field-name ";"))))
+                          (let ((raw-field-name (. name-sym name))
+                                (field-name (to-c-name arena raw-field-name))
+                                (field-type (to-c-type-prefixed ctx type-expr))
+                                (is-ptr (is-pointer-type-expr type-expr)))
+                            ;; Emit the field
+                            (ctx-emit ctx (ctx-str5 ctx "    " field-type " " field-name ";"))
+                            ;; Register field type for both raw and qualified type names
+                            (ctx-register-field-type ctx raw-type-name raw-field-name field-type is-ptr)
+                            (ctx-register-field-type ctx qualified-type-name raw-field-name field-type is-ptr)))
                         ((none) (ctx-emit ctx "    /* missing field type */"))))
                     (else (ctx-emit ctx "    /* field name must be symbol */"))))
                 ((none) (ctx-emit ctx "    /* missing field name */"))))))
@@ -731,8 +760,8 @@
         (ctx-dedent ctx)
         (ctx-emit ctx "}")
         (ctx-emit ctx "")
-        ;; Register function
-        (ctx-register-func ctx (FuncEntry raw-name fn-name false false))
+        ;; Register function - set returns-string if return type is slop_string
+        (ctx-register-func ctx (FuncEntry raw-name fn-name false (string-eq actual-return "slop_string")))
         ;; Clear current result type and return type
         (ctx-clear-current-result-type ctx)
         (ctx-clear-current-return-type ctx))))

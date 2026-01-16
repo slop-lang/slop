@@ -8,7 +8,7 @@
 (module context
   (export
     ;; Types
-    TranspileContext VarEntry TypeEntry FuncEntry TranspileError
+    TranspileContext VarEntry TypeEntry FuncEntry FieldEntry TranspileError
     ;; Context creation and reset
     context-new ctx-reset-for-new-module
     ;; Output management
@@ -20,6 +20,7 @@
     ;; Type/function registration
     ctx-register-type ctx-lookup-type
     ctx-register-func ctx-lookup-func
+    ctx-register-field-type ctx-lookup-field-type
     ctx-mark-pointer-var ctx-is-pointer-var
     ;; Module context
     ctx-set-module ctx-get-module
@@ -92,6 +93,14 @@
       (returns-pointer Bool)
       (returns-string Bool)))
 
+  ;; Field type info for record types
+  (type FieldEntry
+    (record
+      (type-name String)    ;; Name of the record type
+      (field-name String)   ;; Name of the field
+      (c-type String)       ;; C type of the field
+      (is-pointer Bool)))   ;; Is this field a pointer type?
+
   ;; Scope for variable bindings (linked list of scopes)
   (type Scope
     (record
@@ -112,6 +121,8 @@
       (types (List TypeEntry))
       ;; Function registry
       (funcs (List FuncEntry))
+      ;; Field type registry (for record field type lookup)
+      (field-types (List FieldEntry))
       ;; Pointer variable tracking (names of pointer vars)
       (pointer-vars (List String))
       ;; Module context
@@ -191,6 +202,7 @@
       (set! (deref ctx) scope initial-scope)
       (set! (deref ctx) types (list-new arena TypeEntry))
       (set! (deref ctx) funcs (list-new arena FuncEntry))
+      (set! (deref ctx) field-types (list-new arena FieldEntry))
       (set! (deref ctx) pointer-vars (list-new arena String))
       (set! (deref ctx) current-module no-module)
       (set! (deref ctx) enable-prefixing false)
@@ -416,6 +428,30 @@
           ((some entry)
             (when (string-eq (. entry name) name)
               (set! result (some entry))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  (fn ctx-register-field-type ((ctx (Ptr TranspileContext)) (type-name String) (field-name String) (c-type String) (is-pointer Bool))
+    (@intent "Register a field type for a record type")
+    (@spec (((Ptr TranspileContext) String String String Bool) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) field-types) (FieldEntry type-name field-name c-type is-pointer)))
+
+  (fn ctx-lookup-field-type ((ctx (Ptr TranspileContext)) (type-name String) (field-name String))
+    (@intent "Look up the C type of a field in a record type")
+    (@spec (((Ptr TranspileContext) String String) -> (Option String)))
+    (@pre {ctx != nil})
+    (let ((fields (. (deref ctx) field-types))
+          (len (list-len fields))
+          (mut i 0)
+          (mut result (Option String) none))
+      (while (and (< i len) (match result ((none) true) ((some _) false)))
+        (match (list-get fields i)
+          ((some entry)
+            (when (and (string-eq (. entry type-name) type-name)
+                       (string-eq (. entry field-name) field-name))
+              (set! result (some (. entry c-type)))))
           ((none) (do)))
         (set! i (+ i 1)))
       result))
@@ -928,9 +964,9 @@
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
-          (len (list-len items)))
-      (if (< len 1)
-        "void*"
+          (len (list-len items))
+          (mut result "void*"))
+      (when (>= len 1)
         (match (list-get items 0)
           ((some first-expr)
             (match (deref first-expr)
@@ -939,80 +975,74 @@
                   (cond
                     ;; (Ptr T) -> T* (special case for array type aliases)
                     ((string-eq head "Ptr")
-                      (if (< len 2)
-                        "void*"
+                      (if (>= len 2)
                         (match (list-get items 1)
                           ((some inner)
                             ;; Check if inner is a symbol that's an array type alias
-                            (let ((inner-type (get-array-pointer-type ctx inner)))
-                              (match inner-type
-                                ((some ptr-type) ptr-type)  ;; Use array's element pointer type
-                                ((none)
-                                  ;; Standard pointer type
-                                  (ctx-str ctx (to-c-type-prefixed ctx inner) "*")))))
-                          ((none) "void*"))))
+                            (match (get-array-pointer-type ctx inner)
+                              ((some ptr-type) (set! result ptr-type))
+                              ((none) (set! result (ctx-str ctx (to-c-type-prefixed ctx inner) "*")))))
+                          ((none) (do)))
+                        (do)))
 
                     ;; (ScopedPtr T) -> T*
                     ((string-eq head "ScopedPtr")
-                      (if (< len 2)
-                        "void*"
+                      (if (>= len 2)
                         (match (list-get items 1)
-                          ((some inner)
-                            (ctx-str ctx (to-c-type-prefixed ctx inner) "*"))
-                          ((none) "void*"))))
+                          ((some inner) (set! result (ctx-str ctx (to-c-type-prefixed ctx inner) "*")))
+                          ((none) (do)))
+                        (do)))
 
                     ;; (Option T) -> slop_option_<inner>
                     ((string-eq head "Option")
-                      (if (< len 2)
-                        "slop_option_void"
+                      (set! result "slop_option_void")
+                      (when (>= len 2)
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type-prefixed ctx inner))
                                   (inner-id (type-to-identifier arena inner-c)))
-                              (ctx-str ctx "slop_option_" inner-id)))
-                          ((none) "slop_option_void"))))
+                              (set! result (ctx-str ctx "slop_option_" inner-id))))
+                          ((none) (do)))))
 
                     ;; (Result T E) -> slop_result_<ok>_<err>
                     ((string-eq head "Result")
-                      (let ((ok-id (if (< len 2)
-                                      "void"
-                                      (match (list-get items 1)
-                                        ((some ok-expr)
-                                          (type-to-identifier arena (to-c-type-prefixed ctx ok-expr)))
-                                        ((none) "void"))))
-                            (err-id (if (< len 3)
-                                       "slop_error"
-                                       (match (list-get items 2)
-                                         ((some err-expr)
-                                           (type-to-identifier arena (to-c-type-prefixed ctx err-expr)))
-                                         ((none) "slop_error")))))
-                        (ctx-str ctx
+                      (let ((mut ok-id "void")
+                            (mut err-id "slop_error"))
+                        (when (>= len 2)
+                          (match (list-get items 1)
+                            ((some ok-expr)
+                              (set! ok-id (type-to-identifier arena (to-c-type-prefixed ctx ok-expr))))
+                            ((none) (do))))
+                        (when (>= len 3)
+                          (match (list-get items 2)
+                            ((some err-expr)
+                              (set! err-id (type-to-identifier arena (to-c-type-prefixed ctx err-expr))))
+                            ((none) (do))))
+                        (set! result (ctx-str ctx
                           (ctx-str ctx "slop_result_" ok-id)
-                          (ctx-str ctx "_" err-id))))
+                          (ctx-str ctx "_" err-id)))))
 
                     ;; (List T) -> slop_list_<inner>
                     ((string-eq head "List")
-                      (if (< len 2)
-                        "slop_list_void"
+                      (set! result "slop_list_void")
+                      (when (>= len 2)
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type-prefixed ctx inner))
                                   (inner-id (type-to-identifier arena inner-c)))
-                              (ctx-str ctx "slop_list_" inner-id)))
-                          ((none) "slop_list_void"))))
+                              (set! result (ctx-str ctx "slop_list_" inner-id))))
+                          ((none) (do)))))
 
                     ;; (Map K V) -> slop_map*
                     ((string-eq head "Map")
-                      "slop_map*")
+                      (set! result "slop_map*"))
 
                     ;; (Array T size) -> T*
                     ((string-eq head "Array")
-                      (if (< len 2)
-                        "void*"
+                      (when (>= len 2)
                         (match (list-get items 1)
-                          ((some inner)
-                            (ctx-str ctx (to-c-type-prefixed ctx inner) "*"))
-                          ((none) "void*"))))
+                          ((some inner) (set! result (ctx-str ctx (to-c-type-prefixed ctx inner) "*")))
+                          ((none) (do)))))
 
                     ;; (record (field1 Type1) (field2 Type2) ...) -> _anon_record_<hash>
                     ((string-eq head "record")
@@ -1045,20 +1075,21 @@
                         ;; Generate hash-based name and register
                         (let ((type-name (ctx-str ctx "_anon_record_" (simple-hash arena field-str))))
                           (ctx-register-inline-record ctx type-name field-str)
-                          type-name)))
+                          (set! result type-name))))
 
                     ;; Default: treat as type name
                     (else
                       (let ((base-c-type (to-c-type arena first-expr)))
                         (if (is-builtin-c-type base-c-type)
-                          base-c-type
+                          (set! result base-c-type)
                           ;; Check if registered (from import)
                           (match (ctx-lookup-type ctx head)
-                            ((some entry) (. entry c-name))
-                            ((none) (ctx-prefix-type ctx base-c-type)))))))))
+                            ((some entry) (set! result (. entry c-name)))
+                            ((none) (set! result (ctx-prefix-type ctx base-c-type))))))))))
               ;; Not a symbol head
-              (_ "void*")))
-          ((none) "void*")))))
+              (_ (do))))
+          ((none) (do))))
+      result))
 
   ;; ============================================================
   ;; Gensym for Unique Variable Names

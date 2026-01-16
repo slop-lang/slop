@@ -22,7 +22,7 @@
                    ctx-get-current-return-type
                    to-c-type-prefixed))
   (import ctype (to-c-type to-c-name))
-  (import expr (transpile-expr))
+  (import expr (transpile-expr infer-expr-c-type))
   (import strlib (starts-with ends-with))
   (import match (transpile-match))
 
@@ -212,14 +212,25 @@
                               ((some type-expr)
                                 (match (list-get items (+ start-idx 2))
                                   ((some init-expr)
-                                    (let ((c-type (to-c-type-prefixed ctx type-expr))
-                                          (init-c (transpile-expr ctx init-expr)))
-                                      ;; Special case: if init is "none" and type is an option type,
-                                      ;; generate typed compound literal
-                                      (let ((final-init (if (and (string-eq init-c "none")
-                                                                 (starts-with c-type "slop_option_"))
+                                    (let ((c-type (to-c-type-prefixed ctx type-expr)))
+                                      ;; Special case: handle Option type initialization
+                                      (let ((final-init
+                                              (if (starts-with c-type "slop_option_")
+                                                ;; Option type - check for special constructors
+                                                (let ((some-val (get-some-value init-expr)))
+                                                  (match some-val
+                                                    ((some val-expr)
+                                                      ;; (some value) - generate typed Option literal
+                                                      (let ((val-c (transpile-expr ctx val-expr)))
+                                                        (ctx-str5 ctx "(" c-type "){.has_value = 1, .value = " val-c "}")))
+                                                    ((none)
+                                                      ;; Not a some expression - check for none
+                                                      (let ((init-c (transpile-expr ctx init-expr)))
+                                                        (if (string-eq init-c "none")
                                                           (ctx-str3 ctx "(" c-type "){.has_value = false}")
-                                                          init-c)))
+                                                          init-c)))))
+                                                ;; Not an Option type - regular transpilation
+                                                (transpile-expr ctx init-expr))))
                                         ;; Emit declaration with type
                                         (ctx-emit ctx (ctx-str5 ctx c-type " " var-name " = " (ctx-str ctx final-init ";")))
                                         ;; Bind variable in scope
@@ -238,9 +249,10 @@
                                       (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
                                       (ctx-bind-var ctx (VarEntry raw-name var-name ptr-type true has-mut)))
                                     ((none)
-                                      ;; Regular binding
-                                      (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
-                                      (ctx-bind-var ctx (VarEntry raw-name var-name "auto" false has-mut))))))
+                                      ;; Regular binding - infer type from init expression
+                                      (let ((inferred-type (infer-expr-c-type ctx init-expr)))
+                                        (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
+                                        (ctx-bind-var ctx (VarEntry raw-name var-name inferred-type false has-mut)))))))
                               ((none) (ctx-emit ctx "/* missing init */"))))))
                       (else (ctx-emit ctx "/* binding name must be symbol */"))))
                   ((none) (ctx-emit ctx "/* missing binding name */")))))))
@@ -257,6 +269,28 @@
             ((symbol sym) (string-eq (. sym name) "mut"))
             (else false)))
         ((none) false))))
+
+  (fn get-some-value ((expr (Ptr SExpr)))
+    (@intent "If expr is (some value), return the value expression")
+    (@spec (((Ptr SExpr)) -> (Option (Ptr SExpr))))
+    (let ((mut result (Option (Ptr SExpr)) none))
+      (match (deref expr)
+        ((list lst)
+          (let ((items (. lst items)))
+            (when (>= (list-len items) 2)
+              (match (list-get items 0)
+                ((some head-expr)
+                  (match (deref head-expr)
+                    ((symbol sym)
+                      (when (string-eq (. sym name) "some")
+                        (match (list-get items 1)
+                          ((some val)
+                            (set! result (some val)))
+                          ((none) (do)))))
+                    (else (do))))
+                ((none) (do))))))
+        (else (do)))
+      result))
 
   ;; ============================================================
   ;; If Statement
@@ -393,12 +427,47 @@
                     (match (list-get items 2)
                       ((some value-expr)
                         (let ((target-c (transpile-expr ctx target-expr))
-                              (value-c (transpile-expr ctx value-expr)))
-                          (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";"))))
+                              (target-type-opt (get-var-c-type ctx target-expr)))
+                          ;; Check if target is Option type and value is (some ...)
+                          (match target-type-opt
+                            ((some target-type)
+                              (if (starts-with target-type "slop_option_")
+                                ;; Option type - handle (some ...) and (none) specially
+                                (let ((some-val-opt (get-some-value value-expr)))
+                                  (match some-val-opt
+                                    ((some val-expr)
+                                      ;; (some value) - generate typed Option literal
+                                      (let ((val-c (transpile-expr ctx val-expr)))
+                                        (ctx-emit ctx (ctx-str ctx target-c (ctx-str5 ctx " = (" target-type "){.has_value = 1, .value = " val-c "};")))))
+                                    ((none)
+                                      ;; Check for none
+                                      (let ((value-c (transpile-expr ctx value-expr)))
+                                        (if (string-eq value-c "none")
+                                          (ctx-emit ctx (ctx-str ctx target-c (ctx-str3 ctx " = (" target-type "){.has_value = false};")))
+                                          (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))))
+                                ;; Not Option type - regular assignment
+                                (let ((value-c (transpile-expr ctx value-expr)))
+                                  (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))
+                            ;; Couldn't get target type - regular assignment
+                            ((none)
+                              (let ((value-c (transpile-expr ctx value-expr)))
+                                (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))))
                       ((none) (ctx-emit ctx "/* missing set! value */"))))
                   ((none) (ctx-emit ctx "/* missing set! target */"))))
               (else (ctx-emit ctx "/* invalid set!: need target and value */")))))
         (else (ctx-emit ctx "/* invalid set! */")))))
+
+  (fn get-var-c-type ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Get the C type of a variable expression")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> (Option String)))
+    (@pre {ctx != nil})
+    (match (deref expr)
+      ((symbol sym)
+        (let ((name (. sym name)))
+          (match (ctx-lookup-var ctx name)
+            ((some var-entry) (some (. var-entry c-type)))
+            ((none) none))))
+      (else none)))
 
   (fn is-pointer-target ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
     (@intent "Check if expression is a pointer variable")
