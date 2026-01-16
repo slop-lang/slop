@@ -62,6 +62,21 @@
     #define SLOP_ASSERT(cond, msg) ((void)0)
 #endif
 
+/* Expression-form range check - returns value after checking bounds.
+ * Unlike SLOP_PRE, this can be used in expression contexts like return statements. */
+#ifdef SLOP_DEBUG
+    #define SLOP_RANGE_CHECK(val, cond, msg) \
+        ({ __auto_type _v = (val); \
+           if (!(cond)) { \
+               fprintf(stderr, "SLOP range check failed: %s\n  at %s:%d\n", \
+                       msg, __FILE__, __LINE__); \
+               abort(); \
+           } \
+           _v; })
+#else
+    #define SLOP_RANGE_CHECK(val, cond, msg) (val)
+#endif
+
 /* ============================================================
  * Arena Allocator
  * ============================================================ */

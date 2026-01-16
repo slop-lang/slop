@@ -237,10 +237,10 @@
                                       ;; Push scope, bind var, infer body, pop scope
                                       (env-push-scope env)
                                       (env-bind-var env var-name elem-type)
-                                      ;; Infer all body expressions
+                                      ;; Infer all body expressions (discard results)
                                       (for (body-idx 2 len)
                                         (match (list-get items body-idx)
-                                          ((some body-expr) (infer-expr env body-expr))
+                                          ((some body-expr) (let ((_ (infer-expr env body-expr))) (do)))
                                           ((none) (do))))
                                       (env-pop-scope env)
                                       (env-get-unit-type env))))
@@ -263,7 +263,7 @@
         ((string-eq op "set!")
           (when (>= len 3)
             (match (list-get items 2)
-              ((some val-expr) (infer-expr env val-expr))
+              ((some val-expr) (let ((_ (infer-expr env val-expr))) (do)))
               ((none) (do))))
           (env-get-unit-type env))
 

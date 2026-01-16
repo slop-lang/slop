@@ -8,7 +8,7 @@
 (module context
   (export
     ;; Types
-    TranspileContext VarEntry TypeEntry FuncEntry FieldEntry TranspileError
+    TranspileContext VarEntry TypeEntry FuncEntry FuncParamType FieldEntry TranspileError
     ;; Context creation and reset
     context-new ctx-reset-for-new-module
     ;; Output management
@@ -20,7 +20,7 @@
     ;; Type/function registration
     ctx-register-type ctx-lookup-type
     ctx-register-func ctx-lookup-func
-    ctx-register-field-type ctx-lookup-field-type
+    ctx-register-field-type ctx-lookup-field-type ctx-lookup-field-type-by-index
     ctx-mark-pointer-var ctx-is-pointer-var
     ;; Module context
     ctx-set-module ctx-get-module
@@ -86,12 +86,20 @@
       (is-record Bool)
       (is-union Bool)))
 
+  ;; Parameter type info for typed none handling
+  ;; Use pointer to allow simpler C type ordering (pointer-element Lists are "simple")
+  (type FuncParamType
+    (record
+      (c-type String)))  ;; C type string for this parameter
+
   (type FuncEntry
     (record
       (name String)
       (c-name String)
+      (return-type String)        ;; Full C return type (e.g., "types_ResolvedType*")
       (returns-pointer Bool)
-      (returns-string Bool)))
+      (returns-string Bool)
+      (param-types (List (Ptr FuncParamType)))))  ;; Parameter types for none inference
 
   ;; Field type info for record types
   (type FieldEntry
@@ -452,6 +460,28 @@
             (when (and (string-eq (. entry type-name) type-name)
                        (string-eq (. entry field-name) field-name))
               (set! result (some (. entry c-type)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  (fn ctx-lookup-field-type-by-index ((ctx (Ptr TranspileContext)) (type-name String) (index Int))
+    (@intent "Look up the C type of a field by index (position) in a record type")
+    (@spec (((Ptr TranspileContext) String Int) -> (Option String)))
+    (@pre {ctx != nil})
+    (@pre {index >= 0})
+    (let ((fields (. (deref ctx) field-types))
+          (len (list-len fields))
+          (mut field-idx 0)  ;; Count fields matching this type
+          (mut i 0)
+          (mut result (Option String) none))
+      ;; Iterate through all fields, counting those for this type
+      (while (and (< i len) (match result ((none) true) ((some _) false)))
+        (match (list-get fields i)
+          ((some entry)
+            (when (string-eq (. entry type-name) type-name)
+              (if (== field-idx index)
+                (set! result (some (. entry c-type)))
+                (set! field-idx (+ field-idx 1)))))
           ((none) (do)))
         (set! i (+ i 1)))
       result))

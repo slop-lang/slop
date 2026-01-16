@@ -19,8 +19,9 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
-                   ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry TypeEntry
-                   to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var))
+                   ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
+                   to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
+                   ctx-lookup-field-type-by-index))
   (import ctype (to-c-type to-c-name type-to-identifier))
   (import strlib (replace starts-with substring char-at count-occurrences index-of contains))
 
@@ -488,8 +489,8 @@
                       (ctx-str3 ctx "slop_option_" base-type "_ptr")))
                   ;; Other custom types: build slop_option_<typename>
                   (else (ctx-str3 ctx "slop_option_" c-type "")))))
-            ;; Default to int
-            ((none) "slop_option_int"))))
+            ;; Unknown variable - emit error
+            ((none) (ctx-str3 ctx "/* TRANSPILER ERROR: unknown variable '" name "' for Option type inference */")))))
       ;; For complex expressions, try to infer type from the structure
       ((list lst)
         (infer-list-expr-option-type ctx (. lst items)))))
@@ -501,7 +502,7 @@
     (let ((len (list-len items))
           (arena (. (deref ctx) arena)))
       (if (< len 1)
-        "slop_option_int"
+        "/* TRANSPILER ERROR: empty list in option type inference */"
         (match (list-get items 0)
           ((some head-expr)
             (match (deref head-expr)
@@ -511,7 +512,7 @@
                     ;; Field access: (. obj field) - try to infer field type
                     ((string-eq op ".")
                       (if (< len 3)
-                        "slop_option_int"
+                        "/* TRANSPILER ERROR: incomplete field access for option type inference */"
                         (match (list-get items 2)
                           ((some field-expr)
                             (match (deref field-expr)
@@ -525,10 +526,10 @@
                                     ((string-eq field-name "c-name") "slop_option_string")
                                     ((string-eq field-name "c-type") "slop_option_string")
                                     ((string-eq field-name "slop-name") "slop_option_string")
-                                    ;; Default to int for unknown fields
-                                    (else "slop_option_int"))))
-                              (else "slop_option_int")))
-                          ((none) "slop_option_int"))))
+                                    ;; Unknown field - emit error
+                                    (else (ctx-str3 ctx "/* TRANSPILER ERROR: unknown field '" field-name "' for option type inference */")))))
+                              (else "/* TRANSPILER ERROR: non-symbol field for option type inference */")))
+                          ((none) "/* TRANSPILER ERROR: missing field for option type inference */"))))
                     ;; String functions that return strings
                     ((or (string-eq op "string-concat")
                          (or (string-eq op "string-copy")
@@ -539,12 +540,29 @@
                     (else
                       (match (ctx-lookup-func ctx op)
                         ((some func-entry)
-                          (if (. func-entry returns-string)
-                            "slop_option_string"
-                            "slop_option_int"))
-                        ((none) "slop_option_int"))))))
-              (else "slop_option_int")))
-          ((none) "slop_option_int")))))
+                          (let ((ret-type (. func-entry return-type)))
+                            (cond
+                              ;; Known string return
+                              ((. func-entry returns-string) "slop_option_string")
+                              ;; Has explicit return type
+                              ((> (string-len ret-type) 0)
+                                (cond
+                                  ((string-eq ret-type "slop_string") "slop_option_string")
+                                  ((string-eq ret-type "int64_t") "slop_option_int")
+                                  ((string-eq ret-type "double") "slop_option_double")
+                                  ;; Pointer type - generate slop_option_<base>_ptr
+                                  ((ends-with ret-type "*")
+                                    (let ((ctx-arena (. (deref ctx) arena))
+                                          (base-type (strip-pointer-suffix ctx-arena ret-type)))
+                                      (ctx-str3 ctx "slop_option_" base-type "_ptr")))
+                                  ;; Other types - generate slop_option_<type>
+                                  (else (ctx-str3 ctx "slop_option_" ret-type ""))))
+                              ;; No return type info - emit error
+                              (else (ctx-str3 ctx "/* TRANSPILER ERROR: cannot infer Option type for function '" op "' */")))))
+                        ;; Unknown function - emit error
+                        ((none) (ctx-str3 ctx "/* TRANSPILER ERROR: unknown function '" op "' for Option type inference */")))))))
+              (else "/* TRANSPILER ERROR: non-symbol head in option type inference */")))
+          ((none) "/* TRANSPILER ERROR: missing list head in option type inference */")))))
 
   (fn ends-with ((s String) (suffix String))
     (@intent "Check if string ends with suffix")
@@ -831,10 +849,10 @@
               ((symbol head-sym)
                 (let ((op (. head-sym name)))
                   (cond
-                    ;; Binary operators (variadic for and/or)
+                    ;; Binary operators (all are variadic - can chain: (- a b c) = a - b - c)
                     ((and (is-binop op) (>= len 3))
-                      ;; Check if this is a variadic and/or with more than 2 operands
-                      (if (and (or (string-eq op "and") (string-eq op "or")) (> len 3))
+                      ;; More than 2 operands: chain all with same operator
+                      (if (> len 3)
                         ;; Variadic: chain all operands
                         (transpile-variadic-binop ctx op items 1)
                         ;; Binary: just 2 operands
@@ -1135,6 +1153,23 @@
                                       "; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; })")))))))
                             ((none) "/* missing list-get index */")))
                         ((none) "/* missing list-get list argument */")))
+                    ;; list-pop: (list-pop list) -> Option<T> (removes and returns last element)
+                    ((and (string-eq op "list-pop") (>= len 2))
+                      (match (list-get items 1)
+                        ((some list-expr)
+                          (let ((list-c (transpile-expr ctx list-expr))
+                                ;; Try to get the proper named option type for this list's elements
+                                (option-type (infer-list-element-option-type ctx list-expr)))
+                            ;; If we have a named option type, use it; otherwise use anonymous struct
+                            (if (> (string-len option-type) 0)
+                              ;; Named option type available
+                              (ctx-str ctx "({ __auto_type _lst_p = &(" (ctx-str ctx list-c
+                                (ctx-str ctx "); " (ctx-str ctx option-type
+                                  " _r = {0}; if (_lst_p->len > 0) { _lst_p->len--; _r.has_value = true; _r.value = _lst_p->data[_lst_p->len]; } _r; })"))))
+                              ;; Fallback to anonymous struct with __typeof__
+                              (ctx-str ctx "({ __auto_type _lst_p = &(" (ctx-str ctx list-c
+                                "); struct { bool has_value; __typeof__(_lst_p->data[0]) value; } _r = {0}; if (_lst_p->len > 0) { _lst_p->len--; _r.has_value = true; _r.value = _lst_p->data[_lst_p->len]; } _r; })")))))
+                        ((none) "/* missing list-pop list argument */")))
                     ;; list-new: (list-new arena Type) -> compound literal
                     ((and (string-eq op "list-new") (>= len 3))
                       (match (list-get items 1)
@@ -1191,6 +1226,12 @@
                     ;; cond expression: (cond (test body) ... (else body)) -> nested ternary
                     ((string-eq op "cond")
                       (transpile-cond-expr ctx items))
+                    ;; for as expression: (for (i start end) body...) -> ({ for (...) {...} 0; })
+                    ((string-eq op "for")
+                      (transpile-for-as-expr ctx items))
+                    ;; for-each as expression: (for-each (item coll) body...) -> ({ for (...) {...} 0; })
+                    ((string-eq op "for-each")
+                      (transpile-for-each-as-expr ctx items))
                     ;; Default: function call
                     (else
                       (transpile-fn-call ctx op items)))))
@@ -1270,20 +1311,26 @@
             ;; Union type: (UnionType (tag value)) -> ((UnionType){ .tag = UnionType_tag, .data.tag = value })
             (transpile-union-constructor ctx fn-name (. type-entry c-name) items)
             ;; Record type: emit compound literal
+            ;; For none arguments, look up field type and generate typed compound literal
             (let ((c-name (. type-entry c-name))
+                  (type-name fn-name)  ;; Use SLOP type name for field lookup
                   (mut args "")
-                  (mut i 1))
+                  (mut i 1)
+                  (mut field-idx 0))
               (while (< i len)
                 (match (list-get items i)
                   ((some arg)
                     (let ((arg-c (transpile-expr ctx arg))
-                          ;; Replace bare "none" with compatible empty option struct
-                          (final-arg (if (string-eq arg-c "none")
-                                       "{.has_value = false}"
-                                       arg-c)))
+                          ;; Look up field type for typed none handling
+                          (field-type-opt (ctx-lookup-field-type-by-index ctx type-name field-idx))
+                          (final-arg (match field-type-opt
+                                       ((some field-type)
+                                         (typed-none-arg ctx field-type arg-c))
+                                       ((none) arg-c))))
                       (if (string-eq args "")
                         (set! args final-arg)
-                        (set! args (ctx-str3 ctx args ", " final-arg)))))
+                        (set! args (ctx-str3 ctx args ", " final-arg)))
+                      (set! field-idx (+ field-idx 1))))
                   ((none) (do)))
                 (set! i (+ i 1)))
               (ctx-str5 ctx "(" c-name "){" args "}"))))
@@ -1293,16 +1340,28 @@
             (if (> (string-len builtin-c-name) 0)
               ;; Built-in type constructor - use special handler for correct field order
               (transpile-builtin-constructor ctx fn-name items)
-              ;; Regular function call
-              (let ((mut args "")
-                    (mut i 1))
+              ;; Regular function call - look up param types for typed none handling
+              (let ((func-opt (ctx-lookup-func ctx fn-name))
+                    (mut args "")
+                    (mut i 1)
+                    (mut param-idx 0))
                 (while (< i len)
                   (match (list-get items i)
                     ((some arg)
-                      (let ((arg-c (transpile-expr ctx arg)))
+                      (let ((arg-c (transpile-expr ctx arg))
+                            ;; Get expected type for this parameter if available
+                            (expected-type (match func-opt
+                                             ((some func-entry)
+                                               (match (list-get (. func-entry param-types) param-idx)
+                                                 ((some p) (. (deref p) c-type))
+                                                 ((none) "")))
+                                             ((none) "")))
+                            ;; Convert none to typed Option if needed
+                            (final-arg (typed-none-arg ctx expected-type arg-c)))
                         (if (string-eq args "")
-                          (set! args arg-c)
-                          (set! args (ctx-str3 ctx args ", " arg-c)))))
+                          (set! args final-arg)
+                          (set! args (ctx-str3 ctx args ", " final-arg)))
+                        (set! param-idx (+ param-idx 1))))
                     ((none) (do)))
                   (set! i (+ i 1)))
                 (transpile-call ctx fn-name args))))))))))
@@ -1933,7 +1992,7 @@
                         ;; some constructor - infer Option type from value
                         ((string-eq op "some")
                           (if (< (list-len items) 2)
-                            "slop_option_int"
+                            "/* TRANSPILER ERROR: some without value */"
                             (match (list-get items 1)
                               ((some val-expr)
                                 (let ((val-type (infer-expr-c-type ctx val-expr)))
@@ -1941,8 +2000,14 @@
                                     ((string-eq val-type "slop_string") "slop_option_string")
                                     ((string-eq val-type "int64_t") "slop_option_int")
                                     ((string-eq val-type "double") "slop_option_double")
-                                    (else "slop_option_int"))))
-                              ((none) "slop_option_int"))))
+                                    ;; Pointer type - generate slop_option_<base>_ptr
+                                    ((ends-with val-type "*")
+                                      (let ((ctx-arena (. (deref ctx) arena))
+                                            (base-type (strip-pointer-suffix ctx-arena val-type)))
+                                        (ctx-str3 ctx "slop_option_" base-type "_ptr")))
+                                    ;; Other types - generate slop_option_<type>
+                                    (else (ctx-str3 ctx "slop_option_" val-type "")))))
+                              ((none) "/* TRANSPILER ERROR: some with no value expression */"))))
                         ;; none constructor - generic option
                         ((string-eq op "none")
                           "slop_option_int")
@@ -1950,9 +2015,11 @@
                         (else
                           (match (ctx-lookup-func ctx op)
                             ((some func-entry)
-                              (if (. func-entry returns-string)
-                                "slop_string"
-                                "int64_t"))
+                              (let ((ret-type (. func-entry return-type)))
+                                (cond
+                                  ((. func-entry returns-string) "slop_string")
+                                  ((> (string-len ret-type) 0) ret-type)
+                                  (else "int64_t"))))
                             ((none) "int64_t"))))))
                   (else "int64_t")))
               ((none) "int64_t")))))
@@ -2064,6 +2131,17 @@
              (starts-with result-type "slop_option_"))
       (ctx-str3 ctx "(" result-type "){.has_value = false}")
       body))
+
+  (fn typed-none-arg ((ctx (Ptr TranspileContext)) (expected-type String) (arg-c String))
+    (@intent "Convert 'none' to typed Option compound literal if expected type is Option")
+    (@spec (((Ptr TranspileContext) String String) -> String))
+    (@pre {ctx != nil})
+    ;; If arg is "none" and expected type starts with "slop_option_",
+    ;; generate: ((slop_option_T){.has_value = false})
+    (if (and (string-eq arg-c "none")
+             (starts-with expected-type "slop_option_"))
+      (ctx-str3 ctx "((" expected-type "){.has_value = false})")
+      arg-c))
 
   (fn build-union-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String)
                              (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String))
@@ -2459,8 +2537,42 @@
             ;; ctx is in scope - use ctx->arena
             (ctx-str ctx (. ctx-var c-name) "->arena"))
           ((none)
-            ;; Fallback to "arena" - will error if not available
-            "arena")))))
+            ;; Third priority: check if list-expr is a field access pattern (. BASE FIELD)
+            ;; Extract arena from BASE (e.g., (. (deref env) types) -> env->arena)
+            (let ((arena-from-field (get-arena-from-field-access ctx list-expr)))
+              (if (> (string-len arena-from-field) 0)
+                arena-from-field
+                ;; Fallback to "arena" - will error if not available
+                "arena")))))))
+
+  (fn get-arena-from-field-access ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Extract arena from base struct if expr is field access (. BASE FIELD)")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    ;; Match pattern: (. BASE FIELD) where BASE might be (deref VAR) or VAR
+    ;; Returns arena from BASE, or empty string if not a field access
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (< len 3)
+            "" ;; Not enough elements for field access
+            (match (list-get items 0)
+              ((some head-expr)
+                (match (deref head-expr)
+                  ((symbol sym)
+                    (if (string-eq (. sym name) ".")
+                      ;; This is a field access: (. BASE FIELD)
+                      (match (list-get items 1)
+                        ((some base-expr)
+                          ;; Get arena from the base expression
+                          (get-arena-from-base ctx base-expr))
+                        ((none) ""))
+                      "")) ;; Not a field access
+                  (else ""))) ;; Head is not a symbol
+              ((none) ""))))) ;; Missing head
+      (else ""))) ;; Not a list
 
   (fn get-arena-from-base ((ctx (Ptr TranspileContext)) (base-expr (Ptr SExpr)))
     (@intent "Extract arena from a base expression - return base->arena or base.arena")
@@ -2812,5 +2924,116 @@
               ;; arena is assumed to be in scope
               (ctx-str ctx "slop_map_keys(arena, " (ctx-str ctx map-c ")"))))
           ((none) "/* map-keys: missing map */")))))
+
+  ;; ============================================================
+  ;; For Loop as Expression
+  ;; ============================================================
+
+  (fn transpile-for-as-expr ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile for loop as expression returning 0")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; (for (var start end) body...) -> ({ for (int64_t var = start; var < end; var++) { body... } 0; })
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items)))
+      (if (< len 2)
+        "({ /* for: need binding */ 0; })"
+        (match (list-get items 1)
+          ((some binding-expr)
+            (match (deref binding-expr)
+              ((list binding-lst)
+                (let ((binding-items (. binding-lst items))
+                      (binding-len (list-len binding-items)))
+                  (if (< binding-len 3)
+                    "({ /* for: binding needs (var start end) */ 0; })"
+                    (match (list-get binding-items 0)
+                      ((some var-expr)
+                        (match (deref var-expr)
+                          ((symbol var-sym)
+                            (let ((var-name (to-c-name arena (. var-sym name))))
+                              (match (list-get binding-items 1)
+                                ((some start-expr)
+                                  (match (list-get binding-items 2)
+                                    ((some end-expr)
+                                      (let ((start-c (transpile-expr ctx start-expr))
+                                            (end-c (transpile-expr ctx end-expr))
+                                            ;; Build: ({ for (int64_t var = start; var < end; var++) {
+                                            (mut result (ctx-str5 ctx "({ for (int64_t " var-name " = " start-c
+                                                          (ctx-str5 ctx "; " var-name " < " end-c
+                                                            (ctx-str3 ctx "; " var-name "++) { ")))))
+                                        ;; Bind loop variable for body expressions
+                                        (ctx-push-scope ctx)
+                                        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" false false))
+                                        ;; Process body expressions
+                                        (let ((mut i 2))
+                                          (while (< i len)
+                                            (match (list-get items i)
+                                              ((some body-expr)
+                                                (let ((body-c (transpile-expr ctx body-expr)))
+                                                  (set! result (ctx-str3 ctx result body-c "; "))))
+                                              ((none) (do)))
+                                            (set! i (+ i 1))))
+                                        (ctx-pop-scope ctx)
+                                        ;; Close: } 0; })
+                                        (ctx-str ctx result "} 0; })")))
+                                    ((none) "({ /* for: missing end */ 0; })")))
+                                ((none) "({ /* for: missing start */ 0; })"))))
+                          (else "({ /* for: var must be symbol */ 0; })")))
+                      ((none) "({ /* for: missing var */ 0; })")))))
+              (else "({ /* for: binding must be list */ 0; })")))
+          ((none) "({ /* for: missing binding */ 0; })")))))
+
+  ;; ============================================================
+  ;; For-Each Loop as Expression
+  ;; ============================================================
+
+  (fn transpile-for-each-as-expr ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile for-each loop as expression returning 0")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; (for-each (item coll) body...) -> ({ for (size_t _i = 0; _i < coll.len; _i++) { __auto_type item = coll.data[_i]; body... } 0; })
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items)))
+      (if (< len 2)
+        "({ /* for-each: need binding */ 0; })"
+        (match (list-get items 1)
+          ((some binding-expr)
+            (match (deref binding-expr)
+              ((list binding-lst)
+                (let ((binding-items (. binding-lst items))
+                      (binding-len (list-len binding-items)))
+                  (if (< binding-len 2)
+                    "({ /* for-each: binding needs (var coll) */ 0; })"
+                    (match (list-get binding-items 0)
+                      ((some var-expr)
+                        (match (deref var-expr)
+                          ((symbol var-sym)
+                            (let ((var-name (to-c-name arena (. var-sym name))))
+                              (match (list-get binding-items 1)
+                                ((some coll-expr)
+                                  (let ((coll-c (transpile-expr ctx coll-expr))
+                                        ;; Build: ({ for (size_t _i = 0; _i < coll.len; _i++) { __auto_type item = coll.data[_i];
+                                        (mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < " coll-c
+                                                      (ctx-str5 ctx ".len; _i++) { __auto_type " var-name " = " coll-c ".data[_i]; "))))
+                                    ;; Bind loop variable for body expressions
+                                    (ctx-push-scope ctx)
+                                    (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" false false))
+                                    ;; Process body expressions
+                                    (let ((mut i 2))
+                                      (while (< i len)
+                                        (match (list-get items i)
+                                          ((some body-expr)
+                                            (let ((body-c (transpile-expr ctx body-expr)))
+                                              (set! result (ctx-str3 ctx result body-c "; "))))
+                                          ((none) (do)))
+                                        (set! i (+ i 1))))
+                                    (ctx-pop-scope ctx)
+                                    ;; Close: } 0; })
+                                    (ctx-str ctx result "} 0; })")))
+                                ((none) "({ /* for-each: missing collection */ 0; })"))))
+                          (else "({ /* for-each: var must be symbol */ 0; })")))
+                      ((none) "({ /* for-each: missing var */ 0; })")))))
+              (else "({ /* for-each: binding must be list */ 0; })")))
+          ((none) "({ /* for-each: missing binding */ 0; })")))))
 
 ) ;; end module
