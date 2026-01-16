@@ -8,6 +8,7 @@ Handles:
 - Contracts → SLOP_PRE/SLOP_POST macros
 """
 
+import re
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Set
 from slop.parser import SExpr, SList, Symbol, String, Number, is_form, parse, find_holes
@@ -2670,16 +2671,16 @@ class Transpiler:
         for post in annotations.get('post', []):
             if post:
                 cond = self.transpile_expr(post)
-                # Replace $result with _retval
-                cond = cond.replace('_result', '_retval')
+                # Replace $result with _retval (word boundary to avoid corrupting identifiers like rk_result)
+                cond = re.sub(r'\b_result\b', '_retval', cond)
                 self.emit(f'SLOP_POST({cond}, "{self.expr_to_str(post)}");')
 
         # Emit runtime checks for assumptions (same as postconditions)
         for assume in annotations.get('assume', []):
             if assume:
                 cond = self.transpile_expr(assume)
-                # Replace $result with _retval
-                cond = cond.replace('_result', '_retval')
+                # Replace $result with _retval (word boundary to avoid corrupting identifiers like rk_result)
+                cond = re.sub(r'\b_result\b', '_retval', cond)
                 self.emit(f'SLOP_POST({cond}, "{self.expr_to_str(assume)}");')
 
         # Emit return after postconditions
@@ -4553,7 +4554,7 @@ class Transpiler:
                                 if max_val is not None:
                                     check_parts.append(f"({value}) <= {max_val}")
                                 check = " && ".join(check_parts)
-                                return f"(SLOP_PRE({check}, \"range check\"), ({target_type})({value}))"
+                                return f"SLOP_RANGE_CHECK(({target_type})({value}), {check}, \"range check\")"
                     return f"(({target_type})({value}))"
 
                 # Sizeof

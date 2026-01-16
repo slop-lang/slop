@@ -27,7 +27,7 @@
                    ctx-lookup-result-type-alias ctx-lookup-type
                    ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-prefixing-enabled ctx-get-module ctx-prefix-type
-                   TypeEntry FuncEntry VarEntry
+                   TypeEntry FuncEntry FuncParamType VarEntry
                    to-c-type-prefixed))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
   (import stmt (transpile-stmt))
@@ -760,8 +760,9 @@
         (ctx-dedent ctx)
         (ctx-emit ctx "}")
         (ctx-emit ctx "")
-        ;; Register function - set returns-string if return type is slop_string
-        (ctx-register-func ctx (FuncEntry raw-name fn-name false (string-eq actual-return "slop_string")))
+        ;; Register function with parameter types for typed none handling
+        (let ((param-types (collect-param-types ctx params-expr)))
+          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return false (string-eq actual-return "slop_string") param-types)))
         ;; Clear current result type and return type
         (ctx-clear-current-result-type ctx)
         (ctx-clear-current-return-type ctx))))
@@ -837,6 +838,51 @@
                   (else false)))
               ((none) false)))))
       (else false)))
+
+  (fn collect-param-types ((ctx (Ptr TranspileContext)) (params-expr (Ptr SExpr)))
+    (@intent "Collect C types of all parameters for typed none handling")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> (List (Ptr FuncParamType))))
+    (@pre {ctx != nil})
+    (@pre {params-expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (result (list-new arena (Ptr FuncParamType))))
+      (match (deref params-expr)
+        ((list lst)
+          (let ((items (. lst items))
+                (len (list-len items))
+                (mut i 0))
+            (while (< i len)
+              (match (list-get items i)
+                ((some param)
+                  (let ((c-type (get-param-c-type ctx param))
+                        (param-info (cast (Ptr FuncParamType) (arena-alloc arena 64))))
+                    (set! (. (deref param-info) c-type) c-type)
+                    (list-push result param-info)))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        (else (do)))
+      result))
+
+  (fn get-param-c-type ((ctx (Ptr TranspileContext)) (param (Ptr SExpr)))
+    (@intent "Extract C type string from a parameter expression")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {param != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref param)
+        ((list lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            (if (< len 2)
+              "void*"
+              ;; Check for mode: (mode name Type) or (name Type)
+              (let ((has-mode (and (>= len 3) (is-param-mode items)))
+                    (type-idx (if has-mode 2 1)))
+                (match (list-get items type-idx)
+                  ((some type-expr)
+                    (to-c-type-prefixed ctx type-expr))
+                  ((none) "void*"))))))
+        (else "void*"))))
 
   ;; ============================================================
   ;; Function Forward Declaration
