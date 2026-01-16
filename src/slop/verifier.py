@@ -930,6 +930,52 @@ def verify_source(source: str, filename: str = "<string>",
     return results
 
 
+def verify_ast(ast: List[SExpr], filename: str = "<string>",
+               mode: str = "error", timeout_ms: int = 5000) -> List[VerificationResult]:
+    """Verify a pre-parsed SLOP AST.
+
+    Args:
+        ast: List of parsed S-expressions
+        filename: Source filename (for error messages)
+        mode: Failure mode ('error' or 'warn')
+        timeout_ms: Z3 solver timeout in milliseconds
+
+    Returns:
+        List of verification results
+    """
+    if not Z3_AVAILABLE:
+        return [VerificationResult(
+            name="z3",
+            verified=False,
+            status="error",
+            message="Z3 solver not available. Install with: pip install z3-solver"
+        )]
+
+    # Run type checker first
+    type_checker = TypeChecker(filename)
+    type_checker.check_module(ast)
+
+    # Check for type errors
+    type_errors = [d for d in type_checker.diagnostics if d.severity == 'error']
+    if type_errors:
+        return [VerificationResult(
+            name="typecheck",
+            verified=False,
+            status="error",
+            message=f"Type errors found: {len(type_errors)} error(s)"
+        )]
+
+    # Run contract verification
+    contract_verifier = ContractVerifier(type_checker, timeout_ms)
+    results = contract_verifier.verify_all(ast)
+
+    # Run range verification
+    range_verifier = RangeVerifier(type_checker, timeout_ms)
+    results.extend(range_verifier.verify_range_safety(ast))
+
+    return results
+
+
 def verify_file(path: str, mode: str = "error",
                 timeout_ms: int = 5000) -> List[VerificationResult]:
     """Verify a SLOP file"""

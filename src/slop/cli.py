@@ -86,8 +86,10 @@ def find_native_component(name: str):
     from pathlib import Path
 
     binary_name = f"slop-{name}"
+    # Project root bin/ directory (cli.py is at src/slop/cli.py)
+    project_root = Path(__file__).parent.parent.parent
     locations = [
-        Path(__file__).parent / "bin" / binary_name,
+        project_root / "bin" / binary_name,
         Path.cwd() / binary_name,
         Path.cwd() / "build" / binary_name,
         # Native components built in lib/compiler/{name}/
@@ -101,7 +103,7 @@ def find_native_component(name: str):
 
 
 def parse_native(input_file: str):
-    """Parse using native parser, returns (ast_json, success).
+    """Parse using native parser, returns (sexp_output, success).
 
     Returns tuple of (output, success). If native parser isn't available,
     returns (None, False).
@@ -114,15 +116,82 @@ def parse_native(input_file: str):
 
     try:
         result = subprocess.run(
-            [str(parser_bin), input_file, '--json'],
+            [str(parser_bin), input_file],
             capture_output=True,
             text=True
         )
         if result.returncode == 0:
             return result.stdout, True
-        return None, False
+        return result.stderr, False
     except Exception:
         return None, False
+
+
+def _json_to_ast(json_data):
+    """Convert JSON AST to Python AST objects.
+
+    Args:
+        json_data: Either a list (top-level) or a dict (single node)
+
+    Returns:
+        Corresponding Python AST object(s)
+    """
+    from slop.parser import Symbol, String, Number, SList
+
+    if isinstance(json_data, list):
+        return [_json_to_ast(item) for item in json_data]
+
+    t = json_data['type']
+    line = json_data.get('line', 0)
+    col = json_data.get('col', 0)
+
+    if t == 'Symbol':
+        return Symbol(json_data['name'], line, col)
+    elif t == 'String':
+        return String(json_data['value'], line, col)
+    elif t == 'Number':
+        return Number(json_data['value'], line, col)
+    elif t == 'List':
+        items = [_json_to_ast(item) for item in json_data['items']]
+        return SList(items, line, col)
+    else:
+        raise ValueError(f"Unknown AST node type: {t}")
+
+
+def parse_native_json(input_file: str):
+    """Parse using native parser with JSON output, returns (ast, success).
+
+    Args:
+        input_file: Path to .slop file
+
+    Returns:
+        Tuple of (result, success). On success, result is list of AST nodes.
+        On failure, result is error message string.
+    """
+    import subprocess
+    import json
+
+    parser_bin = find_native_component('parser')
+    if not parser_bin:
+        return None, False
+
+    try:
+        result = subprocess.run(
+            [str(parser_bin), '--format', 'json', input_file],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            return result.stderr or "Native parser failed", False
+
+        # Parse JSON and convert to Python AST
+        json_ast = json.loads(result.stdout)
+        return _json_to_ast(json_ast), True
+
+    except json.JSONDecodeError as e:
+        return f"Failed to parse JSON output: {e}", False
+    except Exception as e:
+        return str(e), False
 
 
 def transpile_native(input_file: str):
@@ -1698,6 +1767,17 @@ def _has_imports(ast) -> bool:
     return False
 
 
+def _has_exports(ast) -> bool:
+    """Check if AST contains export declarations (module with exports)."""
+    for form in ast:
+        if is_form(form, 'module') and len(form.items) > 2:
+            # Check for (export ...) form in module declaration
+            for item in form.items[2:]:
+                if is_form(item, 'export'):
+                    return True
+    return False
+
+
 def cmd_build(args):
     """Full build pipeline"""
     try:
@@ -2248,17 +2328,24 @@ def cmd_test(args):
 
             fn_name = fn_form[1].name if isinstance(fn_form[1], Symbol) else str(fn_form[1])
 
-            # Check if first parameter is (arena Arena) - needs arena allocation in test
+            # Check if any parameter is (arena Arena) - needs arena allocation in test
+            # Also track position to inject arena arg correctly
             needs_arena = False
+            arena_position = None
             params = fn_form[2] if len(fn_form) > 2 and hasattr(fn_form[2], 'items') else None
             if params and len(params.items) > 0:
-                first_param = params[0]
-                if hasattr(first_param, 'items') and len(first_param.items) >= 2:
-                    param_name = first_param[0]
-                    param_type = first_param[1]
-                    if isinstance(param_name, Symbol) and param_name.name == 'arena':
-                        if isinstance(param_type, Symbol) and param_type.name == 'Arena':
-                            needs_arena = True
+                for idx, param in enumerate(params.items):
+                    if hasattr(param, 'items') and len(param.items) >= 2:
+                        # Handle both (name Type) and (in name Type) forms
+                        if len(param.items) == 2:
+                            param_name, param_type = param[0], param[1]
+                        else:  # (in name Type) form
+                            param_name, param_type = param[1], param[2]
+                        if isinstance(param_name, Symbol) and param_name.name == 'arena':
+                            if isinstance(param_type, Symbol) and param_type.name == 'Arena':
+                                needs_arena = True
+                                arena_position = idx
+                                break
 
             # Get return type from @spec if available
             return_type = None
@@ -2307,6 +2394,7 @@ def cmd_test(args):
                             'expected': expected,
                             'return_type': return_type,
                             'needs_arena': needs_arena,
+                            'arena_position': arena_position,
                         })
 
         # Process top-level and module forms
@@ -2326,11 +2414,21 @@ def cmd_test(args):
         # Filter out test cases with unsupported syntax (e.g., list literals)
         def has_unsupported_syntax(tc):
             """Check if test case uses syntax we can't compile."""
+            # Check args for list literals
             for arg in tc['args']:
-                # Check for list literals: (list ...)
                 if hasattr(arg, 'items') and len(arg.items) > 0:
                     if hasattr(arg[0], 'name') and arg[0].name == 'list':
                         return True
+            # Check expected value for list literals (bare lists like (0 1 1 2 3))
+            expected = tc.get('expected')
+            if expected and hasattr(expected, 'items') and len(expected.items) > 0:
+                first = expected[0]
+                # Bare list of numbers: (0 1 1 2 3) - first element is a Number
+                if isinstance(first, Number):
+                    return True
+                # Explicit list call: (list ...)
+                if hasattr(first, 'name') and first.name == 'list':
+                    return True
             return False
 
         supported_cases = [tc for tc in test_cases if not has_unsupported_syntax(tc)]
@@ -2346,46 +2444,84 @@ def cmd_test(args):
 
         print(f"Found {len(test_cases)} test case(s)")
 
-        # Check if this is a multi-module file (has imports)
+        # Check if this is a multi-module file (has imports) or has exports
+        # Modules with exports need prefixing to avoid C standard library name collisions
         is_multi_module = _has_imports(ast)
+        has_exports = _has_exports(ast)
 
         # Transpile the source
         print("  Transpiling...")
-        if is_multi_module:
-            # Multi-module: resolve dependencies and transpile all
-            from slop.transpiler import transpile_multi
-            search_paths = [Path(p) for p in args.include] + [input_path.parent, input_path.parent.parent]
-            # Also include sibling directories (e.g., common/ for shared types)
-            if input_path.parent.parent.exists():
-                for sibling in input_path.parent.parent.iterdir():
-                    if sibling.is_dir() and sibling != input_path.parent:
-                        search_paths.append(sibling)
-            # Find project root (where slop.toml is) and add lib/std
-            for parent in input_path.resolve().parents:
-                if (parent / 'slop.toml').exists():
-                    lib_std = parent / 'lib' / 'std'
-                    if lib_std.exists():
-                        for subdir in lib_std.iterdir():
-                            if subdir.is_dir():
-                                search_paths.append(subdir)
-                    break
-            resolver = ModuleResolver(search_paths)
-            try:
-                graph = resolver.build_dependency_graph(input_path)
-                order = resolver.topological_sort(graph)
-                c_code = transpile_multi(graph.modules, order)
-            except ResolverError as e:
-                print(f"Module resolution error: {e}", file=sys.stderr)
-                return 1
-        else:
-            from slop.transpiler import transpile
-            with open(input_path) as f:
-                source = f.read()
-            c_code = transpile(source)
+        use_native = getattr(args, 'native', False)
+        c_code = None
+        used_native_transpiler = False  # Track if native transpiler was used (always prefixes)
+
+        if use_native:
+            native_transpiler_bin = find_native_component('transpiler')
+            if native_transpiler_bin:
+                print(f"  [native] Transpiler: {native_transpiler_bin}")
+                c_code, success = transpile_native(str(input_path))
+                if not success:
+                    print(f"  [native] Transpiler failed, falling back to Python")
+                    if c_code:  # c_code contains error message on failure
+                        print(f"  [native] Error: {c_code}")
+                    c_code = None
+                else:
+                    used_native_transpiler = True  # Native transpiler always uses module prefixes
+            else:
+                print("  [native] Transpiler: not found, using Python")
+
+        if c_code is None:
+            if is_multi_module:
+                # Multi-module: resolve dependencies and transpile all
+                from slop.transpiler import transpile_multi
+                search_paths = [Path(p) for p in args.include] + [input_path.parent, input_path.parent.parent]
+                # Also include sibling directories (e.g., common/ for shared types)
+                if input_path.parent.parent.exists():
+                    for sibling in input_path.parent.parent.iterdir():
+                        if sibling.is_dir() and sibling != input_path.parent:
+                            search_paths.append(sibling)
+                # Find project root (where slop.toml is) and add lib/std
+                for parent in input_path.resolve().parents:
+                    if (parent / 'slop.toml').exists():
+                        lib_std = parent / 'lib' / 'std'
+                        if lib_std.exists():
+                            for subdir in lib_std.iterdir():
+                                if subdir.is_dir():
+                                    search_paths.append(subdir)
+                        break
+                resolver = ModuleResolver(search_paths)
+                try:
+                    graph = resolver.build_dependency_graph(input_path)
+                    order = resolver.topological_sort(graph)
+                    c_code = transpile_multi(graph.modules, order)
+                except ResolverError as e:
+                    print(f"Module resolution error: {e}", file=sys.stderr)
+                    return 1
+            else:
+                from slop.transpiler import transpile, Transpiler
+                from slop.parser import parse as slop_parse, Symbol
+                with open(input_path) as f:
+                    source = f.read()
+                if has_exports:
+                    # Use prefixed transpiler for modules with exports to avoid C name collisions
+                    parsed_ast = slop_parse(source)
+                    # Extract module name from AST
+                    module_name = None
+                    for form in parsed_ast:
+                        if is_form(form, 'module') and len(form.items) > 1:
+                            module_name = form[1].name if isinstance(form[1], Symbol) else str(form[1])
+                            break
+                    transpiler = Transpiler()
+                    if module_name:
+                        transpiler.setup_module_context(module_name, [])
+                    c_code = transpiler.transpile(parsed_ast)
+                else:
+                    c_code = transpile(source)
 
         # Generate test harness
+        # Prefixing needed for: native transpiler (always), multi-module, or modules with exports
         print("  Generating test harness...")
-        test_code = generate_test_harness(test_cases, c_code, enable_prefixing=is_multi_module)
+        test_code = generate_test_harness(test_cases, c_code, enable_prefixing=(used_native_transpiler or is_multi_module or has_exports))
 
         # Write to temp file and compile
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2402,7 +2538,8 @@ def cmd_test(args):
                 "cc", "-O0", "-g",
                 "-I", str(runtime_path),
                 "-o", test_bin_path,
-                test_c_path
+                test_c_path,
+                "-lm"  # Link math library for math.h functions
             ]
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
@@ -2543,6 +2680,30 @@ def _parse_pointer_predicate(expected, return_type):
     }
 
 
+def _strip_main_function(c_code):
+    """Remove main() function from C code to avoid conflict with test harness main."""
+    import re
+    # Match: int main(void) { ... } or int64_t main(void) { ... }
+    # Use line-by-line parsing for balanced braces
+    lines = c_code.split('\n')
+    result = []
+    in_main = False
+    brace_depth = 0
+    for line in lines:
+        # Detect start of main function
+        if not in_main and re.match(r'^(int|int64_t)\s+main\s*\(', line):
+            in_main = True
+            brace_depth = line.count('{') - line.count('}')
+            continue
+        if in_main:
+            brace_depth += line.count('{') - line.count('}')
+            if brace_depth <= 0:
+                in_main = False
+            continue
+        result.append(line)
+    return '\n'.join(result)
+
+
 def generate_test_harness(test_cases, c_code, enable_prefixing=True):
     """Generate C test harness code from test cases.
 
@@ -2556,9 +2717,10 @@ def generate_test_harness(test_cases, c_code, enable_prefixing=True):
 
     lines = []
 
-    # Include the transpiled code inline
+    # Include the transpiled code inline (but remove main function to avoid conflict)
     lines.append("// ===== Transpiled SLOP code =====")
-    lines.append(c_code)
+    c_code_stripped = _strip_main_function(c_code)
+    lines.append(c_code_stripped)
     lines.append("")
     lines.append("// ===== Test harness =====")
     lines.append("#include <stdio.h>")
@@ -2588,13 +2750,18 @@ def generate_test_harness(test_cases, c_code, enable_prefixing=True):
         if enable_prefixing and tc['module']:
             c_fn_name = f"{tc['module'].replace('-', '_')}_{c_fn_name}"
 
-        # Convert args to C expressions
+        # Convert args to C expressions, injecting arena at correct position
         c_args = []
         needs_arena = tc.get('needs_arena', False)
-        if needs_arena:
-            c_args.append('test_arena')
-        for arg in tc['args']:
+        arena_position = tc.get('arena_position', 0)
+        for idx, arg in enumerate(tc['args']):
+            # Inject arena at the correct position
+            if needs_arena and idx == arena_position:
+                c_args.append('test_arena')
             c_args.append(sexpr_to_c(arg))
+        # Handle case where arena is last param (after all args)
+        if needs_arena and arena_position >= len(tc['args']):
+            c_args.append('test_arena')
 
         # Determine comparison based on return type
         return_type = tc.get('return_type', 'Int')
@@ -2690,6 +2857,14 @@ def generate_test_harness(test_cases, c_code, enable_prefixing=True):
             result_args = 'result ? "true" : "false"'
             expected_fmt = '%s'
             expected_args = f'{c_expected} ? "true" : "false"'
+        elif return_type and 'Float' in return_type:
+            # Float comparison with epsilon for approximate equality
+            # Use relative epsilon for larger values, absolute for small values
+            compare_expr = f'fabs(result - {c_expected}) < (fabs({c_expected}) * 1e-6 + 1e-9)'
+            result_fmt = '%g'
+            result_args = 'result'
+            expected_fmt = '%g'
+            expected_args = f'{c_expected}'
         else:
             # Default to integer comparison
             compare_expr = f'result == {c_expected}'
@@ -2797,7 +2972,7 @@ def sexpr_to_c(expr):
 def cmd_verify(args):
     """Verify contracts and range safety with Z3"""
     try:
-        from slop.verifier import verify_file, Z3_AVAILABLE
+        from slop.verifier import verify_file, verify_ast, Z3_AVAILABLE
     except ImportError:
         print("Error: verifier module not found", file=sys.stderr)
         return 1
@@ -2814,8 +2989,26 @@ def cmd_verify(args):
     # Determine failure mode
     mode = args.mode if args.mode else "error"
 
-    # Run verification
-    results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)
+    # Check if using native parser
+    use_native = getattr(args, 'native', False)
+    if use_native:
+        ast, success = parse_native_json(args.input)
+        if not success:
+            # ast contains error message on failure
+            if ast:
+                print(f"Native parser failed: {ast}", file=sys.stderr)
+            else:
+                print("Native parser not available, falling back to Python", file=sys.stderr)
+                # Fall back to Python parser
+                results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)
+                use_native = False
+        if use_native and success:
+            if args.verbose:
+                print("[native] Using native parser", file=sys.stderr)
+            results = verify_ast(ast, filename=args.input, mode=mode, timeout_ms=args.timeout)
+    else:
+        # Run verification with Python parser
+        results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)
 
     # Categorize results
     verified = [r for r in results if r.status == 'verified']
@@ -2984,6 +3177,8 @@ def main():
         help='Z3 solver timeout in milliseconds (default: 5000)')
     p.add_argument('-v', '--verbose', action='store_true',
         help='Show counterexamples and skipped contracts')
+    p.add_argument('--native', action='store_true',
+        help='Use native parser where available, fall back to Python')
 
     # ref
     p = subparsers.add_parser('ref', help='Language reference for AI assistants')
@@ -3006,6 +3201,8 @@ def main():
         help='Add search path for module imports')
     p.add_argument('-v', '--verbose', action='store_true',
         help='Show generated C code on failure')
+    p.add_argument('--native', action='store_true',
+        help='Use native components where available, fall back to Python')
 
     args = parser.parse_args()
 
