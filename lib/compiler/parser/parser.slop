@@ -719,25 +719,65 @@
                                      (. tok line) (. tok col)))))
               (ok node))))
 
-        ;; Symbol (includes keywords like 'and', 'or')
+        ;; Symbol - handle unary 'not' specially
         ((== (. tok kind) 'tok-symbol)
-          (do
-            (parser-advance state)
-            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
-              (set! (deref node)
-                    (union-new SExpr symbol
-                      (SExprSymbol (. tok value) (. tok line) (. tok col))))
-              (ok node))))
+          (if (string-eq (. tok value) "not")
+            ;; Unary not: build (not operand)
+            (do
+              (parser-advance state)
+              (match (parse-infix-primary arena state)
+                ((error e) (error e))
+                ((ok operand)
+                  (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                        (not-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
+                        (items (list-new arena (Ptr SExpr))))
+                    (set! (deref not-sym)
+                          (union-new SExpr symbol
+                            (SExprSymbol "not" (. tok line) (. tok col))))
+                    (list-push items not-sym)
+                    (list-push items operand)
+                    (set! (deref node)
+                          (union-new SExpr list
+                            (SExprList items (. tok line) (. tok col))))
+                    (ok node)))))
+            ;; Regular symbol
+            (do
+              (parser-advance state)
+              (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+                (set! (deref node)
+                      (union-new SExpr symbol
+                        (SExprSymbol (. tok value) (. tok line) (. tok col))))
+                (ok node)))))
 
-        ;; Operator used as unary or standalone (like 'not')
-        ((== (. tok kind) 'tok-operator)
+        ;; Unary minus: build (- 0 operand)
+        ((and (== (. tok kind) 'tok-operator)
+              (string-eq (. tok value) "-"))
           (do
             (parser-advance state)
-            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
-              (set! (deref node)
-                    (union-new SExpr symbol
-                      (SExprSymbol (. tok value) (. tok line) (. tok col))))
-              (ok node))))
+            (match (parse-infix-primary arena state)
+              ((error e) (error e))
+              ((ok operand)
+                (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                      (minus-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
+                      (zero-node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                      (items (list-new arena (Ptr SExpr))))
+                  (set! (deref minus-sym)
+                        (union-new SExpr symbol
+                          (SExprSymbol "-" (. tok line) (. tok col))))
+                  (set! (deref zero-node)
+                        (union-new SExpr number
+                          (SExprNumber 0 0.0 false "0" (. tok line) (. tok col))))
+                  (list-push items minus-sym)
+                  (list-push items zero-node)
+                  (list-push items operand)
+                  (set! (deref node)
+                        (union-new SExpr list
+                          (SExprList items (. tok line) (. tok col))))
+                  (ok node))))))
+
+        ;; Other operators: error (should be binary, not primary)
+        ((== (. tok kind) 'tok-operator)
+          (error (ParseError "Unexpected operator in expression" (. tok line) (. tok col))))
 
         ;; Parenthesized subexpression (could be regular prefix list or grouping)
         ((== (. tok kind) 'tok-lparen)
