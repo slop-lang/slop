@@ -1867,7 +1867,12 @@
                   ((symbol sym)
                     (let ((op (. sym name)))
                       (cond
-                        ;; String operations
+                        ;; First check function registry - this handles prescanned functions
+                        ((match (ctx-lookup-func ctx op)
+                           ((some func-entry) (. func-entry returns-string))
+                           ((none) false))
+                          "slop_string")
+                        ;; String operations (hardcoded fallback)
                         ((or (string-eq op "ctx-str")
                              (or (string-eq op "ctx-str3")
                                  (or (string-eq op "ctx-str4")

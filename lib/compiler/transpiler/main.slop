@@ -257,7 +257,8 @@
                 (ctx (context-new arena)))
             ;; Enable prefixing for multi-module builds
             (ctx-set-prefixing ctx true)
-            (ctx-set-module ctx (some mod-name))
+            ;; Use ctx-reset-for-new-module instead of ctx-set-module to avoid Option type inference issues
+            (ctx-reset-for-new-module ctx mod-name)
             ;; Transpile
             (transpile-file ctx exprs)
             ;; Output JSON for this module
