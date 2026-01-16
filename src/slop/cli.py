@@ -101,7 +101,7 @@ def find_native_component(name: str):
 
 
 def parse_native(input_file: str):
-    """Parse using native parser, returns (ast_json, success).
+    """Parse using native parser, returns (sexp_output, success).
 
     Returns tuple of (output, success). If native parser isn't available,
     returns (None, False).
@@ -114,15 +114,82 @@ def parse_native(input_file: str):
 
     try:
         result = subprocess.run(
-            [str(parser_bin), input_file, '--json'],
+            [str(parser_bin), input_file],
             capture_output=True,
             text=True
         )
         if result.returncode == 0:
             return result.stdout, True
-        return None, False
+        return result.stderr, False
     except Exception:
         return None, False
+
+
+def _json_to_ast(json_data):
+    """Convert JSON AST to Python AST objects.
+
+    Args:
+        json_data: Either a list (top-level) or a dict (single node)
+
+    Returns:
+        Corresponding Python AST object(s)
+    """
+    from slop.parser import Symbol, String, Number, SList
+
+    if isinstance(json_data, list):
+        return [_json_to_ast(item) for item in json_data]
+
+    t = json_data['type']
+    line = json_data.get('line', 0)
+    col = json_data.get('col', 0)
+
+    if t == 'Symbol':
+        return Symbol(json_data['name'], line, col)
+    elif t == 'String':
+        return String(json_data['value'], line, col)
+    elif t == 'Number':
+        return Number(json_data['value'], line, col)
+    elif t == 'List':
+        items = [_json_to_ast(item) for item in json_data['items']]
+        return SList(items, line, col)
+    else:
+        raise ValueError(f"Unknown AST node type: {t}")
+
+
+def parse_native_json(input_file: str):
+    """Parse using native parser with JSON output, returns (ast, success).
+
+    Args:
+        input_file: Path to .slop file
+
+    Returns:
+        Tuple of (result, success). On success, result is list of AST nodes.
+        On failure, result is error message string.
+    """
+    import subprocess
+    import json
+
+    parser_bin = find_native_component('parser')
+    if not parser_bin:
+        return None, False
+
+    try:
+        result = subprocess.run(
+            [str(parser_bin), '--format', 'json', input_file],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode != 0:
+            return result.stderr or "Native parser failed", False
+
+        # Parse JSON and convert to Python AST
+        json_ast = json.loads(result.stdout)
+        return _json_to_ast(json_ast), True
+
+    except json.JSONDecodeError as e:
+        return f"Failed to parse JSON output: {e}", False
+    except Exception as e:
+        return str(e), False
 
 
 def transpile_native(input_file: str):
@@ -2903,7 +2970,7 @@ def sexpr_to_c(expr):
 def cmd_verify(args):
     """Verify contracts and range safety with Z3"""
     try:
-        from slop.verifier import verify_file, Z3_AVAILABLE
+        from slop.verifier import verify_file, verify_ast, Z3_AVAILABLE
     except ImportError:
         print("Error: verifier module not found", file=sys.stderr)
         return 1
@@ -2920,8 +2987,26 @@ def cmd_verify(args):
     # Determine failure mode
     mode = args.mode if args.mode else "error"
 
-    # Run verification
-    results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)
+    # Check if using native parser
+    use_native = getattr(args, 'native', False)
+    if use_native:
+        ast, success = parse_native_json(args.input)
+        if not success:
+            # ast contains error message on failure
+            if ast:
+                print(f"Native parser failed: {ast}", file=sys.stderr)
+            else:
+                print("Native parser not available, falling back to Python", file=sys.stderr)
+                # Fall back to Python parser
+                results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)
+                use_native = False
+        if use_native and success:
+            if args.verbose:
+                print("[native] Using native parser", file=sys.stderr)
+            results = verify_ast(ast, filename=args.input, mode=mode, timeout_ms=args.timeout)
+    else:
+        # Run verification with Python parser
+        results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)
 
     # Categorize results
     verified = [r for r in results if r.status == 'verified']
@@ -3090,6 +3175,8 @@ def main():
         help='Z3 solver timeout in milliseconds (default: 5000)')
     p.add_argument('-v', '--verbose', action='store_true',
         help='Show counterexamples and skipped contracts')
+    p.add_argument('--native', action='store_true',
+        help='Use native parser where available, fall back to Python')
 
     # ref
     p = subparsers.add_parser('ref', help='Language reference for AI assistants')

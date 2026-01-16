@@ -22,7 +22,7 @@
     ;; Parser
     parse
     ;; Utilities
-    is-form find-holes pretty-print
+    is-form find-holes pretty-print json-print
     sexpr-line sexpr-col
     sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name
     ;; Type predicates
@@ -36,7 +36,8 @@
   ;; Import string utilities from strlib
   (import strlib (is-alpha is-digit is-alnum is-space
                   char-at AsciiChar
-                  char-is-symbol-start char-is-symbol-char char-is-operator))
+                  char-is-symbol-start char-is-symbol-char char-is-operator
+                  float-to-string))
 
   ;; ============================================================
   ;; FFI Declarations
@@ -1151,4 +1152,161 @@
                   ((none) (do)))
                 (set! i (+ i 1)))
               (string-concat arena result ")")))))))
+
+  ;; ============================================================
+  ;; JSON Output Functions
+  ;; ============================================================
+
+  (fn json-escape-string ((arena Arena) (s String))
+    (@intent "Escape string for JSON output, returning quoted string")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (let ((slen (cast Int (. s len)))
+          ;; Allocate extra space for escapes and quotes (worst case: every char escaped + 2 quotes)
+          (buf (cast (Ptr U8) (arena-alloc arena (+ (* slen 2) 3))))
+          (mut i 0)
+          (mut out 1))
+      (set! (@ buf 0) 34)  ;; opening quote
+      (while (< i slen)
+        (let ((c (@ (. s data) i)))
+          (cond
+            ((== c 34)   ;; quote -> \"
+              (do
+                (set! (@ buf out) 92)       ;; backslash
+                (set! (@ buf (+ out 1)) 34) ;; quote
+                (set! out (+ out 2))))
+            ((== c 92)   ;; backslash -> \\
+              (do
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 92)
+                (set! out (+ out 2))))
+            ((== c 10)   ;; newline -> \n
+              (do
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 110)
+                (set! out (+ out 2))))
+            ((== c 13)   ;; carriage return -> \r
+              (do
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 114)
+                (set! out (+ out 2))))
+            ((== c 9)    ;; tab -> \t
+              (do
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 116)
+                (set! out (+ out 2))))
+            (else
+              (do
+                (set! (@ buf out) c)
+                (set! out (+ out 1))))))
+        (set! i (+ i 1)))
+      (set! (@ buf out) 34)  ;; closing quote
+      (String buf (cast U64 (+ out 1)))))
+
+  (fn json-print-list ((arena Arena) (items (List (Ptr SExpr))))
+    (@intent "Print list of S-expressions as JSON array")
+    (@spec ((Arena (List (Ptr SExpr))) -> String))
+    (@alloc arena)
+    (let ((len (list-len items)))
+      (if (== len 0)
+        (string-copy arena "[]")
+        (let ((mut result (string-copy arena "["))
+              (mut i 0))
+          (while (< i len)
+            (match (list-get items i)
+              ((some child)
+                (let ((child-json (json-print arena child)))
+                  (when (> i 0)
+                    (set! result (string-concat arena result ",")))
+                  (set! result (string-concat arena result child-json))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          (string-concat arena result "]")))))
+
+  (fn json-print ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Print S-expression as JSON")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@alloc arena)
+    (match (deref expr)
+      ;; Symbol: {"type":"Symbol","name":"...","line":N,"col":N}
+      ((symbol sym)
+        (let ((escaped (json-escape-string arena (. sym name)))
+              (line-str (int-to-string arena (. sym line)))
+              (col-str (int-to-string arena (. sym col))))
+          ;; Build: {"type":"Symbol","name":<escaped>,"line":<line>,"col":<col>}
+          (string-concat arena
+            (string-concat arena
+              (string-concat arena
+                (string-concat arena
+                  (string-concat arena
+                    (string-concat arena "{\"type\":\"Symbol\",\"name\":" escaped)
+                    ",\"line\":")
+                  line-str)
+                ",\"col\":")
+              col-str)
+            "}")))
+
+      ;; String: {"type":"String","value":"...","line":N,"col":N}
+      ((string str)
+        (let ((escaped (json-escape-string arena (. str value)))
+              (line-str (int-to-string arena (. str line)))
+              (col-str (int-to-string arena (. str col))))
+          (string-concat arena
+            (string-concat arena
+              (string-concat arena
+                (string-concat arena
+                  (string-concat arena
+                    (string-concat arena "{\"type\":\"String\",\"value\":" escaped)
+                    ",\"line\":")
+                  line-str)
+                ",\"col\":")
+              col-str)
+            "}")))
+
+      ;; Number: {"type":"Number","value":N,"is_float":bool,"line":N,"col":N}
+      ((number num)
+        (let ((line-str (int-to-string arena (. num line)))
+              (col-str (int-to-string arena (. num col))))
+          (if (. num is-float)
+            (let ((val-str (float-to-string arena (. num float-value) 15)))
+              (string-concat arena
+                (string-concat arena
+                  (string-concat arena
+                    (string-concat arena
+                      (string-concat arena
+                        (string-concat arena "{\"type\":\"Number\",\"value\":" val-str)
+                        ",\"is_float\":true,\"line\":")
+                      line-str)
+                    ",\"col\":")
+                  col-str)
+                "}"))
+            (let ((val-str (int-to-string arena (. num int-value))))
+              (string-concat arena
+                (string-concat arena
+                  (string-concat arena
+                    (string-concat arena
+                      (string-concat arena
+                        (string-concat arena "{\"type\":\"Number\",\"value\":" val-str)
+                        ",\"is_float\":false,\"line\":")
+                      line-str)
+                    ",\"col\":")
+                  col-str)
+                "}")))))
+
+      ;; List: {"type":"List","items":[...],"line":N,"col":N}
+      ((list lst)
+        (let ((items-json (json-print-list arena (. lst items)))
+              (line-str (int-to-string arena (. lst line)))
+              (col-str (int-to-string arena (. lst col))))
+          (string-concat arena
+            (string-concat arena
+              (string-concat arena
+                (string-concat arena
+                  (string-concat arena
+                    (string-concat arena "{\"type\":\"List\",\"items\":" items-json)
+                    ",\"line\":")
+                  line-str)
+                ",\"col\":")
+              col-str)
+            "}")))))
 )

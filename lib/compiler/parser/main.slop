@@ -1,7 +1,7 @@
 ;; ============================================================
 ;; SLOP Parser CLI - Native parser binary entry point
 ;;
-;; Usage: slop-parser <file.slop>
+;; Usage: slop-parser [--format sexp|json] <file.slop>
 ;; Parses the input file and prints the AST.
 ;; ============================================================
 
@@ -10,54 +10,111 @@
 
   (import file (FileMode FileError File
                 file-open file-close file-read-all))
-  (import parser (ParseResult ParseError SExpr
-                  parse pretty-print))
+  (import types (SExpr))
+  (import parser (ParseResult ParseError
+                  parse pretty-print json-print))
 
   ;; FFI for strlen
   (ffi "string.h"
     (strlen ((s (Ptr U8))) U64))
+
+  ;; Output format enum
+  (type OutputFormat (enum fmt-sexp fmt-json))
+
+  (fn argv-to-string ((argv (Ptr (Ptr U8))) (index Int))
+    (@intent "Convert argv[index] to String")
+    (@spec (((Ptr (Ptr U8)) Int) -> String))
+    (@pure)
+    (let ((ptr (@ argv index)))
+      (String ptr (strlen ptr))))
+
+  (fn print-json-array ((arena Arena) (exprs (List (Ptr SExpr))))
+    (@intent "Print list of expressions as JSON array")
+    (@spec ((Arena (List (Ptr SExpr))) -> Unit))
+    (@alloc arena)
+    (let ((len (list-len exprs))
+          (mut i 0))
+      (print "[")
+      (while (< i len)
+        (match (list-get exprs i)
+          ((some expr)
+            (do
+              (when (> i 0)
+                (print ","))
+              (print (json-print arena expr))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (println "]")))
+
+  (fn print-sexp-list ((arena Arena) (exprs (List (Ptr SExpr))))
+    (@intent "Print list of expressions as S-expressions")
+    (@spec ((Arena (List (Ptr SExpr))) -> Unit))
+    (@alloc arena)
+    (let ((len (list-len exprs))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get exprs i)
+          ((some expr)
+            (println (pretty-print arena expr)))
+          ((none) (do)))
+        (set! i (+ i 1)))))
 
   (fn main ((argc Int) (argv (Ptr (Ptr U8))))
     (@intent "Parse a SLOP file and print its AST")
     (@spec ((Int (Ptr (Ptr U8))) -> Int))
     (if (< argc 2)
       (do
-        (println "Usage: slop-parser <file.slop>")
+        (println "Usage: slop-parser [--format sexp|json] <file.slop>")
         1)
       (with-arena 2097152  ;; 2MB arena for parsing
-        (let ((path (String (@ argv 1) (strlen (@ argv 1)))))
-          (match (file-open path 'read)
-            ((error e)
-              (do
-                (println "Error: Could not open file")
-                1))
-            ((ok f)
-              (match (file-read-all arena (addr f))
-                ((error e)
+        ;; Parse arguments
+        (let ((mut format 'fmt-sexp)  ;; default format
+              (mut file-idx 1))
+          ;; Check for --format flag
+          (when (and (>= argc 4)
+                     (string-eq (argv-to-string argv 1) "--format"))
+            (let ((fmt-arg (argv-to-string argv 2)))
+              (cond
+                ((string-eq fmt-arg "json") (set! format 'fmt-json))
+                ((string-eq fmt-arg "sexp") (set! format 'fmt-sexp))
+                (else
                   (do
-                    (file-close (addr f))
-                    (println "Error: Could not read file")
-                    1))
-                ((ok source)
-                  (do
-                    (file-close (addr f))
-                    (match (parse arena source)
-                      ((error e)
-                        (do
-                          (print "Parse error at line ")
-                          (print (. e line))
-                          (print ", col ")
-                          (print (. e col))
-                          (print ": ")
-                          (println (. e message))
-                          1))
-                      ((ok exprs)
-                        (let ((len (list-len exprs))
-                              (mut i 0))
-                          (while (< i len)
-                            (match (list-get exprs i)
-                              ((some expr)
-                                (println (pretty-print arena expr)))
-                              ((none) (do)))
-                            (set! i (+ i 1)))
-                          0)))))))))))))
+                    (print "Unknown format: ")
+                    (println fmt-arg)
+                    (return 1)))))
+            (set! file-idx 3))
+
+          ;; Get file path
+          (let ((path (argv-to-string argv file-idx)))
+            (match (file-open path 'read)
+              ((error e)
+                (do
+                  (print "Error: Could not open file: ")
+                  (println path)
+                  1))
+              ((ok f)
+                (match (file-read-all arena (addr f))
+                  ((error e)
+                    (do
+                      (file-close (addr f))
+                      (println "Error: Could not read file")
+                      1))
+                  ((ok source)
+                    (do
+                      (file-close (addr f))
+                      (match (parse arena source)
+                        ((error e)
+                          (do
+                            (print "Parse error at line ")
+                            (print (. e line))
+                            (print ", col ")
+                            (print (. e col))
+                            (print ": ")
+                            (println (. e message))
+                            1))
+                        ((ok exprs)
+                          (do
+                            ;; Output based on format
+                            (if (== format 'fmt-json)
+                              (do (print-json-array arena exprs) 0)
+                              (do (print-sexp-list arena exprs) 0))))))))))))))))
