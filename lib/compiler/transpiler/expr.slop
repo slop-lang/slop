@@ -849,10 +849,10 @@
               ((symbol head-sym)
                 (let ((op (. head-sym name)))
                   (cond
-                    ;; Binary operators (variadic for and/or)
+                    ;; Binary operators (all are variadic - can chain: (- a b c) = a - b - c)
                     ((and (is-binop op) (>= len 3))
-                      ;; Check if this is a variadic and/or with more than 2 operands
-                      (if (and (or (string-eq op "and") (string-eq op "or")) (> len 3))
+                      ;; More than 2 operands: chain all with same operator
+                      (if (> len 3)
                         ;; Variadic: chain all operands
                         (transpile-variadic-binop ctx op items 1)
                         ;; Binary: just 2 operands
