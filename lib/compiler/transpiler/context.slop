@@ -1217,6 +1217,24 @@
                           (ctx-register-inline-record ctx type-name field-str)
                           (set! result type-name))))
 
+                    ;; (Fn (args...) return) -> return_type(*)(arg_types...)
+                    ((string-eq head "Fn")
+                      (if (< len 2)
+                        (set! result "void*")
+                        ;; Return type is the last item
+                        (let ((ret-type (match (list-get items (- len 1))
+                                          ((some ret) (to-c-type-prefixed ctx ret))
+                                          ((none) "void"))))
+                          (if (= len 2)
+                            ;; (Fn RetType) - no args list
+                            (set! result (ctx-str ctx ret-type "(*)(void)"))
+                            ;; (Fn (args...) RetType)
+                            (match (list-get items 1)
+                              ((some args-expr)
+                                (let ((args-str (build-fn-args-str-prefixed ctx args-expr)))
+                                  (set! result (ctx-str ctx (ctx-str ctx ret-type "(*)") args-str))))
+                              ((none) (set! result (ctx-str ctx ret-type "(*)(void)"))))))))
+
                     ;; Default: treat as type name
                     (else
                       (let ((base-c-type (to-c-type arena first-expr)))
@@ -1234,6 +1252,33 @@
   ;; ============================================================
   ;; Gensym for Unique Variable Names
   ;; ============================================================
+
+  (fn build-fn-args-str-prefixed ((ctx (Ptr TranspileContext)) (args-expr (Ptr SExpr)))
+    (@intent "Build C function argument string from SLOP Fn args list with prefixed types")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref args-expr)
+        ((list args-list)
+          (let ((arg-items (. args-list items))
+                (arg-count (list-len arg-items)))
+            (if (= arg-count 0)
+              "(void)"
+              ;; Build comma-separated args
+              (let ((mut result "(")
+                    (mut i 0))
+                (while (< i arg-count)
+                  (match (list-get arg-items i)
+                    ((some arg-expr)
+                      (let ((arg-type (to-c-type-prefixed ctx arg-expr)))
+                        (if (> i 0)
+                          (set! result (ctx-str ctx result (ctx-str ctx ", " arg-type)))
+                          (set! result (ctx-str ctx result arg-type)))))
+                    ((none) ()))
+                  (set! i (+ i 1)))
+                (ctx-str ctx result ")")))))
+        ;; Not a list - treat as void
+        (_ "(void)"))))
 
   (fn ctx-gensym ((ctx (Ptr TranspileContext)) (prefix String))
     (@intent "Generate a unique variable name with the given prefix")

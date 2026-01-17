@@ -66,7 +66,7 @@ class TestThreadTypes:
         assert len(errors) == 0, f"Type errors: {errors}"
 
     def test_chan_transpilation(self, thread_tests_path):
-        """Verify that (Chan T) generates correct SLOP_CHAN_DEFINE"""
+        """Verify that (Chan T) generates correct channel struct"""
         from slop.parser import parse
 
         code = """
@@ -78,11 +78,12 @@ class TestThreadTypes:
         transpiler = Transpiler()
         c_code = transpiler.transpile(ast)
 
-        assert "SLOP_CHAN_DEFINE(int64_t, slop_chan_int)" in c_code
+        # Now emits direct struct definition instead of SLOP_CHAN_DEFINE macro
+        assert "typedef struct slop_chan_int" in c_code
         assert "slop_chan_int*" in c_code
 
     def test_thread_transpilation(self, thread_tests_path):
-        """Verify that (Thread T) generates correct SLOP_THREAD_DEFINE"""
+        """Verify that (Thread T) generates correct thread struct and trampoline"""
         from slop.parser import parse
 
         code = """
@@ -94,7 +95,9 @@ class TestThreadTypes:
         transpiler = Transpiler()
         c_code = transpiler.transpile(ast)
 
-        assert "SLOP_THREAD_DEFINE(int64_t, slop_thread_int)" in c_code
+        # Now emits direct struct definition instead of SLOP_THREAD_DEFINE macro
+        assert "typedef struct slop_thread_int" in c_code
+        assert "slop_thread_int_entry" in c_code  # Trampoline function
         assert "slop_thread_int*" in c_code
 
     def test_thread_test_compiles(self, c_compiler, runtime_path, thread_lib_path, thread_tests_path):
@@ -117,9 +120,8 @@ class TestThreadTypes:
             c_file = tmpdir_path / "thread_test.c"
             c_file.write_text(c_code)
 
-            # Copy slop_thread.h to temp directory
-            thread_h = thread_lib_path / "slop_thread.h"
-            (tmpdir_path / "slop_thread.h").write_text(thread_h.read_text())
+            # No longer need slop_thread.h - struct definitions are now emitted
+            # directly by the transpiler
 
             exe_file = tmpdir_path / "thread_test"
 
@@ -128,7 +130,6 @@ class TestThreadTypes:
                 c_compiler,
                 "-O2",
                 f"-I{runtime_path}",
-                f"-I{tmpdir}",
                 "-pthread",
                 "-o",
                 str(exe_file),

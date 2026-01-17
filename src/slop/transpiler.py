@@ -1712,7 +1712,7 @@ class Transpiler:
 
         self.emit("#include \"slop_runtime.h\"")
         if self.uses_concurrency:
-            self.emit("#include \"slop_thread.h\"")
+            self.emit("#include <pthread.h>")
         self.emit("#include <stdint.h>")
         self.emit("#include <stdbool.h>")
         self.emit("")
@@ -3703,6 +3703,9 @@ class Transpiler:
                     return f"(({option_type}){{ .has_value = false }})"
                 # Fallback for unknown type context
                 return "(slop_option_ptr){ .has_value = false }"
+            if name == 'unit':
+                # Unit value - transpile to void expression
+                return "(void)0"
             if name.startswith("'"):
                 # Enum value - look up qualified name
                 enum_val = name[1:]
@@ -3713,8 +3716,14 @@ class Transpiler:
             if name in self.enums:
                 return self.enums[name]
             # Handle dot notation for field access (e.g., resp.data, addr.sin_addr.s_addr)
+            # or enum value access (e.g., ChanError.closed -> ChanError_closed)
             if '.' in name:
                 parts = name.split('.')
+                # Check if base is a simple enum - if so, this is enum value access
+                if parts[0] in self.simple_enums:
+                    # Enum value access: EnumName.value -> EnumName_value
+                    variant_name = self.to_c_name(parts[1])
+                    return f"{parts[0]}_{variant_name}"
                 base_is_ptr = parts[0] in self.pointer_vars
                 return self._resolve_field_chain(parts, base_is_pointer=base_is_ptr)
             return self.to_c_name(name)
@@ -4157,8 +4166,8 @@ class Transpiler:
                 if op == 'ok':
                     val = self.transpile_expr(expr[1]) if len(expr) > 1 else "NULL"
                     result_type = self._get_result_c_type()
-                    # For void/Unit result, use 0 instead of NULL for ok value
-                    if val == "NULL" and "_void_" in result_type:
+                    # For void/Unit result, use 0 instead of NULL or unit for ok value
+                    if (val in ("NULL", "unit", "(void)0")) and "_void_" in result_type:
                         val = "0"
                     return f"(({result_type}){{ .is_ok = true, .data.ok = {val} }})"
 
@@ -5769,28 +5778,60 @@ class Transpiler:
                         f"typedef struct {{ bool is_ok; union {{ {ok_type} ok; {err_type} err; }} data; }} {type_name};")
                 self.emitted_generated_types.add(type_name)
 
-        # Emit Chan types - use SLOP_CHAN_DEFINE macro from slop_thread.h
-        # Chan types are always emitted in pointer phase since they use pointer semantics
+        # Emit Chan types - direct struct emission (no macro dependency)
+        # (Chan T) maps to slop_chan_{T} which is the state struct
+        # (Ptr (Chan T)) maps to slop_chan_{T}* which is a pointer to the state
         if phase in ('pointer', 'all'):
             for type_name, inner in sorted(self.generated_chan_types):
                 if type_name not in self.emitted_generated_types:
                     if not emitted_any:
                         self.emit("/* Generated generic type definitions */")
                         emitted_any = True
-                    self._emit_guarded_typedef(type_name,
-                        f"SLOP_CHAN_DEFINE({inner}, {type_name})")
+                    guard = self._type_guard_name(type_name)
+                    self.emit(f"#ifndef {guard}")
+                    self.emit(f"#define {guard}")
+                    # Channel state struct with pthread storage (64 bytes for portability)
+                    self.emit(f"typedef struct {type_name} {{")
+                    self.emit(f"    uint8_t mutex[64];       /* pthread_mutex_t storage */")
+                    self.emit(f"    uint8_t not_empty[64];   /* pthread_cond_t storage */")
+                    self.emit(f"    uint8_t not_full[64];    /* pthread_cond_t storage */")
+                    self.emit(f"    {inner}* buffer;         /* Ring buffer */")
+                    self.emit(f"    size_t capacity;         /* Buffer capacity (0 = unbuffered) */")
+                    self.emit(f"    size_t count;            /* Current item count */")
+                    self.emit(f"    size_t head;             /* Read index */")
+                    self.emit(f"    size_t tail;             /* Write index */")
+                    self.emit(f"    bool closed;             /* Channel closed flag */")
+                    self.emit(f"}} {type_name};")
+                    self.emit("#endif")
                     self.emitted_generated_types.add(type_name)
 
-        # Emit Thread types - use SLOP_THREAD_DEFINE macro from slop_thread.h
-        # Thread types are always emitted in pointer phase since they use pointer semantics
+        # Emit Thread types - direct struct emission + trampoline function
+        # (Thread T) maps to slop_thread_{T} which is the state struct
+        # (Ptr (Thread T)) maps to slop_thread_{T}* which is a pointer to the state
         if phase in ('pointer', 'all'):
             for type_name, inner in sorted(self.generated_thread_types):
                 if type_name not in self.emitted_generated_types:
                     if not emitted_any:
                         self.emit("/* Generated generic type definitions */")
                         emitted_any = True
-                    self._emit_guarded_typedef(type_name,
-                        f"SLOP_THREAD_DEFINE({inner}, {type_name})")
+                    guard = self._type_guard_name(type_name)
+                    self.emit(f"#ifndef {guard}")
+                    self.emit(f"#define {guard}")
+                    # Thread state struct
+                    self.emit(f"typedef struct {type_name} {{")
+                    self.emit(f"    pthread_t id;            /* pthread handle */")
+                    self.emit(f"    {inner} result;          /* Thread return value */")
+                    self.emit(f"    void* func;              /* Function pointer */")
+                    self.emit(f"    bool done;               /* Completion flag */")
+                    self.emit(f"}} {type_name};")
+                    # Trampoline function for pthread_create
+                    self.emit(f"static void* {type_name}_entry(void* arg) {{")
+                    self.emit(f"    {type_name}* s = ({type_name}*)arg;")
+                    self.emit(f"    s->result = (({inner}(*)(void))(s->func))();")
+                    self.emit(f"    s->done = true;")
+                    self.emit(f"    return NULL;")
+                    self.emit(f"}}")
+                    self.emit("#endif")
                     self.emitted_generated_types.add(type_name)
 
         # Emit deferred map accessor functions (after all value types are complete)

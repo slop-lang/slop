@@ -656,8 +656,19 @@ class TypeChecker:
         name = sym.name
 
         # Handle dotted field access: foo.bar.baz
+        # or enum value access: EnumName.variant
         if '.' in name:
             parts = name.split('.')
+            # Check if base is an enum type - if so, this is enum value access
+            base_enum_type = self.env.lookup_type(parts[0])
+            if isinstance(base_enum_type, EnumType):
+                # Enum value access: EnumName.variant
+                variant = parts[1]
+                if base_enum_type.has_variant(variant):
+                    return base_enum_type
+                else:
+                    self.error(f"Enum '{parts[0]}' has no variant '{variant}'", sym)
+                    return UNKNOWN
             # Check refinements first, then variable lookup
             base_type = self._get_refined_type(parts[0])
             if base_type is None:
@@ -692,6 +703,9 @@ class TypeChecker:
         if name == 'none':
             # Bare 'none' is Option type with unknown inner type
             return OptionType(self.fresh_type_var('T'))
+        if name == 'unit':
+            # Unit value for void results
+            return PrimitiveType('Unit')
         if name.startswith("'"):
             # Quoted symbol - enum variant, look up which enum it belongs to
             variant_name = name[1:]  # Strip the quote
