@@ -759,7 +759,31 @@ For C expressions SLOP doesn't model yet:
 (c-inline "((struct foo){.x = 1})")        ; Compound literal
 ```
 
-### 9.4 Build Integration
+### 9.4 FFI-Only Types
+
+#### Char
+
+The `Char` type exists solely for FFI interop with C functions that use `char*`.
+
+In C, `char`, `signed char`, and `unsigned char` are three distinct types:
+- `I8` maps to `int8_t` (typically `signed char`)
+- `U8` maps to `uint8_t` (typically `unsigned char`)
+- `Char` maps to `char` (distinct from both)
+
+Use `(Ptr Char)` when declaring FFI functions that expect `char*`:
+
+```lisp
+;; C stdlib functions require char*, not uint8_t*
+(ffi "stdlib.h"
+  (strtol ((s (Ptr Char)) (endptr (Ptr (Ptr Char))) (base Int)) I64))
+
+;; Calling with a cast from String.data
+(strtol (cast (Ptr Char) (. my-string data)) ...)
+```
+
+**Important:** `Char` should only be used at FFI boundaries. For general SLOP programming, use `U8` for byte data and `String` for text.
+
+### 9.5 Build Integration
 
 Link required libraries when building:
 

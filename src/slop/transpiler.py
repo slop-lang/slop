@@ -122,7 +122,7 @@ class Transpiler:
             'U16': 'uint16_t',
             'U32': 'uint32_t',
             'U64': 'uint64_t',
-            'Char': 'char',  # For C string interop (strtol, etc.)
+            'Char': 'char',  # For FFI C string interop (strtol, etc.) - not a user-facing SLOP type
             'Float': 'double',
             'F32': 'float',
             'Bool': 'uint8_t',
@@ -170,7 +170,7 @@ class Transpiler:
         return False
 
     def _type_to_print_category(self, typ) -> str:
-        """Convert a resolved Type to print category: 'String', 'Bool', 'Float', 'Char', or 'Int'."""
+        """Convert a resolved Type to print category: 'String', 'Bool', 'Float', or 'Int'."""
         from slop.types import PrimitiveType, RangeType, RecordType
         if isinstance(typ, PrimitiveType):
             if typ.name == 'String':
@@ -179,8 +179,6 @@ class Transpiler:
                 return 'Bool'
             elif typ.name == 'Float':
                 return 'Float'
-            elif typ.name == 'Char':
-                return 'Char'
             else:
                 return 'Int'
         elif isinstance(typ, RangeType):
@@ -536,8 +534,6 @@ class Transpiler:
             return f'printf("%s{nl}", ({arg}) ? "true" : "false")'
         elif arg_type == 'Float':
             return f'printf("%f{nl}", ({arg}))'
-        elif arg_type in ('Char',):
-            return f'printf("%c{nl}", ({arg}))'
         else:
             # Default to integer (Int, range types, etc.)
             return f'printf("%lld{nl}", (long long)({arg}))'
@@ -545,7 +541,7 @@ class Transpiler:
     def _get_print_arg_type(self, expr: SExpr) -> str:
         """Determine the type category of a print argument.
 
-        Returns: 'String', 'Bool', 'Float', 'Char', or 'Int' (default for integers/ranges)
+        Returns: 'String', 'Bool', 'Float', or 'Int' (default for integers/ranges)
         """
         # Try resolved type first (set by type checker)
         resolved = self._get_resolved_type(expr)
@@ -608,11 +604,9 @@ class Transpiler:
             return 'Bool'
         if c_type in ('float', 'double', 'Float'):
             return 'Float'
-        if c_type in ('char', 'Char'):
-            return 'Char'
         if 'String' in c_type or 'slop_string' in c_type:
             return 'String'
-        # Everything else is treated as integer
+        # Everything else (including char for FFI) is treated as integer
         return 'Int'
 
     def _transpile_option_constructor_with_type(self, expr: SExpr, option_c_type: str) -> str:

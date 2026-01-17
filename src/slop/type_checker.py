@@ -1773,7 +1773,7 @@ class TypeChecker:
         if isinstance(collection_type, ListType):
             element_type = collection_type.element_type
         elif isinstance(collection_type, PrimitiveType) and collection_type.name == 'String':
-            element_type = PrimitiveType('Char')
+            element_type = PrimitiveType('U8')
         else:
             self.error(f"for-each requires a List or String, got {collection_type}", binding[1])
 
@@ -2161,7 +2161,7 @@ class TypeChecker:
             elif isinstance(arg_type, PrimitiveType):
                 is_valid = arg_type.name in ('Int', 'Bool', 'String', 'Float',
                                               'I8', 'I16', 'I32', 'I64',
-                                              'U8', 'U16', 'U32', 'U64', 'Char')
+                                              'U8', 'U16', 'U32', 'U64')
             elif isinstance(arg_type, RecordType) and arg_type.name == 'String':
                 is_valid = True
             if not is_valid and not isinstance(arg_type, UnknownType):

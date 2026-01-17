@@ -22,7 +22,7 @@
                env-lookup-function env-lookup-variant env-lookup-constant
                env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
-               env-make-option-type env-make-ptr-type env-get-generic-type
+               env-make-option-type env-make-ptr-type env-make-result-type env-get-generic-type
                env-add-warning env-add-error))
 
   ;; ============================================================
@@ -115,8 +115,8 @@
               ;; Boolean literals
               ((or (string-eq name "true") (string-eq name "false"))
                 (env-get-bool-type env))
-              ;; nil
-              ((string-eq name "nil")
+              ;; nil and unit
+              ((or (string-eq name "nil") (string-eq name "unit"))
                 (env-get-unit-type env))
               ;; none - Option type with unknown inner type
               ((string-eq name "none")
@@ -421,6 +421,11 @@
                     ;; IO builtins
                     ((string-eq op "print") (env-get-unit-type env))
                     ((string-eq op "println") (env-get-unit-type env))
+                    ;; Result constructors - return generic Result type
+                    ((string-eq op "ok") (env-make-result-type env))
+                    ((string-eq op "error") (env-make-result-type env))
+                    ;; Option constructor
+                    ((string-eq op "some") (env-make-option-type env nil))
                     ;; Unknown function - return Int as fallback
                     (else (env-get-int-type env)))))))))))
 
@@ -919,6 +924,8 @@
           ((string-eq type-name "U16") (env-get-int-type env))
           ((string-eq type-name "U32") (env-get-int-type env))
           ((string-eq type-name "U64") (env-get-int-type env))
+          ;; Char - for FFI C string interop (strtol, etc.)
+          ((string-eq type-name "Char") (env-get-int-type env))
           ;; Unknown type - emit warning and use generic type to avoid cascading errors
           (else
             (let ((arena (env-arena env))

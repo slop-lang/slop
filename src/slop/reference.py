@@ -288,6 +288,16 @@ tier-4: 70B+ models   ; Complex algorithms, multi-step logic
 (c-inline "CONSTANT")            ; Emit C constant
 (c-inline "sizeof(struct foo)")  ; Emit C expression
 
+### FFI-Only Types
+
+#### Char
+For C functions expecting `char*` (distinct from `int8_t*` and `uint8_t*`):
+```lisp
+(ffi "stdlib.h"
+  (strtol ((s (Ptr Char)) (endptr (Ptr (Ptr Char))) (base Int)) I64))
+```
+Use only at FFI boundaries. For general code, use `U8` or `String`.
+
 ### Type Casting
 (cast Type expr)                 ; Cast expression to Type
 """,

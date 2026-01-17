@@ -314,6 +314,6 @@
     (@intent "Wait for thread to complete and return its result")
     (@spec (((Ptr (Thread Int))) -> Int))
     (@pre {thread != nil})
-    (pthread-join thread.id nil)
-    thread.result)
+    (pthread-join (. thread id) nil)
+    (. thread result))
 )
