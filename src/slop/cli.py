@@ -251,17 +251,18 @@ def parse_with_fallback(input_file: str, prefer_native: bool = False, verbose: b
         Parsed AST (list of SExpr)
     """
     if prefer_native:
-        output, success = parse_native(input_file)
+        ast, success = parse_native_json(input_file)
         if success:
             if verbose:
                 print("Using native parser", file=sys.stderr)
-            # For now, native parser outputs pretty-printed s-expressions
-            # We'd need to re-parse or have it output JSON
-            # Fall through to Python parser for AST
+            return ast
         elif verbose:
-            print("Native parser not available, using Python parser", file=sys.stderr)
+            if ast:  # ast contains error message on failure
+                print(f"Native parser failed: {ast}", file=sys.stderr)
+            else:
+                print("Native parser not available, using Python parser", file=sys.stderr)
 
-    # Use Python parser (always, for now, since we need the AST objects)
+    # Fallback to Python parser
     return parse_file(input_file)
 
 
