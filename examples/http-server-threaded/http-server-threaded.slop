@@ -53,7 +53,7 @@
   (fn response-ok ()
     (@intent "Return 200 OK with greeting")
     (@spec (() -> String))
-    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: close\r\n\r\nHello, SLOP!")
+    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 12\r\nConnection: close\r\n\r\nHello, SLOP!")
 
   (fn response-404 ()
     (@intent "Return 404 Not Found")
