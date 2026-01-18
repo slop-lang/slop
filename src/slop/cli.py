@@ -26,6 +26,7 @@ from slop.providers import (
 )
 from slop.type_checker import TypeChecker, check_file, check_modules
 from slop.resolver import ModuleResolver, ResolverError
+from slop import paths
 
 
 def extract_requires_blocks(ast):
@@ -77,29 +78,15 @@ def extract_requires_blocks(ast):
 def find_native_component(name: str):
     """Find a native SLOP component binary.
 
+    Delegates to paths.find_native_binary() which respects SLOP_HOME.
+
     Args:
         name: Component name (e.g., 'parser', 'transpiler', 'checker')
 
     Returns:
         Path to binary if found, None otherwise
     """
-    from pathlib import Path
-
-    binary_name = f"slop-{name}"
-    # Project root bin/ directory (cli.py is at src/slop/cli.py)
-    project_root = Path(__file__).parent.parent.parent
-    locations = [
-        project_root / "bin" / binary_name,
-        Path.cwd() / binary_name,
-        Path.cwd() / "build" / binary_name,
-        # Native components built in lib/compiler/{name}/
-        Path.cwd() / "lib" / "compiler" / name / binary_name,
-    ]
-
-    for loc in locations:
-        if loc.exists():
-            return loc
-    return None
+    return paths.find_native_binary(name)
 
 
 def parse_native(input_file: str):
@@ -3220,6 +3207,85 @@ def cmd_verify(args):
     return 0
 
 
+def cmd_paths(args):
+    """Show resolved SLOP paths for debugging."""
+    resolved = paths.get_resolved_paths()
+
+    print("SLOP Path Resolution")
+    print("=" * 50)
+
+    # SLOP_HOME status
+    slop_home_env = resolved.get('slop_home_env')
+    slop_home = resolved.get('slop_home')
+    if slop_home_env:
+        if slop_home:
+            print(f"SLOP_HOME: {slop_home} (set and valid)")
+        else:
+            print(f"SLOP_HOME: {slop_home_env} (set but invalid/missing)")
+    else:
+        print("SLOP_HOME: (not set)")
+
+    print()
+    print("Resolved Directories:")
+    print("-" * 50)
+
+    # Show each resolved directory
+    dirs = [
+        ('Spec dir', 'spec_dir'),
+        ('Examples dir', 'examples_dir'),
+        ('Stdlib dir', 'stdlib_dir'),
+        ('Bin dir', 'bin_dir'),
+        ('Package root', 'package_root'),
+    ]
+
+    for label, key in dirs:
+        value = resolved.get(key)
+        if value:
+            print(f"  {label:15} {value}")
+        else:
+            print(f"  {label:15} (not found)")
+
+    # Show native binaries
+    print()
+    print("Native Binaries:")
+    print("-" * 50)
+
+    binaries = ['parser', 'transpiler', 'checker']
+    for name in binaries:
+        binary_path = paths.find_native_binary(name)
+        if binary_path:
+            print(f"  slop-{name:12} {binary_path}")
+        else:
+            print(f"  slop-{name:12} (not found)")
+
+    # Show stdlib modules
+    print()
+    print("Stdlib Modules:")
+    print("-" * 50)
+
+    stdlib_modules = paths.list_stdlib_modules()
+    if stdlib_modules:
+        for module_path in stdlib_modules:
+            print(f"  {module_path.name}")
+    else:
+        print("  (none found)")
+
+    # Show examples
+    if args.verbose:
+        print()
+        print("Examples:")
+        print("-" * 50)
+
+        examples = paths.list_examples()
+        if examples:
+            for example_path in examples:
+                print(f"  {example_path.name}")
+        else:
+            print("  (none found)")
+
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='SLOP - Symbolic LLM-Optimized Programming',
@@ -3357,6 +3423,11 @@ def main():
     p.add_argument('--python', action='store_true',
         help='Use Python toolchain instead of native')
 
+    # paths - diagnostic command
+    p = subparsers.add_parser('paths', help='Show resolved SLOP paths')
+    p.add_argument('-v', '--verbose', action='store_true',
+        help='Show additional details (examples list)')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -3376,6 +3447,7 @@ def main():
         'ref': cmd_ref,
         'doc': cmd_doc,
         'test': cmd_test,
+        'paths': cmd_paths,
     }
 
     return commands[args.command](args)

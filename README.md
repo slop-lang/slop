@@ -184,6 +184,10 @@ slop check-hole '(helper 42)' -t Int -c myfile.slop
 
 # From stdin
 echo '(ok value)' | slop check-hole -t '(Result T E)'
+
+# Show resolved paths (useful for debugging SLOP_HOME)
+slop paths
+slop paths -v                  # Include examples list
 ```
 
 ### Native Components
@@ -211,6 +215,40 @@ Native component sources are in `lib/compiler/`:
 - `lib/compiler/transpiler/` - Native SLOP-to-C transpiler
 
 Pre-built binaries are installed to `bin/` at the project root. If a native component isn't found, the CLI automatically falls back to the Python implementation.
+
+### SLOP_HOME Environment Variable
+
+Set `SLOP_HOME` to specify a canonical location for SLOP resources. When set, the toolchain looks here first before falling back to package-relative paths:
+
+```bash
+export SLOP_HOME=/path/to/slop
+```
+
+Expected structure:
+```
+$SLOP_HOME/
+├── lib/std/     # Standard library modules
+├── examples/    # Example SLOP programs
+├── bin/         # Native toolchain binaries
+└── spec/        # Language specification files
+```
+
+Use `slop paths` to see resolved paths:
+
+```bash
+$ slop paths
+SLOP Path Resolution
+==================================================
+SLOP_HOME: /home/user/slop (set and valid)
+
+Resolved Directories:
+--------------------------------------------------
+  Spec dir        /home/user/slop/spec
+  Examples dir    /home/user/slop/examples
+  Stdlib dir      /home/user/slop/lib/std
+  Bin dir         /home/user/slop/bin
+  ...
+```
 
 ## Project Configuration
 
