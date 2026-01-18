@@ -775,9 +775,9 @@
         (set! i (+ i 1)))
       (if negative (- 0 result) result)))
 
-  (fn select-smallest-c-type ((min-val Int) (max-val Int) (has-min Bool) (has-max Bool))
+  (fn select-smallest-c-type ((min-val I64) (max-val I64) (has-min Bool) (has-max Bool))
     (@intent "Select smallest C type that fits the range")
-    (@spec ((Int Int Bool Bool) -> String))
+    (@spec ((I64 I64 Bool Bool) -> String))
     (cond
       ;; Both bounds specified - can optimize
       ((and has-min has-max)
@@ -806,8 +806,8 @@
     (@pre {type-expr != nil})
     (let ((arena (. (deref ctx) arena))
           (bounds RangeBounds (parse-range-bounds type-expr))
-          (min-val Int (. bounds min-val))
-          (max-val Int (. bounds max-val))
+          (min-val I64 (. bounds min-val))
+          (max-val I64 (. bounds max-val))
           (has-min Bool (. bounds has-min))
           (has-max Bool (. bounds has-max))
           (c-type (select-smallest-c-type min-val max-val has-min has-max)))
