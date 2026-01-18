@@ -18,7 +18,7 @@
     ;; Helpers
     is-type-form is-function-form get-return-type get-result-type-name build-param-str)
 
-  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
+  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds))
   (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
                    ctx-register-type ctx-register-func ctx-register-field-type
                    ctx-str ctx-str3 ctx-str4 ctx-str5
@@ -617,14 +617,19 @@
     (@pre {type-expr != nil})
     (let ((arena (. (deref ctx) arena)))
       ;; Check if it's an Array type - requires special handling
-      (if (is-array-type type-expr)
-        (emit-array-typedef ctx qualified-name type-expr)
+      (cond
+        ((is-array-type type-expr)
+          (emit-array-typedef ctx qualified-name type-expr))
+        ;; Check if it's a range type like (Int 0 .. 100)
+        ((is-range-type type-expr)
+          (emit-range-typedef ctx raw-name qualified-name type-expr))
         ;; Standard typedef
-        (let ((c-type (to-c-type-prefixed ctx type-expr)))
-          (ctx-emit ctx (ctx-str5 ctx "typedef " c-type " " qualified-name ";"))
-          (ctx-emit ctx "")
-          ;; Register type
-          (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))))))
+        (else
+          (let ((c-type (to-c-type-prefixed ctx type-expr)))
+            (ctx-emit ctx (ctx-str5 ctx "typedef " c-type " " qualified-name ";"))
+            (ctx-emit ctx "")
+            ;; Register type
+            (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false)))))))
 
   (fn is-array-type ((type-expr (Ptr SExpr)))
     (@intent "Check if type expression is an Array type")
@@ -685,6 +690,156 @@
       ((number num)
         (. num raw))
       (else "0")))
+
+  ;; ============================================================
+  ;; Range Type Handling
+  ;; ============================================================
+
+  (fn is-range-type ((type-expr (Ptr SExpr)))
+    (@intent "Check if type expression is a range type like (Int 0 .. 100)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {type-expr != nil})
+    (match (deref type-expr)
+      ((list lst)
+        (let ((items (. lst items))
+              (len (list-len items))
+              (mut found-dots false)
+              (mut i 0))
+          ;; Look for '..' symbol in the items
+          (while (and (< i len) (not found-dots))
+            (match (list-get items i)
+              ((some item)
+                (match (deref item)
+                  ((symbol sym)
+                    (when (string-eq (. sym name) "..")
+                      (set! found-dots true)))
+                  (else (do))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          found-dots))
+      (else false)))
+
+  (fn parse-range-bounds ((type-expr (Ptr SExpr)))
+    (@intent "Parse range bounds from type like (Int 0 .. 100)")
+    (@spec (((Ptr SExpr)) -> RangeBounds))
+    (@pre {type-expr != nil})
+    (let ((mut min-val 0)
+          (mut max-val 0)
+          (mut has-min false)
+          (mut has-max false)
+          (mut found-dots false))
+      (match (deref type-expr)
+        ((list lst)
+          (let ((items (. lst items))
+                (len (list-len items))
+                (mut i 1))  ;; Skip the base type (first item)
+            (while (< i len)
+              (match (list-get items i)
+                ((some item)
+                  (match (deref item)
+                    ((number num)
+                      (if (not found-dots)
+                        ;; Number before '..' is min
+                        (do
+                          (set! min-val (string-to-int (. num raw)))
+                          (set! has-min true))
+                        ;; Number after '..' is max
+                        (do
+                          (set! max-val (string-to-int (. num raw)))
+                          (set! has-max true))))
+                    ((symbol sym)
+                      (when (string-eq (. sym name) "..")
+                        (set! found-dots true)))
+                    (else (do))))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        (else (do)))
+      ;; Return record - field order: has-min, has-max, min-val, max-val
+      (RangeBounds has-min has-max min-val max-val)))
+
+  (fn string-to-int ((s String))
+    (@intent "Convert string to integer")
+    (@spec ((String) -> Int))
+    (let ((len (cast Int (string-len s)))
+          (mut result 0)
+          (mut i 0)
+          (mut negative false))
+      ;; Handle negative sign
+      (when (and (> len 0) (== (@ (. s data) 0) 45))  ;; '-' = 45
+        (set! negative true)
+        (set! i 1))
+      (while (< i len)
+        (let ((c (@ (. s data) i)))
+          (when (and (>= c 48) (<= c 57))  ;; '0'-'9' = 48-57
+            (set! result (+ (* result 10) (- (cast Int c) 48)))))
+        (set! i (+ i 1)))
+      (if negative (- 0 result) result)))
+
+  (fn select-smallest-c-type ((min-val Int) (max-val Int) (has-min Bool) (has-max Bool))
+    (@intent "Select smallest C type that fits the range")
+    (@spec ((Int Int Bool Bool) -> String))
+    (cond
+      ;; Both bounds specified - can optimize
+      ((and has-min has-max)
+        (cond
+          ;; uint8_t: 0 to 255
+          ((and (>= min-val 0) (<= max-val 255))
+            "uint8_t")
+          ;; uint16_t: 0 to 65535
+          ((and (>= min-val 0) (<= max-val 65535))
+            "uint16_t")
+          ;; int8_t: -128 to 127
+          ((and (>= min-val (- 0 128)) (<= max-val 127))
+            "int8_t")
+          ;; int16_t: -32768 to 32767
+          ((and (>= min-val (- 0 32768)) (<= max-val 32767))
+            "int16_t")
+          ;; Default to int64_t
+          (else "int64_t")))
+      ;; Default to int64_t for unbounded ranges
+      (else "int64_t")))
+
+  (fn emit-range-typedef ((ctx (Ptr TranspileContext)) (raw-name String) (qualified-name String) (type-expr (Ptr SExpr)))
+    (@intent "Emit typedef and _new constructor for range type")
+    (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {type-expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (bounds RangeBounds (parse-range-bounds type-expr))
+          (min-val Int (. bounds min-val))
+          (max-val Int (. bounds max-val))
+          (has-min Bool (. bounds has-min))
+          (has-max Bool (. bounds has-max))
+          (c-type (select-smallest-c-type min-val max-val has-min has-max)))
+      ;; Emit typedef
+      (ctx-emit ctx (ctx-str5 ctx "typedef " c-type " " qualified-name ";"))
+      (ctx-emit ctx "")
+      ;; Emit _new constructor
+      (ctx-emit ctx (ctx-str5 ctx "static inline " qualified-name " " qualified-name "_new(int64_t v) {"))
+      (ctx-indent ctx)
+      ;; Emit bounds check using SLOP_PRE
+      (cond
+        ;; Both bounds
+        ((and has-min has-max)
+          (let ((min-str (int-to-string arena min-val))
+                (max-str (int-to-string arena max-val)))
+            (ctx-emit ctx (ctx-str ctx "SLOP_PRE(v >= " (ctx-str ctx min-str (ctx-str ctx " && v <= " (ctx-str ctx max-str (ctx-str ctx ", \"" (ctx-str ctx qualified-name (ctx-str ctx " in range " (ctx-str ctx min-str (ctx-str ctx ".." (ctx-str ctx max-str "\");")))))))))))))
+        ;; Only min bound
+        (has-min
+          (let ((min-str (int-to-string arena min-val)))
+            (ctx-emit ctx (ctx-str ctx "SLOP_PRE(v >= " (ctx-str ctx min-str (ctx-str ctx ", \"" (ctx-str ctx qualified-name (ctx-str ctx " >= " (ctx-str ctx min-str "\");")))))))))
+        ;; Only max bound
+        (has-max
+          (let ((max-str (int-to-string arena max-val)))
+            (ctx-emit ctx (ctx-str ctx "SLOP_PRE(v <= " (ctx-str ctx max-str (ctx-str ctx ", \"" (ctx-str ctx qualified-name (ctx-str ctx " <= " (ctx-str ctx max-str "\");")))))))))
+        (else (do)))
+      ;; Emit return
+      (ctx-emit ctx (ctx-str ctx "return (" (ctx-str ctx qualified-name ")v;")))
+      (ctx-dedent ctx)
+      (ctx-emit ctx "}")
+      (ctx-emit ctx "")
+      ;; Register type
+      (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))))
 
   ;; ============================================================
   ;; Function Definition
