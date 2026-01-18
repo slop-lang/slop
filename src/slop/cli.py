@@ -1427,12 +1427,18 @@ def cmd_fill(args):
             print(f"Found {len(all_holes)} holes")
 
         # Create filler from config or use mock
-        if args.config:
+        # If --config specified, use it; otherwise look for slop.toml in current dir
+        config_file = args.config
+        if not config_file and Path("slop.toml").exists():
+            config_file = "slop.toml"
+
+        routing_config = {}
+        if config_file:
             try:
-                config = load_config(args.config)
-                configs, provider = create_from_config(config)
+                config = load_config(config_file)
+                configs, provider, routing_config = create_from_config(config)
                 if not quiet:
-                    print(f"Loaded config from {args.config}")
+                    print(f"Loaded config from {config_file}")
             except Exception as e:
                 print(f"Error loading config: {e}", file=sys.stderr)
                 return 1
@@ -1440,10 +1446,11 @@ def cmd_fill(args):
             configs = create_default_configs()
             provider = MockProvider()
             if not quiet:
-                print("Note: No --config specified. Using mock provider.")
+                print("Note: No slop.toml found. Using mock provider.")
                 print("      Create slop.toml from slop.toml.example for real LLM generation.")
 
-        filler = HoleFiller(configs, provider)
+        max_retries = routing_config.get('max_retries', 2)
+        filler = HoleFiller(configs, provider, max_retries=max_retries)
         if not quiet:
             print("Filling holes...")
 
@@ -1626,18 +1633,21 @@ def cmd_fill(args):
         output_text = '\n'.join(output_lines)
         output_text = format_source(output_text)
 
-        if args.inplace:
-            Path(input_file).write_text(output_text)
+        if args.stdout:
+            # Explicit stdout output
             if not quiet:
-                print(f"\nWrote {input_file}")
+                print("\n--- Filled source ---")
+            print(output_text)
         elif args.output:
+            # Write to specified output file
             Path(args.output).write_text(output_text)
             if not quiet:
                 print(f"\nWrote {args.output}")
         else:
+            # Default: write back to input file (in-place)
+            Path(input_file).write_text(output_text)
             if not quiet:
-                print("\n--- Filled source ---")
-            print(output_text)
+                print(f"\nWrote {input_file}")
 
         if not quiet:
             print(f"\n{success_count} filled, {fail_count} failed")
@@ -3315,9 +3325,9 @@ def main():
     p = subparsers.add_parser('fill', help='Fill holes with LLM')
     p.add_argument('input', nargs='?', default=None,
                    help='Input file (optional if slop.toml has [project].entry)')
-    p.add_argument('-o', '--output')
-    p.add_argument('-i', '--inplace', action='store_true',
-        help='Modify input file in place')
+    p.add_argument('-o', '--output', help='Write to specified file instead of modifying input')
+    p.add_argument('--stdout', action='store_true',
+        help='Print to stdout instead of modifying the input file')
     p.add_argument('-c', '--config', help='Path to TOML config file')
     p.add_argument('-v', '--verbose', action='count', default=0,
         help='Increase verbosity (-v for info, -vv for debug with imported specs)')

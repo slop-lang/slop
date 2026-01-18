@@ -716,7 +716,11 @@ def _extract_enum_variants(context: Dict[str, Any]) -> set:
 
 
 def _extract_param_names(params_str: str) -> List[str]:
-    """Extract variable names from params string like '((arena Arena) (request (Ptr Request)))'"""
+    """Extract variable names from params string.
+
+    Handles both simple format: '((arena Arena) (request (Ptr Request)))'
+    and annotated format: '((in arena Arena) (out result (Ptr Result)))'
+    """
     if not params_str:
         return []
 
@@ -726,8 +730,17 @@ def _extract_param_names(params_str: str) -> List[str]:
             return []
         names = []
         for param in parsed[0].items:
-            if isinstance(param, SList) and len(param) >= 1 and isinstance(param[0], Symbol):
-                names.append(param[0].name)
+            if isinstance(param, SList) and len(param) >= 1:
+                first = param[0]
+                if isinstance(first, Symbol):
+                    # Check if first element is an annotation (in/out/inout/mut)
+                    if first.name in ('in', 'out', 'inout', 'mut') and len(param) >= 2:
+                        # Format: (in name Type) - extract second element
+                        if isinstance(param[1], Symbol):
+                            names.append(param[1].name)
+                    else:
+                        # Format: (name Type) - extract first element
+                        names.append(first.name)
         return names
     except Exception:
         return []
@@ -1628,10 +1641,11 @@ class HoleFiller:
     }
 
     def __init__(self, configs: Dict[Tier, ModelConfig], provider,
-                 tier_limits: Optional[Dict[Tier, int]] = None):
+                 tier_limits: Optional[Dict[Tier, int]] = None,
+                 max_retries: int = 2):
         self.configs = configs
         self.provider = provider
-        self.max_retries = 2
+        self.max_retries = max_retries
 
         # Create per-tier semaphores for rate limiting
         limits = tier_limits or self.DEFAULT_TIER_LIMITS
@@ -1904,8 +1918,10 @@ class HoleFiller:
             context_set = set(hole.context)
             # Include FFI functions - they're globally available
             ffi_names = {s['name'] for s in context.get('ffi_specs', [])}
+            # Include function parameters - they're valid context items
+            param_names = set(_extract_param_names(context.get('params', '')))
             # Validate context items are actually defined
-            valid_items = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | enum_variants | ffi_names
+            valid_items = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | enum_variants | ffi_names | param_names
             invalid_context = context_set - valid_items
             if invalid_context:
                 errors.append(f"Invalid context items (not defined): {', '.join(sorted(invalid_context))}")
@@ -1951,10 +1967,34 @@ class HoleFiller:
         - FAIL on clear type mismatches (wrong type, missing cast)
         - ALLOW unknown types (?) from c-inline expressions
         - ALLOW unresolved type variables
+
+        Tries native checker first if available. If native reports errors,
+        verifies with Python checker (native may have false positives due to
+        type name formatting differences like Option_Int vs (Option Int)).
         """
         if not hole.type_expr:
             return []  # No type constraint to check
 
+        # Try native checker first
+        expr_str = pretty_print(expr)
+        expected_type_str = pretty_print(hole.type_expr)
+        native_result = _try_native_checker(
+            expr_str,
+            expected_type_str,
+            context,
+            params=context.get('params', '')
+        )
+        if native_result is not None:
+            errors, _, _ = native_result
+            if not errors:
+                # Native says it's valid - trust it
+                return []
+            # Native reports errors - verify with Python checker
+            # (native may have false positives due to type name format differences)
+            python_errors, _, _ = _validate_expr_type(expr, hole.type_expr, context)
+            return python_errors
+
+        # Fall back to Python type checker
         errors, _, _ = _validate_expr_type(expr, hole.type_expr, context)
         return errors
 
