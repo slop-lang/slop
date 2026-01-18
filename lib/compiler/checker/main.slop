@@ -29,6 +29,16 @@
   (ffi "stdio.h"
     (putchar ((c Int)) Int))
 
+  ;; FFI for string functions
+  (ffi "string.h"
+    (strlen ((s (Ptr U8))) U64))
+
+  ;; ============================================================
+  ;; Output Format
+  ;; ============================================================
+
+  (type OutputFormat (enum fmt-text fmt-json))
+
   ;; ============================================================
   ;; Result Type
   ;; ============================================================
@@ -205,20 +215,28 @@
   (fn print-diagnostic ((arena Arena) (filename String) (diag Diagnostic))
     (@intent "Print a diagnostic message with location info")
     (@spec ((Arena String Diagnostic) -> Unit))
-    (let ((msg (. diag message))
-          (line (. diag line))
-          (col (. diag col))
-          (level (. diag level)))
-      (print filename)
-      (print ":")
-      (print line)
-      (print ":")
-      (print col)
-      (print ": ")
-      (match level
-        ('diag-warning (print "warning: "))
-        ('diag-error (print "error: ")))
-      (println msg)))
+    (print filename)
+    (print ":")
+    (print (. diag line))
+    (print ":")
+    (print (. diag col))
+    (print ": ")
+    (match (. diag level)
+      ('diag-warning (print "warning: "))
+      ('diag-error (print "error: ")))
+    (println (. diag message)))
+
+  (fn output-diagnostics-text ((arena Arena) (filename String) (diagnostics (List Diagnostic)))
+    (@intent "Output diagnostics in human-readable text format")
+    (@spec ((Arena String (List Diagnostic)) -> Unit))
+    (let ((len (list-len diagnostics))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get diagnostics i)
+          ((some diag) (print-diagnostic arena filename diag))
+          ((none) (do)))
+        (set! i (+ i 1))))
+    (do))
 
   ;; ============================================================
   ;; JSON Output for Multi-Module
@@ -285,27 +303,25 @@
   ;; Single File Processing
   ;; ============================================================
 
-  (fn check-single-file ((env (Ptr TypeEnv)) (arena Arena) (filename (Ptr U8)) (first Bool))
-    (@intent "Type check a single file using shared environment, output JSON")
-    (@spec (((Ptr TypeEnv) Arena (Ptr U8) Bool) -> Int))
+  (fn check-single-file ((env (Ptr TypeEnv)) (arena Arena) (filename (Ptr U8)) (format OutputFormat) (first Bool))
+    (@intent "Type check a single file using shared environment")
+    (@spec (((Ptr TypeEnv) Arena (Ptr U8) OutputFormat Bool) -> Int))
     (@pre (!= env nil))
     (@pre (!= filename nil))
     (let ((filename-str (cstring-to-string filename)))
       (match (file-open filename-str 'read)
         ((error e)
           (do
-            (print-str (cast (Ptr U8) "Error: Could not open file: "))
-            (print-str filename)
-            (putchar 10)
+            (print "Error: Could not open file: ")
+            (println filename-str)
             1))
         ((ok f)
           (match (file-read-all arena (addr f))
             ((error e)
               (do
                 (file-close (addr f))
-                (print-str (cast (Ptr U8) "Error: Could not read file: "))
-                (print-str filename)
-                (putchar 10)
+                (print "Error: Could not read file: ")
+                (println filename-str)
                 1))
             ((ok source)
               (do
@@ -319,21 +335,22 @@
                       (type-check-with-env env ast)
                       ;; Get diagnostics for this module
                       (let ((diagnostics (env-get-diagnostics env)))
-                        ;; Output JSON for this module
-                        (output-module-json arena mod-name diagnostics first)
+                        ;; Output based on format
+                        (when (== format 'fmt-json)
+                          (output-module-json arena mod-name diagnostics first))
+                        (when (== format 'fmt-text)
+                          (output-diagnostics-text arena filename-str diagnostics))
                         ;; Return error count
                         (count-errors diagnostics))))
                   ((error parse-err)
                     (do
-                      (print-str (cast (Ptr U8) "Parse error in "))
-                      (print-str filename)
-                      (print-str (cast (Ptr U8) " at line "))
-                      (print-string (int-to-string arena (. parse-err line)))
-                      (print-str (cast (Ptr U8) ", col "))
-                      (print-string (int-to-string arena (. parse-err col)))
-                      (print-str (cast (Ptr U8) ": "))
-                      (print-string (. parse-err message))
-                      (putchar 10)
+                      (print filename-str)
+                      (print ":")
+                      (print (. parse-err line))
+                      (print ":")
+                      (print (. parse-err col))
+                      (print ": error: ")
+                      (println (. parse-err message))
                       1))))))))))
 
   (fn count-errors ((diagnostics (List Diagnostic)))
@@ -353,6 +370,16 @@
       errors))
 
   ;; ============================================================
+  ;; Argv Helper
+  ;; ============================================================
+
+  (fn argv-to-string ((argv (Ptr (Ptr U8))) (index Int))
+    (@intent "Convert argv[index] to String")
+    (@spec (((Ptr (Ptr U8)) Int) -> String))
+    (let ((ptr (@ argv index)))
+      (String ptr (strlen ptr))))
+
+  ;; ============================================================
   ;; Main - CLI Entry Point
   ;; ============================================================
 
@@ -361,26 +388,34 @@
     (@spec ((Int (Ptr (Ptr U8))) -> Int))
     (if (< argc 2)
       (do
-        (print-str (cast (Ptr U8) "Usage: slop-checker <file.slop> [file2.slop ...]\n"))
+        (println "Usage: slop-checker [--json] <file.slop> [file2.slop ...]")
         1)
       (with-arena 4194304  ;; 4MB arena for multi-file builds
         ;; Create a single shared environment for all modules
         (let ((env (env-new arena))
-              (mut total-errors 0))
-          ;; Output JSON object opening
-          (putchar 123)  ;; {
+              (mut total-errors 0)
+              (mut format 'fmt-text)
+              (mut file-start 1))
+          ;; Check for --json flag
+          (when (string-eq (argv-to-string argv 1) "--json")
+            (set! format 'fmt-json)
+            (set! file-start 2))
+          ;; JSON opening brace if needed
+          (when (== format 'fmt-json)
+            (putchar 123))  ;; {
           ;; Process each input file using the shared environment
-          (let ((mut i 1)
+          (let ((mut i file-start)
                 (mut first true))
             (while (< i argc)
               (let ((filename (@ argv i))
-                    (errors (check-single-file env arena filename first)))
+                    (errors (check-single-file env arena filename format first)))
                 (set! total-errors (+ total-errors errors))
                 (set! first false))
               (set! i (+ i 1))))
-          ;; Output JSON object closing
-          (putchar 125)  ;; }
-          (putchar 10)   ;; newline
+          ;; JSON closing if needed
+          (when (== format 'fmt-json)
+            (putchar 125)   ;; }
+            (putchar 10))   ;; newline
           ;; Return non-zero if any errors
           (if (> total-errors 0) 1 0)))))
 )

@@ -354,6 +354,8 @@ Use only at FFI boundaries. For general code, use `U8` or `String`.
 (unwrap r) -> T                          ; Panics on error
 
 ### I/O
+(print val) -> Unit                          ; Print to stdout (no newline)
+(println val) -> Unit                        ; Print to stdout with newline
 (file-read path) -> (Result String IoError)
 (file-write path content) -> (Result Unit IoError)
 

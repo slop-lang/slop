@@ -306,6 +306,10 @@ def cmd_parse(args):
     use_native = not getattr(args, 'python', False)
 
     try:
+        # Print deprecation warning when explicitly using Python parser
+        if not use_native:
+            print("Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+
         # Try native parser by default
         if use_native:
             import subprocess
@@ -324,8 +328,10 @@ def cmd_parse(args):
                 else:
                     # Native parser failed, fall back to Python
                     print("Native parser failed, falling back to Python", file=sys.stderr)
+                    print("Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             else:
                 print("Native parser not found, falling back to Python", file=sys.stderr)
+                print("Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         # Python parser
         ast = parse_file(args.input)
@@ -367,6 +373,10 @@ def cmd_transpile(args):
         input_path = Path(args.input)
         use_native = not getattr(args, 'python', False)
 
+        # Print deprecation warning when explicitly using Python transpiler
+        if not use_native:
+            print("Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+
         # Try native transpiler by default
         if use_native:
             c_code, success = transpile_native(str(input_path))
@@ -384,6 +394,7 @@ def cmd_transpile(args):
                     print(f"Native transpiler not available, falling back to Python", file=sys.stderr)
                 else:
                     print("Native transpiler not found, falling back to Python", file=sys.stderr)
+                print("Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         # Python transpiler path
         # Parse entry file to check for imports
@@ -1678,13 +1689,21 @@ def cmd_check(args):
     try:
         use_native = not getattr(args, 'python', False)
 
+        # Print deprecation warning when explicitly using Python type checker
+        if not use_native:
+            print("Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+
         # Try native checker by default
         if use_native:
             checker_bin = find_native_component('checker')
             if checker_bin:
                 import subprocess
+                cmd = [str(checker_bin)]
+                if getattr(args, 'json', False):
+                    cmd.append('--json')
+                cmd.append(args.input)
                 result = subprocess.run(
-                    [str(checker_bin), args.input],
+                    cmd,
                     capture_output=True,
                     text=True,
                 )
@@ -1696,6 +1715,7 @@ def cmd_check(args):
                 return result.returncode
             else:
                 print("Native checker not found, falling back to Python", file=sys.stderr)
+                print("Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         ast = parse_file(args.input)
 
@@ -1886,16 +1906,19 @@ def cmd_build(args):
                 print(f"  Using native parser: {parser_bin}")
             else:
                 print("  Native parser not found, falling back to Python")
+                print("  Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             native_checker_bin = find_native_component('checker')
             if native_checker_bin:
                 print(f"  Using native type checker: {native_checker_bin}")
             else:
                 print("  Native type checker not found, falling back to Python")
+                print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             native_transpiler_bin = find_native_component('transpiler')
             if native_transpiler_bin:
                 print(f"  Using native transpiler: {native_transpiler_bin}")
             else:
                 print("  Native transpiler not found, falling back to Python")
+                print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         # Create output directory if needed
         output_dir = Path(output).parent
@@ -1949,7 +1972,7 @@ def cmd_build(args):
                 import subprocess
                 import json
                 source_files = [str(graph.modules[name].path) for name in order]
-                cmd = [native_checker_bin] + source_files
+                cmd = [native_checker_bin, '--json'] + source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 # Note: native checker returns non-zero on errors, but we still
                 # want to parse the JSON to show the diagnostics
@@ -1976,6 +1999,7 @@ def cmd_build(args):
                         return 1
             else:
                 # Fall back to Python type checker
+                print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                 all_diagnostics = check_modules(graph.modules, order)
                 for mod_name, diagnostics in all_diagnostics.items():
                     type_errors = [d for d in diagnostics if d.severity == 'error']
@@ -2020,6 +2044,7 @@ def cmd_build(args):
                     return 1
             else:
                 # Fall back to Python transpiler
+                print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                 from slop.transpiler import transpile_multi_split
                 results = transpile_multi_split(graph.modules, order)
 
@@ -2130,6 +2155,7 @@ def cmd_build(args):
                     return 1
             else:
                 # Use Python type checker
+                print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                 from slop.type_checker import check_source_ast
                 diagnostics = check_source_ast(ast, str(input_path))
                 type_errors = [d for d in diagnostics if d.severity == 'error']
@@ -2167,6 +2193,7 @@ def cmd_build(args):
                 else:
                     # Fall back to Python transpiler
                     print("  Native transpiler failed, falling back to Python...")
+                    print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                     from slop.transpiler import Transpiler
                     transpiler = Transpiler()
                     c_code = transpiler.transpile(ast)
@@ -2175,10 +2202,12 @@ def cmd_build(args):
                 if not success:
                     print(f"  Native transpiler failed: {c_code}")
                     print("  Falling back to Python transpiler...")
+                    print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                     from slop.transpiler import Transpiler
                     transpiler = Transpiler()
                     c_code = transpiler.transpile(ast)
             else:
+                print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                 from slop.transpiler import Transpiler
                 transpiler = Transpiler()
                 c_code = transpiler.transpile(ast)
@@ -3240,6 +3269,8 @@ def main():
     p.add_argument('input')
     p.add_argument('--python', action='store_true',
                    help='Use Python toolchain instead of native')
+    p.add_argument('--json', action='store_true',
+                   help='Output diagnostics as JSON')
 
     # check-hole
     p = subparsers.add_parser('check-hole', help='Validate expression against expected type')

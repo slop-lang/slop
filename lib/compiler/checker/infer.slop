@@ -375,6 +375,16 @@
         ((string-eq op "none")
           (env-make-option-type env nil))
 
+        ;; (hole Type "prompt" [:context ...]) - unfilled hole
+        ((string-eq op "hole")
+          (let ((hole-type (resolve-hole-type env items len))
+                (raw-prompt (get-hole-prompt items len))
+                (arena (env-arena env))
+                (hole-msg (string-concat arena "Unfilled hole: " raw-prompt)))
+            ;; Report unfilled hole as an error
+            (env-add-error env hole-msg line col)
+            hole-type))
+
         ;; Function call - look up return type and check arguments
         (else
           (match (env-lookup-function env op)
@@ -608,12 +618,13 @@
                       (let ((binding-name (sexpr-get-symbol-name binding-expr)))
                         (when (not (string-eq binding-name ""))
                           ;; Check if scrutinee is a generic type - if so, bind to generic
-                          (let ((scrutinee-name (. (deref scrutinee-type) name)))
+                          (let ((scrutinee-name (. (deref scrutinee-type) name))
+                                (scrutinee-kind (. (deref scrutinee-type) kind)))
                             (if (string-eq scrutinee-name "T")
                               ;; Generic scrutinee - bind to generic type
                               (env-bind-var env binding-name (env-get-generic-type env))
                               ;; Special case for Option types: "some" variant gets inner-type
-                              (if (and (== (. (deref scrutinee-type) kind) 'rk-option)
+                              (if (and (== scrutinee-kind 'rk-option)
                                        (string-eq variant-name "some"))
                                 ;; For Option types, payload is the inner-type
                                 (match (. (deref scrutinee-type) inner-type)
@@ -1047,6 +1058,45 @@
                 "unknown"
                 name)))
           ((none) "unknown")))))
+
+  (fn resolve-hole-type ((env (Ptr TypeEnv)) (items (List (Ptr SExpr))) (len Int))
+    (@intent "Resolve the type from a hole form")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr)) Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    ;; (hole Type "prompt" ...) - type is at position 1
+    (if (< len 2)
+      (env-get-unit-type env)
+      ;; Use direct array access to avoid transpiler issues with nested match
+      (let ((type-expr (@ (. items data) 1)))
+        (if (== type-expr nil)
+          (env-get-unit-type env)
+          (let ((type-name (sexpr-get-symbol-name type-expr)))
+            (if (string-eq type-name "")
+              (env-get-unit-type env)
+              ;; Look up the type
+              (match (env-lookup-type env type-name)
+                ((some t) t)
+                ((none)
+                  (cond
+                    ((string-eq type-name "Int") (env-get-int-type env))
+                    ((string-eq type-name "Bool") (env-get-bool-type env))
+                    ((string-eq type-name "String") (env-get-string-type env))
+                    ((string-eq type-name "Unit") (env-get-unit-type env))
+                    (else (env-get-unit-type env)))))))))))
+
+  (fn get-hole-prompt ((items (List (Ptr SExpr))) (len Int))
+    (@intent "Extract the prompt string from a hole form")
+    (@spec (((List (Ptr SExpr)) Int) -> String))
+    ;; (hole Type "prompt" ...) - prompt is at position 2
+    (if (< len 3)
+      "(no description)"
+      ;; Use direct array access to avoid match/list-get issues
+      (let ((prompt-expr (@ (. items data) 2)))
+        (if (== prompt-expr nil)
+          "(no description)"
+          (match (deref prompt-expr)
+            ((string str) (. str value))
+            (_ "(no description)"))))))
 
   (fn find-last-body-idx ((items (List (Ptr SExpr))))
     (@intent "Find index of last body expression, skipping :c-name and its value")

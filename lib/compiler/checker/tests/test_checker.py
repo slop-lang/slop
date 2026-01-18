@@ -18,7 +18,8 @@ class TestCheckerPasses:
         exit_code, stdout, stderr = run_checker(slop_file)
 
         assert exit_code == 0, f"Expected success, got:\n{stdout}\n{stderr}"
-        assert "Type check passed" in stdout or "OK" in stdout
+        # Human-readable output: silence means success (GCC/Clang style)
+        assert "error" not in stdout.lower(), f"Unexpected error: {stdout}"
 
 
 class TestBranchTypeWarnings:
