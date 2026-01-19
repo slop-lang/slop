@@ -662,13 +662,16 @@
             ;; Allow Unknown type field access
             (if (string-eq type-name "Unknown")
               (env-get-unknown-type env)
-              ;; Error: trying to access field on non-record type
-              (let ((msg (string-concat arena "Cannot access field '"
-                           (string-concat arena field-name
-                             (string-concat arena "' on non-record type '"
-                               (string-concat arena type-name "'"))))))
-                (env-add-error env msg line col)
-                (env-get-unknown-type env))))))))
+              ;; Allow field access on Ptr types (transpiler handles auto-dereference)
+              (if (starts-with type-name "Ptr_")
+                (env-get-unknown-type env)
+                ;; Error: trying to access field on non-record type
+                (let ((msg (string-concat arena "Cannot access field '"
+                             (string-concat arena field-name
+                               (string-concat arena "' on non-record type '"
+                                 (string-concat arena type-name "'"))))))
+                  (env-add-error env msg line col)
+                  (env-get-unknown-type env)))))))))
 
   (fn infer-cond-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of cond expression, checking branch types")
@@ -999,8 +1002,20 @@
             ((string-eq head-name "List")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))
                 (env-make-ptr-type env inner-type)))
-            ;; Other complex types - return Unknown
-            (else (env-get-unknown-type env)))))
+            ;; Thread type: (Thread T) - built-in parameterized type, treat as record
+            ((string-eq head-name "Thread")
+              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
+                ;; Thread is a record with id, done, result fields - use ptr to inner type as approximation
+                (env-make-ptr-type env inner-type)))
+            ;; Chan type: (Chan T) - built-in parameterized type, treat as record
+            ((string-eq head-name "Chan")
+              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
+                (env-make-ptr-type env inner-type)))
+            ;; User-defined generic types - look up the base type
+            (else
+              (match (env-lookup-type env head-name)
+                ((some t) t)
+                ((none) (env-get-unknown-type env)))))))
       ((none) (env-get-unknown-type env))))
 
   (fn resolve-option-inner-type ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
