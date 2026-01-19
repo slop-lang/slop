@@ -1,0 +1,472 @@
+;; ============================================================
+;; SLOP Type Extraction for Tester
+;;
+;; Extracts type definitions from parsed SLOP AST and builds
+;; a TypeRegistry for use in type-aware C code generation.
+;;
+;; The TypeRegistry maps type names to their definitions,
+;; allowing the emitter to generate proper struct literals
+;; for union variants and record constructors.
+;; ============================================================
+
+(module type-extract
+  (export
+    ;; Types
+    TypeEntry TypeEntryKind FieldEntry VariantEntry EnumValueEntry TypeRegistry
+    ;; Constructor
+    make-type-registry
+    ;; Extraction
+    extract-types-from-ast
+    ;; Lookup functions
+    registry-lookup
+    registry-lookup-variant
+    registry-lookup-enum-value
+    registry-is-union
+    registry-is-record
+    registry-is-enum
+    registry-get-variant-info
+    registry-get-record-fields)
+
+  (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
+  (import parser (is-form sexpr-is-symbol sexpr-is-number sexpr-is-string
+                  sexpr-list-len sexpr-list-get sexpr-get-symbol-name
+                  pretty-print))
+
+  ;; ============================================================
+  ;; Type Entry - A single type definition
+  ;; ============================================================
+
+  ;; Kind of type entry
+  (type TypeEntryKind (enum te-record te-union te-enum te-range te-alias))
+
+  ;; A field in a record type
+  (type FieldEntry (record
+    (name String)
+    (type-name String)))  ;; Type as string for simplicity
+
+  ;; A variant in a union type
+  (type VariantEntry (record
+    (name String)
+    (index Int)
+    (payload-type String)))  ;; Empty string means no payload
+
+  ;; A value in an enum type
+  (type EnumValueEntry (record
+    (name String)
+    (index Int)))
+
+  ;; Complete type entry
+  (type TypeEntry (record
+    (name String)            ;; SLOP type name (e.g., "Term")
+    (c-name String)          ;; C type name (e.g., "rdf_Term")
+    (kind TypeEntryKind)
+    (fields (List FieldEntry))         ;; For records
+    (variants (List VariantEntry))     ;; For unions
+    (enum-values (List EnumValueEntry)) ;; For enums
+    (inner-type String)))    ;; For alias, range, etc.
+
+  ;; ============================================================
+  ;; Type Registry - Collection of type entries
+  ;; ============================================================
+
+  (type TypeRegistry (record
+    (types (List (Ptr TypeEntry)))
+    (module-prefix String)))
+
+  ;; ============================================================
+  ;; Constructor
+  ;; ============================================================
+
+  (fn make-type-registry ((arena Arena) (prefix String))
+    (@intent "Create empty type registry with module prefix")
+    (@spec ((Arena String) -> TypeRegistry))
+    (@alloc arena)
+    (TypeRegistry (list-new arena (Ptr TypeEntry)) prefix))
+
+  ;; ============================================================
+  ;; Type Entry Constructor
+  ;; ============================================================
+
+  (fn type-entry-new ((arena Arena) (name String) (c-name String) (kind TypeEntryKind))
+    (@intent "Create a new type entry")
+    (@spec ((Arena String String TypeEntryKind) -> (Ptr TypeEntry)))
+    (@alloc arena)
+    (let ((entry (cast (Ptr TypeEntry) (arena-alloc arena 128))))
+      (set! (deref entry) (TypeEntry
+        name c-name kind
+        (list-new arena FieldEntry)
+        (list-new arena VariantEntry)
+        (list-new arena EnumValueEntry)
+        ""))
+      entry))
+
+  (fn field-entry-new ((name String) (type-name String))
+    (@intent "Create a field entry")
+    (@spec ((String String) -> FieldEntry))
+    (@pure)
+    (FieldEntry name type-name))
+
+  (fn variant-entry-new ((name String) (index Int) (payload-type String))
+    (@intent "Create a variant entry")
+    (@spec ((String Int String) -> VariantEntry))
+    (@pure)
+    (VariantEntry name index payload-type))
+
+  (fn enum-value-entry-new ((name String) (index Int))
+    (@intent "Create an enum value entry")
+    (@spec ((String Int) -> EnumValueEntry))
+    (@pure)
+    (EnumValueEntry name index))
+
+  ;; ============================================================
+  ;; Type Extraction from AST
+  ;; ============================================================
+
+  (fn extract-types-from-ast ((arena Arena) (ast (List (Ptr SExpr))) (module-prefix String))
+    (@intent "Build TypeRegistry from parsed AST")
+    (@spec ((Arena (List (Ptr SExpr)) String) -> (Ptr TypeRegistry)))
+    (@alloc arena)
+    ;; Allocate the registry on the arena
+    (let ((reg-ptr (cast (Ptr TypeRegistry) (arena-alloc arena 128))))
+      (set! (deref reg-ptr) (make-type-registry arena module-prefix))
+      (let ((len (list-len ast))
+            (mut i 0))
+        (while (< i len)
+          (match (list-get ast i)
+            ((some expr)
+              ;; Check for module form
+              (when (is-form expr "module")
+                (extract-types-from-module arena expr reg-ptr module-prefix))
+              ;; Check for top-level type definition
+              (when (is-form expr "type")
+                (extract-type-def arena expr reg-ptr module-prefix)))
+            ((none) (do)))
+          (set! i (+ i 1))))
+      reg-ptr))
+
+  (fn extract-types-from-module ((arena Arena) (module-form (Ptr SExpr))
+                                  (reg-ptr (Ptr TypeRegistry)) (prefix String))
+    (@intent "Extract type definitions from a module form")
+    (@spec ((Arena (Ptr SExpr) (Ptr TypeRegistry) String) -> Unit))
+    (let ((len (sexpr-list-len module-form))
+          (mut i 2))  ;; Skip 'module' and module name
+      (while (< i len)
+        (match (sexpr-list-get module-form i)
+          ((some form)
+            (when (is-form form "type")
+              (extract-type-def arena form reg-ptr prefix)))
+          ((none) (do)))
+        (set! i (+ i 1))))
+    (do))
+
+  (fn extract-type-def ((arena Arena) (type-form (Ptr SExpr))
+                        (reg-ptr (Ptr TypeRegistry)) (prefix String))
+    (@intent "Extract a single type definition")
+    (@spec ((Arena (Ptr SExpr) (Ptr TypeRegistry) String) -> Unit))
+    ;; type-form: (type Name definition)
+    (when (>= (sexpr-list-len type-form) 3)
+      (match (sexpr-list-get type-form 1)
+        ((some name-expr)
+          (when (sexpr-is-symbol name-expr)
+            (let ((type-name (sexpr-get-symbol-name name-expr))
+                  (c-name (make-c-type-name arena prefix type-name)))
+              (match (sexpr-list-get type-form 2)
+                ((some def-expr)
+                  (cond
+                    ;; Record: (type Name (record (field1 Type1) ...))
+                    ((is-form def-expr "record")
+                      (let ((entry (extract-record-type arena type-name c-name def-expr)))
+                        (list-push (. (deref reg-ptr) types) entry)))
+
+                    ;; Union: (type Name (union (variant1 Type1) ...))
+                    ((is-form def-expr "union")
+                      (let ((entry (extract-union-type arena type-name c-name def-expr)))
+                        (list-push (. (deref reg-ptr) types) entry)))
+
+                    ;; Enum: (type Name (enum val1 val2 ...))
+                    ((is-form def-expr "enum")
+                      (let ((entry (extract-enum-type arena type-name c-name def-expr)))
+                        (list-push (. (deref reg-ptr) types) entry)))
+
+                    ;; Range type: (type Name (Int min .. max))
+                    ((is-form def-expr "Int")
+                      (let ((entry (type-entry-new arena type-name c-name 'te-range)))
+                        (set! (. (deref entry) inner-type) "Int")
+                        (list-push (. (deref reg-ptr) types) entry)))
+
+                    ;; Alias to another type
+                    (else
+                      (let ((entry (type-entry-new arena type-name c-name 'te-alias))
+                            (inner (pretty-print arena def-expr)))
+                        (set! (. (deref entry) inner-type) inner)
+                        (list-push (. (deref reg-ptr) types) entry)))))
+                ((none) (do))))))
+        ((none) (do))))
+    (do))
+
+  ;; ============================================================
+  ;; Record Type Extraction
+  ;; ============================================================
+
+  (fn extract-record-type ((arena Arena) (name String) (c-name String) (def (Ptr SExpr)))
+    (@intent "Extract record type definition")
+    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TypeEntry)))
+    (@alloc arena)
+    ;; def: (record (field1 Type1) (field2 Type2) ...)
+    (let ((entry (type-entry-new arena name c-name 'te-record))
+          (len (sexpr-list-len def))
+          (mut i 1))  ;; Skip 'record' keyword
+      (while (< i len)
+        (match (sexpr-list-get def i)
+          ((some field-def)
+            ;; field-def: (field-name FieldType)
+            (when (>= (sexpr-list-len field-def) 2)
+              (match (sexpr-list-get field-def 0)
+                ((some field-name-expr)
+                  (when (sexpr-is-symbol field-name-expr)
+                    (let ((field-name (sexpr-get-symbol-name field-name-expr)))
+                      (match (sexpr-list-get field-def 1)
+                        ((some field-type-expr)
+                          (let ((field-type (pretty-print arena field-type-expr))
+                                (fe (field-entry-new field-name field-type)))
+                            (list-push (. (deref entry) fields) fe)))
+                        ((none) (do))))))
+                ((none) (do)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      entry))
+
+  ;; ============================================================
+  ;; Union Type Extraction
+  ;; ============================================================
+
+  (fn extract-union-type ((arena Arena) (name String) (c-name String) (def (Ptr SExpr)))
+    (@intent "Extract union type definition")
+    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TypeEntry)))
+    (@alloc arena)
+    ;; def: (union (variant1 Type1) (variant2 Type2) ...)
+    (let ((entry (type-entry-new arena name c-name 'te-union))
+          (len (sexpr-list-len def))
+          (mut i 1)   ;; Skip 'union' keyword
+          (mut idx 0))
+      (while (< i len)
+        (match (sexpr-list-get def i)
+          ((some variant-def)
+            ;; variant-def: (variant-name PayloadType) or (variant-name)
+            (let ((vlen (sexpr-list-len variant-def)))
+              (when (>= vlen 1)
+                (match (sexpr-list-get variant-def 0)
+                  ((some variant-name-expr)
+                    (when (sexpr-is-symbol variant-name-expr)
+                      (let ((variant-name (sexpr-get-symbol-name variant-name-expr))
+                            (payload-type (if (>= vlen 2)
+                                            (match (sexpr-list-get variant-def 1)
+                                              ((some pt-expr) (pretty-print arena pt-expr))
+                                              ((none) ""))
+                                            ""))
+                            (ve (variant-entry-new variant-name idx payload-type)))
+                        (list-push (. (deref entry) variants) ve)
+                        (set! idx (+ idx 1)))))
+                  ((none) (do))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      entry))
+
+  ;; ============================================================
+  ;; Enum Type Extraction
+  ;; ============================================================
+
+  (fn extract-enum-type ((arena Arena) (name String) (c-name String) (def (Ptr SExpr)))
+    (@intent "Extract enum type definition")
+    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TypeEntry)))
+    (@alloc arena)
+    ;; def: (enum val1 val2 val3 ...)
+    (let ((entry (type-entry-new arena name c-name 'te-enum))
+          (len (sexpr-list-len def))
+          (mut i 1)   ;; Skip 'enum' keyword
+          (mut idx 0))
+      (while (< i len)
+        (match (sexpr-list-get def i)
+          ((some val-expr)
+            (when (sexpr-is-symbol val-expr)
+              (let ((val-name (sexpr-get-symbol-name val-expr))
+                    (eve (enum-value-entry-new val-name idx)))
+                (list-push (. (deref entry) enum-values) eve)
+                (set! idx (+ idx 1)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      entry))
+
+  ;; ============================================================
+  ;; Lookup Functions
+  ;; ============================================================
+
+  (fn registry-lookup ((reg TypeRegistry) (name String))
+    (@intent "Find type by SLOP name")
+    (@spec ((TypeRegistry String) -> (Option (Ptr TypeEntry))))
+    (@pure)
+    (let ((types (. reg types))
+          (len (list-len types))
+          (mut i 0)
+          (mut found (Option (Ptr TypeEntry)) (none)))
+      (while (and (< i len) (match found ((none) true) (_ false)))
+        (match (list-get types i)
+          ((some entry)
+            (when (string-eq (. (deref entry) name) name)
+              (set! found (some entry))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn registry-lookup-variant ((reg TypeRegistry) (variant-name String))
+    (@intent "Find which union type contains a given variant, return (union-entry, variant-entry)")
+    (@spec ((TypeRegistry String) -> (Option (Ptr TypeEntry))))
+    (@pure)
+    (let ((types (. reg types))
+          (len (list-len types))
+          (mut i 0)
+          (mut found (Option (Ptr TypeEntry)) (none)))
+      (while (and (< i len) (match found ((none) true) (_ false)))
+        (match (list-get types i)
+          ((some entry)
+            (when (== (. (deref entry) kind) 'te-union)
+              ;; Search variants
+              (let ((variants (. (deref entry) variants))
+                    (vlen (list-len variants))
+                    (mut j 0)
+                    (mut vfound false))
+                (while (and (< j vlen) (not vfound))
+                  (match (list-get variants j)
+                    ((some ve)
+                      (when (string-eq (. ve name) variant-name)
+                        (set! vfound true)
+                        (set! found (some entry))))
+                    ((none) (do)))
+                  (set! j (+ j 1))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn registry-lookup-enum-value ((reg TypeRegistry) (value-name String))
+    (@intent "Find which enum type contains a given value")
+    (@spec ((TypeRegistry String) -> (Option (Ptr TypeEntry))))
+    (@pure)
+    (let ((types (. reg types))
+          (len (list-len types))
+          (mut i 0)
+          (mut found (Option (Ptr TypeEntry)) (none)))
+      (while (and (< i len) (match found ((none) true) (_ false)))
+        (match (list-get types i)
+          ((some entry)
+            (when (== (. (deref entry) kind) 'te-enum)
+              (let ((values (. (deref entry) enum-values))
+                    (vlen (list-len values))
+                    (mut j 0)
+                    (mut vfound false))
+                (while (and (< j vlen) (not vfound))
+                  (match (list-get values j)
+                    ((some eve)
+                      (when (string-eq (. eve name) value-name)
+                        (set! vfound true)
+                        (set! found (some entry))))
+                    ((none) (do)))
+                  (set! j (+ j 1))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  ;; ============================================================
+  ;; Type Predicate Functions
+  ;; ============================================================
+
+  (fn registry-is-union ((reg TypeRegistry) (name String))
+    (@intent "Check if type is a union")
+    (@spec ((TypeRegistry String) -> Bool))
+    (@pure)
+    (match (registry-lookup reg name)
+      ((some entry) (== (. (deref entry) kind) 'te-union))
+      ((none) false)))
+
+  (fn registry-is-record ((reg TypeRegistry) (name String))
+    (@intent "Check if type is a record")
+    (@spec ((TypeRegistry String) -> Bool))
+    (@pure)
+    (match (registry-lookup reg name)
+      ((some entry) (== (. (deref entry) kind) 'te-record))
+      ((none) false)))
+
+  (fn registry-is-enum ((reg TypeRegistry) (name String))
+    (@intent "Check if type is an enum")
+    (@spec ((TypeRegistry String) -> Bool))
+    (@pure)
+    (match (registry-lookup reg name)
+      ((some entry) (== (. (deref entry) kind) 'te-enum))
+      ((none) false)))
+
+  ;; ============================================================
+  ;; Variant Info Retrieval
+  ;; ============================================================
+
+  (fn registry-get-variant-info ((reg TypeRegistry) (variant-name String))
+    (@intent "Get variant index and payload type for a union variant")
+    (@spec ((TypeRegistry String) -> (Option VariantEntry)))
+    (@pure)
+    (match (registry-lookup-variant reg variant-name)
+      ((some entry)
+        ;; Find the specific variant
+        (let ((variants (. (deref entry) variants))
+              (vlen (list-len variants))
+              (mut i 0)
+              (mut found (Option VariantEntry) (none)))
+          (while (and (< i vlen) (match found ((none) true) (_ false)))
+            (match (list-get variants i)
+              ((some ve)
+                (when (string-eq (. ve name) variant-name)
+                  (set! found (some ve))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          found))
+      ((none) (none))))
+
+  (fn registry-get-record-fields ((reg TypeRegistry) (name String))
+    (@intent "Get list of fields for a record type")
+    (@spec ((TypeRegistry String) -> (Option (List FieldEntry))))
+    (@pure)
+    ;; Returns None if not found or not a record
+    (match (registry-lookup reg name)
+      ((some entry)
+        (if (== (. (deref entry) kind) 'te-record)
+          (some (. (deref entry) fields))
+          (none)))
+      ((none) (none))))
+
+  ;; ============================================================
+  ;; Helper Functions
+  ;; ============================================================
+
+  (fn make-c-type-name ((arena Arena) (prefix String) (name String))
+    (@intent "Generate C type name with prefix")
+    (@spec ((Arena String String) -> String))
+    (@alloc arena)
+    (if (== (cast Int (. prefix len)) 0)
+      (convert-to-c-ident arena name)
+      (string-concat arena (convert-to-c-ident arena prefix)
+        (string-concat arena "_" (convert-to-c-ident arena name)))))
+
+  (fn convert-to-c-ident ((arena Arena) (name String))
+    (@intent "Convert SLOP name to C identifier (replace - with _)")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (let ((len (cast Int (. name len)))
+          (buf (cast (Ptr U8) (arena-alloc arena (+ len 1))))
+          (mut i 0))
+      (while (< i len)
+        (let ((c (@ (. name data) i)))
+          (if (== c 45)  ;; '-'
+            (set! (@ buf i) 95)  ;; '_'
+            (set! (@ buf i) c)))
+        (set! i (+ i 1)))
+      (set! (@ buf len) 0)
+      (String buf (. name len))))
+
+) ;; end module

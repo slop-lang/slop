@@ -780,10 +780,26 @@
                                     (match (list-get items val-idx)
                                       ((some val-expr)
                                         (let ((c-type (to-c-type-prefixed ctx type-expr))
-                                              (val-c (transpile-expr ctx val-expr))
                                               (is-ptr (ends-with c-type "*")))
-                                          (ctx-emit ctx (ctx-str5 ctx c-type " " c-name " = " (ctx-str ctx val-c ";")))
-                                          (ctx-bind-var ctx (VarEntry raw-name c-name c-type is-ptr has-mut))))
+                                          ;; Special case: handle Option type initialization
+                                          (let ((final-init
+                                                  (if (starts-with c-type "slop_option_")
+                                                    ;; Option type - check for special constructors
+                                                    (let ((some-val (get-some-value-inline val-expr)))
+                                                      (match some-val
+                                                        ((some inner-expr)
+                                                          ;; (some value) - generate typed Option literal
+                                                          (let ((inner-c (transpile-expr ctx inner-expr)))
+                                                            (ctx-str5 ctx "(" c-type "){.has_value = 1, .value = " inner-c "}")))
+                                                        ((none)
+                                                          ;; Not a some expression - check for none BEFORE transpiling
+                                                          (if (is-none-form-inline val-expr)
+                                                            (ctx-str3 ctx "(" c-type "){.has_value = false}")
+                                                            (transpile-expr ctx val-expr)))))
+                                                    ;; Not an Option type - regular transpilation
+                                                    (transpile-expr ctx val-expr))))
+                                            (ctx-emit ctx (ctx-str5 ctx c-type " " c-name " = " (ctx-str ctx final-init ";")))
+                                            (ctx-bind-var ctx (VarEntry raw-name c-name c-type is-ptr has-mut)))))
                                       ((none) (ctx-emit ctx "/* missing value */")))
                                     ;; Not typed - middle is actually value - infer type
                                     (match (list-get items type-idx)
@@ -854,6 +870,28 @@
               ;; A-Z is 65-90
               (and (>= first-char 65) (<= first-char 90))))))
       ((list _) true)  ;; Complex types like (Ptr X), (List X), (Option X)
+      (else false)))
+
+  ;; ============================================================
+  ;; Option Type Helpers for Inline Let
+  ;; ============================================================
+
+  (fn is-none-form-inline ((expr (Ptr SExpr)))
+    (@intent "Check if expression is none symbol or (none) list")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((symbol sym) (string-eq (. sym name) "none"))
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 1)
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((symbol sym) (string-eq (. sym name) "none"))
+                  (else false)))
+              ((none) false))
+            false)))
       (else false)))
 
   (fn to-c-type-simple ((arena Arena) (type-expr (Ptr SExpr)))

@@ -181,6 +181,33 @@ def parse_native_json(input_file: str):
         return str(e), False
 
 
+def parse_native_json_string(source: str):
+    """Parse SLOP source string using native parser.
+
+    Args:
+        source: SLOP source code string
+
+    Returns:
+        Tuple of (result, success). On success, result is list of AST nodes.
+        On failure, result is error message string.
+    """
+    import tempfile
+
+    parser_bin = find_native_component('parser')
+    if not parser_bin:
+        return "Native parser not available", False
+
+    # Write source to temp file for native parser
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.slop', delete=False) as f:
+        f.write(source)
+        temp_path = f.name
+
+    try:
+        return parse_native_json(temp_path)
+    finally:
+        os.unlink(temp_path)
+
+
 def transpile_native(input_file: str):
     """Transpile using native transpiler, returns (c_code, success).
 
@@ -259,6 +286,48 @@ def transpile_native_split(input_file: str):
         return {}, False
     except Exception:
         return {}, False
+
+
+def test_native(input_file: str):
+    """Generate test harness using native tester.
+
+    Returns tuple of (test_harness, test_count, module_name, success).
+    test_harness is the C code string for the test harness.
+    If native tester isn't available, returns (None, 0, '', False).
+    """
+    import subprocess
+    import json
+
+    tester_bin = find_native_component('tester')
+    if not tester_bin:
+        return None, 0, '', False
+
+    try:
+        result = subprocess.run(
+            [str(tester_bin), input_file],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if 'error' in data:
+                return data['error'], 0, '', False
+            test_harness = data.get('test_harness', '')
+            test_count = data.get('test_count', 0)
+            module_name = data.get('module_name', '')
+            return test_harness, test_count, module_name, True
+        # Non-zero return code - try to parse error from output
+        try:
+            data = json.loads(result.stdout)
+            if 'error' in data:
+                return data['error'], 0, '', False
+        except json.JSONDecodeError:
+            pass
+        return result.stderr or "Unknown error", 0, '', False
+    except json.JSONDecodeError as e:
+        return f"Failed to parse tester output: {e}", 0, '', False
+    except Exception as e:
+        return str(e), 0, '', False
 
 
 def parse_with_fallback(input_file: str, prefer_native: bool = False, verbose: bool = False):
@@ -1239,7 +1308,12 @@ def cmd_fill(args):
         if not quiet:
             print("  Pre-checking scaffold...")
 
-        diagnostics = check_file(input_file)
+        # Try native checker first
+        from slop.verifier import run_native_checker_diagnostics
+        diagnostics, native_available = run_native_checker_diagnostics(input_file)
+        if not native_available:
+            # Fall back to Python checker
+            diagnostics = check_file(input_file)
         type_errors = [d for d in diagnostics if d.severity == 'error']
         type_warnings = [d for d in diagnostics if d.severity == 'warning']
 
@@ -2463,6 +2537,72 @@ def cmd_test(args):
                 if inc_path.exists() and str(inc_path) not in [str(Path(x).resolve()) for x in args.include]:
                     args.include.append(str(inc_path))
 
+        # Try native tester first (if not --python flag)
+        use_native = not getattr(args, 'python', False)
+        if use_native:
+            native_tester_bin = find_native_component('tester')
+            if native_tester_bin:
+                print(f"  Using native tester: {native_tester_bin}")
+                test_harness, test_count, module_name, tester_success = test_native(str(input_path))
+                if tester_success and test_count > 0:
+                    # Native tester succeeded - now get transpiled code
+                    print(f"Found {test_count} test case(s)")
+                    print("  Transpiling...")
+                    c_code, transpiler_success = transpile_native(str(input_path))
+                    if transpiler_success:
+                        # Combine transpiled code (without main) with test harness
+                        c_code_stripped = _strip_main_function(c_code)
+                        test_code = c_code_stripped + "\n\n" + test_harness
+
+                        # Write to temp file and compile
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            test_c_path = os.path.join(tmpdir, "test.c")
+                            test_bin_path = os.path.join(tmpdir, "test_runner")
+
+                            with open(test_c_path, 'w') as f:
+                                f.write(test_code)
+
+                            # Compile
+                            print("  Compiling...")
+                            runtime_path = _get_runtime_path()
+                            compile_cmd = [
+                                "cc", "-O0", "-g",
+                                "-I", str(runtime_path),
+                                "-o", test_bin_path,
+                                test_c_path,
+                                "-lm"
+                            ]
+
+                            result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                            if result.returncode != 0:
+                                print(f"Compilation failed:\n{result.stderr}")
+                                if args.verbose:
+                                    print("\n--- Generated test code ---")
+                                    print(test_code)
+                                return 1
+
+                            # Run tests
+                            print("  Running tests...")
+                            result = subprocess.run([test_bin_path], capture_output=True)
+                            stdout = result.stdout.decode('utf-8', errors='replace')
+                            stderr = result.stderr.decode('utf-8', errors='replace')
+                            print(stdout, end='')
+                            if stderr:
+                                print(stderr, end='', file=sys.stderr)
+                            return result.returncode
+                    else:
+                        print("  Native transpiler failed, falling back to Python")
+                        if c_code:
+                            print(f"    Error: {c_code}")
+                elif tester_success and test_count == 0:
+                    print("No @example annotations found")
+                    return 0
+                else:
+                    # Native tester failed
+                    if test_harness:  # Contains error message
+                        print(f"  Native tester failed: {test_harness}")
+                    print("  Falling back to Python test extraction")
+
         ast = parse_file(str(input_path))
 
         # Extract functions with @example annotations
@@ -3145,6 +3285,7 @@ def cmd_verify(args):
             # ast contains error message on failure
             if ast:
                 print(f"Native parser failed: {ast}", file=sys.stderr)
+                return 1
             else:
                 print("Native parser not available, falling back to Python", file=sys.stderr)
                 # Fall back to Python parser
@@ -3153,7 +3294,19 @@ def cmd_verify(args):
         if use_native and success:
             if args.verbose:
                 print("Using native parser", file=sys.stderr)
-            results = verify_ast(ast, filename=args.input, mode=mode, timeout_ms=args.timeout)
+            # Run native type checker first
+            from slop.verifier import _run_native_checker, VerificationResult
+            check_success, diagnostics = _run_native_checker(args.input)
+            if not check_success:
+                error_msgs = [d.get('message', 'Unknown error') for d in diagnostics if d.get('level') == 'error']
+                results = [VerificationResult(
+                    name="typecheck",
+                    verified=False,
+                    status="error",
+                    message=f"Type errors found: {'; '.join(error_msgs) if error_msgs else 'check failed'}"
+                )]
+            else:
+                results = verify_ast(ast, filename=args.input, mode=mode, timeout_ms=args.timeout)
     else:
         # Run verification with Python parser
         results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)

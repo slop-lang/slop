@@ -224,11 +224,10 @@
                                                       (let ((val-c (transpile-expr ctx val-expr)))
                                                         (ctx-str5 ctx "(" c-type "){.has_value = 1, .value = " val-c "}")))
                                                     ((none)
-                                                      ;; Not a some expression - check for none
-                                                      (let ((init-c (transpile-expr ctx init-expr)))
-                                                        (if (string-eq init-c "none")
-                                                          (ctx-str3 ctx "(" c-type "){.has_value = false}")
-                                                          init-c)))))
+                                                      ;; Not a some expression - check for none BEFORE transpiling
+                                                      (if (is-none-form init-expr)
+                                                        (ctx-str3 ctx "(" c-type "){.has_value = false}")
+                                                        (transpile-expr ctx init-expr)))))
                                                 ;; Not an Option type - regular transpilation
                                                 (transpile-expr ctx init-expr))))
                                         ;; Emit declaration with type
@@ -292,6 +291,24 @@
                 ((none) (do))))))
         (else (do)))
       result))
+
+  (fn is-none-form ((expr (Ptr SExpr)))
+    (@intent "Check if expression is none symbol or (none) list")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((symbol sym) (string-eq (. sym name) "none"))
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 1)
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((symbol sym) (string-eq (. sym name) "none"))
+                  (else false)))
+              ((none) false))
+            false)))
+      (else false)))
 
   ;; ============================================================
   ;; If Statement
@@ -441,10 +458,10 @@
                                       (let ((val-c (transpile-expr ctx val-expr)))
                                         (ctx-emit ctx (ctx-str ctx target-c (ctx-str5 ctx " = (" target-type "){.has_value = 1, .value = " val-c "};")))))
                                     ((none)
-                                      ;; Check for none
-                                      (let ((value-c (transpile-expr ctx value-expr)))
-                                        (if (string-eq value-c "none")
-                                          (ctx-emit ctx (ctx-str ctx target-c (ctx-str3 ctx " = (" target-type "){.has_value = false};")))
+                                      ;; Check for none BEFORE transpiling
+                                      (if (is-none-form value-expr)
+                                        (ctx-emit ctx (ctx-str ctx target-c (ctx-str3 ctx " = (" target-type "){.has_value = false};")))
+                                        (let ((value-c (transpile-expr ctx value-expr)))
                                           (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))))
                                 ;; Not Option type - regular assignment
                                 (let ((value-c (transpile-expr ctx value-expr)))

@@ -1,0 +1,225 @@
+;; ============================================================
+;; SLOP Native Tester - CLI Entry Point
+;;
+;; Command-line interface for the native test harness generator.
+;; Reads SLOP source, extracts @example annotations, and outputs
+;; C test harness code as JSON.
+;;
+;; Usage: slop-tester <input.slop>
+;;
+;; Output JSON:
+;; {
+;;   "test_harness": "// Test harness C code...",
+;;   "test_count": 16,
+;;   "module_name": "module-name"
+;; }
+;; ============================================================
+
+(module tester-main
+  (import types (SExpr SExprList SExprSymbol))
+  (import tester (generate-tests TestResult))
+
+  ;; FFI for file I/O and command-line arguments
+  (ffi "stdio.h"
+    (fopen ((filename (Ptr Char)) (mode (Ptr Char))) (Ptr Void))
+    (fclose ((file (Ptr Void))) Int)
+    (fread ((ptr (Ptr Void)) (size Int) (count Int) (stream (Ptr Void))) Int)
+    (fseek ((stream (Ptr Void)) (offset Int) (whence Int)) Int)
+    (ftell ((stream (Ptr Void))) Int)
+    (putchar ((c Int)) Int)
+    (puts ((s (Ptr Char))) Int)
+    (fprintf ((stream (Ptr Void)) (format (Ptr Char))) Int))
+
+  (ffi "stdlib.h"
+    (exit ((code Int)) Unit))
+
+  ;; Seek constants
+  (const SEEK_SET Int 0)
+  (const SEEK_END Int 2)
+
+  ;; Stderr handle (we'll use fd 2)
+  (ffi "stdio.h"
+    (fdopen ((fd Int) (mode (Ptr Char))) (Ptr Void)))
+
+  ;; ============================================================
+  ;; File Reading
+  ;; ============================================================
+
+  (fn read-file ((arena Arena) (filename (Ptr Char)))
+    (@intent "Read entire file contents into arena-allocated string")
+    (@spec ((Arena (Ptr Char)) -> (Option String)))
+    (@alloc arena)
+    (let ((file (fopen filename (cast (Ptr Char) "rb"))))
+      (if (== file nil)
+        none
+        (do
+          ;; Get file size
+          (fseek file 0 SEEK_END)
+          (let ((size (ftell file)))
+            (fseek file 0 SEEK_SET)
+            ;; Allocate buffer
+            (let ((buf (cast (Ptr U8) (arena-alloc arena (+ size 1)))))
+              ;; Read file
+              (fread (cast (Ptr Void) buf) 1 size file)
+              (set! (@ buf size) 0)  ;; null terminate
+              (fclose file)
+              (some (String buf (cast U64 size)))))))))
+
+  ;; ============================================================
+  ;; Output Helpers
+  ;; ============================================================
+
+  (fn print-str ((s (Ptr Char)))
+    (@intent "Print string to stdout")
+    (@spec (((Ptr Char)) -> Unit))
+    (let ((mut i 0))
+      (while (!= (@ s i) 0)
+        (putchar (cast Int (@ s i)))
+        (set! i (+ i 1))))
+    (do))
+
+  (fn print-string ((s String))
+    (@intent "Print String to stdout")
+    (@spec ((String) -> Unit))
+    (let ((len (cast Int (. s len)))
+          (data (. s data))
+          (mut i 0))
+      (while (< i len)
+        (putchar (cast Int (@ data i)))
+        (set! i (+ i 1))))
+    (do))
+
+  (fn print-json-string ((s String))
+    (@intent "Print JSON-escaped string with quotes")
+    (@spec ((String) -> Unit))
+    ;; Print opening quote
+    (putchar 34)  ;; "
+    ;; Escape and print content
+    (let ((len (cast Int (. s len)))
+          (data (. s data))
+          (mut i 0))
+      (while (< i len)
+        (let ((c (cast Int (@ data i))))
+          (cond
+            ((== c 34)   ;; " -> \"
+              (putchar 92)
+              (putchar 34))
+            ((== c 92)   ;; \ -> \\
+              (putchar 92)
+              (putchar 92))
+            ((== c 10)   ;; \n -> \n
+              (putchar 92)
+              (putchar 110))
+            ((== c 13)   ;; \r -> \r
+              (putchar 92)
+              (putchar 114))
+            ((== c 9)    ;; \t -> \t
+              (putchar 92)
+              (putchar 116))
+            (else
+              (putchar c))))
+        (set! i (+ i 1))))
+    ;; Print closing quote
+    (putchar 34)
+    (do))
+
+  (fn lines-to-string ((arena Arena) (lines (List String)))
+    (@intent "Concatenate list of lines into single string with newlines")
+    (@spec ((Arena (List String)) -> String))
+    (let ((len (list-len lines)))
+      (if (== len 0)
+        ""
+        ;; Calculate total size
+        (let ((mut total 0)
+              (mut i 0))
+          (while (< i len)
+            (match (list-get lines i)
+              ((some line)
+                (set! total (+ total (+ (cast Int (. line len)) 1))))  ;; +1 for newline
+              ((none) (do)))
+            (set! i (+ i 1)))
+          ;; Allocate buffer
+          (let ((buf (arena-alloc arena (+ total 1)))
+                (mut pos 0)
+                (mut j 0))
+            (while (< j len)
+              (match (list-get lines j)
+                ((some line)
+                  (let ((line-len (cast Int (. line len)))
+                        (line-data (. line data))
+                        (mut k 0))
+                    (while (< k line-len)
+                      (set! (@ buf pos) (@ line-data k))
+                      (set! pos (+ pos 1))
+                      (set! k (+ k 1)))
+                    ;; Add newline
+                    (set! (@ buf pos) 10)
+                    (set! pos (+ pos 1))))
+                ((none) (do)))
+              (set! j (+ j 1)))
+            (set! (@ buf pos) 0)  ;; null terminate
+            (String buf (cast U64 pos)))))))
+
+  (fn print-int ((n Int))
+    (@intent "Print integer to stdout")
+    (@spec ((Int) -> Unit))
+    (if (< n 0)
+      (do
+        (putchar 45)  ;; '-'
+        (print-int (- 0 n)))
+      (if (< n 10)
+        (putchar (+ 48 n))  ;; '0' + n
+        (do
+          (print-int (/ n 10))
+          (putchar (+ 48 (% n 10))))))
+    (do))
+
+  ;; ============================================================
+  ;; Main Entry Point
+  ;; ============================================================
+
+  (fn main ((argc Int) (argv (Ptr (Ptr Char))))
+    (@intent "Main entry point - generate test harness JSON")
+    (@spec ((Int (Ptr (Ptr Char))) -> Int))
+    ;; Check arguments
+    (if (< argc 2)
+      (do
+        (print-str (cast (Ptr Char) "Usage: slop-tester <input.slop>\n"))
+        1)
+      (with-arena 16777216  ;; 16MB arena
+        (let ((filename (@ argv 1)))
+          (match (read-file arena filename)
+            ((some source)
+              (let ((result (generate-tests arena source)))
+                (if (. result success)
+                  (do
+                    ;; Output JSON: {"test_harness": "...", "test_count": N, "module_name": "..."}
+                    (putchar 123)  ;; {
+                    ;; test_harness field
+                    (print-str (cast (Ptr Char) "\"test_harness\":"))
+                    (let ((harness-str (lines-to-string arena (. result test-harness))))
+                      (print-json-string harness-str))
+                    (putchar 44)  ;; ,
+                    ;; test_count field
+                    (print-str (cast (Ptr Char) "\"test_count\":"))
+                    (print-int (. result test-count))
+                    (putchar 44)  ;; ,
+                    ;; module_name field
+                    (print-str (cast (Ptr Char) "\"module_name\":"))
+                    (print-json-string (. result module-name))
+                    ;; Close object
+                    (putchar 125)  ;; }
+                    (putchar 10)   ;; newline
+                    0)
+                  (do
+                    ;; Output error JSON
+                    (print-str (cast (Ptr Char) "{\"error\":"))
+                    (print-json-string (. result error-message))
+                    (print-str (cast (Ptr Char) "}\n"))
+                    1))))
+            ((none)
+              (do
+                (print-str (cast (Ptr Char) "{\"error\":\"Could not read file\"}\n"))
+                1)))))))
+
+) ;; end module

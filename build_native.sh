@@ -16,3 +16,8 @@ mv ./slop-checker ../../../bin
 cd ../transpiler
 slop build
 mv ./slop-transpiler ../../../bin
+
+## Build the tester
+cd ../tester
+slop build
+mv ./slop-tester ../../../bin

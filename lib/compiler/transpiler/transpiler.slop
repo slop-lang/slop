@@ -1159,11 +1159,16 @@
                 ;; These depend on types from other modules (available via includes)
                 (emit-imported-list-types-header ctx)
                 (emit-imported-option-types-header ctx)
+                ;; Emit value-element List types for type aliases (range types, etc.)
+                ;; These depend on type aliases being defined first
+                (emit-value-list-types-header ctx)
                 ;; Emit all struct/union types in dependency order (topological sort)
                 ;; This handles the ordering automatically: types are emitted only when
                 ;; all their non-pointer field types are already emitted.
                 ;; Option/List types for each struct/union are emitted immediately after.
                 (emit-struct-union-types-sorted ctx items body-start)
+                ;; Emit any remaining value-element List types (for complex struct elements)
+                (emit-complex-value-list-types-header ctx)
                 ;; Emit generated Result types
                 (emit-result-types-header ctx)
                 ;; Emit Result type aliases (after Result types so they can reference slop_result_*)
@@ -1181,6 +1186,9 @@
                 ;; (The CLI adds #include of the module's own header)
                 ;; Emit constants first (before functions that use them)
                 (emit-module-consts ctx items body-start)
+                ;; Emit forward declarations for internal (non-exported) functions
+                ;; This ensures functions can call each other regardless of definition order
+                (emit-fn-forward-decls ctx items body-start)
                 ;; Emit functions
                 (emit-module-functions ctx items body-start)))))
         (else (ctx-emit ctx "/* invalid module */")))))
@@ -2314,8 +2322,9 @@
           ((some lt)
             ;; Emit value-element lists that weren't emitted before (complex struct elem types)
             ;; At this point, complex structs are emitted
-            (when (not (is-pointer-elem-type (. lt elem-type)))
-              ;; emit-single will skip if already emitted due to #ifndef guard
+            ;; Skip if already emitted by emit-value-list-types-header
+            (when (and (not (is-pointer-elem-type (. lt elem-type)))
+                       (not (ctx-is-type-emitted ctx (. lt c-name))))
               (emit-single-list-type-header ctx lt)))
           ((none) (do)))
         (set! i (+ i 1)))))
@@ -3087,7 +3096,11 @@
       false  ;; Generated types are never "imported"
       (match (ctx-get-module ctx)
         ((some current-mod)
-          (let ((current-prefix (ctx-str ctx current-mod "_")))
+          ;; Convert module name to C-style (replace - with _) before comparing
+          ;; Module names use hyphens (type-extract) but C types use underscores (type_extract_)
+          (let ((arena (. (deref ctx) arena))
+                (c-mod (to-c-name arena current-mod))
+                (current-prefix (ctx-str ctx c-mod "_")))
             ;; If type has an underscore but doesn't start with current module prefix,
             ;; it's an imported type (from a different module's header)
             (let ((underscore-pos (find-char type-name (cast U8 95))))  ;; 95 is ASCII for '_'

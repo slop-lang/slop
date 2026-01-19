@@ -8,6 +8,7 @@ include = [
     "parser",
     "transpiler",
     "checker",
+    "tester",
     "../../lib/std/strlib",
     "../../lib/std/io"
 ]
