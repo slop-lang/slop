@@ -20,12 +20,11 @@ class TestZ3Translation:
 
     def test_arithmetic_translation(self):
         """Test +, -, *, / translate correctly"""
-        from slop.verifier import Z3Translator
-        from slop.type_checker import TypeEnv
+        from slop.verifier import Z3Translator, MinimalTypeEnv
         from slop.parser import parse
         from slop.types import PrimitiveType
 
-        env = TypeEnv()
+        env = MinimalTypeEnv()
         translator = Z3Translator(env)
 
         # Declare variables
@@ -52,12 +51,11 @@ class TestZ3Translation:
 
     def test_comparison_translation(self):
         """Test >, <, >=, <=, ==, != translate correctly"""
-        from slop.verifier import Z3Translator
-        from slop.type_checker import TypeEnv
+        from slop.verifier import Z3Translator, MinimalTypeEnv
         from slop.parser import parse
         from slop.types import PrimitiveType
 
-        env = TypeEnv()
+        env = MinimalTypeEnv()
         translator = Z3Translator(env)
 
         translator.declare_variable('x', PrimitiveType('Int'))
@@ -84,12 +82,11 @@ class TestZ3Translation:
 
     def test_boolean_translation(self):
         """Test and, or, not translate correctly"""
-        from slop.verifier import Z3Translator
-        from slop.type_checker import TypeEnv
+        from slop.verifier import Z3Translator, MinimalTypeEnv
         from slop.parser import parse
         from slop.types import PrimitiveType
 
-        env = TypeEnv()
+        env = MinimalTypeEnv()
         translator = Z3Translator(env)
 
         translator.declare_variable('a', PrimitiveType('Bool'))
@@ -115,11 +112,10 @@ class TestZ3Translation:
 
     def test_range_type_constraints(self):
         """Test RangeType adds correct Z3 constraints"""
-        from slop.verifier import Z3Translator
-        from slop.type_checker import TypeEnv
+        from slop.verifier import Z3Translator, MinimalTypeEnv
         from slop.types import RangeType, RangeBounds
 
-        env = TypeEnv()
+        env = MinimalTypeEnv()
         translator = Z3Translator(env)
 
         # Declare a range-typed variable

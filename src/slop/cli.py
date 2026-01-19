@@ -3253,6 +3253,7 @@ def cmd_verify(args):
             # ast contains error message on failure
             if ast:
                 print(f"Native parser failed: {ast}", file=sys.stderr)
+                return 1
             else:
                 print("Native parser not available, falling back to Python", file=sys.stderr)
                 # Fall back to Python parser
@@ -3261,7 +3262,19 @@ def cmd_verify(args):
         if use_native and success:
             if args.verbose:
                 print("Using native parser", file=sys.stderr)
-            results = verify_ast(ast, filename=args.input, mode=mode, timeout_ms=args.timeout)
+            # Run native type checker first
+            from slop.verifier import _run_native_checker, VerificationResult
+            check_success, diagnostics = _run_native_checker(args.input)
+            if not check_success:
+                error_msgs = [d.get('message', 'Unknown error') for d in diagnostics if d.get('level') == 'error']
+                results = [VerificationResult(
+                    name="typecheck",
+                    verified=False,
+                    status="error",
+                    message=f"Type errors found: {'; '.join(error_msgs) if error_msgs else 'check failed'}"
+                )]
+            else:
+                results = verify_ast(ast, filename=args.input, mode=mode, timeout_ms=args.timeout)
     else:
         # Run verification with Python parser
         results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)

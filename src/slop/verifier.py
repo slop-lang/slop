@@ -12,12 +12,13 @@ from typing import Dict, List, Optional, Any, Tuple, Union
 from slop.parser import SExpr, SList, Symbol, String, Number, is_form, parse, parse_file
 from slop.types import (
     Type, PrimitiveType, RangeType, RangeBounds, RecordType, EnumType,
-    OptionType, ResultType, PtrType, FnType, UNKNOWN,
+    OptionType, ResultType, PtrType, FnType, UNKNOWN, ListType, ArrayType,
+    UnionType,
 )
-from slop.type_checker import TypeChecker, TypeEnv, check_file, SourceLocation
 import subprocess
 import sys
 import os
+import json
 from pathlib import Path
 
 
@@ -73,6 +74,272 @@ except ImportError:
 
 
 # ============================================================================
+# Source Location
+# ============================================================================
+
+@dataclass
+class SourceLocation:
+    """Source location for error messages"""
+    file: str = "<unknown>"
+    line: int = 0
+    column: int = 0
+
+
+# ============================================================================
+# Minimal Type Environment (for Z3 verification without full type checker)
+# ============================================================================
+
+@dataclass
+class MinimalTypeEnv:
+    """Minimal type environment for Z3 verification.
+
+    Provides the subset of TypeEnv functionality needed by Z3Translator:
+    - type_registry: Dict mapping type names to Type objects
+    - lookup_var: Method to get type for a variable name
+    """
+    type_registry: Dict[str, Type] = field(default_factory=dict)
+    _var_types: Dict[str, Type] = field(default_factory=dict)
+
+    def lookup_var(self, name: str) -> Optional[Type]:
+        """Look up the type of a variable"""
+        return self._var_types.get(name)
+
+    def bind_var(self, name: str, typ: Type):
+        """Bind a variable to a type"""
+        self._var_types[name] = typ
+
+
+# ============================================================================
+# Type Registry Builder (extract types from AST without full type checking)
+# ============================================================================
+
+def build_type_registry_from_ast(ast: List[SExpr]) -> Dict[str, Type]:
+    """Extract type definitions from AST without full type checking.
+
+    Mirrors the native type-extract.slop approach for extracting types.
+    """
+    registry: Dict[str, Type] = {}
+
+    for form in ast:
+        if is_form(form, 'module'):
+            # Process forms inside module
+            for item in form.items[1:]:
+                if is_form(item, 'type'):
+                    _register_type(item, registry)
+        elif is_form(form, 'type'):
+            _register_type(form, registry)
+
+    return registry
+
+
+def _register_type(type_form: SList, registry: Dict[str, Type]):
+    """Parse (type Name ...) into registry."""
+    if len(type_form) < 3:
+        return
+
+    name = type_form[1].name if isinstance(type_form[1], Symbol) else None
+    if not name:
+        return
+
+    body = type_form[2]
+
+    if is_form(body, 'record'):
+        # (type Name (record (field1 T1) (field2 T2) ...))
+        fields: Dict[str, Type] = {}
+        for field_item in body.items[1:]:
+            if isinstance(field_item, SList) and len(field_item) >= 2:
+                fname = field_item[0].name if isinstance(field_item[0], Symbol) else None
+                if fname:
+                    ftype = _parse_type_expr_simple(field_item[1], registry)
+                    fields[fname] = ftype
+        registry[name] = RecordType(name, fields)
+
+    elif is_form(body, 'enum'):
+        # (type Name (enum val1 val2 ...))
+        variants = [v.name for v in body.items[1:] if isinstance(v, Symbol)]
+        registry[name] = EnumType(name, variants)
+
+    elif is_form(body, 'union'):
+        # (type Name (union (tag1 T1) (tag2) ...))
+        variants: Dict[str, Optional[Type]] = {}
+        for variant in body.items[1:]:
+            if isinstance(variant, SList) and len(variant) >= 1:
+                tag = variant[0].name if isinstance(variant[0], Symbol) else None
+                if tag:
+                    payload = _parse_type_expr_simple(variant[1], registry) if len(variant) > 1 else None
+                    variants[tag] = payload
+            elif isinstance(variant, Symbol):
+                # Tag without payload
+                variants[variant.name] = None
+        registry[name] = UnionType(name, variants)
+
+    elif is_form(body, 'Int') or (isinstance(body, SList) and len(body) >= 4):
+        # Range type: (type Name (Int min .. max))
+        bounds = _parse_range_bounds(body)
+        if bounds:
+            registry[name] = RangeType('Int', bounds)
+
+    elif isinstance(body, Symbol):
+        # Type alias: (type Name ExistingType)
+        aliased = _parse_type_expr_simple(body, registry)
+        registry[name] = aliased
+
+
+def _parse_type_expr_simple(expr: SExpr, registry: Dict[str, Type]) -> Type:
+    """Parse type expression with minimal context."""
+    if isinstance(expr, Symbol):
+        name = expr.name
+        if name in registry:
+            return registry[name]
+        # Standard primitive types
+        if name in ('Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64',
+                    'Float', 'F32', 'F64', 'Bool', 'String', 'Unit', 'Void', 'Arena'):
+            return PrimitiveType(name)
+        # Unknown type - might be defined later
+        return PrimitiveType(name)
+
+    if isinstance(expr, SList) and len(expr) >= 1:
+        head = expr[0]
+        if isinstance(head, Symbol):
+            head_name = head.name
+
+            if head_name == 'Ptr' and len(expr) >= 2:
+                inner = _parse_type_expr_simple(expr[1], registry)
+                return PtrType(inner)
+
+            if head_name == 'OwnPtr' and len(expr) >= 2:
+                inner = _parse_type_expr_simple(expr[1], registry)
+                return PtrType(inner, owning=True)
+
+            if head_name == 'OptPtr' and len(expr) >= 2:
+                inner = _parse_type_expr_simple(expr[1], registry)
+                return PtrType(inner, nullable=True)
+
+            if head_name == 'Option' and len(expr) >= 2:
+                inner = _parse_type_expr_simple(expr[1], registry)
+                return OptionType(inner)
+
+            if head_name == 'Result' and len(expr) >= 3:
+                ok_type = _parse_type_expr_simple(expr[1], registry)
+                err_type = _parse_type_expr_simple(expr[2], registry)
+                return ResultType(ok_type, err_type)
+
+            if head_name == 'List' and len(expr) >= 2:
+                elem = _parse_type_expr_simple(expr[1], registry)
+                return ListType(elem)
+
+            if head_name == 'Array' and len(expr) >= 3:
+                elem = _parse_type_expr_simple(expr[1], registry)
+                size = expr[2].value if isinstance(expr[2], Number) else 0
+                return ArrayType(elem, int(size))
+
+            if head_name == 'Fn' and len(expr) >= 4:
+                # (Fn (A B) -> R)
+                params = expr[1]
+                ret = expr[3] if len(expr) > 3 else expr[-1]
+                param_types: List[Type] = []
+                if isinstance(params, SList):
+                    for p in params.items:
+                        param_types.append(_parse_type_expr_simple(p, registry))
+                ret_type = _parse_type_expr_simple(ret, registry)
+                return FnType(tuple(param_types), ret_type)
+
+            # Range type: (Int min .. max)
+            if head_name in ('Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64'):
+                bounds = _parse_range_bounds(expr)
+                if bounds:
+                    return RangeType(head_name, bounds)
+                return PrimitiveType(head_name)
+
+            # Check registry for parameterized type
+            if head_name in registry:
+                return registry[head_name]
+
+    return UNKNOWN
+
+
+def _parse_range_bounds(expr: SExpr) -> Optional[RangeBounds]:
+    """Parse range bounds from (Int min .. max) or similar."""
+    if not isinstance(expr, SList) or len(expr) < 4:
+        return None
+
+    # Expected format: (Int min .. max) or (Int min ..max) etc.
+    # Find the '..' separator
+    dot_idx = -1
+    for i, item in enumerate(expr.items):
+        if isinstance(item, Symbol) and item.name == '..':
+            dot_idx = i
+            break
+
+    if dot_idx == -1:
+        return None
+
+    min_val: Optional[int] = None
+    max_val: Optional[int] = None
+
+    # Parse min value (before ..)
+    if dot_idx > 1:
+        min_item = expr[dot_idx - 1]
+        if isinstance(min_item, Number):
+            min_val = int(min_item.value)
+        elif isinstance(min_item, Symbol) and min_item.name.lstrip('-').isdigit():
+            min_val = int(min_item.name)
+
+    # Parse max value (after ..)
+    if dot_idx + 1 < len(expr):
+        max_item = expr[dot_idx + 1]
+        if isinstance(max_item, Number):
+            max_val = int(max_item.value)
+        elif isinstance(max_item, Symbol) and max_item.name.lstrip('-').isdigit():
+            max_val = int(max_item.name)
+
+    return RangeBounds(min_val, max_val)
+
+
+# ============================================================================
+# Native Type Checker Integration
+# ============================================================================
+
+def _run_native_checker(path: str) -> Tuple[bool, List[dict]]:
+    """Run native type checker and return (success, diagnostics).
+
+    Returns (True, []) if checker not available or succeeds.
+    Returns (False, diagnostics) if type errors found.
+    """
+    checker_bin = Path(__file__).parent.parent.parent / 'bin' / 'slop-checker'
+    if not checker_bin.exists():
+        return True, []  # Fall through if native checker not available
+
+    try:
+        result = subprocess.run(
+            [str(checker_bin), '--json', path],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode == 0:
+            return True, []
+
+        # Parse JSON diagnostics
+        try:
+            data = json.loads(result.stdout)
+            diagnostics = []
+            for mod_name, mod_data in data.items():
+                if isinstance(mod_data, dict):
+                    for diag in mod_data.get('diagnostics', []):
+                        diagnostics.append(diag)
+            return False, diagnostics
+        except json.JSONDecodeError:
+            return False, [{'level': 'error', 'message': result.stderr or 'Type check failed'}]
+
+    except subprocess.TimeoutExpired:
+        return False, [{'level': 'error', 'message': 'Type checker timed out'}]
+    except FileNotFoundError:
+        return True, []  # Fall through if checker not found
+
+
+# ============================================================================
 # Verification Results
 # ============================================================================
 
@@ -121,7 +388,7 @@ class VerificationDiagnostic:
 class Z3Translator:
     """Translates SLOP AST expressions to Z3 constraints"""
 
-    def __init__(self, type_env: TypeEnv, filename: str = "<unknown>"):
+    def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>"):
         if not Z3_AVAILABLE:
             raise RuntimeError("Z3 is not available")
         self.type_env = type_env
@@ -492,10 +759,11 @@ class Z3Translator:
 class ContractVerifier:
     """Verifies @pre/@post contracts for functions"""
 
-    def __init__(self, type_checker: TypeChecker, timeout_ms: int = 5000):
+    def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>", timeout_ms: int = 5000):
         if not Z3_AVAILABLE:
             raise RuntimeError("Z3 is not available")
-        self.type_checker = type_checker
+        self.type_env = type_env
+        self.filename = filename
         self.timeout_ms = timeout_ms
 
     def _references_mutable_state(self, expr: SExpr) -> bool:
@@ -525,7 +793,7 @@ class ContractVerifier:
                 verified=False,
                 status="skipped",
                 message="Invalid function form",
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         fn_name = fn_form[1].name if isinstance(fn_form[1], Symbol) else "unknown"
@@ -558,7 +826,7 @@ class ContractVerifier:
                     for i, s in enumerate(spec.items):
                         if isinstance(s, Symbol) and s.name == '->':
                             if i + 1 < len(spec):
-                                spec_return_type = self.type_checker.parse_type_expr(spec[i + 1])
+                                spec_return_type = _parse_type_expr_simple(spec[i + 1], self.type_env.type_registry)
                             break
             elif isinstance(item, SList) and len(item) > 0:
                 # Check if this is an annotation form
@@ -578,7 +846,7 @@ class ContractVerifier:
                 verified=True,
                 status="skipped",
                 message="No contracts to verify",
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         # Check if postconditions reference mutable state
@@ -589,11 +857,11 @@ class ContractVerifier:
                 verified=False,
                 status="warning",
                 message="Postcondition references mutable state; cannot verify without body analysis",
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         # Create translator and declare parameters
-        translator = Z3Translator(self.type_checker.env, self.type_checker.filename)
+        translator = Z3Translator(self.type_env, self.filename)
 
         # Declare parameter variables
         for param in params:
@@ -609,7 +877,7 @@ class ContractVerifier:
                     param_name = first.name if isinstance(first, Symbol) else None
                     param_type_expr = param[1]
                 if param_name and param_type_expr:
-                    param_type = self.type_checker.parse_type_expr(param_type_expr)
+                    param_type = _parse_type_expr_simple(param_type_expr, self.type_env.type_registry)
                     translator.declare_variable(param_name, param_type)
 
         # Declare $result for postconditions and assumptions
@@ -672,7 +940,7 @@ class ContractVerifier:
                 verified=False,
                 status="failed",
                 message=f"Could not translate {len(failed_pres)} precondition(s)",
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         if failed_posts:
@@ -681,7 +949,7 @@ class ContractVerifier:
                 verified=False,
                 status="failed",
                 message=f"Could not translate {len(failed_posts)} postcondition(s)",
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         if failed_assumes:
@@ -690,7 +958,7 @@ class ContractVerifier:
                 verified=False,
                 status="failed",
                 message=f"Could not translate {len(failed_assumes)} assumption(s)",
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         if not post_z3 and not postconditions:
@@ -702,7 +970,7 @@ class ContractVerifier:
                     verified=True,
                     status="verified",
                     message="Verified via @assume (trusted)",
-                    location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                 )
             # No postconditions at all, check if preconditions are satisfiable
             solver = z3.Solver()
@@ -720,14 +988,14 @@ class ContractVerifier:
                     verified=False,
                     status="failed",
                     message="Preconditions are unsatisfiable",
-                    location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                 )
             return VerificationResult(
                 name=fn_name,
                 verified=True,
                 status="verified",
                 message="Preconditions are satisfiable",
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         # Check: can we satisfy preconditions but violate postconditions?
@@ -766,7 +1034,7 @@ class ContractVerifier:
                 verified=True,
                 status="verified",
                 message="Contract verified",
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
         elif result == z3.sat:
             # Found a counterexample
@@ -783,7 +1051,7 @@ class ContractVerifier:
                 status="failed",
                 message="Contract may be violated",
                 counterexample=counterexample,
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
         else:
             # Unknown (timeout or undecidable)
@@ -792,7 +1060,7 @@ class ContractVerifier:
                 verified=False,
                 status="unknown",
                 message="Verification timed out or undecidable",
-                location=SourceLocation(self.type_checker.filename, fn_form.line, fn_form.col)
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
     def verify_all(self, ast: List[SExpr]) -> List[VerificationResult]:
@@ -818,10 +1086,11 @@ class ContractVerifier:
 class RangeVerifier:
     """Verifies range type safety through operations"""
 
-    def __init__(self, type_checker: TypeChecker, timeout_ms: int = 5000):
+    def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>", timeout_ms: int = 5000):
         if not Z3_AVAILABLE:
             raise RuntimeError("Z3 is not available")
-        self.type_checker = type_checker
+        self.type_env = type_env
+        self.filename = filename
         self.timeout_ms = timeout_ms
 
     def verify_range_safety(self, ast: List[SExpr]) -> List[VerificationResult]:
@@ -905,26 +1174,16 @@ def verify_source(source: str, filename: str = "<string>",
             message=f"Parse error: {e}"
         )]
 
-    # Run type checker first using check_module which handles all top-level forms
-    type_checker = TypeChecker(filename)
-    type_checker.check_module(ast)
-
-    # Check for type errors
-    type_errors = [d for d in type_checker.diagnostics if d.severity == 'error']
-    if type_errors:
-        return [VerificationResult(
-            name="typecheck",
-            verified=False,
-            status="error",
-            message=f"Type errors found: {len(type_errors)} error(s)"
-        )]
+    # Build type registry from AST (no full type checking needed for verification)
+    type_registry = build_type_registry_from_ast(ast)
+    type_env = MinimalTypeEnv(type_registry=type_registry)
 
     # Run contract verification
-    contract_verifier = ContractVerifier(type_checker, timeout_ms)
+    contract_verifier = ContractVerifier(type_env, filename, timeout_ms)
     results = contract_verifier.verify_all(ast)
 
     # Run range verification
-    range_verifier = RangeVerifier(type_checker, timeout_ms)
+    range_verifier = RangeVerifier(type_env, filename, timeout_ms)
     results.extend(range_verifier.verify_range_safety(ast))
 
     return results
@@ -951,26 +1210,16 @@ def verify_ast(ast: List[SExpr], filename: str = "<string>",
             message="Z3 solver not available. Install with: pip install z3-solver"
         )]
 
-    # Run type checker first
-    type_checker = TypeChecker(filename)
-    type_checker.check_module(ast)
-
-    # Check for type errors
-    type_errors = [d for d in type_checker.diagnostics if d.severity == 'error']
-    if type_errors:
-        return [VerificationResult(
-            name="typecheck",
-            verified=False,
-            status="error",
-            message=f"Type errors found: {len(type_errors)} error(s)"
-        )]
+    # Build type registry from AST (no full type checking needed for verification)
+    type_registry = build_type_registry_from_ast(ast)
+    type_env = MinimalTypeEnv(type_registry=type_registry)
 
     # Run contract verification
-    contract_verifier = ContractVerifier(type_checker, timeout_ms)
+    contract_verifier = ContractVerifier(type_env, filename, timeout_ms)
     results = contract_verifier.verify_all(ast)
 
     # Run range verification
-    range_verifier = RangeVerifier(type_checker, timeout_ms)
+    range_verifier = RangeVerifier(type_env, filename, timeout_ms)
     results.extend(range_verifier.verify_range_safety(ast))
 
     return results
@@ -999,29 +1248,29 @@ def verify_file(path: str, mode: str = "error",
             message=f"Could not read file: {e}"
         )]
 
-    # Use check_file which handles import resolution from slop.toml
-    diagnostics = check_file(path)
+    # Run native type checker first
+    success, diagnostics = _run_native_checker(path)
 
     # Check for type errors
-    type_errors = [d for d in diagnostics if d.severity == 'error']
-    if type_errors:
+    if not success:
+        error_msgs = [d.get('message', 'Unknown error') for d in diagnostics if d.get('level') == 'error']
         return [VerificationResult(
             name="typecheck",
             verified=False,
             status="error",
-            message=f"Type errors found: {len(type_errors)} error(s)"
+            message=f"Type errors found: {'; '.join(error_msgs) if error_msgs else 'check failed'}"
         )]
 
-    # Create type checker for contract verification (already type-checked via check_file)
-    type_checker = TypeChecker(path)
-    type_checker.check_module(ast)
+    # Build type registry from AST for contract verification
+    type_registry = build_type_registry_from_ast(ast)
+    type_env = MinimalTypeEnv(type_registry=type_registry)
 
     # Run contract verification
-    contract_verifier = ContractVerifier(type_checker, timeout_ms)
+    contract_verifier = ContractVerifier(type_env, path, timeout_ms)
     results = contract_verifier.verify_all(ast)
 
     # Run range verification
-    range_verifier = RangeVerifier(type_checker, timeout_ms)
+    range_verifier = RangeVerifier(type_env, path, timeout_ms)
     results.extend(range_verifier.verify_range_safety(ast))
 
     return results
