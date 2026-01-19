@@ -181,6 +181,33 @@ def parse_native_json(input_file: str):
         return str(e), False
 
 
+def parse_native_json_string(source: str):
+    """Parse SLOP source string using native parser.
+
+    Args:
+        source: SLOP source code string
+
+    Returns:
+        Tuple of (result, success). On success, result is list of AST nodes.
+        On failure, result is error message string.
+    """
+    import tempfile
+
+    parser_bin = find_native_component('parser')
+    if not parser_bin:
+        return "Native parser not available", False
+
+    # Write source to temp file for native parser
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.slop', delete=False) as f:
+        f.write(source)
+        temp_path = f.name
+
+    try:
+        return parse_native_json(temp_path)
+    finally:
+        os.unlink(temp_path)
+
+
 def transpile_native(input_file: str):
     """Transpile using native transpiler, returns (c_code, success).
 
@@ -1281,7 +1308,12 @@ def cmd_fill(args):
         if not quiet:
             print("  Pre-checking scaffold...")
 
-        diagnostics = check_file(input_file)
+        # Try native checker first
+        from slop.verifier import run_native_checker_diagnostics
+        diagnostics, native_available = run_native_checker_diagnostics(input_file)
+        if not native_available:
+            # Fall back to Python checker
+            diagnostics = check_file(input_file)
         type_errors = [d for d in diagnostics if d.severity == 'error']
         type_warnings = [d for d in diagnostics if d.severity == 'warning']
 

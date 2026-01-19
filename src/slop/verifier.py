@@ -339,6 +339,54 @@ def _run_native_checker(path: str) -> Tuple[bool, List[dict]]:
         return True, []  # Fall through if checker not found
 
 
+@dataclass
+class NativeDiagnostic:
+    """Diagnostic from native checker, compatible with TypeDiagnostic interface."""
+    severity: str
+    message: str
+    location: Optional[SourceLocation] = None
+
+    def __str__(self) -> str:
+        loc = ""
+        if self.location and self.location.line > 0:
+            loc = f"{self.location.file}:{self.location.line}: "
+        return f"{loc}{self.severity}: {self.message}"
+
+
+def run_native_checker_diagnostics(path: str) -> Tuple[List[NativeDiagnostic], bool]:
+    """Run native checker and return diagnostics in compatible format.
+
+    Returns (diagnostics, native_available).
+    If native not available, returns ([], False) so caller can fall back.
+    """
+    checker_bin = Path(__file__).parent.parent.parent / 'bin' / 'slop-checker'
+    if not checker_bin.exists():
+        return [], False  # Native checker not available
+
+    success, raw_diagnostics = _run_native_checker(path)
+
+    if success:
+        return [], True  # No errors
+
+    if not raw_diagnostics:
+        return [], False  # Native checker not available or no output
+
+    # Convert JSON dicts to NativeDiagnostic
+    result = []
+    for diag in raw_diagnostics:
+        nd = NativeDiagnostic(
+            severity=diag.get('level', 'error'),
+            message=diag.get('message', ''),
+            location=SourceLocation(
+                file=path,
+                line=diag.get('line', 0),
+                column=diag.get('col', 0)
+            )
+        )
+        result.append(nd)
+    return result, True
+
+
 # ============================================================================
 # Verification Results
 # ============================================================================
@@ -1164,7 +1212,15 @@ def verify_source(source: str, filename: str = "<string>",
             message="Z3 solver not available. Install with: pip install z3-solver"
         )]
 
+    # Try native parser first
     try:
+        from slop.cli import parse_native_json_string
+        ast, success = parse_native_json_string(source)
+        if not success:
+            # Fall back to Python parser
+            ast = parse(source)
+    except ImportError:
+        # Fall back to Python parser if cli import fails
         ast = parse(source)
     except Exception as e:
         return [VerificationResult(
@@ -1236,7 +1292,17 @@ def verify_file(path: str, mode: str = "error",
             message="Z3 solver not available. Install with: pip install z3-solver"
         )]
 
+    # Try native parser first
     try:
+        from slop.cli import parse_native_json
+        ast, success = parse_native_json(path)
+        if not success:
+            # Fall back to Python parser
+            with open(path) as f:
+                source = f.read()
+            ast = parse(source)
+    except ImportError:
+        # Fall back to Python parser if cli import fails
         with open(path) as f:
             source = f.read()
         ast = parse(source)
@@ -1245,7 +1311,7 @@ def verify_file(path: str, mode: str = "error",
             name="file",
             verified=False,
             status="error",
-            message=f"Could not read file: {e}"
+            message=f"Could not read/parse file: {e}"
         )]
 
     # Run native type checker first
