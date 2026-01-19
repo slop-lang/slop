@@ -261,6 +261,48 @@ def transpile_native_split(input_file: str):
         return {}, False
 
 
+def test_native(input_file: str):
+    """Generate test harness using native tester.
+
+    Returns tuple of (test_harness, test_count, module_name, success).
+    test_harness is the C code string for the test harness.
+    If native tester isn't available, returns (None, 0, '', False).
+    """
+    import subprocess
+    import json
+
+    tester_bin = find_native_component('tester')
+    if not tester_bin:
+        return None, 0, '', False
+
+    try:
+        result = subprocess.run(
+            [str(tester_bin), input_file],
+            capture_output=True,
+            text=True
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if 'error' in data:
+                return data['error'], 0, '', False
+            test_harness = data.get('test_harness', '')
+            test_count = data.get('test_count', 0)
+            module_name = data.get('module_name', '')
+            return test_harness, test_count, module_name, True
+        # Non-zero return code - try to parse error from output
+        try:
+            data = json.loads(result.stdout)
+            if 'error' in data:
+                return data['error'], 0, '', False
+        except json.JSONDecodeError:
+            pass
+        return result.stderr or "Unknown error", 0, '', False
+    except json.JSONDecodeError as e:
+        return f"Failed to parse tester output: {e}", 0, '', False
+    except Exception as e:
+        return str(e), 0, '', False
+
+
 def parse_with_fallback(input_file: str, prefer_native: bool = False, verbose: bool = False):
     """Parse a file, optionally trying native parser first.
 
@@ -2462,6 +2504,72 @@ def cmd_test(args):
                 inc_path = (config_dir / p).resolve()
                 if inc_path.exists() and str(inc_path) not in [str(Path(x).resolve()) for x in args.include]:
                     args.include.append(str(inc_path))
+
+        # Try native tester first (if not --python flag)
+        use_native = not getattr(args, 'python', False)
+        if use_native:
+            native_tester_bin = find_native_component('tester')
+            if native_tester_bin:
+                print(f"  Using native tester: {native_tester_bin}")
+                test_harness, test_count, module_name, tester_success = test_native(str(input_path))
+                if tester_success and test_count > 0:
+                    # Native tester succeeded - now get transpiled code
+                    print(f"Found {test_count} test case(s)")
+                    print("  Transpiling...")
+                    c_code, transpiler_success = transpile_native(str(input_path))
+                    if transpiler_success:
+                        # Combine transpiled code (without main) with test harness
+                        c_code_stripped = _strip_main_function(c_code)
+                        test_code = c_code_stripped + "\n\n" + test_harness
+
+                        # Write to temp file and compile
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            test_c_path = os.path.join(tmpdir, "test.c")
+                            test_bin_path = os.path.join(tmpdir, "test_runner")
+
+                            with open(test_c_path, 'w') as f:
+                                f.write(test_code)
+
+                            # Compile
+                            print("  Compiling...")
+                            runtime_path = _get_runtime_path()
+                            compile_cmd = [
+                                "cc", "-O0", "-g",
+                                "-I", str(runtime_path),
+                                "-o", test_bin_path,
+                                test_c_path,
+                                "-lm"
+                            ]
+
+                            result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                            if result.returncode != 0:
+                                print(f"Compilation failed:\n{result.stderr}")
+                                if args.verbose:
+                                    print("\n--- Generated test code ---")
+                                    print(test_code)
+                                return 1
+
+                            # Run tests
+                            print("  Running tests...")
+                            result = subprocess.run([test_bin_path], capture_output=True)
+                            stdout = result.stdout.decode('utf-8', errors='replace')
+                            stderr = result.stderr.decode('utf-8', errors='replace')
+                            print(stdout, end='')
+                            if stderr:
+                                print(stderr, end='', file=sys.stderr)
+                            return result.returncode
+                    else:
+                        print("  Native transpiler failed, falling back to Python")
+                        if c_code:
+                            print(f"    Error: {c_code}")
+                elif tester_success and test_count == 0:
+                    print("No @example annotations found")
+                    return 0
+                else:
+                    # Native tester failed
+                    if test_harness:  # Contains error message
+                        print(f"  Native tester failed: {test_harness}")
+                    print("  Falling back to Python test extraction")
 
         ast = parse_file(str(input_path))
 

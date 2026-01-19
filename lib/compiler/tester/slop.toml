@@ -1,0 +1,12 @@
+# Native SLOP Test Harness Generator
+# Build with: uv run slop build (from this directory)
+
+[project]
+name = "slop-tester"
+version = "0.1.0"
+entry = "main.slop"
+
+[build]
+output = "slop-tester"
+include = ["../common", "../parser", "../../std", "../../std/strlib", "../../std/io", "../../std/os"]
+type = "executable"

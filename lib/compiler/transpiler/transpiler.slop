@@ -1159,11 +1159,16 @@
                 ;; These depend on types from other modules (available via includes)
                 (emit-imported-list-types-header ctx)
                 (emit-imported-option-types-header ctx)
+                ;; Emit value-element List types for type aliases (range types, etc.)
+                ;; These depend on type aliases being defined first
+                (emit-value-list-types-header ctx)
                 ;; Emit all struct/union types in dependency order (topological sort)
                 ;; This handles the ordering automatically: types are emitted only when
                 ;; all their non-pointer field types are already emitted.
                 ;; Option/List types for each struct/union are emitted immediately after.
                 (emit-struct-union-types-sorted ctx items body-start)
+                ;; Emit any remaining value-element List types (for complex struct elements)
+                (emit-complex-value-list-types-header ctx)
                 ;; Emit generated Result types
                 (emit-result-types-header ctx)
                 ;; Emit Result type aliases (after Result types so they can reference slop_result_*)
@@ -2314,8 +2319,9 @@
           ((some lt)
             ;; Emit value-element lists that weren't emitted before (complex struct elem types)
             ;; At this point, complex structs are emitted
-            (when (not (is-pointer-elem-type (. lt elem-type)))
-              ;; emit-single will skip if already emitted due to #ifndef guard
+            ;; Skip if already emitted by emit-value-list-types-header
+            (when (and (not (is-pointer-elem-type (. lt elem-type)))
+                       (not (ctx-is-type-emitted ctx (. lt c-name))))
               (emit-single-list-type-header ctx lt)))
           ((none) (do)))
         (set! i (+ i 1)))))

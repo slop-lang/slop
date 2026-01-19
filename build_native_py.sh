@@ -16,3 +16,8 @@ mv ./slop-checker ../../../bin
 cd ../transpiler
 slop build --python
 mv ./slop-transpiler ../../../bin
+
+## Build the tester
+cd ../tester
+slop build --python
+mv ./slop-tester ../../../bin

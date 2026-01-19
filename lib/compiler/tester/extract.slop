@@ -1,0 +1,362 @@
+;; ============================================================
+;; SLOP Test Case Extraction
+;;
+;; Extracts @example test cases from parsed SLOP AST.
+;; Each @example annotation in a function becomes a TestCase.
+;; ============================================================
+
+(module extract
+  (export
+    ;; Types
+    TestCase
+    ;; Extraction functions
+    extract-examples-from-ast
+    extract-examples-from-module
+    extract-fn-examples)
+
+  (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
+  (import parser (is-form sexpr-is-symbol sexpr-is-number sexpr-is-string
+                  sexpr-list-len sexpr-list-get sexpr-get-symbol-name
+                  sexpr-symbol-name sexpr-number-string sexpr-string-value
+                  pretty-print))
+
+  ;; ============================================================
+  ;; Test Case Type
+  ;; ============================================================
+
+  ;; Represents a single test case extracted from @example
+  (type TestCase (record
+    (fn-name String)                  ;; Function name being tested
+    (module-name (Option String))     ;; Module containing the function
+    (args (List (Ptr SExpr)))         ;; Input arguments (S-expressions)
+    (expected (Ptr SExpr))            ;; Expected result (S-expression)
+    (return-type (Option String))     ;; Return type from @spec
+    (needs-arena Bool)                ;; Whether function needs arena param
+    (arena-position Int)))            ;; Position of arena param (0-indexed)
+
+  ;; ============================================================
+  ;; Test Case Constructor
+  ;; ============================================================
+
+  (fn test-case-new ((arena Arena) (fn-name String) (module-name (Option String))
+                     (args (List (Ptr SExpr))) (expected (Ptr SExpr))
+                     (return-type (Option String)) (needs-arena Bool) (arena-position Int))
+    (@intent "Create a new TestCase record")
+    (@spec ((Arena String (Option String) (List (Ptr SExpr)) (Ptr SExpr) (Option String) Bool Int) -> (Ptr TestCase)))
+    (@alloc arena)
+    (let ((tc (cast (Ptr TestCase) (arena-alloc arena 128))))
+      (set! (deref tc) (TestCase fn-name module-name args expected return-type needs-arena arena-position))
+      tc))
+
+  ;; ============================================================
+  ;; Arrow Separator Detection
+  ;; ============================================================
+
+  (fn find-arrow-separator ((items (List (Ptr SExpr))))
+    (@intent "Find index of -> separator in list, returns -1 if not found")
+    (@spec (((List (Ptr SExpr))) -> Int))
+    (@pure)
+    (let ((len (list-len items))
+          (mut i 0)
+          (mut found -1))
+      (while (and (< i len) (== found -1))
+        (match (list-get items i)
+          ((some item)
+            (when (sexpr-is-symbol item)
+              (when (string-eq (sexpr-get-symbol-name item) "->")
+                (set! found i))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  ;; ============================================================
+  ;; Arena Parameter Detection
+  ;; ============================================================
+
+  (fn detect-arena-param ((params (Ptr SExpr)))
+    (@intent "Check parameters for (arena Arena), return position or -1")
+    (@spec (((Ptr SExpr)) -> Int))
+    (@pure)
+    ;; params should be a list like ((x Int) (arena Arena) (y String))
+    (if (not (sexpr-is-symbol params))
+      (let ((len (sexpr-list-len params))
+            (mut i 0)
+            (mut found -1))
+        (while (and (< i len) (== found -1))
+          (match (sexpr-list-get params i)
+            ((some param)
+              ;; param should be (name Type) or (in name Type)
+              (let ((plen (sexpr-list-len param)))
+                (when (>= plen 2)
+                  ;; Get type position based on form
+                  (let ((type-pos (if (== plen 2) 1 2))
+                        (name-pos (if (== plen 2) 0 1)))
+                    (match (sexpr-list-get param name-pos)
+                      ((some name-expr)
+                        (when (sexpr-is-symbol name-expr)
+                          (when (string-eq (sexpr-get-symbol-name name-expr) "arena")
+                            (match (sexpr-list-get param type-pos)
+                              ((some type-expr)
+                                (when (sexpr-is-symbol type-expr)
+                                  (when (string-eq (sexpr-get-symbol-name type-expr) "Arena")
+                                    (set! found i))))
+                              ((none) (do))))))
+                      ((none) (do)))))))
+            ((none) (do)))
+          (set! i (+ i 1)))
+        found)
+      -1))
+
+  ;; ============================================================
+  ;; Return Type Extraction from @spec
+  ;; ============================================================
+
+  (fn extract-return-type ((arena Arena) (spec-form (Ptr SExpr)))
+    (@intent "Extract return type string from @spec form")
+    (@spec ((Arena (Ptr SExpr)) -> (Option String)))
+    (@alloc arena)
+    ;; @spec form: (@spec ((ParamTypes) -> ReturnType))
+    ;; or: (@spec ((ParamTypes...) -> ReturnType))
+    ;; The second element should be the signature list
+    (if (< (sexpr-list-len spec-form) 2)
+      (none)
+      (match (sexpr-list-get spec-form 1)
+        ((some sig)
+          ;; sig should be like ((Int String) -> Bool)
+          (let ((sig-len (sexpr-list-len sig)))
+            (if (< sig-len 3)
+              (none)
+              ;; Return type is the last element
+              (match (sexpr-list-get sig (- sig-len 1))
+                ((some ret-type) (some (pretty-print arena ret-type)))
+                ((none) (none))))))
+        ((none) (none)))))
+
+  ;; ============================================================
+  ;; Example Extraction from Single Function
+  ;; ============================================================
+
+  (fn extract-fn-examples ((arena Arena) (fn-form (Ptr SExpr)) (module-name (Option String)))
+    (@intent "Extract test cases from a function definition")
+    (@spec ((Arena (Ptr SExpr) (Option String)) -> (List (Ptr TestCase))))
+    (@alloc arena)
+    (let ((result (list-new arena (Ptr TestCase))))
+      ;; fn-form should be (fn name (params) body...)
+      (if (< (sexpr-list-len fn-form) 3)
+        result  ;; Not enough elements
+        (do
+          ;; Get function name (element 1)
+          (let ((fn-name-opt (sexpr-list-get fn-form 1)))
+            (match fn-name-opt
+              ((none) result)
+              ((some fn-name-expr)
+                (if (not (sexpr-is-symbol fn-name-expr))
+                  result
+                  (let ((fn-name (sexpr-get-symbol-name fn-name-expr)))
+                    ;; Get params (element 2) for arena detection
+                    (let ((params-opt (sexpr-list-get fn-form 2)))
+                      (match params-opt
+                        ((none) result)
+                        ((some params)
+                          (let ((arena-pos (detect-arena-param params))
+                                (needs-arena (>= arena-pos 0))
+                                (mut return-type (Option String) (none)))
+                            ;; Scan body for @spec and @example
+                            (let ((form-len (sexpr-list-len fn-form))
+                                  (mut i 3))
+                              (while (< i form-len)
+                                (match (sexpr-list-get fn-form i)
+                                  ((some item)
+                                    ;; Check for @spec
+                                    (when (is-form item "@spec")
+                                      (set! return-type (extract-return-type arena item)))
+                                    ;; Check for @example
+                                    (when (is-form item "@example")
+                                      (let ((example-tc (parse-example arena item fn-name module-name
+                                                                       return-type needs-arena arena-pos)))
+                                        (match example-tc
+                                          ((some tc) (list-push result tc))
+                                          ((none) (do))))))
+                                  ((none) (do)))
+                                (set! i (+ i 1))))
+                            result)))))))))))))
+
+  ;; ============================================================
+  ;; Parse Single @example Annotation
+  ;; ============================================================
+
+  (fn parse-example ((arena Arena) (example-form (Ptr SExpr)) (fn-name String)
+                     (module-name (Option String)) (return-type (Option String))
+                     (needs-arena Bool) (arena-pos Int))
+    (@intent "Parse @example form into TestCase")
+    (@spec ((Arena (Ptr SExpr) String (Option String) (Option String) Bool Int) -> (Option (Ptr TestCase))))
+    (@alloc arena)
+    ;; @example form: (@example arg1 arg2 ... -> expected)
+    ;; or: (@example (arg1 arg2) -> expected) for grouped args
+    (let ((example-len (sexpr-list-len example-form)))
+      (if (< example-len 2)
+        (none)  ;; Need at least @example and something
+        ;; Build list of items after @example keyword
+        (let ((items (list-new arena (Ptr SExpr)))
+              (mut i 1))
+          (while (< i example-len)
+            (match (sexpr-list-get example-form i)
+              ((some item) (list-push items item))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          ;; Find -> separator
+          (let ((arrow-idx (find-arrow-separator items)))
+            (if (< arrow-idx 0)
+              (none)  ;; No arrow found
+              (if (>= arrow-idx (- (list-len items) 1))
+                (none)  ;; Arrow at end, no expected value
+                ;; Get args (before arrow) and expected (after arrow)
+                (let ((args (list-new arena (Ptr SExpr)))
+                      (mut j 0))
+                  ;; Collect args before arrow
+                  (while (< j arrow-idx)
+                    (match (list-get items j)
+                      ((some arg) (list-push args arg))
+                      ((none) (do)))
+                    (set! j (+ j 1)))
+                  ;; Handle grouped args case: (@example (arg1 arg2) -> expected)
+                  ;; If single arg is a list, check if it should be unpacked
+                  (let ((final-args (unpack-grouped-args arena args)))
+                    ;; Get expected (after arrow)
+                    (match (list-get items (+ arrow-idx 1))
+                      ((some expected)
+                        (some (test-case-new arena fn-name module-name final-args
+                                             expected return-type needs-arena arena-pos)))
+                      ((none) (none))))))))))))
+
+  ;; ============================================================
+  ;; Unpack Grouped Arguments
+  ;; ============================================================
+
+  (fn unpack-grouped-args ((arena Arena) (args (List (Ptr SExpr))))
+    (@intent "Unpack grouped args like ((arg1 arg2)) to (arg1 arg2)")
+    (@spec ((Arena (List (Ptr SExpr))) -> (List (Ptr SExpr))))
+    (@alloc arena)
+    ;; If args is a single-element list containing a list that doesn't look
+    ;; like a function call, unpack it
+    (if (!= (list-len args) 1)
+      args  ;; Multiple args, don't unpack
+      (match (list-get args 0)
+        ((none) args)
+        ((some first-arg)
+          (if (not (sexpr-is-symbol first-arg))
+            ;; First arg is a list, check if it should be unpacked
+            (let ((inner-len (sexpr-list-len first-arg)))
+              (if (== inner-len 0)
+                (list-new arena (Ptr SExpr))  ;; Empty inner list means no args
+                (match (sexpr-list-get first-arg 0)
+                  ((none) args)
+                  ((some first-inner)
+                    ;; Check if first item is 'arena' marker
+                    (if (and (sexpr-is-symbol first-inner)
+                             (string-eq (sexpr-get-symbol-name first-inner) "arena"))
+                      ;; Skip arena marker and collect remaining items
+                      (let ((unpacked (list-new arena (Ptr SExpr)))
+                            (mut i 1))
+                        (while (< i inner-len)
+                          (match (sexpr-list-get first-arg i)
+                            ((some item) (list-push unpacked item))
+                            ((none) (do)))
+                          (set! i (+ i 1)))
+                        unpacked)
+                      ;; Check if first inner is not a symbol (meaning it's a value list, not fn call)
+                      ;; Unpack if first element is: a number, string, or a list (complex expression)
+                      (if (or (sexpr-is-number first-inner)
+                              (sexpr-is-string first-inner)
+                              (not (sexpr-is-symbol first-inner)))
+                        ;; It's a grouped argument list, unpack it
+                        (let ((unpacked (list-new arena (Ptr SExpr)))
+                              (mut i 0))
+                          (while (< i inner-len)
+                            (match (sexpr-list-get first-arg i)
+                              ((some item) (list-push unpacked item))
+                              ((none) (do)))
+                            (set! i (+ i 1)))
+                          unpacked)
+                        args))))))  ;; It's a function call, don't unpack
+            args)))))  ;; First arg is a symbol, don't unpack
+
+  ;; ============================================================
+  ;; Module-level Extraction
+  ;; ============================================================
+
+  (fn extract-examples-from-module ((arena Arena) (module-form (Ptr SExpr)))
+    (@intent "Extract all test cases from a module definition")
+    (@spec ((Arena (Ptr SExpr)) -> (List (Ptr TestCase))))
+    (@alloc arena)
+    (let ((result (list-new arena (Ptr TestCase))))
+      ;; module-form should be (module name exports? body...)
+      (if (< (sexpr-list-len module-form) 2)
+        result
+        ;; Get module name
+        (let ((mod-name-opt (sexpr-list-get module-form 1)))
+          (match mod-name-opt
+            ((none) result)
+            ((some mod-name-expr)
+              ;; Use typed mutable var to handle Option type properly
+              (let ((mut mod-name (Option String) (none)))
+                (when (sexpr-is-symbol mod-name-expr)
+                  (set! mod-name (some (sexpr-get-symbol-name mod-name-expr))))
+                ;; Scan module body for fn definitions
+                (let ((form-len (sexpr-list-len module-form))
+                      (mut i 2))
+                  (while (< i form-len)
+                    (match (sexpr-list-get module-form i)
+                      ((some item)
+                        (when (is-form item "fn")
+                          (let ((fn-tests (extract-fn-examples arena item mod-name))
+                                (fn-tests-len (list-len fn-tests))
+                                (mut j 0))
+                            (while (< j fn-tests-len)
+                              (match (list-get fn-tests j)
+                                ((some tc) (list-push result tc))
+                                ((none) (do)))
+                              (set! j (+ j 1))))))
+                      ((none) (do)))
+                    (set! i (+ i 1))))
+                result)))))))
+
+  ;; ============================================================
+  ;; Top-level Extraction
+  ;; ============================================================
+
+  (fn extract-examples-from-ast ((arena Arena) (ast (List (Ptr SExpr))))
+    (@intent "Extract all test cases from parsed AST")
+    (@spec ((Arena (List (Ptr SExpr))) -> (List (Ptr TestCase))))
+    (@alloc arena)
+    (let ((result (list-new arena (Ptr TestCase)))
+          (len (list-len ast))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get ast i)
+          ((some form)
+            ;; Check for top-level fn
+            (when (is-form form "fn")
+              (let ((fn-tests (extract-fn-examples arena form (none)))
+                    (fn-tests-len (list-len fn-tests))
+                    (mut j 0))
+                (while (< j fn-tests-len)
+                  (match (list-get fn-tests j)
+                    ((some tc) (list-push result tc))
+                    ((none) (do)))
+                  (set! j (+ j 1)))))
+            ;; Check for module
+            (when (is-form form "module")
+              (let ((mod-tests (extract-examples-from-module arena form))
+                    (mod-tests-len (list-len mod-tests))
+                    (mut k 0))
+                (while (< k mod-tests-len)
+                  (match (list-get mod-tests k)
+                    ((some tc) (list-push result tc))
+                    ((none) (do)))
+                  (set! k (+ k 1))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+) ;; end module

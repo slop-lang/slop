@@ -132,3 +132,4 @@ The goal is a self-hosting slop parser, type checker, and transpiler.  When work
 
 ## General guidance
 - Paren balance is critical for a language based on S-expressions.  Verify balance BEFORE making multiple writes to a file to avoid large compounding imbalances that require extensive troubleshooting.
+- The python build tools - parser, type checker, and transpiler ARE DEPRECATED and should generally not be used.  build_native_py.sh is likewise deprecated.  Always use the native build chain and build_native.sh to rebuild the native tooling.  build_native_py.sh is to be used only as a last resort.

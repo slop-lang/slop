@@ -1,0 +1,110 @@
+;; ============================================================
+;; SLOP Test Harness Generator - Orchestration
+;;
+;; Main orchestration module that:
+;; 1. Parses SLOP source
+;; 2. Extracts @example test cases
+;; 3. Generates C test harness code
+;; ============================================================
+
+(module tester
+  (export
+    ;; Types
+    TestResult
+    ;; Main functions
+    generate-tests
+    extract-module-name)
+
+  (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
+  (import parser (parse ParseResult is-form sexpr-is-symbol sexpr-list-len sexpr-list-get sexpr-get-symbol-name))
+  (import extract (TestCase extract-examples-from-ast))
+  (import emit (emit-test-harness))
+
+  ;; ============================================================
+  ;; Module Name Extraction
+  ;; ============================================================
+
+  (fn extract-module-name ((exprs (List (Ptr SExpr))))
+    (@intent "Extract module name from parsed expressions")
+    (@spec (((List (Ptr SExpr))) -> String))
+    (@pure)
+    ;; Look for (module name ...) in first expression
+    (if (< (list-len exprs) 1)
+      ""
+      (match (list-get exprs 0)
+        ((some first-expr)
+          (if (is-form first-expr "module")
+            (if (>= (sexpr-list-len first-expr) 2)
+              (match (sexpr-list-get first-expr 1)
+                ((some name-expr)
+                  (if (sexpr-is-symbol name-expr)
+                    (sexpr-get-symbol-name name-expr)
+                    ""))
+                ((none) ""))
+              "")
+            ""))
+        ((none) ""))))
+
+  ;; ============================================================
+  ;; Main Test Generation Pipeline
+  ;; ============================================================
+
+  (type TestResult (record
+    (success Bool)
+    (test-harness (List String))
+    (test-count Int)
+    (module-name String)
+    (error-message String)))
+
+  (fn generate-tests ((arena Arena) (source String))
+    (@intent "Generate test harness from SLOP source code")
+    (@spec ((Arena String) -> TestResult))
+    (@alloc arena)
+    ;; Step 1: Parse the source
+    (match (parse arena source)
+      ((ok exprs)
+        ;; Step 2: Extract module name for prefixing
+        (let ((mod-name (extract-module-name exprs)))
+          ;; Step 3: Extract test cases
+          (let ((test-cases (extract-examples-from-ast arena exprs))
+                (test-count (list-len test-cases)))
+            (if (== test-count 0)
+              ;; No tests found
+              (TestResult true (list-new arena String) 0 mod-name "")
+              ;; Step 4: Generate test harness
+              (let ((prefix (if (> (cast Int (. mod-name len)) 0)
+                              (convert-to-c-name arena mod-name)
+                              "")))
+                (let ((harness-lines (emit-test-harness arena test-cases prefix)))
+                  (TestResult true harness-lines test-count mod-name "")))))))
+
+      ((error err)
+        ;; Parse error
+        (let ((error-msg (string-concat arena "Parse error at line "
+                           (string-concat arena (int-to-string arena (. err line))
+                             (string-concat arena ", col "
+                               (string-concat arena (int-to-string arena (. err col))
+                                 (string-concat arena ": " (. err message))))))))
+          (TestResult false (list-new arena String) 0 "" error-msg)))))
+
+  ;; ============================================================
+  ;; Helper Functions
+  ;; ============================================================
+
+  (fn convert-to-c-name ((arena Arena) (name String))
+    (@intent "Convert SLOP name to C identifier (replace - with _)")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (let ((len (cast Int (. name len)))
+          (buf (cast (Ptr U8) (arena-alloc arena (+ len 1))))
+          (mut i 0))
+      (while (< i len)
+        (let ((c (@ (. name data) i)))
+          (if (== c 45)  ;; '-'
+            (set! (@ buf i) 95)  ;; '_'
+            (set! (@ buf i) c)))
+        (set! i (+ i 1)))
+      (set! (@ buf len) 0)
+      (String buf (. name len))))
+
+) ;; end module
