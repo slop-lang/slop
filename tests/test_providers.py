@@ -189,7 +189,7 @@ class TestCreateFromConfig:
                 'tier-2': {'provider': 'mock', 'model': 'test2'}
             }
         }
-        tier_configs, provider = create_from_config(config)
+        tier_configs, provider, routing = create_from_config(config)
 
         assert Tier.TIER_1 in tier_configs
         assert Tier.TIER_2 in tier_configs
@@ -197,5 +197,5 @@ class TestCreateFromConfig:
 
     def test_defaults_to_mock_provider(self):
         config = {'tiers': {}}
-        tier_configs, provider = create_from_config(config)
+        tier_configs, provider, routing = create_from_config(config)
         assert isinstance(provider, MultiProvider)

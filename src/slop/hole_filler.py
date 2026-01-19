@@ -14,12 +14,19 @@ from typing import Optional, List, Dict, Any, Callable
 from slop.parser import SExpr, SList, Symbol, String, Number, parse, find_holes, is_form, pretty_print, ParseError
 from slop.providers import Tier, ModelConfig, Provider, MockProvider, create_default_configs
 from slop.types import BUILTIN_FUNCTIONS
+from slop import paths
 
 logger = logging.getLogger(__name__)
 
 
 # Cache for spec/LANGUAGE.md + spec/REFERENCE.md content
 _SKILL_SPEC: Optional[str] = None
+
+# Cache for stdlib signatures
+_STDLIB_SIGNATURES: Optional[str] = None
+
+# Cache for example patterns
+_EXAMPLE_PATTERNS: Optional[str] = None
 
 # Valid built-in expression forms from SLOP spec
 # Note: BUILTIN_FUNCTIONS (from types.py) is unioned with these special forms
@@ -64,10 +71,8 @@ def _transform_lisp_forms(expr: SExpr) -> SExpr:
     This transforms them to valid SLOP.
     """
     if isinstance(expr, Symbol):
-        # Transform symbols: t -> true, nil -> false (when used as boolean)
+        # Transform Scheme boolean literals to SLOP equivalents
         name = expr.name
-        if name == 't':
-            return Symbol('true')
         if name == '#t':
             return Symbol('true')
         if name == '#f':
@@ -259,30 +264,211 @@ def _extract_function_calls(expr: SExpr) -> set:
 
 
 def load_skill_spec() -> str:
-    """Load and cache the SLOP language spec from spec/LANGUAGE.md and spec/REFERENCE.md"""
+    """Load and cache the SLOP language spec from spec/LANGUAGE.md and spec/REFERENCE.md.
+
+    Uses paths.get_spec_dir() to find spec files, respecting SLOP_HOME if set.
+    """
     global _SKILL_SPEC
     if _SKILL_SPEC is not None:
         return _SKILL_SPEC
 
-    # Find spec files relative to this file's location
-    # hole_filler.py is in src/slop/, spec/ is at project root
-    pkg_root = Path(__file__).parent.parent.parent
+    spec_dir = paths.get_spec_dir()
+    if not spec_dir:
+        _SKILL_SPEC = ""
+        return _SKILL_SPEC
 
     content = ""
 
     # Load spec/LANGUAGE.md - complete language specification
-    lang_path = pkg_root / "spec" / "LANGUAGE.md"
+    lang_path = spec_dir / "LANGUAGE.md"
     if lang_path.exists():
         content = lang_path.read_text()
 
     # Load spec/REFERENCE.md - quick reference for LLM code generation
     # Contains common mistakes, loop patterns, and idioms
-    ref_path = pkg_root / "spec" / "REFERENCE.md"
+    ref_path = spec_dir / "REFERENCE.md"
     if ref_path.exists():
         content += "\n\n" + ref_path.read_text()
 
     _SKILL_SPEC = content.strip()
     return _SKILL_SPEC
+
+
+def load_stdlib_signatures() -> str:
+    """Load and cache function signatures from standard library modules.
+
+    Extracts exported function names, @spec, and @intent for LLM context.
+    Uses paths.get_stdlib_dir() to find stdlib, respecting SLOP_HOME if set.
+
+    Returns:
+        Formatted string containing stdlib module signatures.
+    """
+    global _STDLIB_SIGNATURES
+    if _STDLIB_SIGNATURES is not None:
+        return _STDLIB_SIGNATURES
+
+    stdlib_modules = paths.list_stdlib_modules()
+    if not stdlib_modules:
+        _STDLIB_SIGNATURES = ""
+        return _STDLIB_SIGNATURES
+
+    sections = ["## Standard Library Functions\n"]
+    sections.append("The following functions are available from the standard library:\n")
+
+    for module_path in stdlib_modules:
+        try:
+            content = module_path.read_text()
+            ast = parse(content)
+
+            # Find module form to get exports
+            module_name = None
+            exports = set()
+            for form in ast:
+                if is_form(form, 'module') and len(form) >= 2:
+                    module_name = form[1].name if isinstance(form[1], Symbol) else str(form[1])
+                    # Find export list
+                    for item in form[2:]:
+                        if is_form(item, 'export'):
+                            for export_item in item[1:]:
+                                if isinstance(export_item, Symbol):
+                                    exports.add(export_item.name)
+                    break
+
+            if not module_name or not exports:
+                continue
+
+            # Extract function signatures for exported functions
+            fn_sigs = []
+            for form in ast:
+                # Handle top-level fn
+                if is_form(form, 'fn') and len(form) >= 3:
+                    fn_name = form[1].name if isinstance(form[1], Symbol) else str(form[1])
+                    if fn_name in exports:
+                        sig = _extract_fn_signature(form)
+                        if sig:
+                            fn_sigs.append(sig)
+
+                # Handle module-scoped fn
+                if is_form(form, 'module'):
+                    for item in form[2:]:
+                        if is_form(item, 'fn') and len(item) >= 3:
+                            fn_name = item[1].name if isinstance(item[1], Symbol) else str(item[1])
+                            if fn_name in exports:
+                                sig = _extract_fn_signature(item)
+                                if sig:
+                                    fn_sigs.append(sig)
+
+            if fn_sigs:
+                sections.append(f"\n### {module_name}\n")
+                sections.append("```lisp\n")
+                sections.append("\n".join(fn_sigs))
+                sections.append("\n```\n")
+
+        except Exception as e:
+            logger.debug(f"Failed to parse stdlib module {module_path}: {e}")
+            continue
+
+    _STDLIB_SIGNATURES = "".join(sections) if len(sections) > 2 else ""
+    return _STDLIB_SIGNATURES
+
+
+def _extract_fn_signature(fn_form: SList) -> Optional[str]:
+    """Extract a concise function signature from a fn form.
+
+    Args:
+        fn_form: A parsed (fn name params ...) form
+
+    Returns:
+        Formatted signature string with name, params, @intent, and @spec
+    """
+    if len(fn_form) < 3:
+        return None
+
+    fn_name = fn_form[1].name if isinstance(fn_form[1], Symbol) else str(fn_form[1])
+    params = pretty_print(fn_form[2]) if len(fn_form) > 2 else "()"
+
+    intent = None
+    spec = None
+
+    for item in fn_form[3:]:
+        if is_form(item, '@intent') and len(item) >= 2:
+            if isinstance(item[1], String):
+                intent = item[1].value
+        elif is_form(item, '@spec') and len(item) >= 2:
+            spec = pretty_print(item[1])
+
+    lines = [f"(fn {fn_name} {params}"]
+    if intent:
+        lines.append(f'  (@intent "{intent}")')
+    if spec:
+        lines.append(f"  (@spec {spec})")
+    lines.append("  ...)")
+
+    return "\n".join(lines)
+
+
+def load_example_patterns(max_examples: int = 3) -> str:
+    """Load small, idiomatic examples for LLM context.
+
+    Loads a curated set of small examples (fizzbuzz, fibonacci, math) to
+    provide pattern examples for the LLM.
+
+    Args:
+        max_examples: Maximum number of examples to include
+
+    Returns:
+        Formatted string containing example code.
+    """
+    global _EXAMPLE_PATTERNS
+    if _EXAMPLE_PATTERNS is not None:
+        return _EXAMPLE_PATTERNS
+
+    examples_dir = paths.get_examples_dir()
+    if not examples_dir:
+        _EXAMPLE_PATTERNS = ""
+        return _EXAMPLE_PATTERNS
+
+    # Prioritize small, idiomatic examples
+    preferred = ['fizzbuzz.slop', 'fibonacci.slop', 'math.slop', 'hello.slop']
+    example_files = []
+
+    for name in preferred:
+        path = examples_dir / name
+        if path.exists():
+            example_files.append(path)
+            if len(example_files) >= max_examples:
+                break
+
+    # Fill remaining slots with other small examples
+    if len(example_files) < max_examples:
+        for path in paths.list_examples():
+            if path not in example_files:
+                # Skip large examples
+                if path.stat().st_size < 5000:
+                    example_files.append(path)
+                    if len(example_files) >= max_examples:
+                        break
+
+    if not example_files:
+        _EXAMPLE_PATTERNS = ""
+        return _EXAMPLE_PATTERNS
+
+    sections = ["## Example SLOP Patterns\n"]
+    sections.append("Here are idiomatic SLOP code examples:\n")
+
+    for example_path in example_files:
+        try:
+            content = example_path.read_text()
+            sections.append(f"\n### {example_path.stem}\n")
+            sections.append("```lisp\n")
+            sections.append(content.strip())
+            sections.append("\n```\n")
+        except Exception as e:
+            logger.debug(f"Failed to read example {example_path}: {e}")
+            continue
+
+    _EXAMPLE_PATTERNS = "".join(sections) if len(sections) > 2 else ""
+    return _EXAMPLE_PATTERNS
 
 
 @dataclass
@@ -528,7 +714,11 @@ def _extract_enum_variants(context: Dict[str, Any]) -> set:
 
 
 def _extract_param_names(params_str: str) -> List[str]:
-    """Extract variable names from params string like '((arena Arena) (request (Ptr Request)))'"""
+    """Extract variable names from params string.
+
+    Handles both simple format: '((arena Arena) (request (Ptr Request)))'
+    and annotated format: '((in arena Arena) (out result (Ptr Result)))'
+    """
     if not params_str:
         return []
 
@@ -538,8 +728,17 @@ def _extract_param_names(params_str: str) -> List[str]:
             return []
         names = []
         for param in parsed[0].items:
-            if isinstance(param, SList) and len(param) >= 1 and isinstance(param[0], Symbol):
-                names.append(param[0].name)
+            if isinstance(param, SList) and len(param) >= 1:
+                first = param[0]
+                if isinstance(first, Symbol):
+                    # Check if first element is an annotation (in/out/inout/mut)
+                    if first.name in ('in', 'out', 'inout', 'mut') and len(param) >= 2:
+                        # Format: (in name Type) - extract second element
+                        if isinstance(param[1], Symbol):
+                            names.append(param[1].name)
+                    else:
+                        # Format: (name Type) - extract first element
+                        names.append(first.name)
         return names
     except Exception:
         return []
@@ -610,8 +809,22 @@ def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
     return referenced
 
 
-def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tuple] = None) -> str:
-    """Build prompt for hole filling, optionally including feedback from failures"""
+def build_prompt(
+    hole: Hole,
+    context: Dict[str, Any],
+    failed_attempts: List[tuple] = None,
+    include_stdlib: bool = True,
+    include_examples: bool = False,
+) -> str:
+    """Build prompt for hole filling, optionally including feedback from failures.
+
+    Args:
+        hole: The hole to fill
+        context: Context dict with type_defs, fn_specs, etc.
+        failed_attempts: List of previous failed attempts for feedback
+        include_stdlib: Include standard library function signatures (default: True)
+        include_examples: Include example patterns for reference (default: False)
+    """
     spec = load_skill_spec()
 
     sections = [
@@ -623,6 +836,24 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
             "",
             spec,
         ])
+
+    # Include stdlib signatures for better LLM awareness of available functions
+    if include_stdlib:
+        stdlib_sigs = load_stdlib_signatures()
+        if stdlib_sigs:
+            sections.extend([
+                "",
+                stdlib_sigs,
+            ])
+
+    # Optionally include example patterns
+    if include_examples:
+        examples = load_example_patterns()
+        if examples:
+            sections.extend([
+                "",
+                examples,
+            ])
 
     # Strong constraints to prevent invented functions
     sections.extend([
@@ -896,9 +1127,12 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
 
     if hole.context:
         sections.append("")
-        sections.append("## Available Context")
-        sections.append(f"You may ONLY call these functions/identifiers: {', '.join(hole.context)}")
-        sections.append("(Built-in forms like let, if, match, do are always available)")
+        sections.append("## Context-Specific Functions")
+        sections.append(f"Use these for this task: {', '.join(hole.context)}")
+        sections.append("")
+        sections.append("Note: All built-in language forms (let, if, match, for-each, etc.) and")
+        sections.append("built-in functions (list-new, list-push, list-len, record-new, cast, etc.)")
+        sections.append("are always available in addition to the context items above.")
 
     if hole.required:
         sections.append("")
@@ -930,6 +1164,143 @@ def build_prompt(hole: Hole, context: Dict[str, Any], failed_attempts: List[tupl
     sections.append("Respond with ONLY the SLOP S-expression. No explanation.")
 
     return '\n'.join(sections)
+
+
+def _try_native_checker(
+    expr_str: str,
+    expected_type: str,
+    context: dict,
+    params: str = '',
+) -> Optional[tuple]:
+    """Try to use the native checker for expression validation.
+
+    Args:
+        expr_str: SLOP expression string
+        expected_type: Expected type string (e.g., "Int")
+        context: Context dict with type_defs, fn_specs, etc.
+        params: Parameter string like "((x Int) (y String))"
+
+    Returns:
+        Tuple of (error_messages, inferred_type_str, expected_type_str) if native
+        checker succeeds, None if unavailable or fails.
+    """
+    import json
+    import subprocess
+    import tempfile
+
+    # Check if native checker is available using paths module
+    checker_path = paths.find_native_binary('checker')
+    if not checker_path:
+        return None
+
+    try:
+        # Build context file content
+        context_lines = []
+
+        # Add type definitions
+        for type_def in context.get('type_defs', []):
+            context_lines.append(type_def)
+
+        # Add imported types
+        for type_info in context.get('imported_types', []):
+            if 'type_def' in type_info:
+                context_lines.append(type_info['type_def'])
+
+        # Add function specs as minimal fn declarations
+        for spec in context.get('fn_specs', []):
+            fn_name = spec.get('name', '')
+            ret_type = spec.get('return_type', 'Unit')
+            fn_params = spec.get('params', '()')
+            if fn_name:
+                context_lines.append(f'(fn {fn_name} {fn_params} (@spec ({fn_params} -> {ret_type})) (do))')
+
+        # Add FFI specs as minimal fn declarations
+        for spec in context.get('ffi_specs', []):
+            fn_name = spec.get('name', '')
+            ret_type = spec.get('return_type', 'Unit')
+            fn_params = spec.get('params', '()')
+            if fn_name:
+                context_lines.append(f'(fn {fn_name} {fn_params} (@spec ({fn_params} -> {ret_type})) (do))')
+
+        # Add imported function specs
+        for spec in context.get('imported_specs', []):
+            fn_name = spec.get('name', '')
+            ret_type = spec.get('return_type', 'Unit')
+            fn_params = spec.get('params', '()')
+            if fn_name:
+                context_lines.append(f'(fn {fn_name} {fn_params} (@spec ({fn_params} -> {ret_type})) (do))')
+
+        # Add constant definitions
+        for spec in context.get('const_specs', []):
+            const_name = spec.get('name', '')
+            type_expr = spec.get('type_expr', 'Int')
+            if const_name:
+                context_lines.append(f'(const {const_name} {type_expr} 0)')
+
+        context_content = '\n'.join(context_lines)
+
+        # Create temp context file if we have context
+        context_file = None
+        if context_content.strip():
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.slop', delete=False) as f:
+                f.write(context_content)
+                context_file = f.name
+
+        try:
+            # Build command
+            cmd = [str(checker_path), '--expr', expr_str, '--type', expected_type]
+            if context_file:
+                cmd.extend(['--context', context_file])
+            if params:
+                cmd.extend(['--params', params])
+
+            # Run native checker
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+
+            # Parse JSON output
+            output = result.stdout.strip()
+            if not output:
+                return None
+
+            data = json.loads(output)
+
+            errors = []
+            if not data.get('valid', True):
+                # Check for diagnostics
+                for diag in data.get('diagnostics', []):
+                    if diag.get('level') == 'error':
+                        errors.append(diag.get('message', 'Unknown error'))
+
+                # If no diagnostics but not valid, add type mismatch error
+                if not errors:
+                    inferred = data.get('inferred_type', 'Unknown')
+                    expected = data.get('expected_type', expected_type)
+                    if inferred != expected:
+                        errors.append(f"Type mismatch: expected {expected}, got {inferred}")
+
+            return (
+                errors,
+                data.get('inferred_type'),
+                data.get('expected_type', expected_type)
+            )
+
+        finally:
+            # Clean up temp file
+            if context_file:
+                import os
+                try:
+                    os.unlink(context_file)
+                except:
+                    pass
+
+    except Exception as e:
+        logger.debug(f"Native checker failed, falling back to Python: {e}")
+        return None
 
 
 def _validate_expr_type(
@@ -1173,6 +1544,7 @@ def check_hole_impl(
     context_file: Optional[str] = None,
     fn_name: Optional[str] = None,
     params: Optional[str] = None,
+    use_native: bool = True,
 ) -> CheckResult:
     """Type check an expression against an expected type with context.
 
@@ -1182,29 +1554,12 @@ def check_hole_impl(
         context_file: Path to .slop file for context (types, functions, etc.)
         fn_name: If provided, extract params from this function in context_file
         params: Parameter string like "((x Int) (y String))" - overrides fn_name extraction
+        use_native: If True, try native checker first before falling back to Python
 
     Returns:
         CheckResult with valid flag, errors list, and type information
     """
     from pathlib import Path
-
-    # Parse the expression
-    try:
-        expr_ast = parse(expr_str)
-        if not expr_ast:
-            return CheckResult(valid=False, errors=["Empty expression"])
-        expr = expr_ast[0]
-    except ParseError as e:
-        return CheckResult(valid=False, errors=[f"Parse error in expression: {e}"])
-
-    # Parse the expected type
-    try:
-        type_ast = parse(expected_type)
-        if not type_ast:
-            return CheckResult(valid=False, errors=["Empty type expression"])
-        expected_type_expr = type_ast[0]
-    except ParseError as e:
-        return CheckResult(valid=False, errors=[f"Parse error in type: {e}"])
 
     # Build context from file if provided
     context: Dict[str, Any] = {
@@ -1228,7 +1583,43 @@ def check_hole_impl(
         except Exception as e:
             return CheckResult(valid=False, errors=[f"Error reading context file: {e}"])
 
-    # Validate expression type
+    # Try native checker first if enabled
+    if use_native:
+        native_result = _try_native_checker(
+            expr_str,
+            expected_type,
+            context,
+            params=context.get('params', '')
+        )
+        if native_result is not None:
+            errors, inferred_str, expected_str = native_result
+            return CheckResult(
+                valid=len(errors) == 0,
+                errors=errors,
+                inferred_type=inferred_str,
+                expected_type=expected_str,
+            )
+
+    # Fall back to Python type checker
+    # Parse the expression
+    try:
+        expr_ast = parse(expr_str)
+        if not expr_ast:
+            return CheckResult(valid=False, errors=["Empty expression"])
+        expr = expr_ast[0]
+    except ParseError as e:
+        return CheckResult(valid=False, errors=[f"Parse error in expression: {e}"])
+
+    # Parse the expected type
+    try:
+        type_ast = parse(expected_type)
+        if not type_ast:
+            return CheckResult(valid=False, errors=["Empty type expression"])
+        expected_type_expr = type_ast[0]
+    except ParseError as e:
+        return CheckResult(valid=False, errors=[f"Parse error in type: {e}"])
+
+    # Validate expression type with Python checker
     errors, inferred_str, expected_str = _validate_expr_type(expr, expected_type_expr, context)
 
     return CheckResult(
@@ -1251,10 +1642,11 @@ class HoleFiller:
     }
 
     def __init__(self, configs: Dict[Tier, ModelConfig], provider,
-                 tier_limits: Optional[Dict[Tier, int]] = None):
+                 tier_limits: Optional[Dict[Tier, int]] = None,
+                 max_retries: int = 2):
         self.configs = configs
         self.provider = provider
-        self.max_retries = 2
+        self.max_retries = max_retries
 
         # Create per-tier semaphores for rate limiting
         limits = tier_limits or self.DEFAULT_TIER_LIMITS
@@ -1527,8 +1919,10 @@ class HoleFiller:
             context_set = set(hole.context)
             # Include FFI functions - they're globally available
             ffi_names = {s['name'] for s in context.get('ffi_specs', [])}
+            # Include function parameters - they're valid context items
+            param_names = set(_extract_param_names(context.get('params', '')))
             # Validate context items are actually defined
-            valid_items = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | enum_variants | ffi_names
+            valid_items = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | enum_variants | ffi_names | param_names
             invalid_context = context_set - valid_items
             if invalid_context:
                 errors.append(f"Invalid context items (not defined): {', '.join(sorted(invalid_context))}")
@@ -1574,10 +1968,34 @@ class HoleFiller:
         - FAIL on clear type mismatches (wrong type, missing cast)
         - ALLOW unknown types (?) from c-inline expressions
         - ALLOW unresolved type variables
+
+        Tries native checker first if available. If native reports errors,
+        verifies with Python checker (native may have false positives due to
+        type name formatting differences like Option_Int vs (Option Int)).
         """
         if not hole.type_expr:
             return []  # No type constraint to check
 
+        # Try native checker first
+        expr_str = pretty_print(expr)
+        expected_type_str = pretty_print(hole.type_expr)
+        native_result = _try_native_checker(
+            expr_str,
+            expected_type_str,
+            context,
+            params=context.get('params', '')
+        )
+        if native_result is not None:
+            errors, _, _ = native_result
+            if not errors:
+                # Native says it's valid - trust it
+                return []
+            # Native reports errors - verify with Python checker
+            # (native may have false positives due to type name format differences)
+            python_errors, _, _ = _validate_expr_type(expr, hole.type_expr, context)
+            return python_errors
+
+        # Fall back to Python type checker
         errors, _, _ = _validate_expr_type(expr, hole.type_expr, context)
         return errors
 

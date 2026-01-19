@@ -16,11 +16,14 @@
 
   (import parser (SExpr parse is-form))
   (import types (TypeError TypeErrorKind type-error-new
-                 Diagnostic DiagnosticLevel))
-  (import env (TypeEnv env-new env-get-diagnostics env-clear-diagnostics))
+                 Diagnostic DiagnosticLevel ResolvedType))
+  (import env (TypeEnv env-new env-get-diagnostics env-clear-diagnostics
+               env-arena env-push-scope env-pop-scope env-bind-var
+               env-lookup-type env-get-int-type env-get-bool-type
+               env-get-string-type env-get-unit-type env-get-arena-type))
   (import collect (collect-module))
   (import resolve (resolve-imports))
-  (import infer (infer-fn-body))
+  (import infer (infer-fn-body infer-expr))
   (import file (FileMode FileError File
                 file-open file-close file-read-all))
   (import strlib (cstring-to-string))
@@ -28,6 +31,16 @@
   ;; FFI for stdio functions
   (ffi "stdio.h"
     (putchar ((c Int)) Int))
+
+  ;; FFI for string functions
+  (ffi "string.h"
+    (strlen ((s (Ptr U8))) U64))
+
+  ;; ============================================================
+  ;; Output Format
+  ;; ============================================================
+
+  (type OutputFormat (enum fmt-text fmt-json))
 
   ;; ============================================================
   ;; Result Type
@@ -205,20 +218,28 @@
   (fn print-diagnostic ((arena Arena) (filename String) (diag Diagnostic))
     (@intent "Print a diagnostic message with location info")
     (@spec ((Arena String Diagnostic) -> Unit))
-    (let ((msg (. diag message))
-          (line (. diag line))
-          (col (. diag col))
-          (level (. diag level)))
-      (print filename)
-      (print ":")
-      (print line)
-      (print ":")
-      (print col)
-      (print ": ")
-      (match level
-        ('diag-warning (print "warning: "))
-        ('diag-error (print "error: ")))
-      (println msg)))
+    (print filename)
+    (print ":")
+    (print (. diag line))
+    (print ":")
+    (print (. diag col))
+    (print ": ")
+    (match (. diag level)
+      ('diag-warning (print "warning: "))
+      ('diag-error (print "error: ")))
+    (println (. diag message)))
+
+  (fn output-diagnostics-text ((arena Arena) (filename String) (diagnostics (List Diagnostic)))
+    (@intent "Output diagnostics in human-readable text format")
+    (@spec ((Arena String (List Diagnostic)) -> Unit))
+    (let ((len (list-len diagnostics))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get diagnostics i)
+          ((some diag) (print-diagnostic arena filename diag))
+          ((none) (do)))
+        (set! i (+ i 1))))
+    (do))
 
   ;; ============================================================
   ;; JSON Output for Multi-Module
@@ -285,27 +306,25 @@
   ;; Single File Processing
   ;; ============================================================
 
-  (fn check-single-file ((env (Ptr TypeEnv)) (arena Arena) (filename (Ptr U8)) (first Bool))
-    (@intent "Type check a single file using shared environment, output JSON")
-    (@spec (((Ptr TypeEnv) Arena (Ptr U8) Bool) -> Int))
+  (fn check-single-file ((env (Ptr TypeEnv)) (arena Arena) (filename (Ptr U8)) (format OutputFormat) (first Bool))
+    (@intent "Type check a single file using shared environment")
+    (@spec (((Ptr TypeEnv) Arena (Ptr U8) OutputFormat Bool) -> Int))
     (@pre (!= env nil))
     (@pre (!= filename nil))
     (let ((filename-str (cstring-to-string filename)))
       (match (file-open filename-str 'read)
         ((error e)
           (do
-            (print-str (cast (Ptr U8) "Error: Could not open file: "))
-            (print-str filename)
-            (putchar 10)
+            (print "Error: Could not open file: ")
+            (println filename-str)
             1))
         ((ok f)
           (match (file-read-all arena (addr f))
             ((error e)
               (do
                 (file-close (addr f))
-                (print-str (cast (Ptr U8) "Error: Could not read file: "))
-                (print-str filename)
-                (putchar 10)
+                (print "Error: Could not read file: ")
+                (println filename-str)
                 1))
             ((ok source)
               (do
@@ -319,21 +338,22 @@
                       (type-check-with-env env ast)
                       ;; Get diagnostics for this module
                       (let ((diagnostics (env-get-diagnostics env)))
-                        ;; Output JSON for this module
-                        (output-module-json arena mod-name diagnostics first)
+                        ;; Output based on format
+                        (when (== format 'fmt-json)
+                          (output-module-json arena mod-name diagnostics first))
+                        (when (== format 'fmt-text)
+                          (output-diagnostics-text arena filename-str diagnostics))
                         ;; Return error count
                         (count-errors diagnostics))))
                   ((error parse-err)
                     (do
-                      (print-str (cast (Ptr U8) "Parse error in "))
-                      (print-str filename)
-                      (print-str (cast (Ptr U8) " at line "))
-                      (print-string (int-to-string arena (. parse-err line)))
-                      (print-str (cast (Ptr U8) ", col "))
-                      (print-string (int-to-string arena (. parse-err col)))
-                      (print-str (cast (Ptr U8) ": "))
-                      (print-string (. parse-err message))
-                      (putchar 10)
+                      (print filename-str)
+                      (print ":")
+                      (print (. parse-err line))
+                      (print ":")
+                      (print (. parse-err col))
+                      (print ": error: ")
+                      (println (. parse-err message))
                       1))))))))))
 
   (fn count-errors ((diagnostics (List Diagnostic)))
@@ -353,34 +373,258 @@
       errors))
 
   ;; ============================================================
+  ;; Argv Helper
+  ;; ============================================================
+
+  (fn argv-to-string ((argv (Ptr (Ptr U8))) (index Int))
+    (@intent "Convert argv[index] to String")
+    (@spec (((Ptr (Ptr U8)) Int) -> String))
+    (let ((ptr (@ argv index)))
+      (String ptr (strlen ptr))))
+
+  ;; ============================================================
+  ;; Expression Mode Support
+  ;; ============================================================
+
+  (fn resolve-type-name ((env (Ptr TypeEnv)) (type-name String))
+    (@intent "Resolve a simple type name to a ResolvedType")
+    (@spec (((Ptr TypeEnv) String) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (match (env-lookup-type env type-name)
+      ((some t) t)
+      ((none)
+        (cond
+          ((string-eq type-name "Int") (env-get-int-type env))
+          ((string-eq type-name "Bool") (env-get-bool-type env))
+          ((string-eq type-name "String") (env-get-string-type env))
+          ((string-eq type-name "Unit") (env-get-unit-type env))
+          ((string-eq type-name "Arena") (env-get-arena-type env))
+          ;; Fallback to Int for unknown types
+          (else (env-get-int-type env))))))
+
+  (fn parse-and-bind-params ((env (Ptr TypeEnv)) (arena Arena) (params-str String))
+    (@intent "Parse a params string like '((a Int) (b String))' and bind to env")
+    (@spec (((Ptr TypeEnv) Arena String) -> Unit))
+    (@pre (!= env nil))
+    (match (parse arena params-str)
+      ((ok params-ast)
+        (when (> (list-len params-ast) 0)
+          (match (list-get params-ast 0)
+            ((some params-list)
+              ;; params-list is ((a Int) (b String) ...)
+              (match (deref params-list)
+                ((list lst)
+                  (let ((items (. lst items))
+                        (len (list-len items)))
+                    (for (i 0 len)
+                      (match (list-get items i)
+                        ((some param)
+                          ;; param is (name Type)
+                          (match (deref param)
+                            ((list param-lst)
+                              (let ((param-items (. param-lst items)))
+                                (when (>= (list-len param-items) 2)
+                                  (match (list-get param-items 0)
+                                    ((some name-expr)
+                                      (match (deref name-expr)
+                                        ((symbol name-sym)
+                                          (let ((param-name (. name-sym name)))
+                                            (match (list-get param-items 1)
+                                              ((some type-expr)
+                                                (match (deref type-expr)
+                                                  ((symbol type-sym)
+                                                    (let ((param-type (resolve-type-name env (. type-sym name))))
+                                                      (env-bind-var env param-name param-type)))
+                                                  ;; Complex type - use Int for now
+                                                  (_ (env-bind-var env param-name (env-get-int-type env)))))
+                                              ((none) (do)))))
+                                        (_ (do))))
+                                    ((none) (do))))))
+                            (_ (do))))
+                        ((none) (do))))))
+                (_ (do))))
+            ((none) (do)))))
+      ((error _) (do))))
+
+  (fn types-names-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
+    (@intent "Check if two types have equal names (simple comparison)")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
+    (@pure)
+    (@pre (!= a nil))
+    (@pre (!= b nil))
+    (let ((a-name (. (deref a) name))
+          (b-name (. (deref b) name)))
+      (cond
+        ;; Same name - equal
+        ((string-eq a-name b-name) true)
+        ;; Generic type "T" matches anything
+        ((or (string-eq a-name "T") (string-eq b-name "T")) true)
+        ;; Different names - not equal
+        (else false))))
+
+  (fn check-expr-mode ((arena Arena) (env (Ptr TypeEnv))
+                        (expr-str String) (type-str String)
+                        (context-file String) (params-str String))
+    (@intent "Type check an expression against expected type with context")
+    (@spec ((Arena (Ptr TypeEnv) String String String String) -> Int))
+    (@pre (!= env nil))
+    ;; 1. If context file provided, parse and collect types/functions
+    (when (> (string-len context-file) 0)
+      (match (file-open context-file 'read)
+        ((error _) (do))
+        ((ok f)
+          (match (file-read-all arena (addr f))
+            ((error _) (file-close (addr f)))
+            ((ok source)
+              (do
+                (file-close (addr f))
+                (match (parse arena source)
+                  ((ok context-ast)
+                    (do
+                      (collect-module env context-ast)
+                      (resolve-imports env context-ast)))
+                  ((error _) (do)))))))))
+    ;; 2. Push scope and bind params if provided
+    (env-push-scope env)
+    (when (> (string-len params-str) 0)
+      (parse-and-bind-params env arena params-str))
+    ;; 3. Parse the expression
+    (let ((result (match (parse arena expr-str)
+                    ((error parse-err)
+                      (do
+                        ;; Output JSON error
+                        (print-str (cast (Ptr U8) "{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":"))
+                        (print-string (int-to-string arena (. parse-err line)))
+                        (print-str (cast (Ptr U8) ",\"col\":"))
+                        (print-string (int-to-string arena (. parse-err col)))
+                        (print-str (cast (Ptr U8) ",\"message\":"))
+                        (print-json-string arena (. parse-err message))
+                        (print-str (cast (Ptr U8) "}]}\n"))
+                        1))
+                    ((ok expr-ast)
+                      (if (== (list-len expr-ast) 0)
+                        (do
+                          (print-str (cast (Ptr U8) "{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n"))
+                          1)
+                        (match (list-get expr-ast 0)
+                          ((none)
+                            (do
+                              (print-str (cast (Ptr U8) "{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n"))
+                              1))
+                          ((some expr)
+                            (do
+                              ;; 4. Infer expression type
+                              (let ((inferred-type (infer-expr env expr)))
+                                ;; 5. Parse expected type
+                                (let ((expected-type (resolve-type-name env type-str))
+                                      (diagnostics (env-get-diagnostics env))
+                                      (num-errors (count-errors diagnostics)))
+                                  ;; 6. Check type match and output result
+                                  (let ((type-match (types-names-equal inferred-type expected-type))
+                                        (final-diagnostics (env-get-diagnostics env))
+                                        (final-errors (count-errors final-diagnostics))
+                                        (is-valid (and type-match (== final-errors 0))))
+                                    (output-expr-result arena is-valid
+                                      (. (deref inferred-type) name) type-str final-diagnostics)
+                                    (if is-valid 0 1))))))))))))
+      (env-pop-scope env)
+      result))
+
+  (fn output-expr-result ((arena Arena) (valid Bool)
+                           (inferred-type String) (expected-type String)
+                           (diagnostics (List Diagnostic)))
+    (@intent "Output JSON result for expression mode")
+    (@spec ((Arena Bool String String (List Diagnostic)) -> Unit))
+    ;; {"valid": true/false, "inferred_type": "...", "expected_type": "...", "diagnostics": [...]}
+    (print-str (cast (Ptr U8) "{\"valid\":"))
+    (if valid
+      (print-str (cast (Ptr U8) "true"))
+      (print-str (cast (Ptr U8) "false")))
+    (print-str (cast (Ptr U8) ",\"inferred_type\":"))
+    (print-json-string arena inferred-type)
+    (print-str (cast (Ptr U8) ",\"expected_type\":"))
+    (print-json-string arena expected-type)
+    (print-str (cast (Ptr U8) ",\"diagnostics\":"))
+    (output-diagnostics-json arena diagnostics)
+    (print-str (cast (Ptr U8) "}\n"))
+    (do))
+
+  ;; ============================================================
   ;; Main - CLI Entry Point
   ;; ============================================================
 
   (fn main ((argc Int) (argv (Ptr (Ptr U8))))
-    (@intent "Entry point for the type checker CLI - supports multiple files")
+    (@intent "Entry point for the type checker CLI - supports multiple files and expression mode")
     (@spec ((Int (Ptr (Ptr U8))) -> Int))
     (if (< argc 2)
       (do
-        (print-str (cast (Ptr U8) "Usage: slop-checker <file.slop> [file2.slop ...]\n"))
+        (println "Usage: slop-checker [--json] <file.slop> [file2.slop ...]")
+        (println "       slop-checker --expr EXPR --type TYPE [--context FILE] [--params PARAMS]")
         1)
       (with-arena 4194304  ;; 4MB arena for multi-file builds
-        ;; Create a single shared environment for all modules
-        (let ((env (env-new arena))
-              (mut total-errors 0))
-          ;; Output JSON object opening
-          (putchar 123)  ;; {
-          ;; Process each input file using the shared environment
-          (let ((mut i 1)
-                (mut first true))
-            (while (< i argc)
-              (let ((filename (@ argv i))
-                    (errors (check-single-file env arena filename first)))
-                (set! total-errors (+ total-errors errors))
-                (set! first false))
-              (set! i (+ i 1))))
-          ;; Output JSON object closing
-          (putchar 125)  ;; }
-          (putchar 10)   ;; newline
-          ;; Return non-zero if any errors
-          (if (> total-errors 0) 1 0)))))
+        ;; Check for expression mode (--expr)
+        (if (string-eq (argv-to-string argv 1) "--expr")
+          (do
+            ;; Expression mode: parse --expr, --type, --context, --params flags
+            (let ((env (env-new arena))
+                  (mut expr-str String "")
+                  (mut type-str String "Int")
+                  (mut context-file String "")
+                  (mut params-str String "")
+                  (mut i 2))
+              ;; Get expression (required after --expr)
+              (when (< i argc)
+                (set! expr-str (argv-to-string argv i))
+                (set! i (+ i 1)))
+              ;; Parse remaining flags
+              (while (< i argc)
+                (let ((arg (argv-to-string argv i)))
+                  (cond
+                    ((string-eq arg "--type")
+                      (when (< (+ i 1) argc)
+                        (set! type-str (argv-to-string argv (+ i 1)))
+                        (set! i (+ i 2))))
+                    ((string-eq arg "--context")
+                      (when (< (+ i 1) argc)
+                        (set! context-file (argv-to-string argv (+ i 1)))
+                        (set! i (+ i 2))))
+                    ((string-eq arg "--params")
+                      (when (< (+ i 1) argc)
+                        (set! params-str (argv-to-string argv (+ i 1)))
+                        (set! i (+ i 2))))
+                    (else
+                      (set! i (+ i 1))))))
+              ;; Run expression mode
+              (if (== (string-len expr-str) 0)
+                (do
+                  (println "Error: --expr requires an expression argument")
+                  1)
+                (check-expr-mode arena env expr-str type-str context-file params-str))))
+          ;; Normal file mode
+          (let ((env (env-new arena))
+                (mut total-errors 0)
+                (mut format 'fmt-text)
+                (mut file-start 1))
+            ;; Check for --json flag
+            (when (string-eq (argv-to-string argv 1) "--json")
+              (set! format 'fmt-json)
+              (set! file-start 2))
+            ;; JSON opening brace if needed
+            (when (== format 'fmt-json)
+              (putchar 123))  ;; {
+            ;; Process each input file using the shared environment
+            (let ((mut i file-start)
+                  (mut first true))
+              (while (< i argc)
+                (let ((filename (@ argv i))
+                      (errors (check-single-file env arena filename format first)))
+                  (set! total-errors (+ total-errors errors))
+                  (set! first false))
+                (set! i (+ i 1))))
+            ;; JSON closing if needed
+            (when (== format 'fmt-json)
+              (putchar 125)   ;; }
+              (putchar 10))   ;; newline
+            ;; Return non-zero if any errors
+            (if (> total-errors 0) 1 0))))))
 )

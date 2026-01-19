@@ -26,6 +26,7 @@ from slop.providers import (
 )
 from slop.type_checker import TypeChecker, check_file, check_modules
 from slop.resolver import ModuleResolver, ResolverError
+from slop import paths
 
 
 def extract_requires_blocks(ast):
@@ -77,29 +78,15 @@ def extract_requires_blocks(ast):
 def find_native_component(name: str):
     """Find a native SLOP component binary.
 
+    Delegates to paths.find_native_binary() which respects SLOP_HOME.
+
     Args:
         name: Component name (e.g., 'parser', 'transpiler', 'checker')
 
     Returns:
         Path to binary if found, None otherwise
     """
-    from pathlib import Path
-
-    binary_name = f"slop-{name}"
-    # Project root bin/ directory (cli.py is at src/slop/cli.py)
-    project_root = Path(__file__).parent.parent.parent
-    locations = [
-        project_root / "bin" / binary_name,
-        Path.cwd() / binary_name,
-        Path.cwd() / "build" / binary_name,
-        # Native components built in lib/compiler/{name}/
-        Path.cwd() / "lib" / "compiler" / name / binary_name,
-    ]
-
-    for loc in locations:
-        if loc.exists():
-            return loc
-    return None
+    return paths.find_native_binary(name)
 
 
 def parse_native(input_file: str):
@@ -306,6 +293,10 @@ def cmd_parse(args):
     use_native = not getattr(args, 'python', False)
 
     try:
+        # Print deprecation warning when explicitly using Python parser
+        if not use_native:
+            print("Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+
         # Try native parser by default
         if use_native:
             import subprocess
@@ -324,8 +315,10 @@ def cmd_parse(args):
                 else:
                     # Native parser failed, fall back to Python
                     print("Native parser failed, falling back to Python", file=sys.stderr)
+                    print("Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             else:
                 print("Native parser not found, falling back to Python", file=sys.stderr)
+                print("Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         # Python parser
         ast = parse_file(args.input)
@@ -367,6 +360,10 @@ def cmd_transpile(args):
         input_path = Path(args.input)
         use_native = not getattr(args, 'python', False)
 
+        # Print deprecation warning when explicitly using Python transpiler
+        if not use_native:
+            print("Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+
         # Try native transpiler by default
         if use_native:
             c_code, success = transpile_native(str(input_path))
@@ -384,6 +381,7 @@ def cmd_transpile(args):
                     print(f"Native transpiler not available, falling back to Python", file=sys.stderr)
                 else:
                     print("Native transpiler not found, falling back to Python", file=sys.stderr)
+                print("Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         # Python transpiler path
         # Parse entry file to check for imports
@@ -1429,12 +1427,18 @@ def cmd_fill(args):
             print(f"Found {len(all_holes)} holes")
 
         # Create filler from config or use mock
-        if args.config:
+        # If --config specified, use it; otherwise look for slop.toml in current dir
+        config_file = args.config
+        if not config_file and Path("slop.toml").exists():
+            config_file = "slop.toml"
+
+        routing_config = {}
+        if config_file:
             try:
-                config = load_config(args.config)
-                configs, provider = create_from_config(config)
+                config = load_config(config_file)
+                configs, provider, routing_config = create_from_config(config)
                 if not quiet:
-                    print(f"Loaded config from {args.config}")
+                    print(f"Loaded config from {config_file}")
             except Exception as e:
                 print(f"Error loading config: {e}", file=sys.stderr)
                 return 1
@@ -1442,10 +1446,11 @@ def cmd_fill(args):
             configs = create_default_configs()
             provider = MockProvider()
             if not quiet:
-                print("Note: No --config specified. Using mock provider.")
+                print("Note: No slop.toml found. Using mock provider.")
                 print("      Create slop.toml from slop.toml.example for real LLM generation.")
 
-        filler = HoleFiller(configs, provider)
+        max_retries = routing_config.get('max_retries', 2)
+        filler = HoleFiller(configs, provider, max_retries=max_retries)
         if not quiet:
             print("Filling holes...")
 
@@ -1628,18 +1633,21 @@ def cmd_fill(args):
         output_text = '\n'.join(output_lines)
         output_text = format_source(output_text)
 
-        if args.inplace:
-            Path(input_file).write_text(output_text)
+        if args.stdout:
+            # Explicit stdout output
             if not quiet:
-                print(f"\nWrote {input_file}")
+                print("\n--- Filled source ---")
+            print(output_text)
         elif args.output:
+            # Write to specified output file
             Path(args.output).write_text(output_text)
             if not quiet:
                 print(f"\nWrote {args.output}")
         else:
+            # Default: write back to input file (in-place)
+            Path(input_file).write_text(output_text)
             if not quiet:
-                print("\n--- Filled source ---")
-            print(output_text)
+                print(f"\nWrote {input_file}")
 
         if not quiet:
             print(f"\n{success_count} filled, {fail_count} failed")
@@ -1678,13 +1686,21 @@ def cmd_check(args):
     try:
         use_native = not getattr(args, 'python', False)
 
+        # Print deprecation warning when explicitly using Python type checker
+        if not use_native:
+            print("Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+
         # Try native checker by default
         if use_native:
             checker_bin = find_native_component('checker')
             if checker_bin:
                 import subprocess
+                cmd = [str(checker_bin)]
+                if getattr(args, 'json', False):
+                    cmd.append('--json')
+                cmd.append(args.input)
                 result = subprocess.run(
-                    [str(checker_bin), args.input],
+                    cmd,
                     capture_output=True,
                     text=True,
                 )
@@ -1696,6 +1712,7 @@ def cmd_check(args):
                 return result.returncode
             else:
                 print("Native checker not found, falling back to Python", file=sys.stderr)
+                print("Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         ast = parse_file(args.input)
 
@@ -1886,16 +1903,19 @@ def cmd_build(args):
                 print(f"  Using native parser: {parser_bin}")
             else:
                 print("  Native parser not found, falling back to Python")
+                print("  Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             native_checker_bin = find_native_component('checker')
             if native_checker_bin:
                 print(f"  Using native type checker: {native_checker_bin}")
             else:
                 print("  Native type checker not found, falling back to Python")
+                print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             native_transpiler_bin = find_native_component('transpiler')
             if native_transpiler_bin:
                 print(f"  Using native transpiler: {native_transpiler_bin}")
             else:
                 print("  Native transpiler not found, falling back to Python")
+                print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         # Create output directory if needed
         output_dir = Path(output).parent
@@ -1949,7 +1969,7 @@ def cmd_build(args):
                 import subprocess
                 import json
                 source_files = [str(graph.modules[name].path) for name in order]
-                cmd = [native_checker_bin] + source_files
+                cmd = [native_checker_bin, '--json'] + source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 # Note: native checker returns non-zero on errors, but we still
                 # want to parse the JSON to show the diagnostics
@@ -1976,6 +1996,7 @@ def cmd_build(args):
                         return 1
             else:
                 # Fall back to Python type checker
+                print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                 all_diagnostics = check_modules(graph.modules, order)
                 for mod_name, diagnostics in all_diagnostics.items():
                     type_errors = [d for d in diagnostics if d.severity == 'error']
@@ -2020,6 +2041,7 @@ def cmd_build(args):
                     return 1
             else:
                 # Fall back to Python transpiler
+                print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                 from slop.transpiler import transpile_multi_split
                 results = transpile_multi_split(graph.modules, order)
 
@@ -2130,6 +2152,7 @@ def cmd_build(args):
                     return 1
             else:
                 # Use Python type checker
+                print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                 from slop.type_checker import check_source_ast
                 diagnostics = check_source_ast(ast, str(input_path))
                 type_errors = [d for d in diagnostics if d.severity == 'error']
@@ -2167,6 +2190,7 @@ def cmd_build(args):
                 else:
                     # Fall back to Python transpiler
                     print("  Native transpiler failed, falling back to Python...")
+                    print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                     from slop.transpiler import Transpiler
                     transpiler = Transpiler()
                     c_code = transpiler.transpile(ast)
@@ -2175,10 +2199,12 @@ def cmd_build(args):
                 if not success:
                     print(f"  Native transpiler failed: {c_code}")
                     print("  Falling back to Python transpiler...")
+                    print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                     from slop.transpiler import Transpiler
                     transpiler = Transpiler()
                     c_code = transpiler.transpile(ast)
             else:
+                print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
                 from slop.transpiler import Transpiler
                 transpiler = Transpiler()
                 c_code = transpiler.transpile(ast)
@@ -2189,9 +2215,11 @@ def cmd_build(args):
 
         # Write module header for library builds (needed for C interop)
         if library_mode and native_module_headers:
+            # Use same directory as output for header files
+            output_dir = os.path.dirname(output) or '.'
             for mod_name, header in native_module_headers.items():
                 c_mod_name = mod_name.replace('-', '_')
-                header_path = f"slop_{c_mod_name}.h"
+                header_path = os.path.join(output_dir, f"slop_{c_mod_name}.h")
                 with open(header_path, 'w') as f:
                     f.write(header)
                 print(f"  Module header: {header_path}")
@@ -3191,6 +3219,85 @@ def cmd_verify(args):
     return 0
 
 
+def cmd_paths(args):
+    """Show resolved SLOP paths for debugging."""
+    resolved = paths.get_resolved_paths()
+
+    print("SLOP Path Resolution")
+    print("=" * 50)
+
+    # SLOP_HOME status
+    slop_home_env = resolved.get('slop_home_env')
+    slop_home = resolved.get('slop_home')
+    if slop_home_env:
+        if slop_home:
+            print(f"SLOP_HOME: {slop_home} (set and valid)")
+        else:
+            print(f"SLOP_HOME: {slop_home_env} (set but invalid/missing)")
+    else:
+        print("SLOP_HOME: (not set)")
+
+    print()
+    print("Resolved Directories:")
+    print("-" * 50)
+
+    # Show each resolved directory
+    dirs = [
+        ('Spec dir', 'spec_dir'),
+        ('Examples dir', 'examples_dir'),
+        ('Stdlib dir', 'stdlib_dir'),
+        ('Bin dir', 'bin_dir'),
+        ('Package root', 'package_root'),
+    ]
+
+    for label, key in dirs:
+        value = resolved.get(key)
+        if value:
+            print(f"  {label:15} {value}")
+        else:
+            print(f"  {label:15} (not found)")
+
+    # Show native binaries
+    print()
+    print("Native Binaries:")
+    print("-" * 50)
+
+    binaries = ['parser', 'transpiler', 'checker']
+    for name in binaries:
+        binary_path = paths.find_native_binary(name)
+        if binary_path:
+            print(f"  slop-{name:12} {binary_path}")
+        else:
+            print(f"  slop-{name:12} (not found)")
+
+    # Show stdlib modules
+    print()
+    print("Stdlib Modules:")
+    print("-" * 50)
+
+    stdlib_modules = paths.list_stdlib_modules()
+    if stdlib_modules:
+        for module_path in stdlib_modules:
+            print(f"  {module_path.name}")
+    else:
+        print("  (none found)")
+
+    # Show examples
+    if args.verbose:
+        print()
+        print("Examples:")
+        print("-" * 50)
+
+        examples = paths.list_examples()
+        if examples:
+            for example_path in examples:
+                print(f"  {example_path.name}")
+        else:
+            print("  (none found)")
+
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='SLOP - Symbolic LLM-Optimized Programming',
@@ -3220,9 +3327,9 @@ def main():
     p = subparsers.add_parser('fill', help='Fill holes with LLM')
     p.add_argument('input', nargs='?', default=None,
                    help='Input file (optional if slop.toml has [project].entry)')
-    p.add_argument('-o', '--output')
-    p.add_argument('-i', '--inplace', action='store_true',
-        help='Modify input file in place')
+    p.add_argument('-o', '--output', help='Write to specified file instead of modifying input')
+    p.add_argument('--stdout', action='store_true',
+        help='Print to stdout instead of modifying the input file')
     p.add_argument('-c', '--config', help='Path to TOML config file')
     p.add_argument('-v', '--verbose', action='count', default=0,
         help='Increase verbosity (-v for info, -vv for debug with imported specs)')
@@ -3240,6 +3347,8 @@ def main():
     p.add_argument('input')
     p.add_argument('--python', action='store_true',
                    help='Use Python toolchain instead of native')
+    p.add_argument('--json', action='store_true',
+                   help='Output diagnostics as JSON')
 
     # check-hole
     p = subparsers.add_parser('check-hole', help='Validate expression against expected type')
@@ -3326,6 +3435,11 @@ def main():
     p.add_argument('--python', action='store_true',
         help='Use Python toolchain instead of native')
 
+    # paths - diagnostic command
+    p = subparsers.add_parser('paths', help='Show resolved SLOP paths')
+    p.add_argument('-v', '--verbose', action='store_true',
+        help='Show additional details (examples list)')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -3345,6 +3459,7 @@ def main():
         'ref': cmd_ref,
         'doc': cmd_doc,
         'test': cmd_test,
+        'paths': cmd_paths,
     }
 
     return commands[args.command](args)

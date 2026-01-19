@@ -2658,10 +2658,25 @@ class TypeChecker:
                 self._expect_type(post_type, PrimitiveType('Bool'), "@post condition", item[1])
 
         # Check body expressions
-        body_exprs = [item for item in form.items[3:]
-                     if not (is_form(item, '@intent') or is_form(item, '@spec') or
-                            is_form(item, '@pre') or is_form(item, '@post') or
-                            is_form(item, '@alloc') or is_form(item, '@pure'))]
+        # Filter out annotations and :c-name keyword-value pair
+        body_exprs = []
+        skip_next = False
+        for item in form.items[3:]:
+            if skip_next:
+                skip_next = False
+                continue
+            # Skip annotation forms
+            if (is_form(item, '@intent') or is_form(item, '@spec') or
+                is_form(item, '@pre') or is_form(item, '@post') or
+                is_form(item, '@alloc') or is_form(item, '@pure') or
+                is_form(item, '@example') or is_form(item, '@assume') or
+                is_form(item, '@deprecated')):
+                continue
+            # Skip :c-name and its following string value
+            if isinstance(item, Symbol) and item.name == ':c-name':
+                skip_next = True
+                continue
+            body_exprs.append(item)
 
         last_type: Type = PrimitiveType('Unit')
         for expr in body_exprs:

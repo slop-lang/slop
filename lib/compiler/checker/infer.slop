@@ -22,8 +22,10 @@
                env-lookup-function env-lookup-variant env-lookup-constant
                env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
+               env-get-unknown-type
                env-make-option-type env-make-ptr-type env-make-result-type env-get-generic-type
                env-add-warning env-add-error))
+  (import strlib (starts-with))
 
   ;; ============================================================
   ;; Type Comparison
@@ -315,6 +317,16 @@
               ((none) (env-get-unit-type env)))
             (env-get-unit-type env)))
 
+        ;; (addr expr) - take address of expression, returns pointer type
+        ((string-eq op "addr")
+          (if (>= len 2)
+            (match (list-get items 1)
+              ((some inner-expr)
+                (let ((inner-type (infer-expr env inner-expr)))
+                  (env-make-ptr-type env inner-type)))
+              ((none) (env-get-unit-type env)))
+            (env-get-unit-type env)))
+
         ;; (cast TargetType expr) - cast expression to target type
         ((string-eq op "cast")
           (if (>= len 2)
@@ -323,8 +335,30 @@
                 ;; Get the target type name and look it up
                 (let ((type-name (sexpr-get-symbol-name type-expr)))
                   (if (string-eq type-name "")
-                    ;; Complex type like (Ptr T) - for now return Int
-                    (env-get-int-type env)
+                    ;; Complex type like (Int 0 ..) or (Ptr T)
+                    ;; Check if it's a range type or other complex type
+                    (if (sexpr-is-list type-expr)
+                      (match (sexpr-list-get type-expr 0)
+                        ((some head-expr)
+                          (let ((head-name (sexpr-get-symbol-name head-expr)))
+                            (cond
+                              ;; Range type (Int min .. max) is Int
+                              ((string-eq head-name "Int") (env-get-int-type env))
+                              ;; Ptr type casts return Int (pointer as address)
+                              ((string-eq head-name "Ptr") (env-get-int-type env))
+                              ;; U8, U16, etc range types are Int
+                              ((string-eq head-name "U8") (env-get-int-type env))
+                              ((string-eq head-name "U16") (env-get-int-type env))
+                              ((string-eq head-name "U32") (env-get-int-type env))
+                              ((string-eq head-name "U64") (env-get-int-type env))
+                              ((string-eq head-name "I8") (env-get-int-type env))
+                              ((string-eq head-name "I16") (env-get-int-type env))
+                              ((string-eq head-name "I32") (env-get-int-type env))
+                              ((string-eq head-name "I64") (env-get-int-type env))
+                              ;; Other complex types - return Unknown
+                              (else (env-get-unknown-type env)))))
+                        ((none) (env-get-unknown-type env)))
+                      (env-get-unknown-type env))
                     ;; Simple type name - look it up
                     (match (env-lookup-type env type-name)
                       ((some t) t)
@@ -334,9 +368,9 @@
                           ((string-eq type-name "Bool") (env-get-bool-type env))
                           ((string-eq type-name "String") (env-get-string-type env))
                           ((string-eq type-name "Unit") (env-get-unit-type env))
-                          (else (env-get-int-type env))))))))
-              ((none) (env-get-int-type env)))
-            (env-get-int-type env)))
+                          (else (env-get-unknown-type env))))))))
+              ((none) (env-get-unknown-type env)))
+            (env-get-unknown-type env)))
 
         ;; (quote symbol) - quoted enum variant, look up the enum type
         ((string-eq op "quote")
@@ -345,17 +379,17 @@
               ((some variant-expr)
                 (let ((variant-name (sexpr-get-symbol-name variant-expr)))
                   (if (string-eq variant-name "")
-                    (env-get-int-type env)
+                    (env-get-unknown-type env)
                     ;; Look up which enum contains this variant
                     (match (env-lookup-variant env variant-name)
                       ((some enum-name)
                         ;; Look up the enum type
                         (match (env-lookup-type env enum-name)
                           ((some enum-type) enum-type)
-                          ((none) (env-get-int-type env))))
-                      ((none) (env-get-int-type env))))))
-              ((none) (env-get-int-type env)))
-            (env-get-int-type env)))
+                          ((none) (env-get-unknown-type env))))
+                      ((none) (env-get-unknown-type env))))))
+              ((none) (env-get-unknown-type env)))
+            (env-get-unknown-type env)))
 
         ;; (. obj field) - field access
         ((string-eq op ".")
@@ -375,6 +409,30 @@
         ((string-eq op "none")
           (env-make-option-type env nil))
 
+        ;; (record-new TypeName (field1 val1) ...) - create record instance
+        ((string-eq op "record-new")
+          (if (>= len 2)
+            (match (list-get items 1)
+              ((some type-expr)
+                (let ((type-name (sexpr-get-symbol-name type-expr)))
+                  (if (string-eq type-name "")
+                    (env-get-unit-type env)
+                    (match (env-lookup-type env type-name)
+                      ((some t) t)
+                      ((none) (env-get-unit-type env))))))
+              ((none) (env-get-unit-type env)))
+            (env-get-unit-type env)))
+
+        ;; (hole Type "prompt" [:context ...]) - unfilled hole
+        ((string-eq op "hole")
+          (let ((hole-type (resolve-hole-type env items len))
+                (raw-prompt (get-hole-prompt items len))
+                (arena (env-arena env))
+                (hole-msg (string-concat arena "Unfilled hole: " raw-prompt)))
+            ;; Report unfilled hole as an error
+            (env-add-error env hole-msg line col)
+            hole-type))
+
         ;; Function call - look up return type and check arguments
         (else
           (match (env-lookup-function env op)
@@ -389,10 +447,14 @@
                 ;; Check for built-in list functions
                 ((none)
                   (cond
-                    ;; list-get returns Option_T (generic Option)
-                    ((string-eq op "list-get") (env-make-option-type env nil))
-                    ;; list-len returns Int
-                    ((string-eq op "list-len") (env-get-int-type env))
+                    ;; list-get returns Option_T (generic Option) - expects 2 args: list, index
+                    ((string-eq op "list-get")
+                      (do (check-builtin-args env "list-get" 2 (- len 1) line col)
+                          (env-make-option-type env nil)))
+                    ;; list-len returns Int - expects 1 arg: list
+                    ((string-eq op "list-len")
+                      (do (check-builtin-args env "list-len" 1 (- len 1) line col)
+                          (env-get-int-type env)))
                     ;; arena-alloc returns Int (pointer)
                     ((string-eq op "arena-alloc") (env-get-int-type env))
                     ;; cast returns Int (approximation)
@@ -407,9 +469,18 @@
                     ((string-eq op "int-to-string") (env-get-string-type env))
                     ((string-eq op "char-at") (env-get-int-type env))
                     ;; List operations
-                    ((string-eq op "list-push") (env-get-unit-type env))
-                    ((string-eq op "list-pop") (env-make-option-type env nil))
-                    ((string-eq op "list-new") (env-get-int-type env))
+                    ;; list-push expects 2 args: list, item
+                    ((string-eq op "list-push")
+                      (do (check-builtin-args env "list-push" 2 (- len 1) line col)
+                          (env-get-unit-type env)))
+                    ;; list-pop expects 1 arg: list
+                    ((string-eq op "list-pop")
+                      (do (check-builtin-args env "list-pop" 1 (- len 1) line col)
+                          (env-make-option-type env nil)))
+                    ;; list-new expects 2 args: arena, Type
+                    ((string-eq op "list-new")
+                      (do (check-builtin-args env "list-new" 2 (- len 1) line col)
+                          (env-make-option-type env nil)))
                     ;; SExpr helpers
                     ((string-eq op "sexpr-is-list") (env-get-bool-type env))
                     ((string-eq op "sexpr-is-symbol") (env-get-bool-type env))
@@ -426,8 +497,8 @@
                     ((string-eq op "error") (env-make-result-type env))
                     ;; Option constructor
                     ((string-eq op "some") (env-make-option-type env nil))
-                    ;; Unknown function - return Int as fallback
-                    (else (env-get-int-type env)))))))))))
+                    ;; Unknown function/form - return Unknown type
+                    (else (env-get-unknown-type env)))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
                            (line Int) (col Int))
@@ -485,20 +556,50 @@
                 (let ((actual-type (infer-expr env arg-expr))
                       (expected-name (. (deref expected-type) name))
                       (actual-name (. (deref actual-type) name)))
-                  ;; Only warn if types differ and both are concrete primitives
+                  ;; Error if types differ, but skip check for:
+                  ;; - Unknown or generic T types
+                  ;; - Option_T matching any Option_* type
+                  ;; - Generic container types (Ptr_T, Ptr_Ptr_SExpr vs List, etc.)
+                  ;; - Unit (nil) passed to pointer types
                   (when (and (not (string-eq expected-name actual-name))
-                             (and (is-primitive-type expected-name)
-                                  (is-primitive-type actual-name)))
+                             (not (string-eq actual-name "Unknown"))
+                             (not (string-eq actual-name "T"))
+                             (not (string-eq expected-name "Unknown"))
+                             (not (string-eq expected-name "T"))
+                             ;; Allow Option_T to match any Option type
+                             (not (string-eq actual-name "Option_T"))
+                             ;; Allow Ptr_T to match any Ptr type
+                             (not (string-eq actual-name "Ptr_T"))
+                             ;; Allow generic List/Ptr mismatches for now
+                             (not (starts-with actual-name "Ptr_Ptr_"))
+                             ;; Allow Unit (nil) to match pointer types
+                             (not (and (string-eq actual-name "Unit")
+                                       (starts-with expected-name "Ptr_"))))
                     (let ((msg (string-concat arena "argument "
                                  (string-concat arena (int-to-string arena (+ arg-idx 1))
-                                   (string-concat arena " of '"
+                                   (string-concat arena " to '"
                                      (string-concat arena fn-name
                                        (string-concat arena "': expected "
                                          (string-concat arena expected-name
                                            (string-concat arena ", got " actual-name)))))))))
-                      (env-add-warning env msg line col)))))
+                      (env-add-error env msg line col)))))
               ((none) (do)))))
         ((none) (do)))))
+
+  (fn check-builtin-args ((env (Ptr TypeEnv)) (op String) (expected Int) (actual Int)
+                           (line Int) (col Int))
+    (@intent "Validate argument count for built-in operations")
+    (@spec (((Ptr TypeEnv) String Int Int Int Int) -> Unit))
+    (@pre (!= env nil))
+    (when (!= actual expected)
+      (let ((arena (env-arena env))
+            (msg (string-concat arena "'"
+                   (string-concat arena op
+                     (string-concat arena "' expects "
+                       (string-concat arena (int-to-string arena expected)
+                         (string-concat arena " argument(s), got "
+                           (int-to-string arena actual))))))))
+        (env-add-error env msg line col))))
 
   (fn infer-field-access ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList)
                            (line Int) (col Int))
@@ -552,7 +653,25 @@
         ;; For generic type T, return generic type
         (if (string-eq type-name "T")
           (env-get-generic-type env)
-          (env-get-int-type env)))))
+          ;; Allow String's internal fields (data, len)
+          (if (string-eq type-name "String")
+            (cond
+              ((string-eq field-name "data") (env-get-int-type env))  ;; char* as int for pointer
+              ((string-eq field-name "len") (env-get-int-type env))
+              (else (env-get-unknown-type env)))
+            ;; Allow Unknown type field access
+            (if (string-eq type-name "Unknown")
+              (env-get-unknown-type env)
+              ;; Allow field access on Ptr types (transpiler handles auto-dereference)
+              (if (starts-with type-name "Ptr_")
+                (env-get-unknown-type env)
+                ;; Error: trying to access field on non-record type
+                (let ((msg (string-concat arena "Cannot access field '"
+                             (string-concat arena field-name
+                               (string-concat arena "' on non-record type '"
+                                 (string-concat arena type-name "'"))))))
+                  (env-add-error env msg line col)
+                  (env-get-unknown-type env)))))))))
 
   (fn infer-cond-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of cond expression, checking branch types")
@@ -608,25 +727,41 @@
                       (let ((binding-name (sexpr-get-symbol-name binding-expr)))
                         (when (not (string-eq binding-name ""))
                           ;; Check if scrutinee is a generic type - if so, bind to generic
-                          (let ((scrutinee-name (. (deref scrutinee-type) name)))
+                          (let ((scrutinee-name (. (deref scrutinee-type) name))
+                                (scrutinee-kind (. (deref scrutinee-type) kind)))
                             (if (string-eq scrutinee-name "T")
                               ;; Generic scrutinee - bind to generic type
                               (env-bind-var env binding-name (env-get-generic-type env))
                               ;; Special case for Option types: "some" variant gets inner-type
-                              (if (and (== (. (deref scrutinee-type) kind) 'rk-option)
+                              (if (and (== scrutinee-kind 'rk-option)
                                        (string-eq variant-name "some"))
                                 ;; For Option types, payload is the inner-type
                                 (match (. (deref scrutinee-type) inner-type)
                                   ((some inner) (env-bind-var env binding-name inner))
                                   ;; Generic Option_T - bind to generic T type that matches anything
                                   ((none) (env-bind-var env binding-name (env-get-generic-type env))))
-                                ;; Normal variant lookup for non-Option types
-                                (match (resolved-type-get-variant-payload scrutinee-type variant-name)
-                                  ((some payload-type)
-                                    (env-bind-var env binding-name payload-type))
-                                  ((none)
-                                    ;; No payload - bind to generic type to avoid cascading errors
-                                    (env-bind-var env binding-name (env-get-generic-type env))))))))))
+                                ;; Special case for Result types: "ok" and "error" variants
+                                (if (== scrutinee-kind 'rk-result)
+                                  (cond
+                                    ;; "ok" variant gets inner-type (the success type)
+                                    ((string-eq variant-name "ok")
+                                      (match (. (deref scrutinee-type) inner-type)
+                                        ((some inner) (env-bind-var env binding-name inner))
+                                        ((none) (env-bind-var env binding-name (env-get-generic-type env)))))
+                                    ;; "error" variant gets inner-type2 (the error type)
+                                    ((string-eq variant-name "error")
+                                      (match (. (deref scrutinee-type) inner-type2)
+                                        ((some inner2) (env-bind-var env binding-name inner2))
+                                        ((none) (env-bind-var env binding-name (env-get-generic-type env)))))
+                                    ;; Other variant names - fallback to generic
+                                    (else (env-bind-var env binding-name (env-get-generic-type env))))
+                                  ;; Normal variant lookup for non-Option/non-Result types
+                                  (match (resolved-type-get-variant-payload scrutinee-type variant-name)
+                                    ((some payload-type)
+                                      (env-bind-var env binding-name payload-type))
+                                    ((none)
+                                      ;; No payload - bind to generic type to avoid cascading errors
+                                      (env-bind-var env binding-name (env-get-generic-type env)))))))))))
                     ((none) (do)))))))
           ((none) (do))))))
 
@@ -833,7 +968,7 @@
               ;; Complex type expression like (Option Int), (Ptr T), (List T)
               (if (sexpr-is-list type-expr)
                 (resolve-complex-type-expr env type-expr)
-                (env-get-int-type env))
+                (env-get-unknown-type env))
               ;; Simple symbol type - look it up
               (match (env-lookup-type env type-name)
                 ((some t) t)
@@ -843,8 +978,8 @@
                     ((string-eq type-name "Bool") (env-get-bool-type env))
                     ((string-eq type-name "String") (env-get-string-type env))
                     ((string-eq type-name "Unit") (env-get-unit-type env))
-                    (else (env-get-int-type env))))))))
-        ((none) (env-get-int-type env)))))
+                    (else (env-get-unknown-type env))))))))
+        ((none) (env-get-unknown-type env)))))
 
   (fn resolve-complex-type-expr ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
     (@intent "Resolve a complex type expression like (Option Int)")
@@ -867,23 +1002,35 @@
             ((string-eq head-name "List")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))
                 (env-make-ptr-type env inner-type)))
-            ;; Other complex types - fall back to Int
-            (else (env-get-int-type env)))))
-      ((none) (env-get-int-type env))))
+            ;; Thread type: (Thread T) - built-in parameterized type, treat as record
+            ((string-eq head-name "Thread")
+              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
+                ;; Thread is a record with id, done, result fields - use ptr to inner type as approximation
+                (env-make-ptr-type env inner-type)))
+            ;; Chan type: (Chan T) - built-in parameterized type, treat as record
+            ((string-eq head-name "Chan")
+              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
+                (env-make-ptr-type env inner-type)))
+            ;; User-defined generic types - look up the base type
+            (else
+              (match (env-lookup-type env head-name)
+                ((some t) t)
+                ((none) (env-get-unknown-type env)))))))
+      ((none) (env-get-unknown-type env))))
 
   (fn resolve-option-inner-type ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
     (@intent "Resolve the inner type of an Option type expression")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (if (< (sexpr-list-len type-expr) 2)
-      (env-get-int-type env)
+      (env-get-unknown-type env)
       (match (sexpr-list-get type-expr 1)
         ((some inner-expr)
           (let ((inner-name (sexpr-get-symbol-name inner-expr)))
             (if (string-eq inner-name "")
-              (env-get-int-type env)
+              (env-get-unknown-type env)
               (resolve-simple-type env inner-name))))
-        ((none) (env-get-int-type env)))))
+        ((none) (env-get-unknown-type env)))))
 
   (fn resolve-ptr-inner-type ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
     (@intent "Resolve the inner type of a Ptr or List type expression")
@@ -898,7 +1045,7 @@
               ;; Inner type is complex, e.g. (Ptr (Ptr Int)) - recursively resolve
               (if (sexpr-is-list inner-expr)
                 (resolve-complex-type-expr env inner-expr)
-                (env-get-int-type env))
+                (env-get-unknown-type env))
               (resolve-simple-type env inner-name))))
         ((none) (env-get-unit-type env)))))
 
@@ -1048,6 +1195,44 @@
                 name)))
           ((none) "unknown")))))
 
+  (fn resolve-hole-type ((env (Ptr TypeEnv)) (items (List (Ptr SExpr))) (len Int))
+    (@intent "Resolve the type from a hole form")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr)) Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    ;; (hole Type "prompt" ...) - type is at position 1
+    (if (< len 2)
+      (env-get-unit-type env)
+      ;; Use direct array access to avoid transpiler issues with nested match
+      (let ((type-expr (@ (. items data) 1)))
+        (if (== type-expr nil)
+          (env-get-unit-type env)
+          (let ((type-name (sexpr-get-symbol-name type-expr)))
+            (if (string-eq type-name "")
+              (env-get-unit-type env)
+              ;; Look up the type
+              (match (env-lookup-type env type-name)
+                ((some t) t)
+                ((none)
+                  (cond
+                    ((string-eq type-name "Int") (env-get-int-type env))
+                    ((string-eq type-name "Bool") (env-get-bool-type env))
+                    ((string-eq type-name "String") (env-get-string-type env))
+                    ((string-eq type-name "Unit") (env-get-unit-type env))
+                    (else (env-get-unit-type env)))))))))))
+
+  (fn get-hole-prompt ((items (List (Ptr SExpr))) (len Int))
+    (@intent "Extract the prompt string from a hole form")
+    (@spec (((List (Ptr SExpr)) Int) -> String))
+    ;; (hole Type "prompt" ...) - prompt is at position 2
+    (if (< len 3)
+      "(no description)"
+      (match (list-get items 2)
+        ((some prompt-expr)
+          (match (deref prompt-expr)
+            ((string str) (. str value))
+            (_ "(no description)")))
+        ((none) "(no description)"))))
+
   (fn find-last-body-idx ((items (List (Ptr SExpr))))
     (@intent "Find index of last body expression, skipping :c-name and its value")
     (@spec (((List (Ptr SExpr))) -> Int))
@@ -1175,5 +1360,5 @@
                           (_ (do))))
                       ((none) (do)))))
                 (_ (do))))
-            ((none) (do)))))))
-)
+            ((none) (do))))))))
+

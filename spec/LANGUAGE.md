@@ -619,7 +619,13 @@ Minimal runtime (~500 lines of C):
 ; Time
 (now-ms) -> (Int 0 ..)
 (sleep-ms ms) -> Unit
+
+; I/O
+(print val) -> Unit       ; Print value to stdout (no newline)
+(println val) -> Unit     ; Print value to stdout with newline
 ```
+
+**Type inference:** `print`/`println` accept String, Int, Bool, or Float and emit the appropriate printf format.
 
 **Note:** The functions above are BUILTINS - no import needed. For additional string
 operations (starts-with, contains, trim, parse-int, etc.), import from strlib:

@@ -417,12 +417,11 @@ def create_from_config(config: dict) -> tuple[Dict[Tier, ModelConfig], Provider]
             temperature=tconfig.get('temperature', 0.4)
         )
 
-    # Apply routing config if present
+    # Extract routing config
     routing = config.get('routing', {})
-    # Could store max_retries, escalate_on_failure for HoleFiller to use
 
     multi_provider = MultiProvider(providers)
-    return tier_configs, multi_provider
+    return tier_configs, multi_provider, routing
 
 
 def create_default_configs() -> Dict[Tier, ModelConfig]:
