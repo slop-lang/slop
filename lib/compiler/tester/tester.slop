@@ -4,7 +4,8 @@
 ;; Main orchestration module that:
 ;; 1. Parses SLOP source
 ;; 2. Extracts @example test cases
-;; 3. Generates C test harness code
+;; 3. Extracts type definitions for type-aware code generation
+;; 4. Generates C test harness code
 ;; ============================================================
 
 (module tester
@@ -18,7 +19,8 @@
   (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
   (import parser (parse ParseResult is-form sexpr-is-symbol sexpr-list-len sexpr-list-get sexpr-get-symbol-name))
   (import extract (TestCase extract-examples-from-ast))
-  (import emit (emit-test-harness))
+  (import emit (emit-test-harness emit-test-harness-typed))
+  (import type-extract (TypeRegistry extract-types-from-ast))
 
   ;; ============================================================
   ;; Module Name Extraction
@@ -71,11 +73,13 @@
             (if (== test-count 0)
               ;; No tests found
               (TestResult true (list-new arena String) 0 mod-name "")
-              ;; Step 4: Generate test harness
+              ;; Step 4: Extract type definitions
               (let ((prefix (if (> (cast Int (. mod-name len)) 0)
                               (convert-to-c-name arena mod-name)
-                              "")))
-                (let ((harness-lines (emit-test-harness arena test-cases prefix)))
+                              ""))
+                    (types (extract-types-from-ast arena exprs mod-name)))
+                ;; Step 5: Generate test harness (type-aware)
+                (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types)))
                   (TestResult true harness-lines test-count mod-name "")))))))
 
       ((error err)
