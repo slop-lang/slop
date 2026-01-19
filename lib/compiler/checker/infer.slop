@@ -447,10 +447,14 @@
                 ;; Check for built-in list functions
                 ((none)
                   (cond
-                    ;; list-get returns Option_T (generic Option)
-                    ((string-eq op "list-get") (env-make-option-type env nil))
-                    ;; list-len returns Int
-                    ((string-eq op "list-len") (env-get-int-type env))
+                    ;; list-get returns Option_T (generic Option) - expects 2 args: list, index
+                    ((string-eq op "list-get")
+                      (do (check-builtin-args env "list-get" 2 (- len 1) line col)
+                          (env-make-option-type env nil)))
+                    ;; list-len returns Int - expects 1 arg: list
+                    ((string-eq op "list-len")
+                      (do (check-builtin-args env "list-len" 1 (- len 1) line col)
+                          (env-get-int-type env)))
                     ;; arena-alloc returns Int (pointer)
                     ((string-eq op "arena-alloc") (env-get-int-type env))
                     ;; cast returns Int (approximation)
@@ -465,9 +469,18 @@
                     ((string-eq op "int-to-string") (env-get-string-type env))
                     ((string-eq op "char-at") (env-get-int-type env))
                     ;; List operations
-                    ((string-eq op "list-push") (env-get-unit-type env))
-                    ((string-eq op "list-pop") (env-make-option-type env nil))
-                    ((string-eq op "list-new") (env-get-int-type env))
+                    ;; list-push expects 2 args: list, item
+                    ((string-eq op "list-push")
+                      (do (check-builtin-args env "list-push" 2 (- len 1) line col)
+                          (env-get-unit-type env)))
+                    ;; list-pop expects 1 arg: list
+                    ((string-eq op "list-pop")
+                      (do (check-builtin-args env "list-pop" 1 (- len 1) line col)
+                          (env-make-option-type env nil)))
+                    ;; list-new expects 2 args: arena, Type
+                    ((string-eq op "list-new")
+                      (do (check-builtin-args env "list-new" 2 (- len 1) line col)
+                          (env-make-option-type env nil)))
                     ;; SExpr helpers
                     ((string-eq op "sexpr-is-list") (env-get-bool-type env))
                     ((string-eq op "sexpr-is-symbol") (env-get-bool-type env))
@@ -572,6 +585,21 @@
                       (env-add-error env msg line col)))))
               ((none) (do)))))
         ((none) (do)))))
+
+  (fn check-builtin-args ((env (Ptr TypeEnv)) (op String) (expected Int) (actual Int)
+                           (line Int) (col Int))
+    (@intent "Validate argument count for built-in operations")
+    (@spec (((Ptr TypeEnv) String Int Int Int Int) -> Unit))
+    (@pre (!= env nil))
+    (when (!= actual expected)
+      (let ((arena (env-arena env))
+            (msg (string-concat arena "'"
+                   (string-concat arena op
+                     (string-concat arena "' expects "
+                       (string-concat arena (int-to-string arena expected)
+                         (string-concat arena " argument(s), got "
+                           (int-to-string arena actual))))))))
+        (env-add-error env msg line col))))
 
   (fn infer-field-access ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList)
                            (line Int) (col Int))
