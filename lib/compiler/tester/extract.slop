@@ -237,49 +237,47 @@
     (@intent "Unpack grouped args like ((arg1 arg2)) to (arg1 arg2)")
     (@spec ((Arena (List (Ptr SExpr))) -> (List (Ptr SExpr))))
     (@alloc arena)
-    ;; If args is a single-element list containing a list that doesn't look
-    ;; like a function call, unpack it
-    (if (!= (list-len args) 1)
-      args  ;; Multiple args, don't unpack
-      (match (list-get args 0)
-        ((none) args)
-        ((some first-arg)
-          (if (not (sexpr-is-symbol first-arg))
-            ;; First arg is a list, check if it should be unpacked
-            (let ((inner-len (sexpr-list-len first-arg)))
-              (if (== inner-len 0)
-                (list-new arena (Ptr SExpr))  ;; Empty inner list means no args
-                (match (sexpr-list-get first-arg 0)
-                  ((none) args)
-                  ((some first-inner)
-                    ;; Check if first item is 'arena' marker
-                    (if (and (sexpr-is-symbol first-inner)
-                             (string-eq (sexpr-get-symbol-name first-inner) "arena"))
-                      ;; Skip arena marker and collect remaining items
-                      (let ((unpacked (list-new arena (Ptr SExpr)))
-                            (mut i 1))
-                        (while (< i inner-len)
-                          (match (sexpr-list-get first-arg i)
-                            ((some item) (list-push unpacked item))
-                            ((none) (do)))
-                          (set! i (+ i 1)))
-                        unpacked)
-                      ;; Check if first inner is not a symbol (meaning it's a value list, not fn call)
-                      ;; Unpack if first element is: a number, string, or a list (complex expression)
-                      (if (or (sexpr-is-number first-inner)
-                              (sexpr-is-string first-inner)
-                              (not (sexpr-is-symbol first-inner)))
-                        ;; It's a grouped argument list, unpack it
+    ;; Use mutable result to ensure consistent return type
+    (let ((mut result (List (Ptr SExpr)) args))
+      ;; Only process single-element lists
+      (when (== (list-len args) 1)
+        (match (list-get args 0)
+          ((some first-arg)
+            (when (not (sexpr-is-symbol first-arg))
+              ;; First arg is a list, check if it should be unpacked
+              (let ((inner-len (sexpr-list-len first-arg)))
+                (if (== inner-len 0)
+                  (set! result (list-new arena (Ptr SExpr)))
+                  (match (sexpr-list-get first-arg 0)
+                    ((some first-inner)
+                      ;; Check if first item is 'arena' marker
+                      (if (and (sexpr-is-symbol first-inner)
+                               (string-eq (sexpr-get-symbol-name first-inner) "arena"))
+                        ;; Skip arena marker and collect remaining items
                         (let ((unpacked (list-new arena (Ptr SExpr)))
-                              (mut i 0))
+                              (mut i 1))
                           (while (< i inner-len)
                             (match (sexpr-list-get first-arg i)
                               ((some item) (list-push unpacked item))
                               ((none) (do)))
                             (set! i (+ i 1)))
-                          unpacked)
-                        args))))))  ;; It's a function call, don't unpack
-            args)))))  ;; First arg is a symbol, don't unpack
+                          (set! result unpacked))
+                        ;; Check if first inner is not a symbol (value list, not fn call)
+                        (when (or (sexpr-is-number first-inner)
+                                  (sexpr-is-string first-inner)
+                                  (not (sexpr-is-symbol first-inner)))
+                          ;; It's a grouped argument list, unpack it
+                          (let ((unpacked (list-new arena (Ptr SExpr)))
+                                (mut i 0))
+                            (while (< i inner-len)
+                              (match (sexpr-list-get first-arg i)
+                                ((some item) (list-push unpacked item))
+                                ((none) (do)))
+                              (set! i (+ i 1)))
+                            (set! result unpacked)))))
+                    ((none) (do)))))))
+          ((none) (do))))
+      result))
 
   ;; ============================================================
   ;; Module-level Extraction

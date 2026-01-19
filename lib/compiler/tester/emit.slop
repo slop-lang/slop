@@ -1494,22 +1494,9 @@
                           "(int)result"
                           "%d"
                           (string-concat arena "(int)" c-expected)))
-                      ;; Check for record types (need memcmp)
+                      ;; Check for record types (need field-by-field comparison)
                       (if (is-record-constructor-typed expected types)
-                        (let ((c-expected (sexpr-to-c-typed arena expected prefix types)))
-                          (let ((expected-var-name "expected_value"))
-                            (CompareInfo
-                              (string-concat arena "({ typeof(result) "
-                                (string-concat arena expected-var-name
-                                  (string-concat arena " = "
-                                    (string-concat arena c-expected
-                                      (string-concat arena "; memcmp(&result, &"
-                                        (string-concat arena expected-var-name
-                                          ", sizeof(result)) == 0; })"))))))
-                              "%s"
-                              "\"<record>\""
-                              "%s"
-                              "\"<expected>\"")))
+                        (build-record-comparison-typed arena expected prefix types)
                         ;; Default: integer comparison
                         (let ((c-expected (sexpr-to-c-typed arena expected prefix types)))
                           (CompareInfo
@@ -1518,6 +1505,111 @@
                             "(long long)result"
                             "%lld"
                             (string-concat arena "(long long)" c-expected))))))))))))))
+
+  ;; ============================================================
+  ;; Record Comparison Building
+  ;; ============================================================
+
+  (fn build-record-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (prefix String) (types TypeRegistry))
+    (@intent "Build field-by-field comparison for record types")
+    (@spec ((Arena (Ptr SExpr) String TypeRegistry) -> CompareInfo))
+    (@alloc arena)
+    ;; Extract record type name from expected expression (first symbol)
+    (let ((record-name (get-record-name-from-expr expected))
+          (c-expected (sexpr-to-c-typed arena expected prefix types)))
+      (match (registry-get-record-fields types record-name)
+        ((some fields)
+          ;; Build field-by-field comparison
+          (let ((expected-var-name "expected_value")
+                (compare-expr (build-record-field-comparisons arena fields prefix expected-var-name)))
+            (CompareInfo
+              (string-concat arena "({ typeof(result) "
+                (string-concat arena expected-var-name
+                  (string-concat arena " = "
+                    (string-concat arena c-expected
+                      (string-concat arena "; "
+                        (string-concat arena compare-expr "; })"))))))
+              "%s"
+              "\"<record>\""
+              "%s"
+              "\"<expected>\"")))
+        ((none)
+          ;; Fallback to memcmp if we can't find the record type
+          (let ((expected-var-name "expected_value"))
+            (CompareInfo
+              (string-concat arena "({ typeof(result) "
+                (string-concat arena expected-var-name
+                  (string-concat arena " = "
+                    (string-concat arena c-expected
+                      (string-concat arena "; memcmp(&result, &"
+                        (string-concat arena expected-var-name
+                          ", sizeof(result)) == 0; })"))))))
+              "%s"
+              "\"<record>\""
+              "%s"
+              "\"<expected>\""))))))
+
+  (fn get-record-name-from-expr ((expr (Ptr SExpr)))
+    (@intent "Extract record type name from a record constructor expression")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 0)
+            ""
+            (match (list-get items 0)
+              ((some first)
+                (if (sexpr-is-symbol first)
+                  (sexpr-get-symbol-name first)
+                  ""))
+              ((none) "")))))
+      (_ "")))
+
+  (fn build-record-field-comparisons ((arena Arena) (fields (List FieldEntry)) (prefix String) (expected-var String))
+    (@intent "Build comparison expressions for all record fields")
+    (@spec ((Arena (List FieldEntry) String String) -> String))
+    (@alloc arena)
+    (let ((len (list-len fields))
+          (mut result "1")  ;; Start with true
+          (mut i 0))
+      (while (< i len)
+        (match (list-get fields i)
+          ((some field)
+            (let ((fname (. field name))
+                  (ftype (. field type-name))
+                  (field-cmp (build-single-field-comparison arena fname ftype expected-var)))
+              (set! result (string-concat arena result
+                             (string-concat arena " && " field-cmp)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  (fn build-single-field-comparison ((arena Arena) (fname String) (ftype String) (expected-var String))
+    (@intent "Build comparison for a single record field")
+    (@spec ((Arena String String String) -> String))
+    (@alloc arena)
+    ;; Check field type and generate appropriate comparison
+    (if (contains ftype "List")
+      ;; For List fields, compare lengths (both should be 0 for empty lists)
+      (string-concat arena "result."
+        (string-concat arena fname
+          (string-concat arena ".len == "
+            (string-concat arena expected-var
+              (string-concat arena "." (string-concat arena fname ".len"))))))
+      (if (contains ftype "String")
+        ;; For String fields, use slop_string_eq
+        (string-concat arena "slop_string_eq(result."
+          (string-concat arena fname
+            (string-concat arena ", "
+              (string-concat arena expected-var
+                (string-concat arena "." (string-concat arena fname ")"))))))
+        ;; For other fields (Int, Bool, etc), use ==
+        (string-concat arena "result."
+          (string-concat arena fname
+            (string-concat arena " == "
+              (string-concat arena expected-var
+                (string-concat arena "." fname))))))))
 
   ;; ============================================================
   ;; Union Comparison Building
