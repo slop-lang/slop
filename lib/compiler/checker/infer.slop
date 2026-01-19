@@ -25,6 +25,7 @@
                env-get-unknown-type
                env-make-option-type env-make-ptr-type env-make-result-type env-get-generic-type
                env-add-warning env-add-error))
+  (import strlib (starts-with))
 
   ;; ============================================================
   ;; Type Comparison
@@ -334,8 +335,30 @@
                 ;; Get the target type name and look it up
                 (let ((type-name (sexpr-get-symbol-name type-expr)))
                   (if (string-eq type-name "")
-                    ;; Complex type like (Ptr T) - return Unknown
-                    (env-get-unknown-type env)
+                    ;; Complex type like (Int 0 ..) or (Ptr T)
+                    ;; Check if it's a range type or other complex type
+                    (if (sexpr-is-list type-expr)
+                      (match (sexpr-list-get type-expr 0)
+                        ((some head-expr)
+                          (let ((head-name (sexpr-get-symbol-name head-expr)))
+                            (cond
+                              ;; Range type (Int min .. max) is Int
+                              ((string-eq head-name "Int") (env-get-int-type env))
+                              ;; Ptr type casts return Int (pointer as address)
+                              ((string-eq head-name "Ptr") (env-get-int-type env))
+                              ;; U8, U16, etc range types are Int
+                              ((string-eq head-name "U8") (env-get-int-type env))
+                              ((string-eq head-name "U16") (env-get-int-type env))
+                              ((string-eq head-name "U32") (env-get-int-type env))
+                              ((string-eq head-name "U64") (env-get-int-type env))
+                              ((string-eq head-name "I8") (env-get-int-type env))
+                              ((string-eq head-name "I16") (env-get-int-type env))
+                              ((string-eq head-name "I32") (env-get-int-type env))
+                              ((string-eq head-name "I64") (env-get-int-type env))
+                              ;; Other complex types - return Unknown
+                              (else (env-get-unknown-type env)))))
+                        ((none) (env-get-unknown-type env)))
+                      (env-get-unknown-type env))
                     ;; Simple type name - look it up
                     (match (env-lookup-type env type-name)
                       ((some t) t)
@@ -520,8 +543,25 @@
                 (let ((actual-type (infer-expr env arg-expr))
                       (expected-name (. (deref expected-type) name))
                       (actual-name (. (deref actual-type) name)))
-                  ;; Error if types differ (check all types, not just primitives)
-                  (when (not (string-eq expected-name actual-name))
+                  ;; Error if types differ, but skip check for:
+                  ;; - Unknown or generic T types
+                  ;; - Option_T matching any Option_* type
+                  ;; - Generic container types (Ptr_T, Ptr_Ptr_SExpr vs List, etc.)
+                  ;; - Unit (nil) passed to pointer types
+                  (when (and (not (string-eq expected-name actual-name))
+                             (not (string-eq actual-name "Unknown"))
+                             (not (string-eq actual-name "T"))
+                             (not (string-eq expected-name "Unknown"))
+                             (not (string-eq expected-name "T"))
+                             ;; Allow Option_T to match any Option type
+                             (not (string-eq actual-name "Option_T"))
+                             ;; Allow Ptr_T to match any Ptr type
+                             (not (string-eq actual-name "Ptr_T"))
+                             ;; Allow generic List/Ptr mismatches for now
+                             (not (starts-with actual-name "Ptr_Ptr_"))
+                             ;; Allow Unit (nil) to match pointer types
+                             (not (and (string-eq actual-name "Unit")
+                                       (starts-with expected-name "Ptr_"))))
                     (let ((msg (string-concat arena "argument "
                                  (string-concat arena (int-to-string arena (+ arg-idx 1))
                                    (string-concat arena " to '"
@@ -585,13 +625,22 @@
         ;; For generic type T, return generic type
         (if (string-eq type-name "T")
           (env-get-generic-type env)
-          ;; Error: trying to access field on non-record type
-          (let ((msg (string-concat arena "Cannot access field '"
-                       (string-concat arena field-name
-                         (string-concat arena "' on non-record type '"
-                           (string-concat arena type-name "'"))))))
-            (env-add-error env msg line col)
-            (env-get-unknown-type env))))))
+          ;; Allow String's internal fields (data, len)
+          (if (string-eq type-name "String")
+            (cond
+              ((string-eq field-name "data") (env-get-int-type env))  ;; char* as int for pointer
+              ((string-eq field-name "len") (env-get-int-type env))
+              (else (env-get-unknown-type env)))
+            ;; Allow Unknown type field access
+            (if (string-eq type-name "Unknown")
+              (env-get-unknown-type env)
+              ;; Error: trying to access field on non-record type
+              (let ((msg (string-concat arena "Cannot access field '"
+                           (string-concat arena field-name
+                             (string-concat arena "' on non-record type '"
+                               (string-concat arena type-name "'"))))))
+                (env-add-error env msg line col)
+                (env-get-unknown-type env))))))))
 
   (fn infer-cond-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of cond expression, checking branch types")
@@ -660,13 +709,28 @@
                                   ((some inner) (env-bind-var env binding-name inner))
                                   ;; Generic Option_T - bind to generic T type that matches anything
                                   ((none) (env-bind-var env binding-name (env-get-generic-type env))))
-                                ;; Normal variant lookup for non-Option types
-                                (match (resolved-type-get-variant-payload scrutinee-type variant-name)
-                                  ((some payload-type)
-                                    (env-bind-var env binding-name payload-type))
-                                  ((none)
-                                    ;; No payload - bind to generic type to avoid cascading errors
-                                    (env-bind-var env binding-name (env-get-generic-type env))))))))))
+                                ;; Special case for Result types: "ok" and "error" variants
+                                (if (== scrutinee-kind 'rk-result)
+                                  (cond
+                                    ;; "ok" variant gets inner-type (the success type)
+                                    ((string-eq variant-name "ok")
+                                      (match (. (deref scrutinee-type) inner-type)
+                                        ((some inner) (env-bind-var env binding-name inner))
+                                        ((none) (env-bind-var env binding-name (env-get-generic-type env)))))
+                                    ;; "error" variant gets inner-type2 (the error type)
+                                    ((string-eq variant-name "error")
+                                      (match (. (deref scrutinee-type) inner-type2)
+                                        ((some inner2) (env-bind-var env binding-name inner2))
+                                        ((none) (env-bind-var env binding-name (env-get-generic-type env)))))
+                                    ;; Other variant names - fallback to generic
+                                    (else (env-bind-var env binding-name (env-get-generic-type env))))
+                                  ;; Normal variant lookup for non-Option/non-Result types
+                                  (match (resolved-type-get-variant-payload scrutinee-type variant-name)
+                                    ((some payload-type)
+                                      (env-bind-var env binding-name payload-type))
+                                    ((none)
+                                      ;; No payload - bind to generic type to avoid cascading errors
+                                      (env-bind-var env binding-name (env-get-generic-type env)))))))))))
                     ((none) (do)))))))
           ((none) (do))))))
 
@@ -1253,5 +1317,5 @@
                           (_ (do))))
                       ((none) (do)))))
                 (_ (do))))
-            ((none) (do)))))))
-)
+            ((none) (do))))))))
+

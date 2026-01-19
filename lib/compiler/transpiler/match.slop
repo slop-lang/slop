@@ -571,6 +571,7 @@
             (ctx-emit ctx (ctx-str ctx "case " case-label))
             (ctx-emit ctx "{")
             (ctx-indent ctx)
+            (ctx-push-scope ctx)
             ;; Extract binding if present
             (match (extract-binding-name pattern)
               ((some binding-name)
@@ -582,6 +583,7 @@
               ((none) (do)))
             ;; Emit body
             (emit-branch-body ctx branch-items is-return)
+            (ctx-pop-scope ctx)
             (when (not is-return) (ctx-emit ctx "break;"))
             (ctx-dedent ctx)
             (ctx-emit ctx "}")))

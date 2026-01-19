@@ -117,6 +117,39 @@
         (string-eq op "-")))
 
   ;; ============================================================
+  ;; Symbol Name Extraction
+  ;; ============================================================
+
+  (fn extract-symbol-name ((expr (Ptr SExpr)))
+    (@intent "Extract symbol name from either bare symbol or (quote symbol)")
+    (@spec (((Ptr SExpr)) -> (Option String)))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ;; Direct symbol: just return the name
+      ((symbol sym) (some (. sym name)))
+      ;; List form: check for (quote symbol)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 2)
+            none
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((symbol head-sym)
+                    (if (string-eq (. head-sym name) "quote")
+                      ;; It's a quote form - extract the inner symbol
+                      (match (list-get items 1)
+                        ((some inner)
+                          (match (deref inner)
+                            ((symbol inner-sym) (some (. inner-sym name)))
+                            (else none)))
+                        ((none) none))
+                      none))
+                  (else none)))
+              ((none) none)))))
+      (else none)))
+
+  ;; ============================================================
   ;; Literal Transpilation
   ;; ============================================================
 
@@ -1129,6 +1162,7 @@
                     ((and (string-eq op "map-keys") (>= len 2))
                       (transpile-map-keys ctx items))
                     ;; union-new: (union-new Type tag value?) -> ((Type){ .tag = Type_tag, .data.tag = value })
+                    ;; tag can be bare symbol or quoted symbol like 'literal
                     ((and (string-eq op "union-new") (>= len 3))
                       (match (list-get items 1)
                         ((some type-expr)
@@ -1136,14 +1170,15 @@
                             ((some tag-expr)
                               (match (deref type-expr)
                                 ((symbol type-sym)
-                                  (match (deref tag-expr)
-                                    ((symbol tag-sym)
+                                  ;; Extract tag name from either bare symbol or (quote symbol)
+                                  (match (extract-symbol-name tag-expr)
+                                    ((some tag-str)
                                       ;; Look up registered type to get proper c-name with module prefix
                                       (let ((raw-type-name (. type-sym name))
                                             (type-name (match (ctx-lookup-type ctx raw-type-name)
                                                          ((some entry) (. entry c-name))
                                                          ((none) (to-c-name arena raw-type-name))))
-                                            (tag-name (to-c-name arena (. tag-sym name)))
+                                            (tag-name (to-c-name arena tag-str))
                                             ;; Build tag constant: Type_tag
                                             (tag-const (ctx-str ctx type-name (ctx-str ctx "_" tag-name))))
                                         ;; Check for optional value
@@ -1156,7 +1191,7 @@
                                             ((none) "/* missing union value */"))
                                           ;; No value - just tag: ((Type){ .tag = Type_tag })
                                           (ctx-str3 ctx "((" type-name (ctx-str3 ctx "){ .tag = " tag-const " })")))))
-                                    (_ "/* union-new tag must be symbol */")))
+                                    ((none) "/* union-new tag must be symbol */")))
                                 (_ "/* union-new type must be symbol */")))
                             ((none) "/* missing union tag */")))
                         ((none) "/* missing union type */")))

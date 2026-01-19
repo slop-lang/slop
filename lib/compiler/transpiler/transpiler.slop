@@ -135,7 +135,12 @@
                               ((list def-lst)
                                 (scan-record-fields-for-generics ctx (. def-lst items)))
                               (else (do))))
-                          ((none) (do)))))
+                          ((none) (do))))
+                      ;; Also register Option type for this record/union type itself
+                      ;; since (Option UserType) is commonly used
+                      (let ((type-id (type-to-identifier arena c-name))
+                            (option-c-name (ctx-str ctx "slop_option_" type-id)))
+                        (ctx-register-option-type ctx c-name option-c-name)))
                     ;; Check if this is a type alias to Result and register it
                     (when (>= (list-len items) 3)
                       (match (list-get items 2)
@@ -987,18 +992,57 @@
   ;; ============================================================
 
   (fn emit-all-types ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Emit all type definitions")
+    (@intent "Emit all type definitions in dependency order")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
     (@pre {ctx != nil})
+    ;; Two-pass emission: unions depend on their payload types, so emit non-unions first
+    ;; Pass 1: Emit all non-union types (records, enums, type aliases)
     (let ((len (list-len items))
           (mut i 0))
       (while (< i len)
         (match (list-get items i)
           ((some item)
-            (when (is-type-def item)
+            (when (and (is-type-def item) (not (is-union-type-def item)))
+              (transpile-type ctx item)))
+          ((none) (do)))
+        (set! i (+ i 1))))
+    ;; Pass 2: Emit all union types (which may depend on pass 1 types)
+    (let ((len (list-len items))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get items i)
+          ((some item)
+            (when (and (is-type-def item) (is-union-type-def item))
               (transpile-type ctx item)))
           ((none) (do)))
         (set! i (+ i 1)))))
+
+  (fn is-union-type-def ((item (Ptr SExpr)))
+    (@intent "Check if item is a union type definition")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {item != nil})
+    (match (deref item)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 3)
+            false
+            ;; Check if third element starts with 'union'
+            (match (list-get items 2)
+              ((some def-expr)
+                (match (deref def-expr)
+                  ((list def-lst)
+                    (let ((def-items (. def-lst items)))
+                      (if (< (list-len def-items) 1)
+                        false
+                        (match (list-get def-items 0)
+                          ((some head)
+                            (match (deref head)
+                              ((symbol sym) (string-eq (. sym name) "union"))
+                              (else false)))
+                          ((none) false)))))
+                  (else false)))
+              ((none) false)))))
+      (else false)))
 
   (fn is-type-def ((item (Ptr SExpr)))
     (@intent "Check if item is a type definition")
@@ -1115,6 +1159,10 @@
                 (emit-value-option-types-header ctx)
                 ;; Emit complex struct types (those with value List/Option fields)
                 (emit-complex-struct-types-header ctx items body-start)
+                ;; Emit value-element List types for complex structs (now that complex structs are defined)
+                (emit-complex-value-list-types-header ctx)
+                ;; Emit value-element Option types for complex structs (now that complex structs are defined)
+                (emit-complex-value-option-types-header ctx)
                 ;; Emit generated Result types
                 (emit-result-types-header ctx)
                 ;; Emit Result type aliases (after Result types so they can reference slop_result_*)
@@ -2075,7 +2123,7 @@
         (set! i (+ i 1)))))
 
   (fn emit-value-option-types-header ((ctx (Ptr TranspileContext)))
-    (@intent "Emit value-element Option types to header (after struct definitions)")
+    (@intent "Emit value-element Option types for simple structs (inner type already emitted)")
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
     (let ((option-types (ctx-get-option-types ctx))
@@ -2084,8 +2132,28 @@
       (while (< i len)
         (match (list-get option-types i)
           ((some ot)
-            ;; Only emit value-element options here (not pointer types)
+            ;; Only emit value-element options whose inner type is already emitted
+            ;; This handles Options of simple structs; complex struct options come later
+            (when (and (not (is-pointer-elem-type (. ot inner-type)))
+                       (is-type-emitted-or-primitive ctx (. ot inner-type)))
+              (emit-single-option-type-header ctx ot)))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn emit-complex-value-option-types-header ((ctx (Ptr TranspileContext)))
+    (@intent "Emit value-element Option types for complex structs (after complex struct definitions)")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((option-types (ctx-get-option-types ctx))
+          (len (list-len option-types))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get option-types i)
+          ((some ot)
+            ;; Emit value-element options that weren't emitted before (complex struct inner types)
+            ;; At this point, complex structs are emitted, so is-type-emitted-or-primitive will be true
             (when (not (is-pointer-elem-type (. ot inner-type)))
+              ;; emit-single will skip if already emitted due to #ifndef guard
               (emit-single-option-type-header ctx ot)))
           ((none) (do)))
         (set! i (+ i 1)))))
@@ -2126,7 +2194,7 @@
         (set! i (+ i 1)))))
 
   (fn emit-value-list-types-header ((ctx (Ptr TranspileContext)))
-    (@intent "Emit value-element List types to header (after struct definitions)")
+    (@intent "Emit value-element List types for simple structs (elem type already emitted)")
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
     (let ((list-types (ctx-get-list-types ctx))
@@ -2135,8 +2203,28 @@
       (while (< i len)
         (match (list-get list-types i)
           ((some lt)
-            ;; Only emit value-element lists here (not pointer types)
+            ;; Only emit value-element lists whose elem type is already emitted
+            ;; This handles Lists of simple structs; complex struct lists come later
+            (when (and (not (is-pointer-elem-type (. lt elem-type)))
+                       (is-type-emitted-or-primitive ctx (. lt elem-type)))
+              (emit-single-list-type-header ctx lt)))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn emit-complex-value-list-types-header ((ctx (Ptr TranspileContext)))
+    (@intent "Emit value-element List types for complex structs (after complex struct definitions)")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((list-types (ctx-get-list-types ctx))
+          (len (list-len list-types))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get list-types i)
+          ((some lt)
+            ;; Emit value-element lists that weren't emitted before (complex struct elem types)
+            ;; At this point, complex structs are emitted
             (when (not (is-pointer-elem-type (. lt elem-type)))
+              ;; emit-single will skip if already emitted due to #ifndef guard
               (emit-single-list-type-header ctx lt)))
           ((none) (do)))
         (set! i (+ i 1)))))
@@ -2566,7 +2654,7 @@
         (set! i (+ i 1)))))
 
   (fn is-type-emitted-or-primitive ((ctx (Ptr TranspileContext)) (type-name String))
-    (@intent "Check if a type is already emitted, a primitive, or a list type")
+    (@intent "Check if a type is already emitted, a primitive, or an imported type")
     (@spec (((Ptr TranspileContext) String) -> Bool))
     (@pre {ctx != nil})
     ;; Primitives and basic types are always available
@@ -2583,8 +2671,43 @@
                                                 (or (string-eq type-name "slop_string")
                                                     (starts-with type-name "slop_list_"))))))))))))
       true
-      ;; Check if in emitted-types list
-      (ctx-is-type-emitted ctx type-name)))
+      ;; Check if it's an imported type (different module prefix)
+      (if (is-imported-type ctx type-name)
+        true
+        ;; Check if in emitted-types list
+        (ctx-is-type-emitted ctx type-name))))
+
+  (fn is-imported-type ((ctx (Ptr TranspileContext)) (type-name String))
+    (@intent "Check if a type is from another module (imported)")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    ;; An imported type has a module prefix that differs from current module
+    ;; e.g., "types_Diagnostic" when current module is "env"
+    (match (ctx-get-module ctx)
+      ((some current-mod)
+        (let ((current-prefix (ctx-str ctx current-mod "_")))
+          ;; If type has an underscore but doesn't start with current module prefix,
+          ;; it's an imported type (from a different module's header)
+          (let ((underscore-pos (find-char type-name (cast U8 95))))  ;; 95 is ASCII for '_'
+            (if (> underscore-pos 0)
+              ;; Has underscore - check if it starts with current module prefix
+              (not (starts-with type-name current-prefix))
+              ;; No underscore - not a prefixed type, treat as local
+              false))))
+      ((none) false)))
+
+  (fn find-char ((s String) (ch U8))
+    (@intent "Find position of first occurrence of character in string, -1 if not found")
+    (@spec ((String U8) -> Int))
+    (let ((data (. s data))
+          (len (cast Int (. s len)))
+          (mut i 0)
+          (mut result -1))
+      (while (and (< i len) (< result 0))
+        (if (== (@ data i) ch)
+          (set! result i)
+          (set! i (+ i 1))))
+      result))
 
   (fn emit-list-type-if-needed-safe ((ctx (Ptr TranspileContext)) (inner-type String))
     (@intent "Emit a List type if inner-type refers to one and elem is emitted")
