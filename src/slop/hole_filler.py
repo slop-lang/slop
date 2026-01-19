@@ -71,10 +71,8 @@ def _transform_lisp_forms(expr: SExpr) -> SExpr:
     This transforms them to valid SLOP.
     """
     if isinstance(expr, Symbol):
-        # Transform symbols: t -> true, nil -> false (when used as boolean)
+        # Transform Scheme boolean literals to SLOP equivalents
         name = expr.name
-        if name == 't':
-            return Symbol('true')
         if name == '#t':
             return Symbol('true')
         if name == '#f':
@@ -1129,9 +1127,12 @@ def build_prompt(
 
     if hole.context:
         sections.append("")
-        sections.append("## Available Context")
-        sections.append(f"You may ONLY call these functions/identifiers: {', '.join(hole.context)}")
-        sections.append("(Built-in forms like let, if, match, do are always available)")
+        sections.append("## Context-Specific Functions")
+        sections.append(f"Use these for this task: {', '.join(hole.context)}")
+        sections.append("")
+        sections.append("Note: All built-in language forms (let, if, match, for-each, etc.) and")
+        sections.append("built-in functions (list-new, list-push, list-len, record-new, cast, etc.)")
+        sections.append("are always available in addition to the context items above.")
 
     if hole.required:
         sections.append("")

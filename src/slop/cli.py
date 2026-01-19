@@ -2215,9 +2215,11 @@ def cmd_build(args):
 
         # Write module header for library builds (needed for C interop)
         if library_mode and native_module_headers:
+            # Use same directory as output for header files
+            output_dir = os.path.dirname(output) or '.'
             for mod_name, header in native_module_headers.items():
                 c_mod_name = mod_name.replace('-', '_')
-                header_path = f"slop_{c_mod_name}.h"
+                header_path = os.path.join(output_dir, f"slop_{c_mod_name}.h")
                 with open(header_path, 'w') as f:
                     f.write(header)
                 print(f"  Module header: {header_path}")

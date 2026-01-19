@@ -188,10 +188,13 @@
                                         (match (list-get items 1)
                                           ((some inner-expr) (get-field-type env arena inner-expr))
                                           ((none) (env-get-int-type env)))
-                                        (env-get-int-type env)))
-                          (ptr-type (resolved-type-new arena 'rk-ptr "Ptr" (none) "void*")))
-                      (resolved-type-set-inner ptr-type inner-type)
-                      ptr-type))
+                                        (env-get-int-type env))))
+                      ;; Use Ptr_<inner> naming to match env-make-ptr-type
+                      (let ((inner-name (. (deref inner-type) name))
+                            (ptr-name (string-concat arena "Ptr_" inner-name))
+                            (ptr-type (resolved-type-new arena 'rk-ptr ptr-name (none) "void*")))
+                        (resolved-type-set-inner ptr-type inner-type)
+                        ptr-type)))
                   ;; List type: (List ElemType) - return placeholder
                   ((string-eq head-name "List")
                     (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*"))

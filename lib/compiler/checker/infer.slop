@@ -22,6 +22,7 @@
                env-lookup-function env-lookup-variant env-lookup-constant
                env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
+               env-get-unknown-type
                env-make-option-type env-make-ptr-type env-make-result-type env-get-generic-type
                env-add-warning env-add-error))
 
@@ -315,6 +316,16 @@
               ((none) (env-get-unit-type env)))
             (env-get-unit-type env)))
 
+        ;; (addr expr) - take address of expression, returns pointer type
+        ((string-eq op "addr")
+          (if (>= len 2)
+            (match (list-get items 1)
+              ((some inner-expr)
+                (let ((inner-type (infer-expr env inner-expr)))
+                  (env-make-ptr-type env inner-type)))
+              ((none) (env-get-unit-type env)))
+            (env-get-unit-type env)))
+
         ;; (cast TargetType expr) - cast expression to target type
         ((string-eq op "cast")
           (if (>= len 2)
@@ -323,8 +334,8 @@
                 ;; Get the target type name and look it up
                 (let ((type-name (sexpr-get-symbol-name type-expr)))
                   (if (string-eq type-name "")
-                    ;; Complex type like (Ptr T) - for now return Int
-                    (env-get-int-type env)
+                    ;; Complex type like (Ptr T) - return Unknown
+                    (env-get-unknown-type env)
                     ;; Simple type name - look it up
                     (match (env-lookup-type env type-name)
                       ((some t) t)
@@ -334,9 +345,9 @@
                           ((string-eq type-name "Bool") (env-get-bool-type env))
                           ((string-eq type-name "String") (env-get-string-type env))
                           ((string-eq type-name "Unit") (env-get-unit-type env))
-                          (else (env-get-int-type env))))))))
-              ((none) (env-get-int-type env)))
-            (env-get-int-type env)))
+                          (else (env-get-unknown-type env))))))))
+              ((none) (env-get-unknown-type env)))
+            (env-get-unknown-type env)))
 
         ;; (quote symbol) - quoted enum variant, look up the enum type
         ((string-eq op "quote")
@@ -345,17 +356,17 @@
               ((some variant-expr)
                 (let ((variant-name (sexpr-get-symbol-name variant-expr)))
                   (if (string-eq variant-name "")
-                    (env-get-int-type env)
+                    (env-get-unknown-type env)
                     ;; Look up which enum contains this variant
                     (match (env-lookup-variant env variant-name)
                       ((some enum-name)
                         ;; Look up the enum type
                         (match (env-lookup-type env enum-name)
                           ((some enum-type) enum-type)
-                          ((none) (env-get-int-type env))))
-                      ((none) (env-get-int-type env))))))
-              ((none) (env-get-int-type env)))
-            (env-get-int-type env)))
+                          ((none) (env-get-unknown-type env))))
+                      ((none) (env-get-unknown-type env))))))
+              ((none) (env-get-unknown-type env)))
+            (env-get-unknown-type env)))
 
         ;; (. obj field) - field access
         ((string-eq op ".")
@@ -374,6 +385,20 @@
         ;; (none) - Option type with unknown inner
         ((string-eq op "none")
           (env-make-option-type env nil))
+
+        ;; (record-new TypeName (field1 val1) ...) - create record instance
+        ((string-eq op "record-new")
+          (if (>= len 2)
+            (match (list-get items 1)
+              ((some type-expr)
+                (let ((type-name (sexpr-get-symbol-name type-expr)))
+                  (if (string-eq type-name "")
+                    (env-get-unit-type env)
+                    (match (env-lookup-type env type-name)
+                      ((some t) t)
+                      ((none) (env-get-unit-type env))))))
+              ((none) (env-get-unit-type env)))
+            (env-get-unit-type env)))
 
         ;; (hole Type "prompt" [:context ...]) - unfilled hole
         ((string-eq op "hole")
@@ -436,8 +461,8 @@
                     ((string-eq op "error") (env-make-result-type env))
                     ;; Option constructor
                     ((string-eq op "some") (env-make-option-type env nil))
-                    ;; Unknown function - return Int as fallback
-                    (else (env-get-int-type env)))))))))))
+                    ;; Unknown function/form - return Unknown type
+                    (else (env-get-unknown-type env)))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
                            (line Int) (col Int))
@@ -495,18 +520,16 @@
                 (let ((actual-type (infer-expr env arg-expr))
                       (expected-name (. (deref expected-type) name))
                       (actual-name (. (deref actual-type) name)))
-                  ;; Only warn if types differ and both are concrete primitives
-                  (when (and (not (string-eq expected-name actual-name))
-                             (and (is-primitive-type expected-name)
-                                  (is-primitive-type actual-name)))
+                  ;; Error if types differ (check all types, not just primitives)
+                  (when (not (string-eq expected-name actual-name))
                     (let ((msg (string-concat arena "argument "
                                  (string-concat arena (int-to-string arena (+ arg-idx 1))
-                                   (string-concat arena " of '"
+                                   (string-concat arena " to '"
                                      (string-concat arena fn-name
                                        (string-concat arena "': expected "
                                          (string-concat arena expected-name
                                            (string-concat arena ", got " actual-name)))))))))
-                      (env-add-warning env msg line col)))))
+                      (env-add-error env msg line col)))))
               ((none) (do)))))
         ((none) (do)))))
 
@@ -562,7 +585,13 @@
         ;; For generic type T, return generic type
         (if (string-eq type-name "T")
           (env-get-generic-type env)
-          (env-get-int-type env)))))
+          ;; Error: trying to access field on non-record type
+          (let ((msg (string-concat arena "Cannot access field '"
+                       (string-concat arena field-name
+                         (string-concat arena "' on non-record type '"
+                           (string-concat arena type-name "'"))))))
+            (env-add-error env msg line col)
+            (env-get-unknown-type env))))))
 
   (fn infer-cond-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of cond expression, checking branch types")
@@ -844,7 +873,7 @@
               ;; Complex type expression like (Option Int), (Ptr T), (List T)
               (if (sexpr-is-list type-expr)
                 (resolve-complex-type-expr env type-expr)
-                (env-get-int-type env))
+                (env-get-unknown-type env))
               ;; Simple symbol type - look it up
               (match (env-lookup-type env type-name)
                 ((some t) t)
@@ -854,8 +883,8 @@
                     ((string-eq type-name "Bool") (env-get-bool-type env))
                     ((string-eq type-name "String") (env-get-string-type env))
                     ((string-eq type-name "Unit") (env-get-unit-type env))
-                    (else (env-get-int-type env))))))))
-        ((none) (env-get-int-type env)))))
+                    (else (env-get-unknown-type env))))))))
+        ((none) (env-get-unknown-type env)))))
 
   (fn resolve-complex-type-expr ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
     (@intent "Resolve a complex type expression like (Option Int)")
@@ -878,23 +907,23 @@
             ((string-eq head-name "List")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))
                 (env-make-ptr-type env inner-type)))
-            ;; Other complex types - fall back to Int
-            (else (env-get-int-type env)))))
-      ((none) (env-get-int-type env))))
+            ;; Other complex types - return Unknown
+            (else (env-get-unknown-type env)))))
+      ((none) (env-get-unknown-type env))))
 
   (fn resolve-option-inner-type ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
     (@intent "Resolve the inner type of an Option type expression")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (if (< (sexpr-list-len type-expr) 2)
-      (env-get-int-type env)
+      (env-get-unknown-type env)
       (match (sexpr-list-get type-expr 1)
         ((some inner-expr)
           (let ((inner-name (sexpr-get-symbol-name inner-expr)))
             (if (string-eq inner-name "")
-              (env-get-int-type env)
+              (env-get-unknown-type env)
               (resolve-simple-type env inner-name))))
-        ((none) (env-get-int-type env)))))
+        ((none) (env-get-unknown-type env)))))
 
   (fn resolve-ptr-inner-type ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
     (@intent "Resolve the inner type of a Ptr or List type expression")
@@ -909,7 +938,7 @@
               ;; Inner type is complex, e.g. (Ptr (Ptr Int)) - recursively resolve
               (if (sexpr-is-list inner-expr)
                 (resolve-complex-type-expr env inner-expr)
-                (env-get-int-type env))
+                (env-get-unknown-type env))
               (resolve-simple-type env inner-name))))
         ((none) (env-get-unit-type env)))))
 
@@ -1090,13 +1119,12 @@
     ;; (hole Type "prompt" ...) - prompt is at position 2
     (if (< len 3)
       "(no description)"
-      ;; Use direct array access to avoid match/list-get issues
-      (let ((prompt-expr (@ (. items data) 2)))
-        (if (== prompt-expr nil)
-          "(no description)"
+      (match (list-get items 2)
+        ((some prompt-expr)
           (match (deref prompt-expr)
             ((string str) (. str value))
-            (_ "(no description)"))))))
+            (_ "(no description)")))
+        ((none) "(no description)"))))
 
   (fn find-last-body-idx ((items (List (Ptr SExpr))))
     (@intent "Find index of last body expression, skipping :c-name and its value")
