@@ -828,3 +828,310 @@ class TestBodyAnalysis:
         # Without explicit constraint that x == y, this should fail
         failed = [r for r in results if r.status == 'failed']
         assert len(failed) == 1
+
+    def test_accessor_inlining(self):
+        """Inline simple accessor in postcondition"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Point (record (x Int) (y Int)))
+
+          (fn get-x ((p Point))
+            (@spec ((Point) -> Int))
+            (@pure)
+            (. p x))
+
+          (fn make-point ((a Int) (b Int))
+            (@spec ((Int Int) -> Point))
+            (@post (== (get-x $result) a))
+            (record-new Point (x a) (y b))))
+        """
+        results = verify_source(source)
+        # make-point should verify because get-x is inlined
+        make_point = [r for r in results if r.name == 'make-point']
+        assert len(make_point) == 1
+        assert make_point[0].status == 'verified'
+
+    def test_accessor_inlining_with_eq(self):
+        """Inline accessor with term-eq postcondition"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Triple (record (subject Int) (predicate Int) (object Int)))
+
+          (fn triple-subject ((t Triple))
+            (@spec ((Triple) -> Int))
+            (@pure)
+            (. t subject))
+
+          (fn triple-predicate ((t Triple))
+            (@spec ((Triple) -> Int))
+            (@pure)
+            (. t predicate))
+
+          (fn triple-object ((t Triple))
+            (@spec ((Triple) -> Int))
+            (@pure)
+            (. t object))
+
+          (fn make-triple ((subj Int) (pred Int) (obj Int))
+            (@spec ((Int Int Int) -> Triple))
+            (@post (and
+              (term-eq (triple-subject $result) subj)
+              (term-eq (triple-predicate $result) pred)
+              (term-eq (triple-object $result) obj)))
+            (record-new Triple (subject subj) (predicate pred) (object obj))))
+        """
+        results = verify_source(source)
+        # make-triple should verify because accessors are inlined
+        make_triple = [r for r in results if r.name == 'make-triple']
+        assert len(make_triple) == 1
+        assert make_triple[0].status == 'verified'
+
+
+class TestUnionTagAxioms:
+    """Test Phase 4: Union tag axioms for union-new bodies"""
+
+    def test_union_new_match_postcondition(self):
+        """union-new body allows proving match postcondition"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Value (union (num Int) (str String)))
+
+          (fn make-num ((n Int))
+            (@spec ((Int) -> Value))
+            (@post (match $result ((num _) true) (_ false)))
+            (union-new Value num n)))
+        """
+        results = verify_source(source)
+        make_num = [r for r in results if r.name == 'make-num']
+        assert len(make_num) == 1
+        assert make_num[0].status == 'verified'
+
+    def test_union_new_different_tag(self):
+        """union-new with different tag verifies its own match"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Value (union (num Int) (str String)))
+
+          (fn make-str ((s String))
+            (@spec ((String) -> Value))
+            (@post (match $result ((str _) true) (_ false)))
+            (union-new Value str s)))
+        """
+        results = verify_source(source)
+        make_str = [r for r in results if r.name == 'make-str']
+        assert len(make_str) == 1
+        assert make_str[0].status == 'verified'
+
+    def test_union_new_wrong_tag_fails(self):
+        """union-new cannot prove match for wrong tag"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Value (union (num Int) (str String)))
+
+          (fn make-num-wrong ((n Int))
+            (@spec ((Int) -> Value))
+            (@post (match $result ((str _) true) (_ false)))
+            (union-new Value num n)))
+        """
+        results = verify_source(source)
+        make_num = [r for r in results if r.name == 'make-num-wrong']
+        assert len(make_num) == 1
+        assert make_num[0].status == 'failed'
+
+    def test_union_new_quoted_tag(self):
+        """union-new with quoted tag works"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Result (union (ok Int) (error String)))
+
+          (fn make-ok ((v Int))
+            (@spec ((Int) -> Result))
+            (@post (match $result (('ok _) true) (_ false)))
+            (union-new Result 'ok v)))
+        """
+        results = verify_source(source)
+        make_ok = [r for r in results if r.name == 'make-ok']
+        assert len(make_ok) == 1
+        assert make_ok[0].status == 'verified'
+
+    def test_union_variants_in_enum_map(self):
+        """Union variant names are registered in enum_values"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv, build_type_registry_from_ast
+        from slop.parser import parse
+
+        source = "(type Term (union (iri String) (blank String) (literal String)))"
+        ast = parse(source)
+        registry = build_type_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=registry)
+        translator = Z3Translator(env)
+
+        # Check that union variants are in enum_values
+        assert 'iri' in translator.enum_values
+        assert 'blank' in translator.enum_values
+        assert 'literal' in translator.enum_values
+        # Check that indices are different
+        assert translator.enum_values['iri'] == 0
+        assert translator.enum_values['blank'] == 1
+        assert translator.enum_values['literal'] == 2
+
+
+class TestTypeInvariants:
+    """Test Phase 5: Type invariants with @invariant or @assume"""
+
+    def test_assume_allows_invariant_reasoning(self):
+        """@assume can be used to express type invariants"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Counter (record (items (List Int)) (count Int)))
+
+          (fn counter-size ((c Counter))
+            (@spec ((Counter) -> Int))
+            (@assume (== c.count (list-len c.items)))
+            (@post (== $result (list-len c.items)))
+            (. c count)))
+        """
+        results = verify_source(source)
+        counter_size = [r for r in results if r.name == 'counter-size']
+        assert len(counter_size) == 1
+        assert counter_size[0].status == 'verified'
+
+    def test_invariant_preserved_by_construction(self):
+        """Record construction preserves invariant when values match"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Graph (record (triples (List Int)) (size Int)))
+
+          (fn make-empty-graph ()
+            (@spec (() -> Graph))
+            (@post (== (. $result size) 0))
+            (record-new Graph (triples nil) (size 0))))
+        """
+        results = verify_source(source)
+        make_empty = [r for r in results if r.name == 'make-empty-graph']
+        assert len(make_empty) == 1
+        assert make_empty[0].status == 'verified'
+
+    def test_type_invariant_annotation(self):
+        """@invariant on type is automatically applied to function parameters"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Counter (record (items (List Int)) (count Int))
+            (@invariant (== count (list-len items))))
+
+          (fn counter-size ((c Counter))
+            (@spec ((Counter) -> Int))
+            (@post (== $result (list-len c.items)))
+            (. c count)))
+        """
+        results = verify_source(source)
+        counter_size = [r for r in results if r.name == 'counter-size']
+        assert len(counter_size) == 1
+        assert counter_size[0].status == 'verified'
+
+    def test_type_invariant_with_ptr(self):
+        """@invariant works with Ptr types"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Graph (record (triples (List Int)) (size Int))
+            (@invariant (== size (list-len triples))))
+
+          (fn graph-size ((g (Ptr Graph)))
+            (@spec (((Ptr Graph)) -> Int))
+            (@post (== $result (list-len g.triples)))
+            (. g size)))
+        """
+        results = verify_source(source)
+        graph_size = [r for r in results if r.name == 'graph-size']
+        assert len(graph_size) == 1
+        assert graph_size[0].status == 'verified'
+
+    def test_invariant_registry_extraction(self):
+        """Invariants are correctly extracted from type definitions"""
+        from slop.verifier import build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (type Graph (record (triples (List Int)) (size Int))
+          (@invariant (== size (list-len triples))))
+        """
+        ast = parse(source)
+        registry = build_invariant_registry_from_ast(ast)
+
+        invariants = registry.get_invariants('Graph')
+        assert len(invariants) == 1
+
+
+class TestLoopPostconditions:
+    """Test Phase 6: Loop postcondition heuristics"""
+
+    def test_assume_enables_loop_postcondition(self):
+        """@assume can be used to trust loop postconditions"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn contains-all ((items (List Int)) (target Int))
+            (@spec (((List Int) Int) -> Bool))
+            (@assume (or (== $result true) (== $result false)))
+            (@post (or (== $result true) (== $result false)))
+            false))
+        """
+        results = verify_source(source)
+        contains = [r for r in results if r.name == 'contains-all']
+        assert len(contains) == 1
+        assert contains[0].status == 'verified'
+
+    def test_conditional_branch_analysis(self):
+        """Conditional with simple branches can verify"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn maybe-add ((g Int) (t Int) (already-present Bool))
+            (@spec ((Int Int Bool) -> Int))
+            (@post (or (== $result g) (== $result (+ g 1))))
+            (if already-present
+              g
+              (+ g 1))))
+        """
+        results = verify_source(source)
+        maybe_add = [r for r in results if r.name == 'maybe-add']
+        assert len(maybe_add) == 1
+        assert maybe_add[0].status == 'verified'
+
+    def test_trusted_annotation_for_complex_loop(self):
+        """Complex loop postconditions can use @assume as escape hatch"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn graph-add ((g Int) (t Int))
+            (@spec ((Int Int) -> Int))
+            (@assume (>= $result g))
+            (@post (>= $result g))
+            g))
+        """
+        results = verify_source(source)
+        graph_add = [r for r in results if r.name == 'graph-add']
+        assert len(graph_add) == 1
+        assert graph_add[0].status == 'verified'

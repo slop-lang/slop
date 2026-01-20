@@ -96,9 +96,11 @@ class MinimalTypeEnv:
     Provides the subset of TypeEnv functionality needed by Z3Translator:
     - type_registry: Dict mapping type names to Type objects
     - lookup_var: Method to get type for a variable name
+    - invariant_registry: TypeInvariantRegistry for type invariants
     """
     type_registry: Dict[str, Type] = field(default_factory=dict)
     _var_types: Dict[str, Type] = field(default_factory=dict)
+    invariant_registry: Optional['TypeInvariantRegistry'] = None
 
     def lookup_var(self, name: str) -> Optional[Type]:
         """Look up the type of a variable"""
@@ -108,10 +110,142 @@ class MinimalTypeEnv:
         """Bind a variable to a type"""
         self._var_types[name] = typ
 
+    def get_invariants_for_type(self, type_name: str) -> List[SExpr]:
+        """Get invariants for a type, if invariant registry is available"""
+        if self.invariant_registry:
+            return self.invariant_registry.get_invariants(type_name)
+        return []
+
+
+# ============================================================================
+# Function Registry (for inlining during verification)
+# ============================================================================
+
+@dataclass
+class FunctionDef:
+    """Definition of a function for inlining purposes"""
+    name: str
+    params: List[str]  # Parameter names in order
+    body: Optional[SExpr]
+    is_pure: bool = True
+
+
+class FunctionRegistry:
+    """Registry of functions for inlining during verification.
+
+    Enables inlining of simple accessor functions so postconditions like
+    (term-eq (triple-subject $result) subject) can be proven by replacing
+    (triple-subject $result) with the actual field access.
+    """
+
+    def __init__(self):
+        self.functions: Dict[str, FunctionDef] = {}
+
+    def register_from_ast(self, ast: List[SExpr]):
+        """Extract function definitions from AST"""
+        for form in ast:
+            if is_form(form, 'module'):
+                for item in form.items[1:]:
+                    if is_form(item, 'fn'):
+                        self._register_fn(item)
+            elif is_form(form, 'fn'):
+                self._register_fn(form)
+
+    def _register_fn(self, fn_form: SList):
+        """Register a single function"""
+        if len(fn_form) < 3:
+            return
+        name = fn_form[1].name if isinstance(fn_form[1], Symbol) else None
+        if not name:
+            return
+
+        # Extract parameter names
+        params = []
+        param_list = fn_form[2] if isinstance(fn_form[2], SList) else SList([])
+        for param in param_list:
+            if isinstance(param, SList) and len(param) >= 2:
+                first = param[0]
+                if isinstance(first, Symbol) and first.name in ('in', 'out', 'mut'):
+                    # Mode is explicit: (in name Type)
+                    param_name = param[1].name if isinstance(param[1], Symbol) else None
+                else:
+                    # No mode: (name Type)
+                    param_name = first.name if isinstance(first, Symbol) else None
+                if param_name:
+                    params.append(param_name)
+
+        # Extract body (skip annotations and :keywords)
+        body = None
+        is_pure = False
+        annotation_forms = {'@intent', '@spec', '@pre', '@post', '@assume', '@pure',
+                           '@alloc', '@example', '@deprecated', '@property',
+                           '@generation-mode', '@requires'}
+
+        for item in fn_form.items[3:]:
+            if isinstance(item, Symbol):
+                if item.name.startswith(':'):
+                    continue
+                # Simple expression as body
+                body = item
+            elif isinstance(item, String):
+                # Skip string values (typically property values after :keyword)
+                continue
+            elif is_form(item, '@pure'):
+                is_pure = True
+                continue
+            elif isinstance(item, SList) and len(item) > 0:
+                head = item[0]
+                if isinstance(head, Symbol) and head.name in annotation_forms:
+                    continue
+                body = item
+
+        self.functions[name] = FunctionDef(name=name, params=params, body=body, is_pure=is_pure)
+
+    def is_simple_accessor(self, name: str) -> bool:
+        """Check if function is a simple field accessor: (. param field)"""
+        fn = self.functions.get(name)
+        if fn and fn.body and is_form(fn.body, '.'):
+            return True
+        return False
+
+    def get_accessor_info(self, name: str) -> Optional[Tuple[str, str]]:
+        """Get (param_name, field_name) for a simple accessor"""
+        fn = self.functions.get(name)
+        if fn and fn.body and is_form(fn.body, '.') and len(fn.body) >= 3:
+            obj = fn.body[1]
+            field = fn.body[2]
+            if isinstance(obj, Symbol) and isinstance(field, Symbol):
+                return (obj.name, field.name)
+        return None
+
 
 # ============================================================================
 # Type Registry Builder (extract types from AST without full type checking)
 # ============================================================================
+
+@dataclass
+class TypeInvariant:
+    """Type invariant: a condition that must hold for all values of the type"""
+    type_name: str
+    condition: SExpr  # The invariant expression
+
+
+class TypeInvariantRegistry:
+    """Registry of type invariants extracted from @invariant annotations"""
+
+    def __init__(self):
+        self.invariants: Dict[str, List[SExpr]] = {}  # type_name -> list of invariant expressions
+
+    def add_invariant(self, type_name: str, condition: SExpr):
+        """Add an invariant for a type"""
+        if type_name not in self.invariants:
+            self.invariants[type_name] = []
+        self.invariants[type_name].append(condition)
+
+    def get_invariants(self, type_name: str) -> List[SExpr]:
+        """Get all invariants for a type"""
+        return self.invariants.get(type_name, [])
+
 
 def build_type_registry_from_ast(ast: List[SExpr]) -> Dict[str, Type]:
     """Extract type definitions from AST without full type checking.
@@ -130,6 +264,40 @@ def build_type_registry_from_ast(ast: List[SExpr]) -> Dict[str, Type]:
             _register_type(form, registry)
 
     return registry
+
+
+def build_invariant_registry_from_ast(ast: List[SExpr]) -> TypeInvariantRegistry:
+    """Extract type invariants from AST.
+
+    Looks for @invariant annotations in type definitions:
+    (type Name (record ...) (@invariant condition))
+    """
+    registry = TypeInvariantRegistry()
+
+    for form in ast:
+        if is_form(form, 'module'):
+            for item in form.items[1:]:
+                if is_form(item, 'type'):
+                    _extract_type_invariants(item, registry)
+        elif is_form(form, 'type'):
+            _extract_type_invariants(form, registry)
+
+    return registry
+
+
+def _extract_type_invariants(type_form: SList, registry: TypeInvariantRegistry):
+    """Extract @invariant annotations from a type definition"""
+    if len(type_form) < 3:
+        return
+
+    name = type_form[1].name if isinstance(type_form[1], Symbol) else None
+    if not name:
+        return
+
+    # Look for @invariant forms after the type body
+    for item in type_form.items[3:]:
+        if is_form(item, '@invariant') and len(item) >= 2:
+            registry.add_invariant(name, item[1])
 
 
 def _register_type(type_form: SList, registry: Dict[str, Type]):
@@ -436,21 +604,28 @@ class VerificationDiagnostic:
 class Z3Translator:
     """Translates SLOP AST expressions to Z3 constraints"""
 
-    def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>"):
+    def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>",
+                 function_registry: Optional[FunctionRegistry] = None):
         if not Z3_AVAILABLE:
             raise RuntimeError("Z3 is not available")
         self.type_env = type_env
         self.filename = filename
+        self.function_registry = function_registry
         self.variables: Dict[str, z3.ExprRef] = {}
         self.constraints: List[z3.BoolRef] = []
         self.enum_values: Dict[str, int] = {}  # 'Fizz' -> 0, etc.
         self._build_enum_map()
 
     def _build_enum_map(self):
-        """Build mapping from enum variant names to integer values"""
+        """Build mapping from enum/union variant names to integer values"""
         for typ in self.type_env.type_registry.values():
             if isinstance(typ, EnumType):
                 for i, variant in enumerate(typ.variants):
+                    self.enum_values[variant] = i
+                    self.enum_values[f"'{variant}"] = i
+            elif isinstance(typ, UnionType):
+                # Union variants also need indices for match expressions
+                for i, variant in enumerate(typ.variants.keys()):
                     self.enum_values[variant] = i
                     self.enum_values[f"'{variant}"] = i
 
@@ -894,7 +1069,16 @@ class Z3Translator:
                 # Wildcard - default case
                 result = self.translate_expr(body)
             elif isinstance(pattern, SList) and len(pattern) >= 1:
-                tag = pattern[0].name if isinstance(pattern[0], Symbol) else None
+                # Handle pattern like (tag var) or ((quote tag) var)
+                tag: Optional[str] = None
+                tag_elem = pattern[0]
+                if isinstance(tag_elem, Symbol):
+                    tag = tag_elem.name.lstrip("'")
+                elif is_form(tag_elem, 'quote') and len(tag_elem) >= 2:
+                    # Handle quoted pattern: ((quote ok) _)
+                    inner = tag_elem[1]
+                    tag = inner.name if isinstance(inner, Symbol) else None
+
                 if tag:
                     # Look up tag index from enum_values or hash it
                     tag_idx = self.enum_values.get(tag, self.enum_values.get(f"'{tag}", hash(tag) % 256))
@@ -942,6 +1126,10 @@ class Z3Translator:
         Strategy: model user-defined functions as uninterpreted functions.
         This allows Z3 to reason about their properties without knowing
         the implementation.
+
+        For simple accessor functions (that just access a field), we inline
+        the field access directly. This allows postconditions like
+        (term-eq (triple-subject $result) subject) to be proven.
         """
         if len(expr) < 1:
             return None
@@ -949,6 +1137,17 @@ class Z3Translator:
         fn_name = expr[0].name if isinstance(expr[0], Symbol) else None
         if fn_name is None:
             return None
+
+        # Try to inline simple accessor functions
+        if self.function_registry and self.function_registry.is_simple_accessor(fn_name):
+            accessor_info = self.function_registry.get_accessor_info(fn_name)
+            if accessor_info and len(expr) >= 2:
+                param_name, field_name = accessor_info
+                # Translate the argument
+                arg = self.translate_expr(expr[1])
+                if arg is not None:
+                    # Return field access on the argument
+                    return self._translate_field_for_obj(arg, field_name)
 
         # Translate arguments
         args = []
@@ -992,12 +1191,14 @@ class Z3Translator:
 class ContractVerifier:
     """Verifies @pre/@post contracts for functions"""
 
-    def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>", timeout_ms: int = 5000):
+    def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>",
+                 timeout_ms: int = 5000, function_registry: Optional[FunctionRegistry] = None):
         if not Z3_AVAILABLE:
             raise RuntimeError("Z3 is not available")
         self.type_env = type_env
         self.filename = filename
         self.timeout_ms = timeout_ms
+        self.function_registry = function_registry
 
     def _references_mutable_state(self, expr: SExpr) -> bool:
         """Check if expression references mutable state (deref field access)"""
@@ -1036,9 +1237,126 @@ class ContractVerifier:
             # Check for shorthand dot notation like t.field
             pass  # No function calls in plain symbols
 
+    def _substitute_fields_for_param(self, expr: SExpr, param_name: str, fields: List[str]) -> SExpr:
+        """Substitute field names in expr with param_name.field notation.
+
+        For type invariant (== size (list-len triples)) with param 'g' and fields ['size', 'triples'],
+        produces (== g.size (list-len g.triples)).
+        """
+        if isinstance(expr, Symbol):
+            name = expr.name
+            # Check if this symbol is a field name
+            if name in fields:
+                # Create shorthand dot notation: param.field
+                return Symbol(f"{param_name}.{name}", expr.line, expr.col)
+            return expr
+        elif isinstance(expr, SList):
+            # Recursively substitute in list elements
+            new_items = [self._substitute_fields_for_param(item, param_name, fields) for item in expr.items]
+            return SList(new_items, expr.line, expr.col)
+        else:
+            # Number, String, etc. - return unchanged
+            return expr
+
+    def _get_record_fields(self, type_name: str) -> List[str]:
+        """Get field names for a record type"""
+        typ = self.type_env.type_registry.get(type_name)
+        if isinstance(typ, RecordType):
+            return list(typ.fields.keys())
+        return []
+
+    def _collect_parameter_invariants(self, params: SList) -> List[Tuple[str, SExpr]]:
+        """Collect type invariants for all parameters, substituted with param names.
+
+        Returns list of (param_name, substituted_invariant) tuples.
+        """
+        result: List[Tuple[str, SExpr]] = []
+
+        for param in params:
+            if isinstance(param, SList) and len(param) >= 2:
+                # Handle parameter modes: (name Type) or (in name Type)
+                first = param[0]
+                if isinstance(first, Symbol) and first.name in ('in', 'out', 'mut'):
+                    param_name = param[1].name if isinstance(param[1], Symbol) else None
+                    param_type_expr = param[2] if len(param) > 2 else None
+                else:
+                    param_name = first.name if isinstance(first, Symbol) else None
+                    param_type_expr = param[1]
+
+                if param_name and param_type_expr:
+                    # Get the type name
+                    type_name = None
+                    if isinstance(param_type_expr, Symbol):
+                        type_name = param_type_expr.name
+                    elif isinstance(param_type_expr, SList) and len(param_type_expr) >= 1:
+                        # Handle (Ptr Type) or other parameterized types
+                        head = param_type_expr[0]
+                        if isinstance(head, Symbol) and head.name in ('Ptr', 'OwnPtr', 'OptPtr'):
+                            if len(param_type_expr) >= 2 and isinstance(param_type_expr[1], Symbol):
+                                type_name = param_type_expr[1].name
+
+                    if type_name:
+                        # Get invariants for this type
+                        invariants = self.type_env.get_invariants_for_type(type_name)
+                        # Get fields for substitution
+                        fields = self._get_record_fields(type_name)
+
+                        for inv in invariants:
+                            # Substitute field names with param.field
+                            subst_inv = self._substitute_fields_for_param(inv, param_name, fields)
+                            result.append((param_name, subst_inv))
+
+        return result
+
     def _is_record_new(self, expr: SExpr) -> bool:
         """Check if expression is a record-new form"""
         return is_form(expr, 'record-new')
+
+    def _is_union_new(self, expr: SExpr) -> bool:
+        """Check if expression is a union-new form"""
+        return is_form(expr, 'union-new')
+
+    def _extract_union_tag_axiom(self, union_new: SList, translator: Z3Translator) -> Optional:
+        """Extract axiom: union_tag($result) == tag_index for union-new body.
+
+        When the function body is (union-new Type tag payload), we can prove
+        that match expressions checking the tag will succeed for that tag.
+        """
+        # union-new Type tag payload
+        if len(union_new) < 3:
+            return None
+
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return None
+
+        # Get tag (can be symbol or quoted symbol)
+        tag_expr = union_new[2]
+        if isinstance(tag_expr, Symbol):
+            tag_name = tag_expr.name.lstrip("'")
+        elif is_form(tag_expr, 'quote') and len(tag_expr) >= 2:
+            inner = tag_expr[1]
+            tag_name = inner.name if isinstance(inner, Symbol) else None
+        else:
+            tag_name = None
+
+        if tag_name is None:
+            return None
+
+        # Get tag index from enum_values or hash
+        tag_idx = translator.enum_values.get(tag_name,
+                  translator.enum_values.get(f"'{tag_name}",
+                  hash(tag_name) % 256))
+
+        # Get or create union_tag function
+        tag_func_name = "union_tag"
+        if tag_func_name not in translator.variables:
+            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+            translator.variables[tag_func_name] = tag_func
+        else:
+            tag_func = translator.variables[tag_func_name]
+
+        return tag_func(result_var) == z3.IntVal(tag_idx)
 
     def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator) -> List:
         """Extract axioms: field_X($result) == value for each field in record-new"""
@@ -1144,7 +1462,7 @@ class ContractVerifier:
             )
 
         # Create translator and declare parameters
-        translator = Z3Translator(self.type_env, self.filename)
+        translator = Z3Translator(self.type_env, self.filename, self.function_registry)
 
         # Declare parameter variables
         for param in params:
@@ -1298,6 +1616,15 @@ class ContractVerifier:
         for a in assume_z3:
             solver.add(a)
 
+        # Phase 5: Add type invariants for parameters
+        # For (type T (record ...) (@invariant cond)), when param has type T,
+        # add cond substituted with param.field references
+        param_invariants = self._collect_parameter_invariants(params)
+        for param_name, inv_expr in param_invariants:
+            inv_z3 = translator.translate_expr(inv_expr)
+            if inv_z3 is not None:
+                solver.add(inv_z3)
+
         # Add body constraint for path-sensitive analysis
         # This constrains $result to equal the translated function body
         if body_z3 is not None:
@@ -1322,6 +1649,14 @@ class ContractVerifier:
             field_axioms = self._extract_record_field_axioms(fn_body, translator)
             for axiom in field_axioms:
                 solver.add(axiom)
+
+        # Phase 4: Add union tag axiom if body is union-new
+        # For (union-new Type tag payload), add: union_tag($result) == tag_index
+        # This allows proving match postconditions like (match $result ((tag _) true) (_ false))
+        if fn_body is not None and self._is_union_new(fn_body):
+            tag_axiom = self._extract_union_tag_axiom(fn_body, translator)
+            if tag_axiom is not None:
+                solver.add(tag_axiom)
 
         # Add negation of postconditions
         solver.add(z3.Not(z3.And(*post_z3)))
@@ -1485,10 +1820,16 @@ def verify_source(source: str, filename: str = "<string>",
 
     # Build type registry from AST (no full type checking needed for verification)
     type_registry = build_type_registry_from_ast(ast)
-    type_env = MinimalTypeEnv(type_registry=type_registry)
+    # Build invariant registry for type invariants
+    invariant_registry = build_invariant_registry_from_ast(ast)
+    type_env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+
+    # Build function registry for inlining
+    function_registry = FunctionRegistry()
+    function_registry.register_from_ast(ast)
 
     # Run contract verification
-    contract_verifier = ContractVerifier(type_env, filename, timeout_ms)
+    contract_verifier = ContractVerifier(type_env, filename, timeout_ms, function_registry)
     results = contract_verifier.verify_all(ast)
 
     # Run range verification
@@ -1521,10 +1862,16 @@ def verify_ast(ast: List[SExpr], filename: str = "<string>",
 
     # Build type registry from AST (no full type checking needed for verification)
     type_registry = build_type_registry_from_ast(ast)
-    type_env = MinimalTypeEnv(type_registry=type_registry)
+    # Build invariant registry for type invariants
+    invariant_registry = build_invariant_registry_from_ast(ast)
+    type_env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+
+    # Build function registry for inlining
+    function_registry = FunctionRegistry()
+    function_registry.register_from_ast(ast)
 
     # Run contract verification
-    contract_verifier = ContractVerifier(type_env, filename, timeout_ms)
+    contract_verifier = ContractVerifier(type_env, filename, timeout_ms, function_registry)
     results = contract_verifier.verify_all(ast)
 
     # Run range verification
@@ -1582,10 +1929,16 @@ def verify_file(path: str, mode: str = "error",
 
     # Build type registry from AST for contract verification
     type_registry = build_type_registry_from_ast(ast)
-    type_env = MinimalTypeEnv(type_registry=type_registry)
+    # Build invariant registry for type invariants
+    invariant_registry = build_invariant_registry_from_ast(ast)
+    type_env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+
+    # Build function registry for inlining
+    function_registry = FunctionRegistry()
+    function_registry.register_from_ast(ast)
 
     # Run contract verification
-    contract_verifier = ContractVerifier(type_env, path, timeout_ms)
+    contract_verifier = ContractVerifier(type_env, path, timeout_ms, function_registry)
     results = contract_verifier.verify_all(ast)
 
     # Run range verification
