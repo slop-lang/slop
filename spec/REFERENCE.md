@@ -269,3 +269,78 @@ For functions that allocate:
         (list-push results data)))
     (ok results)))
 ```
+
+## SMT Verification
+
+SLOP uses Z3 for compile-time contract verification. This section details what's verified and how to help the verifier when automatic verification fails.
+
+### What's Verified
+
+The verifier checks:
+
+- **Contract consistency**: Preconditions don't contradict postconditions
+- **Range type bounds**: `(Int 0 .. 100)` generates constraints `0 <= x <= 100`
+- **Type invariants**: `@invariant` on type definitions applied to parameters
+- **Record field axioms**: `(record-new Type (field value))` implies `(. $result field) == value`
+- **Union tag axioms**: `(union-new Type tag value)` establishes tag in match
+- **Equality reflexivity**: `*-eq` functions have `(fn-eq x x) == true` axiom
+
+### Loop Patterns
+
+The verifier automatically detects common loop patterns and generates axioms:
+
+**Filter pattern** - collecting items matching a predicate:
+
+```lisp
+(let ((mut result (make-list arena)))
+  (for-each (x items)
+    (if predicate (list-push result x)))
+  result)
+;; Axiom: (list-len result) <= (list-len items)
+```
+
+**Count pattern** - counting items matching a predicate:
+
+```lisp
+(let ((mut count 0))
+  (for-each (x items)
+    (if predicate (set! count (+ count 1))))
+  count)
+;; Axioms: count >= 0, count <= (list-len items)
+```
+
+**Fold pattern** - accumulating with an operator:
+
+```lisp
+(let ((mut acc init))
+  (for-each (x items)
+    (set! acc (max acc x)))
+  acc)
+;; Axiom for max: result >= init
+```
+
+### Escape Hatches
+
+When automatic verification fails, use these annotations:
+
+**`@assume`** - Trust an assertion without proof (for FFI behavior, complex invariants):
+
+```lisp
+(fn use-ffi-result ((ptr (Ptr Data)))
+  (@spec (((Ptr Data)) -> Int))
+  (@assume (!= ptr nil))  ;; FFI guarantees non-null
+  (. ptr value))
+```
+
+**`@loop-invariant`** - Provide invariant for patterns the verifier doesn't recognize:
+
+```lisp
+(fn complex-loop ((items (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post (>= $result 0))
+  (let ((mut sum 0))
+    (for-each (x items)
+      (@loop-invariant (>= sum 0))  ;; Help the verifier
+      (set! sum (+ sum (abs x))))
+    sum))
+```

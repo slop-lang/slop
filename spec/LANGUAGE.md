@@ -599,86 +599,16 @@ SLOP                    C
 
 ### 7.1 SMT Contract Verification
 
-SLOP uses the Z3 SMT solver for automated contract verification at compile time.
+SLOP uses Z3 for compile-time contract verification. The verifier automatically:
+- Checks contract consistency (pre doesn't contradict post)
+- Enforces range type bounds
+- Recognizes loop patterns (filter, count, fold) and generates axioms
 
-#### What's Verified Automatically
+**Escape hatches** when automatic verification fails:
+- `@assume`: Trust assertion without proof
+- `@loop-invariant`: Provide invariant for complex loops
 
-The verifier checks contract consistency and generates axioms for common patterns:
-
-- **Contract consistency**: Preconditions don't contradict postconditions
-- **Range type bounds**: `(Int 0 .. 100)` generates constraints `0 <= x <= 100`
-- **Type invariants**: `@invariant` on type definitions applied to parameters
-- **Record field axioms**: `(record-new Type (field value))` implies `(. $result field) == value`
-- **Union tag axioms**: `(union-new Type tag value)` establishes tag in match
-- **Equality reflexivity**: `*-eq` functions have `(fn-eq x x) == true` axiom
-- **Filter loop patterns**: `(let ((mut result (make-list))) (for-each ...if...push...) result)`
-- **Count loop patterns**: `(let ((mut count 0)) (for-each ...if...(+ count 1)...) count)`
-- **Fold loop patterns**: `(let ((mut acc init)) (for-each ...(op acc item)...) acc)`
-
-#### Loop Pattern Recognition
-
-The verifier automatically detects common loop patterns and generates axioms:
-
-**Filter pattern** - collecting items matching a predicate:
-```lisp
-(let ((mut result (make-list arena)))
-  (for-each (x items)
-    (if predicate (list-push result x)))
-  result)
-;; Axiom: (list-len result) <= (list-len items)
-```
-
-**Count pattern** - counting items matching a predicate:
-```lisp
-(let ((mut count 0))
-  (for-each (x items)
-    (if predicate (set! count (+ count 1))))
-  count)
-;; Axioms: count >= 0, count <= (list-len items)
-```
-
-**Fold pattern** - accumulating with an operator:
-```lisp
-(let ((mut acc init))
-  (for-each (x items)
-    (set! acc (max acc x)))
-  acc)
-;; Axiom for max: result >= init
-```
-
-#### Escape Hatches
-
-When automatic verification fails, use these annotations:
-
-- **`@assume`**: Trust an assertion without proof (for FFI behavior, complex invariants)
-- **`@loop-invariant`**: Provide loop invariant for patterns the verifier doesn't recognize
-
-```lisp
-(fn complex-loop ((items (List Int)))
-  (@spec (((List Int)) -> Int))
-  (@post (>= $result 0))
-  (let ((mut sum 0))
-    (for-each (x items)
-      (@loop-invariant (>= sum 0))  ;; Help the verifier
-      (set! sum (+ sum (abs x))))
-    sum))
-```
-
-#### Verification Phases
-
-The verifier runs multiple phases to build up axioms:
-
-1. Type invariants for parameters
-2. Reflexivity axioms for equality functions
-3. Record field axioms from `record-new` bodies
-4. Union tag axioms from `union-new` bodies
-5. Conditional record-new axioms
-6. Accessor function axioms
-7. List operation axioms
-8. Filter pattern detection
-9. Count pattern detection
-10. Fold pattern detection
-11. Union structural equality
+See REFERENCE.md for recognized patterns and verification details.
 
 ## 8. Standard Library
 
