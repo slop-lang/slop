@@ -555,6 +555,24 @@ class Z3Translator:
                         return result
                     return None
 
+                # String length
+                if op == 'string-len':
+                    if len(expr) >= 2:
+                        s = self.translate_expr(expr[1])
+                        if s is None:
+                            return None
+                        func_name = "string_len"
+                        if func_name not in self.variables:
+                            func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
+                            self.variables[func_name] = func
+                        else:
+                            func = self.variables[func_name]
+                        result = func(s)
+                        # String length is always non-negative
+                        self.constraints.append(result >= 0)
+                        return result
+                    return None
+
                 # is-form - check if SExpr is a specific form type
                 if op == 'is-form':
                     if len(expr) >= 3:
@@ -588,12 +606,34 @@ class Z3Translator:
                 if op == 'nil':
                     return z3.IntVal(0)  # nil is address 0
 
+                # Quote form - (quote x) is equivalent to 'x
+                if op == 'quote' and len(expr) >= 2:
+                    inner = expr[1]
+                    if isinstance(inner, Symbol):
+                        # Treat as quoted enum variant
+                        name = inner.name
+                        if name in self.enum_values:
+                            return z3.IntVal(self.enum_values[name])
+                        # Try with quote prefix
+                        quoted_name = f"'{name}"
+                        if quoted_name in self.enum_values:
+                            return z3.IntVal(self.enum_values[quoted_name])
+                    # If not found in enums, return the translated inner expression
+                    return self.translate_expr(inner)
+
                 # Control flow - path sensitive analysis
                 if op == 'if':
                     return self._translate_if(expr)
 
                 if op == 'cond':
                     return self._translate_cond(expr)
+
+                if op == 'match':
+                    return self._translate_match(expr)
+
+                # Handle potential user-defined function calls
+                # This is a fallback for functions not handled above
+                return self._translate_function_call(expr)
 
         return None
 
@@ -621,6 +661,17 @@ class Z3Translator:
             return z3.BoolVal(False)
         if name == 'nil':
             return z3.IntVal(0)
+
+        # Shorthand dot notation: t.field -> (. t field)
+        if '.' in name and not name.startswith('.'):
+            parts = name.split('.', 1)
+            obj_name, field_name = parts
+            # Get the object variable
+            obj = self._translate_symbol(Symbol(obj_name))
+            if obj is None:
+                return None
+            # Translate as field access using the same logic as _translate_field_access
+            return self._translate_field_for_obj(obj, field_name)
 
         # Look up in variables
         if name in self.variables:
@@ -727,6 +778,10 @@ class Z3Translator:
         if obj is None or field_name is None:
             return None
 
+        return self._translate_field_for_obj(obj, field_name)
+
+    def _translate_field_for_obj(self, obj: z3.ExprRef, field_name: str) -> z3.ExprRef:
+        """Translate field access given an already-translated object and field name"""
         # Create or get the field accessor function
         # Use Bool for fields that look boolean, Int otherwise
         func_name = f"field_{field_name}"
@@ -799,6 +854,136 @@ class Z3Translator:
 
         return result
 
+    def _translate_match(self, expr: SList) -> Optional[z3.ExprRef]:
+        """Translate match expression for union types.
+
+        Pattern: (match expr ((tag1 var) body1) ((tag2 var) body2) ...)
+
+        Translation strategy:
+        - Track union discriminator with uninterpreted function union_tag(expr) -> Int
+        - Each pattern (tag var) maps to tag index
+        - Build nested z3.If() based on tag equality
+        """
+        if len(expr) < 3:
+            return None
+
+        scrutinee = self.translate_expr(expr[1])
+        if scrutinee is None:
+            return None
+
+        # Get or create tag discriminator function
+        tag_func_name = "union_tag"
+        if tag_func_name not in self.variables:
+            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+            self.variables[tag_func_name] = tag_func
+        else:
+            tag_func = self.variables[tag_func_name]
+
+        tag_value = tag_func(scrutinee)
+
+        # Process clauses in reverse to build nested If
+        result: Optional[z3.ExprRef] = None
+        for clause in reversed(expr.items[2:]):
+            if not isinstance(clause, SList) or len(clause) < 2:
+                continue
+
+            pattern = clause[0]
+            body = clause[1]
+
+            if isinstance(pattern, Symbol) and pattern.name == '_':
+                # Wildcard - default case
+                result = self.translate_expr(body)
+            elif isinstance(pattern, SList) and len(pattern) >= 1:
+                tag = pattern[0].name if isinstance(pattern[0], Symbol) else None
+                if tag:
+                    # Look up tag index from enum_values or hash it
+                    tag_idx = self.enum_values.get(tag, self.enum_values.get(f"'{tag}", hash(tag) % 256))
+
+                    # If the pattern has a variable binding, declare it
+                    if len(pattern) >= 2 and isinstance(pattern[1], Symbol):
+                        var_name = pattern[1].name
+                        # Create uninterpreted function to extract the payload
+                        payload_func_name = f"union_payload_{tag}"
+                        if payload_func_name not in self.variables:
+                            payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
+                            self.variables[payload_func_name] = payload_func
+                        else:
+                            payload_func = self.variables[payload_func_name]
+                        # Bind the variable to the payload extraction
+                        self.variables[var_name] = payload_func(scrutinee)
+
+                    body_z3 = self.translate_expr(body)
+                    if body_z3 is None:
+                        return None
+
+                    if result is None:
+                        result = body_z3
+                    else:
+                        result = z3.If(tag_value == tag_idx, body_z3, result)
+            elif isinstance(pattern, Symbol):
+                # Simple tag pattern without variable binding
+                tag = pattern.name
+                tag_idx = self.enum_values.get(tag, self.enum_values.get(f"'{tag}", hash(tag) % 256))
+
+                body_z3 = self.translate_expr(body)
+                if body_z3 is None:
+                    return None
+
+                if result is None:
+                    result = body_z3
+                else:
+                    result = z3.If(tag_value == tag_idx, body_z3, result)
+
+        return result
+
+    def _translate_function_call(self, expr: SList) -> Optional[z3.ExprRef]:
+        """Translate user-defined function calls as uninterpreted functions.
+
+        Strategy: model user-defined functions as uninterpreted functions.
+        This allows Z3 to reason about their properties without knowing
+        the implementation.
+        """
+        if len(expr) < 1:
+            return None
+
+        fn_name = expr[0].name if isinstance(expr[0], Symbol) else None
+        if fn_name is None:
+            return None
+
+        # Translate arguments
+        args = []
+        for arg in expr.items[1:]:
+            arg_z3 = self.translate_expr(arg)
+            if arg_z3 is None:
+                return None
+            args.append(arg_z3)
+
+        # Create uninterpreted function with unique key based on name and arity
+        func_key = f"fn_{fn_name}_{len(args)}"
+        if func_key not in self.variables:
+            # Determine return type based on naming conventions
+            is_predicate = (fn_name.endswith('-eq') or fn_name.endswith('?') or
+                          fn_name.startswith('is-') or fn_name.endswith('-contains') or
+                          fn_name == 'graph-contains')
+            return_sort = z3.BoolSort() if is_predicate else z3.IntSort()
+
+            # Build argument sorts (default to Int for all args)
+            if args:
+                arg_sorts = [z3.IntSort()] * len(args)
+                func = z3.Function(func_key, *arg_sorts, return_sort)
+            else:
+                # Zero-argument function
+                func = z3.Function(func_key, return_sort)
+            self.variables[func_key] = func
+        else:
+            func = self.variables[func_key]
+
+        # Apply the function to arguments
+        if args:
+            return func(*args)
+        else:
+            return func()
+
 
 # ============================================================================
 # Contract Verifier
@@ -831,6 +1016,47 @@ class ContractVerifier:
                     if self._references_mutable_state(item):
                         return True
         return False
+
+    def _find_eq_function_calls(self, exprs: List[SExpr]) -> set:
+        """Find all function calls ending in -eq in expressions"""
+        result: set = set()
+        for expr in exprs:
+            self._collect_eq_calls(expr, result)
+        return result
+
+    def _collect_eq_calls(self, expr: SExpr, result: set):
+        """Recursively collect function calls ending in -eq"""
+        if isinstance(expr, SList) and len(expr) > 0:
+            head = expr[0]
+            if isinstance(head, Symbol) and head.name.endswith('-eq'):
+                result.add(head.name)
+            for item in expr.items:
+                self._collect_eq_calls(item, result)
+        elif isinstance(expr, Symbol):
+            # Check for shorthand dot notation like t.field
+            pass  # No function calls in plain symbols
+
+    def _is_record_new(self, expr: SExpr) -> bool:
+        """Check if expression is a record-new form"""
+        return is_form(expr, 'record-new')
+
+    def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator) -> List:
+        """Extract axioms: field_X($result) == value for each field in record-new"""
+        axioms = []
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return axioms
+
+        # record-new Type (field1 val1) (field2 val2) ...
+        for item in record_new.items[2:]:  # Skip 'record-new' and Type
+            if isinstance(item, SList) and len(item) >= 2:
+                field_name = item[0].name if isinstance(item[0], Symbol) else None
+                if field_name:
+                    field_value = translator.translate_expr(item[1])
+                    if field_value is not None:
+                        field_func = translator._translate_field_for_obj(result_var, field_name)
+                        axioms.append(field_func == field_value)
+        return axioms
 
     def verify_function(self, fn_form: SList) -> VerificationResult:
         """Verify a single function's contracts"""
@@ -883,9 +1109,18 @@ class ContractVerifier:
                     continue
                 # This is the function body
                 fn_body = item
-            elif isinstance(item, (Symbol, Number)):
-                # Simple expression as body
+            elif isinstance(item, Symbol):
+                # Skip keyword properties like :c-name
+                if item.name.startswith(':'):
+                    continue
+                # Simple expression as body (e.g., variable reference)
                 fn_body = item
+            elif isinstance(item, Number):
+                # Simple numeric expression as body
+                fn_body = item
+            elif isinstance(item, String):
+                # Skip string values (typically property values after :keyword)
+                continue
 
         # Skip if no contracts to verify
         if not preconditions and not postconditions and not assumptions:
@@ -1069,6 +1304,24 @@ class ContractVerifier:
             result_var = translator.variables.get('$result')
             if result_var is not None:
                 solver.add(result_var == body_z3)
+
+        # Phase 1: Add reflexivity axioms for equality functions
+        # For any function ending in -eq, add axiom: fn_eq(x, x) == true
+        eq_funcs = self._find_eq_function_calls(postconditions)
+        for eq_fn in eq_funcs:
+            func_key = f"fn_{eq_fn}_2"  # 2-arity eq functions
+            if func_key in translator.variables:
+                eq_func = translator.variables[func_key]
+                # ForAll x: eq_func(x, x) == True
+                refl_x = z3.Int("_refl_x")
+                solver.add(z3.ForAll([refl_x], eq_func(refl_x, refl_x) == z3.BoolVal(True)))
+
+        # Phase 2: Add record field axioms if body is record-new
+        # For (record-new Type (field1 val1) ...), add: field_field1($result) == val1
+        if fn_body is not None and self._is_record_new(fn_body):
+            field_axioms = self._extract_record_field_axioms(fn_body, translator)
+            for axiom in field_axioms:
+                solver.add(axiom)
 
         # Add negation of postconditions
         solver.add(z3.Not(z3.And(*post_z3)))

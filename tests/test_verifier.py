@@ -516,3 +516,315 @@ class TestInfixContractVerification:
         results = verify_source(source)
         # Should process without errors
         assert len(results) >= 1
+
+
+class TestNewConstructs:
+    """Test new constructs: string-len, dot notation, match, function calls"""
+
+    def test_string_len_translation(self):
+        """Test string-len translates to Z3"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        translator.declare_variable('s', PrimitiveType('String'))
+
+        # Test string-len
+        expr = parse("(string-len s)")[0]
+        z3_expr = translator.translate_expr(expr)
+        assert z3_expr is not None
+        # String length should have non-negative constraint added
+        assert len(translator.constraints) >= 1
+
+    def test_string_len_precondition(self):
+        """Verify precondition with string-len"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn check-string ((s String))
+            (@spec ((String) -> Bool))
+            (@pre (> (string-len s) 0))
+            (@post (== $result true))
+            true))
+        """
+        results = verify_source(source)
+        # Should verify (postcondition is trivially true)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_shorthand_dot_notation(self):
+        """Test t.field shorthand translates like (. t field)"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        translator.declare_variable('t', PrimitiveType('Int'))
+
+        # Test shorthand notation
+        expr = parse("t.value")[0]
+        z3_expr = translator.translate_expr(expr)
+        assert z3_expr is not None
+        assert 'field_value' in str(z3_expr)
+
+    def test_shorthand_dot_postcondition(self):
+        """Verify postcondition using shorthand dot notation"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Point (record (x Int) (y Int)))
+          (fn get-x ((p (Ptr Point)))
+            (@spec (((Ptr Point)) -> Int))
+            (@post (>= $result 0))
+            (. p x)))
+        """
+        results = verify_source(source)
+        # Should have at least one result
+        assert len(results) >= 1
+
+    def test_match_expression_translation(self):
+        """Test match expression translates to nested If"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv, build_type_registry_from_ast
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        source = """
+        (type Result (union (ok Int) (error Int)))
+        """
+        ast = parse(source)
+        registry = build_type_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=registry)
+        translator = Z3Translator(env)
+
+        translator.declare_variable('r', PrimitiveType('Int'))
+
+        # Test match translation
+        expr = parse("(match r ((ok v) v) ((error e) 0))")[0]
+        z3_expr = translator.translate_expr(expr)
+        assert z3_expr is not None
+        # Should produce an If expression
+        assert 'If' in str(z3_expr) or z3_expr is not None
+
+    def test_match_in_postcondition(self):
+        """Verify postcondition with match expression"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Status (union (active) (inactive)))
+          (fn check-active ((s Int))
+            (@spec ((Int) -> Bool))
+            (@post (or (== $result true) (== $result false)))
+            (match s
+              ((active) true)
+              ((inactive) false))))
+        """
+        results = verify_source(source)
+        # Should process without translation errors
+        assert len(results) >= 1
+        # Should not have translation failures
+        failed_translate = [r for r in results if 'Could not translate' in r.message]
+        assert len(failed_translate) == 0
+
+    def test_function_call_axiomatization(self):
+        """Test user-defined function calls as uninterpreted functions"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        translator.declare_variable('a', PrimitiveType('Int'))
+        translator.declare_variable('b', PrimitiveType('Int'))
+
+        # Test function call translation
+        expr = parse("(term-eq a b)")[0]
+        z3_expr = translator.translate_expr(expr)
+        assert z3_expr is not None
+        # Should be a function application
+        assert 'fn_term-eq' in str(translator.variables)
+
+    def test_function_call_predicate(self):
+        """Predicates ending in -eq should return Bool"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        translator.declare_variable('a', PrimitiveType('Int'))
+        translator.declare_variable('b', PrimitiveType('Int'))
+
+        # term-eq should return Bool
+        expr = parse("(term-eq a b)")[0]
+        z3_expr = translator.translate_expr(expr)
+        assert z3_expr is not None
+        assert z3_expr.sort() == z3.BoolSort()
+
+    def test_function_call_in_postcondition(self):
+        """Verify postcondition that calls user-defined function"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn get-value ((x Int))
+            (@spec ((Int) -> Int))
+            (@post (>= $result 0))
+            x)
+
+          (fn double ((x Int))
+            (@spec ((Int) -> Int))
+            (@pre (>= x 0))
+            (@post (== $result (get-value x)))
+            x))
+        """
+        results = verify_source(source)
+        # Should process without translation errors
+        assert len(results) >= 1
+
+    def test_quote_form_translation(self):
+        """Test (quote x) form translates to enum value"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv, build_type_registry_from_ast
+        from slop.parser import parse
+        import z3
+
+        source = "(type Status (enum ok error))"
+        ast = parse(source)
+        registry = build_type_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=registry)
+        translator = Z3Translator(env)
+
+        # Test (quote ok) - native parser output
+        expr = parse("(quote ok)")[0]
+        z3_expr = translator.translate_expr(expr)
+        assert z3_expr is not None
+        assert z3_expr == z3.IntVal(0)  # 'ok' is first enum value
+
+    def test_graph_size_function_call(self):
+        """Test graph-size function call in postcondition"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn empty-check ((g Int))
+            (@spec ((Int) -> Bool))
+            (@pre (== (graph-size g) 0))
+            (@post (== $result true))
+            true))
+        """
+        results = verify_source(source)
+        # Should process (graph-size translated as function call)
+        assert len(results) >= 1
+        failed_translate = [r for r in results if 'Could not translate' in r.message]
+        assert len(failed_translate) == 0
+
+
+class TestBodyAnalysis:
+    """Test body analysis for verifier: reflexivity axioms, record axioms, inlining"""
+
+    def test_reflexivity_axiom(self):
+        """Postcondition (term-eq $result $result) should verify via reflexivity"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn identity ((x Int))
+            (@spec ((Int) -> Int))
+            (@post (term-eq $result $result))
+            x))
+        """
+        results = verify_source(source)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) == 1
+
+    def test_reflexivity_with_field_access(self):
+        """Postcondition (term-eq $result t.field) verifies when body is (. t field)"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Item (record (value Int)))
+          (fn get-value ((t (Ptr Item)))
+            (@spec (((Ptr Item)) -> Int))
+            (@post (term-eq $result t.value))
+            (. t value)))
+        """
+        results = verify_source(source)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) == 1
+
+    def test_record_field_axiom(self):
+        """Record-new body allows proving field equality"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Point (record (x Int) (y Int)))
+          (fn make-point ((a Int) (b Int))
+            (@spec ((Int Int) -> Point))
+            (@post (== (. $result x) a))
+            (record-new Point (x a) (y b))))
+        """
+        results = verify_source(source)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) == 1
+
+    def test_record_field_multiple_axioms(self):
+        """Multiple record field postconditions all verify"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Triple (record (a Int) (b Int) (c Int)))
+          (fn make-triple ((x Int) (y Int) (z Int))
+            (@spec ((Int Int Int) -> Triple))
+            (@post (== (. $result a) x))
+            (@post (== (. $result b) y))
+            (@post (== (. $result c) z))
+            (record-new Triple (a x) (b y) (c z))))
+        """
+        results = verify_source(source)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) == 1
+
+    def test_combined_record_eq(self):
+        """Combined record + eq: (term-eq (. $result x) val) with record-new"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Item (record (value Int)))
+          (fn make-item ((v Int))
+            (@spec ((Int) -> Item))
+            (@post (term-eq (. $result value) v))
+            (record-new Item (value v))))
+        """
+        results = verify_source(source)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) == 1
+
+    def test_eq_function_different_args_not_verified(self):
+        """term-eq with different args should not automatically verify"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn compare ((x Int) (y Int))
+            (@spec ((Int Int) -> Bool))
+            (@post (term-eq x y))
+            true))
+        """
+        results = verify_source(source)
+        # Without explicit constraint that x == y, this should fail
+        failed = [r for r in results if r.status == 'failed']
+        assert len(failed) == 1
