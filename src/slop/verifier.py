@@ -1771,7 +1771,7 @@ class ContractVerifier:
         return axioms
 
     # ========================================================================
-    # Phase 1: Filter Pattern Detection and Axiom Generation
+    # Phase 8: Filter Pattern Detection and Axiom Generation
     # ========================================================================
 
     def _is_mutable_binding(self, binding: SExpr) -> bool:
@@ -2121,7 +2121,7 @@ class ContractVerifier:
         return suggestions
 
     # ========================================================================
-    # Phase 4: Union Structural Equality Axioms
+    # Phase 9: Union Structural Equality Axioms
     # ========================================================================
 
     def _detect_union_equality_function(self, fn_form: SList) -> Optional[Tuple[str, str, str]]:
@@ -2628,7 +2628,7 @@ class ContractVerifier:
         for a in assume_z3:
             solver.add(a)
 
-        # Phase 5: Add type invariants for parameters
+        # Phase 1: Add type invariants for parameters
         # For (type T (record ...) (@invariant cond)), when param has type T,
         # add cond substituted with param.field references
         param_invariants = self._collect_parameter_invariants(params)
@@ -2644,7 +2644,7 @@ class ContractVerifier:
             if result_var is not None:
                 solver.add(result_var == body_z3)
 
-        # Phase 1: Add reflexivity axioms for equality functions
+        # Phase 2: Add reflexivity axioms for equality functions
         # For any function ending in -eq, add axiom: fn_eq(x, x) == true
         # Include -eq functions from both postconditions AND body
         eq_funcs = self._find_eq_function_calls(postconditions)
@@ -2658,7 +2658,7 @@ class ContractVerifier:
                 refl_x = z3.Int("_refl_x")
                 solver.add(z3.ForAll([refl_x], eq_func(refl_x, refl_x) == z3.BoolVal(True)))
 
-        # Phase 2: Add record field axioms if body is record-new
+        # Phase 3: Add record field axioms if body is record-new
         # For (record-new Type (field1 val1) ...), add: field_field1($result) == val1
         if fn_body is not None and self._is_record_new(fn_body):
             # Get the actual record-new form (may be inside a do block)
@@ -2669,7 +2669,7 @@ class ContractVerifier:
 
         # Phase 4: Add union tag axiom if body is union-new
         # For (union-new Type tag payload), add: union_tag($result) == tag_index
-        # This allows proving match postconditions like (match $result ((tag _) true) (_ false))
+        # Allows proving match postconditions like (match $result ((tag _) true) (_ false))
         if fn_body is not None and self._is_union_new(fn_body):
             # Get the actual union-new form (may be inside a do block)
             return_expr = self._get_return_expr(fn_body)
@@ -2677,29 +2677,29 @@ class ContractVerifier:
             if tag_axiom is not None:
                 solver.add(tag_axiom)
 
-        # Phase 8: Add conditional record-new axioms
+        # Phase 5: Add conditional record-new axioms
         # For (if cond (record-new Type (f1 v1) ...) else), add: cond => field_f1($result) == v1
         if fn_body is not None and self._is_conditional_with_record_new(fn_body):
             cond_axioms = self._extract_conditional_record_axioms(fn_body, translator)
             for axiom in cond_axioms:
                 solver.add(axiom)
 
-        # Phase 7: Add accessor function axioms
+        # Phase 6: Add accessor function axioms
         # For functions that are simple field accessors, add axiom: fn_name(x) == field_name(x)
-        # This allows proving (>= (graph-size $result) (graph-size g)) by connecting to field access
+        # Allows proving (>= (graph-size $result) (graph-size g)) by connecting to field access
         if self.function_registry:
             accessor_axioms = self._extract_accessor_axioms(postconditions, translator)
             for axiom in accessor_axioms:
                 solver.add(axiom)
 
-        # Phase 9: Add list operation axioms
+        # Phase 7: Add list operation axioms
         # For (list-push lst x), track that list-len increases by 1
         if fn_body is not None:
             list_axioms = self._extract_list_axioms(fn_body, translator)
             for axiom in list_axioms:
                 solver.add(axiom)
 
-        # Phase 10: Filter pattern detection and axiom generation
+        # Phase 8: Filter pattern detection and axiom generation
         # Detect filter loop patterns and generate automatic axioms
         if fn_body is not None:
             filter_pattern = self._detect_filter_pattern(fn_body)
@@ -2708,7 +2708,7 @@ class ContractVerifier:
                 for axiom in filter_axioms:
                     solver.add(axiom)
 
-        # Phase 4: Union structural equality axioms
+        # Phase 9: Union structural equality axioms
         # For union equality functions (e.g., term-eq), add axioms connecting
         # structural equality to Z3's native equality
         if fn_body is not None:
