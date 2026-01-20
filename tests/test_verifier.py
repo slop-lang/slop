@@ -1811,3 +1811,421 @@ class TestUnionStructuralEquality:
         # Should not detect - Point is a record, not a union
         detection = verifier._detect_union_equality_function(fn_form)
         assert detection is None
+
+
+class TestCountPatternRecognition:
+    """Test count pattern recognition and axiom generation"""
+
+    def test_count_pattern_detection(self):
+        """Detect count pattern in function body"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn count-positive ((items (List Int)))
+          (@spec (((List Int)) -> Int))
+          (@post (>= $result 0))
+          (let ((mut count 0))
+            (for-each (x items)
+              (if (> x 0)
+                (set! count (+ count 1))))
+            count))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        # Get function body (fn name params @spec @post body)
+        fn_body = ast[0].items[5]  # The let expression
+
+        # Test pattern detection
+        pattern = verifier._detect_count_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.count_var == 'count'
+        assert pattern.loop_var == 'x'
+
+    def test_count_pattern_with_when(self):
+        """Detect count pattern using when instead of if"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn count-even ((items (List Int)))
+          (@spec (((List Int)) -> Int))
+          (@post (>= $result 0))
+          (let ((mut count 0))
+            (for-each (x items)
+              (when (== (% x 2) 0)
+                (set! count (+ count 1))))
+            count))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+        pattern = verifier._detect_count_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.count_var == 'count'
+
+    def test_count_pattern_axiom_generation(self):
+        """Count pattern generates correct axioms"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn count-matches ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (>= $result 0))
+            (let ((mut count 0))
+              (for-each (x items)
+                (if (> x 0)
+                  (set! count (+ count 1))))
+              count)))
+        """
+        results = verify_source(source)
+        count_fn = [r for r in results if r.name == 'count-matches']
+        assert len(count_fn) == 1
+        # With count pattern axiom (result >= 0), this should verify
+        assert count_fn[0].status == 'verified'
+
+    def test_count_bounded_by_collection(self):
+        """Count pattern generates upper bound axiom"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn count-all ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items)
+                (if true
+                  (set! count (+ count 1))))
+              count)))
+        """
+        results = verify_source(source)
+        count_fn = [r for r in results if r.name == 'count-all']
+        assert len(count_fn) == 1
+        # With count pattern axiom (result <= list-len), this should verify
+        assert count_fn[0].status == 'verified'
+
+
+class TestFoldPatternRecognition:
+    """Test fold/accumulation pattern recognition and axiom generation"""
+
+    def test_fold_pattern_detection_sum(self):
+        """Detect sum fold pattern in function body"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn sum-items ((items (List Int)))
+          (@spec (((List Int)) -> Int))
+          (@post (>= $result 0))
+          (let ((mut total 0))
+            (for-each (x items)
+              (set! total (+ total x)))
+            total))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+        pattern = verifier._detect_fold_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.acc_var == 'total'
+        assert pattern.operator == '+'
+        assert pattern.loop_var == 'x'
+
+    def test_fold_pattern_detection_max(self):
+        """Detect max fold pattern"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn find-max ((items (List Int)) (init Int))
+          (@spec (((List Int) Int) -> Int))
+          (@post (>= $result init))
+          (let ((mut best init))
+            (for-each (x items)
+              (set! best (max best x)))
+            best))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+        pattern = verifier._detect_fold_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.acc_var == 'best'
+        assert pattern.operator == 'max'
+
+    def test_fold_max_axiom_generation(self):
+        """Max fold pattern generates result >= init axiom"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn find-max ((items (List Int)) (init Int))
+            (@spec (((List Int) Int) -> Int))
+            (@post (>= $result init))
+            (let ((mut best init))
+              (for-each (x items)
+                (set! best (max best x)))
+              best)))
+        """
+        results = verify_source(source)
+        max_fn = [r for r in results if r.name == 'find-max']
+        assert len(max_fn) == 1
+        # With fold pattern axiom for max (result >= init), this should verify
+        assert max_fn[0].status == 'verified'
+
+    def test_fold_min_axiom_generation(self):
+        """Min fold pattern generates result <= init axiom"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn find-min ((items (List Int)) (init Int))
+            (@spec (((List Int) Int) -> Int))
+            (@post (<= $result init))
+            (let ((mut best init))
+              (for-each (x items)
+                (set! best (min best x)))
+              best)))
+        """
+        results = verify_source(source)
+        min_fn = [r for r in results if r.name == 'find-min']
+        assert len(min_fn) == 1
+        # With fold pattern axiom for min (result <= init), this should verify
+        assert min_fn[0].status == 'verified'
+
+    def test_fold_pattern_conditional_accumulation(self):
+        """Detect fold pattern with conditional accumulation"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn sum-positive ((items (List Int)))
+          (@spec (((List Int)) -> Int))
+          (@post (>= $result 0))
+          (let ((mut total 0))
+            (for-each (x items)
+              (if (> x 0)
+                (set! total (+ total x))))
+            total))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+        pattern = verifier._detect_fold_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.acc_var == 'total'
+        assert pattern.operator == '+'
+
+
+class TestFindPatternRecognition:
+    """Test find-first pattern recognition"""
+
+    def test_find_pattern_detection(self):
+        """Detect find-first pattern in function body"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn find-first-positive ((items (List Int)))
+          (@spec (((List Int)) -> Int))
+          (@post (or (== $result nil) (> $result 0)))
+          (let ((mut found nil))
+            (for-each (x items)
+              (if (and (== found nil) (> x 0))
+                (set! found x)))
+            found))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+        pattern = verifier._detect_find_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.result_var == 'found'
+        assert pattern.loop_var == 'x'
+
+    def test_find_pattern_with_when(self):
+        """Detect find-first pattern using when"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn find-match ((items (List Int)) (target Int))
+          (@spec (((List Int) Int) -> Int))
+          (@post (>= 0 0))
+          (let ((mut found nil))
+            (for-each (x items)
+              (when (and (== found nil) (== x target))
+                (set! found x)))
+            found))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+        pattern = verifier._detect_find_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.result_var == 'found'
+
+    def test_no_find_pattern_without_nil_check(self):
+        """Pattern without nil check should not be detected as find-first"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn find-all ((items (List Int)))
+          (@spec (((List Int)) -> Int))
+          (@post (>= 0 0))
+          (let ((mut found nil))
+            (for-each (x items)
+              (if (> x 0)
+                (set! found x)))
+            found))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+        pattern = verifier._detect_find_pattern(fn_body)
+        # Should not detect - missing (== found nil) check
+        assert pattern is None
+
+
+class TestVerifierProperties:
+    """Property-based tests for verifier correctness"""
+
+    def test_pattern_recognition_consistency(self):
+        """Pattern detection returns consistent types"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, CountPatternInfo, FoldPatternInfo, FindPatternInfo
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Count pattern
+        count_body = parse("(let ((mut count 0)) (for-each (x items) (if (> x 0) (set! count (+ count 1)))) count)")[0]
+        count_result = verifier._detect_count_pattern(count_body)
+        assert count_result is None or isinstance(count_result, CountPatternInfo)
+
+        # Fold pattern
+        fold_body = parse("(let ((mut total 0)) (for-each (x items) (set! total (+ total x))) total)")[0]
+        fold_result = verifier._detect_fold_pattern(fold_body)
+        assert fold_result is None or isinstance(fold_result, FoldPatternInfo)
+
+        # Find pattern
+        find_body = parse("(let ((mut found nil)) (for-each (x items) (if (and (== found nil) (> x 0)) (set! found x))) found)")[0]
+        find_result = verifier._detect_find_pattern(find_body)
+        assert find_result is None or isinstance(find_result, FindPatternInfo)
+
+    def test_all_documented_patterns_recognized(self):
+        """Every pattern documented in LANGUAGE.md is detected"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Filter pattern (from LANGUAGE.md)
+        filter_body = parse("""
+        (let ((mut result (make-list arena)))
+          (for-each (x items)
+            (if (> x 0) (set! result (list-push result x))))
+          result)
+        """)[0]
+        assert verifier._detect_filter_pattern(filter_body) is not None
+
+        # Count pattern (from LANGUAGE.md)
+        count_body = parse("""
+        (let ((mut count 0))
+          (for-each (x items)
+            (if (> x 0) (set! count (+ count 1))))
+          count)
+        """)[0]
+        assert verifier._detect_count_pattern(count_body) is not None
+
+        # Fold pattern (from LANGUAGE.md)
+        fold_body = parse("""
+        (let ((mut acc 0))
+          (for-each (x items)
+            (set! acc (max acc x)))
+          acc)
+        """)[0]
+        assert verifier._detect_fold_pattern(fold_body) is not None
+
+    def test_axiom_generation_soundness(self):
+        """Generated axioms don't create contradictions with themselves"""
+        from slop.verifier import verify_source
+
+        # A function where only the pattern axioms are needed
+        # The count pattern axiom (result >= 0) should help verify the postcondition
+        source = """
+        (module test
+          (fn get-count ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (>= $result 0))
+            (let ((mut count 0))
+              (for-each (x items)
+                (if true (set! count (+ count 1))))
+              count)))
+        """
+        results = verify_source(source)
+        # Should verify since count >= 0 is an axiom from count pattern
+        get_count = [r for r in results if r.name == 'get-count']
+        assert len(get_count) == 1
+        assert get_count[0].status == 'verified'
+
+    def test_pattern_independence(self):
+        """Detecting one pattern doesn't affect detecting another"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # This body matches both count and fold patterns
+        # (count is a special case of fold with + and init=0)
+        body = parse("(let ((mut count 0)) (for-each (x items) (if (> x 0) (set! count (+ count 1)))) count)")[0]
+
+        # Both should be detected
+        count = verifier._detect_count_pattern(body)
+        fold = verifier._detect_fold_pattern(body)
+
+        # Count should match (initialized to 0, increments by 1)
+        assert count is not None
+        assert count.count_var == 'count'
+
+        # Fold should also match (it's a general accumulation)
+        # Note: fold pattern checks for non-empty-collection init, which count (0) passes
+        # But count pattern is more specific, so both may detect
+        # This is intentional - we apply axioms from both

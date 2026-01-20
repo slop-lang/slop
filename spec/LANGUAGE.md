@@ -597,6 +597,19 @@ SLOP                    C
    - Null checks
 ```
 
+### 7.1 SMT Contract Verification
+
+SLOP uses Z3 for compile-time contract verification. The verifier automatically:
+- Checks contract consistency (pre doesn't contradict post)
+- Enforces range type bounds
+- Recognizes loop patterns (filter, count, fold) and generates axioms
+
+**Escape hatches** when automatic verification fails:
+- `@assume`: Trust assertion without proof
+- `@loop-invariant`: Provide invariant for complex loops
+
+See REFERENCE.md for recognized patterns and verification details.
+
 ## 8. Standard Library
 
 Minimal runtime (~500 lines of C):

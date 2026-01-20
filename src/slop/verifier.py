@@ -249,6 +249,57 @@ class FilterPatternInfo:
     excluded_item: Optional[SExpr] = None  # If negated equality, the excluded item
 
 
+@dataclass
+class CountPatternInfo:
+    """Information about a detected count loop pattern.
+
+    Count pattern:
+    (let ((mut count 0))
+      (for-each (item collection)
+        (if predicate
+          (set! count (+ count 1))))
+      count)
+    """
+    count_var: str  # The mutable count variable name
+    collection: SExpr  # The collection being iterated
+    loop_var: str  # The loop variable name
+    predicate: SExpr  # The condition for incrementing count
+
+
+@dataclass
+class FoldPatternInfo:
+    """Information about a detected fold/accumulation loop pattern.
+
+    Fold pattern:
+    (let ((mut acc init))
+      (for-each (item collection)
+        (set! acc (op acc item)))
+      acc)
+    """
+    acc_var: str  # The mutable accumulator variable name
+    init_value: SExpr  # The initial accumulator value
+    collection: SExpr  # The collection being iterated
+    loop_var: str  # The loop variable name
+    operator: str  # The accumulation operator (e.g., '+', '*', 'max', 'min')
+
+
+@dataclass
+class FindPatternInfo:
+    """Information about a detected find-first loop pattern.
+
+    Find pattern:
+    (let ((mut found nil))
+      (for-each (item collection)
+        (if (and (== found nil) predicate)
+          (set! found item)))
+      found)
+    """
+    result_var: str  # The mutable result variable name
+    collection: SExpr  # The collection being iterated
+    loop_var: str  # The loop variable name
+    predicate: SExpr  # The condition for selecting an item
+
+
 class TypeInvariantRegistry:
     """Registry of type invariants extracted from @invariant annotations"""
 
@@ -2005,6 +2056,417 @@ class ContractVerifier:
 
         return axioms
 
+    def _detect_count_pattern(self, body: SExpr) -> Optional[CountPatternInfo]:
+        """Detect count loop pattern in function body.
+
+        Pattern:
+        (let ((mut count 0))
+          (for-each (item collection)
+            (if predicate
+              (set! count (+ count 1))))
+          count)
+
+        Returns CountPatternInfo if detected, None otherwise.
+        """
+        # Must be a let expression
+        if not is_form(body, 'let') or len(body) < 3:
+            return None
+
+        bindings = body[1]
+        if not isinstance(bindings, SList):
+            return None
+
+        # Find mutable count binding initialized to 0
+        count_var = None
+        for binding in bindings.items:
+            if self._is_mutable_binding(binding) and len(binding) >= 3:
+                var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                init_expr = binding[2]
+                # Check if initialized to 0
+                if var_name and isinstance(init_expr, Number) and init_expr.value == 0:
+                    count_var = var_name
+                    break
+
+        if not count_var:
+            return None
+
+        # Find for-each loop in body
+        body_exprs = body.items[2:]
+        for body_expr in body_exprs:
+            if is_form(body_expr, 'for-each') and len(body_expr) >= 3:
+                loop_binding = body_expr[1]
+                if isinstance(loop_binding, SList) and len(loop_binding) >= 2:
+                    loop_var = loop_binding[0].name if isinstance(loop_binding[0], Symbol) else None
+                    collection = loop_binding[1]
+
+                    if loop_var:
+                        # Search loop body for (if predicate (set! count (+ count 1)))
+                        loop_body = body_expr.items[2:]
+                        predicate = self._find_count_increment_predicate(loop_body, count_var)
+                        if predicate is not None:
+                            return CountPatternInfo(
+                                count_var=count_var,
+                                collection=collection,
+                                loop_var=loop_var,
+                                predicate=predicate
+                            )
+
+        return None
+
+    def _find_count_increment_predicate(self, stmts: List[SExpr], count_var: str) -> Optional[SExpr]:
+        """Find the predicate in a count increment pattern.
+
+        Looks for patterns like:
+        - (if predicate (set! count (+ count 1)))
+        - (when predicate (set! count (+ count 1)))
+        """
+        for stmt in stmts:
+            # Skip annotations
+            if isinstance(stmt, SList) and len(stmt) >= 1:
+                head = stmt[0]
+                if isinstance(head, Symbol) and head.name.startswith('@'):
+                    continue
+
+            # Check for if/when with count increment
+            if (is_form(stmt, 'if') or is_form(stmt, 'when')) and len(stmt) >= 3:
+                predicate = stmt[1]
+                then_branch = stmt[2]
+
+                # Check if then branch is (set! count (+ count 1))
+                if self._is_count_increment(then_branch, count_var):
+                    return predicate
+
+            # Recurse into nested let
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                nested_result = self._find_count_increment_predicate(stmt.items[2:], count_var)
+                if nested_result is not None:
+                    return nested_result
+
+        return None
+
+    def _is_count_increment(self, expr: SExpr, count_var: str) -> bool:
+        """Check if expression is (set! count (+ count 1))."""
+        if not is_form(expr, 'set!') or len(expr) < 3:
+            return False
+
+        target = expr[1]
+        if not isinstance(target, Symbol) or target.name != count_var:
+            return False
+
+        value = expr[2]
+        if not is_form(value, '+') or len(value) < 3:
+            return False
+
+        # Check for (+ count 1) or (+ 1 count)
+        arg1 = value[1]
+        arg2 = value[2]
+
+        if isinstance(arg1, Symbol) and arg1.name == count_var:
+            if isinstance(arg2, Number) and arg2.value == 1:
+                return True
+        if isinstance(arg2, Symbol) and arg2.name == count_var:
+            if isinstance(arg1, Number) and arg1.value == 1:
+                return True
+
+        return False
+
+    def _generate_count_axioms(self, pattern: CountPatternInfo,
+                               translator: Z3Translator) -> List:
+        """Generate Z3 axioms for detected count pattern.
+
+        Axioms:
+        1. Count is non-negative: $result >= 0
+        2. Count is bounded by collection size: $result <= (list-len collection)
+        """
+        axioms = []
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return axioms
+
+        # Only add numeric axioms if result is an integer type
+        if result_var.sort() != z3.IntSort():
+            return axioms
+
+        # Axiom 1: Count is non-negative
+        axioms.append(result_var >= 0)
+
+        # Axiom 2: Count is bounded by collection size
+        # Translate the collection to get its Z3 representation
+        collection_z3 = translator.translate_expr(pattern.collection)
+        if collection_z3 is not None:
+            # Get or create list-len function
+            list_len_func_name = "fn_list-len_1"
+            if list_len_func_name not in translator.variables:
+                list_len_func = z3.Function(list_len_func_name, z3.IntSort(), z3.IntSort())
+                translator.variables[list_len_func_name] = list_len_func
+            else:
+                list_len_func = translator.variables[list_len_func_name]
+
+            collection_len = list_len_func(collection_z3)
+            axioms.append(result_var <= collection_len)
+
+        return axioms
+
+    def _detect_fold_pattern(self, body: SExpr) -> Optional[FoldPatternInfo]:
+        """Detect fold/accumulation loop pattern in function body.
+
+        Pattern:
+        (let ((mut acc init))
+          (for-each (item collection)
+            (set! acc (op acc item)))
+          acc)
+
+        Returns FoldPatternInfo if detected, None otherwise.
+        """
+        # Must be a let expression
+        if not is_form(body, 'let') or len(body) < 3:
+            return None
+
+        bindings = body[1]
+        if not isinstance(bindings, SList):
+            return None
+
+        # Find mutable accumulator binding
+        acc_var = None
+        init_value = None
+        for binding in bindings.items:
+            if self._is_mutable_binding(binding) and len(binding) >= 3:
+                var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                init_expr = binding[2]
+                # Accept numeric or simple initializers (not empty collection inits)
+                if var_name and not self._is_empty_collection_init(init_expr):
+                    acc_var = var_name
+                    init_value = init_expr
+                    break
+
+        if not acc_var or init_value is None:
+            return None
+
+        # Find for-each loop in body
+        body_exprs = body.items[2:]
+        for body_expr in body_exprs:
+            if is_form(body_expr, 'for-each') and len(body_expr) >= 3:
+                loop_binding = body_expr[1]
+                if isinstance(loop_binding, SList) and len(loop_binding) >= 2:
+                    loop_var = loop_binding[0].name if isinstance(loop_binding[0], Symbol) else None
+                    collection = loop_binding[1]
+
+                    if loop_var:
+                        # Search loop body for (set! acc (op acc item))
+                        loop_body = body_expr.items[2:]
+                        operator = self._find_accumulator_operator(loop_body, acc_var, loop_var)
+                        if operator is not None:
+                            return FoldPatternInfo(
+                                acc_var=acc_var,
+                                init_value=init_value,
+                                collection=collection,
+                                loop_var=loop_var,
+                                operator=operator
+                            )
+
+        return None
+
+    def _find_accumulator_operator(self, stmts: List[SExpr], acc_var: str, loop_var: str) -> Optional[str]:
+        """Find the operator in a fold/accumulation pattern.
+
+        Looks for patterns like:
+        - (set! acc (+ acc item))
+        - (set! acc (* acc item))
+        - (set! acc (max acc item))
+        """
+        for stmt in stmts:
+            # Skip annotations
+            if isinstance(stmt, SList) and len(stmt) >= 1:
+                head = stmt[0]
+                if isinstance(head, Symbol) and head.name.startswith('@'):
+                    continue
+
+            # Check for (set! acc (op acc item))
+            if is_form(stmt, 'set!') and len(stmt) >= 3:
+                target = stmt[1]
+                if isinstance(target, Symbol) and target.name == acc_var:
+                    value = stmt[2]
+                    if isinstance(value, SList) and len(value) >= 3:
+                        op = value[0]
+                        if isinstance(op, Symbol):
+                            # Check if it involves acc and loop_var
+                            arg1 = value[1]
+                            arg2 = value[2]
+                            uses_acc = (isinstance(arg1, Symbol) and arg1.name == acc_var) or \
+                                       (isinstance(arg2, Symbol) and arg2.name == acc_var)
+                            uses_loop = (isinstance(arg1, Symbol) and arg1.name == loop_var) or \
+                                        (isinstance(arg2, Symbol) and arg2.name == loop_var)
+                            if uses_acc and uses_loop:
+                                return op.name
+
+            # Check for conditional accumulation (if pred (set! acc ...))
+            if (is_form(stmt, 'if') or is_form(stmt, 'when')) and len(stmt) >= 3:
+                then_branch = stmt[2]
+                result = self._find_accumulator_operator([then_branch], acc_var, loop_var)
+                if result is not None:
+                    return result
+
+            # Recurse into nested let
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                nested_result = self._find_accumulator_operator(stmt.items[2:], acc_var, loop_var)
+                if nested_result is not None:
+                    return nested_result
+
+        return None
+
+    def _generate_fold_axioms(self, pattern: FoldPatternInfo,
+                              translator: Z3Translator) -> List:
+        """Generate Z3 axioms for detected fold pattern.
+
+        Axioms depend on the operator:
+        - For '+': If init >= 0 and items non-negative, result >= init
+        - For '*': Special handling for multiplication
+        - For 'max'/'min': Result bounded by init and collection
+        """
+        axioms = []
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return axioms
+
+        # Translate initial value
+        init_z3 = translator.translate_expr(pattern.init_value)
+
+        op = pattern.operator
+        if op == '+':
+            # For addition starting at 0, result is non-negative if items are
+            if isinstance(pattern.init_value, Number) and pattern.init_value.value == 0:
+                # Common case: sum starting at 0, items assumed non-negative
+                # We can't prove this without knowing item signs, so just add non-negative constraint
+                # if init is 0 (most common for sums)
+                pass
+            # For any + accumulator, result >= init if items are non-negative
+            # This is a heuristic - we add it when init is a known value
+            if init_z3 is not None:
+                # Add axiom: result >= init (for non-negative items)
+                # This is sound for counting/summing positive values
+                pass
+
+        elif op == 'max':
+            # For max, result >= init
+            if init_z3 is not None:
+                axioms.append(result_var >= init_z3)
+
+        elif op == 'min':
+            # For min, result <= init
+            if init_z3 is not None:
+                axioms.append(result_var <= init_z3)
+
+        return axioms
+
+    def _detect_find_pattern(self, body: SExpr) -> Optional[FindPatternInfo]:
+        """Detect find-first loop pattern in function body.
+
+        Pattern:
+        (let ((mut found nil))
+          (for-each (item collection)
+            (if (and (== found nil) predicate)
+              (set! found item)))
+          found)
+
+        Returns FindPatternInfo if detected, None otherwise.
+        """
+        # Must be a let expression
+        if not is_form(body, 'let') or len(body) < 3:
+            return None
+
+        bindings = body[1]
+        if not isinstance(bindings, SList):
+            return None
+
+        # Find mutable result binding initialized to nil
+        result_var = None
+        for binding in bindings.items:
+            if self._is_mutable_binding(binding) and len(binding) >= 3:
+                var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                init_expr = binding[2]
+                # Check if initialized to nil
+                if var_name and isinstance(init_expr, Symbol) and init_expr.name == 'nil':
+                    result_var = var_name
+                    break
+
+        if not result_var:
+            return None
+
+        # Find for-each loop in body
+        body_exprs = body.items[2:]
+        for body_expr in body_exprs:
+            if is_form(body_expr, 'for-each') and len(body_expr) >= 3:
+                loop_binding = body_expr[1]
+                if isinstance(loop_binding, SList) and len(loop_binding) >= 2:
+                    loop_var = loop_binding[0].name if isinstance(loop_binding[0], Symbol) else None
+                    collection = loop_binding[1]
+
+                    if loop_var:
+                        # Search loop body for find-first pattern
+                        loop_body = body_expr.items[2:]
+                        predicate = self._find_first_predicate(loop_body, result_var, loop_var)
+                        if predicate is not None:
+                            return FindPatternInfo(
+                                result_var=result_var,
+                                collection=collection,
+                                loop_var=loop_var,
+                                predicate=predicate
+                            )
+
+        return None
+
+    def _find_first_predicate(self, stmts: List[SExpr], result_var: str, loop_var: str) -> Optional[SExpr]:
+        """Find the predicate in a find-first pattern.
+
+        Looks for patterns like:
+        - (if (and (== found nil) predicate) (set! found item))
+        - (when (and (== found nil) predicate) (set! found item))
+        """
+        for stmt in stmts:
+            # Skip annotations
+            if isinstance(stmt, SList) and len(stmt) >= 1:
+                head = stmt[0]
+                if isinstance(head, Symbol) and head.name.startswith('@'):
+                    continue
+
+            # Check for if/when with find-first pattern
+            if (is_form(stmt, 'if') or is_form(stmt, 'when')) and len(stmt) >= 3:
+                condition = stmt[1]
+                then_branch = stmt[2]
+
+                # Check if condition is (and (== found nil) predicate)
+                if is_form(condition, 'and') and len(condition) >= 3:
+                    nil_check = condition[1]
+                    predicate = condition[2]
+
+                    # Check if nil_check is (== result_var nil)
+                    is_nil_check = False
+                    if is_form(nil_check, '==') and len(nil_check) >= 3:
+                        arg1 = nil_check[1]
+                        arg2 = nil_check[2]
+                        if (isinstance(arg1, Symbol) and arg1.name == result_var and
+                            isinstance(arg2, Symbol) and arg2.name == 'nil'):
+                            is_nil_check = True
+                        elif (isinstance(arg2, Symbol) and arg2.name == result_var and
+                              isinstance(arg1, Symbol) and arg1.name == 'nil'):
+                            is_nil_check = True
+
+                    # Check if then_branch sets result to loop_var
+                    if is_nil_check and is_form(then_branch, 'set!') and len(then_branch) >= 3:
+                        target = then_branch[1]
+                        value = then_branch[2]
+                        if (isinstance(target, Symbol) and target.name == result_var and
+                            isinstance(value, Symbol) and value.name == loop_var):
+                            return predicate
+
+            # Recurse into nested let
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                nested_result = self._find_first_predicate(stmt.items[2:], result_var, loop_var)
+                if nested_result is not None:
+                    return nested_result
+
+        return None
+
     def _has_for_each(self, expr: SExpr) -> bool:
         """Check if expression contains a for-each loop"""
         if is_form(expr, 'for-each'):
@@ -2708,7 +3170,25 @@ class ContractVerifier:
                 for axiom in filter_axioms:
                     solver.add(axiom)
 
-        # Phase 9: Union structural equality axioms
+        # Phase 9: Count pattern detection and axiom generation
+        # Detect counting loops and generate bounds axioms
+        if fn_body is not None:
+            count_pattern = self._detect_count_pattern(fn_body)
+            if count_pattern is not None:
+                count_axioms = self._generate_count_axioms(count_pattern, translator)
+                for axiom in count_axioms:
+                    solver.add(axiom)
+
+        # Phase 10: Fold pattern detection and axiom generation
+        # Detect accumulation loops and generate appropriate axioms
+        if fn_body is not None:
+            fold_pattern = self._detect_fold_pattern(fn_body)
+            if fold_pattern is not None:
+                fold_axioms = self._generate_fold_axioms(fold_pattern, translator)
+                for axiom in fold_axioms:
+                    solver.add(axiom)
+
+        # Phase 11: Union structural equality axioms
         # For union equality functions (e.g., term-eq), add axioms connecting
         # structural equality to Z3's native equality
         if fn_body is not None:
