@@ -134,6 +134,25 @@ literal     = number | string | 'true | 'false | 'nil
 (alias Name Type)
 ```
 
+### 3.3.1 Type Invariants
+
+Types can declare invariants that must hold for all values:
+
+```lisp
+(type Graph (record (triples (List Triple)) (size GraphSize))
+  (@invariant (== size (list-len triples))))
+```
+
+**Semantics:**
+- Invariant expressions use field names directly (not prefixed)
+- Verifier automatically assumes invariant holds for function parameters of that type
+- Constructors should maintain the invariant (not automatically checked)
+
+**Use cases:**
+- Cached computed values (size == list-len)
+- Relational constraints between fields
+- Domain-specific validity conditions
+
 ### 3.4 Function Definitions
 
 ```
@@ -173,6 +192,8 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 (@pre boolean-expr)              ; Precondition
 (@post boolean-expr)             ; Postcondition ($result for return value)
 (@assume boolean-expr)           ; Trusted axiom for verification (e.g., FFI behavior)
+(@invariant boolean-expr)        ; Type invariant (on type definitions only)
+(@loop-invariant boolean-expr)   ; Loop invariant (inside for-each/while body)
 
 ; Infix notation (contracts only) - curly braces denote infix expressions
 (@pre {x > 0})                   ; Equivalent to (@pre (> x 0))
