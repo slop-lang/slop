@@ -3338,6 +3338,14 @@ def cmd_verify(args):
         if args.verbose and r.counterexample:
             ce_str = ", ".join(f"{k}={v}" for k, v in r.counterexample.items())
             print(f"    counterexample: {ce_str}")
+        if r.suggestions:
+            print(f"    Suggestions:")
+            for suggestion in r.suggestions:
+                # Indent multi-line suggestions properly
+                lines = suggestion.split('\n')
+                print(f"      • {lines[0]}")
+                for line in lines[1:]:
+                    print(f"        {line}")
 
     for r in errors:
         print(f"  error: {r.name} - {r.message}")
