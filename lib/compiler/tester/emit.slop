@@ -28,6 +28,7 @@
                         registry-lookup registry-lookup-variant registry-lookup-enum-value
                         registry-is-union registry-is-record registry-is-enum
                         registry-get-variant-info registry-get-record-fields))
+  (import ctype (to-c-name))
 
   ;; ============================================================
   ;; Emit Context - holds output list for mutation
@@ -913,9 +914,10 @@
   ;; ============================================================
 
   (fn emit-test-harness-typed ((arena Arena) (tests (List (Ptr TestCase)))
-                                (module-prefix String) (types (Ptr TypeRegistry)))
+                                (module-prefix String) (types (Ptr TypeRegistry))
+                                (imports (List String)))
     (@intent "Generate complete C test harness code with type awareness")
-    (@spec ((Arena (List (Ptr TestCase)) String (Ptr TypeRegistry)) -> (List String)))
+    (@spec ((Arena (List (Ptr TestCase)) String (Ptr TypeRegistry) (List String)) -> (List String)))
     (@alloc arena)
     (let ((ctx (emit-ctx-new-typed arena types)))
       ;; Header comment
@@ -928,6 +930,17 @@
       (emit ctx "#include <stdio.h>")
       (emit ctx "#include <string.h>")
       (emit ctx "#include <math.h>")
+      ;; Emit dependency includes (like transpiler's emit-header-dependency-includes)
+      (let ((import-count (list-len imports))
+            (mut j 0))
+        (while (< j import-count)
+          (match (list-get imports j)
+            ((some mod-name)
+              (let ((c-name (to-c-name arena mod-name)))
+                (emit ctx (string-concat arena "#include \"slop_"
+                            (string-concat arena c-name ".h\"")))))
+            ((none) (do)))
+          (set! j (+ j 1))))
       (emit ctx "")
 
       ;; Test tracking variables
@@ -1430,21 +1443,61 @@
           ;; Check for Result type
           (if (contains ret-type-str "Result")
             (if (is-ok-value expected)
-              (let ((inner-expected (get-ok-inner-typed arena expected prefix types)))
-                (CompareInfo
-                  (string-concat arena "result.is_ok && result.data.ok == " inner-expected)
-                  "%s"
-                  "result.is_ok ? \"ok(...)\" : \"error(...)\""
-                  "%s"
-                  "\"ok(...)\""))
-              (if (is-error-value expected)
-                (let ((inner-expected (get-error-inner-typed arena expected prefix types)))
+              (let ((inner-expected (get-ok-inner-typed arena expected prefix types))
+                    (inner-expr (get-ok-inner-expr expected)))
+                ;; Check if inner value is a union constructor
+                (if (is-union-constructor-typed inner-expr types)
+                  ;; Use memcmp comparison for union types
+                  (let ((expected-var "expected_ok"))
+                    (CompareInfo
+                      (string-concat arena "({ typeof(result.data.ok) "
+                        (string-concat arena expected-var
+                          (string-concat arena " = "
+                            (string-concat arena inner-expected
+                              (string-concat arena "; result.is_ok && result.data.ok.tag == "
+                                (string-concat arena expected-var
+                                  (string-concat arena ".tag && memcmp(&result.data.ok.data, &"
+                                    (string-concat arena expected-var
+                                      ".data, sizeof(result.data.ok.data)) == 0; })"))))))))
+                      "%s"
+                      "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                      "%s"
+                      "\"ok(...)\""))
+                  ;; Non-union: use direct comparison
                   (CompareInfo
-                    (string-concat arena "!result.is_ok && result.data.err == " inner-expected)
+                    (string-concat arena "result.is_ok && result.data.ok == " inner-expected)
                     "%s"
                     "result.is_ok ? \"ok(...)\" : \"error(...)\""
                     "%s"
-                    "\"error(...)\""))
+                    "\"ok(...)\"")))
+              (if (is-error-value expected)
+                (let ((inner-expected (get-error-inner-typed arena expected prefix types))
+                      (inner-expr (get-ok-inner-expr expected)))
+                  ;; Check if inner value is a union constructor
+                  (if (is-union-constructor-typed inner-expr types)
+                    ;; Use memcmp comparison for union types
+                    (let ((expected-var "expected_err"))
+                      (CompareInfo
+                        (string-concat arena "({ typeof(result.data.err) "
+                          (string-concat arena expected-var
+                            (string-concat arena " = "
+                              (string-concat arena inner-expected
+                                (string-concat arena "; !result.is_ok && result.data.err.tag == "
+                                  (string-concat arena expected-var
+                                    (string-concat arena ".tag && memcmp(&result.data.err.data, &"
+                                      (string-concat arena expected-var
+                                        ".data, sizeof(result.data.err.data)) == 0; })"))))))))
+                        "%s"
+                        "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                        "%s"
+                        "\"error(...)\""))
+                    ;; Non-union: use direct comparison
+                    (CompareInfo
+                      (string-concat arena "!result.is_ok && result.data.err == " inner-expected)
+                      "%s"
+                      "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                      "%s"
+                      "\"error(...)\"")))
                 (let ((c-expected (sexpr-to-c-typed arena expected prefix types)))
                   (CompareInfo
                     (string-concat arena "result == " c-expected)
@@ -1812,6 +1865,20 @@
     (@spec ((Arena (Ptr SExpr) String TypeRegistry) -> String))
     (@alloc arena)
     (get-some-inner-typed arena expr prefix types))
+
+  (fn get-ok-inner-expr ((expected (Ptr SExpr)))
+    (@intent "Get inner expression from (ok val) for type checking")
+    (@spec (((Ptr SExpr)) -> (Ptr SExpr)))
+    (@pure)
+    (match (deref expected)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (> (list-len items) 1)
+            (match (list-get items 1)
+              ((some inner) inner)
+              ((none) expected))
+            expected)))
+      (_ expected)))
 
   (fn build-list-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (prefix String) (types TypeRegistry))
     (@intent "Build comparison info for List types with type awareness")

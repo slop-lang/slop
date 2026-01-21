@@ -21,6 +21,7 @@
   (import extract (TestCase extract-examples-from-ast))
   (import emit (emit-test-harness emit-test-harness-typed))
   (import type-extract (TypeRegistry extract-types-from-ast))
+  (import ctype (to-c-name))
 
   ;; ============================================================
   ;; Module Name Extraction
@@ -48,6 +49,31 @@
         ((none) ""))))
 
   ;; ============================================================
+  ;; Import Extraction
+  ;; ============================================================
+
+  (fn extract-imports ((arena Arena) (exprs (List (Ptr SExpr))))
+    (@intent "Extract imported module names from parsed expressions")
+    (@spec ((Arena (List (Ptr SExpr))) -> (List String)))
+    (@alloc arena)
+    (let ((result (list-new arena String))
+          (len (list-len exprs))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get exprs i)
+          ((some expr)
+            (when (is-form expr "import")
+              (when (>= (sexpr-list-len expr) 2)
+                (match (sexpr-list-get expr 1)
+                  ((some name-expr)
+                    (when (sexpr-is-symbol name-expr)
+                      (list-push result (sexpr-get-symbol-name name-expr))))
+                  ((none) (do))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  ;; ============================================================
   ;; Main Test Generation Pipeline
   ;; ============================================================
 
@@ -66,7 +92,8 @@
     (match (parse arena source)
       ((ok exprs)
         ;; Step 2: Extract module name for prefixing
-        (let ((mod-name (extract-module-name exprs)))
+        (let ((mod-name (extract-module-name exprs))
+              (imports (extract-imports arena exprs)))
           ;; Step 3: Extract test cases
           (let ((test-cases (extract-examples-from-ast arena exprs))
                 (test-count (list-len test-cases)))
@@ -75,11 +102,11 @@
               (TestResult true (list-new arena String) 0 mod-name "")
               ;; Step 4: Extract type definitions
               (let ((prefix (if (> (cast Int (. mod-name len)) 0)
-                              (convert-to-c-name arena mod-name)
+                              (to-c-name arena mod-name)
                               ""))
                     (types (extract-types-from-ast arena exprs mod-name)))
                 ;; Step 5: Generate test harness (type-aware)
-                (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types)))
+                (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types imports)))
                   (TestResult true harness-lines test-count mod-name "")))))))
 
       ((error err)
@@ -90,25 +117,5 @@
                                (string-concat arena (int-to-string arena (. err col))
                                  (string-concat arena ": " (. err message))))))))
           (TestResult false (list-new arena String) 0 "" error-msg)))))
-
-  ;; ============================================================
-  ;; Helper Functions
-  ;; ============================================================
-
-  (fn convert-to-c-name ((arena Arena) (name String))
-    (@intent "Convert SLOP name to C identifier (replace - with _)")
-    (@spec ((Arena String) -> String))
-    (@alloc arena)
-    (let ((len (cast Int (. name len)))
-          (buf (cast (Ptr U8) (arena-alloc arena (+ len 1))))
-          (mut i 0))
-      (while (< i len)
-        (let ((c (@ (. name data) i)))
-          (if (== c 45)  ;; '-'
-            (set! (@ buf i) 95)  ;; '_'
-            (set! (@ buf i) c)))
-        (set! i (+ i 1)))
-      (set! (@ buf len) 0)
-      (String buf (. name len))))
 
 ) ;; end module
