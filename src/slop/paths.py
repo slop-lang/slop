@@ -203,6 +203,27 @@ def list_stdlib_modules() -> List[Path]:
     return sorted(modules, key=lambda p: p.name)
 
 
+def get_stdlib_include_paths() -> List[Path]:
+    """Get all standard library module directories as include paths.
+
+    Returns directories that should be added to module search paths
+    so that standard library modules can be imported by name.
+
+    Returns:
+        List of paths to stdlib module directories.
+    """
+    stdlib_dir = get_stdlib_dir()
+    if not stdlib_dir:
+        return []
+
+    paths = []
+    for subdir in stdlib_dir.iterdir():
+        if subdir.is_dir() and not subdir.name.startswith('.'):
+            paths.append(subdir)
+
+    return sorted(paths, key=lambda p: p.name)
+
+
 def list_examples() -> List[Path]:
     """List all example SLOP files.
 

@@ -548,6 +548,7 @@ def cmd_transpile(args):
         if _has_imports(ast):
             # Multi-module path
             search_paths = [Path(p) for p in args.include]
+            search_paths.extend(paths.get_stdlib_include_paths())
             resolver = ModuleResolver(search_paths)
 
             graph = resolver.build_dependency_graph(input_path)
@@ -806,6 +807,7 @@ def _extract_imported_specs(ast, search_paths=None, from_path=None) -> list:
 
     # Build search paths similar to check_file in type_checker.py
     all_search_paths = [Path(p) for p in (search_paths or [])]
+    all_search_paths.extend(paths.get_stdlib_include_paths())
 
     # Try to find project-local slop.toml with include paths
     if from_path:
@@ -879,6 +881,7 @@ def _extract_imported_types(ast, search_paths=None, from_path=None) -> list:
 
     # Build search paths similar to check_file in type_checker.py
     all_search_paths = [Path(p) for p in (search_paths or [])]
+    all_search_paths.extend(paths.get_stdlib_include_paths())
 
     # Try to find project-local slop.toml with include paths
     if from_path:
@@ -2051,6 +2054,12 @@ def cmd_build(args):
             link_libraries = []
             link_paths = []
 
+        # Add standard library paths by default
+        stdlib_paths = paths.get_stdlib_include_paths()
+        for stdlib_path in stdlib_paths:
+            if str(stdlib_path) not in include_paths:
+                include_paths.append(str(stdlib_path))
+
         print(f"Building {input_path} -> {output}")
 
         # Use native by default unless --python flag is set
@@ -2629,6 +2638,8 @@ def cmd_test(args):
         # Set up search paths for module resolution
         search_paths = [Path(p) for p in args.include]
         search_paths.append(input_path.resolve().parent)
+        # Add standard library paths
+        search_paths.extend(paths.get_stdlib_include_paths())
 
         # Determine cache directory from config or use default
         test_section = toml_cfg.get('test', {}) if toml_cfg else {}
@@ -2909,6 +2920,8 @@ def cmd_test(args):
                 # Multi-module: resolve dependencies and transpile all
                 from slop.transpiler import transpile_multi
                 search_paths = [Path(p) for p in args.include] + [input_path.parent, input_path.parent.parent]
+                # Add standard library paths
+                search_paths.extend(paths.get_stdlib_include_paths())
                 # Also include sibling directories (e.g., common/ for shared types)
                 if input_path.parent.parent.exists():
                     for sibling in input_path.parent.parent.iterdir():
