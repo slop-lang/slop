@@ -339,7 +339,9 @@ def transpile_to_cache(module_path: Path, cache_dir: Path, search_paths: list) -
                     impl = '\n'.join(other_lines)
 
             header_path.write_text(header)
-            impl_path.write_text(impl)
+            # Prepend necessary includes to impl file (like build command does)
+            impl_with_includes = f'#include "slop_runtime.h"\n#include "slop_{c_mod_name}.h"\n\n{impl}'
+            impl_path.write_text(impl_with_includes)
         return True
 
     # Fall back to Python transpiler
@@ -2681,7 +2683,8 @@ def cmd_test(args):
             header_path = cache_dir / f"slop_{c_mod_name}.h"
 
             # Check if needs retranspile (mtime-based caching)
-            if header_path.exists() and header_path.stat().st_mtime > module_info.path.stat().st_mtime:
+            force_rebuild = getattr(args, 'rebuild', False)
+            if not force_rebuild and header_path.exists() and header_path.stat().st_mtime > module_info.path.stat().st_mtime:
                 continue  # Already up to date
 
             print(f"  Transpiling dependency: {mod_name}")
@@ -2692,6 +2695,16 @@ def cmd_test(args):
         # Add cache dir to include paths for compilation
         if str(cache_dir) not in args.include:
             args.include.append(str(cache_dir))
+
+        # Collect dependency source files for linking
+        dep_sources = []
+        for mod_name in build_order:
+            if graph.modules[mod_name].path == input_path.resolve():
+                continue  # Skip the test file itself
+            c_mod_name = mod_name.replace('-', '_')
+            c_path = cache_dir / f"slop_{c_mod_name}.c"
+            if c_path.exists():
+                dep_sources.append(str(c_path))
 
         # Try native tester first (if not --python flag)
         use_native = not getattr(args, 'python', False)
@@ -2727,8 +2740,7 @@ def cmd_test(args):
                                 "-I", str(cache_dir),
                                 "-o", test_bin_path,
                                 test_c_path,
-                                "-lm"
-                            ]
+                            ] + dep_sources + ["-lm"]
 
                             result = subprocess.run(compile_cmd, capture_output=True, text=True)
                             if result.returncode != 0:
@@ -3755,6 +3767,8 @@ def main():
         help='Show generated C code on failure')
     p.add_argument('--python', action='store_true',
         help='Use Python toolchain instead of native')
+    p.add_argument('--rebuild', action='store_true',
+        help='Force rebuild of all dependencies (ignore cache)')
 
     # paths - diagnostic command
     p = subparsers.add_parser('paths', help='Show resolved SLOP paths')
