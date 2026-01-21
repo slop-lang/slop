@@ -50,6 +50,9 @@ TOPICS = {
 (type User (record (id Int) (name String)))
 (type Shape (union (circle Float) (rect Float Float) (point)))
 
+Note: Variant names must be globally unique across all enum and union types
+in a module. Using the same variant name in different types causes a compile error.
+
 ### Pointers
 (Ptr T)                 ; Borrowed pointer (T*)
 (ScopedPtr T)           ; Scoped, auto-freed on scope exit
@@ -545,7 +548,7 @@ These ARE in strlib and need `(import strlib ...)`:
 | `parse-int`, `parse-float` | String to number |
 | `float-to-string` | Float to string |
 | `compare`, `compare-ignore-case` | String comparison |
-| `join`, `reverse`, `repeat` | Advanced operations |
+| `join`, `string-build`, `reverse`, `repeat` | Advanced operations |
 | `fill-bytes` | Fill memory region with byte value |
 """,
 

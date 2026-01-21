@@ -178,17 +178,16 @@
   ;; Main Entry Point
   ;; ============================================================
 
-  (fn main ((argc Int) (argv (Ptr (Ptr Char))))
+  (fn main ((argc Int) (argv (Ptr (Ptr U8))))
     (@intent "Main entry point - generate test harness JSON")
-    (@spec ((Int (Ptr (Ptr Char))) -> Int))
+    (@spec ((Int (Ptr (Ptr U8))) -> Int))
     ;; Check arguments
     (if (< argc 2)
       (do
         (print-str (cast (Ptr Char) "Usage: slop-tester <input.slop>\n"))
         1)
       (with-arena 16777216  ;; 16MB arena
-        (let ((filename (@ argv 1)))
-          (match (read-file arena filename)
+        (match (read-file arena (cast (Ptr Char) (@ argv 1)))
             ((some source)
               (let ((result (generate-tests arena source)))
                 (if (. result success)
@@ -220,6 +219,6 @@
             ((none)
               (do
                 (print-str (cast (Ptr Char) "{\"error\":\"Could not read file\"}\n"))
-                1)))))))
+                1))))))
 
 ) ;; end module

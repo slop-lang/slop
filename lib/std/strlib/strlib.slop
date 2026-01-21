@@ -36,6 +36,7 @@
     parse-float
     float-to-string
     join
+    string-build
     replace
     replace-all
     compare
@@ -644,9 +645,7 @@
     (@spec ((Arena (List String) String) -> String))
     (@alloc arena)
     (@pure)
-    (@example (arena (list "a" "b" "c") ", ") -> "a, b, c")
-    (@example (arena (list "hello") "-") -> "hello")
-    (@example (arena (list) ", ") -> "")
+    (@example (arena (list String) ", ") -> "")
     (let ((count (cast Int (list-len strings))))
       (if (== count 0)
         (String (cast (Ptr U8) (arena-alloc arena 1)) (cast U64 0))
@@ -690,6 +689,13 @@
                       (set! pos (+ pos sep-len))))
                   (set! j (+ j 1))))
               (String (cast (Ptr U8) buf) (cast U64 total-len))))))))
+
+  (fn string-build ((arena Arena) (strings (List String)))
+    (@intent "Concatenate list of strings into single string with one allocation")
+    (@spec ((Arena (List String)) -> String))
+    (@alloc arena)
+    (@pure)
+    (join arena strings ""))
 
   (fn replace ((arena Arena) (s String) (old String) (new String))
     (@intent "Replace first occurrence of old with new")

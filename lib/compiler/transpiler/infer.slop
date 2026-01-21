@@ -73,7 +73,7 @@
     (@pre {expr != nil})
     (match (deref expr)
       ;; Symbol: check if it's a known pointer variable
-      ((symbol sym)
+      ((sym sym)
         (let ((name (. sym name)))
           ;; Check explicit pointer tracking
           (if (ctx-is-pointer-var ctx name)
@@ -84,11 +84,11 @@
                 (. entry is-pointer))
               ((none) false)))))
       ;; List expression: check for pointer-returning forms
-      ((list lst)
+      ((lst lst)
         (is-pointer-expr-list ctx (. lst items)))
       ;; Literals are never pointers
-      ((string _) false)
-      ((number _) false)))
+      ((str _) false)
+      ((num _) false)))
 
   (fn is-pointer-expr-list ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Check if a list expression returns a pointer")
@@ -99,7 +99,7 @@
       (match (list-get items 0)
         ((some head-expr)
           (match (deref head-expr)
-            ((symbol head-sym)
+            ((sym head-sym)
               (let ((op (. head-sym name)))
                 (cond
                   ;; arena-alloc always returns a pointer
@@ -115,7 +115,7 @@
                       (match (list-get items 1)
                         ((some type-expr)
                           (match (deref type-expr)
-                            ((list type-lst)
+                            ((lst type-lst)
                               (is-ptr-type-list (. type-lst items)))
                             (_ false)))
                         ((none) false))))
@@ -135,7 +135,7 @@
       (match (list-get items 0)
         ((some head-expr)
           (match (deref head-expr)
-            ((symbol sym) (string-eq (. sym name) "Ptr"))
+            ((sym sym) (string-eq (. sym name) "Ptr"))
             (_ false)))
         ((none) false))))
 
@@ -150,9 +150,9 @@
     (@pre {expr != nil})
     (match (deref expr)
       ;; String literal is always a string
-      ((string _) true)
+      ((str _) true)
       ;; Symbol: check variable type
-      ((symbol sym)
+      ((sym sym)
         (let ((name (. sym name)))
           (match (ctx-lookup-var ctx name)
             ((some entry)
@@ -160,10 +160,10 @@
                   (string-eq (. entry c-type) "String")))
             ((none) false))))
       ;; List expression: check for string-returning forms
-      ((list lst)
+      ((lst lst)
         (is-string-expr-list ctx (. lst items)))
       ;; Numbers are not strings
-      ((number _) false)))
+      ((num _) false)))
 
   (fn is-string-expr-list ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Check if a list expression returns a string")
@@ -174,7 +174,7 @@
       (match (list-get items 0)
         ((some head-expr)
           (match (deref head-expr)
-            ((symbol head-sym)
+            ((sym head-sym)
               (let ((op (. head-sym name)))
                 (cond
                   ;; String operations
@@ -199,18 +199,18 @@
     (@spec (((Ptr SExpr)) -> (Option String)))
     (@pre {expr != nil})
     (match (deref expr)
-      ((number num)
+      ((num num)
         (if (. num is-float)
           (some "double")
           (some "int64_t")))
-      ((string _) (some "slop_string"))
-      ((symbol sym)
+      ((str _) (some "slop_string"))
+      ((sym sym)
         (let ((name (. sym name)))
           (cond
             ((string-eq name "true") (some "uint8_t"))
             ((string-eq name "false") (some "uint8_t"))
             ((string-eq name "none") (some "slop_option"))  ;; Generic option
             (else none))))
-      ((list _) none)))
+      ((lst _) none)))
 
 ) ;; end module

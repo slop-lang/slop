@@ -22,7 +22,7 @@ from slop.hole_filler import HoleFiller, extract_hole, classify_tier, replace_ho
 from slop.formatter import format_source
 from slop.providers import (
     MockProvider, create_default_configs, load_config, create_from_config, Tier,
-    load_project_config, ProjectConfig, BuildConfig
+    load_project_config, ProjectConfig, BuildConfig, TestConfig, VerifyConfig
 )
 from slop.type_checker import TypeChecker, check_file, check_modules
 from slop.resolver import ModuleResolver, ResolverError
@@ -288,6 +288,95 @@ def transpile_native_split(input_file: str):
         return {}, False
 
 
+def transpile_to_cache(module_path: Path, cache_dir: Path, search_paths: list) -> bool:
+    """Transpile a single module, outputting .h and .c to cache_dir.
+
+    Args:
+        module_path: Path to the .slop file to transpile
+        cache_dir: Directory to write output files
+        search_paths: Include paths for the transpiler
+
+    Returns:
+        True if transpilation succeeded, False otherwise
+    """
+    # Try native transpiler first
+    results, success = transpile_native_split(str(module_path))
+    if success and results:
+        for mod_name, (header, impl) in results.items():
+            c_mod_name = mod_name.replace('-', '_')
+            header_path = cache_dir / f"slop_{c_mod_name}.h"
+            impl_path = cache_dir / f"slop_{c_mod_name}.c"
+
+            # Check if header is essentially empty (only guards + basic includes)
+            # If so, move static const definitions from impl to header
+            header_lines = header.strip().split('\n')
+            has_declarations = any(
+                not line.startswith('#') and
+                not line.startswith('//') and
+                line.strip() and
+                line.strip() != '}'
+                for line in header_lines
+                if '#ifndef' not in line and '#define' not in line and '#endif' not in line
+            )
+
+            if not has_declarations:
+                # Header is empty - this module likely only has constants
+                # Move static const definitions to header (they can be in headers)
+                impl_lines = impl.split('\n')
+                const_lines = []
+                other_lines = []
+                for line in impl_lines:
+                    if line.startswith('static const '):
+                        const_lines.append(line)
+                    else:
+                        other_lines.append(line)
+
+                if const_lines:
+                    # Insert constants into header before #endif
+                    header_parts = header.rsplit('#endif', 1)
+                    if len(header_parts) == 2:
+                        header = header_parts[0] + '\n'.join(const_lines) + '\n\n#endif' + header_parts[1]
+                    impl = '\n'.join(other_lines)
+
+            header_path.write_text(header)
+            # Prepend necessary includes to impl file (like build command does)
+            impl_with_includes = f'#include "slop_runtime.h"\n#include "slop_{c_mod_name}.h"\n\n{impl}'
+            impl_path.write_text(impl_with_includes)
+        return True
+
+    # Fall back to Python transpiler
+    try:
+        from slop.transpiler import Transpiler
+        from slop.parser import parse_file as parser_parse_file, Symbol
+
+        ast = parser_parse_file(str(module_path))
+
+        # Find module name from AST
+        module_name = module_path.stem
+        for form in ast:
+            if is_form(form, 'module') and len(form.items) > 1:
+                if isinstance(form[1], Symbol):
+                    module_name = form[1].name
+                break
+
+        transpiler = Transpiler()
+        transpiler.setup_module_context(module_name, [])
+        c_code = transpiler.transpile(ast)
+
+        # Generate header (declarations) and impl (definitions)
+        c_mod_name = module_name.replace('-', '_')
+        header_path = cache_dir / f"slop_{c_mod_name}.h"
+        impl_path = cache_dir / f"slop_{c_mod_name}.c"
+
+        # For now, put everything in the header (simple approach)
+        header_path.write_text(c_code)
+        impl_path.write_text(f'#include "slop_{c_mod_name}.h"\n')
+        return True
+    except Exception as e:
+        print(f"  Failed to transpile {module_path}: {e}", file=sys.stderr)
+        return False
+
+
 def test_native(input_file: str):
     """Generate test harness using native tester.
 
@@ -461,6 +550,7 @@ def cmd_transpile(args):
         if _has_imports(ast):
             # Multi-module path
             search_paths = [Path(p) for p in args.include]
+            search_paths.extend(paths.get_stdlib_include_paths())
             resolver = ModuleResolver(search_paths)
 
             graph = resolver.build_dependency_graph(input_path)
@@ -719,12 +809,13 @@ def _extract_imported_specs(ast, search_paths=None, from_path=None) -> list:
 
     # Build search paths similar to check_file in type_checker.py
     all_search_paths = [Path(p) for p in (search_paths or [])]
+    all_search_paths.extend(paths.get_stdlib_include_paths())
 
     # Try to find project-local slop.toml with include paths
     if from_path:
         project_config_path = _find_project_config(from_path.parent)
         if project_config_path:
-            _, build_cfg = load_project_config(str(project_config_path))
+            _, build_cfg, _, _ = load_project_config(str(project_config_path))
             if build_cfg and build_cfg.include:
                 config_dir = project_config_path.parent
                 for p in build_cfg.include:
@@ -792,12 +883,13 @@ def _extract_imported_types(ast, search_paths=None, from_path=None) -> list:
 
     # Build search paths similar to check_file in type_checker.py
     all_search_paths = [Path(p) for p in (search_paths or [])]
+    all_search_paths.extend(paths.get_stdlib_include_paths())
 
     # Try to find project-local slop.toml with include paths
     if from_path:
         project_config_path = _find_project_config(from_path.parent)
         if project_config_path:
-            _, build_cfg = load_project_config(str(project_config_path))
+            _, build_cfg, _, _ = load_project_config(str(project_config_path))
             if build_cfg and build_cfg.include:
                 config_dir = project_config_path.parent
                 for p in build_cfg.include:
@@ -1289,7 +1381,7 @@ def cmd_fill(args):
     try:
         # Load project config for entry point
         config_path = getattr(args, 'config', None)
-        project_cfg, _ = load_project_config(config_path)
+        project_cfg, _, _, _ = load_project_config(config_path)
 
         # Determine input file
         if hasattr(args, 'input') and args.input:
@@ -1925,26 +2017,288 @@ def _has_exports(ast) -> bool:
     return False
 
 
+def _build_library_from_sources(
+    source_files: list,
+    output: str,
+    include_paths: list,
+    debug: bool,
+    library_mode: str,
+    link_libraries: list,
+    link_paths: list,
+    use_native: bool,
+    native_transpiler_bin,
+    native_checker_bin,
+) -> int:
+    """Build a library from multiple source files.
+
+    This handles the case where [build].sources is specified in slop.toml,
+    allowing users to build an entire directory of source files into a library.
+
+    Returns:
+        0 on success, non-zero on failure
+    """
+    import subprocess
+    import tempfile
+    import json
+
+    search_paths = [Path(p) for p in include_paths]
+
+    # Build dependency graph from all source files
+    print("  Resolving modules...")
+    resolver = ModuleResolver(search_paths)
+
+    # Build a combined graph from all source files
+    all_modules = {}
+    for source_file in source_files:
+        try:
+            graph = resolver.build_dependency_graph(source_file)
+            for mod_name, mod_info in graph.modules.items():
+                if mod_name not in all_modules:
+                    all_modules[mod_name] = mod_info
+        except ResolverError as e:
+            print(f"  Module resolution failed for {source_file}: {e}")
+            return 1
+
+    if not all_modules:
+        print("Error: No modules found in source files", file=sys.stderr)
+        return 1
+
+    # Get build order
+    try:
+        from slop.resolver import DependencyGraph
+        combined_graph = DependencyGraph()
+        combined_graph.modules = all_modules
+        for mod_name, mod_info in all_modules.items():
+            combined_graph.dependencies[mod_name] = mod_info.imports
+        order = resolver.topological_sort(combined_graph)
+        print(f"    Build order: {', '.join(order)}")
+    except ResolverError as e:
+        print(f"  Dependency resolution failed: {e}")
+        return 1
+
+    # Check for holes across all modules
+    total_holes = 0
+    for mod_name in order:
+        info = all_modules[mod_name]
+        for form in info.ast:
+            total_holes += len(find_holes(form))
+    if total_holes > 0:
+        print(f"  Warning: {total_holes} unfilled holes")
+
+    # Type check all modules
+    print("  Type checking...")
+    total_errors = 0
+    total_warnings = 0
+
+    if native_checker_bin:
+        # Use native type checker - pass files in dependency order
+        source_files_ordered = [str(all_modules[name].path) for name in order]
+        cmd = [native_checker_bin, '--json'] + source_files_ordered
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            all_diagnostics_json = json.loads(result.stdout)
+            for mod_name, data in all_diagnostics_json.items():
+                for diag in data.get('diagnostics', []):
+                    level = diag.get('level', 'error')
+                    msg = diag.get('message', '')
+                    line = diag.get('line', 0)
+                    col = diag.get('col', 0)
+                    if level == 'warning':
+                        print(f"    [{mod_name}] warning at {line}:{col}: {msg}")
+                        total_warnings += 1
+                    else:
+                        print(f"    [{mod_name}] error at {line}:{col}: {msg}")
+                        total_errors += 1
+        except json.JSONDecodeError:
+            if result.stderr:
+                print(f"Native type checker output:\n{result.stderr}")
+            if result.returncode != 0:
+                print(f"  Type check failed with exit code {result.returncode}")
+                return 1
+    else:
+        # Fall back to Python type checker
+        print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+        all_diagnostics = check_modules(all_modules, order)
+        for mod_name, diagnostics in all_diagnostics.items():
+            type_errors = [d for d in diagnostics if d.severity == 'error']
+            type_warnings = [d for d in diagnostics if d.severity == 'warning']
+            for w in type_warnings:
+                print(f"    [{mod_name}] {w}")
+            for e in type_errors:
+                print(f"    [{mod_name}] {e}")
+            total_errors += len(type_errors)
+            total_warnings += len(type_warnings)
+
+    if total_errors > 0:
+        print(f"  Type check failed: {total_errors} error(s)")
+        return 1
+
+    if total_warnings > 0:
+        print(f"  Type check passed with {total_warnings} warning(s)")
+    else:
+        print("  Type check passed")
+
+    # Transpile all modules to separate files
+    print("  Transpiling to C...")
+    results = {}
+    if native_transpiler_bin:
+        # Use native transpiler - it outputs JSON with per-module header/impl
+        source_files_ordered = [str(all_modules[name].path) for name in order]
+        cmd = [native_transpiler_bin] + source_files_ordered
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Native transpiler failed:\n{result.stderr}")
+            return 1
+        try:
+            results = json.loads(result.stdout)
+            # Convert from {"mod": {"header": ..., "impl": ...}} to {"mod": (header, impl)}
+            results = {name: (data['header'], data['impl']) for name, data in results.items()}
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse native transpiler output: {e}")
+            return 1
+    else:
+        # Fall back to Python transpiler
+        print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+        from slop.transpiler import transpile_multi_split
+        results = transpile_multi_split(all_modules, order)
+
+    # Write to temp directory and compile
+    runtime_path = _get_runtime_path()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        c_files = []
+        header_files = []
+        for mod_name, (header, impl) in results.items():
+            # Prefix with slop_ to avoid C stdlib conflicts
+            c_mod_name = mod_name.replace('-', '_')
+            header_path = os.path.join(tmpdir, f"slop_{c_mod_name}.h")
+            impl_path = os.path.join(tmpdir, f"slop_{c_mod_name}.c")
+            with open(header_path, 'w') as f:
+                f.write(header)
+            with open(impl_path, 'w') as f:
+                if native_transpiler_bin:
+                    f.write('#include "slop_runtime.h"\n')
+                    f.write(f'#include "slop_{c_mod_name}.h"\n\n')
+                f.write(impl)
+            c_files.append(impl_path)
+            header_files.append((header_path, f"slop_{c_mod_name}.h"))
+
+        print("  Compiling...")
+
+        # Build link flags from config
+        link_flags = []
+        for lpath in link_paths:
+            link_flags.extend(["-L", lpath])
+        for lib in link_libraries:
+            link_flags.extend(["-l", lib])
+
+        if library_mode == 'static':
+            # Compile to object files, then create static library
+            obj_files = []
+            for c_file in c_files:
+                obj_file = c_file.replace('.c', '.o')
+                compile_cmd = ["cc", "-c", "-O2", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
+                if debug:
+                    compile_cmd.insert(1, "-g")
+                    compile_cmd.insert(2, "-DSLOP_DEBUG")
+                result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"Compilation failed:\n{result.stderr}")
+                    return 1
+                obj_files.append(obj_file)
+
+            lib_file = f"{output}.a" if not output.endswith('.a') else output
+            ar_cmd = ["ar", "rcs", lib_file] + obj_files
+            result = subprocess.run(ar_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"Archive failed:\n{result.stderr}")
+                return 1
+
+            # Copy header files to output directory
+            output_dir = Path(lib_file).parent
+            for header_path, header_name in header_files:
+                dest = output_dir / header_name
+                import shutil
+                shutil.copy(header_path, dest)
+                print(f"  Header: {dest}")
+
+            print(f"✓ Built {lib_file}")
+
+        elif library_mode == 'shared':
+            ext = ".dylib" if sys.platform == "darwin" else ".so"
+            lib_file = f"{output}{ext}" if not output.endswith(ext) else output
+            compile_cmd = ["cc", "-shared", "-fPIC", "-O2", "-I", str(runtime_path), "-I", tmpdir,
+                          "-o", lib_file] + c_files + link_flags
+            if debug:
+                compile_cmd.insert(1, "-g")
+                compile_cmd.insert(2, "-DSLOP_DEBUG")
+            result = subprocess.run(compile_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"Compilation failed:\n{result.stderr}")
+                return 1
+
+            # Copy header files to output directory
+            output_dir = Path(lib_file).parent
+            for header_path, header_name in header_files:
+                dest = output_dir / header_name
+                import shutil
+                shutil.copy(header_path, dest)
+                print(f"  Header: {dest}")
+
+            print(f"✓ Built {lib_file}")
+
+        else:
+            # Default to static for library builds
+            print("Error: sources-based build requires library mode (static or shared)", file=sys.stderr)
+            return 1
+
+    return 0
+
+
 def cmd_build(args):
     """Full build pipeline"""
     try:
         # Load project config (auto-detect slop.toml or use explicit -c)
         config_path = getattr(args, 'config', None)
-        project_cfg, build_cfg = load_project_config(config_path)
+        project_cfg, build_cfg, _, _ = load_project_config(config_path)
 
-        # Determine input file
+        # Determine input file(s)
+        # Priority: CLI argument > [build].sources > [project].entry
+        input_path = None
+        source_files = []  # For library builds from sources
+
         if hasattr(args, 'input') and args.input:
             input_path = Path(args.input)
+        elif build_cfg and build_cfg.sources:
+            # Library build from sources configuration
+            from slop.discovery import discover_slop_files
+            source_files = discover_slop_files(
+                build_cfg.sources,
+                pattern="*.slop",
+                base_dir=Path.cwd()
+            )
+            if not source_files:
+                print("Error: No .slop files found in [build].sources", file=sys.stderr)
+                return 1
+            print(f"Building library from {len(source_files)} source file(s)")
         elif project_cfg and project_cfg.entry:
             input_path = Path(project_cfg.entry)
             print(f"Using entry from slop.toml: {input_path}")
         else:
-            print("Error: No input file specified and no [project].entry in slop.toml", file=sys.stderr)
+            print("Error: No input file specified, no [build].sources, and no [project].entry in slop.toml", file=sys.stderr)
             return 1
 
         # Merge config with CLI args (CLI wins)
         if build_cfg:
-            output = args.output or build_cfg.output or input_path.stem
+            # Determine default output name
+            if input_path:
+                default_output = input_path.stem
+            elif project_cfg and project_cfg.name:
+                default_output = project_cfg.name
+            else:
+                default_output = "output"
+
+            output = args.output or build_cfg.output or default_output
             include_paths = (args.include or []) + build_cfg.include
             debug = args.debug or build_cfg.debug
             # Map build_type to library flag format
@@ -1957,14 +2311,28 @@ def cmd_build(args):
             link_libraries = build_cfg.libraries
             link_paths = build_cfg.library_paths
         else:
-            output = args.output or input_path.stem
+            output = args.output or (input_path.stem if input_path else "output")
             include_paths = args.include or []
             debug = args.debug
             library_mode = getattr(args, 'library', None)
             link_libraries = []
             link_paths = []
 
-        print(f"Building {input_path} -> {output}")
+        # Add standard library paths by default
+        stdlib_paths = paths.get_stdlib_include_paths()
+        for stdlib_path in stdlib_paths:
+            if str(stdlib_path) not in include_paths:
+                include_paths.append(str(stdlib_path))
+
+        # For sources-based library build, force library mode if not set
+        if source_files and not library_mode:
+            library_mode = "static"
+            print(f"  Defaulting to static library for sources-based build")
+
+        if source_files:
+            print(f"Building library -> {output}")
+        else:
+            print(f"Building {input_path} -> {output}")
 
         # Use native by default unless --python flag is set
         use_native = not getattr(args, 'python', False)
@@ -1995,6 +2363,21 @@ def cmd_build(args):
         output_dir = Path(output).parent
         if output_dir and str(output_dir) != '.':
             output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Handle sources-based library build (multiple source files)
+        if source_files:
+            return _build_library_from_sources(
+                source_files=source_files,
+                output=output,
+                include_paths=include_paths,
+                debug=debug,
+                library_mode=library_mode,
+                link_libraries=link_libraries,
+                link_paths=link_paths,
+                use_native=use_native,
+                native_transpiler_bin=native_transpiler_bin if use_native else None,
+                native_checker_bin=native_checker_bin if use_native else None,
+            )
 
         # Parse
         print("  Parsing...")
@@ -2510,6 +2893,155 @@ def cmd_ref(args):
     return 0
 
 
+def _run_tests_multi(args, test_files: list, toml_cfg, config_dir, build_cfg, test_cfg) -> int:
+    """Run tests on multiple files and aggregate results.
+
+    Args:
+        args: CLI arguments
+        test_files: List of Path objects for files to test
+        toml_cfg: Loaded TOML config dict
+        config_dir: Path to config directory
+        build_cfg: BuildConfig instance
+        test_cfg: TestConfig instance
+
+    Returns:
+        0 if all tests pass, 1 if any fail
+    """
+    import io
+    import contextlib
+
+    total_files = len(test_files)
+    passed_files = 0
+    failed_files = 0
+    no_tests_files = 0
+    total_tests = 0
+    failed_tests = 0
+
+    print(f"Running tests on {total_files} file(s)...")
+    print()
+
+    for i, test_file in enumerate(test_files, 1):
+        rel_path = test_file
+        try:
+            rel_path = test_file.relative_to(Path.cwd())
+        except ValueError:
+            pass
+
+        print(f"[{i}/{total_files}] Testing {rel_path}")
+
+        # Create a copy of args with the single file
+        class SingleFileArgs:
+            pass
+
+        single_args = SingleFileArgs()
+        single_args.input = str(test_file)
+        single_args.include = list(args.include) if args.include else []
+        single_args.verbose = getattr(args, 'verbose', False)
+        single_args.python = getattr(args, 'python', False)
+        single_args.rebuild = getattr(args, 'rebuild', False)
+
+        # Add include paths from build config
+        if build_cfg and build_cfg.include and config_dir:
+            for p in build_cfg.include:
+                inc_path = (config_dir / p).resolve()
+                if inc_path.exists() and str(inc_path) not in single_args.include:
+                    single_args.include.append(str(inc_path))
+
+        # Run test on single file by calling cmd_test directly
+        # Capture stdout/stderr to parse results
+        stdout_capture = io.StringIO()
+        stderr_capture = io.StringIO()
+
+        try:
+            with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+                returncode = cmd_test(single_args)
+        except Exception as e:
+            returncode = 1
+            stderr_capture.write(str(e))
+
+        output = stdout_capture.getvalue()
+        stderr_output = stderr_capture.getvalue()
+
+        # Parse results from output
+        import re
+
+        # Extract individual test results for verbose output
+        # Patterns: "fn-name(...) -> PASS" or "fn-name(...) -> FAIL"
+        test_results = []
+        for line in output.split('\n'):
+            if '-> PASS' in line or '-> FAIL' in line:
+                test_results.append(line.strip())
+
+        if "No @example annotations found" in output or "No testable @example" in output:
+            no_tests_files += 1
+            print(f"  No tests found")
+        elif returncode == 0:
+            # Extract test count from output
+            match = re.search(r'(\d+) test case\(s\)', output)
+            if match:
+                tests_in_file = int(match.group(1))
+                total_tests += tests_in_file
+            # Also check for "X passed" pattern
+            match = re.search(r'(\d+) passed', output)
+            if match:
+                tests_in_file = int(match.group(1))
+                if tests_in_file > 0:
+                    total_tests = max(total_tests, tests_in_file)
+            passed_files += 1
+            print(f"  PASSED ({len(test_results)} tests)")
+            # Show individual test results in verbose mode
+            if args.verbose and test_results:
+                for result in test_results:
+                    print(f"    {result}")
+        else:
+            failed_files += 1
+            # Try to count failed tests
+            matches = re.findall(r'FAIL', output)
+            failed_in_file = len(matches)
+            failed_tests += failed_in_file
+            # Also count total tests
+            match = re.search(r'(\d+) test case\(s\)', output)
+            if match:
+                total_tests += int(match.group(1))
+            print(f"  FAILED")
+            # Always show individual test results for failed files
+            if test_results:
+                for result in test_results:
+                    # Highlight failures
+                    if '-> FAIL' in result:
+                        print(f"    ✗ {result}")
+                    elif args.verbose:
+                        print(f"    {result}")
+            # Show additional error output in verbose mode
+            if args.verbose:
+                for line in stderr_output.strip().split('\n'):
+                    if line.strip():
+                        print(f"    {line}")
+
+    # Print summary
+    print()
+    print("=" * 50)
+    print(f"Test Summary:")
+    print(f"  Files tested:  {total_files}")
+    print(f"  Files passed:  {passed_files}")
+    print(f"  Files failed:  {failed_files}")
+    print(f"  Files skipped: {no_tests_files} (no @example annotations)")
+    if total_tests > 0:
+        print(f"  Total tests:   {total_tests}")
+        if failed_tests > 0:
+            print(f"  Tests failed:  {failed_tests}")
+
+    if failed_files > 0:
+        print(f"\n{failed_files} file(s) had failing tests")
+        return 1
+    elif passed_files > 0:
+        print(f"\nAll {passed_files} file(s) passed")
+        return 0
+    else:
+        print(f"\nNo tests were run")
+        return 0
+
+
 def cmd_test(args):
     """Run tests from @example annotations"""
     import subprocess
@@ -2517,16 +3049,79 @@ def cmd_test(args):
     from slop.parser import Symbol, Number, String
 
     try:
-        input_path = Path(args.input)
+        # Determine what to test:
+        # 1. CLI argument (file or directory)
+        # 2. [test].sources from slop.toml
+        input_arg = getattr(args, 'input', None)
 
-        # Load project config relative to input file (search up parent directories)
+        # Load project config
         config_dir = None
-        for parent in input_path.resolve().parents:
-            if (parent / 'slop.toml').exists():
-                config_dir = parent
-                break
+        toml_cfg = None
+        project_cfg, build_cfg, test_cfg, _ = load_project_config()
 
-        if config_dir:
+        if project_cfg:
+            config_dir = Path.cwd()
+            try:
+                import tomllib
+                with open(config_dir / 'slop.toml', 'rb') as f:
+                    toml_cfg = tomllib.load(f)
+            except Exception:
+                pass
+
+        # Determine files to test
+        test_files = []
+
+        if input_arg:
+            input_path = Path(input_arg)
+            if input_path.is_dir():
+                # Directory specified - discover all .slop files
+                from slop.discovery import discover_slop_files
+                pattern = test_cfg.pattern if test_cfg else "*.slop"
+                exclude = test_cfg.exclude if test_cfg else []
+                test_files = discover_slop_files(
+                    [str(input_path)],
+                    pattern=pattern,
+                    exclude=exclude,
+                    base_dir=Path.cwd()
+                )
+                if not test_files:
+                    print(f"No .slop files found in {input_path}")
+                    return 0
+            else:
+                # Single file specified
+                test_files = [input_path.resolve()]
+        elif test_cfg and test_cfg.sources:
+            # Use [test].sources from slop.toml
+            from slop.discovery import discover_slop_files
+            test_files = discover_slop_files(
+                test_cfg.sources,
+                pattern=test_cfg.pattern,
+                exclude=test_cfg.exclude,
+                base_dir=Path.cwd()
+            )
+            if not test_files:
+                print("No .slop files found in [test].sources")
+                return 0
+            print(f"Testing {len(test_files)} file(s) from [test].sources")
+        else:
+            print("Error: No input file specified and no [test].sources in slop.toml", file=sys.stderr)
+            return 1
+
+        # Run tests on multiple files or single file
+        if len(test_files) > 1:
+            return _run_tests_multi(args, test_files, toml_cfg, config_dir, build_cfg, test_cfg)
+
+        # Single file mode - use original logic
+        input_path = test_files[0]
+
+        # Re-find config_dir relative to input file if not already set
+        if not config_dir:
+            for parent in input_path.resolve().parents:
+                if (parent / 'slop.toml').exists():
+                    config_dir = parent
+                    break
+
+        if not toml_cfg and config_dir:
             import tomllib
             with open(config_dir / 'slop.toml', 'rb') as f:
                 toml_cfg = tomllib.load(f)
@@ -2536,6 +3131,83 @@ def cmd_test(args):
                 inc_path = (config_dir / p).resolve()
                 if inc_path.exists() and str(inc_path) not in [str(Path(x).resolve()) for x in args.include]:
                     args.include.append(str(inc_path))
+        elif toml_cfg and config_dir:
+            build_section = toml_cfg.get('build', {})
+            include_paths = build_section.get('include', [])
+            for p in include_paths:
+                inc_path = (config_dir / p).resolve()
+                if inc_path.exists() and str(inc_path) not in [str(Path(x).resolve()) for x in args.include]:
+                    args.include.append(str(inc_path))
+
+        # ===== Auto-resolve and transpile dependencies =====
+        # Set up search paths for module resolution
+        search_paths = [Path(p) for p in args.include]
+        search_paths.append(input_path.resolve().parent)
+        # Add standard library paths
+        search_paths.extend(paths.get_stdlib_include_paths())
+
+        # Determine cache directory from config or use default
+        test_section = toml_cfg.get('test', {}) if toml_cfg else {}
+        cache_dir = Path(test_section.get('cache', '.slop-test'))
+        if config_dir:
+            cache_dir = config_dir / cache_dir
+        cache_dir.mkdir(exist_ok=True)
+
+        # Build dependency graph for the test file
+        resolver = ModuleResolver(search_paths)
+        try:
+            graph = resolver.build_dependency_graph(input_path.resolve())
+        except ResolverError as e:
+            print(f"Module resolution error: {e}", file=sys.stderr)
+            return 1
+
+        # Validate imports
+        errors = resolver.validate_imports(graph)
+        if errors:
+            for err in errors:
+                print(f"Import error: {err}", file=sys.stderr)
+            return 1
+
+        # Get build order (dependencies first)
+        try:
+            build_order = resolver.topological_sort(graph)
+        except ResolverError as e:
+            print(f"Dependency error: {e}", file=sys.stderr)
+            return 1
+
+        # Transpile each dependency (except the test file itself)
+        test_module_name = input_path.stem
+        for mod_name in build_order:
+            if graph.modules[mod_name].path == input_path.resolve():
+                continue  # Skip the test file itself
+
+            module_info = graph.modules[mod_name]
+            c_mod_name = mod_name.replace('-', '_')
+            header_path = cache_dir / f"slop_{c_mod_name}.h"
+
+            # Check if needs retranspile (mtime-based caching)
+            force_rebuild = getattr(args, 'rebuild', False)
+            if not force_rebuild and header_path.exists() and header_path.stat().st_mtime > module_info.path.stat().st_mtime:
+                continue  # Already up to date
+
+            print(f"  Transpiling dependency: {mod_name}")
+            if not transpile_to_cache(module_info.path, cache_dir, search_paths):
+                print(f"Failed to transpile dependency: {mod_name}", file=sys.stderr)
+                return 1
+
+        # Add cache dir to include paths for compilation
+        if str(cache_dir) not in args.include:
+            args.include.append(str(cache_dir))
+
+        # Collect dependency source files for linking
+        dep_sources = []
+        for mod_name in build_order:
+            if graph.modules[mod_name].path == input_path.resolve():
+                continue  # Skip the test file itself
+            c_mod_name = mod_name.replace('-', '_')
+            c_path = cache_dir / f"slop_{c_mod_name}.c"
+            if c_path.exists():
+                dep_sources.append(str(c_path))
 
         # Try native tester first (if not --python flag)
         use_native = not getattr(args, 'python', False)
@@ -2568,10 +3240,10 @@ def cmd_test(args):
                             compile_cmd = [
                                 "cc", "-O0", "-g",
                                 "-I", str(runtime_path),
+                                "-I", str(cache_dir),
                                 "-o", test_bin_path,
                                 test_c_path,
-                                "-lm"
-                            ]
+                            ] + dep_sources + ["-lm"]
 
                             result = subprocess.run(compile_cmd, capture_output=True, text=True)
                             if result.returncode != 0:
@@ -2763,6 +3435,8 @@ def cmd_test(args):
                 # Multi-module: resolve dependencies and transpile all
                 from slop.transpiler import transpile_multi
                 search_paths = [Path(p) for p in args.include] + [input_path.parent, input_path.parent.parent]
+                # Add standard library paths
+                search_paths.extend(paths.get_stdlib_include_paths())
                 # Also include sibling directories (e.g., common/ for shared types)
                 if input_path.parent.parent.exists():
                     for sibling in input_path.parent.parent.iterdir():
@@ -2825,6 +3499,7 @@ def cmd_test(args):
             compile_cmd = [
                 "cc", "-O0", "-g",
                 "-I", str(runtime_path),
+                "-I", str(cache_dir),
                 "-o", test_bin_path,
                 test_c_path,
                 "-lm"  # Link math library for math.h functions
@@ -3257,6 +3932,116 @@ def sexpr_to_c(expr):
         return str(expr)
 
 
+def _run_verify_multi(args, verify_files: list, verify_cfg) -> int:
+    """Run verification on multiple files and aggregate results.
+
+    Args:
+        args: CLI arguments
+        verify_files: List of Path objects for files to verify
+        verify_cfg: VerifyConfig instance
+
+    Returns:
+        0 if all verifications pass, 1 if any fail
+    """
+    try:
+        from slop.verifier import verify_file, Z3_AVAILABLE
+    except ImportError:
+        print("Error: verifier module not found", file=sys.stderr)
+        return 1
+
+    if not Z3_AVAILABLE:
+        print("Error: Z3 solver not available.", file=sys.stderr)
+        return 1
+
+    total_files = len(verify_files)
+    passed_files = 0
+    failed_files = 0
+    no_contracts_files = 0
+    total_verified = 0
+    total_failed = 0
+    total_warnings = 0
+    total_unknown = 0
+
+    mode = args.mode if args.mode else "error"
+    timeout = verify_cfg.timeout if verify_cfg else args.timeout
+
+    print(f"Verifying {total_files} file(s)...")
+    print()
+
+    for i, verify_file_path in enumerate(verify_files, 1):
+        rel_path = verify_file_path
+        try:
+            rel_path = verify_file_path.relative_to(Path.cwd())
+        except ValueError:
+            pass
+
+        print(f"[{i}/{total_files}] Verifying {rel_path}")
+
+        # Run verification on single file
+        results = verify_file(str(verify_file_path), mode=mode, timeout_ms=timeout)
+
+        # Categorize results
+        verified = [r for r in results if r.status == 'verified']
+        failed = [r for r in results if r.status == 'failed']
+        unknown = [r for r in results if r.status == 'unknown']
+        warnings = [r for r in results if r.status == 'warning']
+        errors = [r for r in results if r.status == 'error']
+
+        total_verified += len(verified)
+        total_failed += len(failed) + len(errors)
+        total_warnings += len(warnings)
+        total_unknown += len(unknown)
+
+        file_total = len(verified) + len(failed) + len(unknown) + len(warnings)
+        if file_total == 0:
+            no_contracts_files += 1
+            print(f"  No contracts to verify")
+        elif failed or errors:
+            failed_files += 1
+            print(f"  FAILED: {len(verified)} verified, {len(failed)} failed")
+            if args.verbose:
+                for r in failed:
+                    print(f"    failed: {r.name} - {r.message}")
+                for r in errors:
+                    print(f"    error: {r.name} - {r.message}")
+        else:
+            passed_files += 1
+            summary_parts = [f"{len(verified)} verified"]
+            if warnings:
+                summary_parts.append(f"{len(warnings)} warning(s)")
+            if unknown:
+                summary_parts.append(f"{len(unknown)} unknown")
+            print(f"  PASSED: {', '.join(summary_parts)}")
+
+    # Print summary
+    print()
+    print("=" * 50)
+    print(f"Verification Summary:")
+    print(f"  Files verified:  {total_files}")
+    print(f"  Files passed:    {passed_files}")
+    print(f"  Files failed:    {failed_files}")
+    print(f"  Files skipped:   {no_contracts_files} (no contracts)")
+    print()
+    print(f"  Total verified:  {total_verified}")
+    print(f"  Total failed:    {total_failed}")
+    if total_warnings > 0:
+        print(f"  Total warnings:  {total_warnings}")
+    if total_unknown > 0:
+        print(f"  Total unknown:   {total_unknown}")
+
+    if failed_files > 0:
+        print(f"\n{failed_files} file(s) had verification failures")
+        if mode == "error":
+            return 1
+        return 0
+    elif passed_files > 0:
+        print(f"\nAll {passed_files} file(s) verified successfully")
+        return 0
+    else:
+        print(f"\nNo contracts were verified")
+        return 0
+
+
 def cmd_verify(args):
     """Verify contracts and range safety with Z3"""
     try:
@@ -3274,13 +4059,67 @@ def cmd_verify(args):
         print("  pip install z3-solver      # if using pip", file=sys.stderr)
         return 1
 
+    # Determine what to verify:
+    # 1. CLI argument (file or directory)
+    # 2. [verify].sources from slop.toml
+    input_arg = getattr(args, 'input', None)
+
+    # Load project config
+    project_cfg, build_cfg, _, verify_cfg = load_project_config()
+
+    # Determine files to verify
+    verify_files = []
+
+    if input_arg:
+        input_path = Path(input_arg)
+        if input_path.is_dir():
+            # Directory specified - discover all .slop files
+            from slop.discovery import discover_slop_files
+            pattern = verify_cfg.pattern if verify_cfg else "*.slop"
+            exclude = verify_cfg.exclude if verify_cfg else []
+            verify_files = discover_slop_files(
+                [str(input_path)],
+                pattern=pattern,
+                exclude=exclude,
+                base_dir=Path.cwd()
+            )
+            if not verify_files:
+                print(f"No .slop files found in {input_path}")
+                return 0
+        else:
+            # Single file specified
+            verify_files = [input_path.resolve()]
+    elif verify_cfg and verify_cfg.sources:
+        # Use [verify].sources from slop.toml
+        from slop.discovery import discover_slop_files
+        verify_files = discover_slop_files(
+            verify_cfg.sources,
+            pattern=verify_cfg.pattern,
+            exclude=verify_cfg.exclude,
+            base_dir=Path.cwd()
+        )
+        if not verify_files:
+            print("No .slop files found in [verify].sources")
+            return 0
+        print(f"Verifying {len(verify_files)} file(s) from [verify].sources")
+    else:
+        print("Error: No input file specified and no [verify].sources in slop.toml", file=sys.stderr)
+        return 1
+
+    # Run verification on multiple files or single file
+    if len(verify_files) > 1:
+        return _run_verify_multi(args, verify_files, verify_cfg)
+
+    # Single file mode - use original logic
+    input_file = str(verify_files[0])
+
     # Determine failure mode
     mode = args.mode if args.mode else "error"
 
     # Use native parser by default unless --python flag is set
     use_native = not getattr(args, 'python', False)
     if use_native:
-        ast, success = parse_native_json(args.input)
+        ast, success = parse_native_json(input_file)
         if not success:
             # ast contains error message on failure
             if ast:
@@ -3289,14 +4128,14 @@ def cmd_verify(args):
             else:
                 print("Native parser not available, falling back to Python", file=sys.stderr)
                 # Fall back to Python parser
-                results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)
+                results = verify_file(input_file, mode=mode, timeout_ms=args.timeout)
                 use_native = False
         if use_native and success:
             if args.verbose:
                 print("Using native parser", file=sys.stderr)
             # Run native type checker first
             from slop.verifier import _run_native_checker, VerificationResult
-            check_success, diagnostics = _run_native_checker(args.input)
+            check_success, diagnostics = _run_native_checker(input_file)
             if not check_success:
                 error_msgs = [d.get('message', 'Unknown error') for d in diagnostics if d.get('level') == 'error']
                 results = [VerificationResult(
@@ -3306,10 +4145,10 @@ def cmd_verify(args):
                     message=f"Type errors found: {'; '.join(error_msgs) if error_msgs else 'check failed'}"
                 )]
             else:
-                results = verify_ast(ast, filename=args.input, mode=mode, timeout_ms=args.timeout)
+                results = verify_ast(ast, filename=input_file, mode=mode, timeout_ms=args.timeout)
     else:
         # Run verification with Python parser
-        results = verify_file(args.input, mode=mode, timeout_ms=args.timeout)
+        results = verify_file(input_file, mode=mode, timeout_ms=args.timeout)
 
     # Categorize results
     verified = [r for r in results if r.status == 'verified']
@@ -3562,7 +4401,8 @@ def main():
 
     # verify
     p = subparsers.add_parser('verify', help='Verify contracts with Z3')
-    p.add_argument('input', help='Input SLOP file')
+    p.add_argument('input', nargs='?', default=None,
+        help='Input file or directory (optional if [verify].sources in slop.toml)')
     p.add_argument('--mode', choices=['error', 'warn'],
         help='Failure mode: error (block, default) or warn')
     p.add_argument('--timeout', type=int, default=5000,
@@ -3588,13 +4428,16 @@ def main():
 
     # test
     p = subparsers.add_parser('test', help='Run tests from @example annotations')
-    p.add_argument('input', help='Input SLOP file')
+    p.add_argument('input', nargs='?', default=None,
+        help='Input file or directory (optional if [test].sources in slop.toml)')
     p.add_argument('-I', '--include', action='append', default=[],
         help='Add search path for module imports')
     p.add_argument('-v', '--verbose', action='store_true',
         help='Show generated C code on failure')
     p.add_argument('--python', action='store_true',
         help='Use Python toolchain instead of native')
+    p.add_argument('--rebuild', action='store_true',
+        help='Force rebuild of all dependencies (ignore cache)')
 
     # paths - diagnostic command
     p = subparsers.add_parser('paths', help='Show resolved SLOP paths')

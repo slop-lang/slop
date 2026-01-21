@@ -27,6 +27,14 @@ libraries = []                 # Libraries to link (-l flags)
 library_paths = []             # Library search paths (-L flags)
 
 # ============================================================================
+# TEST
+# Settings for `slop test` command
+# ============================================================================
+
+[test]
+cache = ".slop-test"           # Directory for transpiled artifacts (default: .slop-test)
+
+# ============================================================================
 # PROVIDERS
 # Define LLM providers. Each provider can be referenced by tiers below.
 # ============================================================================

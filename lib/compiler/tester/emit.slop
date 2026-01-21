@@ -23,11 +23,12 @@
                   sexpr-list-len sexpr-list-get sexpr-get-symbol-name
                   sexpr-number-string sexpr-string-value pretty-print))
   (import extract (TestCase))
-  (import strlib (contains to-lower))
+  (import strlib (contains to-lower string-build))
   (import type-extract (TypeRegistry TypeEntry TypeEntryKind FieldEntry VariantEntry
                         registry-lookup registry-lookup-variant registry-lookup-enum-value
                         registry-is-union registry-is-record registry-is-enum
                         registry-get-variant-info registry-get-record-fields))
+  (import ctype (to-c-name))
 
   ;; ============================================================
   ;; Emit Context - holds output list for mutation
@@ -99,18 +100,18 @@
     (@alloc arena)
     (match (deref expr)
       ;; Number: just return the raw string representation
-      ((number num)
+      ((num num)
         (. num raw))
 
       ;; String: wrap in SLOP_STR macro
-      ((string str)
+      ((str str)
         (let ((val (. str value)))
           (string-concat arena
             (string-concat arena "SLOP_STR(\"" (escape-string arena val))
             "\")")))
 
       ;; Symbol: handle special cases
-      ((symbol sym)
+      ((sym sym)
         (let ((name (. sym name)))
           (cond
             ((string-eq name "true") "true")
@@ -137,7 +138,7 @@
               (convert-symbol-to-c arena name)))))
 
       ;; List: could be function call, operator, or constructor
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items))
               (len (list-len items)))
           (if (== len 0)
@@ -166,18 +167,21 @@
                         (if (> len 1)
                           (match (list-get items 1)
                             ((some type-expr)
-                              (let ((type-name (if (sexpr-is-symbol type-expr)
-                                                 (sexpr-get-symbol-name type-expr)
-                                                 "void")))
-                                ;; Emit empty list: (slop_list_prefix_Type){.data = NULL, .len = 0, .cap = 0}
-                                (string-concat arena "(slop_list_"
-                                  (string-concat arena prefix
-                                    (string-concat arena "_"
-                                      (string-concat arena (convert-symbol-to-c arena type-name)
-                                        "){.data = NULL, .len = 0, .cap = 0}"))))))
+                              (if (sexpr-is-symbol type-expr)
+                                (let ((type-name (sexpr-get-symbol-name type-expr)))
+                                  ;; Built-in types don't use module prefix
+                                  (if (string-eq type-name "String")
+                                    "(slop_list_string){.data = NULL, .len = 0, .cap = 0}"
+                                    ;; Module types use prefix: (slop_list_prefix_Type){...}
+                                    (string-concat arena "(slop_list_"
+                                      (string-concat arena prefix
+                                        (string-concat arena "_"
+                                          (string-concat arena (convert-symbol-to-c arena type-name)
+                                            "){.data = NULL, .len = 0, .cap = 0}"))))))
+                                "/* error: list literal first element must be type symbol */"))
                             ((none)
-                              "(slop_list_void){.data = NULL, .len = 0, .cap = 0}"))
-                          "(slop_list_void){.data = NULL, .len = 0, .cap = 0}"))
+                              "/* error: list literal requires type */"))
+                          "/* error: list literal requires type */"))
 
                       ;; Result constructors
                       ((string-eq op "ok")
@@ -319,28 +323,38 @@
         ;; Check if there's an inner value
         (if (> (list-len items) 1)
           ;; Has payload: (variant inner)
+          ;; Use statement expression with zero-init to avoid memcmp padding issues
           (match (list-get items 1)
             ((some inner-expr)
-              (let ((inner-c (sexpr-to-c-typed arena inner-expr prefix types)))
-                (string-concat arena "(("
-                  (string-concat arena c-name
-                    (string-concat arena "){.tag = "
-                      (string-concat arena tag-value
-                        (string-concat arena ", .data."
-                          (string-concat arena c-variant
-                            (string-concat arena " = "
-                              (string-concat arena inner-c "})"))))))))))
+              (let ((inner-c (sexpr-to-c-typed arena inner-expr prefix types))
+                    (parts (list-new arena String)))
+                (list-push parts "({ typeof(")
+                (list-push parts c-name)
+                (list-push parts ") _u = {0}; _u.tag = ")
+                (list-push parts tag-value)
+                (list-push parts "; _u.data.")
+                (list-push parts c-variant)
+                (list-push parts " = ")
+                (list-push parts inner-c)
+                (list-push parts "; _u; })")
+                (string-build arena parts)))
             ((none)
               ;; Shouldn't happen, but handle gracefully
-              (string-concat arena "(("
-                (string-concat arena c-name
-                  (string-concat arena "){.tag = "
-                    (string-concat arena tag-value "})"))))))
+              (let ((parts (list-new arena String)))
+                (list-push parts "({ typeof(")
+                (list-push parts c-name)
+                (list-push parts ") _u = {0}; _u.tag = ")
+                (list-push parts tag-value)
+                (list-push parts "; _u; })")
+                (string-build arena parts))))
           ;; No payload (rare for union variants)
-          (string-concat arena "(("
-            (string-concat arena c-name
-              (string-concat arena "){.tag = "
-                (string-concat arena tag-value "})"))))))))
+          (let ((parts (list-new arena String)))
+            (list-push parts "({ typeof(")
+            (list-push parts c-name)
+            (list-push parts ") _u = {0}; _u.tag = ")
+            (list-push parts tag-value)
+            (list-push parts "; _u; })")
+            (string-build arena parts))))))
 
   ;; ============================================================
   ;; Record Literal Emission
@@ -412,7 +426,7 @@
     ;; e.g., "(Option String)" -> "slop_option_string"
     (let ((c-opt-type (option-type-to-c arena opt-type prefix)))
       (match (deref item)
-        ((list lst)
+        ((lst lst)
           (let ((items (. lst items)))
             (if (== (list-len items) 0)
               (string-concat arena "(" (string-concat arena c-opt-type "){.has_value = false}"))
@@ -450,7 +464,7 @@
                             (string-concat arena inner-c "}")))))))
                 ((none)
                   (string-concat arena "(" (string-concat arena c-opt-type "){.has_value = false}")))))))
-        ((symbol sym)
+        ((sym sym)
           (let ((name (. sym name)))
             (if (string-eq name "none")
               (string-concat arena "(" (string-concat arena c-opt-type "){.has_value = false}"))
@@ -581,18 +595,18 @@
     (@alloc arena)
     (match (deref expr)
       ;; Number: just return the raw string representation
-      ((number num)
+      ((num num)
         (. num raw))
 
       ;; String: wrap in SLOP_STR macro
-      ((string str)
+      ((str str)
         (let ((val (. str value)))
           (string-concat arena
             (string-concat arena "SLOP_STR(\"" (escape-string arena val))
             "\")")))
 
       ;; Symbol: handle special cases
-      ((symbol sym)
+      ((sym sym)
         (let ((name (. sym name)))
           (cond
             ((string-eq name "true") "true")
@@ -608,7 +622,7 @@
               (convert-symbol-to-c arena name)))))
 
       ;; List: could be function call, operator, or constructor
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items))
               (len (list-len items)))
           (if (== len 0)
@@ -913,9 +927,10 @@
   ;; ============================================================
 
   (fn emit-test-harness-typed ((arena Arena) (tests (List (Ptr TestCase)))
-                                (module-prefix String) (types (Ptr TypeRegistry)))
+                                (module-prefix String) (types (Ptr TypeRegistry))
+                                (imports (List String)))
     (@intent "Generate complete C test harness code with type awareness")
-    (@spec ((Arena (List (Ptr TestCase)) String (Ptr TypeRegistry)) -> (List String)))
+    (@spec ((Arena (List (Ptr TestCase)) String (Ptr TypeRegistry) (List String)) -> (List String)))
     (@alloc arena)
     (let ((ctx (emit-ctx-new-typed arena types)))
       ;; Header comment
@@ -928,6 +943,17 @@
       (emit ctx "#include <stdio.h>")
       (emit ctx "#include <string.h>")
       (emit ctx "#include <math.h>")
+      ;; Emit dependency includes (like transpiler's emit-header-dependency-includes)
+      (let ((import-count (list-len imports))
+            (mut j 0))
+        (while (< j import-count)
+          (match (list-get imports j)
+            ((some mod-name)
+              (let ((c-name (to-c-name arena mod-name)))
+                (emit ctx (string-concat arena "#include \"slop_"
+                            (string-concat arena c-name ".h\"")))))
+            ((none) (do)))
+          (set! j (+ j 1))))
       (emit ctx "")
 
       ;; Test tracking variables
@@ -1088,7 +1114,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             false
@@ -1430,21 +1456,105 @@
           ;; Check for Result type
           (if (contains ret-type-str "Result")
             (if (is-ok-value expected)
-              (let ((inner-expected (get-ok-inner-typed arena expected prefix types)))
-                (CompareInfo
-                  (string-concat arena "result.is_ok && result.data.ok == " inner-expected)
-                  "%s"
-                  "result.is_ok ? \"ok(...)\" : \"error(...)\""
-                  "%s"
-                  "\"ok(...)\""))
-              (if (is-error-value expected)
-                (let ((inner-expected (get-error-inner-typed arena expected prefix types)))
+              (let ((inner-expected (get-ok-inner-typed arena expected prefix types))
+                    (inner-expr (get-ok-inner-expr expected)))
+                ;; Check if inner value is a union constructor
+                (if (is-union-constructor-typed inner-expr types)
+                  ;; Compare union tag and specific variant field (not memcmp to avoid padding issues)
+                  (let ((expected-var "expected_ok")
+                        (variant-name (get-union-variant-name inner-expr))
+                        (c-variant (convert-symbol-to-c arena variant-name))
+                        (is-string-variant (contains (to-lower arena variant-name) "string")))
+                    (CompareInfo
+                      (let ((parts (list-new arena String)))
+                        (list-push parts "({ typeof(result.data.ok) ")
+                        (list-push parts expected-var)
+                        (list-push parts " = ")
+                        (list-push parts inner-expected)
+                        (list-push parts "; result.is_ok && result.data.ok.tag == ")
+                        (list-push parts expected-var)
+                        (list-push parts ".tag && ")
+                        (if is-string-variant
+                          ;; String comparison
+                          (do
+                            (list-push parts "slop_string_eq(result.data.ok.data.")
+                            (list-push parts c-variant)
+                            (list-push parts ", ")
+                            (list-push parts expected-var)
+                            (list-push parts ".data.")
+                            (list-push parts c-variant)
+                            (list-push parts ")"))
+                          ;; Direct comparison for primitives
+                          (do
+                            (list-push parts "result.data.ok.data.")
+                            (list-push parts c-variant)
+                            (list-push parts " == ")
+                            (list-push parts expected-var)
+                            (list-push parts ".data.")
+                            (list-push parts c-variant)))
+                        (list-push parts "; })")
+                        (string-build arena parts))
+                      "%s"
+                      "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                      "%s"
+                      "\"ok(...)\""))
+                  ;; Non-union: use direct comparison
                   (CompareInfo
-                    (string-concat arena "!result.is_ok && result.data.err == " inner-expected)
+                    (string-concat arena "result.is_ok && result.data.ok == " inner-expected)
                     "%s"
                     "result.is_ok ? \"ok(...)\" : \"error(...)\""
                     "%s"
-                    "\"error(...)\""))
+                    "\"ok(...)\"")))
+              (if (is-error-value expected)
+                (let ((inner-expected (get-error-inner-typed arena expected prefix types))
+                      (inner-expr (get-ok-inner-expr expected)))
+                  ;; Check if inner value is a union constructor
+                  (if (is-union-constructor-typed inner-expr types)
+                    ;; Compare union tag and specific variant field (not memcmp to avoid padding issues)
+                    (let ((expected-var "expected_err")
+                          (variant-name (get-union-variant-name inner-expr))
+                          (c-variant (convert-symbol-to-c arena variant-name))
+                          (is-string-variant (contains (to-lower arena variant-name) "string")))
+                      (CompareInfo
+                        (let ((parts (list-new arena String)))
+                          (list-push parts "({ typeof(result.data.err) ")
+                          (list-push parts expected-var)
+                          (list-push parts " = ")
+                          (list-push parts inner-expected)
+                          (list-push parts "; !result.is_ok && result.data.err.tag == ")
+                          (list-push parts expected-var)
+                          (list-push parts ".tag && ")
+                          (if is-string-variant
+                            ;; String comparison
+                            (do
+                              (list-push parts "slop_string_eq(result.data.err.data.")
+                              (list-push parts c-variant)
+                              (list-push parts ", ")
+                              (list-push parts expected-var)
+                              (list-push parts ".data.")
+                              (list-push parts c-variant)
+                              (list-push parts ")"))
+                            ;; Direct comparison for primitives
+                            (do
+                              (list-push parts "result.data.err.data.")
+                              (list-push parts c-variant)
+                              (list-push parts " == ")
+                              (list-push parts expected-var)
+                              (list-push parts ".data.")
+                              (list-push parts c-variant)))
+                          (list-push parts "; })")
+                          (string-build arena parts))
+                        "%s"
+                        "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                        "%s"
+                        "\"error(...)\""))
+                    ;; Non-union: use direct comparison
+                    (CompareInfo
+                      (string-concat arena "!result.is_ok && result.data.err == " inner-expected)
+                      "%s"
+                      "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                      "%s"
+                      "\"error(...)\"")))
                 (let ((c-expected (sexpr-to-c-typed arena expected prefix types)))
                   (CompareInfo
                     (string-concat arena "result == " c-expected)
@@ -1554,7 +1664,7 @@
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             ""
@@ -1657,7 +1767,7 @@
     ;; Then look up which union type contains that variant
     ;; Build function name: prefix_typename_eq (e.g., rdf_term_eq)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             ""
@@ -1696,7 +1806,7 @@
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             false
@@ -1718,12 +1828,29 @@
               ((none) false)))))
       (_ false)))
 
+  (fn get-union-variant-name ((expr (Ptr SExpr)))
+    (@intent "Get the variant name from a union constructor expression like (xsd-integer-val 42)")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 0)
+            ""
+            (match (list-get items 0)
+              ((some first)
+                (if (sexpr-is-symbol first)
+                  (sexpr-get-symbol-name first)
+                  ""))
+              ((none) "")))))
+      (_ "")))
+
   (fn is-enum-value-typed ((expr (Ptr SExpr)) (types TypeRegistry))
     (@intent "Check if expression is an enum value using type registry")
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
     (match (deref expr)
-      ((symbol sym)
+      ((sym sym)
         (let ((name (. sym name)))
           ;; Check for quoted symbol
           (if (string-starts-with name "'")
@@ -1732,7 +1859,7 @@
                 ((some _) true)
                 ((none) false)))
             false)))
-      ((list lst)
+      ((lst lst)
         ;; Check for (quote symbol) form
         (let ((items (. lst items)))
           (if (< (list-len items) 2)
@@ -1758,7 +1885,7 @@
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             false
@@ -1813,12 +1940,26 @@
     (@alloc arena)
     (get-some-inner-typed arena expr prefix types))
 
+  (fn get-ok-inner-expr ((expected (Ptr SExpr)))
+    (@intent "Get inner expression from (ok val) for type checking")
+    (@spec (((Ptr SExpr)) -> (Ptr SExpr)))
+    (@pure)
+    (match (deref expected)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (> (list-len items) 1)
+            (match (list-get items 1)
+              ((some inner) inner)
+              ((none) expected))
+            expected)))
+      (_ expected)))
+
   (fn build-list-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (prefix String) (types TypeRegistry))
     (@intent "Build comparison info for List types with type awareness")
     (@spec ((Arena (Ptr SExpr) String TypeRegistry) -> CompareInfo))
     (@alloc arena)
     (match (deref expected)
-      ((list lst)
+      ((lst lst)
         (let ((elements (. lst items))
               (elem-count (list-len elements)))
           (if (== elem-count 0)
@@ -1873,8 +2014,8 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((symbol sym) (string-eq (. sym name) "none"))
-      ((list lst)
+      ((sym sym) (string-eq (. sym name) "none"))
+      ((lst lst)
         (let ((items (. lst items)))
           (and (== (list-len items) 1)
                (match (list-get items 0)
@@ -1933,7 +2074,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             true
@@ -1948,7 +2089,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             false
@@ -2118,7 +2259,7 @@
     ;; For list comparison, we need to compare length and elements
     ;; Expected value should be a list literal like (0 1 1 2 3)
     (match (deref expected)
-      ((list lst)
+      ((lst lst)
         (let ((elements (. lst items))
               (elem-count (list-len elements)))
           (if (== elem-count 0)

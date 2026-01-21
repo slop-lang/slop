@@ -269,6 +269,8 @@ class BuildConfig:
     debug: bool = False
     libraries: list = None
     library_paths: list = None
+    test_cache: str = ".slop-test"  # Directory for test artifacts
+    sources: list = None  # Source files/directories for library builds
 
     def __post_init__(self):
         if self.include is None:
@@ -277,23 +279,55 @@ class BuildConfig:
             self.libraries = []
         if self.library_paths is None:
             self.library_paths = []
+        if self.sources is None:
+            self.sources = []
 
 
-def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Optional[BuildConfig]]:
-    """Load project and build configuration from slop.toml.
+@dataclass
+class TestConfig:
+    """Test configuration from slop.toml [test] section"""
+    sources: list = None  # Source files/directories to test
+    pattern: str = "*.slop"  # File pattern for directories
+    exclude: list = None  # Directories/patterns to exclude
+    cache: str = ".slop-test"  # Directory for test artifacts
+
+    def __post_init__(self):
+        if self.sources is None:
+            self.sources = []
+        if self.exclude is None:
+            self.exclude = []
+
+
+@dataclass
+class VerifyConfig:
+    """Verify configuration from slop.toml [verify] section"""
+    sources: list = None  # Source files/directories to verify
+    pattern: str = "*.slop"  # File pattern for directories
+    exclude: list = None  # Directories/patterns to exclude
+    timeout: int = 5000  # Z3 timeout per file in ms
+
+    def __post_init__(self):
+        if self.sources is None:
+            self.sources = []
+        if self.exclude is None:
+            self.exclude = []
+
+
+def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Optional[BuildConfig], Optional[TestConfig], Optional[VerifyConfig]]:
+    """Load project, build, test, and verify configuration from slop.toml.
 
     Args:
         path: Path to config file. If None, looks for slop.toml in current dir.
 
     Returns:
-        (ProjectConfig, BuildConfig) tuple. Either may be None if not present.
+        (ProjectConfig, BuildConfig, TestConfig, VerifyConfig) tuple. Any may be None if not present.
     """
     from pathlib import Path
 
     if path is None:
         config_path = Path("slop.toml")
         if not config_path.exists():
-            return None, None
+            return None, None, None, None
     else:
         config_path = Path(path)
         if not config_path.exists():
@@ -312,6 +346,7 @@ def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Opti
     # Extract build config
     build_data = config.get('build', {})
     link_data = build_data.get('link', {})
+    test_data = config.get('test', {})
     build = BuildConfig(
         output=build_data.get('output', ''),
         include=build_data.get('include', []),
@@ -319,9 +354,28 @@ def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Opti
         debug=build_data.get('debug', False),
         libraries=link_data.get('libraries', []),
         library_paths=link_data.get('library_paths', []),
+        test_cache=test_data.get('cache', '.slop-test'),
+        sources=build_data.get('sources', []),
     ) if build_data else None
 
-    return project, build
+    # Extract test config
+    test_config = TestConfig(
+        sources=test_data.get('sources', []),
+        pattern=test_data.get('pattern', '*.slop'),
+        exclude=test_data.get('exclude', []),
+        cache=test_data.get('cache', '.slop-test'),
+    ) if test_data else None
+
+    # Extract verify config
+    verify_data = config.get('verify', {})
+    verify_config = VerifyConfig(
+        sources=verify_data.get('sources', []),
+        pattern=verify_data.get('pattern', '*.slop'),
+        exclude=verify_data.get('exclude', []),
+        timeout=verify_data.get('timeout', 5000),
+    ) if verify_data else None
+
+    return project, build, test_config, verify_config
 
 
 def create_provider(provider_config: dict) -> Provider:

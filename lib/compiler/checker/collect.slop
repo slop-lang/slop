@@ -22,7 +22,7 @@
                env-register-function env-register-constant env-set-module env-get-module
                env-get-int-type env-get-bool-type env-get-string-type
                env-get-unit-type env-register-variant env-check-variant-collisions
-               env-make-option-type))
+               env-make-option-type env-add-warning))
 
   ;; ============================================================
   ;; Main Collection Functions
@@ -65,13 +65,13 @@
     (@spec (((Ptr TypeEnv) Arena (Ptr SExpr)) -> Unit))
     (@pre (!= env nil))
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           ;; Extract type name from position 1: (type NAME TYPE-EXPR)
           (match (list-get items 1)
             ((some name-expr)
               (match (deref name-expr)
-                ((symbol sym)
+                ((sym sym)
                   (let ((type-name (. sym name)))
                     ;; Check type-expr to determine kind
                     (match (list-get items 2)
@@ -117,7 +117,7 @@
     (@pre (!= resolved nil))
     (@pre (!= record-expr nil))
     (match (deref record-expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items))
               (len (list-len items)))
           ;; Skip index 0 (the "record" keyword), iterate fields from index 1
@@ -126,13 +126,13 @@
               ((some field-form)
                 ;; Each field is (field-name Type)
                 (match (deref field-form)
-                  ((list field-lst)
+                  ((lst field-lst)
                     (let ((field-items (. field-lst items)))
                       ;; Get field name at index 0
                       (match (list-get field-items 0)
                         ((some name-expr)
                           (match (deref name-expr)
-                            ((symbol name-sym)
+                            ((sym name-sym)
                               ;; Get field type at index 1
                               (match (list-get field-items 1)
                                 ((some type-expr)
@@ -153,7 +153,7 @@
     (@spec (((Ptr TypeEnv) Arena (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (match (deref type-expr)
-      ((symbol sym)
+      ((sym sym)
         (let ((type-name (. sym name)))
           ;; Try to look up type, fall back to creating placeholder
           (match (env-lookup-type env type-name)
@@ -167,7 +167,7 @@
                 ((string-eq type-name "Unit") (env-get-unit-type env))
                 ;; Unknown type - create placeholder
                 (else (resolved-type-new arena 'rk-primitive type-name (none) type-name)))))))
-      ((list lst)
+      ((lst lst)
         ;; Complex type expression like (Option Int), (Ptr T), (List T)
         (let ((items (. lst items)))
           (match (list-get items 0)
@@ -211,7 +211,7 @@
     (@pre (!= module-form nil))
     (let ((arena (env-arena env)))
       (match (deref module-form)
-        ((list lst)
+        ((lst lst)
           (let ((items (. lst items))
                 (len (list-len items)))
             ;; Skip module name and export, start at index 2
@@ -277,8 +277,26 @@
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
     (match (deref expr)
-      ((symbol sym) (. sym name))
+      ((sym sym) (. sym name))
       (_ "")))
+
+  ;; ============================================================
+  ;; Reserved Variant Names Check
+  ;; ============================================================
+
+  (fn is-reserved-variant-name ((name String))
+    (@intent "Check if a variant name shadows a built-in form")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "list")
+        (string-eq name "ok")
+        (string-eq name "error")
+        (string-eq name "some")
+        (string-eq name "none")))
+
+  ;; ============================================================
+  ;; Union Variant Collection
+  ;; ============================================================
 
   (fn collect-union-variants ((env (Ptr TypeEnv)) (arena Arena) (resolved (Ptr ResolvedType)) (union-expr (Ptr SExpr)))
     (@intent "Extract variant definitions from a union and add them to the resolved type")
@@ -287,7 +305,7 @@
     (@pre (!= resolved nil))
     (@pre (!= union-expr nil))
     (match (deref union-expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items))
               (len (list-len items))
               (mut variant-idx 0)
@@ -326,18 +344,29 @@
           ((some name-expr) (sexpr-get-symbol-name name-expr))
           ((none) "")))
       (match (deref variant-form)
-        ((symbol sym) (. sym name))
+        ((sym sym) (. sym name))
         (_ ""))))
 
   (fn collect-single-union-variant ((env (Ptr TypeEnv)) (arena Arena) (resolved (Ptr ResolvedType))
                                      (variant-form (Ptr SExpr)) (variant-idx Int))
     (@intent "Process a single union variant")
     (@spec (((Ptr TypeEnv) Arena (Ptr ResolvedType) (Ptr SExpr) Int) -> Unit))
-    (let ((variant-name (get-variant-name variant-form)))
+    (let ((variant-name (get-variant-name variant-form))
+          (type-name (. (deref resolved) name))
+          (arena (env-arena env)))
       (when (not (string-eq variant-name ""))
+        ;; Check for reserved names that shadow built-in forms
+        (when (is-reserved-variant-name variant-name)
+          (let ((msg (string-concat arena "union variant '"
+                       (string-concat arena variant-name
+                         (string-concat arena "' in type '"
+                           (string-concat arena type-name "' shadows built-in form"))))))
+            (env-add-warning env msg (sexpr-line variant-form) (sexpr-col variant-form))))
         (let ((payload-type (get-variant-payload-type env variant-form))
               (variant (resolved-variant-new arena variant-name variant-idx variant-name payload-type)))
-          (list-push (. (deref resolved) variants) (deref variant))))))
+          (list-push (. (deref resolved) variants) (deref variant))
+          ;; Register variant for collision detection (same as enum variants)
+          (env-register-variant env variant-name type-name)))))
 
   (fn collect-enum-variants ((env (Ptr TypeEnv)) (enum-name String) (enum-expr (Ptr SExpr)))
     (@intent "Extract variant names from an enum definition and register them")
@@ -345,7 +374,7 @@
     (@pre (!= env nil))
     (@pre (!= enum-expr nil))
     (match (deref enum-expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items))
               (len (list-len items)))
           ;; Skip index 0 (the "enum" keyword), iterate variants from index 1
@@ -353,7 +382,7 @@
             (match (list-get items i)
               ((some variant-expr)
                 (match (deref variant-expr)
-                  ((symbol sym)
+                  ((sym sym)
                     (do (env-register-variant env (. sym name) enum-name)))
                   (_ (do))))
               ((none) (do))))))
@@ -421,7 +450,7 @@
     (@spec (((Ptr TypeEnv) Arena (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (match (deref type-expr)
-      ((symbol sym)
+      ((sym sym)
         (let ((type-name (. sym name)))
           ;; Try to look up type, fall back to primitive
           (match (env-lookup-type env type-name)

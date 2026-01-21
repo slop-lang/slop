@@ -14,6 +14,7 @@
                   sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name))
   (import types (ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
                  FnSignature ParamInfo
+                 resolved-type-new
                  resolved-type-is-pointer resolved-type-is-union
                  resolved-type-get-variant-index resolved-type-get-variant-payload
                  resolved-type-is-record resolved-type-has-field resolved-type-get-field-type))
@@ -111,7 +112,7 @@
     (let ((line (sexpr-line expr))
           (col (sexpr-col expr)))
       (match (deref expr)
-        ((symbol sym)
+        ((sym sym)
           (let ((name (. sym name)))
             (cond
               ;; Boolean literals
@@ -141,11 +142,11 @@
                                   (msg (string-concat arena "Undefined variable: " name)))
                               (env-add-error env msg line col)
                               (env-get-int-type env))))))))))))
-        ((number num)
+        ((num num)
           (env-get-int-type env))
-        ((string str)
+        ((str str)
           (env-get-string-type env))
-        ((list lst)
+        ((lst lst)
           (infer-list-expr env expr lst)))))
 
   (fn infer-list-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
@@ -161,7 +162,7 @@
           ((none) (env-get-unit-type env))
           ((some head)
             (match (deref head)
-              ((symbol sym)
+              ((sym sym)
                 (let ((op (. sym name)))
                   (infer-special-form env expr lst op)))
               ;; Non-symbol head - just return unit
@@ -344,8 +345,10 @@
                             (cond
                               ;; Range type (Int min .. max) is Int
                               ((string-eq head-name "Int") (env-get-int-type env))
-                              ;; Ptr type casts return Int (pointer as address)
-                              ((string-eq head-name "Ptr") (env-get-int-type env))
+                              ;; Ptr type casts return the pointer type
+                              ((string-eq head-name "Ptr")
+                                (let ((inner-type (resolve-ptr-inner-type env type-expr)))
+                                  (env-make-ptr-type env inner-type)))
                               ;; U8, U16, etc range types are Int
                               ((string-eq head-name "U8") (env-get-int-type env))
                               ((string-eq head-name "U16") (env-get-int-type env))
@@ -495,10 +498,38 @@
                     ;; Result constructors - return generic Result type
                     ((string-eq op "ok") (env-make-result-type env))
                     ((string-eq op "error") (env-make-result-type env))
+                    ;; Array indexing builtin: (@ ptr index) returns element type
+                    ((string-eq op "@")
+                      (if (>= len 2)
+                        (match (list-get items 1)
+                          ((some ptr-expr)
+                            (let ((ptr-type (infer-expr env ptr-expr)))
+                              ;; Get the element type from the pointer
+                              (if (resolved-type-is-pointer ptr-type)
+                                (match (. (deref ptr-type) inner-type)
+                                  ((some inner) inner)
+                                  ((none) (env-get-int-type env)))
+                                ;; Not a pointer - default to Int
+                                (env-get-int-type env))))
+                          ((none) (env-get-int-type env)))
+                        (env-get-int-type env)))
                     ;; Option constructor
                     ((string-eq op "some") (env-make-option-type env nil))
-                    ;; Unknown function/form - return Unknown type
-                    (else (env-get-unknown-type env)))))))))))
+                    ;; Unknown function/form - check if it's a variant being misused
+                    (else
+                      (let ((arena (env-arena env)))
+                        (match (env-lookup-variant env op)
+                          ((some parent-type)
+                            (let ((msg (string-concat arena "'"
+                                         (string-concat arena op
+                                           (string-concat arena "' is a variant of '"
+                                             (string-concat arena parent-type
+                                               "'. Use (union-new Type variant value) syntax"))))))
+                              (env-add-error env msg line col)
+                              (env-get-unknown-type env)))
+                          ((none)
+                            ;; May be an FFI function - emit warning, not error
+                            (env-get-unknown-type env))))))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
                            (line Int) (col Int))
@@ -621,7 +652,7 @@
                 ((none) (env-get-unit-type env))
                 ((some field-expr)
                   (match (deref field-expr)
-                    ((symbol field-sym)
+                    ((sym field-sym)
                       (let ((field-name (. field-sym name)))
                         (check-field-exists env obj-type field-name line col)))
                     ;; Non-symbol field - return unit
@@ -689,7 +720,7 @@
         (match (list-get items i)
           ((some clause)
             (match (deref clause)
-              ((list clause-lst)
+              ((lst clause-lst)
                 (let ((clause-items (. clause-lst items))
                       (clause-len (list-len clause-items)))
                   (when (> clause-len 1)
@@ -787,7 +818,7 @@
         (match (list-get items i)
           ((some clause)
             (match (deref clause)
-              ((list clause-lst)
+              ((lst clause-lst)
                 (let ((clause-items (. clause-lst items))
                       (clause-len (list-len clause-items)))
                   (when (> clause-len 1)
@@ -823,7 +854,7 @@
     (@pre (!= fn-form nil))
     (@pre (!= inferred-type nil))
     (match (deref fn-form)
-      ((list fn-lst)
+      ((lst fn-lst)
         (let ((items (. fn-lst items))
               (len (list-len items)))
           ;; Search through function body elements for @spec
@@ -843,7 +874,7 @@
     (@pre (!= env nil))
     (@pre (!= spec-form nil))
     (match (deref spec-form)
-      ((list spec-lst)
+      ((lst spec-lst)
         ;; (@spec ((Types) -> RetType))
         (let ((spec-items (. spec-lst items)))
           (match (list-get spec-items 1)
@@ -860,7 +891,7 @@
     (@pre (!= env nil))
     (@pre (!= spec-body nil))
     (match (deref spec-body)
-      ((list body-lst)
+      ((lst body-lst)
         ;; ((Types) -> RetType) - last element is return type
         (let ((body-items (. body-lst items))
               (body-len (list-len body-items)))
@@ -898,7 +929,7 @@
     (@pre (!= env nil))
     (@pre (!= ret-expr nil))
     (match (deref ret-expr)
-      ((symbol ret-sym)
+      ((sym ret-sym)
         (let ((declared-name (. ret-sym name))
               (inferred-name (. (deref inferred-type) name)))
           ;; Only check if types differ AND both are primitives
@@ -998,10 +1029,10 @@
             ((string-eq head-name "Ptr")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))
                 (env-make-ptr-type env inner-type)))
-            ;; List type: (List InnerType) - treat as generic for now
+            ;; List type: (List ElemType) - return type named "List" to match collect phase
             ((string-eq head-name "List")
-              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
-                (env-make-ptr-type env inner-type)))
+              (let ((arena (env-arena env)))
+                (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*")))
             ;; Thread type: (Thread T) - built-in parameterized type, treat as record
             ((string-eq head-name "Thread")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))
@@ -1056,31 +1087,32 @@
     (match (env-lookup-type env type-name)
       ((some t) t)
       ((none)
-        (cond
-          ;; Primitive types
-          ((string-eq type-name "Int") (env-get-int-type env))
-          ((string-eq type-name "Bool") (env-get-bool-type env))
-          ((string-eq type-name "String") (env-get-string-type env))
-          ((string-eq type-name "Unit") (env-get-unit-type env))
-          ((string-eq type-name "Arena") (env-get-arena-type env))
-          ((string-eq type-name "Float") (env-get-int-type env))  ;; Treat as Int for now
-          ;; Sized integer types
-          ((string-eq type-name "I8") (env-get-int-type env))
-          ((string-eq type-name "I16") (env-get-int-type env))
-          ((string-eq type-name "I32") (env-get-int-type env))
-          ((string-eq type-name "I64") (env-get-int-type env))
-          ((string-eq type-name "U8") (env-get-int-type env))
-          ((string-eq type-name "U16") (env-get-int-type env))
-          ((string-eq type-name "U32") (env-get-int-type env))
-          ((string-eq type-name "U64") (env-get-int-type env))
-          ;; Char - for FFI C string interop (strtol, etc.)
-          ((string-eq type-name "Char") (env-get-int-type env))
+        (let ((arena (env-arena env)))
+          (cond
+            ;; Primitive types
+            ((string-eq type-name "Int") (env-get-int-type env))
+            ((string-eq type-name "Bool") (env-get-bool-type env))
+            ((string-eq type-name "String") (env-get-string-type env))
+            ((string-eq type-name "Unit") (env-get-unit-type env))
+            ((string-eq type-name "Arena") (env-get-arena-type env))
+            ;; Sized integer types - create named placeholder to match collect.slop
+            ((string-eq type-name "Float") (resolved-type-new arena 'rk-primitive "Float" (none) "double"))
+            ((string-eq type-name "I8") (resolved-type-new arena 'rk-primitive "I8" (none) "int8_t"))
+            ((string-eq type-name "I16") (resolved-type-new arena 'rk-primitive "I16" (none) "int16_t"))
+            ((string-eq type-name "I32") (resolved-type-new arena 'rk-primitive "I32" (none) "int32_t"))
+            ((string-eq type-name "I64") (resolved-type-new arena 'rk-primitive "I64" (none) "int64_t"))
+            ((string-eq type-name "U8") (resolved-type-new arena 'rk-primitive "U8" (none) "uint8_t"))
+            ((string-eq type-name "U16") (resolved-type-new arena 'rk-primitive "U16" (none) "uint16_t"))
+            ((string-eq type-name "U32") (resolved-type-new arena 'rk-primitive "U32" (none) "uint32_t"))
+            ((string-eq type-name "U64") (resolved-type-new arena 'rk-primitive "U64" (none) "uint64_t"))
+            ;; Char - for FFI C string interop
+            ((string-eq type-name "Char") (resolved-type-new arena 'rk-primitive "Char" (none) "char"))
           ;; Unknown type - emit warning and use generic type to avoid cascading errors
           (else
             (let ((arena (env-arena env))
                   (msg (string-concat arena "Unknown type in parameter: " type-name)))
               (env-add-warning env msg 0 0)
-              (env-get-generic-type env)))))))
+              (env-get-generic-type env))))))))
 
   ;; ============================================================
   ;; Let Binding Support
@@ -1202,10 +1234,8 @@
     ;; (hole Type "prompt" ...) - type is at position 1
     (if (< len 2)
       (env-get-unit-type env)
-      ;; Use direct array access to avoid transpiler issues with nested match
-      (let ((type-expr (@ (. items data) 1)))
-        (if (== type-expr nil)
-          (env-get-unit-type env)
+      (match (list-get items 1)
+        ((some type-expr)
           (let ((type-name (sexpr-get-symbol-name type-expr)))
             (if (string-eq type-name "")
               (env-get-unit-type env)
@@ -1218,7 +1248,8 @@
                     ((string-eq type-name "Bool") (env-get-bool-type env))
                     ((string-eq type-name "String") (env-get-string-type env))
                     ((string-eq type-name "Unit") (env-get-unit-type env))
-                    (else (env-get-unit-type env)))))))))))
+                    (else (env-get-unit-type env))))))))
+        ((none) (env-get-unit-type env)))))
 
   (fn get-hole-prompt ((items (List (Ptr SExpr))) (len Int))
     (@intent "Extract the prompt string from a hole form")
@@ -1229,7 +1260,7 @@
       (match (list-get items 2)
         ((some prompt-expr)
           (match (deref prompt-expr)
-            ((string str) (. str value))
+            ((str str) (. str value))
             (_ "(no description)")))
         ((none) "(no description)"))))
 
@@ -1251,14 +1282,14 @@
       ((some item)
         (match (deref item)
           ;; :c-name keyword
-          ((symbol sym) (string-eq (. sym name) ":c-name"))
+          ((sym sym) (string-eq (. sym name) ":c-name"))
           ;; String after :c-name (check previous item)
-          ((string _)
+          ((str _)
             (if (> idx 0)
               (match (list-get items (- idx 1))
                 ((some prev)
                   (match (deref prev)
-                    ((symbol sym) (string-eq (. sym name) ":c-name"))
+                    ((sym sym) (string-eq (. sym name) ":c-name"))
                     (else false)))
                 ((none) false))
               false))
@@ -1293,7 +1324,7 @@
               ((none) (do))))))
       ;; Infer body type (last non-c-name element)
       (let ((result-type (match (deref fn-form)
-                           ((list fn-lst)
+                           ((lst fn-lst)
                              (let ((items (. fn-lst items))
                                    (item-len (list-len items))
                                    (last-body-idx (find-last-body-idx items)))
@@ -1323,20 +1354,20 @@
             ((some pattern-case)
               ;; Pattern case is ((variant-name binding-var) body)
               (match (deref pattern-case)
-                ((list pattern-list)
+                ((lst pattern-list)
                   (when (> (list-len (. pattern-list items)) 0)
                     (match (list-get (. pattern-list items) 0)
                       ((some pattern-expr)
                         ;; Pattern expr is (variant-name binding-var)
                         (match (deref pattern-expr)
-                          ((list variant-list)
+                          ((lst variant-list)
                             (let ((variant-items (. variant-list items)))
                               ;; Get variant name (first element)
                               (when (> (list-len variant-items) 0)
                                 (match (list-get variant-items 0)
                                   ((some variant-name-expr)
                                     (match (deref variant-name-expr)
-                                      ((symbol variant-sym)
+                                      ((sym variant-sym)
                                         (let ((variant-name (. variant-sym name)))
                                           ;; Verify variant exists and get payload type
                                           (match (resolved-type-get-variant-payload scrutinee-type variant-name)
@@ -1346,7 +1377,7 @@
                                                 (match (list-get variant-items 1)
                                                   ((some binding-expr)
                                                     (match (deref binding-expr)
-                                                      ((symbol binding-sym)
+                                                      ((sym binding-sym)
                                                         (env-bind-var env (. binding-sym name) payload-type))
                                                       (_ (do))))
                                                   ((none) (do)))))
