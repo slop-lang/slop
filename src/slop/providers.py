@@ -269,6 +269,7 @@ class BuildConfig:
     debug: bool = False
     libraries: list = None
     library_paths: list = None
+    test_cache: str = ".slop-test"  # Directory for test artifacts
 
     def __post_init__(self):
         if self.include is None:
@@ -312,6 +313,7 @@ def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Opti
     # Extract build config
     build_data = config.get('build', {})
     link_data = build_data.get('link', {})
+    test_data = config.get('test', {})
     build = BuildConfig(
         output=build_data.get('output', ''),
         include=build_data.get('include', []),
@@ -319,6 +321,7 @@ def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Opti
         debug=build_data.get('debug', False),
         libraries=link_data.get('libraries', []),
         library_paths=link_data.get('library_paths', []),
+        test_cache=test_data.get('cache', '.slop-test'),
     ) if build_data else None
 
     return project, build

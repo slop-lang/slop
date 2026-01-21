@@ -31,7 +31,8 @@
                    ctx-get-inline-records InlineRecord
                    ctx-add-c-name-alias ctx-get-c-name-aliases FuncCNameAlias extract-fn-c-name
                    ctx-add-import ctx-get-imports
-                   ctx-str ctx-str3 ctx-str4 ctx-str5 TypeEntry FuncEntry FuncParamType
+                   ctx-str ctx-str3 ctx-str4 ctx-str5 TypeEntry FuncEntry FuncParamType VarEntry
+                   ctx-bind-var
                    to-c-type-prefixed
                    ctx-mark-type-emitted ctx-is-type-emitted
                    ctx-register-field-type))
@@ -647,9 +648,11 @@
                                           (c-mod-name (to-c-name arena mod-name))
                                           (c-sym-name (to-c-name arena sym-name)))
                                       (if (is-type-name sym-name)
-                                        ;; Register type
+                                        ;; Register type AND as variable (for constants like XSD_STRING)
                                         (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name)))
-                                          (ctx-register-type ctx (TypeEntry sym-name c-name c-name false false false)))
+                                          (do
+                                            (ctx-register-type ctx (TypeEntry sym-name c-name c-name false false false))
+                                            (ctx-bind-var ctx (VarEntry sym-name c-name "auto" false false))))
                                         ;; Register function with module prefix (no param types for imports)
                                         (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name))
                                               (empty-params (list-new arena (Ptr FuncParamType))))

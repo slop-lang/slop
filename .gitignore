@@ -39,6 +39,7 @@ dist/
 *.log
 .coverage
 htmlcov/
+.slop-test/
 
 # code tools
 .claude/

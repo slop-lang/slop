@@ -446,13 +446,24 @@
           (ctx-dedent ctx)
           (ctx-emit ctx "}"))
         (do
-          (let ((c-case (to-c-name arena tag)))
-            (ctx-emit ctx (ctx-str ctx "case " (ctx-str ctx c-case ": {")))
-            (ctx-indent ctx)
-            (emit-branch-body ctx branch-items is-return)
-            (ctx-emit ctx "break;")
-            (ctx-dedent ctx)
-            (ctx-emit ctx "}"))))))
+          (match (ctx-lookup-enum-variant ctx tag)
+            ((some type-name)
+              (let ((c-case (ctx-str3 ctx type-name "_" (to-c-name arena tag))))
+                (ctx-emit ctx (ctx-str ctx "case " (ctx-str ctx c-case ": {")))
+                (ctx-indent ctx)
+                (emit-branch-body ctx branch-items is-return)
+                (ctx-emit ctx "break;")
+                (ctx-dedent ctx)
+                (ctx-emit ctx "}")))
+            ((none)
+              ;; Fallback for unregistered variants
+              (let ((c-case (to-c-name arena tag)))
+                (ctx-emit ctx (ctx-str ctx "case " (ctx-str ctx c-case ": {")))
+                (ctx-indent ctx)
+                (emit-branch-body ctx branch-items is-return)
+                (ctx-emit ctx "break;")
+                (ctx-dedent ctx)
+                (ctx-emit ctx "}"))))))))
 
   ;; ============================================================
   ;; Literal Match
@@ -546,8 +557,13 @@
                               (ctx-dedent ctx)
                               (ctx-emit ctx "}"))
                             (else
-                              ;; Regular variant case
-                              (emit-union-case ctx scrutinee-c pattern tag branch-items is-return)))))
+                              ;; Regular variant case - look up union type name from variant
+                              (match (ctx-lookup-enum-variant ctx tag)
+                                ((some union-type-name)
+                                  (emit-union-case ctx scrutinee-c pattern tag union-type-name branch-items is-return))
+                                ((none)
+                                  ;; Fallback: emit error comment if variant not found
+                                  (ctx-emit ctx (ctx-str3 ctx "/* unknown union variant: " tag " */"))))))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -556,40 +572,35 @@
       (ctx-emit ctx "}")))
 
   (fn emit-union-case ((ctx (Ptr TranspileContext)) (scrutinee-c String)
-                       (pattern (Ptr SExpr)) (tag String)
+                       (pattern (Ptr SExpr)) (tag String) (union-type-name String)
                        (branch-items (List (Ptr SExpr))) (is-return Bool))
     (@intent "Emit a single union case")
-    (@spec (((Ptr TranspileContext) String (Ptr SExpr) String (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) String String (List (Ptr SExpr)) Bool) -> Unit))
     (@pre {ctx != nil})
     (@pre {pattern != nil})
-    (let ((arena (. (deref ctx) arena)))
-      ;; Look up the type name for this variant
-      (match (ctx-lookup-enum-variant ctx tag)
-        ((some type-name)
-          ;; Emit case TypeName_variantname:
-          (let ((case-label (ctx-str4 ctx type-name "_" tag ":")))
-            (ctx-emit ctx (ctx-str ctx "case " case-label))
-            (ctx-emit ctx "{")
-            (ctx-indent ctx)
-            (ctx-push-scope ctx)
-            ;; Extract binding if present
-            (match (extract-binding-name pattern)
-              ((some binding-name)
-                ;; __auto_type binding = scrutinee.data.variant;
-                (let ((c-binding (to-c-name arena binding-name)))
-                  (ctx-emit ctx (ctx-str5 ctx "__auto_type " c-binding " = " scrutinee-c
-                                 (ctx-str3 ctx ".data." tag ";")))
-                  (ctx-bind-var ctx (VarEntry binding-name c-binding "auto" false false))))
-              ((none) (do)))
-            ;; Emit body
-            (emit-branch-body ctx branch-items is-return)
-            (ctx-pop-scope ctx)
-            (when (not is-return) (ctx-emit ctx "break;"))
-            (ctx-dedent ctx)
-            (ctx-emit ctx "}")))
-        ((none)
-          ;; Variant not found - emit error comment
-          (ctx-emit ctx (ctx-str3 ctx "/* unknown variant: " tag " */"))))))
+    (let ((arena (. (deref ctx) arena))
+          (c-tag (to-c-name arena tag))
+          (case-label (ctx-str4 ctx union-type-name "_" c-tag ":")))
+      ;; Emit case TypeName_variantname:
+      (ctx-emit ctx (ctx-str ctx "case " case-label))
+      (ctx-emit ctx "{")
+      (ctx-indent ctx)
+      (ctx-push-scope ctx)
+      ;; Extract binding if present
+      (match (extract-binding-name pattern)
+        ((some binding-name)
+          ;; __auto_type binding = scrutinee.data.variant;
+          (let ((c-binding (to-c-name arena binding-name)))
+            (ctx-emit ctx (ctx-str5 ctx "__auto_type " c-binding " = " scrutinee-c
+                           (ctx-str3 ctx ".data." c-tag ";")))
+            (ctx-bind-var ctx (VarEntry binding-name c-binding "auto" false false))))
+        ((none) (do)))
+      ;; Emit body
+      (emit-branch-body ctx branch-items is-return)
+      (ctx-pop-scope ctx)
+      (when (not is-return) (ctx-emit ctx "break;"))
+      (ctx-dedent ctx)
+      (ctx-emit ctx "}")))
 
   ;; ============================================================
   ;; Generic Match (fallback)

@@ -288,6 +288,93 @@ def transpile_native_split(input_file: str):
         return {}, False
 
 
+def transpile_to_cache(module_path: Path, cache_dir: Path, search_paths: list) -> bool:
+    """Transpile a single module, outputting .h and .c to cache_dir.
+
+    Args:
+        module_path: Path to the .slop file to transpile
+        cache_dir: Directory to write output files
+        search_paths: Include paths for the transpiler
+
+    Returns:
+        True if transpilation succeeded, False otherwise
+    """
+    # Try native transpiler first
+    results, success = transpile_native_split(str(module_path))
+    if success and results:
+        for mod_name, (header, impl) in results.items():
+            c_mod_name = mod_name.replace('-', '_')
+            header_path = cache_dir / f"slop_{c_mod_name}.h"
+            impl_path = cache_dir / f"slop_{c_mod_name}.c"
+
+            # Check if header is essentially empty (only guards + basic includes)
+            # If so, move static const definitions from impl to header
+            header_lines = header.strip().split('\n')
+            has_declarations = any(
+                not line.startswith('#') and
+                not line.startswith('//') and
+                line.strip() and
+                line.strip() != '}'
+                for line in header_lines
+                if '#ifndef' not in line and '#define' not in line and '#endif' not in line
+            )
+
+            if not has_declarations:
+                # Header is empty - this module likely only has constants
+                # Move static const definitions to header (they can be in headers)
+                impl_lines = impl.split('\n')
+                const_lines = []
+                other_lines = []
+                for line in impl_lines:
+                    if line.startswith('static const '):
+                        const_lines.append(line)
+                    else:
+                        other_lines.append(line)
+
+                if const_lines:
+                    # Insert constants into header before #endif
+                    header_parts = header.rsplit('#endif', 1)
+                    if len(header_parts) == 2:
+                        header = header_parts[0] + '\n'.join(const_lines) + '\n\n#endif' + header_parts[1]
+                    impl = '\n'.join(other_lines)
+
+            header_path.write_text(header)
+            impl_path.write_text(impl)
+        return True
+
+    # Fall back to Python transpiler
+    try:
+        from slop.transpiler import Transpiler
+        from slop.parser import parse_file as parser_parse_file, Symbol
+
+        ast = parser_parse_file(str(module_path))
+
+        # Find module name from AST
+        module_name = module_path.stem
+        for form in ast:
+            if is_form(form, 'module') and len(form.items) > 1:
+                if isinstance(form[1], Symbol):
+                    module_name = form[1].name
+                break
+
+        transpiler = Transpiler()
+        transpiler.setup_module_context(module_name, [])
+        c_code = transpiler.transpile(ast)
+
+        # Generate header (declarations) and impl (definitions)
+        c_mod_name = module_name.replace('-', '_')
+        header_path = cache_dir / f"slop_{c_mod_name}.h"
+        impl_path = cache_dir / f"slop_{c_mod_name}.c"
+
+        # For now, put everything in the header (simple approach)
+        header_path.write_text(c_code)
+        impl_path.write_text(f'#include "slop_{c_mod_name}.h"\n')
+        return True
+    except Exception as e:
+        print(f"  Failed to transpile {module_path}: {e}", file=sys.stderr)
+        return False
+
+
 def test_native(input_file: str):
     """Generate test harness using native tester.
 
@@ -2526,6 +2613,7 @@ def cmd_test(args):
                 config_dir = parent
                 break
 
+        toml_cfg = None
         if config_dir:
             import tomllib
             with open(config_dir / 'slop.toml', 'rb') as f:
@@ -2536,6 +2624,63 @@ def cmd_test(args):
                 inc_path = (config_dir / p).resolve()
                 if inc_path.exists() and str(inc_path) not in [str(Path(x).resolve()) for x in args.include]:
                     args.include.append(str(inc_path))
+
+        # ===== Auto-resolve and transpile dependencies =====
+        # Set up search paths for module resolution
+        search_paths = [Path(p) for p in args.include]
+        search_paths.append(input_path.resolve().parent)
+
+        # Determine cache directory from config or use default
+        test_section = toml_cfg.get('test', {}) if toml_cfg else {}
+        cache_dir = Path(test_section.get('cache', '.slop-test'))
+        if config_dir:
+            cache_dir = config_dir / cache_dir
+        cache_dir.mkdir(exist_ok=True)
+
+        # Build dependency graph for the test file
+        resolver = ModuleResolver(search_paths)
+        try:
+            graph = resolver.build_dependency_graph(input_path.resolve())
+        except ResolverError as e:
+            print(f"Module resolution error: {e}", file=sys.stderr)
+            return 1
+
+        # Validate imports
+        errors = resolver.validate_imports(graph)
+        if errors:
+            for err in errors:
+                print(f"Import error: {err}", file=sys.stderr)
+            return 1
+
+        # Get build order (dependencies first)
+        try:
+            build_order = resolver.topological_sort(graph)
+        except ResolverError as e:
+            print(f"Dependency error: {e}", file=sys.stderr)
+            return 1
+
+        # Transpile each dependency (except the test file itself)
+        test_module_name = input_path.stem
+        for mod_name in build_order:
+            if graph.modules[mod_name].path == input_path.resolve():
+                continue  # Skip the test file itself
+
+            module_info = graph.modules[mod_name]
+            c_mod_name = mod_name.replace('-', '_')
+            header_path = cache_dir / f"slop_{c_mod_name}.h"
+
+            # Check if needs retranspile (mtime-based caching)
+            if header_path.exists() and header_path.stat().st_mtime > module_info.path.stat().st_mtime:
+                continue  # Already up to date
+
+            print(f"  Transpiling dependency: {mod_name}")
+            if not transpile_to_cache(module_info.path, cache_dir, search_paths):
+                print(f"Failed to transpile dependency: {mod_name}", file=sys.stderr)
+                return 1
+
+        # Add cache dir to include paths for compilation
+        if str(cache_dir) not in args.include:
+            args.include.append(str(cache_dir))
 
         # Try native tester first (if not --python flag)
         use_native = not getattr(args, 'python', False)
@@ -2568,6 +2713,7 @@ def cmd_test(args):
                             compile_cmd = [
                                 "cc", "-O0", "-g",
                                 "-I", str(runtime_path),
+                                "-I", str(cache_dir),
                                 "-o", test_bin_path,
                                 test_c_path,
                                 "-lm"
@@ -2825,6 +2971,7 @@ def cmd_test(args):
             compile_cmd = [
                 "cc", "-O0", "-g",
                 "-I", str(runtime_path),
+                "-I", str(cache_dir),
                 "-o", test_bin_path,
                 test_c_path,
                 "-lm"  # Link math library for math.h functions

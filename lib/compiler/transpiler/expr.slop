@@ -468,6 +468,9 @@
       ((string-eq fn-name "string-new") "string_new")
       ((string-eq fn-name "int-to-string") "int_to_string")
       ((string-eq fn-name "float-to-string-short") "float_to_string_short")
+      ;; Parsing operations (from strlib, but commonly used without explicit import)
+      ((string-eq fn-name "parse-int") "strlib_parse_int")
+      ((string-eq fn-name "parse-float") "strlib_parse_float")
       ;; List operations
       ((string-eq fn-name "list-len") "list_len")
       ((string-eq fn-name "list-new") "list_new")
@@ -1447,31 +1450,50 @@
             (if (> (string-len builtin-c-name) 0)
               ;; Built-in type constructor - use special handler for correct field order
               (transpile-builtin-constructor ctx fn-name items)
-              ;; Regular function call - look up param types for typed none handling
-              (let ((func-opt (ctx-lookup-func ctx fn-name))
-                    (mut args "")
-                    (mut i 1)
-                    (mut param-idx 0))
-                (while (< i len)
-                  (match (list-get items i)
-                    ((some arg)
-                      (let ((arg-c (transpile-expr ctx arg))
-                            ;; Get expected type for this parameter if available
-                            (expected-type (match func-opt
-                                             ((some func-entry)
-                                               (match (list-get (. func-entry param-types) param-idx)
-                                                 ((some p) (. (deref p) c-type))
+              ;; Check if fn-name is a union variant constructor (e.g., xsd-string-val)
+              (match (ctx-lookup-enum-variant ctx fn-name)
+                ((some type-name)
+                  ;; Union variant constructor: (variant-name value) -> inline struct init
+                  (let ((c-variant (to-c-name arena fn-name))
+                        (c-tag-enum (ctx-str3 ctx type-name "_" c-variant)))
+                    (if (>= len 2)
+                      (match (list-get items 1)
+                        ((some value-expr)
+                          (let ((value-c (transpile-expr ctx value-expr)))
+                            (ctx-str3 ctx "((" type-name
+                              (ctx-str3 ctx "){ .tag = " c-tag-enum
+                                (ctx-str5 ctx ", .data." c-variant " = " value-c " })")))))
+                        ((none)
+                          (ctx-str3 ctx "((" type-name
+                            (ctx-str3 ctx "){ .tag = " c-tag-enum " })"))))
+                      (ctx-str3 ctx "((" type-name
+                        (ctx-str3 ctx "){ .tag = " c-tag-enum " })")))))
+                ((none)
+                  ;; Regular function call - look up param types for typed none handling
+                  (let ((func-opt (ctx-lookup-func ctx fn-name))
+                        (mut args "")
+                        (mut i 1)
+                        (mut param-idx 0))
+                    (while (< i len)
+                      (match (list-get items i)
+                        ((some arg)
+                          (let ((arg-c (transpile-expr ctx arg))
+                                ;; Get expected type for this parameter if available
+                                (expected-type (match func-opt
+                                                 ((some func-entry)
+                                                   (match (list-get (. func-entry param-types) param-idx)
+                                                     ((some p) (. (deref p) c-type))
+                                                     ((none) "")))
                                                  ((none) "")))
-                                             ((none) "")))
-                            ;; Convert none to typed Option if needed
-                            (final-arg (typed-none-arg ctx expected-type arg-c)))
-                        (if (string-eq args "")
-                          (set! args final-arg)
-                          (set! args (ctx-str3 ctx args ", " final-arg)))
-                        (set! param-idx (+ param-idx 1))))
-                    ((none) (do)))
-                  (set! i (+ i 1)))
-                (transpile-call ctx fn-name args))))))))))
+                                ;; Convert none to typed Option if needed
+                                (final-arg (typed-none-arg ctx expected-type arg-c)))
+                            (if (string-eq args "")
+                              (set! args final-arg)
+                              (set! args (ctx-str3 ctx args ", " final-arg)))
+                            (set! param-idx (+ param-idx 1))))
+                        ((none) (do)))
+                      (set! i (+ i 1)))
+                    (transpile-call ctx fn-name args))))))))))))
 
   (fn transpile-print ((ctx (Ptr TranspileContext)) (arg (Ptr SExpr)) (newline Bool))
     (@intent "Transpile print/println with type-aware formatting")

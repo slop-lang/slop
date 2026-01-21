@@ -201,6 +201,10 @@ Result and Option carry data - bind with parens:
   ((none) (handle-none)))
 ```
 
+**Note:** Variant names must be globally unique across all enum and union types
+in a module. Using the same variant name in different types will result in a
+compile error.
+
 ### Error Returns
 
 IMPORTANT: Quote the error variant!

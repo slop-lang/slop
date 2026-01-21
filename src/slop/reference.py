@@ -50,6 +50,9 @@ TOPICS = {
 (type User (record (id Int) (name String)))
 (type Shape (union (circle Float) (rect Float Float) (point)))
 
+Note: Variant names must be globally unique across all enum and union types
+in a module. Using the same variant name in different types causes a compile error.
+
 ### Pointers
 (Ptr T)                 ; Borrowed pointer (T*)
 (ScopedPtr T)           ; Scoped, auto-freed on scope exit
