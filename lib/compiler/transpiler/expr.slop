@@ -1217,7 +1217,14 @@
                       (match (list-get items 1)
                         ((some result-expr)
                           (let ((result-c (transpile-expr ctx result-expr)))
-                            (ctx-str3 ctx "({ __auto_type _tmp = " result-c "; if (!_tmp.is_ok) return _tmp; _tmp.data.ok; })")))
+                            (match (ctx-get-current-result-type ctx)
+                              ((some enclosing-type)
+                                ;; Convert error to enclosing function's result type
+                                (ctx-str5 ctx "({ __auto_type _tmp = " result-c "; if (!_tmp.is_ok) return ((" enclosing-type
+                                          "){ .is_ok = false, .data.err = _tmp.data.err }); _tmp.data.ok; })"))
+                              ((none)
+                                ;; No enclosing result type - use direct return (fallback)
+                                (ctx-str3 ctx "({ __auto_type _tmp = " result-c "; if (!_tmp.is_ok) return _tmp; _tmp.data.ok; })")))))
                         ((none) "/* missing ? argument */")))
                     ;; list-len: (list-len list) -> ((int64_t)(list.len))
                     ((and (string-eq op "list-len") (>= len 2))
