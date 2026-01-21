@@ -10,13 +10,13 @@
     ;; Type definitions
     transpile-type transpile-record transpile-enum transpile-union
     ;; Constant definitions
-    transpile-const is-const-form
+    transpile-const is-const-form eval-const-value
     ;; Function definitions
     transpile-function emit-forward-declaration
     ;; FFI definitions
     transpile-ffi transpile-ffi-struct is-ffi-form is-ffi-struct-form
     ;; Helpers
-    is-type-form is-function-form get-return-type get-result-type-name build-param-str)
+    is-type-form is-function-form get-return-type get-result-type-name build-param-str get-type-name-str)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds))
   (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
@@ -151,13 +151,16 @@
   ;; Constant Definition
   ;; ============================================================
 
-  (fn transpile-const ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+  (fn transpile-const ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (is-exported Bool))
     (@intent "Transpile constant definition: (const NAME Type value)")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) Bool) -> Unit))
     (@pre {ctx != nil})
     (@pre {expr != nil})
     ;; (const NAME Type value)
-    ;; Integers emit as #define, others as static const
+    ;; Exported integers: nothing (already in header as #define)
+    ;; Non-exported integers: #define
+    ;; Exported non-integers: const (no static)
+    ;; Non-exported non-integers: static const
     (let ((arena (. (deref ctx) arena)))
       (match (deref expr)
         ((list lst)
@@ -179,40 +182,46 @@
                             ((some type-expr)
                               (match (list-get items 3)
                                 ((some value-expr)
-                                  (emit-const-def ctx c-name type-expr value-expr))
+                                  (emit-const-def ctx c-name type-expr value-expr is-exported))
                                 ((none) (ctx-fail ctx "missing const value"))))
                             ((none) (ctx-fail ctx "missing const type"))))))
                     (else (ctx-fail ctx "const name must be symbol"))))
                 ((none) (ctx-fail ctx "missing const name"))))))
         (else (ctx-fail ctx "invalid const form")))))
 
-  (fn emit-const-def ((ctx (Ptr TranspileContext)) (c-name String) (type-expr (Ptr SExpr)) (value-expr (Ptr SExpr)))
-    (@intent "Emit constant definition based on type")
-    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (Ptr SExpr)) -> Unit))
+  (fn emit-const-def ((ctx (Ptr TranspileContext)) (c-name String) (type-expr (Ptr SExpr)) (value-expr (Ptr SExpr)) (is-exported Bool))
+    (@intent "Emit constant definition based on type and export status")
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (Ptr SExpr) Bool) -> Unit))
     (@pre {ctx != nil})
     (@pre {type-expr != nil})
     (@pre {value-expr != nil})
+    ;; Exported integers: nothing (already in header as #define)
+    ;; Non-exported integers: #define
+    ;; Exported non-integers: const (no static)
+    ;; Non-exported non-integers: static const
     (let ((arena (. (deref ctx) arena))
           (c-type (to-c-type-prefixed ctx type-expr))
           (type-name (get-type-name-str type-expr)))
-      ;; Check if it's an integer type
       (if (is-int-type type-name)
-        ;; Integer type -> #define
-        (let ((value-c (eval-const-value ctx value-expr)))
-          (ctx-emit ctx (ctx-str4 ctx "#define " c-name " (" (ctx-str ctx value-c ")"))))
-        ;; String or other type -> static const
-        (if (string-eq type-name "String")
-          (match (deref value-expr)
-            ((string str)
-              (ctx-emit ctx (ctx-str5 ctx "static const " c-type " " c-name
-                              (ctx-str3 ctx " = SLOP_STR(\"" (. str value) "\");"))))
-            (else
-              (let ((value-c (eval-const-value ctx value-expr)))
-                (ctx-emit ctx (ctx-str5 ctx "static const " c-type " " c-name
-                                (ctx-str3 ctx " = " value-c ";"))))))
+        ;; Integer type
+        (when (not is-exported)
+          ;; Non-exported: emit #define in impl
           (let ((value-c (eval-const-value ctx value-expr)))
-            (ctx-emit ctx (ctx-str5 ctx "static const " c-type " " c-name
-                            (ctx-str3 ctx " = " value-c ";"))))))))
+            (ctx-emit ctx (ctx-str4 ctx "#define " c-name " (" (ctx-str ctx value-c ")")))))
+        ;; Non-integer type
+        (let ((storage (if is-exported "const " "static const ")))
+          (if (string-eq type-name "String")
+            (match (deref value-expr)
+              ((string str)
+                (ctx-emit ctx (ctx-str5 ctx storage c-type " " c-name
+                                (ctx-str3 ctx " = SLOP_STR(\"" (. str value) "\");"))))
+              (else
+                (let ((value-c (eval-const-value ctx value-expr)))
+                  (ctx-emit ctx (ctx-str5 ctx storage c-type " " c-name
+                                  (ctx-str3 ctx " = " value-c ";"))))))
+            (let ((value-c (eval-const-value ctx value-expr)))
+              (ctx-emit ctx (ctx-str5 ctx storage c-type " " c-name
+                              (ctx-str3 ctx " = " value-c ";")))))))))
 
   (fn get-type-name-str ((type-expr (Ptr SExpr)))
     (@intent "Get simple type name as string")
