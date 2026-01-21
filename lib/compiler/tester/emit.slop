@@ -23,7 +23,7 @@
                   sexpr-list-len sexpr-list-get sexpr-get-symbol-name
                   sexpr-number-string sexpr-string-value pretty-print))
   (import extract (TestCase))
-  (import strlib (contains to-lower))
+  (import strlib (contains to-lower string-build))
   (import type-extract (TypeRegistry TypeEntry TypeEntryKind FieldEntry VariantEntry
                         registry-lookup registry-lookup-variant registry-lookup-enum-value
                         registry-is-union registry-is-record registry-is-enum
@@ -323,28 +323,38 @@
         ;; Check if there's an inner value
         (if (> (list-len items) 1)
           ;; Has payload: (variant inner)
+          ;; Use statement expression with zero-init to avoid memcmp padding issues
           (match (list-get items 1)
             ((some inner-expr)
-              (let ((inner-c (sexpr-to-c-typed arena inner-expr prefix types)))
-                (string-concat arena "(("
-                  (string-concat arena c-name
-                    (string-concat arena "){.tag = "
-                      (string-concat arena tag-value
-                        (string-concat arena ", .data."
-                          (string-concat arena c-variant
-                            (string-concat arena " = "
-                              (string-concat arena inner-c "})"))))))))))
+              (let ((inner-c (sexpr-to-c-typed arena inner-expr prefix types))
+                    (parts (list-new arena String)))
+                (list-push parts "({ typeof(")
+                (list-push parts c-name)
+                (list-push parts ") _u = {0}; _u.tag = ")
+                (list-push parts tag-value)
+                (list-push parts "; _u.data.")
+                (list-push parts c-variant)
+                (list-push parts " = ")
+                (list-push parts inner-c)
+                (list-push parts "; _u; })")
+                (string-build arena parts)))
             ((none)
               ;; Shouldn't happen, but handle gracefully
-              (string-concat arena "(("
-                (string-concat arena c-name
-                  (string-concat arena "){.tag = "
-                    (string-concat arena tag-value "})"))))))
+              (let ((parts (list-new arena String)))
+                (list-push parts "({ typeof(")
+                (list-push parts c-name)
+                (list-push parts ") _u = {0}; _u.tag = ")
+                (list-push parts tag-value)
+                (list-push parts "; _u; })")
+                (string-build arena parts))))
           ;; No payload (rare for union variants)
-          (string-concat arena "(("
-            (string-concat arena c-name
-              (string-concat arena "){.tag = "
-                (string-concat arena tag-value "})"))))))))
+          (let ((parts (list-new arena String)))
+            (list-push parts "({ typeof(")
+            (list-push parts c-name)
+            (list-push parts ") _u = {0}; _u.tag = ")
+            (list-push parts tag-value)
+            (list-push parts "; _u; })")
+            (string-build arena parts))))))
 
   ;; ============================================================
   ;; Record Literal Emission
@@ -1450,18 +1460,40 @@
                     (inner-expr (get-ok-inner-expr expected)))
                 ;; Check if inner value is a union constructor
                 (if (is-union-constructor-typed inner-expr types)
-                  ;; Use memcmp comparison for union types
-                  (let ((expected-var "expected_ok"))
+                  ;; Compare union tag and specific variant field (not memcmp to avoid padding issues)
+                  (let ((expected-var "expected_ok")
+                        (variant-name (get-union-variant-name inner-expr))
+                        (c-variant (convert-symbol-to-c arena variant-name))
+                        (is-string-variant (contains (to-lower arena variant-name) "string")))
                     (CompareInfo
-                      (string-concat arena "({ typeof(result.data.ok) "
-                        (string-concat arena expected-var
-                          (string-concat arena " = "
-                            (string-concat arena inner-expected
-                              (string-concat arena "; result.is_ok && result.data.ok.tag == "
-                                (string-concat arena expected-var
-                                  (string-concat arena ".tag && memcmp(&result.data.ok.data, &"
-                                    (string-concat arena expected-var
-                                      ".data, sizeof(result.data.ok.data)) == 0; })"))))))))
+                      (let ((parts (list-new arena String)))
+                        (list-push parts "({ typeof(result.data.ok) ")
+                        (list-push parts expected-var)
+                        (list-push parts " = ")
+                        (list-push parts inner-expected)
+                        (list-push parts "; result.is_ok && result.data.ok.tag == ")
+                        (list-push parts expected-var)
+                        (list-push parts ".tag && ")
+                        (if is-string-variant
+                          ;; String comparison
+                          (do
+                            (list-push parts "slop_string_eq(result.data.ok.data.")
+                            (list-push parts c-variant)
+                            (list-push parts ", ")
+                            (list-push parts expected-var)
+                            (list-push parts ".data.")
+                            (list-push parts c-variant)
+                            (list-push parts ")"))
+                          ;; Direct comparison for primitives
+                          (do
+                            (list-push parts "result.data.ok.data.")
+                            (list-push parts c-variant)
+                            (list-push parts " == ")
+                            (list-push parts expected-var)
+                            (list-push parts ".data.")
+                            (list-push parts c-variant)))
+                        (list-push parts "; })")
+                        (string-build arena parts))
                       "%s"
                       "result.is_ok ? \"ok(...)\" : \"error(...)\""
                       "%s"
@@ -1478,18 +1510,40 @@
                       (inner-expr (get-ok-inner-expr expected)))
                   ;; Check if inner value is a union constructor
                   (if (is-union-constructor-typed inner-expr types)
-                    ;; Use memcmp comparison for union types
-                    (let ((expected-var "expected_err"))
+                    ;; Compare union tag and specific variant field (not memcmp to avoid padding issues)
+                    (let ((expected-var "expected_err")
+                          (variant-name (get-union-variant-name inner-expr))
+                          (c-variant (convert-symbol-to-c arena variant-name))
+                          (is-string-variant (contains (to-lower arena variant-name) "string")))
                       (CompareInfo
-                        (string-concat arena "({ typeof(result.data.err) "
-                          (string-concat arena expected-var
-                            (string-concat arena " = "
-                              (string-concat arena inner-expected
-                                (string-concat arena "; !result.is_ok && result.data.err.tag == "
-                                  (string-concat arena expected-var
-                                    (string-concat arena ".tag && memcmp(&result.data.err.data, &"
-                                      (string-concat arena expected-var
-                                        ".data, sizeof(result.data.err.data)) == 0; })"))))))))
+                        (let ((parts (list-new arena String)))
+                          (list-push parts "({ typeof(result.data.err) ")
+                          (list-push parts expected-var)
+                          (list-push parts " = ")
+                          (list-push parts inner-expected)
+                          (list-push parts "; !result.is_ok && result.data.err.tag == ")
+                          (list-push parts expected-var)
+                          (list-push parts ".tag && ")
+                          (if is-string-variant
+                            ;; String comparison
+                            (do
+                              (list-push parts "slop_string_eq(result.data.err.data.")
+                              (list-push parts c-variant)
+                              (list-push parts ", ")
+                              (list-push parts expected-var)
+                              (list-push parts ".data.")
+                              (list-push parts c-variant)
+                              (list-push parts ")"))
+                            ;; Direct comparison for primitives
+                            (do
+                              (list-push parts "result.data.err.data.")
+                              (list-push parts c-variant)
+                              (list-push parts " == ")
+                              (list-push parts expected-var)
+                              (list-push parts ".data.")
+                              (list-push parts c-variant)))
+                          (list-push parts "; })")
+                          (string-build arena parts))
                         "%s"
                         "result.is_ok ? \"ok(...)\" : \"error(...)\""
                         "%s"
@@ -1773,6 +1827,23 @@
                   false))
               ((none) false)))))
       (_ false)))
+
+  (fn get-union-variant-name ((expr (Ptr SExpr)))
+    (@intent "Get the variant name from a union constructor expression like (xsd-integer-val 42)")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (match (deref expr)
+      ((list lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 0)
+            ""
+            (match (list-get items 0)
+              ((some first)
+                (if (sexpr-is-symbol first)
+                  (sexpr-get-symbol-name first)
+                  ""))
+              ((none) "")))))
+      (_ "")))
 
   (fn is-enum-value-typed ((expr (Ptr SExpr)) (types TypeRegistry))
     (@intent "Check if expression is an enum value using type registry")
