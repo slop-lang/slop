@@ -503,7 +503,7 @@
                   (is-float (string-contains-dot (. tok value))))
               (if is-float
                 (set! (deref node)
-                      (union-new SExpr number
+                      (union-new SExpr num
                         (SExprNumber
                           0  ;; int-value (unused for float)
                           (strtod (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0))
@@ -512,7 +512,7 @@
                           (. tok line)
                           (. tok col))))
                 (set! (deref node)
-                      (union-new SExpr number
+                      (union-new SExpr num
                         (SExprNumber
                           (strtoll (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0) 10)
                           0.0
@@ -528,7 +528,7 @@
             (parser-advance state)
             (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
               (set! (deref node)
-                    (union-new SExpr string
+                    (union-new SExpr str
                       (SExprString (. tok value) (. tok line) (. tok col))))
               (ok node))))
 
@@ -543,12 +543,12 @@
                       (items (list-new arena (Ptr SExpr))))
                   ;; Create quote symbol
                   (set! (deref quote-sym)
-                        (union-new SExpr symbol
+                        (union-new SExpr sym
                           (SExprSymbol "quote" (. tok line) (. tok col))))
                   (list-push items quote-sym)
                   (list-push items quoted-expr)
                   (set! (deref node)
-                        (union-new SExpr list
+                        (union-new SExpr lst
                           (SExprList items (. tok line) (. tok col))))
                   (ok node)))
               ((error e) (error e)))))
@@ -559,7 +559,7 @@
             (parser-advance state)
             (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
               (set! (deref node)
-                    (union-new SExpr symbol
+                    (union-new SExpr sym
                       (SExprSymbol (. tok value) (. tok line) (. tok col))))
               (ok node))))
 
@@ -569,7 +569,7 @@
             (parser-advance state)
             (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
               (set! (deref node)
-                    (union-new SExpr symbol
+                    (union-new SExpr sym
                       (SExprSymbol (. tok value) (. tok line) (. tok col))))
               (ok node))))
 
@@ -593,7 +593,7 @@
                           (set! (@ kw-buf (+ i 1)) (@ (. (. next-tok value) data) i))
                           (set! i (+ i 1))))
                       (set! (deref node)
-                            (union-new SExpr symbol
+                            (union-new SExpr sym
                               (SExprSymbol
                                 (String kw-buf (cast U64 (+ slen 1)))
                                 (. tok line)
@@ -607,7 +607,7 @@
             (parser-advance state)
             (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
               (set! (deref node)
-                    (union-new SExpr symbol
+                    (union-new SExpr sym
                       (SExprSymbol ".." (. tok line) (. tok col))))
               (ok node))))
 
@@ -652,7 +652,7 @@
           (error error-val)
           (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
             (set! (deref node)
-                  (union-new SExpr list
+                  (union-new SExpr lst
                     (SExprList items
                                (. start-tok line)
                                (. start-tok col))))
@@ -705,14 +705,14 @@
             (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
               (if (string-contains-dot (. tok value))
                 (set! (deref node)
-                      (union-new SExpr number
+                      (union-new SExpr num
                         (SExprNumber 0
                                      (strtod (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0))
                                      true
                                      (. tok value)
                                      (. tok line) (. tok col))))
                 (set! (deref node)
-                      (union-new SExpr number
+                      (union-new SExpr num
                         (SExprNumber (strtoll (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0) 10)
                                      0.0
                                      false
@@ -733,12 +733,12 @@
                         (not-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
                         (items (list-new arena (Ptr SExpr))))
                     (set! (deref not-sym)
-                          (union-new SExpr symbol
+                          (union-new SExpr sym
                             (SExprSymbol "not" (. tok line) (. tok col))))
                     (list-push items not-sym)
                     (list-push items operand)
                     (set! (deref node)
-                          (union-new SExpr list
+                          (union-new SExpr lst
                             (SExprList items (. tok line) (. tok col))))
                     (ok node)))))
             ;; Regular symbol
@@ -746,7 +746,7 @@
               (parser-advance state)
               (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
                 (set! (deref node)
-                      (union-new SExpr symbol
+                      (union-new SExpr sym
                         (SExprSymbol (. tok value) (. tok line) (. tok col))))
                 (ok node)))))
 
@@ -763,16 +763,16 @@
                       (zero-node (cast (Ptr SExpr) (arena-alloc arena 128)))
                       (items (list-new arena (Ptr SExpr))))
                   (set! (deref minus-sym)
-                        (union-new SExpr symbol
+                        (union-new SExpr sym
                           (SExprSymbol "-" (. tok line) (. tok col))))
                   (set! (deref zero-node)
-                        (union-new SExpr number
+                        (union-new SExpr num
                           (SExprNumber 0 0.0 false "0" (. tok line) (. tok col))))
                   (list-push items minus-sym)
                   (list-push items zero-node)
                   (list-push items operand)
                   (set! (deref node)
-                        (union-new SExpr list
+                        (union-new SExpr lst
                           (SExprList items (. tok line) (. tok col))))
                   (ok node))))))
 
@@ -795,12 +795,12 @@
                       (quote-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
                       (items (list-new arena (Ptr SExpr))))
                   (set! (deref quote-sym)
-                        (union-new SExpr symbol
+                        (union-new SExpr sym
                           (SExprSymbol "quote" (. tok line) (. tok col))))
                   (list-push items quote-sym)
                   (list-push items quoted-expr)
                   (set! (deref node)
-                        (union-new SExpr list
+                        (union-new SExpr lst
                           (SExprList items (. tok line) (. tok col))))
                   (ok node))))))
 
@@ -850,13 +850,13 @@
                                   (items (list-new arena (Ptr SExpr))))
                               ;; Create operator symbol
                               (set! (deref op-sym)
-                                    (union-new SExpr symbol
+                                    (union-new SExpr sym
                                       (SExprSymbol (. op-tok value) (. op-tok line) (. op-tok col))))
                               (list-push items op-sym)
                               (list-push items result)
                               (list-push items right)
                               (set! (deref node)
-                                    (union-new SExpr list
+                                    (union-new SExpr lst
                                       (SExprList items (. op-tok line) (. op-tok col))))
                               (set! result node))))))))
                 ;; Not an operator, stop
@@ -931,27 +931,27 @@
     (@spec (((Ptr SExpr)) -> (Int 0 ..)))
     (@pure)
     (match (deref expr)
-      ((symbol s) (. s line))
-      ((string s) (. s line))
-      ((number n) (. n line))
-      ((list l) (. l line))))
+      ((sym s) (. s line))
+      ((str s) (. s line))
+      ((num n) (. n line))
+      ((lst l) (. l line))))
 
   (fn sexpr-col ((expr (Ptr SExpr)))
     (@intent "Get column number of S-expression")
     (@spec (((Ptr SExpr)) -> (Int 0 ..)))
     (@pure)
     (match (deref expr)
-      ((symbol s) (. s col))
-      ((string s) (. s col))
-      ((number n) (. n col))
-      ((list l) (. l col))))
+      ((sym s) (. s col))
+      ((str s) (. s col))
+      ((num n) (. n col))
+      ((lst l) (. l col))))
 
   (fn sexpr-is-symbol-with-name ((expr (Ptr SExpr)) (name String))
     (@intent "Check if expression is a symbol with given name")
     (@spec (((Ptr SExpr) String) -> Bool))
     (@pure)
     (match (deref expr)
-      ((symbol sym) (string-eq (. sym name) name))
+      ((sym sym) (string-eq (. sym name) name))
       (_ false)))
 
   (fn is-form ((expr (Ptr SExpr)) (keyword String))
@@ -959,7 +959,7 @@
     (@spec (((Ptr SExpr) String) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list l)
+      ((lst l)
         (if (== (list-len (. l items)) 0)
           false
           (match (list-get (. l items) 0)
@@ -972,7 +972,7 @@
     (@spec (((Ptr SExpr)) -> Int))
     (@pure)
     (match (deref expr)
-      ((list l) (list-len (. l items)))
+      ((lst l) (list-len (. l items)))
       (_ 0)))
 
   (fn sexpr-list-get ((expr (Ptr SExpr)) (index Int))
@@ -980,7 +980,7 @@
     (@spec (((Ptr SExpr) Int) -> (Option (Ptr SExpr))))
     (@pure)
     (match (deref expr)
-      ((list l) (list-get (. l items) index))
+      ((lst l) (list-get (. l items) index))
       (_ (none))))
 
   (fn sexpr-is-list ((expr (Ptr SExpr)))
@@ -988,7 +988,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list l) true)
+      ((lst l) true)
       (_ false)))
 
   (fn sexpr-get-symbol-name ((expr (Ptr SExpr)))
@@ -996,7 +996,7 @@
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
     (match (deref expr)
-      ((symbol sym) (. sym name))
+      ((sym sym) (. sym name))
       (_ "")))
 
   ;; Alias for compatibility
@@ -1011,7 +1011,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((symbol s) true)
+      ((sym s) true)
       (_ false)))
 
   (fn sexpr-is-number ((expr (Ptr SExpr)))
@@ -1019,7 +1019,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((number n) true)
+      ((num n) true)
       (_ false)))
 
   (fn sexpr-is-string ((expr (Ptr SExpr)))
@@ -1027,7 +1027,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((string s) true)
+      ((str s) true)
       (_ false)))
 
   (fn sexpr-number-string ((expr (Ptr SExpr)))
@@ -1035,7 +1035,7 @@
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
     (match (deref expr)
-      ((number n) (. n raw))
+      ((num n) (. n raw))
       (_ "")))
 
   (fn sexpr-string-value ((expr (Ptr SExpr)))
@@ -1043,7 +1043,7 @@
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
     (match (deref expr)
-      ((string s) (. s value))
+      ((str s) (. s value))
       (_ "")))
 
   (fn find-holes ((arena Arena) (expr (Ptr SExpr)))
@@ -1056,7 +1056,7 @@
         (list-push result expr))
       ;; If it's a list, recursively check children
       (match (deref expr)
-        ((list l)
+        ((lst l)
           (let ((items (. l items))
                 (len (list-len items))
                 (mut i 0))
@@ -1083,11 +1083,11 @@
     (@alloc arena)
     (match (deref expr)
       ;; Symbol: return the name
-      ((symbol sym)
+      ((sym sym)
         (string-copy arena (. sym name)))
 
       ;; String: return quoted with escapes
-      ((string str)
+      ((str str)
         (let ((val (. str value))
               (slen (cast Int (. val len)))
               ;; Allocate extra space for quotes and potential escapes
@@ -1128,14 +1128,14 @@
           (String buf (cast U64 (+ out 1)))))
 
       ;; Number: convert to string
-      ((number num)
+      ((num num)
         (if (. num is-float)
           ;; For floats, just return a placeholder (float-to-string is complex)
           (string-copy arena "<float>")
           (int-to-string arena (. num int-value))))
 
       ;; List: ( children... )
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items))
               (len (list-len items)))
           (if (== len 0)
@@ -1229,7 +1229,7 @@
     (@alloc arena)
     (match (deref expr)
       ;; Symbol: {"type":"Symbol","name":"...","line":N,"col":N}
-      ((symbol sym)
+      ((sym sym)
         (let ((escaped (json-escape-string arena (. sym name)))
               (line-str (int-to-string arena (. sym line)))
               (col-str (int-to-string arena (. sym col))))
@@ -1247,7 +1247,7 @@
             "}")))
 
       ;; String: {"type":"String","value":"...","line":N,"col":N}
-      ((string str)
+      ((str str)
         (let ((escaped (json-escape-string arena (. str value)))
               (line-str (int-to-string arena (. str line)))
               (col-str (int-to-string arena (. str col))))
@@ -1264,7 +1264,7 @@
             "}")))
 
       ;; Number: {"type":"Number","value":N,"is_float":bool,"line":N,"col":N}
-      ((number num)
+      ((num num)
         (let ((line-str (int-to-string arena (. num line)))
               (col-str (int-to-string arena (. num col))))
           (if (. num is-float)
@@ -1294,7 +1294,7 @@
                 "}")))))
 
       ;; List: {"type":"List","items":[...],"line":N,"col":N}
-      ((list lst)
+      ((lst lst)
         (let ((items-json (json-print-list arena (. lst items)))
               (line-str (int-to-string arena (. lst line)))
               (col-str (int-to-string arena (. lst col))))

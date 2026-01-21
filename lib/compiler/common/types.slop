@@ -61,11 +61,13 @@
     (col (Int 0 ..))))
 
   ;; Main S-expression type - discriminated union of all node types
+  ;; NOTE: Variant names use short forms (sym, str, num, lst) to avoid
+  ;; collision with built-in forms (list, etc.)
   (type SExpr (union
-    (symbol SExprSymbol)
-    (string SExprString)
-    (number SExprNumber)
-    (list SExprList)))
+    (sym SExprSymbol)
+    (str SExprString)
+    (num SExprNumber)
+    (lst SExprList)))
 
   (type TypeKind (enum kind-primitive kind-range kind-record kind-enum kind-union kind-alias kind-option kind-result kind-list kind-map kind-ptr kind-array kind-function kind-ffi))
 

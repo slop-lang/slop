@@ -195,18 +195,18 @@
     (@pre {expr != nil})
     (match (deref expr)
       ;; Symbol: builtin type or user-defined type name
-      ((symbol sym)
+      ((sym sym)
         (let ((name (. sym name)))
           (match (builtin-type-c arena name)
             ((some c-type) c-type)
             ;; Not a builtin - return as-is (user type)
             ((none) (to-c-name arena name)))))
       ;; List: compound type like (Ptr T), (Option T), etc.
-      ((list lst)
+      ((lst lst)
         (to-c-type-compound arena (. lst items)))
       ;; Other forms shouldn't appear as types
-      ((string _) "void*")
-      ((number _) "void*")))
+      ((str _) "void*")
+      ((num _) "void*")))
 
   (fn to-c-type-compound ((arena Arena) (items (List (Ptr SExpr))))
     (@intent "Convert SLOP compound type to C type string")
@@ -217,7 +217,7 @@
         (match (list-get items 0)
           ((some first-expr)
             (match (deref first-expr)
-              ((symbol head-sym)
+              ((sym head-sym)
                 (let ((head (. head-sym name)))
                   (cond
                     ;; (Ptr T) -> T*
@@ -347,7 +347,7 @@
   (@intent "Build C function argument string from SLOP Fn args list")
   (@spec ((Arena (Ptr SExpr)) -> String))
   (match (deref args-expr)
-    ((list args-list)
+    ((lst args-list)
       (let ((arg-items (. args-list items))
             (arg-count (list-len arg-items)))
         (if (= arg-count 0)

@@ -100,18 +100,18 @@
     (@alloc arena)
     (match (deref expr)
       ;; Number: just return the raw string representation
-      ((number num)
+      ((num num)
         (. num raw))
 
       ;; String: wrap in SLOP_STR macro
-      ((string str)
+      ((str str)
         (let ((val (. str value)))
           (string-concat arena
             (string-concat arena "SLOP_STR(\"" (escape-string arena val))
             "\")")))
 
       ;; Symbol: handle special cases
-      ((symbol sym)
+      ((sym sym)
         (let ((name (. sym name)))
           (cond
             ((string-eq name "true") "true")
@@ -138,7 +138,7 @@
               (convert-symbol-to-c arena name)))))
 
       ;; List: could be function call, operator, or constructor
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items))
               (len (list-len items)))
           (if (== len 0)
@@ -426,7 +426,7 @@
     ;; e.g., "(Option String)" -> "slop_option_string"
     (let ((c-opt-type (option-type-to-c arena opt-type prefix)))
       (match (deref item)
-        ((list lst)
+        ((lst lst)
           (let ((items (. lst items)))
             (if (== (list-len items) 0)
               (string-concat arena "(" (string-concat arena c-opt-type "){.has_value = false}"))
@@ -464,7 +464,7 @@
                             (string-concat arena inner-c "}")))))))
                 ((none)
                   (string-concat arena "(" (string-concat arena c-opt-type "){.has_value = false}")))))))
-        ((symbol sym)
+        ((sym sym)
           (let ((name (. sym name)))
             (if (string-eq name "none")
               (string-concat arena "(" (string-concat arena c-opt-type "){.has_value = false}"))
@@ -595,18 +595,18 @@
     (@alloc arena)
     (match (deref expr)
       ;; Number: just return the raw string representation
-      ((number num)
+      ((num num)
         (. num raw))
 
       ;; String: wrap in SLOP_STR macro
-      ((string str)
+      ((str str)
         (let ((val (. str value)))
           (string-concat arena
             (string-concat arena "SLOP_STR(\"" (escape-string arena val))
             "\")")))
 
       ;; Symbol: handle special cases
-      ((symbol sym)
+      ((sym sym)
         (let ((name (. sym name)))
           (cond
             ((string-eq name "true") "true")
@@ -622,7 +622,7 @@
               (convert-symbol-to-c arena name)))))
 
       ;; List: could be function call, operator, or constructor
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items))
               (len (list-len items)))
           (if (== len 0)
@@ -1114,7 +1114,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             false
@@ -1664,7 +1664,7 @@
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             ""
@@ -1767,7 +1767,7 @@
     ;; Then look up which union type contains that variant
     ;; Build function name: prefix_typename_eq (e.g., rdf_term_eq)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             ""
@@ -1806,7 +1806,7 @@
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             false
@@ -1833,7 +1833,7 @@
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             ""
@@ -1850,7 +1850,7 @@
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
     (match (deref expr)
-      ((symbol sym)
+      ((sym sym)
         (let ((name (. sym name)))
           ;; Check for quoted symbol
           (if (string-starts-with name "'")
@@ -1859,7 +1859,7 @@
                 ((some _) true)
                 ((none) false)))
             false)))
-      ((list lst)
+      ((lst lst)
         ;; Check for (quote symbol) form
         (let ((items (. lst items)))
           (if (< (list-len items) 2)
@@ -1885,7 +1885,7 @@
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             false
@@ -1945,7 +1945,7 @@
     (@spec (((Ptr SExpr)) -> (Ptr SExpr)))
     (@pure)
     (match (deref expected)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (> (list-len items) 1)
             (match (list-get items 1)
@@ -1959,7 +1959,7 @@
     (@spec ((Arena (Ptr SExpr) String TypeRegistry) -> CompareInfo))
     (@alloc arena)
     (match (deref expected)
-      ((list lst)
+      ((lst lst)
         (let ((elements (. lst items))
               (elem-count (list-len elements)))
           (if (== elem-count 0)
@@ -2014,8 +2014,8 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((symbol sym) (string-eq (. sym name) "none"))
-      ((list lst)
+      ((sym sym) (string-eq (. sym name) "none"))
+      ((lst lst)
         (let ((items (. lst items)))
           (and (== (list-len items) 1)
                (match (list-get items 0)
@@ -2074,7 +2074,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             true
@@ -2089,7 +2089,7 @@
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
     (match (deref expr)
-      ((list lst)
+      ((lst lst)
         (let ((items (. lst items)))
           (if (== (list-len items) 0)
             false
@@ -2259,7 +2259,7 @@
     ;; For list comparison, we need to compare length and elements
     ;; Expected value should be a list literal like (0 1 1 2 3)
     (match (deref expected)
-      ((list lst)
+      ((lst lst)
         (let ((elements (. lst items))
               (elem-count (list-len elements)))
           (if (== elem-count 0)

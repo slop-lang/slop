@@ -2769,7 +2769,7 @@ def check_file(path: str) -> List[TypeDiagnostic]:
         project_config_path = _find_project_config(file_path.parent)
         if project_config_path:
             # Load config from the found slop.toml
-            _, build_cfg = load_project_config(str(project_config_path))
+            _, build_cfg, _, _ = load_project_config(str(project_config_path))
             if build_cfg and build_cfg.include:
                 # Include paths are relative to the config file's directory
                 config_dir = project_config_path.parent
@@ -2778,7 +2778,7 @@ def check_file(path: str) -> List[TypeDiagnostic]:
 
         # 2. Also try loading from CWD (for backward compatibility)
         if not search_paths:
-            _, build_cfg = load_project_config()
+            _, build_cfg, _, _ = load_project_config()
             if build_cfg and build_cfg.include:
                 for p in build_cfg.include:
                     search_paths.append(Path(p).resolve())
