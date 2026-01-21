@@ -1029,10 +1029,10 @@
             ((string-eq head-name "Ptr")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))
                 (env-make-ptr-type env inner-type)))
-            ;; List type: (List InnerType) - treat as generic for now
+            ;; List type: (List ElemType) - return type named "List" to match collect phase
             ((string-eq head-name "List")
-              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
-                (env-make-ptr-type env inner-type)))
+              (let ((arena (env-arena env)))
+                (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*")))
             ;; Thread type: (Thread T) - built-in parameterized type, treat as record
             ((string-eq head-name "Thread")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))

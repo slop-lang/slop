@@ -167,18 +167,21 @@
                         (if (> len 1)
                           (match (list-get items 1)
                             ((some type-expr)
-                              (let ((type-name (if (sexpr-is-symbol type-expr)
-                                                 (sexpr-get-symbol-name type-expr)
-                                                 "void")))
-                                ;; Emit empty list: (slop_list_prefix_Type){.data = NULL, .len = 0, .cap = 0}
-                                (string-concat arena "(slop_list_"
-                                  (string-concat arena prefix
-                                    (string-concat arena "_"
-                                      (string-concat arena (convert-symbol-to-c arena type-name)
-                                        "){.data = NULL, .len = 0, .cap = 0}"))))))
+                              (if (sexpr-is-symbol type-expr)
+                                (let ((type-name (sexpr-get-symbol-name type-expr)))
+                                  ;; Built-in types don't use module prefix
+                                  (if (string-eq type-name "String")
+                                    "(slop_list_string){.data = NULL, .len = 0, .cap = 0}"
+                                    ;; Module types use prefix: (slop_list_prefix_Type){...}
+                                    (string-concat arena "(slop_list_"
+                                      (string-concat arena prefix
+                                        (string-concat arena "_"
+                                          (string-concat arena (convert-symbol-to-c arena type-name)
+                                            "){.data = NULL, .len = 0, .cap = 0}"))))))
+                                "/* error: list literal first element must be type symbol */"))
                             ((none)
-                              "(slop_list_void){.data = NULL, .len = 0, .cap = 0}"))
-                          "(slop_list_void){.data = NULL, .len = 0, .cap = 0}"))
+                              "/* error: list literal requires type */"))
+                          "/* error: list literal requires type */"))
 
                       ;; Result constructors
                       ((string-eq op "ok")

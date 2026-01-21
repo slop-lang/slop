@@ -548,7 +548,7 @@ These ARE in strlib and need `(import strlib ...)`:
 | `parse-int`, `parse-float` | String to number |
 | `float-to-string` | Float to string |
 | `compare`, `compare-ignore-case` | String comparison |
-| `join`, `reverse`, `repeat` | Advanced operations |
+| `join`, `string-build`, `reverse`, `repeat` | Advanced operations |
 | `fill-bytes` | Fill memory region with byte value |
 """,
 
