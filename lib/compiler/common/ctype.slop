@@ -278,7 +278,7 @@
                               (string-concat arena "slop_list_" inner-id)))
                           ((none) "slop_list_void"))))
 
-                    ;; (Map K V) -> slop_map* (generic for now)
+                    ;; (Map K V) -> slop_map* (generic - value type tracked in VarEntry.slop-type)
                     ((string-eq head "Map")
                       "slop_map*")
 

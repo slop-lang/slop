@@ -515,6 +515,33 @@
                         (env-get-int-type env)))
                     ;; Option constructor
                     ((string-eq op "some") (env-make-option-type env nil))
+                    ;; Map builtins
+                    ;; map-new expects 3 args: arena, KeyType, ValueType - returns Map
+                    ((string-eq op "map-new")
+                      (do (check-builtin-args env "map-new" 3 (- len 1) line col)
+                          (let ((arena (env-arena env)))
+                            (resolved-type-new arena 'rk-primitive "Map" (none) "slop_map*"))))
+                    ;; map-get expects 2 args: map, key - returns Option
+                    ((string-eq op "map-get")
+                      (do (check-builtin-args env "map-get" 2 (- len 1) line col)
+                          (env-make-option-type env nil)))
+                    ;; map-put expects 3 args: map, key, value - returns Unit
+                    ((string-eq op "map-put")
+                      (do (check-builtin-args env "map-put" 3 (- len 1) line col)
+                          (env-get-unit-type env)))
+                    ;; map-has expects 2 args: map, key - returns Bool
+                    ((string-eq op "map-has")
+                      (do (check-builtin-args env "map-has" 2 (- len 1) line col)
+                          (env-get-bool-type env)))
+                    ;; map-keys expects 1 arg: map - returns List
+                    ((string-eq op "map-keys")
+                      (do (check-builtin-args env "map-keys" 1 (- len 1) line col)
+                          (let ((arena (env-arena env)))
+                            (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*"))))
+                    ;; map-remove expects 2 args: map, key - returns Unit
+                    ((string-eq op "map-remove")
+                      (do (check-builtin-args env "map-remove" 2 (- len 1) line col)
+                          (env-get-unit-type env)))
                     ;; Unknown function/form - check if it's a variant being misused
                     (else
                       (let ((arena (env-arena env)))
@@ -592,7 +619,8 @@
                   ;; - Option_T matching any Option_* type
                   ;; - Generic container types (Ptr_T, Ptr_Ptr_SExpr vs List, etc.)
                   ;; - Unit (nil) passed to pointer types
-                  (when (and (not (string-eq expected-name actual-name))
+                  ;; - Range types compatible with their base type (e.g., Score vs Int)
+                  (when (and (not (types-equal expected-type actual-type))
                              (not (string-eq actual-name "Unknown"))
                              (not (string-eq actual-name "T"))
                              (not (string-eq expected-name "Unknown"))
@@ -1033,6 +1061,10 @@
             ((string-eq head-name "List")
               (let ((arena (env-arena env)))
                 (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*")))
+            ;; Map type: (Map KeyType ValueType) - return type named "Map"
+            ((string-eq head-name "Map")
+              (let ((arena (env-arena env)))
+                (resolved-type-new arena 'rk-primitive "Map" (none) "slop_map*")))
             ;; Thread type: (Thread T) - built-in parameterized type, treat as record
             ((string-eq head-name "Thread")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))

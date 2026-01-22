@@ -293,7 +293,7 @@
         ((some binding-name)
           (let ((c-name (to-c-name arena binding-name)))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".value;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" "" false false))))
         ((none) (do)))
       ;; Emit body
       (emit-branch-body ctx branch-items is-return)
@@ -369,7 +369,7 @@
         ((some binding-name)
           (let ((c-name (to-c-name arena binding-name)))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.ok;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" "" false false))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
@@ -391,7 +391,7 @@
         ((some binding-name)
           (let ((c-name (to-c-name arena binding-name)))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.err;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" "" false false))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
@@ -593,7 +593,7 @@
           (let ((c-binding (to-c-name arena binding-name)))
             (ctx-emit ctx (ctx-str5 ctx "__auto_type " c-binding " = " scrutinee-c
                            (ctx-str3 ctx ".data." c-tag ";")))
-            (ctx-bind-var ctx (VarEntry binding-name c-binding "auto" false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-binding "auto" "" false false))))
         ((none) (do)))
       ;; Emit body
       (emit-branch-body ctx branch-items is-return)
@@ -810,7 +810,7 @@
                                                     ;; Not an Option type - regular transpilation
                                                     (transpile-expr ctx val-expr))))
                                             (ctx-emit ctx (ctx-str5 ctx c-type " " c-name " = " (ctx-str ctx final-init ";")))
-                                            (ctx-bind-var ctx (VarEntry raw-name c-name c-type is-ptr has-mut)))))
+                                            (ctx-bind-var ctx (VarEntry raw-name c-name c-type "" is-ptr has-mut)))))
                                       ((none) (ctx-emit ctx "/* missing value */")))
                                     ;; Not typed - middle is actually value - infer type
                                     (match (list-get items type-idx)
@@ -822,13 +822,13 @@
                                             ((some ptr-type)
                                               ;; Arena-alloc returns pointer
                                               (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                              (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type true has-mut)))
+                                              (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type "" true has-mut)))
                                             ((none)
                                               ;; Infer type from expression
                                               (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                                     (is-ptr (ends-with inferred-type "*")))
                                                 (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                                (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type is-ptr has-mut)))))))
+                                                (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type "" is-ptr has-mut)))))))
                                       ((none) (ctx-emit ctx "/* missing value */")))))
                                 ((none) (ctx-emit ctx "/* missing type/value */"))))
                             ;; Simple: (name init)
@@ -842,13 +842,13 @@
                                       ((some ptr-type)
                                         ;; Arena-alloc returns pointer
                                         (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                        (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type true has-mut)))
+                                        (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type "" true has-mut)))
                                       ((none)
                                         ;; Infer type from expression
                                         (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                               (is-ptr (ends-with inferred-type "*")))
                                           (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                          (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type is-ptr has-mut)))))))
+                                          (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type "" is-ptr has-mut)))))))
                                 ((none) (ctx-emit ctx "/* missing value */")))))))
                       (else (ctx-emit ctx "/* binding name must be symbol */"))))
                   ((none) (ctx-emit ctx "/* missing binding name */")))))))
@@ -1328,7 +1328,7 @@
                 (ctx-emit ctx "slop_arena* arena = &_arena;")))
             ((none) (ctx-emit ctx "/* missing size */")))
           ;; Bind arena variable in scope
-          (ctx-bind-var ctx (VarEntry "arena" "arena" "slop_arena*" true false))
+          (ctx-bind-var ctx (VarEntry "arena" "arena" "slop_arena*" "" true false))
           ;; Process body statements (items 2 onwards)
           (let ((mut i 2))
             (while (< i len)

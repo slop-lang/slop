@@ -652,7 +652,7 @@
                                         (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name)))
                                           (do
                                             (ctx-register-type ctx (TypeEntry sym-name c-name c-name false false false))
-                                            (ctx-bind-var ctx (VarEntry sym-name c-name "auto" false false))))
+                                            (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false))))
                                         ;; Register function with module prefix (no param types for imports)
                                         (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name))
                                               (empty-params (list-new arena (Ptr FuncParamType))))

@@ -91,6 +91,7 @@
       (name String)        ;; SLOP name
       (c-name String)      ;; C identifier
       (c-type String)      ;; C type string
+      (slop-type String)   ;; Original SLOP type string (e.g., "(Map String Int)")
       (is-pointer Bool)    ;; Is this a pointer variable?
       (is-mutable Bool)))  ;; Is this mutable?
 
@@ -1263,7 +1264,7 @@
                               (set! result (ctx-str ctx "slop_list_" inner-id))))
                           ((none) (do)))))
 
-                    ;; (Map K V) -> slop_map*
+                    ;; (Map K V) -> slop_map* (generic - value type tracked in VarEntry.slop-type)
                     ((string-eq head "Map")
                       (set! result "slop_map*"))
 
