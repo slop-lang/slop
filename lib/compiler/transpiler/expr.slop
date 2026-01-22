@@ -3271,6 +3271,23 @@
   ;; For primitives, use compound literal: &(type){key}
   ;; ============================================================
 
+  (fn is-c-primitive-type ((t String))
+    (@intent "Check if type is a C primitive that works with compound literals")
+    (@spec ((String) -> Bool))
+    (cond
+      ((string-eq t "int64_t") true)
+      ((string-eq t "int32_t") true)
+      ((string-eq t "int16_t") true)
+      ((string-eq t "int8_t") true)
+      ((string-eq t "uint64_t") true)
+      ((string-eq t "uint32_t") true)
+      ((string-eq t "uint16_t") true)
+      ((string-eq t "uint8_t") true)
+      ((string-eq t "double") true)
+      ((string-eq t "float") true)
+      ((string-eq t "bool") true)
+      (else false)))
+
   (fn wrap-map-key-as-ptr ((ctx (Ptr TranspileContext)) (key-c String) (key-expr (Ptr SExpr)))
     (@intent "Wrap transpiled key expression as pointer for map operations")
     (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> String))
@@ -3284,9 +3301,12 @@
         ;; Pointer types - cast and take address
         ((ends-with key-type "*")
           (ctx-str ctx "&(void*){" (ctx-str ctx key-c "}")))
-        ;; Primitives - use compound literal
+        ;; Primitives - use compound literal (works for scalars)
+        ((is-c-primitive-type key-type)
+          (ctx-str ctx "&(" (ctx-str ctx key-type (ctx-str ctx "){" (ctx-str ctx key-c "}")))))
+        ;; Struct/union types - just take address (compound literal doesn't work)
         (else
-          (ctx-str ctx "&(" (ctx-str ctx key-type (ctx-str ctx "){" (ctx-str ctx key-c "}"))))))))
+          (ctx-str ctx "&(" (ctx-str ctx key-c ")"))))))
 
   (fn transpile-map-put ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile map-put to slop_map_put with proper key pointer wrapping")
