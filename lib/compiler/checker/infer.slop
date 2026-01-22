@@ -1107,6 +1107,8 @@
             ((string-eq type-name "U64") (resolved-type-new arena 'rk-primitive "U64" (none) "uint64_t"))
             ;; Char - for FFI C string interop
             ((string-eq type-name "Char") (resolved-type-new arena 'rk-primitive "Char" (none) "char"))
+            ;; Void - for FFI opaque pointers (void*)
+            ((string-eq type-name "Void") (resolved-type-new arena 'rk-primitive "Void" (none) "void"))
           ;; Unknown type - emit warning and use generic type to avoid cascading errors
           (else
             (let ((arena (env-arena env))
