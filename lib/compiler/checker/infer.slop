@@ -542,6 +542,33 @@
                     ((string-eq op "map-remove")
                       (do (check-builtin-args env "map-remove" 2 (- len 1) line col)
                           (env-get-unit-type env)))
+                    ;; Set builtins
+                    ;; set literal: (set Type e1 e2...) - returns Set
+                    ((string-eq op "set")
+                      (let ((arena (env-arena env)))
+                        (resolved-type-new arena 'rk-primitive "Set" (none) "slop_map*")))
+                    ;; set-new expects 2 args: arena, ElementType - returns Set
+                    ((string-eq op "set-new")
+                      (do (check-builtin-args env "set-new" 2 (- len 1) line col)
+                          (let ((arena (env-arena env)))
+                            (resolved-type-new arena 'rk-primitive "Set" (none) "slop_map*"))))
+                    ;; set-put expects 2 args: set, element - returns Unit
+                    ((string-eq op "set-put")
+                      (do (check-builtin-args env "set-put" 2 (- len 1) line col)
+                          (env-get-unit-type env)))
+                    ;; set-has expects 2 args: set, element - returns Bool
+                    ((string-eq op "set-has")
+                      (do (check-builtin-args env "set-has" 2 (- len 1) line col)
+                          (env-get-bool-type env)))
+                    ;; set-remove expects 2 args: set, element - returns Unit
+                    ((string-eq op "set-remove")
+                      (do (check-builtin-args env "set-remove" 2 (- len 1) line col)
+                          (env-get-unit-type env)))
+                    ;; set-elements expects 1 arg: set - returns List
+                    ((string-eq op "set-elements")
+                      (do (check-builtin-args env "set-elements" 1 (- len 1) line col)
+                          (let ((arena (env-arena env)))
+                            (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*"))))
                     ;; Unknown function/form - check if it's a variant being misused
                     (else
                       (let ((arena (env-arena env)))
@@ -555,8 +582,17 @@
                               (env-add-error env msg line col)
                               (env-get-unknown-type env)))
                           ((none)
-                            ;; May be an FFI function - emit warning, not error
-                            (env-get-unknown-type env))))))))))))))
+                            ;; Check if it looks like a builtin (set-, map-, list-, etc.)
+                            (if (or (starts-with op "set-")
+                                    (or (starts-with op "map-")
+                                        (or (starts-with op "list-")
+                                            (starts-with op "arena-"))))
+                              (let ((msg (string-concat arena "Unknown builtin: '"
+                                           (string-concat arena op "'"))))
+                                (env-add-error env msg line col)
+                                (env-get-unknown-type env))
+                              ;; May be an FFI function - pass through
+                              (env-get-unknown-type env)))))))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
                            (line Int) (col Int))
@@ -1065,6 +1101,10 @@
             ((string-eq head-name "Map")
               (let ((arena (env-arena env)))
                 (resolved-type-new arena 'rk-primitive "Map" (none) "slop_map*")))
+            ;; Set type: (Set ElemType) - return type named "Set"
+            ((string-eq head-name "Set")
+              (let ((arena (env-arena env)))
+                (resolved-type-new arena 'rk-primitive "Set" (none) "slop_map*")))
             ;; Thread type: (Thread T) - built-in parameterized type, treat as record
             ((string-eq head-name "Thread")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))

@@ -1282,6 +1282,24 @@
                     ;; map-keys: (map-keys map) -> slop_map_keys(map)
                     ((and (string-eq op "map-keys") (>= len 2))
                       (transpile-map-keys ctx items))
+                    ;; set: (set Type e1 e2...) -> set literal
+                    ((and (string-eq op "set") (>= len 2))
+                      (transpile-set-literal ctx items))
+                    ;; set-new: (set-new arena ElementType) -> slop_map_new_ptr for Set
+                    ((and (string-eq op "set-new") (>= len 3))
+                      (transpile-set-new ctx items))
+                    ;; set-put: (set-put set element) -> slop_map_put with dummy value
+                    ((and (string-eq op "set-put") (>= len 3))
+                      (transpile-set-put ctx items))
+                    ;; set-has: (set-has set element) -> slop_map_has
+                    ((and (string-eq op "set-has") (>= len 3))
+                      (transpile-set-has ctx items))
+                    ;; set-remove: (set-remove set element) -> slop_map_remove
+                    ((and (string-eq op "set-remove") (>= len 3))
+                      (transpile-set-remove ctx items))
+                    ;; set-elements: (set-elements set) -> get elements as list
+                    ((and (string-eq op "set-elements") (>= len 2))
+                      (transpile-set-elements ctx items))
                     ;; union-new: (union-new Type tag value?) -> ((Type){ .tag = Type_tag, .data.tag = value })
                     ;; tag can be bare symbol or quoted symbol like 'literal
                     ((and (string-eq op "union-new") (>= len 3))
@@ -3429,6 +3447,136 @@
               ;; arena is assumed to be in scope
               (ctx-str ctx "slop_map_keys(arena, " (ctx-str ctx map-c ")"))))
           ((none) "/* map-keys: missing map */")))))
+
+  ;; ============================================================
+  ;; Set Operations
+  ;; ============================================================
+
+  (fn transpile-set-new ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile set-new to slop_map_new_ptr with element type info")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items)))
+      (if (< len 3)
+        "/* set-new: needs arena and ElementType */"
+        (match (list-get items 1)
+          ((some arena-expr)
+            (match (list-get items 2)
+              ((some elem-type-expr)
+                (let ((arena-c (transpile-expr ctx arena-expr))
+                      (elem-info (get-map-key-c-info ctx elem-type-expr)))
+                  ;; Generate: slop_map_new_ptr(arena, 16, sizeof_expr, hash_fn, eq_fn)
+                  (ctx-str ctx "slop_map_new_ptr("
+                    (ctx-str ctx arena-c
+                      (ctx-str ctx ", 16, "
+                        (ctx-str ctx elem-info ")"))))))
+              ((none) "/* set-new: missing ElementType */")))
+          ((none) "/* set-new: missing arena */")))))
+
+  (fn transpile-set-put ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile set-put to slop_map_put with dummy value")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items)))
+      (if (< len 3)
+        "/* set-put: needs set, element */"
+        (match (list-get items 1)
+          ((some set-expr)
+            (match (list-get items 2)
+              ((some elem-expr)
+                (let ((set-c (transpile-expr ctx set-expr))
+                      (elem-c (transpile-expr ctx elem-expr))
+                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr)))
+                  ;; Use a dummy 1-byte value for set membership
+                  (ctx-str ctx "({ uint8_t _dummy = 1; slop_map_put(arena, "
+                    (ctx-str ctx set-c
+                      (ctx-str ctx ", "
+                        (ctx-str ctx elem-ptr ", &_dummy); })"))))))
+              ((none) "/* set-put: missing element */")))
+          ((none) "/* set-put: missing set */")))))
+
+  (fn transpile-set-has ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile set-has to check for non-NULL with proper element pointer wrapping")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items)))
+      (if (< len 3)
+        "/* set-has: needs set, element */"
+        (match (list-get items 1)
+          ((some set-expr)
+            (match (list-get items 2)
+              ((some elem-expr)
+                (let ((set-c (transpile-expr ctx set-expr))
+                      (elem-c (transpile-expr ctx elem-expr))
+                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr)))
+                  (ctx-str ctx "(slop_map_get(" (ctx-str ctx set-c (ctx-str ctx ", " (ctx-str ctx elem-ptr ") != NULL)"))))))
+              ((none) "/* set-has: missing element */")))
+          ((none) "/* set-has: missing set */")))))
+
+  (fn transpile-set-remove ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile set-remove to slop_map_remove with proper element pointer wrapping")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items)))
+      (if (< len 3)
+        "/* set-remove: needs set, element */"
+        (match (list-get items 1)
+          ((some set-expr)
+            (match (list-get items 2)
+              ((some elem-expr)
+                (let ((set-c (transpile-expr ctx set-expr))
+                      (elem-c (transpile-expr ctx elem-expr))
+                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr)))
+                  (ctx-str ctx "slop_map_remove(" (ctx-str ctx set-c (ctx-str ctx ", " (ctx-str ctx elem-ptr ")"))))))
+              ((none) "/* set-remove: missing element */")))
+          ((none) "/* set-remove: missing set */")))))
+
+  (fn transpile-set-elements ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile set-elements to slop_map_keys (gets keys which are the elements)")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items)))
+      (if (< len 2)
+        "/* set-elements: needs set */"
+        (match (list-get items 1)
+          ((some set-expr)
+            (let ((set-c (transpile-expr ctx set-expr)))
+              (ctx-str ctx "slop_map_keys(arena, " (ctx-str ctx set-c ")"))))
+          ((none) "/* set-elements: missing set */")))))
+
+  (fn transpile-set-literal ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile set literal (set Type e1 e2...) to inline set construction")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items)))
+      (if (< len 2)
+        "/* set: needs at least Type */"
+        (match (list-get items 1)
+          ((some type-expr)
+            (let ((elem-info (get-map-key-c-info ctx type-expr))
+                  ;; Build: ({ slop_map* _s = slop_map_new_ptr(arena, N, elem_info);
+                  (num-elems (- len 2))
+                  (init-cap (if (> num-elems 16) num-elems 16))
+                  (mut result (ctx-str ctx "({ slop_map* _s = slop_map_new_ptr(arena, "
+                                (ctx-str ctx (int-to-string arena init-cap)
+                                  (ctx-str ctx ", "
+                                    (ctx-str ctx elem-info "); "))))))
+              ;; Add each element: slop_map_put(arena, _s, &elem, &(uint8_t){1});
+              (let ((mut i 2))
+                (while (< i len)
+                  (match (list-get items i)
+                    ((some elem-expr)
+                      (let ((elem-c (transpile-expr ctx elem-expr))
+                            (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr)))
+                        (set! result (ctx-str ctx result
+                          (ctx-str ctx "slop_map_put(arena, _s, "
+                            (ctx-str ctx elem-ptr ", &(uint8_t){1}); "))))))
+                    ((none) (do)))
+                  (set! i (+ i 1))))
+              ;; Close: _s; })
+              (ctx-str ctx result "_s; })")))
+          ((none) "/* set: missing type */")))))
 
   ;; ============================================================
   ;; For Loop as Expression

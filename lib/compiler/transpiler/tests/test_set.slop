@@ -1,0 +1,187 @@
+;; ============================================================
+;; Set Operations Tests
+;;
+;; Tests for (Set T) type support implemented on top of Map.
+;; ============================================================
+
+(module test-set
+
+  ;; ============================================================
+  ;; Test 1: set-new creates an empty set
+  ;; ============================================================
+  (fn test-set-new ()
+    (@intent "Test creating empty set")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena String)))
+        (not (set-has s "test")))))
+
+  ;; ============================================================
+  ;; Test 2: set-put and set-has
+  ;; ============================================================
+  (fn test-set-put-has ()
+    (@intent "Test adding and checking elements")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena String)))
+        (set-put s "hello")
+        (set-has s "hello"))))
+
+  ;; ============================================================
+  ;; Test 3: set-has returns false for missing elements
+  ;; ============================================================
+  (fn test-set-has-missing ()
+    (@intent "Test set-has returns false for non-existent elements")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena String)))
+        (set-put s "hello")
+        (not (set-has s "world")))))
+
+  ;; ============================================================
+  ;; Test 4: set-remove
+  ;; ============================================================
+  (fn test-set-remove ()
+    (@intent "Test removing elements from set")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena String)))
+        (set-put s "hello")
+        (set-remove s "hello")
+        (not (set-has s "hello")))))
+
+  ;; ============================================================
+  ;; Test 5: set literal with String
+  ;; ============================================================
+  (fn test-set-literal-string ()
+    (@intent "Test set literal syntax with strings")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set String "a" "b" "c")))
+        (and (set-has s "a")
+             (and (set-has s "b")
+                  (set-has s "c"))))))
+
+  ;; ============================================================
+  ;; Test 6: set literal with Int
+  ;; ============================================================
+  (fn test-set-literal-int ()
+    (@intent "Test set literal syntax with integers")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set Int 1 2 3)))
+        (and (set-has s 1)
+             (and (set-has s 2)
+                  (set-has s 3))))))
+
+  ;; ============================================================
+  ;; Test 7: multiple set-put operations
+  ;; ============================================================
+  (fn test-set-multiple-puts ()
+    (@intent "Test adding multiple elements")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena Int)))
+        (set-put s 10)
+        (set-put s 20)
+        (set-put s 30)
+        (and (set-has s 10)
+             (and (set-has s 20)
+                  (set-has s 30))))))
+
+  ;; ============================================================
+  ;; Test 8: set-put is idempotent
+  ;; ============================================================
+  (fn test-set-put-idempotent ()
+    (@intent "Adding same element twice should not change the set")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena String)))
+        (set-put s "hello")
+        (set-put s "hello")
+        (set-has s "hello"))))
+
+  ;; ============================================================
+  ;; Test 9: set-elements returns list of elements
+  ;; ============================================================
+  (fn test-set-elements ()
+    (@intent "Test getting elements as list")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set String "a" "b" "c")))
+        (let ((elems (set-elements s)))
+          (== (list-len elems) 3)))))
+
+  ;; ============================================================
+  ;; Test 10: empty set literal
+  ;; ============================================================
+  (fn test-set-empty-literal ()
+    (@intent "Test empty set literal")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set String)))
+        (not (set-has s "anything")))))
+
+  ;; ============================================================
+  ;; Main test runner
+  ;; ============================================================
+  (fn main ()
+    (@intent "Run all set tests")
+    (@spec (() -> Int))
+    (do
+      (println "Running set tests...")
+
+      ;; Test 1
+      (if (test-set-new)
+        (println "Test 1 (set-new): PASS")
+        (println "Test 1 (set-new): FAIL"))
+
+      ;; Test 2
+      (if (test-set-put-has)
+        (println "Test 2 (set-put-has): PASS")
+        (println "Test 2 (set-put-has): FAIL"))
+
+      ;; Test 3
+      (if (test-set-has-missing)
+        (println "Test 3 (set-has-missing): PASS")
+        (println "Test 3 (set-has-missing): FAIL"))
+
+      ;; Test 4
+      (if (test-set-remove)
+        (println "Test 4 (set-remove): PASS")
+        (println "Test 4 (set-remove): FAIL"))
+
+      ;; Test 5
+      (if (test-set-literal-string)
+        (println "Test 5 (set-literal-string): PASS")
+        (println "Test 5 (set-literal-string): FAIL"))
+
+      ;; Test 6
+      (if (test-set-literal-int)
+        (println "Test 6 (set-literal-int): PASS")
+        (println "Test 6 (set-literal-int): FAIL"))
+
+      ;; Test 7
+      (if (test-set-multiple-puts)
+        (println "Test 7 (set-multiple-puts): PASS")
+        (println "Test 7 (set-multiple-puts): FAIL"))
+
+      ;; Test 8
+      (if (test-set-put-idempotent)
+        (println "Test 8 (set-put-idempotent): PASS")
+        (println "Test 8 (set-put-idempotent): FAIL"))
+
+      ;; Test 9
+      (if (test-set-elements)
+        (println "Test 9 (set-elements): PASS")
+        (println "Test 9 (set-elements): FAIL"))
+
+      ;; Test 10
+      (if (test-set-empty-literal)
+        (println "Test 10 (set-empty-literal): PASS")
+        (println "Test 10 (set-empty-literal): FAIL"))
+
+      (println "All set tests complete!")
+      0))
+
+) ;; end module
