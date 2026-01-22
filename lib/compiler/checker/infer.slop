@@ -212,11 +212,12 @@
         ((string-eq op "let")
           (infer-let-expr env expr))
 
-        ;; (when cond body...) - returns Unit
+        ;; (when cond body...) - check condition and all body expressions, return Unit
         ((string-eq op "when")
-          (env-get-unit-type env))
+          (do (infer-body-exprs env expr 1)
+              (env-get-unit-type env)))
 
-        ;; (for ...) - returns Unit
+        ;; (for (i start end) body...) - just return Unit for now (proper implementation later)
         ((string-eq op "for")
           (env-get-unit-type env))
 
@@ -259,8 +260,10 @@
             (env-get-unit-type env)))
 
         ;; (while ...) - returns Unit
+        ;; (while cond body...) - check condition and all body expressions, return Unit
         ((string-eq op "while")
-          (env-get-unit-type env))
+          (do (infer-body-exprs env expr 1)
+              (env-get-unit-type env)))
 
         ;; (with-arena size body...) - binds 'arena' and returns last body type
         ((string-eq op "with-arena")
@@ -475,6 +478,7 @@
                     ;; list-push expects 2 args: list, item
                     ((string-eq op "list-push")
                       (do (check-builtin-args env "list-push" 2 (- len 1) line col)
+                          (infer-builtin-args env expr)
                           (env-get-unit-type env)))
                     ;; list-pop expects 1 arg: list
                     ((string-eq op "list-pop")
@@ -712,6 +716,35 @@
                          (string-concat arena " argument(s), got "
                            (int-to-string arena actual))))))))
         (env-add-error env msg line col))))
+
+  (fn infer-builtin-args ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
+    (@intent "Infer types of all arguments in a builtin call to catch nested errors")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= expr nil))
+    (when (sexpr-is-list expr)
+      (let ((len (sexpr-list-len expr)))
+        ;; Start from index 1 (skip the operator)
+        (for (i 1 len)
+          (match (sexpr-list-get expr i)
+            ((some arg-expr)
+              (let ((_ (infer-expr env arg-expr)))
+                (do)))
+            ((none) (do)))))))
+
+  (fn infer-body-exprs ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (start-idx Int))
+    (@intent "Infer types of all body expressions starting from given index")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= expr nil))
+    (when (sexpr-is-list expr)
+      (let ((len (sexpr-list-len expr)))
+        (for (i start-idx len)
+          (match (sexpr-list-get expr i)
+            ((some body-expr)
+              (let ((_ (infer-expr env body-expr)))
+                (do)))
+            ((none) (do)))))))
 
   (fn infer-field-access ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList)
                            (line Int) (col Int))
@@ -1268,15 +1301,16 @@
                   ((some binding) (bind-let-binding env binding))
                   ((none) (do)))))))
         ((none) (do))))
-    ;; Infer type of last body expression
+    ;; Infer type of ALL body expressions, returning type of last
     (let ((result-type
             (if (sexpr-is-list expr)
-              (let ((len (sexpr-list-len expr)))
-                (if (> len 2)
-                  (match (sexpr-list-get expr (- len 1))
-                    ((some last-body) (infer-expr env last-body))
-                    ((none) (env-get-unit-type env)))
-                  (env-get-unit-type env)))
+              (let ((len (sexpr-list-len expr))
+                    (mut last-type (Ptr ResolvedType) (env-get-unit-type env)))
+                (for (i 2 len)
+                  (match (sexpr-list-get expr i)
+                    ((some body-expr) (set! last-type (infer-expr env body-expr)))
+                    ((none) (do))))
+                last-type)
               (env-get-unit-type env))))
       (env-pop-scope env)
       result-type))
