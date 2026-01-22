@@ -23,7 +23,7 @@
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index))
   (import ctype (to-c-type to-c-name type-to-identifier))
-  (import strlib (replace starts-with substring char-at count-occurrences index-of contains))
+  (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
 
   ;; ============================================================
   ;; String Escaping for C
@@ -3030,22 +3030,121 @@
                 (ctx-str ctx result (ctx-str ctx data-part "}})")))))
           ((none) "/* list: missing type */")))))
 
+  ;; ============================================================
+  ;; Map Key Type Info
+  ;;
+  ;; Returns C code suffix with sizeof, hash function, and eq function
+  ;; for the given key type expression: "sizeof(...), hash_fn, eq_fn"
+  ;; ============================================================
+
+  (fn get-map-key-c-info ((ctx (Ptr TranspileContext)) (key-type-expr (Ptr SExpr)))
+    (@intent "Get sizeof, hash fn, eq fn suffix for map key type")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {key-type-expr != nil})
+    (match (deref key-type-expr)
+      ;; Symbol: check for builtin types
+      ((sym sym)
+        (let ((name (. sym name)))
+          (cond
+            ;; String -> slop_string
+            ((string-eq name "String")
+              "sizeof(slop_string), slop_hash_string, slop_eq_string")
+            ;; Int, I64 -> int64_t
+            ((or (string-eq name "Int") (string-eq name "I64"))
+              "sizeof(int64_t), slop_hash_int, slop_eq_int")
+            ;; I32 -> int32_t (use int hash)
+            ((string-eq name "I32")
+              "sizeof(int32_t), slop_hash_int, slop_eq_int")
+            ;; Uint, U64 -> uint64_t
+            ((or (string-eq name "Uint") (string-eq name "U64"))
+              "sizeof(uint64_t), slop_hash_uint, slop_eq_uint")
+            ;; U32 -> uint32_t (use uint hash)
+            ((string-eq name "U32")
+              "sizeof(uint32_t), slop_hash_uint, slop_eq_uint")
+            ;; Symbol -> int64_t (symbols are interned as integers)
+            ((string-eq name "Symbol")
+              "sizeof(int64_t), slop_hash_symbol, slop_eq_symbol")
+            ;; Default to string for unknown types (backward compat)
+            (else
+              "sizeof(slop_string), slop_hash_string, slop_eq_string"))))
+      ;; List: check for (Ptr T)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 1)
+            "sizeof(void*), slop_hash_ptr, slop_eq_ptr"
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((sym sym)
+                    (let ((head-name (. sym name)))
+                      (if (string-eq head-name "Ptr")
+                        "sizeof(void*), slop_hash_ptr, slop_eq_ptr"
+                        ;; Default to string for unknown compound types
+                        "sizeof(slop_string), slop_hash_string, slop_eq_string")))
+                  (_ "sizeof(slop_string), slop_hash_string, slop_eq_string")))
+              ((none) "sizeof(void*), slop_hash_ptr, slop_eq_ptr")))))
+      ;; Default fallback
+      (_ "sizeof(slop_string), slop_hash_string, slop_eq_string")))
+
   (fn transpile-map-new ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile map-new to slop_map_new_ptr")
+    (@intent "Transpile map-new to slop_map_new_ptr with key type info")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
-      (if (< len 2)
-        "/* map-new: missing arena */"
+      (if (< len 3)
+        ;; Backward compat: if only arena, default to string keys
+        (if (< len 2)
+          "/* map-new: missing arena */"
+          (match (list-get items 1)
+            ((some arena-expr)
+              (let ((arena-c (transpile-expr ctx arena-expr)))
+                ;; Default to string keys for backward compatibility
+                (ctx-str ctx "slop_map_new_ptr(" (ctx-str ctx arena-c ", 16, sizeof(slop_string), slop_hash_string, slop_eq_string)"))))
+            ((none) "/* map-new: missing arena */")))
+        ;; Full form: (map-new arena KeyType ValueType)
         (match (list-get items 1)
           ((some arena-expr)
-            (let ((arena-c (transpile-expr ctx arena-expr)))
-              ;; Generate: slop_map_new_ptr(arena, 16)
-              (ctx-str ctx "slop_map_new_ptr(" (ctx-str ctx arena-c ", 16)"))))
+            (match (list-get items 2)
+              ((some key-type-expr)
+                (let ((arena-c (transpile-expr ctx arena-expr))
+                      (key-info (get-map-key-c-info ctx key-type-expr)))
+                  ;; Generate: slop_map_new_ptr(arena, 16, sizeof_expr, hash_fn, eq_fn)
+                  ;; key-info is already the formatted string "sizeof(...), hash_fn, eq_fn"
+                  (ctx-str ctx "slop_map_new_ptr("
+                    (ctx-str ctx arena-c
+                      (ctx-str ctx ", 16, "
+                        (ctx-str ctx key-info ")"))))))
+              ((none) "/* map-new: missing KeyType */")))
           ((none) "/* map-new: missing arena */")))))
 
+  ;; ============================================================
+  ;; Map Key Wrapping
+  ;;
+  ;; The generic map API expects keys as const void*.
+  ;; For structs (slop_string), pass &key.
+  ;; For primitives, use compound literal: &(type){key}
+  ;; ============================================================
+
+  (fn wrap-map-key-as-ptr ((ctx (Ptr TranspileContext)) (key-c String) (key-expr (Ptr SExpr)))
+    (@intent "Wrap transpiled key expression as pointer for map operations")
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {key-expr != nil})
+    (let ((key-type (infer-expr-c-type ctx key-expr)))
+      (cond
+        ;; slop_string is a struct, just take address
+        ((string-eq key-type "slop_string")
+          (ctx-str ctx "&(" (ctx-str ctx key-c ")")))
+        ;; Pointer types - cast and take address
+        ((ends-with key-type "*")
+          (ctx-str ctx "&(void*){" (ctx-str ctx key-c "}")))
+        ;; Primitives - use compound literal
+        (else
+          (ctx-str ctx "&(" (ctx-str ctx key-type (ctx-str ctx "){" (ctx-str ctx key-c "}"))))))))
+
   (fn transpile-map-put ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile map-put to slop_map_put")
+    (@intent "Transpile map-put to slop_map_put with proper key pointer wrapping")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
@@ -3060,23 +3159,26 @@
                     (let ((map-c (transpile-expr ctx map-expr))
                           (key-c (transpile-expr ctx key-expr))
                           (val-c (transpile-expr ctx val-expr))
+                          ;; Wrap key as pointer for generic map API
+                          (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr))
                           ;; Check if map is a pointer-to-pointer (Ptr Map -> slop_map**)
                           (needs-deref (is-ptr-to-ptr-map ctx map-expr)))
-                      ;; slop_map_put expects slop_map*
+                      ;; slop_map_put expects arena, slop_map* and key as const void*
+                      ;; Arena is assumed to be in scope from with-arena
                       ;; If we have slop_map**, dereference once
                       (if needs-deref
                         (let ((s1 (ctx-str ctx "({ __auto_type _tmp = " val-c))
-                              (s2 (ctx-str ctx s1 "; slop_map_put(NULL, (*"))
+                              (s2 (ctx-str ctx s1 "; slop_map_put(arena, (*"))
                               (s3 (ctx-str ctx s2 map-c))
                               (s4 (ctx-str ctx s3 "), "))
-                              (s5 (ctx-str ctx s4 key-c))
+                              (s5 (ctx-str ctx s4 key-ptr))
                               (s6 (ctx-str ctx s5 ", &_tmp); })")))
                           s6)
                         (let ((s1 (ctx-str ctx "({ __auto_type _tmp = " val-c))
-                              (s2 (ctx-str ctx s1 "; slop_map_put(NULL, "))
+                              (s2 (ctx-str ctx s1 "; slop_map_put(arena, "))
                               (s3 (ctx-str ctx s2 map-c))
                               (s4 (ctx-str ctx s3 ", "))
-                              (s5 (ctx-str ctx s4 key-c))
+                              (s5 (ctx-str ctx s4 key-ptr))
                               (s6 (ctx-str ctx s5 ", &_tmp); })")))
                           s6))))
                   ((none) "/* map-put: missing val */")))
@@ -3084,7 +3186,7 @@
           ((none) "/* map-put: missing map */")))))
 
   (fn transpile-map-get ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile map-get to slop_map_get")
+    (@intent "Transpile map-get to slop_map_get with proper key pointer wrapping")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
@@ -3095,14 +3197,16 @@
             (match (list-get items 2)
               ((some key-expr)
                 (let ((map-c (transpile-expr ctx map-expr))
-                      (key-c (transpile-expr ctx key-expr)))
-                  ;; Generate: slop_map_get(MAP, KEY)
-                  (ctx-str ctx "slop_map_get(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-c ")"))))))
+                      (key-c (transpile-expr ctx key-expr))
+                      ;; Wrap key as pointer for generic map API
+                      (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr)))
+                  ;; Generate: slop_map_get(MAP, KEY_PTR)
+                  (ctx-str ctx "slop_map_get(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-ptr ")"))))))
               ((none) "/* map-get: missing key */")))
           ((none) "/* map-get: missing map */")))))
 
   (fn transpile-map-has ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile map-has to check for non-NULL")
+    (@intent "Transpile map-has to check for non-NULL with proper key pointer wrapping")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
@@ -3113,9 +3217,11 @@
             (match (list-get items 2)
               ((some key-expr)
                 (let ((map-c (transpile-expr ctx map-expr))
-                      (key-c (transpile-expr ctx key-expr)))
-                  ;; Generate: (slop_map_get(MAP, KEY) != NULL)
-                  (ctx-str ctx "(slop_map_get(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-c ") != NULL)"))))))
+                      (key-c (transpile-expr ctx key-expr))
+                      ;; Wrap key as pointer for generic map API
+                      (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr)))
+                  ;; Generate: (slop_map_get(MAP, KEY_PTR) != NULL)
+                  (ctx-str ctx "(slop_map_get(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-ptr ") != NULL)"))))))
               ((none) "/* map-has: missing key */")))
           ((none) "/* map-has: missing map */")))))
 
