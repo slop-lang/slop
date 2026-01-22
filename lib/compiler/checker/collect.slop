@@ -195,9 +195,16 @@
                             (ptr-type (resolved-type-new arena 'rk-ptr ptr-name (none) "void*")))
                         (resolved-type-set-inner ptr-type inner-type)
                         ptr-type)))
-                  ;; List type: (List ElemType) - return placeholder
+                  ;; List type: (List ElemType)
                   ((string-eq head-name "List")
-                    (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*"))
+                    (let ((inner-type (if (>= (list-len items) 2)
+                                        (match (list-get items 1)
+                                          ((some inner-expr) (get-field-type env arena inner-expr))
+                                          ((none) (env-get-int-type env)))
+                                        (env-get-int-type env))))
+                      (let ((list-type (resolved-type-new arena 'rk-list "List" (none) "slop_list_t*")))
+                        (resolved-type-set-inner list-type inner-type)
+                        list-type)))
                   ;; Unknown complex type
                   (else (resolved-type-new arena 'rk-primitive head-name (none) head-name)))))
             ((none) (env-get-unit-type env)))))

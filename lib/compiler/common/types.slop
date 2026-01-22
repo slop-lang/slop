@@ -24,7 +24,8 @@
     resolved-type-get-variant-index resolved-type-get-variant-payload
     resolved-type-has-field resolved-type-get-field-type
     ;; Setters
-    resolved-type-set-inner)
+    resolved-type-set-inner
+    resolved-type-set-inner2)
 
   ;; ============================================================
   ;; S-Expression AST Types
@@ -315,6 +316,14 @@
     ;; Using explicit typed local to help transpiler generate correct option type
     (let ((inner-opt (Option (Ptr ResolvedType)) (if (!= inner nil) (some inner) (none))))
       (set! (. (deref t) inner-type) inner-opt)))
+
+  (fn resolved-type-set-inner2 ((t (Ptr ResolvedType)) (inner (Ptr ResolvedType)))
+    (@intent "Set the second inner type for Map (value type) and Result (error type)")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Unit))
+    (@pre (!= t nil))
+    ;; Using explicit typed local to help transpiler generate correct option type
+    (let ((inner-opt (Option (Ptr ResolvedType)) (if (!= inner nil) (some inner) (none))))
+      (set! (. (deref t) inner-type2) inner-opt)))
 
   (fn param-info-new ((arena Arena) (name String) (param-type (Ptr ResolvedType)))
     (@intent "Create a function parameter info")
