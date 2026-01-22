@@ -24,7 +24,7 @@
                env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
                env-get-unknown-type
-               env-make-option-type env-make-ptr-type env-make-result-type env-get-generic-type
+               env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
                env-add-warning env-add-error))
   (import strlib (starts-with string-build))
 
@@ -57,6 +57,13 @@
         ;; Range type vs its base type (e.g., AsciiChar vs Int)
         ((or (== a-kind 'rk-range) (== b-kind 'rk-range))
           (types-compatible-with-range a b))
+
+        ;; Function types are compatible if both are rk-function
+        ;; or if one is named "Fn" (generic function type from parameter parsing)
+        ;; TODO: Full signature comparison
+        ((and (== a-kind 'rk-function) (== b-kind 'rk-function)) true)
+        ((or (string-eq a-name "Fn") (string-eq b-name "Fn"))
+          (or (== a-kind 'rk-function) (== b-kind 'rk-function)))
 
         ;; Different names, not special case - not equal
         (else false))))
@@ -133,9 +140,9 @@
                     (match (env-lookup-constant env name)
                       ((some t) t)
                       ((none)
-                        ;; Try looking up as a function
+                        ;; Try looking up as a function (return Fn type for value use)
                         (match (env-lookup-function env name)
-                          ((some sig) (. (deref sig) return-type))
+                          ((some sig) (env-make-fn-type env sig))
                           ((none)
                             ;; Undefined variable - emit error
                             (let ((arena (env-arena env))
@@ -461,8 +468,19 @@
                     ((string-eq op "list-len")
                       (do (check-builtin-args env "list-len" 1 (- len 1) line col)
                           (env-get-int-type env)))
-                    ;; arena-alloc returns Int (pointer)
-                    ((string-eq op "arena-alloc") (env-get-int-type env))
+                    ;; (arena-alloc arena Type) - return (Ptr Type)
+                    ((string-eq op "arena-alloc")
+                      (if (>= len 3)
+                        (match (list-get items 2)
+                          ((some type-expr)
+                            (let ((type-name (sexpr-get-symbol-name type-expr)))
+                              (if (string-eq type-name "")
+                                (env-get-int-type env)
+                                (match (env-lookup-type env type-name)
+                                  ((some resolved) (env-make-ptr-type env resolved))
+                                  ((none) (env-get-int-type env))))))
+                          ((none) (env-get-int-type env)))
+                        (env-get-int-type env)))
                     ;; cast returns Int (approximation)
                     ((string-eq op "cast") (env-get-int-type env))
                     ;; String builtins
