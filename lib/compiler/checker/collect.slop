@@ -495,6 +495,13 @@
     (@pre (!= module-form nil))
     (let ((arena (env-arena env)))
       (when (sexpr-is-list module-form)
+        ;; Extract and set module name from position 1
+        (match (sexpr-list-get module-form 1)
+          ((some name-expr)
+            (let ((mod-name (sexpr-get-symbol-name name-expr)))
+              (when (not (string-eq mod-name ""))
+                (env-set-module env (some mod-name)))))
+          ((none) (do)))
         (let ((len (sexpr-list-len module-form)))
           ;; Skip module name and export, start at index 2
           (for (i 2 len)
@@ -516,9 +523,14 @@
           ((some name-expr)
             (let ((fn-name (sexpr-get-symbol-name name-expr)))
               (when (not (string-eq fn-name ""))
-                (let ((params (collect-fn-params env arena fn-form))
+                ;; Build qualified name: module:fn-name
+                (let ((qualified-name (match (env-get-module env)
+                                        ((some mod) (string-concat arena mod
+                                                      (string-concat arena ":" fn-name)))
+                                        ((none) fn-name)))
+                      (params (collect-fn-params env arena fn-form))
                       (ret-type (find-fn-return-type env fn-form))
-                      (sig (fn-signature-new arena fn-name fn-name params ret-type)))
+                      (sig (fn-signature-new arena qualified-name fn-name params ret-type)))
                   (env-register-function env sig)))))
           ((none) (do))))))
 
