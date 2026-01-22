@@ -481,6 +481,19 @@
       ((string-eq fn-name "bytes-new") "bytes_new")
       ;; Option operations
       ((string-eq fn-name "unwrap") "unwrap")
+      ;; C library functions (FFI)
+      ((string-eq fn-name "printf") "printf")
+      ((string-eq fn-name "fprintf") "fprintf")
+      ((string-eq fn-name "sprintf") "sprintf")
+      ((string-eq fn-name "snprintf") "snprintf")
+      ((string-eq fn-name "malloc") "malloc")
+      ((string-eq fn-name "free") "free")
+      ((string-eq fn-name "memcpy") "memcpy")
+      ((string-eq fn-name "memset") "memset")
+      ((string-eq fn-name "strlen") "strlen")
+      ((string-eq fn-name "strcmp") "strcmp")
+      ((string-eq fn-name "exit") "exit")
+      ((string-eq fn-name "abort") "abort")
       ;; Not a runtime function
       (else "")))
 
@@ -639,22 +652,6 @@
                         ((none) (ctx-str3 ctx "/* TRANSPILER ERROR: unknown function '" op "' for Option type inference */")))))))
               (else "/* TRANSPILER ERROR: non-symbol head in option type inference */")))
           ((none) "/* TRANSPILER ERROR: missing list head in option type inference */")))))
-
-  (fn ends-with ((s String) (suffix String))
-    (@intent "Check if string ends with suffix")
-    (@spec ((String String) -> Bool))
-    (let ((s-len (string-len s))
-          (suffix-len (string-len suffix)))
-      (if (< s-len suffix-len)
-        false
-        (let ((start (- s-len suffix-len))
-              (mut i 0)
-              (mut matches true))
-          (while (and (< i suffix-len) matches)
-            (when (not (== (char-at s (cast (Int 0 ..) (+ start i))) (char-at suffix (cast (Int 0 ..) i))))
-              (set! matches false))
-            (set! i (+ i 1)))
-          matches))))
 
   (fn strip-pointer-suffix ((arena Arena) (s String))
     (@intent "Strip trailing * from pointer type string")
@@ -1378,6 +1375,9 @@
               ((some arg)
                 (transpile-print ctx arg false))
               ((none) "/* print: missing argument */"))))
+        ;; printf: FFI call to C's printf - string literals become raw C strings
+        ((string-eq fn-name "printf")
+          (transpile-printf-call ctx items))
         ;; min: (min a b) -> ((a) < (b) ? (a) : (b))
         ((string-eq fn-name "min")
           (if (< len 3)
@@ -1553,6 +1553,30 @@
           (string-concat arena "\", (int)(" arg-c))
         (string-concat arena ").len, ("
           (string-concat arena arg-c ").data)")))))
+
+  (fn transpile-printf-call ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile printf call with raw C strings for string literals")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          (mut args "")
+          (mut i 1))
+      (while (< i len)
+        (match (list-get items i)
+          ((some arg)
+            (let ((arg-c (match (deref arg)
+                           ;; String literal - use raw C string, not SLOP_STR
+                           ((str s)
+                             (ctx-str3 ctx "\"" (escape-c-string ctx (. s value)) "\""))
+                           ;; Other expressions - transpile normally
+                           (_ (transpile-expr ctx arg)))))
+              (if (string-eq args "")
+                (set! args arg-c)
+                (set! args (ctx-str3 ctx args ", " arg-c)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (ctx-str3 ctx "printf(" args ")")))
 
   (fn string-contains ((s String) (substr String))
     (@intent "Check if string contains substring")
@@ -3165,21 +3189,22 @@
                           (needs-deref (is-ptr-to-ptr-map ctx map-expr)))
                       ;; slop_map_put expects arena, slop_map* and key as const void*
                       ;; Arena is assumed to be in scope from with-arena
+                      ;; Allocate value on arena so it persists beyond the statement
                       ;; If we have slop_map**, dereference once
                       (if needs-deref
-                        (let ((s1 (ctx-str ctx "({ __auto_type _tmp = " val-c))
-                              (s2 (ctx-str ctx s1 "; slop_map_put(arena, (*"))
+                        (let ((s1 (ctx-str ctx "({ __auto_type _val = " val-c))
+                              (s2 (ctx-str ctx s1 "; void* _vptr = slop_arena_alloc(arena, sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(arena, (*"))
                               (s3 (ctx-str ctx s2 map-c))
                               (s4 (ctx-str ctx s3 "), "))
                               (s5 (ctx-str ctx s4 key-ptr))
-                              (s6 (ctx-str ctx s5 ", &_tmp); })")))
+                              (s6 (ctx-str ctx s5 ", _vptr); })")))
                           s6)
-                        (let ((s1 (ctx-str ctx "({ __auto_type _tmp = " val-c))
-                              (s2 (ctx-str ctx s1 "; slop_map_put(arena, "))
+                        (let ((s1 (ctx-str ctx "({ __auto_type _val = " val-c))
+                              (s2 (ctx-str ctx s1 "; void* _vptr = slop_arena_alloc(arena, sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(arena, "))
                               (s3 (ctx-str ctx s2 map-c))
                               (s4 (ctx-str ctx s3 ", "))
                               (s5 (ctx-str ctx s4 key-ptr))
-                              (s6 (ctx-str ctx s5 ", &_tmp); })")))
+                              (s6 (ctx-str ctx s5 ", _vptr); })")))
                           s6))))
                   ((none) "/* map-put: missing val */")))
               ((none) "/* map-put: missing key */")))
@@ -3200,8 +3225,13 @@
                       (key-c (transpile-expr ctx key-expr))
                       ;; Wrap key as pointer for generic map API
                       (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr)))
-                  ;; Generate: slop_map_get(MAP, KEY_PTR)
-                  (ctx-str ctx "slop_map_get(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-ptr ")"))))))
+                  ;; Generate Option wrapper for map-get result
+                  ;; Default to slop_option_string for common case
+                  (ctx-str ctx "({ void* _ptr = slop_map_get("
+                    (ctx-str ctx map-c
+                      (ctx-str ctx ", "
+                        (ctx-str ctx key-ptr
+                          "); _ptr ? (slop_option_string){ .has_value = true, .value = *(slop_string*)_ptr } : (slop_option_string){ .has_value = false }; })"))))))
               ((none) "/* map-get: missing key */")))
           ((none) "/* map-get: missing map */")))))
 
