@@ -104,7 +104,11 @@ class ModuleResolver:
             return self.cache[path]
 
         # Parse file
-        ast = parse_file(str(path))
+        try:
+            ast = parse_file(str(path))
+        except Exception as e:
+            # Re-raise with filename included for better error messages
+            raise ResolverError(f"{path}: {e}") from e
 
         # Find module form
         module_name = path.stem  # Default to filename
