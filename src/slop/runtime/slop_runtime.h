@@ -531,6 +531,31 @@ static inline slop_list_string slop_map_keys(slop_arena* arena, slop_map* map) {
     return result;
 }
 
+/* Generic set elements - returns raw pointer to arena-allocated array of keys
+ * The caller should cast the data pointer to the appropriate element type.
+ * Returns a struct with data pointer, len, and cap (list-compatible layout). */
+typedef struct {
+    void* data;
+    size_t len;
+    size_t cap;
+} slop_set_elements_result;
+
+static inline slop_set_elements_result slop_set_elements_raw(slop_arena* arena, slop_map* set) {
+    size_t count = set->len;
+    if (count == 0) {
+        return (slop_set_elements_result){NULL, 0, 0};
+    }
+    void* result = slop_arena_alloc(arena, count * set->key_size);
+    size_t idx = 0;
+    for (size_t i = 0; i < set->cap && idx < count; i++) {
+        if (set->entries[i].occupied) {
+            memcpy((char*)result + idx * set->key_size, set->entries[i].key, set->key_size);
+            idx++;
+        }
+    }
+    return (slop_set_elements_result){result, count, count};
+}
+
 /* ============================================================
  * Typed String-Keyed Map (generic via macro)
  *

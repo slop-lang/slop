@@ -26,7 +26,7 @@
                env-get-unknown-type
                env-make-option-type env-make-ptr-type env-make-result-type env-get-generic-type
                env-add-warning env-add-error))
-  (import strlib (starts-with))
+  (import strlib (starts-with string-build))
 
   ;; ============================================================
   ;; Type Comparison
@@ -480,10 +480,11 @@
                     ((string-eq op "list-pop")
                       (do (check-builtin-args env "list-pop" 1 (- len 1) line col)
                           (env-make-option-type env nil)))
-                    ;; list-new expects 2 args: arena, Type
+                    ;; list-new expects 2 args: arena, Type - returns List
                     ((string-eq op "list-new")
                       (do (check-builtin-args env "list-new" 2 (- len 1) line col)
-                          (env-make-option-type env nil)))
+                          (let ((arena (env-arena env)))
+                            (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*"))))
                     ;; SExpr helpers
                     ((string-eq op "sexpr-is-list") (env-get-bool-type env))
                     ((string-eq op "sexpr-is-symbol") (env-get-bool-type env))
@@ -650,9 +651,24 @@
                 (let ((actual-type (infer-expr env arg-expr))
                       (expected-name (. (deref expected-type) name))
                       (actual-name (. (deref actual-type) name)))
+                  ;; Catch Option passed to non-Option parameter
+                  (when (and (or (string-eq actual-name "Option_T")
+                                 (starts-with actual-name "Option_"))
+                             (not (starts-with expected-name "Option_")))
+                    (let ((parts (list-new arena String)))
+                      (list-push parts "argument ")
+                      (list-push parts (int-to-string arena (+ arg-idx 1)))
+                      (list-push parts " to '")
+                      (list-push parts fn-name)
+                      (list-push parts "': expected ")
+                      (list-push parts expected-name)
+                      (list-push parts ", got ")
+                      (list-push parts actual-name)
+                      (list-push parts " - use match to unwrap")
+                      (env-add-error env (string-build arena parts) line col)))
                   ;; Error if types differ, but skip check for:
                   ;; - Unknown or generic T types
-                  ;; - Option_T matching any Option_* type
+                  ;; - Option_T matching any Option_* type (not non-Option types - caught above)
                   ;; - Generic container types (Ptr_T, Ptr_Ptr_SExpr vs List, etc.)
                   ;; - Unit (nil) passed to pointer types
                   ;; - Range types compatible with their base type (e.g., Score vs Int)
@@ -661,8 +677,9 @@
                              (not (string-eq actual-name "T"))
                              (not (string-eq expected-name "Unknown"))
                              (not (string-eq expected-name "T"))
-                             ;; Allow Option_T to match any Option type
-                             (not (string-eq actual-name "Option_T"))
+                             ;; Allow Option_T to match any Option_* type (not non-Option types - caught above)
+                             (not (and (string-eq actual-name "Option_T")
+                                       (starts-with expected-name "Option_")))
                              ;; Allow Ptr_T to match any Ptr type
                              (not (string-eq actual-name "Ptr_T"))
                              ;; Allow generic List/Ptr mismatches for now
