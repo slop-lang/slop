@@ -16,7 +16,7 @@
   (import types (ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
                  FnSignature ParamInfo
                  resolved-type-new resolved-variant-new resolved-field-new
-                 resolved-type-set-inner
+                 resolved-type-set-inner resolved-type-set-inner2
                  fn-signature-new param-info-new))
   (import env (TypeEnv env-arena env-register-type env-lookup-type
                env-register-function env-register-constant env-set-module env-get-module
@@ -98,6 +98,26 @@
                                   (resolved (resolved-type-new arena 'rk-range type-name (none) type-name)))
                               (resolved-type-set-inner resolved base-type)
                               (env-register-type env resolved)))
+                          ;; Map alias: (type Name (Map KeyType ValueType))
+                          ((is-form type-expr "Map")
+                            (let ((resolved (resolved-type-new arena 'rk-map type-name (none) "slop_map*"))
+                                  (key-type (get-field-type env arena (get-type-arg type-expr 1)))
+                                  (val-type (get-field-type env arena (get-type-arg type-expr 2))))
+                              (resolved-type-set-inner resolved key-type)
+                              (resolved-type-set-inner2 resolved val-type)
+                              (env-register-type env resolved)))
+                          ;; Set alias: (type Name (Set ElemType))
+                          ((is-form type-expr "Set")
+                            (let ((resolved (resolved-type-new arena 'rk-primitive type-name (none) "slop_map*"))
+                                  (elem-type (get-field-type env arena (get-type-arg type-expr 1))))
+                              (resolved-type-set-inner resolved elem-type)
+                              (env-register-type env resolved)))
+                          ;; List alias: (type Name (List ElemType))
+                          ((is-form type-expr "List")
+                            (let ((resolved (resolved-type-new arena 'rk-list type-name (none) "slop_list_t*"))
+                                  (elem-type (get-field-type env arena (get-type-arg type-expr 1))))
+                              (resolved-type-set-inner resolved elem-type)
+                              (env-register-type env resolved)))
                           ;; Other - use placeholder
                           (else
                             (let ((resolved (resolved-type-new arena 'rk-primitive type-name (none) type-name)))
@@ -147,6 +167,17 @@
                   (_ (do))))
               ((none) (do))))))
       (_ (do))))
+
+  (fn get-type-arg ((type-expr (Ptr SExpr)) (idx Int))
+    (@intent "Get type argument at given index from a type expression like (Map K V)")
+    (@spec (((Ptr SExpr) Int) -> (Ptr SExpr)))
+    (@pre (!= type-expr nil))
+    (match (deref type-expr)
+      ((lst lst)
+        (match (list-get (. lst items) idx)
+          ((some arg) arg)
+          ((none) type-expr)))  ;; Fallback to expr itself
+      (_ type-expr)))
 
   (fn get-field-type ((env (Ptr TypeEnv)) (arena Arena) (type-expr (Ptr SExpr)))
     (@intent "Get resolved type for a field type expression")
@@ -205,6 +236,32 @@
                       (let ((list-type (resolved-type-new arena 'rk-list "List" (none) "slop_list_t*")))
                         (resolved-type-set-inner list-type inner-type)
                         list-type)))
+                  ;; Set type: (Set ElemType)
+                  ((string-eq head-name "Set")
+                    (let ((inner-type (if (>= (list-len items) 2)
+                                        (match (list-get items 1)
+                                          ((some inner-expr) (get-field-type env arena inner-expr))
+                                          ((none) (env-get-int-type env)))
+                                        (env-get-int-type env))))
+                      (let ((set-type (resolved-type-new arena 'rk-primitive "Set" (none) "slop_map*")))
+                        (resolved-type-set-inner set-type inner-type)
+                        set-type)))
+                  ;; Map type: (Map KeyType ValueType)
+                  ((string-eq head-name "Map")
+                    (let ((key-type (if (>= (list-len items) 2)
+                                      (match (list-get items 1)
+                                        ((some inner-expr) (get-field-type env arena inner-expr))
+                                        ((none) (env-get-int-type env)))
+                                      (env-get-int-type env)))
+                          (val-type (if (>= (list-len items) 3)
+                                      (match (list-get items 2)
+                                        ((some inner-expr) (get-field-type env arena inner-expr))
+                                        ((none) (env-get-int-type env)))
+                                      (env-get-int-type env))))
+                      (let ((map-type (resolved-type-new arena 'rk-map "Map" (none) "slop_map*")))
+                        (resolved-type-set-inner map-type key-type)
+                        (resolved-type-set-inner2 map-type val-type)
+                        map-type)))
                   ;; Unknown complex type
                   (else (resolved-type-new arena 'rk-primitive head-name (none) head-name)))))
             ((none) (env-get-unit-type env)))))

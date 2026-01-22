@@ -133,6 +133,45 @@
       (vars (List VarEntry))
       (parent (Option (Ptr Scope)))))
 
+  ;; Types used by TranspileContext (must be defined before it)
+  (type EnumVariant (record
+    (variant-name String)
+    (enum-name String)))
+
+  (type ResultType (record
+    (ok-type String)      ;; C type for ok value
+    (err-type String)     ;; C type for error value
+    (c-name String)))     ;; Generated C type name like slop_result_int_TestError
+
+  (type OptionType (record
+    (inner-type String)   ;; C type of the contained value
+    (c-name String)))     ;; Generated C type name like slop_option_SExpr_ptr
+
+  (type ListType (record
+    (elem-type String)    ;; C type of list elements
+    (c-name String)))     ;; Generated C type name like slop_list_SExpr_ptr
+
+  (type ChanType (record
+    (elem-type String)    ;; C type of channel elements
+    (c-name String)))     ;; Generated C type name like slop_chan_int
+
+  (type ThreadType (record
+    (result-type String)  ;; C type of thread result
+    (c-name String)))     ;; Generated C type name like slop_thread_int
+
+  (type ResultTypeAlias (record
+    (alias-name String)   ;; SLOP type alias name (e.g., "ComputeResult")
+    (c-name String)))     ;; Generated C type name (e.g., "slop_result_int_BaseError")
+
+  (type FuncCNameAlias (record
+    (raw-name String)      ;; SLOP function name
+    (mangled-name String)  ;; Module-prefixed C name
+    (clean-name String)))  ;; User-specified :c-name
+
+  (type InlineRecord (record
+    (type-name String)    ;; Generated type name (e.g., "_anon_record_12345678")
+    (field-body String))) ;; C struct body (e.g., "int64_t first; int64_t second; ")
+
   ;; Main transpiler context
   (type TranspileContext
     (record
@@ -186,44 +225,6 @@
       (gensym-counter Int)
       ;; Flag to capture return values to _retval (for postconditions)
       (capture-to-retval Bool)))
-
-  (type EnumVariant (record
-    (variant-name String)
-    (enum-name String)))
-
-  (type ResultType (record
-    (ok-type String)      ;; C type for ok value
-    (err-type String)     ;; C type for error value
-    (c-name String)))     ;; Generated C type name like slop_result_int_TestError
-
-  (type OptionType (record
-    (inner-type String)   ;; C type of the contained value
-    (c-name String)))     ;; Generated C type name like slop_option_SExpr_ptr
-
-  (type ListType (record
-    (elem-type String)    ;; C type of list elements
-    (c-name String)))     ;; Generated C type name like slop_list_SExpr_ptr
-
-  (type ChanType (record
-    (elem-type String)    ;; C type of channel elements
-    (c-name String)))     ;; Generated C type name like slop_chan_int
-
-  (type ThreadType (record
-    (result-type String)  ;; C type of thread result
-    (c-name String)))     ;; Generated C type name like slop_thread_int
-
-  (type ResultTypeAlias (record
-    (alias-name String)   ;; SLOP type alias name (e.g., "ComputeResult")
-    (c-name String)))     ;; Generated C type name (e.g., "slop_result_int_BaseError")
-
-  (type FuncCNameAlias (record
-    (raw-name String)      ;; SLOP function name
-    (mangled-name String)  ;; Module-prefixed C name
-    (clean-name String)))  ;; User-specified :c-name
-
-  (type InlineRecord (record
-    (type-name String)    ;; Generated type name (e.g., "_anon_record_12345678")
-    (field-body String))) ;; C struct body (e.g., "int64_t first; int64_t second; ")
 
   ;; ============================================================
   ;; Context Creation
@@ -1266,6 +1267,10 @@
 
                     ;; (Map K V) -> slop_map* (generic - value type tracked in VarEntry.slop-type)
                     ((string-eq head "Map")
+                      (set! result "slop_map*"))
+
+                    ;; (Set T) -> slop_map* (sets are implemented as maps in runtime)
+                    ((string-eq head "Set")
                       (set! result "slop_map*"))
 
                     ;; (Array T size) -> T*

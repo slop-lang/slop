@@ -14,7 +14,7 @@
     ;; Operator helpers
     is-binop is-unop is-comparison-op
     ;; Type inference
-    infer-expr-c-type)
+    infer-expr-c-type infer-option-inner-slop-type)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
@@ -755,7 +755,7 @@
   (fn extract-map-value-from-slop-type ((arena Arena) (slop-type String))
     (@intent "Extract value type from '(Map K V)' SLOP type string")
     (@spec ((Arena String) -> String))
-    ;; Handle common cases like "(Map String Int)" -> "Int"
+    ;; Handle cases like "(Map String Int)" -> "Int" or "(Map Term (Set Term))" -> "(Set Term)"
     ;; Returns "" if cannot parse
     (let ((len (string-len slop-type)))
       (if (< len 10)
@@ -763,22 +763,31 @@
         ;; Check for "(Map " prefix (5 chars)
         (if (not (starts-with slop-type "(Map "))
           ""
-          ;; Find the last space before the closing paren
-          ;; This works for simple value types like Int, String, Set
-          (let ((mut last-space-idx 5)
-                (mut i 5)
-                (end-idx (- len 1)))  ;; don't include trailing )
-            ;; Scan to find the last space
-            (while (< i end-idx)
-              (when (== (char-at slop-type (cast (Int 0 ..) i)) 32)  ;; 32 = ' '
-                (set! last-space-idx i))
+          ;; Find the space between K and V at nesting level 1
+          ;; This handles compound value types like (Set Term)
+          (let ((mut i 5)
+                (mut nesting 1)
+                (mut key-space 0)
+                (mut found-key false)
+                (end-idx (- len 1)))
+            ;; Skip past key type to find space at level 1
+            (while (and (< i end-idx) (not found-key))
+              (let ((c (char-at slop-type (cast (Int 0 ..) i))))
+                (cond
+                  ((== c 40) (set! nesting (+ nesting 1)))
+                  ((== c 41) (set! nesting (- nesting 1)))
+                  ((and (== c 32) (== nesting 1))
+                    (set! key-space i)
+                    (set! found-key true))
+                  (else (do))))
               (set! i (+ i 1)))
-            ;; Extract value type from last_space_idx+1 to end_idx
-            (let ((value-start (+ last-space-idx 1))
-                  (value-len (- end-idx value-start)))
-              (if (> value-len 0)
-                (substring arena slop-type (cast (Int 0 ..) value-start) (cast (Int 0 ..) value-len))
-                "")))))))
+            (if (not found-key)
+              ""
+              (let ((value-start (+ key-space 1))
+                    (value-len (- end-idx value-start)))
+                (if (> value-len 0)
+                  (substring arena slop-type (cast (Int 0 ..) value-start) (cast (Int 0 ..) value-len))
+                  ""))))))))
 
   (fn slop-value-type-to-c-type ((arena Arena) (slop-type String))
     (@intent "Convert SLOP value type name to C type")
@@ -868,6 +877,70 @@
       ((starts-with option-type "slop_option_")
         (substring-after-prefix arena option-type "slop_option_"))
       (else "void")))
+
+  (fn infer-option-inner-slop-type ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)))
+    (@intent "Infer the inner SLOP type of an Option from the scrutinee expression")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {scrutinee != nil})
+    ;; For (map-get M k), if M has type (Map K V), return "V"
+    ;; For (list-get L i), if L has type (List T), return "T"
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref scrutinee)
+        ((lst lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            (if (< len 2)
+              ""
+              (match (list-get items 0)
+                ((some head-expr)
+                  (match (deref head-expr)
+                    ((sym sym)
+                      (let ((op (. sym name)))
+                        (cond
+                          ((string-eq op "map-get")
+                            ;; (map-get MAP KEY) - get value type from MAP's type
+                            (if (< len 2)
+                              ""
+                              (match (list-get items 1)
+                                ((some map-expr)
+                                  (match (deref map-expr)
+                                    ((sym map-sym)
+                                      (let ((map-name (. map-sym name)))
+                                        (match (ctx-lookup-var ctx map-name)
+                                          ((some var-entry)
+                                            (let ((slop-type (. var-entry slop-type)))
+                                              (if (> (string-len slop-type) 0)
+                                                (extract-map-value-from-slop-type arena slop-type)
+                                                "")))
+                                          ((none) ""))))
+                                    (_ "")))
+                                ((none) ""))))
+                          ((string-eq op "list-get")
+                            ;; (list-get LIST IDX) - get element type from LIST's type
+                            (if (< len 2)
+                              ""
+                              (match (list-get items 1)
+                                ((some list-expr)
+                                  (match (deref list-expr)
+                                    ((sym list-sym)
+                                      (let ((list-name (. list-sym name)))
+                                        (match (ctx-lookup-var ctx list-name)
+                                          ((some var-entry)
+                                            (let ((slop-type (. var-entry slop-type)))
+                                              (if (starts-with slop-type "(List ")
+                                                (let ((elem-len (- (- (string-len slop-type) 6) 1)))
+                                                  (if (> elem-len 0)
+                                                    (substring arena slop-type 6 (cast (Int 0 ..) elem-len))
+                                                    ""))
+                                                "")))
+                                          ((none) ""))))
+                                    (_ "")))
+                                ((none) ""))))
+                          (else ""))))
+                    (_ "")))
+                ((none) "")))))
+        (_ ""))))
 
   ;; ============================================================
   ;; Ternary None Fix Helper

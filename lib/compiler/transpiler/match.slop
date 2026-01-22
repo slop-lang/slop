@@ -20,7 +20,7 @@
                    to-c-type-prefixed))
   (import strlib (starts-with ends-with char-at))
   (import ctype (to-c-name to-c-type))
-  (import expr (transpile-expr infer-expr-c-type))
+  (import expr (transpile-expr infer-expr-c-type infer-option-inner-slop-type))
 
   ;; ============================================================
   ;; Pattern Type Detection
@@ -194,7 +194,7 @@
                       ;; Dispatch based on pattern types
                       (cond
                         ((is-option-match patterns)
-                          (transpile-option-match ctx scrutinee-var patterns items is-return))
+                          (transpile-option-match ctx scrutinee-var scrutinee patterns items is-return))
                         ((is-result-match patterns)
                           (transpile-result-match ctx scrutinee-var patterns items is-return))
                         ((is-enum-match patterns)
@@ -238,9 +238,10 @@
   ;; ============================================================
 
   (fn transpile-option-match ((ctx (Ptr TranspileContext)) (scrutinee-c String)
+                              (scrutinee-expr (Ptr SExpr))
                               (patterns (List (Ptr SExpr))) (items (List (Ptr SExpr))) (is-return Bool))
     (@intent "Transpile Option matching")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr)) (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (List (Ptr SExpr)) (List (Ptr SExpr)) Bool) -> Unit))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
@@ -258,7 +259,7 @@
                         (let ((tag (get-pattern-tag pattern)))
                           (cond
                             ((string-eq tag "some")
-                              (emit-option-some-branch ctx scrutinee-c pattern branch-items is-return first)
+                              (emit-option-some-branch ctx scrutinee-c scrutinee-expr pattern branch-items is-return first)
                               (set! first false))
                             ((string-eq tag "none")
                               (emit-option-none-branch ctx scrutinee-c branch-items is-return first)
@@ -276,9 +277,10 @@
         (ctx-emit ctx "}"))))
 
   (fn emit-option-some-branch ((ctx (Ptr TranspileContext)) (scrutinee-c String)
+                               (scrutinee-expr (Ptr SExpr))
                                (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (is-return Bool) (first Bool))
     (@intent "Emit the (some x) branch")
-    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (List (Ptr SExpr)) Bool Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (Ptr SExpr) (List (Ptr SExpr)) Bool Bool) -> Unit))
     (@pre {ctx != nil})
     (@pre {pattern != nil})
     (let ((arena (. (deref ctx) arena)))
@@ -291,9 +293,11 @@
       ;; Bind the value if there's a name
       (match (extract-binding-name pattern)
         ((some binding-name)
-          (let ((c-name (to-c-name arena binding-name)))
+          (let ((c-name (to-c-name arena binding-name))
+                ;; Infer the inner type from the scrutinee expression
+                (inner-slop-type (infer-option-inner-slop-type ctx scrutinee-expr)))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".value;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" "" false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" inner-slop-type false false))))
         ((none) (do)))
       ;; Emit body
       (emit-branch-body ctx branch-items is-return)
