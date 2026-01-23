@@ -14,15 +14,17 @@
     ;; Operator helpers
     is-binop is-unop is-comparison-op
     ;; Type inference
-    infer-expr-c-type infer-option-inner-slop-type)
+    infer-expr-c-type infer-option-inner-slop-type infer-expr-slop-type
+    ;; Collection/Result type inference helpers
+    infer-collection-element-slop-type infer-result-ok-slop-type infer-result-err-slop-type)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
-                   ctx-lookup-field-type-by-index ctx-register-option-type
-                   ctx-register-struct-key-type ctx-has-struct-key-type))
+                   ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
+                   ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias))
   (import ctype (to-c-type to-c-name type-to-identifier))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
 
@@ -790,9 +792,10 @@
                   (substring arena slop-type (cast (Int 0 ..) value-start) (cast (Int 0 ..) value-len))
                   ""))))))))
 
-  (fn slop-value-type-to-c-type ((arena Arena) (slop-type String))
-    (@intent "Convert SLOP value type name to C type")
-    (@spec ((Arena String) -> String))
+  (fn slop-value-type-to-c-type ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Convert SLOP value type name to C type with proper module prefix")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
     ;; Map common SLOP types to C types
     (cond
       ((string-eq slop-type "Int") "int64_t")
@@ -810,8 +813,20 @@
       ((string-eq slop-type "Bool") "uint8_t")
       ((string-eq slop-type "String") "slop_string")
       ((string-eq slop-type "Bytes") "slop_bytes")
-      ;; User-defined types - convert to C identifier format
-      (else (to-c-name arena slop-type))))
+      ;; User-defined types - look up in context for proper prefixed name
+      (else
+        (let ((arena (. (deref ctx) arena)))
+          (match (ctx-lookup-type ctx slop-type)
+            ((some entry) (. entry c-name))
+            ((none) (to-c-name arena slop-type)))))))
+
+  (fn get-var-name-from-expr ((expr (Ptr SExpr)))
+    (@intent "Extract variable name from expression if it's a simple symbol")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((sym sym) (. sym name))
+      (_ "")))
 
   (fn extract-map-key-from-slop-type ((arena Arena) (slop-type String))
     (@intent "Extract key type from '(Map K V)' SLOP type string")
@@ -850,6 +865,140 @@
                   (substring arena slop-type (cast (Int 0 ..) key-start) (cast (Int 0 ..) key-len))
                   ""))))))))
 
+  (fn resolve-type-alias-for-map ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Resolve a type alias to get the underlying (Map K V) or (Set T) type")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; If it already starts with (Map or (Set, return as-is
+    (cond
+      ((starts-with slop-type "(Map ") slop-type)
+      ((starts-with slop-type "(Set ") slop-type)
+      ((starts-with slop-type "(") slop-type)  ;; Some other compound type
+      (else
+        ;; It's a simple identifier - look up as type alias
+        (match (ctx-lookup-type-alias ctx slop-type)
+          ((some alias-def) alias-def)
+          ((none) slop-type)))))
+
+  ;; ============================================================
+  ;; SLOP Type Inference for Expressions
+  ;; ============================================================
+
+  (fn infer-expr-slop-type ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Infer SLOP type of an expression for map/set key type propagation")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref expr)
+        ;; Variable reference - look up its slop-type
+        ((sym sym)
+          (let ((name (. sym name)))
+            (match (ctx-lookup-var ctx name)
+              ((some entry) (. entry slop-type))
+              ((none) ""))))
+        ;; List expression - check for field access
+        ((lst lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            (if (< len 1)
+              ""
+              (match (list-get items 0)
+                ((some head)
+                  (match (deref head)
+                    ((sym head-sym)
+                      (let ((op (. head-sym name)))
+                        (cond
+                          ;; Field access: (. obj field)
+                          ((and (string-eq op ".") (>= len 3))
+                            (match (list-get items 1)
+                              ((some obj-expr)
+                                (match (list-get items 2)
+                                  ((some field-expr)
+                                    (match (deref field-expr)
+                                      ((sym field-sym)
+                                        (let ((field-name (. field-sym name)))
+                                          ;; Get object's type, then look up field's slop-type
+                                          (let ((obj-c-type (infer-expr-c-type ctx obj-expr)))
+                                            (match (ctx-lookup-field-slop-type ctx obj-c-type field-name)
+                                              ((some slop-type) slop-type)
+                                              ((none)
+                                                ;; Try with SLOP type
+                                                (let ((obj-slop-type (infer-expr-slop-type ctx obj-expr)))
+                                                  (match (ctx-lookup-field-slop-type ctx obj-slop-type field-name)
+                                                    ((some slop-type2) slop-type2)
+                                                    ((none) ""))))))))
+                                      (_ "")))
+                                  ((none) "")))
+                              ((none) "")))
+                          ;; Default: no type info
+                          (else ""))))
+                    (_ "")))
+                ((none) "")))))
+        ;; Other forms - no type info
+        (_ ""))))
+
+  ;; ============================================================
+  ;; Helper Functions for Type Inference from Inferred SLOP Types
+  ;; ============================================================
+
+  (fn infer-map-key-c-type-from-slop-type ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Infer C type of map key from a SLOP type string")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (if (== (string-len slop-type) 0)
+        ""
+        (let ((resolved-type (resolve-type-alias-for-map ctx slop-type))
+              (key-slop-type (extract-map-key-from-slop-type arena resolved-type)))
+          (if (> (string-len key-slop-type) 0)
+            (slop-value-type-to-c-type ctx key-slop-type)
+            (let ((elem-slop-type (extract-set-elem-from-slop-type arena resolved-type)))
+              (if (> (string-len elem-slop-type) 0)
+                (slop-value-type-to-c-type ctx elem-slop-type)
+                "")))))))
+
+  (fn infer-set-elem-c-type-from-slop-type ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Infer C type of set element from a SLOP type string")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (if (== (string-len slop-type) 0)
+        ""
+        (let ((resolved-type (resolve-type-alias-for-map ctx slop-type))
+              (elem-slop-type (extract-set-elem-from-slop-type arena resolved-type)))
+          (if (> (string-len elem-slop-type) 0)
+            (slop-value-type-to-c-type ctx elem-slop-type)
+            "")))))
+
+  (fn extract-map-value-from-inferred ((ctx (Ptr TranspileContext)) (map-expr (Ptr SExpr)))
+    (@intent "Extract map value type by inferring the expression's SLOP type")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {map-expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (inferred-slop-type (infer-expr-slop-type ctx map-expr)))
+      (if (== (string-len inferred-slop-type) 0)
+        ""
+        (let ((resolved-type (resolve-type-alias-for-map ctx inferred-slop-type)))
+          (extract-map-value-from-slop-type arena resolved-type)))))
+
+  (fn extract-list-elem-from-inferred ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)))
+    (@intent "Extract list element type by inferring the expression's SLOP type")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {list-expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (inferred-slop-type (infer-expr-slop-type ctx list-expr)))
+      (if (== (string-len inferred-slop-type) 0)
+        ""
+        (if (starts-with inferred-slop-type "(List ")
+          (let ((elem-len (- (- (string-len inferred-slop-type) 6) 1)))
+            (if (> elem-len 0)
+              (substring arena inferred-slop-type 6 (cast (Int 0 ..) elem-len))
+              ""))
+          ""))))
+
   (fn infer-map-key-c-type ((ctx (Ptr TranspileContext)) (map-expr (Ptr SExpr)))
     (@intent "Infer the C type of a map's key type from variable lookup")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
@@ -864,15 +1013,21 @@
               ((some var-entry)
                 (let ((slop-type (. var-entry slop-type)))
                   (if (> (string-len slop-type) 0)
-                    ;; We have a SLOP type string - extract key type from it
-                    (let ((key-slop-type (extract-map-key-from-slop-type arena slop-type)))
+                    ;; We have a SLOP type string - resolve type aliases and extract key type
+                    (let ((resolved-type (resolve-type-alias-for-map ctx slop-type))
+                          (key-slop-type (extract-map-key-from-slop-type arena resolved-type)))
                       (if (> (string-len key-slop-type) 0)
-                        (slop-value-type-to-c-type arena key-slop-type)
-                        ""))
+                        (slop-value-type-to-c-type ctx key-slop-type)
+                        ;; Try set element type if not a map
+                        (let ((elem-slop-type (extract-set-elem-from-slop-type arena resolved-type)))
+                          (if (> (string-len elem-slop-type) 0)
+                            (slop-value-type-to-c-type ctx elem-slop-type)
+                            ""))))
                     ;; No slop-type stored
                     "")))
               ((none) ""))))
-        (_ ""))))
+        ;; Non-symbol expression (field access, match binding, etc.) - use fallback inference
+        (_ (infer-map-key-c-type-from-slop-type ctx (infer-expr-slop-type ctx map-expr))))))
 
   (fn extract-set-elem-from-slop-type ((arena Arena) (slop-type String))
     (@intent "Extract element type from '(Set T)' SLOP type string")
@@ -906,15 +1061,74 @@
               ((some var-entry)
                 (let ((slop-type (. var-entry slop-type)))
                   (if (> (string-len slop-type) 0)
-                    ;; We have a SLOP type string - extract element type from it
-                    (let ((elem-slop-type (extract-set-elem-from-slop-type arena slop-type)))
+                    ;; We have a SLOP type string - resolve type aliases and extract element type
+                    (let ((resolved-type (resolve-type-alias-for-map ctx slop-type))
+                          (elem-slop-type (extract-set-elem-from-slop-type arena resolved-type)))
                       (if (> (string-len elem-slop-type) 0)
-                        (slop-value-type-to-c-type arena elem-slop-type)
+                        (slop-value-type-to-c-type ctx elem-slop-type)
                         ""))
                     ;; No slop-type stored
                     "")))
               ((none) ""))))
-        (_ ""))))
+        ;; Non-symbol expression (field access, match binding, etc.) - use fallback inference
+        (_ (infer-set-elem-c-type-from-slop-type ctx (infer-expr-slop-type ctx set-expr))))))
+
+  (fn compound-slop-type-to-id ((arena Arena) (slop-type String))
+    (@intent "Convert compound SLOP type string to C identifier for container naming")
+    (@spec ((Arena String) -> String))
+    ;; Handle compound types: (Set T), (Map K V), (List T), (Option T), (Ptr T)
+    ;; Returns a valid C identifier component
+    (cond
+      ;; (Set T) -> set_<T-id>
+      ((starts-with slop-type "(Set ")
+        (let ((inner (extract-set-elem-from-slop-type arena slop-type)))
+          (if (> (string-len inner) 0)
+            (string-concat arena "set_" (slop-value-type-to-option-id arena inner))
+            (to-c-name arena slop-type))))
+      ;; (Map K V) -> map_<K-id>_<V-id>
+      ((starts-with slop-type "(Map ")
+        (let ((key-type (extract-map-key-from-slop-type arena slop-type))
+              (val-type (extract-map-value-from-slop-type arena slop-type)))
+          (if (and (> (string-len key-type) 0) (> (string-len val-type) 0))
+            (string-concat arena "map_"
+              (string-concat arena (slop-value-type-to-option-id arena key-type)
+                (string-concat arena "_" (slop-value-type-to-option-id arena val-type))))
+            (to-c-name arena slop-type))))
+      ;; (List T) -> list_<T-id>
+      ((starts-with slop-type "(List ")
+        (let ((len (string-len slop-type)))
+          (if (< len 8)
+            (to-c-name arena slop-type)
+            (let ((inner-start 6)
+                  (inner-len (- (- len 1) inner-start)))
+              (if (> inner-len 0)
+                (let ((inner (substring arena slop-type (cast (Int 0 ..) inner-start) (cast (Int 0 ..) inner-len))))
+                  (string-concat arena "list_" (slop-value-type-to-option-id arena inner)))
+                (to-c-name arena slop-type))))))
+      ;; (Option T) -> option_<T-id>
+      ((starts-with slop-type "(Option ")
+        (let ((len (string-len slop-type)))
+          (if (< len 10)
+            (to-c-name arena slop-type)
+            (let ((inner-start 8)
+                  (inner-len (- (- len 1) inner-start)))
+              (if (> inner-len 0)
+                (let ((inner (substring arena slop-type (cast (Int 0 ..) inner-start) (cast (Int 0 ..) inner-len))))
+                  (string-concat arena "option_" (slop-value-type-to-option-id arena inner)))
+                (to-c-name arena slop-type))))))
+      ;; (Ptr T) -> <T-id>_ptr
+      ((starts-with slop-type "(Ptr ")
+        (let ((len (string-len slop-type)))
+          (if (< len 7)
+            (to-c-name arena slop-type)
+            (let ((inner-start 5)
+                  (inner-len (- (- len 1) inner-start)))
+              (if (> inner-len 0)
+                (let ((inner (substring arena slop-type (cast (Int 0 ..) inner-start) (cast (Int 0 ..) inner-len))))
+                  (string-concat arena (slop-value-type-to-option-id arena inner) "_ptr"))
+                (to-c-name arena slop-type))))))
+      ;; Unknown compound type - fall back to to-c-name
+      (else (to-c-name arena slop-type))))
 
   (fn slop-value-type-to-option-id ((arena Arena) (slop-type String))
     (@intent "Convert SLOP value type name to option type identifier component")
@@ -936,6 +1150,9 @@
       ((string-eq slop-type "Bool") "uint8_t")
       ((string-eq slop-type "String") "string")
       ((string-eq slop-type "Bytes") "bytes")
+      ;; Compound types starting with ( need special handling
+      ((starts-with slop-type "(")
+        (compound-slop-type-to-id arena slop-type))
       ;; User-defined types - convert to C identifier format
       (else (to-c-name arena slop-type))))
 
@@ -979,7 +1196,11 @@
       ((string-eq option-type "slop_option_char") "char")
       ((string-eq option-type "slop_option_u8") "uint8_t")
       ((starts-with option-type "slop_option_")
-        (substring-after-prefix arena option-type "slop_option_"))
+        (let ((extracted (substring-after-prefix arena option-type "slop_option_")))
+          ;; Handle set_ types - sets are implemented as slop_map*
+          (if (starts-with extracted "set_")
+            "slop_map*"
+            extracted)))
       (else "void")))
 
   (fn infer-option-inner-slop-type ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)))
@@ -987,10 +1208,28 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
     (@pre {ctx != nil})
     (@pre {scrutinee != nil})
+    ;; For a variable of type (Option T), return "T"
     ;; For (map-get M k), if M has type (Map K V), return "V"
     ;; For (list-get L i), if L has type (List T), return "T"
     (let ((arena (. (deref ctx) arena)))
       (match (deref scrutinee)
+        ;; Variable reference - look up its slop-type and extract inner type from (Option T)
+        ((sym sym)
+          (let ((name (. sym name)))
+            (match (ctx-lookup-var ctx name)
+              ((some var-entry)
+                (let ((slop-type (. var-entry slop-type)))
+                  (if (starts-with slop-type "(Option ")
+                    ;; Extract T from "(Option T)" - starts at position 8, ends before last paren
+                    (let ((len (string-len slop-type)))
+                      (if (> len 9)
+                        (let ((inner-len (- (- (cast Int len) 8) 1)))
+                          (if (> inner-len 0)
+                            (substring arena slop-type 8 (cast (Int 0 ..) inner-len))
+                            ""))
+                        ""))
+                    "")))
+              ((none) ""))))
         ((lst lst)
           (let ((items (. lst items))
                 (len (list-len items)))
@@ -1015,10 +1254,15 @@
                                           ((some var-entry)
                                             (let ((slop-type (. var-entry slop-type)))
                                               (if (> (string-len slop-type) 0)
-                                                (extract-map-value-from-slop-type arena slop-type)
+                                                ;; Resolve type aliases before extracting value type
+                                                (let ((resolved-type (resolve-type-alias-for-map ctx slop-type)))
+                                                  (let ((value-type (extract-map-value-from-slop-type arena resolved-type)))
+                                                    ;; Also resolve value type if it's a type alias (e.g., TermSet -> (Set Term))
+                                                    (resolve-type-alias-for-map ctx value-type)))
                                                 "")))
                                           ((none) ""))))
-                                    (_ "")))
+                                    ;; Non-symbol map expression - use fallback inference
+                                    (_ (extract-map-value-from-inferred ctx map-expr))))
                                 ((none) ""))))
                           ((string-eq op "list-get")
                             ;; (list-get LIST IDX) - get element type from LIST's type
@@ -1039,7 +1283,8 @@
                                                     ""))
                                                 "")))
                                           ((none) ""))))
-                                    (_ "")))
+                                    ;; Non-symbol list expression - use fallback inference
+                                    (_ (extract-list-elem-from-inferred ctx list-expr))))
                                 ((none) ""))))
                           (else ""))))
                     (_ "")))
@@ -2088,11 +2333,11 @@
                   (patterns (collect-match-patterns ctx items)))
               (cond
                 ((is-option-patterns patterns)
-                  (build-option-match-expr ctx scrutinee-c items))
+                  (build-option-match-expr ctx scrutinee scrutinee-c items))
                 ((is-result-patterns patterns)
-                  (build-result-match-expr ctx scrutinee-c items))
+                  (build-result-match-expr ctx scrutinee scrutinee-c items))
                 ((is-union-expr-patterns ctx patterns)
-                  (build-union-match-expr ctx scrutinee-c items))
+                  (build-union-match-expr ctx scrutinee scrutinee-c items))
                 (else
                   (build-ternary-match-expr ctx scrutinee-c items)))))
           ((none) "/* missing match scrutinee */")))))
@@ -2227,28 +2472,32 @@
             (transpile-expr ctx body-expr))
           ((none) "0")))))
 
-  (fn transpile-branch-body-with-binding ((ctx (Ptr TranspileContext)) (branch-items (List (Ptr SExpr)))
-                                          (binding-name String))
+  (fn transpile-branch-body-with-binding ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr))
+                                          (branch-items (List (Ptr SExpr))) (binding-name String))
     (@intent "Transpile branch body with proper variable binding in scope")
-    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) String) -> String))
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
     (@pre {ctx != nil})
+    (@pre {scrutinee != nil})
     ;; Push scope to contain the binding
     (ctx-push-scope ctx)
     ;; Bind the variable if non-empty
     (when (not (string-eq binding-name ""))
       (let ((arena (. (deref ctx) arena))
-            (c-name (to-c-name arena binding-name)))
-        (ctx-bind-var ctx (VarEntry binding-name c-name "auto" "" false false))))
+            (c-name (to-c-name arena binding-name))
+            ;; Infer the inner SLOP type from the scrutinee for proper map/set iteration
+            (inner-slop-type (infer-option-inner-slop-type ctx scrutinee)))
+        (ctx-bind-var ctx (VarEntry binding-name c-name "auto" inner-slop-type false false))))
     ;; Transpile body expression
     (let ((result (get-match-branch-body ctx branch-items)))
       ;; Pop scope
       (ctx-pop-scope ctx)
       result))
 
-  (fn build-option-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
+  (fn build-option-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build Option match as GCC statement expression")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
+    (@pre {scrutinee != nil})
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut some-body "0")
@@ -2270,8 +2519,8 @@
                               (match (get-expr-binding-name pattern)
                                 ((some name)
                                   (set! some-binding name)
-                                  ;; Transpile body with binding in scope
-                                  (set! some-body (transpile-branch-body-with-binding ctx branch-items name)))
+                                  ;; Transpile body with binding in scope, passing scrutinee for type inference
+                                  (set! some-body (transpile-branch-body-with-binding ctx scrutinee branch-items name)))
                                 ((none)
                                   ;; No binding - transpile normally
                                   (set! some-body (get-match-branch-body ctx branch-items)))))
@@ -2490,25 +2739,33 @@
                                                                                 (or (string-eq op "transpile-enum-variant")
                                                                                     (string-eq op "extract-module-name"))))))))))))))))
                           "slop_string")
-                        ;; Field access - check known string fields
+                        ;; Field access - look up field's C type from context
                         ((string-eq op ".")
                           (if (< (list-len items) 3)
-                            "int64_t"
-                            (match (list-get items 2)
-                              ((some field-expr)
-                                (match (deref field-expr)
-                                  ((sym field-sym)
-                                    (let ((field-name (. field-sym name)))
-                                      (cond
-                                        ((or (string-eq field-name "name")
-                                             (or (string-eq field-name "value")
-                                                 (or (string-eq field-name "c-name")
-                                                     (or (string-eq field-name "c-type")
-                                                         (string-eq field-name "message")))))
-                                          "slop_string")
-                                        (else "int64_t"))))
-                                  (else "int64_t")))
-                              ((none) "int64_t"))))
+                            "/* TRANSPILER ERROR: malformed field access */"
+                            (match (list-get items 1)
+                              ((some obj-expr)
+                                (match (list-get items 2)
+                                  ((some field-expr)
+                                    (match (deref field-expr)
+                                      ((sym field-sym)
+                                        (let ((field-name (. field-sym name))
+                                              (obj-c-type (infer-expr-c-type ctx obj-expr)))
+                                          ;; Look up field's C type
+                                          (match (ctx-lookup-field-type ctx obj-c-type field-name)
+                                            ((some c-type) c-type)
+                                            ((none)
+                                              ;; Try with SLOP type instead of C type
+                                              (match (ctx-lookup-var ctx (get-var-name-from-expr obj-expr))
+                                                ((some var-entry)
+                                                  (let ((obj-slop-type (. var-entry slop-type)))
+                                                    (match (ctx-lookup-field-type ctx obj-slop-type field-name)
+                                                      ((some c-type2) c-type2)
+                                                      ((none) "/* TRANSPILER ERROR: unknown field type */"))))
+                                                ((none) "/* TRANSPILER ERROR: unknown object type */"))))))
+                                      (else "/* TRANSPILER ERROR: field name must be symbol */")))
+                                  ((none) "/* TRANSPILER ERROR: missing field expression */")))
+                              ((none) "/* TRANSPILER ERROR: missing object expression */"))))
                         ;; Let expression - infer from body (last element after bindings)
                         ((or (string-eq op "let") (string-eq op "let*"))
                           (if (< (list-len items) 3)
@@ -2598,9 +2855,9 @@
               ((none) "int64_t")))))
       (else "int64_t")))
 
-  (fn build-result-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
+  (fn build-result-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build Result match as GCC statement expression")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
@@ -2626,7 +2883,7 @@
                                     ((some name)
                                       (set! ok-binding name)
                                       ;; Transpile body with binding in scope
-                                      (set! ok-body (transpile-branch-body-with-binding ctx branch-items name)))
+                                      (set! ok-body (transpile-branch-body-with-binding ctx scrutinee branch-items name)))
                                     ((none)
                                       ;; No binding - transpile normally
                                       (set! ok-body (get-match-branch-body ctx branch-items)))))
@@ -2635,7 +2892,7 @@
                                     ((some name)
                                       (set! err-binding name)
                                       ;; Transpile body with binding in scope
-                                      (set! err-body (transpile-branch-body-with-binding ctx branch-items name)))
+                                      (set! err-body (transpile-branch-body-with-binding ctx scrutinee branch-items name)))
                                     ((none)
                                       ;; No binding - transpile normally
                                       (set! err-body (get-match-branch-body ctx branch-items)))))
@@ -2675,9 +2932,9 @@
                         (ctx-str ctx "_mr = "
                           (ctx-str ctx err-body "; } _mr; })")))))))))))))
 
-  (fn build-union-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
+  (fn build-union-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build union (tagged union) match as GCC statement expression with switch")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     ;; Generate: ({ __auto_type _mv = scrutinee; <type> _mr = {0};
     ;;              switch (_mv.tag) { case T_v: { __auto_type b = _mv.data.v; _mr = body; break; } ... } _mr; })
@@ -2696,7 +2953,7 @@
                   (when (>= (list-len branch-items) 2)
                     (match (list-get branch-items 0)
                       ((some pattern)
-                        (set! cases (build-union-case-expr ctx arena cases pattern branch-items result-type)))
+                        (set! cases (build-union-case-expr ctx arena cases scrutinee pattern branch-items result-type)))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -2737,9 +2994,9 @@
       arg-c))
 
   (fn build-union-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String)
-                             (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String))
+                             (scrutinee (Ptr SExpr)) (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String))
     (@intent "Build a single union case for expression-level match")
-    (@spec (((Ptr TranspileContext) Arena String (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
+    (@spec (((Ptr TranspileContext) Arena String (Ptr SExpr) (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
     (@pre {ctx != nil})
     (let ((tag (get-expr-pattern-tag pattern))
           (is-void (string-eq result-type "void")))
@@ -2760,7 +3017,7 @@
                   ((some binding-name)
                     ;; Has binding - need to bind variable and transpile body with scope
                     (let ((c-binding (to-c-name arena binding-name))
-                          (body (typed-none ctx result-type (transpile-branch-body-with-binding ctx branch-items binding-name)))
+                          (body (typed-none ctx result-type (transpile-branch-body-with-binding ctx scrutinee branch-items binding-name)))
                           (s1 (ctx-str ctx cases "case "))
                           (s2 (ctx-str ctx s1 case-label))
                           (s3 (ctx-str ctx s2 ": { __auto_type "))
@@ -3575,12 +3832,23 @@
       ((string-eq t "bool") true)
       (else false)))
 
-  (fn wrap-map-key-as-ptr ((ctx (Ptr TranspileContext)) (key-c String) (key-expr (Ptr SExpr)))
-    (@intent "Wrap transpiled key expression as pointer for map operations")
-    (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> String))
+  (fn wrap-map-key-as-ptr ((ctx (Ptr TranspileContext)) (key-c String) (key-expr (Ptr SExpr)) (container-expr (Ptr SExpr)))
+    (@intent "Wrap transpiled key expression as pointer for map/set operations")
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (Ptr SExpr)) -> String))
     (@pre {ctx != nil})
     (@pre {key-expr != nil})
-    (let ((key-type (infer-expr-c-type ctx key-expr)))
+    ;; container-expr may be nil (e.g., for set literals where type is explicit)
+    (let ((container-key-type
+            (if (!= container-expr nil)
+              ;; Try map key type first, then set element type
+              (let ((map-type (infer-map-key-c-type ctx container-expr)))
+                (if (> (string-len map-type) 0)
+                  map-type
+                  (infer-set-elem-c-type ctx container-expr)))
+              ""))
+          (key-type (if (> (string-len container-key-type) 0)
+                      container-key-type
+                      (infer-expr-c-type ctx key-expr))))
       (cond
         ;; slop_string is a struct, just take address
         ((string-eq key-type "slop_string")
@@ -3612,7 +3880,7 @@
                           (key-c (transpile-expr ctx key-expr))
                           (val-c (transpile-expr ctx val-expr))
                           ;; Wrap key as pointer for generic map API
-                          (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr))
+                          (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr))
                           ;; Check if map is a pointer-to-pointer (Ptr Map -> slop_map**)
                           (needs-deref (is-ptr-to-ptr-map ctx map-expr)))
                       ;; slop_map_put expects arena, slop_map* and key as const void*
@@ -3653,15 +3921,16 @@
                 (let ((map-c (transpile-expr ctx map-expr))
                       (key-c (transpile-expr ctx key-expr))
                       ;; Wrap key as pointer for generic map API
-                      (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr))
+                      (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr))
                       ;; Infer option type from map's value type
                       (option-type (infer-map-value-option-type ctx map-expr)))
                   ;; If we have a named option type, use it; otherwise use anonymous struct
                   (if (> (string-len option-type) 0)
                     ;; Named option type available - register it and generate proper code
-                    (let ((value-c-type (option-type-to-value-c-type arena option-type)))
-                      ;; Register the option type so its struct definition gets generated
-                      (ctx-register-option-type ctx value-c-type option-type)
+                    (let ((inner-type-name (substring-after-prefix arena option-type "slop_option_"))
+                          (value-c-type (option-type-to-value-c-type arena option-type)))
+                      ;; Register the option type using inner-type-name so set_* types are properly detected
+                      (ctx-register-option-type ctx inner-type-name option-type)
                       (ctx-str ctx "({ void* _ptr = slop_map_get("
                         (ctx-str ctx map-c
                           (ctx-str ctx ", "
@@ -3696,7 +3965,7 @@
                 (let ((map-c (transpile-expr ctx map-expr))
                       (key-c (transpile-expr ctx key-expr))
                       ;; Wrap key as pointer for generic map API
-                      (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr)))
+                      (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr)))
                   ;; Generate: (slop_map_get(MAP, KEY_PTR) != NULL)
                   (ctx-str ctx "(slop_map_get(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-ptr ") != NULL)"))))))
               ((none) "/* map-has: missing key */")))
@@ -3706,17 +3975,23 @@
     (@intent "Transpile map-keys to properly typed list")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
-    (let ((len (list-len items)))
+    (let ((len (list-len items))
+          (arena (. (deref ctx) arena)))
       (if (< len 2)
         "/* map-keys: needs map */"
         (match (list-get items 1)
           ((some map-expr)
             (let ((map-c (transpile-expr ctx map-expr))
-                  (key-c-type (infer-map-key-c-type ctx map-expr)))
+                  (key-c-type (infer-map-key-c-type ctx map-expr))
+                  ;; Debug: get variable name and slop-type
+                  (debug-var-name (get-var-name-from-expr map-expr))
+                  (debug-slop-type (match (ctx-lookup-var ctx debug-var-name)
+                                     ((some entry) (. entry slop-type))
+                                     ((none) "VAR_NOT_FOUND"))))
               ;; Check if key type is string - use legacy slop_map_keys
               (if (or (string-eq key-c-type "slop_string") (== (string-len key-c-type) 0))
-                ;; Generate: slop_map_keys(arena, MAP)
-                (ctx-str ctx "slop_map_keys(arena, " (ctx-str ctx map-c ")"))
+                ;; Generate: slop_map_keys(arena, MAP) with debug info
+                (ctx-str ctx "/* DEBUG: var=" (ctx-str ctx debug-var-name (ctx-str ctx " slop=" (ctx-str ctx debug-slop-type (ctx-str ctx " key=" (ctx-str ctx key-c-type (ctx-str ctx " */ slop_map_keys(arena, " (ctx-str ctx map-c ")"))))))))
                 ;; Generate typed list from raw elements:
                 ;; ({ slop_set_elements_result _r = slop_set_elements_raw(arena, MAP);
                 ;;    (slop_list_KeyType){.data = (KeyType*)_r.data, .len = _r.len, .cap = _r.cap}; })
@@ -3768,7 +4043,7 @@
               ((some elem-expr)
                 (let ((set-c (transpile-expr ctx set-expr))
                       (elem-c (transpile-expr ctx elem-expr))
-                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr)))
+                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr set-expr)))
                   ;; Use a dummy 1-byte value for set membership
                   (ctx-str ctx "({ uint8_t _dummy = 1; slop_map_put(arena, "
                     (ctx-str ctx set-c
@@ -3790,7 +4065,7 @@
               ((some elem-expr)
                 (let ((set-c (transpile-expr ctx set-expr))
                       (elem-c (transpile-expr ctx elem-expr))
-                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr)))
+                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr set-expr)))
                   (ctx-str ctx "(slop_map_get(" (ctx-str ctx set-c (ctx-str ctx ", " (ctx-str ctx elem-ptr ") != NULL)"))))))
               ((none) "/* set-has: missing element */")))
           ((none) "/* set-has: missing set */")))))
@@ -3808,7 +4083,7 @@
               ((some elem-expr)
                 (let ((set-c (transpile-expr ctx set-expr))
                       (elem-c (transpile-expr ctx elem-expr))
-                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr)))
+                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr set-expr)))
                   (ctx-str ctx "slop_map_remove(" (ctx-str ctx set-c (ctx-str ctx ", " (ctx-str ctx elem-ptr ")"))))))
               ((none) "/* set-remove: missing element */")))
           ((none) "/* set-remove: missing set */")))))
@@ -3865,7 +4140,7 @@
                   (match (list-get items i)
                     ((some elem-expr)
                       (let ((elem-c (transpile-expr ctx elem-expr))
-                            (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr)))
+                            (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr nil)))
                         (set! result (ctx-str ctx result
                           (ctx-str ctx "slop_map_put(arena, _s, "
                             (ctx-str ctx elem-ptr ", &(uint8_t){1}); "))))))
@@ -3962,12 +4237,14 @@
                               (match (list-get binding-items 1)
                                 ((some coll-expr)
                                   (let ((coll-c (transpile-expr ctx coll-expr))
+                                        ;; Infer element type from collection for proper type propagation
+                                        (elem-slop-type (infer-collection-element-slop-type ctx coll-expr))
                                         ;; Build: ({ for (size_t _i = 0; _i < coll.len; _i++) { __auto_type item = coll.data[_i];
                                         (mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < " coll-c
                                                       (ctx-str5 ctx ".len; _i++) { __auto_type " var-name " = " coll-c ".data[_i]; "))))
-                                    ;; Bind loop variable for body expressions
+                                    ;; Bind loop variable for body expressions with inferred element type
                                     (ctx-push-scope ctx)
-                                    (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" "" false false))
+                                    (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false))
                                     ;; Process body expressions
                                     (let ((mut i 2))
                                       (while (< i len)
@@ -3985,5 +4262,166 @@
                       ((none) "({ /* for-each: missing var */ 0; })")))))
               (else "({ /* for-each: binding must be list */ 0; })")))
           ((none) "({ /* for-each: missing binding */ 0; })")))))
+
+  ;; ============================================================
+  ;; Type Argument Extraction Helpers
+  ;; ============================================================
+
+  (fn extract-first-type-arg ((arena Arena) (slop-type String) (start Int))
+    (@intent "Extract first type arg, handling nested parens")
+    (@spec ((Arena String Int) -> String))
+    (let ((len (cast Int (string-len slop-type)))
+          (mut depth 0)
+          (mut end-pos start)
+          (mut found false))
+      (while (and (< end-pos len) (not found))
+        (let ((c (char-at slop-type (cast (Int 0 ..) end-pos))))
+          (cond
+            ((== c 40)
+              (set! depth (+ depth 1))
+              (set! end-pos (+ end-pos 1)))
+            ((== c 41)
+              (if (== depth 0)
+                (set! found true)
+                (do
+                  (set! depth (- depth 1))
+                  (set! end-pos (+ end-pos 1)))))
+            ((and (== c 32) (== depth 0))
+              (set! found true))
+            (else
+              (set! end-pos (+ end-pos 1))))))
+      (if (> end-pos start)
+        (substring arena slop-type (cast (Int 0 ..) start) (cast (Int 0 ..) (- end-pos start)))
+        "")))
+
+  (fn extract-second-type-arg ((arena Arena) (slop-type String) (start Int))
+    (@intent "Extract second type arg from compound type")
+    (@spec ((Arena String Int) -> String))
+    (let ((first-arg (extract-first-type-arg arena slop-type start))
+          (first-len (string-len first-arg)))
+      (if (== first-len 0)
+        ""
+        (extract-first-type-arg arena slop-type (+ start (+ (cast Int first-len) 1))))))
+
+  ;; ============================================================
+  ;; Result Type Inference Helpers
+  ;; ============================================================
+
+  (fn infer-result-ok-slop-type ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)))
+    (@intent "Extract OK type T from (Result T E) scrutinee")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {scrutinee != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref scrutinee)
+        ((sym sym)
+          (match (ctx-lookup-var ctx (. sym name))
+            ((some var-entry)
+              (let ((slop-type (. var-entry slop-type)))
+                (if (starts-with slop-type "(Result ")
+                  (extract-first-type-arg arena slop-type 8)
+                  "")))
+            ((none) "")))
+        (_ ""))))
+
+  (fn infer-result-err-slop-type ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)))
+    (@intent "Extract Error type E from (Result T E) scrutinee")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {scrutinee != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref scrutinee)
+        ((sym sym)
+          (match (ctx-lookup-var ctx (. sym name))
+            ((some var-entry)
+              (let ((slop-type (. var-entry slop-type)))
+                (if (starts-with slop-type "(Result ")
+                  (extract-second-type-arg arena slop-type 8)
+                  "")))
+            ((none) "")))
+        (_ ""))))
+
+  ;; ============================================================
+  ;; Collection Element Type Inference
+  ;; ============================================================
+
+  (fn infer-collection-element-slop-type ((ctx (Ptr TranspileContext)) (coll-expr (Ptr SExpr)))
+    (@intent "Infer the SLOP element type from a collection expression")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {coll-expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref coll-expr)
+        ((lst lst)
+          (let ((items (. lst items)))
+            (if (< (list-len items) 1)
+              ""
+              (match (list-get items 0)
+                ((some head)
+                  (match (deref head)
+                    ((sym sym)
+                      (let ((op (. sym name)))
+                        (cond
+                          ((string-eq op "map-keys")
+                            (if (< (list-len items) 2)
+                              ""
+                              (match (list-get items 1)
+                                ((some map-expr)
+                                  (let ((map-slop-type (infer-expr-slop-type ctx map-expr)))
+                                    (if (> (string-len map-slop-type) 0)
+                                      (let ((resolved (resolve-type-alias-for-map ctx map-slop-type)))
+                                        (extract-map-key-from-slop-type arena resolved))
+                                      "")))
+                                ((none) ""))))
+                          ((string-eq op "set-elements")
+                            (if (< (list-len items) 2)
+                              ""
+                              (match (list-get items 1)
+                                ((some set-expr)
+                                  (let ((set-slop-type (infer-expr-slop-type ctx set-expr)))
+                                    (if (> (string-len set-slop-type) 0)
+                                      (let ((resolved (resolve-type-alias-for-map ctx set-slop-type)))
+                                        (extract-set-elem-from-slop-type arena resolved))
+                                      "")))
+                                ((none) ""))))
+                          ((string-eq op "map-values")
+                            (if (< (list-len items) 2)
+                              ""
+                              (match (list-get items 1)
+                                ((some map-expr)
+                                  (let ((map-slop-type (infer-expr-slop-type ctx map-expr)))
+                                    (if (> (string-len map-slop-type) 0)
+                                      (let ((resolved (resolve-type-alias-for-map ctx map-slop-type)))
+                                        (extract-map-value-from-slop-type arena resolved))
+                                      "")))
+                                ((none) ""))))
+                          (else (infer-elem-from-type ctx coll-expr)))))
+                    (_ (infer-elem-from-type ctx coll-expr))))
+                ((none) "")))))
+        (_ (infer-elem-from-type ctx coll-expr)))))
+
+  (fn infer-elem-from-type ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Infer element type from expression's SLOP type")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (slop-type (infer-expr-slop-type ctx expr)))
+      (if (== (string-len slop-type) 0)
+        ""
+        ;; Resolve type alias before pattern matching (e.g., TermSet -> (Set Term))
+        (let ((resolved-type (resolve-type-alias-for-map ctx slop-type)))
+          (cond
+            ((starts-with resolved-type "(List ")
+              (let ((elem-len (- (- (string-len resolved-type) 6) 1)))
+                (if (> elem-len 0)
+                  (substring arena resolved-type 6 (cast (Int 0 ..) elem-len))
+                  "")))
+            ((starts-with resolved-type "(Set ")
+              (extract-set-elem-from-slop-type arena resolved-type))
+            ((starts-with resolved-type "(Map ")
+              ;; For maps, return the key type (used for iteration)
+              (extract-map-key-from-slop-type arena resolved-type))
+            (else ""))))))
 
 ) ;; end module

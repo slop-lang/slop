@@ -8,7 +8,7 @@
 (module ctype
   (export
     ;; Type conversion
-    to-c-type to-c-name type-to-identifier
+    to-c-type to-c-name type-to-identifier sexpr-to-type-string
     ;; Builtin type lookup
     builtin-type-c is-builtin-type is-builtin-c-type
     ;; C keyword check
@@ -367,5 +367,36 @@
             (string-concat arena result ")")))))
     ;; Not a list - treat as void
     (_ "(void)")))
+
+  ;; ============================================================
+  ;; Type String Conversion
+  ;; ============================================================
+
+  (fn sexpr-to-type-string ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Convert type SExpr to string representation for slop-type field")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((sym sym)
+        ;; Simple type name
+        (. sym name))
+      ((lst lst)
+        ;; Compound type like (Map K V), (Ptr T), etc.
+        (let ((items (. lst items))
+              (len (list-len items))
+              (mut result "(")
+              (mut i 0))
+          (while (< i len)
+            (match (list-get items i)
+              ((some item-expr)
+                (let ((item-str (sexpr-to-type-string arena item-expr)))
+                  (if (> i 0)
+                    (set! result (string-concat arena result (string-concat arena " " item-str)))
+                    (set! result (string-concat arena result item-str)))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          (string-concat arena result ")")))
+      ;; Other forms - return empty
+      (_ "")))
 
 ) ;; end module

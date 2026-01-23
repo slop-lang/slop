@@ -28,6 +28,7 @@
                    ctx-register-chan-type ctx-has-chan-type ctx-get-chan-types ChanType
                    ctx-register-thread-type ctx-has-thread-type ctx-get-thread-types ThreadType
                    ctx-register-result-type-alias ctx-lookup-result-type-alias ResultTypeAlias
+                   ctx-register-type-alias
                    ctx-get-inline-records InlineRecord
                    ctx-add-c-name-alias ctx-get-c-name-aliases FuncCNameAlias extract-fn-c-name
                    ctx-add-import ctx-get-imports
@@ -46,6 +47,7 @@
   (import expr (transpile-expr))
   (import match (transpile-match))
   (import strlib (starts-with substring char-at))
+  (import parser (pretty-print))
 
   ;; ============================================================
   ;; Module Prescan
@@ -144,10 +146,20 @@
                             (option-c-name (ctx-str ctx "slop_option_" type-id)))
                         (ctx-register-option-type ctx c-name option-c-name)))
                     ;; Check if this is a type alias to Result and register it
+                    ;; Also register Map/Set type aliases for key type inference
                     (when (>= (list-len items) 3)
                       (match (list-get items 2)
                         ((some body-expr)
-                          (check-and-register-result-alias ctx type-name body-expr))
+                          (do
+                            (check-and-register-result-alias ctx type-name body-expr)
+                            ;; Register Map/Set type aliases during prescan and scan for generics
+                            (let ((slop-type-str (pretty-print arena body-expr)))
+                              (when (or (starts-with slop-type-str "(Map ")
+                                        (starts-with slop-type-str "(Set "))
+                                (do
+                                  (ctx-register-type-alias ctx type-name slop-type-str)
+                                  ;; Scan Map/Set body to register list types for key/element
+                                  (scan-type-for-generics ctx body-expr))))))
                         ((none) (do)))))))
               (else (do))))
           ((none) (do))))))
@@ -1305,8 +1317,8 @@
                 (emit-c-name-aliases ctx)
                 ;; Emit exported constant declarations to header
                 (emit-module-consts-header ctx items body-start exports)
-                ;; Emit header guard closing
-                (emit-header-guard-close ctx)
+                ;; Note: Header guard closing moved to after function transpilation
+                ;; to allow late-registered option types to be emitted
 
                 ;; ===== IMPL OUTPUT =====
                 ;; Types, includes, and forward declarations are now in header
@@ -1318,7 +1330,11 @@
                 ;; This ensures functions can call each other regardless of definition order
                 (emit-fn-forward-decls ctx items body-start)
                 ;; Emit functions
-                (emit-module-functions ctx items body-start)))))
+                (emit-module-functions ctx items body-start)
+                ;; Emit any late-registered option types to header (discovered during function transpilation)
+                (emit-late-registered-option-types-header ctx)
+                ;; Now close the header guard
+                (emit-header-guard-close ctx)))))
         (else (ctx-emit ctx "/* invalid module */")))))
 
   (fn get-body-start ((items (List (Ptr SExpr))))
@@ -1467,15 +1483,24 @@
                               (match (list-get items 1)
                                 ((some inner) (scan-type-for-generics ctx inner))
                                 ((none) (do)))))
-                          ;; Result type - already handled elsewhere, but scan types
+                          ;; Result type - register and scan inner types
                           ((string-eq op "Result")
-                            (when (>= len 2)
-                              (match (list-get items 1)
-                                ((some ok) (scan-type-for-generics ctx ok))
-                                ((none) (do))))
                             (when (>= len 3)
-                              (match (list-get items 2)
-                                ((some err) (scan-type-for-generics ctx err))
+                              (match (list-get items 1)
+                                ((some ok-type)
+                                  (match (list-get items 2)
+                                    ((some err-type)
+                                      ;; Register the Result type
+                                      (let ((ok-c (to-c-type-prefixed ctx ok-type))
+                                            (err-c (to-c-type-prefixed ctx err-type))
+                                            (ok-id (type-to-identifier arena ok-c))
+                                            (err-id (type-to-identifier arena err-c))
+                                            (c-name (ctx-str5 ctx "slop_result_" ok-id "_" err-id "")))
+                                        (ctx-register-result-type ctx ok-c err-c c-name)
+                                        ;; Recursively scan inner types for nested generics
+                                        (scan-type-for-generics ctx ok-type)
+                                        (scan-type-for-generics ctx err-type)))
+                                    ((none) (do))))
                                 ((none) (do)))))
                           ;; Chan type
                           ((string-eq op "Chan")
@@ -1498,6 +1523,36 @@
                                         (c-name (ctx-str ctx "slop_thread_" result-id)))
                                     (ctx-register-thread-type ctx result-c c-name)
                                     (scan-type-for-generics ctx result)))
+                                ((none) (do)))))
+                          ;; Map type - register list type for key to support map-keys iteration
+                          ((string-eq op "Map")
+                            (when (>= len 3)
+                              (match (list-get items 1)
+                                ((some key-type)
+                                  (let ((key-c (to-c-type-prefixed ctx key-type))
+                                        (key-id (type-to-identifier arena key-c))
+                                        (list-c-name (ctx-str ctx "slop_list_" key-id))
+                                        (option-c-name (ctx-str ctx "slop_option_" key-id)))
+                                    (ctx-register-list-type ctx key-c list-c-name)
+                                    (ctx-register-option-type ctx key-c option-c-name)
+                                    (scan-type-for-generics ctx key-type)
+                                    ;; Also scan value type for nested generics
+                                    (match (list-get items 2)
+                                      ((some val-type) (scan-type-for-generics ctx val-type))
+                                      ((none) (do)))))
+                                ((none) (do)))))
+                          ;; Set type - register list type for element to support set iteration
+                          ((string-eq op "Set")
+                            (when (>= len 2)
+                              (match (list-get items 1)
+                                ((some elem-type)
+                                  (let ((elem-c (to-c-type-prefixed ctx elem-type))
+                                        (elem-id (type-to-identifier arena elem-c))
+                                        (list-c-name (ctx-str ctx "slop_list_" elem-id))
+                                        (option-c-name (ctx-str ctx "slop_option_" elem-id)))
+                                    (ctx-register-list-type ctx elem-c list-c-name)
+                                    (ctx-register-option-type ctx elem-c option-c-name)
+                                    (scan-type-for-generics ctx elem-type)))
                                 ((none) (do)))))
                           (else (do)))))
                     (else (do))))
@@ -2364,6 +2419,13 @@
           (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
           ;; #define GUARD_DEFINED
           (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+          ;; If inner-type is a set type (set_*), emit typedef first
+          (when (starts-with inner-type "set_")
+            (let ((set-guard (ctx-str3 ctx (uppercase-name ctx inner-type) "_DEFINED" "")))
+              (ctx-emit-header ctx (ctx-str ctx "#ifndef " set-guard))
+              (ctx-emit-header ctx (ctx-str ctx "#define " set-guard))
+              (ctx-emit-header ctx (ctx-str ctx "typedef slop_map* " (ctx-str ctx inner-type ";")))
+              (ctx-emit-header ctx "#endif")))
           ;; SLOP_OPTION_DEFINE(inner_type, c_name)
           (ctx-emit-header ctx (ctx-str5 ctx "SLOP_OPTION_DEFINE(" inner-type ", " c-name ")"))
           ;; #endif
@@ -2427,10 +2489,11 @@
         (set! i (+ i 1)))))
 
   (fn is-primitive-or-runtime-type ((type-name String))
-    (@intent "Check if a type is primitive or a slop_* runtime type")
+    (@intent "Check if a type is primitive or a slop_* or set_* runtime type")
     (@spec ((String) -> Bool))
     (or (is-primitive-type type-name)
-        (starts-with type-name "slop_")))
+        (or (starts-with type-name "slop_")
+            (starts-with type-name "set_"))))
 
   (fn emit-imported-list-types-header ((ctx (Ptr TranspileContext)))
     (@intent "Emit value-element List types for imported types (from other modules)")
@@ -2469,6 +2532,22 @@
                        (not (starts-with (. ot inner-type) "slop_list_"))
                        (is-imported-type ctx (. ot inner-type)))
               (emit-single-option-type-header ctx ot)))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn emit-late-registered-option-types-header ((ctx (Ptr TranspileContext)))
+    (@intent "Emit option types registered during function transpilation (e.g. set_* types)")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((option-types (ctx-get-option-types ctx))
+          (len (list-len option-types))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get option-types i)
+          ((some ot)
+            ;; Emit any option types not yet emitted (relies on #ifndef guard in emit-single)
+            ;; This catches set_* types registered during map-get transpilation
+            (emit-single-option-type-header ctx ot))
           ((none) (do)))
         (set! i (+ i 1)))))
 
@@ -2530,8 +2609,10 @@
               (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
               ;; SLOP_STRUCT_HASH_EQ_DEFINE(TypeName)
               (ctx-emit-header ctx (ctx-str3 ctx "SLOP_STRUCT_HASH_EQ_DEFINE(" c-type ")"))
-              ;; SLOP_LIST_DEFINE(TypeName, slop_list_TypeName)
-              (ctx-emit-header ctx (ctx-str5 ctx "SLOP_LIST_DEFINE(" c-type ", " list-c-name ")"))
+              ;; Only emit SLOP_LIST_DEFINE if list type wasn't already emitted
+              (when (not (ctx-is-type-emitted ctx list-c-name))
+                (ctx-emit-header ctx (ctx-str5 ctx "SLOP_LIST_DEFINE(" c-type ", " list-c-name ")"))
+                (ctx-mark-type-emitted ctx list-c-name))
               ;; #endif
               (ctx-emit-header ctx "#endif")
               (ctx-emit-header ctx "")))
@@ -3564,12 +3645,13 @@
                         (match (list-get items 1)
                           ((some type-expr)
                             (let ((c-type (to-c-type-prefixed ctx type-expr))
+                                  (slop-type-str (pretty-print arena type-expr))
                                   (is-ptr (is-pointer-type-expr-header type-expr)))
                               ;; Emit the field
                               (ctx-emit-header ctx (ctx-str4 ctx "    " c-type " " (ctx-str ctx c-field-name ";")))
                               ;; Register field type for both raw and qualified type names
-                              (ctx-register-field-type ctx raw-type-name field-name c-type is-ptr)
-                              (ctx-register-field-type ctx c-type-name field-name c-type is-ptr)))
+                              (ctx-register-field-type ctx raw-type-name field-name c-type slop-type-str is-ptr)
+                              (ctx-register-field-type ctx c-type-name field-name c-type slop-type-str is-ptr)))
                           ((none) (do)))))
                     (else (do))))
                 ((none) (do))))))

@@ -18,11 +18,12 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
-                   ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
+                   ctx-bind-var ctx-lookup-var ctx-lookup-type
+                   ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
                    ctx-get-current-return-type ctx-is-capture-retval
                    to-c-type-prefixed))
   (import ctype (to-c-type to-c-name))
-  (import expr (transpile-expr infer-expr-c-type))
+  (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-collection-element-slop-type))
   (import strlib (starts-with ends-with))
   (import match (transpile-match))
 
@@ -272,19 +273,21 @@
                             (match (list-get items (+ start-idx 1))
                               ((some init-expr)
                                 (let ((init-c (transpile-expr ctx init-expr))
+                                      ;; Infer SLOP type for map/set key type propagation
+                                      (inferred-slop-type (infer-expr-slop-type ctx init-expr))
                                       ;; Check if init is arena-alloc to get proper pointer type
                                       (ptr-type-opt (get-arena-alloc-ptr-type ctx init-expr)))
                                   (match ptr-type-opt
                                     ((some ptr-type)
                                       ;; Arena-alloc returns pointer - register as pointer type
                                       (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
-                                      (ctx-bind-var ctx (VarEntry raw-name var-name ptr-type "" true has-mut)))
+                                      (ctx-bind-var ctx (VarEntry raw-name var-name ptr-type inferred-slop-type true has-mut)))
                                     ((none)
                                       ;; Regular binding - infer type from init expression
                                       (let ((inferred-type (infer-expr-c-type ctx init-expr)))
                                         (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
                                         ;; Check if inferred type is a pointer (ends with *)
-                                        (ctx-bind-var ctx (VarEntry raw-name var-name inferred-type "" (ends-with inferred-type "*") has-mut)))))))
+                                        (ctx-bind-var ctx (VarEntry raw-name var-name inferred-type inferred-slop-type (ends-with inferred-type "*") has-mut)))))))
                               ((none) (ctx-emit ctx "/* missing init */"))))))
                       (else (ctx-emit ctx "/* binding name must be symbol */"))))
                   ((none) (ctx-emit ctx "/* missing binding name */")))))))
@@ -866,9 +869,10 @@
                                           (ctx-indent ctx)
                                           ;; Emit: __auto_type var = coll.data[_i];
                                           (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " coll-c ".data[_i];"))
-                                          ;; Bind loop variable
+                                          ;; Bind loop variable with inferred element type
                                           (ctx-push-scope ctx)
-                                          (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" "" false false))
+                                          (let ((elem-slop-type (infer-collection-element-slop-type ctx coll-expr)))
+                                            (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false)))
                                           ;; Process body
                                           (let ((mut i 2))
                                             (while (< i len)

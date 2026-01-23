@@ -19,8 +19,8 @@
                    ctx-lookup-enum-variant ctx-get-current-return-type ctx-gensym
                    to-c-type-prefixed))
   (import strlib (starts-with ends-with char-at))
-  (import ctype (to-c-name to-c-type))
-  (import expr (transpile-expr infer-expr-c-type infer-option-inner-slop-type))
+  (import ctype (to-c-name to-c-type sexpr-to-type-string))
+  (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-option-inner-slop-type infer-result-ok-slop-type infer-result-err-slop-type))
 
   ;; ============================================================
   ;; Pattern Type Detection
@@ -196,7 +196,7 @@
                         ((is-option-match patterns)
                           (transpile-option-match ctx scrutinee-var scrutinee patterns items is-return))
                         ((is-result-match patterns)
-                          (transpile-result-match ctx scrutinee-var patterns items is-return))
+                          (transpile-result-match ctx scrutinee-var scrutinee patterns items is-return))
                         ((is-enum-match patterns)
                           (transpile-enum-match ctx scrutinee-var items is-return))
                         ((is-literal-match patterns)
@@ -321,10 +321,12 @@
   ;; ============================================================
 
   (fn transpile-result-match ((ctx (Ptr TranspileContext)) (scrutinee-c String)
+                              (scrutinee-expr (Ptr SExpr))
                               (patterns (List (Ptr SExpr))) (items (List (Ptr SExpr))) (is-return Bool))
     (@intent "Transpile Result matching")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr)) (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (List (Ptr SExpr)) (List (Ptr SExpr)) Bool) -> Unit))
     (@pre {ctx != nil})
+    (@pre {scrutinee-expr != nil})
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut i 2)
@@ -341,10 +343,10 @@
                         (let ((tag (get-pattern-tag pattern)))
                           (cond
                             ((string-eq tag "ok")
-                              (emit-result-ok-branch ctx scrutinee-c pattern branch-items is-return first)
+                              (emit-result-ok-branch ctx scrutinee-c scrutinee-expr pattern branch-items is-return first)
                               (set! first false))
                             ((string-eq tag "error")
-                              (emit-result-error-branch ctx scrutinee-c pattern branch-items is-return first)
+                              (emit-result-error-branch ctx scrutinee-c scrutinee-expr pattern branch-items is-return first)
                               (set! first false))
                             ((string-eq tag "else")
                               (emit-else-branch ctx branch-items is-return first)
@@ -358,10 +360,12 @@
         (ctx-emit ctx "}"))))
 
   (fn emit-result-ok-branch ((ctx (Ptr TranspileContext)) (scrutinee-c String)
+                             (scrutinee-expr (Ptr SExpr))
                              (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (is-return Bool) (first Bool))
     (@intent "Emit the (ok x) branch")
-    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (List (Ptr SExpr)) Bool Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (Ptr SExpr) (List (Ptr SExpr)) Bool Bool) -> Unit))
     (@pre {ctx != nil})
+    (@pre {scrutinee-expr != nil})
     (@pre {pattern != nil})
     (let ((arena (. (deref ctx) arena)))
       (if first
@@ -371,19 +375,22 @@
       (ctx-push-scope ctx)
       (match (extract-binding-name pattern)
         ((some binding-name)
-          (let ((c-name (to-c-name arena binding-name)))
+          (let ((c-name (to-c-name arena binding-name))
+                (ok-slop-type (infer-result-ok-slop-type ctx scrutinee-expr)))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.ok;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" "" false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" ok-slop-type false false))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
       (ctx-dedent ctx)))
 
   (fn emit-result-error-branch ((ctx (Ptr TranspileContext)) (scrutinee-c String)
+                                (scrutinee-expr (Ptr SExpr))
                                 (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (is-return Bool) (first Bool))
     (@intent "Emit the (error e) branch")
-    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (List (Ptr SExpr)) Bool Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (Ptr SExpr) (List (Ptr SExpr)) Bool Bool) -> Unit))
     (@pre {ctx != nil})
+    (@pre {scrutinee-expr != nil})
     (@pre {pattern != nil})
     (let ((arena (. (deref ctx) arena)))
       (if first
@@ -393,9 +400,10 @@
       (ctx-push-scope ctx)
       (match (extract-binding-name pattern)
         ((some binding-name)
-          (let ((c-name (to-c-name arena binding-name)))
+          (let ((c-name (to-c-name arena binding-name))
+                (err-slop-type (infer-result-err-slop-type ctx scrutinee-expr)))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.err;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" "" false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" err-slop-type false false))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
@@ -812,27 +820,31 @@
                                                             (ctx-str3 ctx "(" c-type "){.has_value = false}")
                                                             (transpile-expr ctx val-expr)))))
                                                     ;; Not an Option type - regular transpilation
-                                                    (transpile-expr ctx val-expr))))
+                                                    (transpile-expr ctx val-expr)))
+                                                ;; Extract SLOP type string from type expression for proper type inference
+                                                (slop-type-str (sexpr-to-type-string arena type-expr)))
                                             (ctx-emit ctx (ctx-str5 ctx c-type " " c-name " = " (ctx-str ctx final-init ";")))
-                                            (ctx-bind-var ctx (VarEntry raw-name c-name c-type "" is-ptr has-mut)))))
+                                            (ctx-bind-var ctx (VarEntry raw-name c-name c-type slop-type-str is-ptr has-mut)))))
                                       ((none) (ctx-emit ctx "/* missing value */")))
                                     ;; Not typed - middle is actually value - infer type
                                     (match (list-get items type-idx)
                                       ((some val-expr)
                                         (let ((val-c (transpile-expr ctx val-expr))
+                                              ;; Infer SLOP type for map/set key type propagation
+                                              (inferred-slop-type (infer-expr-slop-type ctx val-expr))
                                               ;; Check if init is arena-alloc to get proper pointer type
                                               (ptr-type-opt (get-arena-alloc-ptr-type-inline ctx val-expr)))
                                           (match ptr-type-opt
                                             ((some ptr-type)
                                               ;; Arena-alloc returns pointer
                                               (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                              (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type "" true has-mut)))
+                                              (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut)))
                                             ((none)
                                               ;; Infer type from expression
                                               (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                                     (is-ptr (ends-with inferred-type "*")))
                                                 (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                                (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type "" is-ptr has-mut)))))))
+                                                (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut)))))))
                                       ((none) (ctx-emit ctx "/* missing value */")))))
                                 ((none) (ctx-emit ctx "/* missing type/value */"))))
                             ;; Simple: (name init)
@@ -840,19 +852,21 @@
                               (match (list-get items val-idx)
                                 ((some val-expr)
                                   (let ((val-c (transpile-expr ctx val-expr))
+                                        ;; Infer SLOP type for map/set key type propagation
+                                        (inferred-slop-type (infer-expr-slop-type ctx val-expr))
                                         ;; Check if init is arena-alloc to get proper pointer type
                                         (ptr-type-opt (get-arena-alloc-ptr-type-inline ctx val-expr)))
                                     (match ptr-type-opt
                                       ((some ptr-type)
                                         ;; Arena-alloc returns pointer
                                         (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                        (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type "" true has-mut)))
+                                        (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut)))
                                       ((none)
                                         ;; Infer type from expression
                                         (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                               (is-ptr (ends-with inferred-type "*")))
                                           (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                          (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type "" is-ptr has-mut)))))))
+                                          (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut)))))))
                                 ((none) (ctx-emit ctx "/* missing value */")))))))
                       (else (ctx-emit ctx "/* binding name must be symbol */"))))
                   ((none) (ctx-emit ctx "/* missing binding name */")))))))
