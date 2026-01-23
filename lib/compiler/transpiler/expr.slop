@@ -2395,6 +2395,40 @@
               (else "int64_t")))
           ((none) "int64_t")))))
 
+  (fn slop-type-to-c-type ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Convert a SLOP type name to its C type equivalent")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      ;; First check if it's a registered type
+      (match (ctx-lookup-type ctx slop-type)
+        ((some entry) (. entry c-name))
+        ((none)
+          ;; Check common primitive types
+          (cond
+            ((string-eq slop-type "String") "slop_string")
+            ((string-eq slop-type "Int") "int64_t")
+            ((string-eq slop-type "Bool") "uint8_t")
+            ((string-eq slop-type "Unit") "void")
+            ((string-eq slop-type "Arena") "slop_arena*")
+            ;; Pointer types like "(Ptr T)"
+            ((starts-with slop-type "(Ptr ")
+              (let ((inner (substring arena slop-type 5 (- (cast Int (string-len slop-type)) 1))))
+                (ctx-str ctx (slop-type-to-c-type ctx inner) "*")))
+            ;; Map/Set types -> slop_map*
+            ((or (starts-with slop-type "(Map ") (starts-with slop-type "(Set "))
+              "slop_map*")
+            ;; List types -> need to generate list type name
+            ((starts-with slop-type "(List ")
+              (let ((inner (substring arena slop-type 6 (- (cast Int (string-len slop-type)) 1))))
+                (ctx-str ctx "slop_list_" (slop-type-to-c-type ctx inner))))
+            ;; Option types
+            ((starts-with slop-type "(Option ")
+              (let ((inner (substring arena slop-type 8 (- (cast Int (string-len slop-type)) 1))))
+                (ctx-str ctx "slop_option_" (slop-type-to-c-type ctx inner))))
+            ;; Default: use as-is (might be a C type already)
+            (else slop-type))))))
+
   (fn infer-expr-c-type ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
     (@intent "Infer C type of an expression")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
@@ -2406,11 +2440,21 @@
       ;; Number -> int64_t or double
       ((num num)
         (if (. num is-float) "double" "int64_t"))
-      ;; Symbol -> look up type
+      ;; Symbol -> look up type, handling "auto" from match bindings
       ((sym sym)
         (let ((name (. sym name)))
           (match (ctx-lookup-var ctx name)
-            ((some entry) (. entry c-type))
+            ((some entry)
+              (let ((c-type (. entry c-type))
+                    (slop-type (. entry slop-type)))
+                (cond
+                  ;; If c-type is "auto" or empty, try to convert slop-type
+                  ((or (string-eq c-type "auto") (== (string-len c-type) 0))
+                    (if (> (string-len slop-type) 0)
+                      (slop-type-to-c-type ctx slop-type)
+                      "int64_t"))
+                  ;; Otherwise use the stored c-type
+                  (else c-type))))
             ((none) "int64_t"))))
       ;; List -> check for known patterns
       ((lst lst)
