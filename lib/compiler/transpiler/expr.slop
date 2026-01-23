@@ -2662,18 +2662,18 @@
             ((string-eq slop-type "Arena") "slop_arena*")
             ;; Pointer types like "(Ptr T)"
             ((starts-with slop-type "(Ptr ")
-              (let ((inner (substring arena slop-type 5 (- (cast Int (string-len slop-type)) 1))))
+              (let ((inner (substring arena slop-type 5 (max 0 (- (cast Int (string-len slop-type)) 1)))))
                 (ctx-str ctx (slop-type-to-c-type ctx inner) "*")))
             ;; Map/Set types -> slop_map*
             ((or (starts-with slop-type "(Map ") (starts-with slop-type "(Set "))
               "slop_map*")
             ;; List types -> need to generate list type name
             ((starts-with slop-type "(List ")
-              (let ((inner (substring arena slop-type 6 (- (cast Int (string-len slop-type)) 1))))
+              (let ((inner (substring arena slop-type 6 (max 0 (- (cast Int (string-len slop-type)) 1)))))
                 (ctx-str ctx "slop_list_" (slop-type-to-c-type ctx inner))))
             ;; Option types
             ((starts-with slop-type "(Option ")
-              (let ((inner (substring arena slop-type 8 (- (cast Int (string-len slop-type)) 1))))
+              (let ((inner (substring arena slop-type 8 (max 0 (- (cast Int (string-len slop-type)) 1)))))
                 (ctx-str ctx "slop_option_" (slop-type-to-c-type ctx inner))))
             ;; Default: use as-is (might be a C type already)
             (else slop-type))))))

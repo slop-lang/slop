@@ -29,7 +29,8 @@
                    ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-prefixing-enabled ctx-get-module ctx-prefix-type
                    TypeEntry FuncEntry FuncParamType VarEntry
-                   to-c-type-prefixed extract-fn-c-name ctx-fail))
+                   to-c-type-prefixed extract-fn-c-name ctx-fail
+                   ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
   (import stmt (transpile-stmt))
   (import expr (transpile-expr))
@@ -334,7 +335,7 @@
           (let ((items (. lst items))
                 (len (list-len items)))
             (if (< len 3)
-              (ctx-emit ctx "/* invalid type: need name and definition */")
+              (ctx-add-error-at ctx "invalid type: need name and definition" (sexpr-line expr) (sexpr-col expr))
               ;; Get type name
               (match (list-get items 1)
                 ((some name-expr)
@@ -353,10 +354,10 @@
                         (match (list-get items 2)
                           ((some type-def)
                             (dispatch-type-def ctx raw-name qualified-name type-def))
-                          ((none) (ctx-emit ctx "/* missing type definition */")))))
-                    (else (ctx-emit ctx "/* type name must be symbol */"))))
-                ((none) (ctx-emit ctx "/* missing type name */"))))))
-        (else (ctx-emit ctx "/* invalid type form */")))))
+                          ((none) (ctx-add-error-at ctx "missing type definition" (sexpr-line name-expr) (sexpr-col name-expr))))))
+                    (else (ctx-add-error-at ctx "type name must be symbol" (sexpr-line name-expr) (sexpr-col name-expr)))))
+                ((none) (ctx-add-error-at ctx "missing type name" (sexpr-line expr) (sexpr-col expr)))))))
+        (else (ctx-add-error-at ctx "invalid type form" (sexpr-line expr) (sexpr-col expr))))))
 
   (fn dispatch-type-def ((ctx (Ptr TranspileContext)) (raw-name String) (qualified-name String) (type-def (Ptr SExpr)))
     (@intent "Dispatch to appropriate type definition handler")
@@ -367,7 +368,7 @@
       ((lst def-lst)
         (let ((items (. def-lst items)))
           (if (< (list-len items) 1)
-            (ctx-emit ctx "/* empty type definition */")
+            (ctx-add-error-at ctx "empty type definition" (sexpr-line type-def) (sexpr-col type-def))
             (match (list-get items 0)
               ((some head)
                 (match (deref head)
@@ -386,12 +387,12 @@
                         ;; Default: treat as type alias
                         (else
                           (transpile-type-alias ctx raw-name qualified-name type-def)))))
-                  (else (ctx-emit ctx "/* invalid type definition head */"))))
-              ((none) (ctx-emit ctx "/* empty type definition */"))))))
+                  (else (ctx-add-error-at ctx "invalid type definition head" (sexpr-line head) (sexpr-col head)))))
+              ((none) (ctx-add-error-at ctx "empty type definition" (sexpr-line type-def) (sexpr-col type-def)))))))
       ;; Simple type (symbol) - could be alias or range
       ((sym sym)
         (transpile-type-alias ctx raw-name qualified-name type-def))
-      (else (ctx-emit ctx "/* invalid type definition form */"))))
+      (else (ctx-add-error-at ctx "invalid type definition form" (sexpr-line type-def) (sexpr-col type-def)))))
 
   (fn has-payload-variants ((items (List (Ptr SExpr))))
     (@intent "Check if enum has payload variants (making it a union)")
@@ -432,7 +433,7 @@
             (ctx-emit ctx "")
             ;; Register type
             (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false true false))))
-        (else (ctx-emit ctx "/* invalid record form */")))))
+        (else (ctx-add-error-at ctx "invalid record form" (sexpr-line expr) (sexpr-col expr))))))
 
   (fn emit-record-fields ((ctx (Ptr TranspileContext)) (raw-type-name String) (qualified-type-name String) (items (List (Ptr SExpr))) (start-idx Int))
     (@intent "Emit struct fields and register their types")
@@ -503,7 +504,7 @@
             (ctx-emit ctx "")
             ;; Register type
             (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name true false false))))
-        (else (ctx-emit ctx "/* invalid enum form */")))))
+        (else (ctx-add-error-at ctx "invalid enum form" (sexpr-line expr) (sexpr-col expr))))))
 
   (fn emit-enum-values ((ctx (Ptr TranspileContext)) (type-name String) (items (List (Ptr SExpr))) (start-idx Int) (len Int))
     (@intent "Emit enum values")
@@ -555,7 +556,7 @@
             (ctx-emit ctx "")
             ;; Register type
             (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false false true))))
-        (else (ctx-emit ctx "/* invalid union form */")))))
+        (else (ctx-add-error-at ctx "invalid union form" (sexpr-line expr) (sexpr-col expr))))))
 
   (fn emit-union-variants ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start-idx Int))
     (@intent "Emit union variant fields")
@@ -875,7 +876,7 @@
           (let ((items (. lst items))
                 (len (list-len items)))
             (if (< len 3)
-              (ctx-emit ctx "/* invalid fn: need name and params */")
+              (ctx-add-error-at ctx "invalid fn: need name and params" (sexpr-line expr) (sexpr-col expr))
               ;; Get function name
               (match (list-get items 1)
                 ((some name-expr)
@@ -895,10 +896,10 @@
                         (match (list-get items 2)
                           ((some params-expr)
                             (emit-function-def ctx raw-name fn-name params-expr items is-public-api))
-                          ((none) (ctx-emit ctx "/* missing params */")))))
-                    (else (ctx-emit ctx "/* function name must be symbol */"))))
-                ((none) (ctx-emit ctx "/* missing function name */"))))))
-        (else (ctx-emit ctx "/* invalid fn form */")))))
+                          ((none) (ctx-add-error-at ctx "missing params" (sexpr-line name-expr) (sexpr-col name-expr))))))
+                    (else (ctx-add-error-at ctx "function name must be symbol" (sexpr-line name-expr) (sexpr-col name-expr)))))
+                ((none) (ctx-add-error-at ctx "missing function name" (sexpr-line expr) (sexpr-col expr)))))))
+        (else (ctx-add-error-at ctx "invalid fn form" (sexpr-line expr) (sexpr-col expr))))))
 
   (fn emit-function-def ((ctx (Ptr TranspileContext)) (raw-name String) (fn-name String) (params-expr (Ptr SExpr)) (items (List (Ptr SExpr))) (is-public-api Bool))
     (@intent "Emit function definition")

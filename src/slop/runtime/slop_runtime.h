@@ -962,4 +962,16 @@ static inline slop_string slop_float_to_string(slop_arena* arena, double n) {
     return slop_string_new_len(arena, buf, len);
 }
 
+/* ============================================================
+ * Stderr output helpers
+ * ============================================================ */
+
+static inline void slop_eprint(const char* s) {
+    fputs(s, stderr);
+}
+
+static inline void slop_eputc(int c) {
+    fputc(c, stderr);
+}
+
 #endif /* SLOP_RUNTIME_H */

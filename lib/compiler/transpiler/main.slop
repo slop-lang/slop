@@ -8,7 +8,7 @@
 (module transpiler-main
   (import types (SExpr SExprList SExprSymbol))
   (import parser (parse ParseResult))
-  (import context (TranspileContext context-new ctx-reset-for-new-module ctx-get-output ctx-get-header ctx-set-prefixing ctx-set-module))
+  (import context (TranspileContext context-new ctx-reset-for-new-module ctx-get-output ctx-get-header ctx-set-prefixing ctx-set-module ctx-set-file ctx-has-errors ctx-report-errors))
   (import transpiler (transpile-file generate-c-output))
   (import strlib (replace-all))
 
@@ -24,6 +24,9 @@
 
   (ffi "stdlib.h"
     (exit ((code Int)) Unit))
+
+  (ffi "string.h"
+    (strlen ((s (Ptr U8))) U64))
 
   ;; Seek constants
   (const SEEK_SET Int 0)
@@ -205,7 +208,11 @@
           (let ((mut i 1)
                 (mut first true))
             (while (< i argc)
-              (let ((filename (@ argv i)))
+              (let ((filename (@ argv i))
+                    (filename-ptr (cast (Ptr U8) filename))
+                    (filename-str (String filename-ptr (strlen filename-ptr))))
+                ;; Set current file for error messages
+                (ctx-set-file ctx filename-str)
                 (match (read-file arena filename)
                   ((some source)
                     (let ((result (transpile-single-file-with-ctx ctx source first)))
@@ -233,6 +240,10 @@
             (ctx-reset-for-new-module ctx mod-name)
             ;; Transpile
             (transpile-file ctx exprs)
+            ;; Check for errors
+            (when (ctx-has-errors ctx)
+              (ctx-report-errors ctx)
+              (exit 1))
             ;; Output JSON for this module
             (output-module-json arena ctx mod-name first)
             0))
@@ -265,6 +276,10 @@
             (ctx-reset-for-new-module ctx mod-name)
             ;; Transpile
             (transpile-file ctx exprs)
+            ;; Check for errors
+            (when (ctx-has-errors ctx)
+              (ctx-report-errors ctx)
+              (exit 1))
             ;; Output JSON for this module
             (output-module-json arena ctx mod-name first)
             0))

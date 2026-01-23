@@ -37,7 +37,7 @@
                    to-c-type-prefixed
                    ctx-mark-type-emitted ctx-is-type-emitted
                    ctx-register-field-type
-                   ctx-get-struct-key-types))
+                   ctx-register-struct-key-type ctx-get-struct-key-types))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
   (import emit (emit-standard-includes emit-include))
   (import defn (transpile-type transpile-function transpile-const is-const-form emit-forward-declaration
