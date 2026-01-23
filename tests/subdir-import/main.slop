@@ -1,0 +1,20 @@
+;; Test subdirectory module imports
+;; This file imports from utils/helper which should resolve to utils/helper.slop
+
+(module main
+  (export main)
+
+  (import utils/helper (greet add-numbers))
+
+  (ffi "stdio.h"
+    (puts ((s (Ptr Char))) Int))
+
+  (fn main ()
+    (@intent "Test subdirectory imports")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((msg (greet arena "World"))
+            (sum (add-numbers 10 20)))
+        (puts (cast (Ptr Char) (. msg data)))
+        sum)))
+)

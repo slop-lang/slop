@@ -153,8 +153,10 @@
     (@example (arena "empty?") -> "empty_p")
     (@example (arena "set!") -> "set_x")
     (@example (arena "int") -> "slop_int")
+    (@example (arena "utils/helper") -> "utils_helper")
     ;; Replace special characters using strlib's replace-all
     (let ((mut result (replace-all arena name "-" "_")))
+      (set! result (replace-all arena result "/" "_"))
       (set! result (replace-all arena result "?" "_p"))
       (set! result (replace-all arena result "!" "_x"))
       (set! result (replace-all arena result "$" "_"))

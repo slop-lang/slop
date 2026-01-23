@@ -5945,7 +5945,7 @@ class Transpiler:
 
     def to_c_name(self, name: str) -> str:
         """Convert SLOP identifier to valid C name"""
-        result = name.replace('-', '_').replace('?', '_p').replace('!', '_x').replace('$', '_')
+        result = name.replace('-', '_').replace('/', '_').replace('?', '_p').replace('!', '_x').replace('$', '_')
         if result in self.C_KEYWORDS:
             return f"slop_{result}"
         return result

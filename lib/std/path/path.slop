@@ -1,0 +1,98 @@
+;; ============================================================
+;; Path Manipulation Module
+;;
+;; Provides path utilities for file system operations:
+;; - path-dirname: Extract directory portion of path
+;; - path-join: Join two path components
+;; - path-basename: Extract filename portion
+;; - path-extension: Extract file extension
+;; ============================================================
+
+(module path
+  (export
+    path-dirname
+    path-join
+    path-basename
+    path-extension)
+
+  (import strlib (last-index-of substring char-at))
+
+  ;; ============================================================
+  ;; Path Functions
+  ;; ============================================================
+
+  (fn path-dirname ((arena Arena) (path String))
+    (@intent "Extract directory portion of path")
+    (@spec ((Arena String) -> String))
+    (@pure)
+    (@example (arena "foo/bar/baz.slop") -> "foo/bar")
+    (@example (arena "baz.slop") -> ".")
+    (@example (arena "/foo/bar") -> "/foo")
+    (@example (arena "/") -> "/")
+    (let ((len (cast Int (. path len))))
+      (if (== len 0)
+        "."
+        ;; Search for last '/' (ASCII 47)
+        (match (last-index-of path "/")
+          ((some idx)
+            (if (== idx 0)
+              "/"
+              (substring arena path 0 (cast (Int 0 ..) idx))))
+          ((none) ".")))))
+
+  (fn path-join ((arena Arena) (base String) (rel String))
+    (@intent "Join two path components with /")
+    (@spec ((Arena String String) -> String))
+    (@pure)
+    (@example (arena "foo/bar" "baz.slop") -> "foo/bar/baz.slop")
+    (@example (arena "." "foo.slop") -> "./foo.slop")
+    (@example (arena "" "foo.slop") -> "foo.slop")
+    (let ((base-len (cast Int (. base len)))
+          (rel-len (cast Int (. rel len))))
+      (cond
+        ;; Empty base - just return rel
+        ((== base-len 0) rel)
+        ;; Empty rel - just return base
+        ((== rel-len 0) base)
+        ;; Both non-empty - join with /
+        (else
+          (let ((slash "/"))
+            (string-concat arena base (string-concat arena slash rel)))))))
+
+  (fn path-basename ((arena Arena) (path String))
+    (@intent "Extract filename portion of path")
+    (@spec ((Arena String) -> String))
+    (@pure)
+    (@example (arena "foo/bar/baz.slop") -> "baz.slop")
+    (@example (arena "baz.slop") -> "baz.slop")
+    (@example (arena "/foo/bar/") -> "")
+    (let ((len (cast Int (. path len))))
+      (if (== len 0)
+        ""
+        (match (last-index-of path "/")
+          ((some idx)
+            (let ((start (+ idx 1))
+                  (remaining (- len start)))
+              (if (<= remaining 0)
+                ""
+                (substring arena path (cast (Int 0 ..) start) (cast (Int 0 ..) remaining)))))
+          ((none) path)))))
+
+  (fn path-extension ((arena Arena) (path String))
+    (@intent "Extract file extension including dot, or empty string")
+    (@spec ((Arena String) -> String))
+    (@pure)
+    (@example (arena "foo.slop") -> ".slop")
+    (@example (arena "foo") -> "")
+    (@example (arena "foo.tar.gz") -> ".gz")
+    (let ((len (cast Int (. path len))))
+      (if (== len 0)
+        ""
+        (match (last-index-of path ".")
+          ((some idx)
+            (let ((ext-len (- len idx)))
+              (if (<= ext-len 0)
+                ""
+                (substring arena path (cast (Int 0 ..) idx) (cast (Int 0 ..) ext-len)))))
+          ((none) "")))))
+)
