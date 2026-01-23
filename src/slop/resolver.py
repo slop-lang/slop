@@ -45,9 +45,61 @@ class ModuleResolver:
         Args:
             search_paths: Directories to search for modules (in order).
                          Current directory of importing file is always searched first.
+                         If a path contains a slop.toml, its [build].sources and
+                         [build].include paths are added automatically.
         """
-        self.search_paths = search_paths or []
+        self.search_paths = self._expand_search_paths(search_paths or [])
         self.cache: Dict[Path, ModuleInfo] = {}
+
+    def _expand_search_paths(self, paths: List[Path]) -> List[Path]:
+        """Expand search paths by reading slop.toml in project directories.
+
+        If a path contains a slop.toml, read it and add:
+        - [build].sources directories
+        - [build].include directories
+        - The path itself as fallback
+        """
+        expanded = []
+        for path in paths:
+            path = Path(path)
+            toml_path = path / 'slop.toml'
+            if toml_path.exists():
+                # This is a project directory - read its config
+                try:
+                    import tomllib
+                    with open(toml_path, 'rb') as f:
+                        config = tomllib.load(f)
+                    build = config.get('build', {})
+
+                    # Add sources directories
+                    sources = build.get('sources', [])
+                    for src in sources:
+                        src_path = (path / src).resolve()
+                        if src_path.is_dir() and src_path not in expanded:
+                            expanded.append(src_path)
+
+                    # Add include directories
+                    includes = build.get('include', [])
+                    for inc in includes:
+                        inc_path = (path / inc).resolve()
+                        if inc_path.is_dir() and inc_path not in expanded:
+                            expanded.append(inc_path)
+                        elif inc_path.exists():
+                            # Recursively expand if it's also a project
+                            expanded.extend(self._expand_search_paths([inc_path]))
+
+                    # Add project root as fallback if no sources specified
+                    if not sources and path not in expanded:
+                        expanded.append(path)
+                except Exception:
+                    # If we can't read the config, just use the path directly
+                    if path not in expanded:
+                        expanded.append(path)
+            else:
+                # Regular directory - add as-is
+                if path not in expanded:
+                    expanded.append(path)
+        return expanded
 
     def resolve_module(self, module_name: str, from_path: Optional[Path] = None) -> Path:
         """Find the .slop file for a module name.
@@ -104,7 +156,11 @@ class ModuleResolver:
             return self.cache[path]
 
         # Parse file
-        ast = parse_file(str(path))
+        try:
+            ast = parse_file(str(path))
+        except Exception as e:
+            # Re-raise with filename included for better error messages
+            raise ResolverError(f"{path}: {e}") from e
 
         # Find module form
         module_name = path.stem  # Default to filename

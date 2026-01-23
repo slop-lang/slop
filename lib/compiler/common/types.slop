@@ -24,7 +24,10 @@
     resolved-type-get-variant-index resolved-type-get-variant-payload
     resolved-type-has-field resolved-type-get-field-type
     ;; Setters
-    resolved-type-set-inner)
+    resolved-type-set-inner
+    resolved-type-set-inner2
+    ;; Type string conversion
+    resolved-type-to-slop-string)
 
   ;; ============================================================
   ;; S-Expression AST Types
@@ -316,6 +319,14 @@
     (let ((inner-opt (Option (Ptr ResolvedType)) (if (!= inner nil) (some inner) (none))))
       (set! (. (deref t) inner-type) inner-opt)))
 
+  (fn resolved-type-set-inner2 ((t (Ptr ResolvedType)) (inner (Ptr ResolvedType)))
+    (@intent "Set the second inner type for Map (value type) and Result (error type)")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Unit))
+    (@pre (!= t nil))
+    ;; Using explicit typed local to help transpiler generate correct option type
+    (let ((inner-opt (Option (Ptr ResolvedType)) (if (!= inner nil) (some inner) (none))))
+      (set! (. (deref t) inner-type2) inner-opt)))
+
   (fn param-info-new ((arena Arena) (name String) (param-type (Ptr ResolvedType)))
     (@intent "Create a function parameter info")
     (@spec ((Arena String (Ptr ResolvedType)) -> (Ptr ParamInfo)))
@@ -506,4 +517,74 @@
           ((none) (do)))
         (set! i (+ i 1)))
       result))
+
+  ;; ============================================================
+  ;; Type String Conversion
+  ;; ============================================================
+
+  (fn resolved-type-to-slop-string ((arena Arena) (t (Ptr ResolvedType)))
+    (@intent "Convert a resolved type to its SLOP string representation")
+    (@spec ((Arena (Ptr ResolvedType)) -> String))
+    (if (== t nil)
+      "Unknown"
+      (let ((kind (. (deref t) kind))
+            (name (. (deref t) name)))
+        (match kind
+          ('rk-primitive name)
+          ('rk-record name)
+          ('rk-enum name)
+          ('rk-union name)
+          ('rk-function name)
+          ('rk-range name)
+          ('rk-option
+            (match (. (deref t) inner-type)
+              ((some inner)
+                (string-concat arena "(Option "
+                  (string-concat arena (resolved-type-to-slop-string arena inner) ")")))
+              ((none) "Option")))
+          ('rk-ptr
+            (match (. (deref t) inner-type)
+              ((some inner)
+                (string-concat arena "(Ptr "
+                  (string-concat arena (resolved-type-to-slop-string arena inner) ")")))
+              ((none) "Ptr")))
+          ('rk-list
+            (match (. (deref t) inner-type)
+              ((some inner)
+                (string-concat arena "(List "
+                  (string-concat arena (resolved-type-to-slop-string arena inner) ")")))
+              ((none) "List")))
+          ('rk-map
+            (match (. (deref t) inner-type)
+              ((some key-type)
+                (match (. (deref t) inner-type2)
+                  ((some val-type)
+                    (string-concat arena "(Map "
+                      (string-concat arena (resolved-type-to-slop-string arena key-type)
+                        (string-concat arena " "
+                          (string-concat arena (resolved-type-to-slop-string arena val-type) ")")))))
+                  ((none)
+                    (string-concat arena "(Map "
+                      (string-concat arena (resolved-type-to-slop-string arena key-type) ")")))))
+              ((none) "Map")))
+          ('rk-result
+            (match (. (deref t) inner-type)
+              ((some ok-type)
+                (match (. (deref t) inner-type2)
+                  ((some err-type)
+                    (string-concat arena "(Result "
+                      (string-concat arena (resolved-type-to-slop-string arena ok-type)
+                        (string-concat arena " "
+                          (string-concat arena (resolved-type-to-slop-string arena err-type) ")")))))
+                  ((none)
+                    (string-concat arena "(Result "
+                      (string-concat arena (resolved-type-to-slop-string arena ok-type) ")")))))
+              ((none) "Result")))
+          ('rk-array
+            (match (. (deref t) inner-type)
+              ((some inner)
+                (string-concat arena "(Array "
+                  (string-concat arena (resolved-type-to-slop-string arena inner) ")")))
+              ((none) "Array")))
+          (else name)))))
 )

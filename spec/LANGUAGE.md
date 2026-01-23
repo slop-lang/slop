@@ -644,6 +644,14 @@ Minimal runtime (~500 lines of C):
 (map-keys map) -> (List K)               ; Return list of all keys
 (map-remove map key) -> Unit             ; Remove key from mutable map
 
+; Sets (homogeneous, type-safe)
+(set-new arena ElementType) -> (Set ElementType)  ; Create empty set
+(set Type e1 e2...)                               ; Set literal
+(set-put set element) -> Unit                     ; Add element to set
+(set-has set element) -> Bool                     ; Check if element exists
+(set-remove set element) -> Unit                  ; Remove element from set
+(set-elements set) -> (List T)                    ; Get all elements as list
+
 ; Results
 (ok val) -> (Result T E)
 (error e) -> (Result T E)

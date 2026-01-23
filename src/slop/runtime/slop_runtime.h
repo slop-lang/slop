@@ -329,11 +329,15 @@ static inline slop_list_string string_split(slop_arena* arena, slop_string s, sl
 }
 
 /* ============================================================
- * Map Type (simple hash map)
+ * Map Type (generic hash map with arbitrary key types)
  * ============================================================ */
 
+/* Function pointer types for hash and equality */
+typedef uint64_t (*slop_hash_fn)(const void* key);
+typedef bool (*slop_eq_fn)(const void* a, const void* b);
+
 typedef struct {
-    slop_string key;
+    void* key;          /* Pointer to key (arena-allocated copy) */
     void* value;
     bool occupied;
 } slop_map_entry;
@@ -341,93 +345,183 @@ typedef struct {
 typedef struct {
     size_t len;
     size_t cap;
+    size_t key_size;    /* Size of key type in bytes */
+    slop_hash_fn hash;  /* Hash function for keys */
+    slop_eq_fn eq;      /* Equality function for keys */
     slop_map_entry* entries;
 } slop_map;
 
-static inline uint64_t slop_hash_string(slop_string s) {
+/* ============================================================
+ * Hash functions for primitive types
+ * ============================================================ */
+
+/* FNV-1a hash for strings */
+static inline uint64_t slop_hash_string(const void* key) {
+    const slop_string* s = (const slop_string*)key;
     uint64_t hash = 14695981039346656037ULL;
-    for (size_t i = 0; i < s.len; i++) {
-        hash ^= (uint8_t)s.data[i];
+    for (size_t i = 0; i < s->len; i++) {
+        hash ^= (uint8_t)s->data[i];
         hash *= 1099511628211ULL;
     }
     return hash;
 }
 
-static inline slop_map slop_map_new(slop_arena* arena, size_t capacity) {
+static inline bool slop_eq_string(const void* a, const void* b) {
+    return slop_string_eq(*(const slop_string*)a, *(const slop_string*)b);
+}
+
+/* Hash for integers (uses splitmix64) */
+static inline uint64_t slop_hash_int(const void* key) {
+    uint64_t x = *(const int64_t*)key;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+static inline bool slop_eq_int(const void* a, const void* b) {
+    return *(const int64_t*)a == *(const int64_t*)b;
+}
+
+/* Hash for unsigned integers */
+static inline uint64_t slop_hash_uint(const void* key) {
+    uint64_t x = *(const uint64_t*)key;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+static inline bool slop_eq_uint(const void* a, const void* b) {
+    return *(const uint64_t*)a == *(const uint64_t*)b;
+}
+
+/* Hash for pointers (useful for identity maps) */
+static inline uint64_t slop_hash_ptr(const void* key) {
+    uint64_t x = (uint64_t)(*(const void**)key);
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+static inline bool slop_eq_ptr(const void* a, const void* b) {
+    return *(const void**)a == *(const void**)b;
+}
+
+/* Hash for symbols (which are just integers internally) */
+#define slop_hash_symbol slop_hash_int
+#define slop_eq_symbol slop_eq_int
+
+/* Generate hash/eq functions for arbitrary struct types using FNV-1a */
+#define SLOP_STRUCT_HASH_EQ_DEFINE(T) \
+    static inline uint64_t slop_hash_##T(const void* key) { \
+        const uint8_t* bytes = (const uint8_t*)key; \
+        uint64_t hash = 14695981039346656037ULL; \
+        for (size_t i = 0; i < sizeof(T); i++) { \
+            hash ^= bytes[i]; \
+            hash *= 1099511628211ULL; \
+        } \
+        return hash; \
+    } \
+    static inline bool slop_eq_##T(const void* a, const void* b) { \
+        return memcmp(a, b, sizeof(T)) == 0; \
+    }
+
+/* ============================================================
+ * Map operations
+ * ============================================================ */
+
+static inline slop_map slop_map_new(slop_arena* arena, size_t capacity,
+                                     size_t key_size, slop_hash_fn hash, slop_eq_fn eq) {
     slop_map_entry* entries = (slop_map_entry*)slop_arena_alloc(
         arena, capacity * sizeof(slop_map_entry));
     memset(entries, 0, capacity * sizeof(slop_map_entry));
-    return (slop_map){0, capacity, entries};
+    return (slop_map){0, capacity, key_size, hash, eq, entries};
 }
 
 /* Return pointer to arena-allocated map (for slop_map* type) */
-static inline slop_map* slop_map_new_ptr(slop_arena* arena, size_t capacity) {
+static inline slop_map* slop_map_new_ptr(slop_arena* arena, size_t capacity,
+                                          size_t key_size, slop_hash_fn hash, slop_eq_fn eq) {
     slop_map* map = (slop_map*)slop_arena_alloc(arena, sizeof(slop_map));
-    *map = slop_map_new(arena, capacity);
+    *map = slop_map_new(arena, capacity, key_size, hash, eq);
     return map;
 }
 
-static inline void* slop_map_get(slop_map* map, slop_string key) {
-    uint64_t hash = slop_hash_string(key);
+/* Legacy string-only constructor for backward compatibility */
+static inline slop_map* slop_map_new_string(slop_arena* arena, size_t capacity) {
+    return slop_map_new_ptr(arena, capacity, sizeof(slop_string), slop_hash_string, slop_eq_string);
+}
+
+static inline void* slop_map_get(slop_map* map, const void* key) {
+    uint64_t hash = map->hash(key);
     size_t idx = hash % map->cap;
-    
+
     for (size_t i = 0; i < map->cap; i++) {
         size_t probe = (idx + i) % map->cap;
         if (!map->entries[probe].occupied) {
             return NULL;
         }
-        if (slop_string_eq(map->entries[probe].key, key)) {
+        if (map->eq(map->entries[probe].key, key)) {
             return map->entries[probe].value;
         }
     }
     return NULL;
 }
 
-static inline void slop_map_put(slop_arena* arena, slop_map* map, 
-                                 slop_string key, void* value) {
+/* Forward declaration for recursive call in put */
+static inline void slop_map_put(slop_arena* arena, slop_map* map,
+                                 const void* key, void* value);
+
+static inline void slop_map_grow(slop_arena* arena, slop_map* map) {
+    size_t new_cap = map->cap * 2;
+    slop_map new_map = slop_map_new(arena, new_cap, map->key_size, map->hash, map->eq);
+    for (size_t i = 0; i < map->cap; i++) {
+        if (map->entries[i].occupied) {
+            slop_map_put(arena, &new_map,
+                        map->entries[i].key, map->entries[i].value);
+        }
+    }
+    *map = new_map;
+}
+
+static inline void slop_map_put(slop_arena* arena, slop_map* map,
+                                 const void* key, void* value) {
     /* Grow if needed (75% load factor) */
     if (map->len * 4 >= map->cap * 3) {
-        size_t new_cap = map->cap * 2;
-        slop_map new_map = slop_map_new(arena, new_cap);
-        for (size_t i = 0; i < map->cap; i++) {
-            if (map->entries[i].occupied) {
-                slop_map_put(arena, &new_map, 
-                            map->entries[i].key, map->entries[i].value);
-            }
-        }
-        *map = new_map;
+        slop_map_grow(arena, map);
     }
-    
-    uint64_t hash = slop_hash_string(key);
+
+    uint64_t hash = map->hash(key);
     size_t idx = hash % map->cap;
-    
+
     for (size_t i = 0; i < map->cap; i++) {
         size_t probe = (idx + i) % map->cap;
         if (!map->entries[probe].occupied) {
-            map->entries[probe].key = key;
+            /* Allocate and copy key */
+            void* key_copy = slop_arena_alloc(arena, map->key_size);
+            memcpy(key_copy, key, map->key_size);
+            map->entries[probe].key = key_copy;
             map->entries[probe].value = value;
             map->entries[probe].occupied = true;
             map->len++;
             return;
         }
-        if (slop_string_eq(map->entries[probe].key, key)) {
+        if (map->eq(map->entries[probe].key, key)) {
             map->entries[probe].value = value;
             return;
         }
     }
 }
 
-static inline bool slop_map_has(slop_map* map, slop_string key) {
+static inline bool slop_map_has(slop_map* map, const void* key) {
     return slop_map_get(map, key) != NULL;
 }
 
-static inline bool slop_map_remove(slop_map* map, slop_string key) {
-    uint64_t hash = slop_hash_string(key);
+static inline bool slop_map_remove(slop_map* map, const void* key) {
+    uint64_t hash = map->hash(key);
     size_t idx = hash % map->cap;
     for (size_t i = 0; i < map->cap; i++) {
         size_t probe = (idx + i) % map->cap;
         if (!map->entries[probe].occupied) return false;
-        if (slop_string_eq(map->entries[probe].key, key)) {
+        if (map->eq(map->entries[probe].key, key)) {
             map->entries[probe].occupied = false;
             map->len--;
             return true;
@@ -436,14 +530,45 @@ static inline bool slop_map_remove(slop_map* map, slop_string key) {
     return false;
 }
 
+/* Get all keys - returns generic list of pointers to keys */
+static inline size_t slop_map_key_count(slop_map* map) {
+    return map->len;
+}
+
+/* Legacy string key iteration for backward compatibility */
 static inline slop_list_string slop_map_keys(slop_arena* arena, slop_map* map) {
     slop_list_string result = slop_list_string_new(arena, map->len > 0 ? map->len : 1);
     for (size_t i = 0; i < map->cap; i++) {
         if (map->entries[i].occupied) {
-            slop_list_string_push(arena, &result, map->entries[i].key);
+            slop_list_string_push(arena, &result, *(slop_string*)map->entries[i].key);
         }
     }
     return result;
+}
+
+/* Generic set elements - returns raw pointer to arena-allocated array of keys
+ * The caller should cast the data pointer to the appropriate element type.
+ * Returns a struct with data pointer, len, and cap (list-compatible layout). */
+typedef struct {
+    void* data;
+    size_t len;
+    size_t cap;
+} slop_set_elements_result;
+
+static inline slop_set_elements_result slop_set_elements_raw(slop_arena* arena, slop_map* set) {
+    size_t count = set->len;
+    if (count == 0) {
+        return (slop_set_elements_result){NULL, 0, 0};
+    }
+    void* result = slop_arena_alloc(arena, count * set->key_size);
+    size_t idx = 0;
+    for (size_t i = 0; i < set->cap && idx < count; i++) {
+        if (set->entries[i].occupied) {
+            memcpy((char*)result + idx * set->key_size, set->entries[i].key, set->key_size);
+            idx++;
+        }
+    }
+    return (slop_set_elements_result){result, count, count};
 }
 
 /* ============================================================
@@ -457,11 +582,11 @@ static inline slop_list_string slop_map_keys(slop_arena* arena, slop_map* map) {
     typedef slop_map Name; \
     \
     static inline Name Name##_new(slop_arena* arena, size_t cap) { \
-        return slop_map_new(arena, cap); \
+        return slop_map_new(arena, cap, sizeof(slop_string), slop_hash_string, slop_eq_string); \
     } \
     \
     static inline OptName Name##_get(Name* map, slop_string key) { \
-        void* v = slop_map_get(map, key); \
+        void* v = slop_map_get(map, &key); \
         if (v) return (OptName){ .has_value = true, .value = *(V*)v }; \
         return (OptName){ .has_value = false }; \
     } \
@@ -469,11 +594,11 @@ static inline slop_list_string slop_map_keys(slop_arena* arena, slop_map* map) {
     static inline void Name##_put(slop_arena* arena, Name* map, slop_string key, V value) { \
         V* stored = (V*)slop_arena_alloc(arena, sizeof(V)); \
         *stored = value; \
-        slop_map_put(arena, map, key, stored); \
+        slop_map_put(arena, map, &key, stored); \
     } \
     \
     static inline bool Name##_has(Name* map, slop_string key) { \
-        return slop_map_get(map, key) != NULL; \
+        return slop_map_get(map, &key) != NULL; \
     }
 
 /* ============================================================

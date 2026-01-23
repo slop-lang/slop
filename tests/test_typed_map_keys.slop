@@ -1,0 +1,32 @@
+;; ============================================================
+;; Test: Typed Map/Set Keys
+;;
+;; Tests that maps and sets can use non-string key types:
+;; - Record types as map keys
+;; ============================================================
+
+(module test-typed-map-keys
+
+  ;; Test record as map key
+  (type Point (record
+    (x Int)
+    (y Int)))
+
+  (fn test-record-key ()
+    (@intent "Test record type as map key")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena Point String)))
+        (map-put m (Point 10 20) "origin")
+        (map-has m (Point 10 20)))))
+
+  (fn main ()
+    (@intent "Run all tests")
+    (@spec (() -> Int))
+    (if (test-record-key)
+      (do
+        (println "Test passed!")
+        0)
+      (do
+        (println "Test failed!")
+        1))))

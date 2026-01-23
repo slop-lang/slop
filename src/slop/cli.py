@@ -2048,33 +2048,38 @@ def _build_library_from_sources(
     resolver = ModuleResolver(search_paths)
 
     # Build a combined graph from all source files
-    all_modules = {}
+    # Each build_dependency_graph call resolves dependencies recursively
+    from slop.resolver import ModuleGraph
+    combined_graph = ModuleGraph()
+
     for source_file in source_files:
         try:
             graph = resolver.build_dependency_graph(source_file)
+            # Merge modules and dependencies from this graph
             for mod_name, mod_info in graph.modules.items():
-                if mod_name not in all_modules:
-                    all_modules[mod_name] = mod_info
+                if mod_name not in combined_graph.modules:
+                    combined_graph.modules[mod_name] = mod_info
+                    combined_graph.dependencies[mod_name] = graph.dependencies.get(mod_name, [])
         except ResolverError as e:
-            print(f"  Module resolution failed for {source_file}: {e}")
+            sys.stdout.flush()
+            print(f"  Module resolution failed: {e}", file=sys.stderr)
             return 1
 
-    if not all_modules:
+    if not combined_graph.modules:
         print("Error: No modules found in source files", file=sys.stderr)
         return 1
 
     # Get build order
     try:
-        from slop.resolver import DependencyGraph
-        combined_graph = DependencyGraph()
-        combined_graph.modules = all_modules
-        for mod_name, mod_info in all_modules.items():
-            combined_graph.dependencies[mod_name] = mod_info.imports
         order = resolver.topological_sort(combined_graph)
         print(f"    Build order: {', '.join(order)}")
     except ResolverError as e:
-        print(f"  Dependency resolution failed: {e}")
+        sys.stdout.flush()
+        print(f"  Dependency resolution failed: {e}", file=sys.stderr)
         return 1
+
+    # Use combined_graph.modules as all_modules for the rest of the function
+    all_modules = combined_graph.modules
 
     # Check for holes across all modules
     total_holes = 0

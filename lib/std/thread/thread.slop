@@ -304,10 +304,10 @@
     (@spec (((Ptr Void)) -> (Ptr Void)))
     (let ((th (cast (Ptr ThreadWithChan) arg)))
       ;; Call the user function with the channel argument
-      (let ((user-func (cast (Fn ((Ptr (Chan Int))) Int) th.func))
-            (ch th.chan))
-        (set! th.result (user-func ch))
-        (set! th.done true))
+      (let ((user-func (cast (Fn ((Ptr (Chan Int))) Int) (. th func)))
+            (ch (. th chan)))
+        (set! (. th result) (user-func ch))
+        (set! (. th done) true))
       nil))
 
   (fn join ((thread (Ptr (Thread Int))))

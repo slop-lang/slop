@@ -25,7 +25,7 @@
                    ctx-set-current-result-type ctx-clear-current-result-type
                    ctx-set-current-return-type ctx-get-current-return-type ctx-clear-current-return-type
                    ctx-set-capture-retval ctx-is-capture-retval
-                   ctx-lookup-result-type-alias ctx-lookup-type
+                   ctx-lookup-result-type-alias ctx-lookup-type ctx-register-type-alias
                    ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-prefixing-enabled ctx-get-module ctx-prefix-type
                    TypeEntry FuncEntry FuncParamType VarEntry
@@ -177,7 +177,7 @@
                             (c-name (ctx-prefix-type ctx base-name)))
                         (do
                           ;; Register constant as variable for local lookup
-                          (ctx-bind-var ctx (VarEntry raw-name c-name "auto" false false))
+                          (ctx-bind-var ctx (VarEntry raw-name c-name "auto" "" false false))
                           (match (list-get items 2)
                             ((some type-expr)
                               (match (list-get items 3)
@@ -469,12 +469,13 @@
                           (let ((raw-field-name (. name-sym name))
                                 (field-name (to-c-name arena raw-field-name))
                                 (field-type (to-c-type-prefixed ctx type-expr))
+                                (slop-type-str (pretty-print arena type-expr))
                                 (is-ptr (is-pointer-type-expr type-expr)))
                             ;; Emit the field
                             (ctx-emit ctx (ctx-str5 ctx "    " field-type " " field-name ";"))
                             ;; Register field type for both raw and qualified type names
-                            (ctx-register-field-type ctx raw-type-name raw-field-name field-type is-ptr)
-                            (ctx-register-field-type ctx qualified-type-name raw-field-name field-type is-ptr)))
+                            (ctx-register-field-type ctx raw-type-name raw-field-name field-type slop-type-str is-ptr)
+                            (ctx-register-field-type ctx qualified-type-name raw-field-name field-type slop-type-str is-ptr)))
                         ((none) (ctx-emit ctx "    /* missing field type */"))))
                     (else (ctx-emit ctx "    /* field name must be symbol */"))))
                 ((none) (ctx-emit ctx "    /* missing field name */"))))))
@@ -638,11 +639,16 @@
           (emit-range-typedef ctx raw-name qualified-name type-expr))
         ;; Standard typedef
         (else
-          (let ((c-type (to-c-type-prefixed ctx type-expr)))
+          (let ((c-type (to-c-type-prefixed ctx type-expr))
+                (slop-type-str (pretty-print arena type-expr)))
             (ctx-emit ctx (ctx-str5 ctx "typedef " c-type " " qualified-name ";"))
             (ctx-emit ctx "")
             ;; Register type
-            (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false)))))))
+            (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))
+            ;; Register type alias for Map/Set resolution (helps infer-map-key-c-type)
+            (when (or (starts-with slop-type-str "(Map ")
+                      (starts-with slop-type-str "(Set "))
+              (ctx-register-type-alias ctx raw-name slop-type-str)))))))
 
   (fn is-array-type ((type-expr (Ptr SExpr)))
     (@intent "Check if type expression is an Array type")
@@ -1012,8 +1018,9 @@
                             (let ((param-name (. name-sym name))
                                   (c-name (to-c-name arena param-name))
                                   (c-type (to-c-type-prefixed ctx type-expr))
+                                  (slop-type-str (pretty-print arena type-expr))
                                   (is-ptr (is-pointer-type type-expr)))
-                              (ctx-bind-var ctx (VarEntry param-name c-name c-type is-ptr false))))
+                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false))))
                           ((none) (do))))
                       (else (do))))
                   ((none) (do)))))))

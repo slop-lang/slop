@@ -9,7 +9,8 @@
   (export
     resolve-imports resolve-import-stmt)
 
-  (import parser (SExpr SExprList SExprSymbol is-form))
+  (import parser (SExpr SExprList SExprSymbol is-form
+                  sexpr-is-list sexpr-list-len sexpr-list-get))
   (import types (ResolvedType))
   (import env (TypeEnv env-arena env-add-import env-resolve-import
                env-lookup-type env-set-module))
@@ -26,9 +27,28 @@
       (for (i 0 len)
         (match (list-get ast i)
           ((some expr)
-            (when (is-form expr "import")
-              (resolve-import-stmt env expr)))
+            (cond
+              ((is-form expr "import")
+                (resolve-import-stmt env expr))
+              ((is-form expr "module")
+                (resolve-module-imports env expr))
+              (else (do))))
           ((none) (do))))))
+
+  (fn resolve-module-imports ((env (Ptr TypeEnv)) (module-form (Ptr SExpr)))
+    (@intent "Process import statements inside a module form")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= module-form nil))
+    (when (sexpr-is-list module-form)
+      (let ((len (sexpr-list-len module-form)))
+        ;; Start from index 2 (after module keyword and name)
+        (for (i 2 len)
+          (match (sexpr-list-get module-form i)
+            ((some item)
+              (when (is-form item "import")
+                (resolve-import-stmt env item)))
+            ((none) (do)))))))
 
   (fn resolve-import-stmt ((env (Ptr TypeEnv)) (import-form (Ptr SExpr)))
     (@intent "Process a single import statement")

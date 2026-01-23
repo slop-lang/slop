@@ -491,6 +491,8 @@ These DO NOT exist in SLOP - use the alternatives:
 | `list-append` | `(list-push list elem)` |
 | `map-set` | `(map-put map key val)` |
 | `hash-get` | `(map-get map key)` |
+| Deeply nested `(or (or ...))` | `(cond ...)` for multi-way conditionals |
+| Nested `(string-concat ...)` | `(string-build arena ...)` from strlib |
 | Definitions outside module | All `(type)`, `(fn)`, `(const)` inside `(module ...)` |
 
 ### Module Structure

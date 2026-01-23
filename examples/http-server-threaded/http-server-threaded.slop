@@ -123,7 +123,7 @@
             (setsockopt sock 1 2 (cast (Ptr Void) opt) 4)
 
             ;; Zero out sockaddr_in
-            (fill-bytes (cast (Ptr U8) addr) 0 (sizeof sockaddr_in))
+            (fill-bytes (cast (Ptr U8) addr) (cast U8 0) (sizeof sockaddr_in))
 
             ;; Configure address (AF_INET=2, INADDR_ANY=0)
             (set! addr.sin_family 2)
