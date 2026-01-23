@@ -410,6 +410,21 @@ static inline bool slop_eq_ptr(const void* a, const void* b) {
 #define slop_hash_symbol slop_hash_int
 #define slop_eq_symbol slop_eq_int
 
+/* Generate hash/eq functions for arbitrary struct types using FNV-1a */
+#define SLOP_STRUCT_HASH_EQ_DEFINE(T) \
+    static inline uint64_t slop_hash_##T(const void* key) { \
+        const uint8_t* bytes = (const uint8_t*)key; \
+        uint64_t hash = 14695981039346656037ULL; \
+        for (size_t i = 0; i < sizeof(T); i++) { \
+            hash ^= bytes[i]; \
+            hash *= 1099511628211ULL; \
+        } \
+        return hash; \
+    } \
+    static inline bool slop_eq_##T(const void* a, const void* b) { \
+        return memcmp(a, b, sizeof(T)) == 0; \
+    }
+
 /* ============================================================
  * Map operations
  * ============================================================ */

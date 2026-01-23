@@ -21,7 +21,8 @@
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
-                   ctx-lookup-field-type-by-index ctx-register-option-type))
+                   ctx-lookup-field-type-by-index ctx-register-option-type
+                   ctx-register-struct-key-type ctx-has-struct-key-type))
   (import ctype (to-c-type to-c-name type-to-identifier))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
 
@@ -811,6 +812,109 @@
       ((string-eq slop-type "Bytes") "slop_bytes")
       ;; User-defined types - convert to C identifier format
       (else (to-c-name arena slop-type))))
+
+  (fn extract-map-key-from-slop-type ((arena Arena) (slop-type String))
+    (@intent "Extract key type from '(Map K V)' SLOP type string")
+    (@spec ((Arena String) -> String))
+    ;; Handle cases like "(Map String Int)" -> "String"
+    ;; Returns "" if cannot parse
+    (let ((len (string-len slop-type)))
+      (if (< len 10)
+        ""
+        ;; Check for "(Map " prefix (5 chars)
+        (if (not (starts-with slop-type "(Map "))
+          ""
+          ;; Find the space between K and V at nesting level 1
+          (let ((mut i 5)
+                (mut nesting 1)
+                (mut key-space 0)
+                (mut found-key false)
+                (end-idx (- len 1)))
+            ;; Skip past key type to find space at level 1
+            (while (and (< i end-idx) (not found-key))
+              (let ((c (char-at slop-type (cast (Int 0 ..) i))))
+                (cond
+                  ((== c 40) (set! nesting (+ nesting 1)))
+                  ((== c 41) (set! nesting (- nesting 1)))
+                  ((and (== c 32) (== nesting 1))
+                    (set! key-space i)
+                    (set! found-key true))
+                  (else (do))))
+              (set! i (+ i 1)))
+            (if (not found-key)
+              ""
+              ;; Key starts at position 5 and ends at key-space
+              (let ((key-start 5)
+                    (key-len (- key-space key-start)))
+                (if (> key-len 0)
+                  (substring arena slop-type (cast (Int 0 ..) key-start) (cast (Int 0 ..) key-len))
+                  ""))))))))
+
+  (fn infer-map-key-c-type ((ctx (Ptr TranspileContext)) (map-expr (Ptr SExpr)))
+    (@intent "Infer the C type of a map's key type from variable lookup")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {map-expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref map-expr)
+        ;; Simple variable name - look up its slop-type
+        ((sym sym)
+          (let ((name (. sym name)))
+            (match (ctx-lookup-var ctx name)
+              ((some var-entry)
+                (let ((slop-type (. var-entry slop-type)))
+                  (if (> (string-len slop-type) 0)
+                    ;; We have a SLOP type string - extract key type from it
+                    (let ((key-slop-type (extract-map-key-from-slop-type arena slop-type)))
+                      (if (> (string-len key-slop-type) 0)
+                        (slop-value-type-to-c-type arena key-slop-type)
+                        ""))
+                    ;; No slop-type stored
+                    "")))
+              ((none) ""))))
+        (_ ""))))
+
+  (fn extract-set-elem-from-slop-type ((arena Arena) (slop-type String))
+    (@intent "Extract element type from '(Set T)' SLOP type string")
+    (@spec ((Arena String) -> String))
+    ;; Handle cases like "(Set Int)" -> "Int" or "(Set Term)" -> "Term"
+    ;; Returns "" if cannot parse
+    (let ((len (string-len slop-type)))
+      (if (< len 7)
+        ""
+        ;; Check for "(Set " prefix (5 chars)
+        (if (not (starts-with slop-type "(Set "))
+          ""
+          ;; Element type starts at position 5 and goes to the closing paren
+          (let ((elem-start 5)
+                (elem-len (- (- len 1) elem-start)))  ;; len - 1 to skip closing paren
+            (if (> elem-len 0)
+              (substring arena slop-type (cast (Int 0 ..) elem-start) (cast (Int 0 ..) elem-len))
+              ""))))))
+
+  (fn infer-set-elem-c-type ((ctx (Ptr TranspileContext)) (set-expr (Ptr SExpr)))
+    (@intent "Infer the C type of a set's element type from variable lookup")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {set-expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref set-expr)
+        ;; Simple variable name - look up its slop-type
+        ((sym sym)
+          (let ((name (. sym name)))
+            (match (ctx-lookup-var ctx name)
+              ((some var-entry)
+                (let ((slop-type (. var-entry slop-type)))
+                  (if (> (string-len slop-type) 0)
+                    ;; We have a SLOP type string - extract element type from it
+                    (let ((elem-slop-type (extract-set-elem-from-slop-type arena slop-type)))
+                      (if (> (string-len elem-slop-type) 0)
+                        (slop-value-type-to-c-type arena elem-slop-type)
+                        ""))
+                    ;; No slop-type stored
+                    "")))
+              ((none) ""))))
+        (_ ""))))
 
   (fn slop-value-type-to-option-id ((arena Arena) (slop-type String))
     (@intent "Convert SLOP value type name to option type identifier component")
@@ -2428,17 +2532,24 @@
                         ;; when returns void
                         ((string-eq op "when")
                           "void")
-                        ;; Function call - check registry for return type
+                        ;; Function call or struct constructor - check type registry first
                         (else
-                          (match (ctx-lookup-func ctx op)
-                            ((some func-entry)
-                              (let ((ret-type (. func-entry return-type)))
-                                (cond
-                                  ((. func-entry returns-string) "slop_string")
-                                  ((string-eq ret-type "void") "void")
-                                  ((> (string-len ret-type) 0) ret-type)
-                                  (else "int64_t"))))
-                            ((none) "int64_t"))))))
+                          ;; First check if it's a struct/union constructor
+                          (match (ctx-lookup-type ctx op)
+                            ((some type-entry)
+                              ;; It's a type! Return its C name
+                              (. type-entry c-name))
+                            ((none)
+                              ;; Not a type, check function registry
+                              (match (ctx-lookup-func ctx op)
+                                ((some func-entry)
+                                  (let ((ret-type (. func-entry return-type)))
+                                    (cond
+                                      ((. func-entry returns-string) "slop_string")
+                                      ((string-eq ret-type "void") "void")
+                                      ((> (string-len ret-type) 0) ret-type)
+                                      (else "int64_t"))))
+                                ((none) "int64_t"))))))))
                   (else "int64_t")))
               ((none) "int64_t")))))
       (else "int64_t")))
@@ -3273,6 +3384,17 @@
   ;; for the given key type expression: "sizeof(...), hash_fn, eq_fn"
   ;; ============================================================
 
+  (fn build-struct-key-info ((ctx (Ptr TranspileContext)) (c-name String))
+    (@intent "Build sizeof/hash/eq info string for a struct key type")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; Generate: sizeof(TypeName), slop_hash_TypeName, slop_eq_TypeName
+    (ctx-str ctx "sizeof("
+      (ctx-str ctx c-name
+        (ctx-str ctx "), slop_hash_"
+          (ctx-str ctx c-name
+            (ctx-str ctx ", slop_eq_" c-name))))))
+
   (fn get-map-key-c-info ((ctx (Ptr TranspileContext)) (key-type-expr (Ptr SExpr)))
     (@intent "Get sizeof, hash fn, eq fn suffix for map key type")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
@@ -3301,9 +3423,16 @@
             ;; Symbol -> int64_t (symbols are interned as integers)
             ((string-eq name "Symbol")
               "sizeof(int64_t), slop_hash_symbol, slop_eq_symbol")
-            ;; Default to string for unknown types (backward compat)
+            ;; User-defined type: look up and generate struct hash/eq
             (else
-              "sizeof(slop_string), slop_hash_string, slop_eq_string"))))
+              (let ((arena (. (deref ctx) arena))
+                    (result (get-struct-key-info-by-name ctx name)))
+                (if (> (string-len result) 0)
+                  result
+                  ;; Fall back to direct name conversion
+                  (let ((c-name (to-c-name arena name)))
+                    (ctx-register-struct-key-type ctx c-name)
+                    (build-struct-key-info ctx c-name))))))))
       ;; List: check for (Ptr T)
       ((lst lst)
         (let ((items (. lst items)))
@@ -3322,6 +3451,29 @@
               ((none) "sizeof(void*), slop_hash_ptr, slop_eq_ptr")))))
       ;; Default fallback
       (_ "sizeof(slop_string), slop_hash_string, slop_eq_string")))
+
+  (fn get-struct-key-info-by-name ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Look up a type by name and return struct key info if found")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; Try direct lookup first
+    (match (ctx-lookup-type ctx name)
+      ((some type-entry)
+        (let ((c-name (. type-entry c-name)))
+          (ctx-register-struct-key-type ctx c-name)
+          (build-struct-key-info ctx c-name)))
+      ((none)
+        ;; Try with module prefix
+        (match (ctx-get-module ctx)
+          ((some mod)
+            (let ((prefixed (ctx-str3 ctx mod "_" name)))
+              (match (ctx-lookup-type ctx prefixed)
+                ((some type-entry)
+                  (let ((c-name (. type-entry c-name)))
+                    (ctx-register-struct-key-type ctx c-name)
+                    (build-struct-key-info ctx c-name)))
+                ((none) ""))))
+          ((none) "")))))
 
   (fn transpile-map-new ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile map-new to slop_map_new_ptr with key type info")
@@ -3507,7 +3659,7 @@
           ((none) "/* map-has: missing map */")))))
 
   (fn transpile-map-keys ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile map-keys to slop_map_keys")
+    (@intent "Transpile map-keys to properly typed list")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
@@ -3515,10 +3667,23 @@
         "/* map-keys: needs map */"
         (match (list-get items 1)
           ((some map-expr)
-            (let ((map-c (transpile-expr ctx map-expr)))
-              ;; Generate: slop_map_keys(arena, MAP)
-              ;; arena is assumed to be in scope
-              (ctx-str ctx "slop_map_keys(arena, " (ctx-str ctx map-c ")"))))
+            (let ((map-c (transpile-expr ctx map-expr))
+                  (key-c-type (infer-map-key-c-type ctx map-expr)))
+              ;; Check if key type is string - use legacy slop_map_keys
+              (if (or (string-eq key-c-type "slop_string") (== (string-len key-c-type) 0))
+                ;; Generate: slop_map_keys(arena, MAP)
+                (ctx-str ctx "slop_map_keys(arena, " (ctx-str ctx map-c ")"))
+                ;; Generate typed list from raw elements:
+                ;; ({ slop_set_elements_result _r = slop_set_elements_raw(arena, MAP);
+                ;;    (slop_list_KeyType){.data = (KeyType*)_r.data, .len = _r.len, .cap = _r.cap}; })
+                (let ((list-type (ctx-str ctx "slop_list_" key-c-type)))
+                  (ctx-str ctx "({ slop_set_elements_result _r = slop_set_elements_raw(arena, "
+                    (ctx-str ctx map-c
+                      (ctx-str ctx "); ("
+                        (ctx-str ctx list-type
+                          (ctx-str ctx "){.data = ("
+                            (ctx-str ctx key-c-type
+                              (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))
           ((none) "/* map-keys: missing map */")))))
 
   ;; ============================================================
@@ -3605,7 +3770,7 @@
           ((none) "/* set-remove: missing set */")))))
 
   (fn transpile-set-elements ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile set-elements to slop_map_keys (gets keys which are the elements)")
+    (@intent "Transpile set-elements to properly typed list")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
@@ -3613,8 +3778,23 @@
         "/* set-elements: needs set */"
         (match (list-get items 1)
           ((some set-expr)
-            (let ((set-c (transpile-expr ctx set-expr)))
-              (ctx-str ctx "slop_map_keys(arena, " (ctx-str ctx set-c ")"))))
+            (let ((set-c (transpile-expr ctx set-expr))
+                  (elem-c-type (infer-set-elem-c-type ctx set-expr)))
+              ;; Check if element type is string - use legacy slop_map_keys
+              (if (or (string-eq elem-c-type "slop_string") (== (string-len elem-c-type) 0))
+                ;; Generate: slop_map_keys(arena, SET)
+                (ctx-str ctx "slop_map_keys(arena, " (ctx-str ctx set-c ")"))
+                ;; Generate typed list from raw elements:
+                ;; ({ slop_set_elements_result _r = slop_set_elements_raw(arena, SET);
+                ;;    (slop_list_ElemType){.data = (ElemType*)_r.data, .len = _r.len, .cap = _r.cap}; })
+                (let ((list-type (ctx-str ctx "slop_list_" elem-c-type)))
+                  (ctx-str ctx "({ slop_set_elements_result _r = slop_set_elements_raw(arena, "
+                    (ctx-str ctx set-c
+                      (ctx-str ctx "); ("
+                        (ctx-str ctx list-type
+                          (ctx-str ctx "){.data = ("
+                            (ctx-str ctx elem-c-type
+                              (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))
           ((none) "/* set-elements: missing set */")))))
 
   (fn transpile-set-literal ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))

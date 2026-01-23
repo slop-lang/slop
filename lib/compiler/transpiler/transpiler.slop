@@ -35,7 +35,8 @@
                    ctx-bind-var
                    to-c-type-prefixed
                    ctx-mark-type-emitted ctx-is-type-emitted
-                   ctx-register-field-type))
+                   ctx-register-field-type
+                   ctx-get-struct-key-types))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
   (import emit (emit-standard-includes emit-include))
   (import defn (transpile-type transpile-function transpile-const is-const-form emit-forward-declaration
@@ -255,7 +256,9 @@
                   ;; Scan param types for List/Option generics
                   (prescan-fn-params ctx items)
                   ;; Check for Result type and other generics in @spec
-                  (prescan-fn-result-type ctx items)))
+                  (prescan-fn-result-type ctx items)
+                  ;; Scan function body for map-new/set-new with struct key types
+                  (prescan-fn-for-struct-keys ctx items)))
               (else (do))))
           ((none) (do))))))
 
@@ -545,6 +548,123 @@
           (ok-id (type-to-identifier arena ok-type))
           (err-id (type-to-identifier arena err-type)))
       (ctx-str5 ctx "slop_result_" ok-id "_" err-id "")))
+
+  ;; ============================================================
+  ;; Struct Key Type Prescan
+  ;;
+  ;; Scan function bodies for map-new/set-new expressions and
+  ;; register struct key types early so they can be emitted in header.
+  ;; ============================================================
+
+  (fn prescan-fn-for-struct-keys ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Prescan function body for map-new/set-new with struct key types")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; Skip fn, name, params, annotations - scan the body
+    (let ((len (list-len items))
+          (mut i 3))  ;; Start after fn, name, params
+      (while (< i len)
+        (match (list-get items i)
+          ((some item)
+            (prescan-expr-for-struct-keys ctx item))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn prescan-expr-for-struct-keys ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Recursively scan expression for map-new/set-new struct key types")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (when (>= len 1)
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((sym sym)
+                    (let ((name (. sym name)))
+                      (cond
+                        ;; (map-new arena KeyType ValueType)
+                        ((string-eq name "map-new")
+                          (when (>= len 3)
+                            (match (list-get items 2)
+                              ((some key-type-expr)
+                                (prescan-register-struct-key-type ctx key-type-expr))
+                              ((none) (do)))))
+                        ;; (set-new arena ElemType)
+                        ((string-eq name "set-new")
+                          (when (>= len 3)
+                            (match (list-get items 2)
+                              ((some elem-type-expr)
+                                (prescan-register-struct-key-type ctx elem-type-expr))
+                              ((none) (do)))))
+                        ;; Other - recursively scan children
+                        (else
+                          (let ((mut i 0))
+                            (while (< i len)
+                              (match (list-get items i)
+                                ((some child)
+                                  (prescan-expr-for-struct-keys ctx child))
+                                ((none) (do)))
+                              (set! i (+ i 1))))))))
+                  ;; Not a symbol head - scan children
+                  (else
+                    (let ((mut i 0))
+                      (while (< i len)
+                        (match (list-get items i)
+                          ((some child)
+                            (prescan-expr-for-struct-keys ctx child))
+                          ((none) (do)))
+                        (set! i (+ i 1)))))))
+              ((none) (do))))))
+      ;; Non-list - nothing to scan
+      (else (do))))
+
+  (fn prescan-register-struct-key-type ((ctx (Ptr TranspileContext)) (type-expr (Ptr SExpr)))
+    (@intent "Register a struct type as a map/set key type if applicable")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {type-expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref type-expr)
+        ((sym sym)
+          (let ((name (. sym name)))
+            ;; Skip builtin types - they don't need struct hash/eq
+            (when (not (is-builtin-map-key-type name))
+              ;; Look up the type
+              (match (ctx-lookup-type ctx name)
+                ((some type-entry)
+                  (ctx-register-struct-key-type ctx (. type-entry c-name)))
+                ;; Try with module prefix
+                ((none)
+                  (match (ctx-get-module ctx)
+                    ((some mod)
+                      (let ((prefixed (ctx-str3 ctx mod "_" name)))
+                        (match (ctx-lookup-type ctx prefixed)
+                          ((some type-entry)
+                            (ctx-register-struct-key-type ctx (. type-entry c-name)))
+                          ((none)
+                            ;; Not found - register using converted name
+                            (ctx-register-struct-key-type ctx (to-c-name arena name))))))
+                    ((none)
+                      ;; No module - register using converted name
+                      (ctx-register-struct-key-type ctx (to-c-name arena name)))))))))
+        ;; Complex type expression - skip for now
+        (else (do)))))
+
+  (fn is-builtin-map-key-type ((name String))
+    (@intent "Check if type is a builtin that doesn't need struct hash/eq")
+    (@spec ((String) -> Bool))
+    (or (string-eq name "String")
+        (or (string-eq name "Int")
+            (or (string-eq name "I64")
+                (or (string-eq name "I32")
+                    (or (string-eq name "Uint")
+                        (or (string-eq name "U64")
+                            (or (string-eq name "U32")
+                                (string-eq name "Symbol")))))))))
 
   (fn check-and-register-result-alias ((ctx (Ptr TranspileContext)) (alias-name String) (body-expr (Ptr SExpr)))
     (@intent "Check if type body is (Result OkType ErrType) and register alias if so")
@@ -1173,6 +1293,8 @@
                 (emit-struct-union-types-sorted ctx items body-start)
                 ;; Emit any remaining value-element List types (for complex struct elements)
                 (emit-complex-value-list-types-header ctx)
+                ;; Emit hash/eq functions and list types for struct map/set keys
+                (emit-struct-key-types-header ctx)
                 ;; Emit generated Result types
                 (emit-result-types-header ctx)
                 ;; Emit Result type aliases (after Result types so they can reference slop_result_*)
@@ -2384,6 +2506,35 @@
             (when (and (not (is-pointer-elem-type (. lt elem-type)))
                        (not (ctx-is-type-emitted ctx (. lt c-name))))
               (emit-single-list-type-header ctx lt)))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn emit-struct-key-types-header ((ctx (Ptr TranspileContext)))
+    (@intent "Emit SLOP_STRUCT_HASH_EQ_DEFINE and SLOP_LIST_DEFINE for struct key types")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((struct-key-types (ctx-get-struct-key-types ctx))
+          (len (list-len struct-key-types))
+          (mut i 0))
+      (when (> len 0)
+        (ctx-emit-header ctx "")
+        (ctx-emit-header ctx "/* Hash/eq functions and list types for struct map/set keys */"))
+      (while (< i len)
+        (match (list-get struct-key-types i)
+          ((some c-type)
+            (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" ""))
+                  (list-c-name (ctx-str ctx "slop_list_" c-type)))
+              ;; #ifndef GUARD_DEFINED
+              (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
+              ;; #define GUARD_DEFINED
+              (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+              ;; SLOP_STRUCT_HASH_EQ_DEFINE(TypeName)
+              (ctx-emit-header ctx (ctx-str3 ctx "SLOP_STRUCT_HASH_EQ_DEFINE(" c-type ")"))
+              ;; SLOP_LIST_DEFINE(TypeName, slop_list_TypeName)
+              (ctx-emit-header ctx (ctx-str5 ctx "SLOP_LIST_DEFINE(" c-type ", " list-c-name ")"))
+              ;; #endif
+              (ctx-emit-header ctx "#endif")
+              (ctx-emit-header ctx "")))
           ((none) (do)))
         (set! i (+ i 1)))))
 

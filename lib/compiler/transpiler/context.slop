@@ -63,6 +63,8 @@
     ctx-gensym
     ;; Hash helper
     simple-hash
+    ;; Struct key type tracking
+    ctx-register-struct-key-type ctx-has-struct-key-type ctx-get-struct-key-types
     ;; Error handling
     ctx-fail)
 
@@ -224,7 +226,9 @@
       ;; Gensym counter for unique variable names
       (gensym-counter Int)
       ;; Flag to capture return values to _retval (for postconditions)
-      (capture-to-retval Bool)))
+      (capture-to-retval Bool)
+      ;; Struct key types needing hash/eq generation (C type names)
+      (struct-key-types (List String))))
 
   ;; ============================================================
   ;; Context Creation
@@ -270,6 +274,7 @@
       (set! (deref ctx) c-name-aliases (list-new arena FuncCNameAlias))
       (set! (deref ctx) gensym-counter 0)
       (set! (deref ctx) capture-to-retval false)
+      (set! (deref ctx) struct-key-types (list-new arena String))
       ctx))
 
   (fn ctx-reset-for-new-module ((ctx (Ptr TranspileContext)) (mod-name String))
@@ -303,6 +308,7 @@
       (set! (deref ctx) thread-types (list-new arena ThreadType))
       (set! (deref ctx) inline-records (list-new arena InlineRecord))
       (set! (deref ctx) c-name-aliases (list-new arena FuncCNameAlias))
+      (set! (deref ctx) struct-key-types (list-new arena String))
       ;; Set new module name
       (set! (deref ctx) current-module (Option String) (some mod-name))
       ;; KEEP preserved: types, funcs, enum-variants, result-type-aliases, pointer-vars
@@ -1408,5 +1414,55 @@
       (set! (deref ctx) gensym-counter (+ counter 1))
       ;; Generate name: prefix_N
       (ctx-str3 ctx prefix "_" (int-to-string arena counter))))
+
+  ;; ============================================================
+  ;; Struct Key Type Tracking
+  ;;
+  ;; Tracks user-defined struct types used as map/set keys so that
+  ;; the transpiler can generate SLOP_STRUCT_HASH_EQ_DEFINE macros.
+  ;; ============================================================
+
+  (fn ctx-register-struct-key-type ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Register a struct type used as map/set key for hash/eq generation")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    ;; Check if already registered
+    (let ((types (. (deref ctx) struct-key-types))
+          (len (list-len types))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get types i)
+          ((some existing)
+            (when (string-eq existing c-type)
+              (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      ;; Only add if not already present - push directly to context field!
+      (when (not found)
+        (list-push (. (deref ctx) struct-key-types) c-type))))
+
+  (fn ctx-has-struct-key-type ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Check if a struct key type is already registered")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    (let ((types (. (deref ctx) struct-key-types))
+          (len (list-len types))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get types i)
+          ((some existing)
+            (when (string-eq existing c-type)
+              (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn ctx-get-struct-key-types ((ctx (Ptr TranspileContext)))
+    (@intent "Get all registered struct key types")
+    (@spec (((Ptr TranspileContext)) -> (List String)))
+    (@pre {ctx != nil})
+    (. (deref ctx) struct-key-types))
 
 ) ;; end module
