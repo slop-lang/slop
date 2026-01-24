@@ -785,10 +785,17 @@
                                           (do
                                             (ctx-register-type ctx (TypeEntry sym-name c-name c-name false false false))
                                             (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false))))
-                                        ;; Register function with module prefix (no param types for imports)
+                                        ;; Register function with module prefix
+                                        ;; Try to copy param-types from existing entry (if already processed)
                                         (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name))
-                                              (empty-params (list-new arena (Ptr FuncParamType))))
-                                          (ctx-register-func ctx (FuncEntry sym-name c-name "" false false empty-params))))))
+                                              ;; Check if function was already registered (from processing imported module)
+                                              (existing-func (ctx-lookup-func ctx sym-name))
+                                              (param-types (match existing-func
+                                                             ;; Found existing entry - copy its param-types
+                                                             ((some entry) (. entry param-types))
+                                                             ;; Not found - fall back to empty params
+                                                             ((none) (list-new arena (Ptr FuncParamType))))))
+                                          (ctx-register-func ctx (FuncEntry sym-name c-name "" false false param-types))))))
                                   (else (do))))
                               ((none) (do)))
                             (set! j (+ j 1)))))
@@ -871,12 +878,42 @@
                       (let ((fn-name (. sym name))
                             ;; Look for :c-name keyword and extract actual C name
                             (c-name (extract-ffi-c-name ctx items fn-name))
-                            (empty-params (list-new arena (Ptr FuncParamType))))
-                        ;; Register as external function (no param types for FFI)
-                        (ctx-register-func ctx (FuncEntry fn-name c-name "" true false empty-params))))
+                            ;; Extract param types from FFI declaration for typed none handling
+                            (param-types (extract-ffi-param-types ctx items)))
+                        ;; Register as external function with param types
+                        (ctx-register-func ctx (FuncEntry fn-name c-name "" true false param-types))))
                     (else (do))))
                 ((none) (do))))))
         (else (do)))))
+
+  (fn extract-ffi-param-types ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Extract parameter types from an FFI function declaration")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> (List (Ptr FuncParamType))))
+    (@pre {ctx != nil})
+    ;; FFI form: (func-name ((param1 Type1) (param2 Type2)) ReturnType ...)
+    ;; items[1] is the param list
+    (let ((arena (. (deref ctx) arena))
+          (result (list-new arena (Ptr FuncParamType))))
+      (when (>= (list-len items) 2)
+        (match (list-get items 1)
+          ((some params-expr)
+            (match (deref params-expr)
+              ((lst params-lst)
+                (let ((params (. params-lst items))
+                      (param-count (list-len params))
+                      (mut i 0))
+                  (while (< i param-count)
+                    (match (list-get params i)
+                      ((some param-expr)
+                        (let ((c-type (prescan-get-param-c-type ctx param-expr))
+                              (param-info (cast (Ptr FuncParamType) (arena-alloc arena 64))))
+                          (set! (. (deref param-info) c-type) c-type)
+                          (list-push result param-info)))
+                      ((none) (do)))
+                    (set! i (+ i 1)))))
+              (else (do))))
+          ((none) (do))))
+      result))
 
   (fn extract-ffi-c-name ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (fn-name String))
     (@intent "Extract C name from FFI declaration - use :c-name value if present, else convert fn-name")
