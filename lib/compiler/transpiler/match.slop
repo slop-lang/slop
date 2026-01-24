@@ -847,7 +847,7 @@
                                                 (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
                                                 (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut)))))))
                                       ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))))
-                                ((none) (ctx-add-error-at ctx "missing type/value" (sexpr-line binding) (sexpr-col binding))))))
+                                ((none) (ctx-add-error-at ctx "missing type/value" (sexpr-line binding) (sexpr-col binding)))))
                             ;; Simple: (name init)
                             (let ((val-idx (+ start-idx 1)))
                               (match (list-get items val-idx)
@@ -868,7 +868,7 @@
                                               (is-ptr (ends-with inferred-type "*")))
                                           (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
                                           (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut)))))))
-                                ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding)))))))
+                                ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))))))
                       (else (ctx-add-error-at ctx "binding name must be symbol" (sexpr-line name-expr) (sexpr-col name-expr)))))
                   ((none) (ctx-add-error-at ctx "missing binding name" (sexpr-line binding) (sexpr-col binding))))))))
         (else (ctx-add-error-at ctx "binding must be list" (sexpr-line binding) (sexpr-col binding))))))
@@ -1114,6 +1114,54 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
       (cond
+        ;; 5-arg form: (set! target field Type value) - typed field assignment
+        ((== len 5)
+          (match (list-get items 1)
+            ((some target-expr)
+              (match (list-get items 2)
+                ((some field-expr)
+                  (match (list-get items 3)
+                    ((some type-expr)
+                      (match (list-get items 4)
+                        ((some value-expr)
+                          (let ((field-name (get-field-name-inline ctx field-expr))
+                                (c-type (to-c-type arena type-expr)))
+                            ;; Build target access
+                            (let ((target-access
+                                    (if (is-deref-inline target-expr)
+                                      (let ((inner-c (get-deref-inner-inline ctx target-expr)))
+                                        (ctx-str ctx "(*" (ctx-str ctx inner-c ").")))
+                                      (let ((target-c (transpile-expr ctx target-expr)))
+                                        (ctx-str ctx target-c ".")))))
+                              ;; Check if Option type
+                              (if (starts-with c-type "slop_option_")
+                                ;; Option type - handle none and (some x)
+                                (if (is-none-form-inline value-expr)
+                                  ;; none -> {.has_value = false}
+                                  (ctx-emit ctx (ctx-str ctx target-access
+                                    (ctx-str ctx field-name
+                                      (ctx-str3 ctx " = (" c-type "){.has_value = false};"))))
+                                  ;; Check for (some x)
+                                  (match (get-some-value-inline value-expr)
+                                    ((some inner-val)
+                                      (let ((val-c (transpile-expr ctx inner-val)))
+                                        (ctx-emit ctx (ctx-str ctx target-access
+                                          (ctx-str ctx field-name
+                                            (ctx-str5 ctx " = (" c-type "){.has_value = 1, .value = " val-c "};"))))))
+                                    ((none)
+                                      (let ((val-c (transpile-expr ctx value-expr)))
+                                        (ctx-emit ctx (ctx-str ctx target-access
+                                          (ctx-str ctx field-name
+                                            (ctx-str ctx " = " (ctx-str ctx val-c ";")))))))))
+                                ;; Not Option type - regular assignment
+                                (let ((val-c (transpile-expr ctx value-expr)))
+                                  (ctx-emit ctx (ctx-str ctx target-access
+                                    (ctx-str ctx field-name
+                                      (ctx-str ctx " = " (ctx-str ctx val-c ";"))))))))))
+                        ((none) (ctx-add-error-at ctx "missing set! value" (list-first-line items) (list-first-col items)))))
+                    ((none) (ctx-add-error-at ctx "missing set! type" (list-first-line items) (list-first-col items)))))
+                ((none) (ctx-add-error-at ctx "missing set! field" (list-first-line items) (list-first-col items)))))
+            ((none) (ctx-add-error-at ctx "missing set! target" (list-first-line items) (list-first-col items)))))
         ;; 4-arg form: (set! target field value) - field assignment
         ((== len 4)
           (match (list-get items 1)

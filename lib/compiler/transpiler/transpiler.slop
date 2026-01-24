@@ -811,10 +811,10 @@
     ;; The types module defines SExpr as a union with these variants:
     ;; (type SExpr (union (symbol SExprSymbol) (string SExprString) (number SExprNumber) (list SExprList)))
     ;; Use prefixed names since SExpr comes from types module
-    (ctx-register-enum-variant ctx "symbol" "types_SExpr")
-    (ctx-register-enum-variant ctx "string" "types_SExpr")
-    (ctx-register-enum-variant ctx "number" "types_SExpr")
-    (ctx-register-enum-variant ctx "list" "types_SExpr")
+    (ctx-register-enum-variant ctx "sym" "types_SExpr")
+    (ctx-register-enum-variant ctx "str" "types_SExpr")
+    (ctx-register-enum-variant ctx "num" "types_SExpr")
+    (ctx-register-enum-variant ctx "lst" "types_SExpr")
     ;; Option and Result variants are built-in and don't need module prefix
     (ctx-register-enum-variant ctx "some" "Option")
     (ctx-register-enum-variant ctx "none" "Option")

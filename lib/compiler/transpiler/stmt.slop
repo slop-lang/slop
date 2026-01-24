@@ -470,6 +470,9 @@
           (let ((items (. lst items))
                 (len (list-len items)))
             (cond
+              ;; 5-arg form: (set! target field Type value) - typed field assignment
+              ((== len 5)
+                (transpile-typed-field-set ctx items))
               ;; 4-arg form: (set! target field value) - field assignment
               ((== len 4)
                 (transpile-field-set ctx items))
@@ -569,6 +572,68 @@
                         ;; Value access: target.field = value;
                         (ctx-emit ctx (ctx-str ctx target-c (ctx-str ctx "." (ctx-str ctx field-name (ctx-str ctx " = " (ctx-str ctx value-c ";")))))))))))
               ((none) (ctx-add-error-at ctx "missing set! value" (sexpr-line target-expr) (sexpr-col target-expr)))))
+            ((none) (ctx-add-error-at ctx "missing set! field" (sexpr-line target-expr) (sexpr-col target-expr)))))
+        ((none) (ctx-add-error-at ctx "missing set! target" (list-first-line items) (list-first-col items))))))
+
+  (fn transpile-typed-field-set ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile typed field assignment: (set! target field Type value)")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; 5-arg form: (set! target field Type value)
+    ;; items[0]=set!, items[1]=target, items[2]=field, items[3]=Type, items[4]=value
+    (let ((arena (. (deref ctx) arena)))
+      (match (list-get items 1)
+        ((some target-expr)
+          (match (list-get items 2)
+            ((some field-expr)
+              (match (list-get items 3)
+                ((some type-expr)
+                  (match (list-get items 4)
+                    ((some value-expr)
+                      (let ((field-name (get-symbol-name arena field-expr))
+                            (c-type (to-c-type arena type-expr)))
+                        ;; Build target access: (*ptr). or target-> or target.
+                        (let ((target-access
+                                (if (is-deref-expr target-expr)
+                                  ;; (deref ptr) -> (*ptr).
+                                  (let ((inner-expr (get-deref-inner target-expr))
+                                        (inner-c (transpile-expr ctx inner-expr)))
+                                    (ctx-str ctx "(*" (ctx-str ctx inner-c ").")))
+                                  ;; Check if pointer
+                                  (let ((target-c (transpile-expr ctx target-expr))
+                                        (is-ptr (is-pointer-target ctx target-expr)))
+                                    (if is-ptr
+                                      (ctx-str ctx target-c "->")
+                                      (ctx-str ctx target-c "."))))))
+                          ;; Check if Option type
+                          (if (starts-with c-type "slop_option_")
+                            ;; Option type - handle none and (some x)
+                            (if (is-none-form value-expr)
+                              ;; none -> {.has_value = false}
+                              (ctx-emit ctx (ctx-str ctx target-access
+                                (ctx-str ctx field-name
+                                  (ctx-str3 ctx " = (" c-type "){.has_value = false};"))))
+                              ;; Check for (some x)
+                              (match (get-some-value value-expr)
+                                ((some inner-val)
+                                  ;; (some x) -> {.has_value = 1, .value = x}
+                                  (let ((val-c (transpile-expr ctx inner-val)))
+                                    (ctx-emit ctx (ctx-str ctx target-access
+                                      (ctx-str ctx field-name
+                                        (ctx-str5 ctx " = (" c-type "){.has_value = 1, .value = " val-c "};"))))))
+                                ((none)
+                                  ;; Regular value
+                                  (let ((val-c (transpile-expr ctx value-expr)))
+                                    (ctx-emit ctx (ctx-str ctx target-access
+                                      (ctx-str ctx field-name
+                                        (ctx-str ctx " = " (ctx-str ctx val-c ";")))))))))
+                            ;; Not Option type - regular assignment
+                            (let ((val-c (transpile-expr ctx value-expr)))
+                              (ctx-emit ctx (ctx-str ctx target-access
+                                (ctx-str ctx field-name
+                                  (ctx-str ctx " = " (ctx-str ctx val-c ";"))))))))))
+                    ((none) (ctx-add-error-at ctx "missing set! value" (sexpr-line type-expr) (sexpr-col type-expr)))))
+                ((none) (ctx-add-error-at ctx "missing set! type" (sexpr-line field-expr) (sexpr-col field-expr)))))
             ((none) (ctx-add-error-at ctx "missing set! field" (sexpr-line target-expr) (sexpr-col target-expr)))))
         ((none) (ctx-add-error-at ctx "missing set! target" (list-first-line items) (list-first-col items))))))
 
