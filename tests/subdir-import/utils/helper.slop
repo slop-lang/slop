@@ -1,0 +1,17 @@
+;; Test module in subdirectory
+;; Module name matches the import path: utils/helper
+
+(module utils/helper
+  (export greet add-numbers)
+
+  (fn greet ((arena Arena) (name String))
+    (@intent "Create a greeting message")
+    (@spec ((Arena String) -> String))
+    (string-concat arena "Hello, " (string-concat arena name "!")))
+
+  (fn add-numbers ((a Int) (b Int))
+    (@intent "Add two numbers")
+    (@spec ((Int Int) -> Int))
+    (@pure)
+    (+ a b))
+)

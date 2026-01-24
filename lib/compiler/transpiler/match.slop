@@ -17,7 +17,8 @@
   (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
                    ctx-lookup-enum-variant ctx-get-current-return-type ctx-gensym
-                   to-c-type-prefixed))
+                   to-c-type-prefixed
+                   ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col))
   (import strlib (starts-with ends-with char-at))
   (import ctype (to-c-name to-c-type sexpr-to-type-string))
   (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-option-inner-slop-type infer-result-ok-slop-type infer-result-err-slop-type))
@@ -180,7 +181,7 @@
           (let ((items (. lst items))
                 (len (list-len items)))
             (if (< len 3)
-              (ctx-emit ctx "/* invalid match: need value and at least one branch */")
+              (ctx-add-error-at ctx "invalid match: need value and at least one branch" (sexpr-line expr) (sexpr-col expr))
               (do
                 ;; Get the scrutinee (value being matched)
                 (match (list-get items 1)
@@ -205,8 +206,8 @@
                           (transpile-union-match ctx scrutinee-var patterns items is-return))
                         (else
                           (transpile-generic-match ctx scrutinee-var items is-return)))))
-                  ((none) (ctx-emit ctx "/* missing match scrutinee */")))))))
-        (else (ctx-emit ctx "/* invalid match */")))))
+                  ((none) (ctx-add-error-at ctx "missing match scrutinee" (sexpr-line expr) (sexpr-col expr))))))))
+        (else (ctx-add-error-at ctx "invalid match" (sexpr-line expr) (sexpr-col expr))))))
 
   (fn collect-patterns ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Collect pattern expressions from match branches (skip head and scrutinee)")
@@ -714,7 +715,7 @@
                               (ctx-emit ctx (ctx-str ctx (transpile-expr ctx body-expr) ";")))))))
                     (else
                       (ctx-emit ctx (ctx-str ctx (transpile-expr ctx body-expr) ";")))))
-                ((none) (ctx-emit ctx "/* empty */;"))))))
+                ((none) (ctx-add-error-at ctx "empty" (list-first-line items) (list-first-col items)))))))
         (else
           ;; Non-list (literal/symbol) - use as expression
           (if (and is-return is-last)
@@ -728,7 +729,7 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
       (if (< len 2)
-        (ctx-emit ctx "/* invalid let */")
+        (ctx-add-error-at ctx "invalid let" (list-first-line items) (list-first-col items))
         (do
           (ctx-emit ctx "{")
           (ctx-indent ctx)
@@ -784,7 +785,7 @@
             (let ((has-mut (binding-starts-with-mut items))
                   (start-idx (if (binding-starts-with-mut items) 1 0)))
               (if (< (- len start-idx) 2)
-                (ctx-emit ctx "/* invalid binding */")
+                (ctx-add-error-at ctx "invalid binding" (sexpr-line binding) (sexpr-col binding))
                 (match (list-get items start-idx)
                   ((some name-expr)
                     (match (deref name-expr)
@@ -825,7 +826,7 @@
                                                 (slop-type-str (sexpr-to-type-string arena type-expr)))
                                             (ctx-emit ctx (ctx-str5 ctx c-type " " c-name " = " (ctx-str ctx final-init ";")))
                                             (ctx-bind-var ctx (VarEntry raw-name c-name c-type slop-type-str is-ptr has-mut)))))
-                                      ((none) (ctx-emit ctx "/* missing value */")))
+                                      ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))
                                     ;; Not typed - middle is actually value - infer type
                                     (match (list-get items type-idx)
                                       ((some val-expr)
@@ -845,8 +846,8 @@
                                                     (is-ptr (ends-with inferred-type "*")))
                                                 (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
                                                 (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut)))))))
-                                      ((none) (ctx-emit ctx "/* missing value */")))))
-                                ((none) (ctx-emit ctx "/* missing type/value */"))))
+                                      ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))))
+                                ((none) (ctx-add-error-at ctx "missing type/value" (sexpr-line binding) (sexpr-col binding)))))
                             ;; Simple: (name init)
                             (let ((val-idx (+ start-idx 1)))
                               (match (list-get items val-idx)
@@ -867,10 +868,10 @@
                                               (is-ptr (ends-with inferred-type "*")))
                                           (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
                                           (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut)))))))
-                                ((none) (ctx-emit ctx "/* missing value */")))))))
-                      (else (ctx-emit ctx "/* binding name must be symbol */"))))
-                  ((none) (ctx-emit ctx "/* missing binding name */")))))))
-        (else (ctx-emit ctx "/* binding must be list */")))))
+                                ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))))))
+                      (else (ctx-add-error-at ctx "binding name must be symbol" (sexpr-line name-expr) (sexpr-col name-expr)))))
+                  ((none) (ctx-add-error-at ctx "missing binding name" (sexpr-line binding) (sexpr-col binding))))))))
+        (else (ctx-add-error-at ctx "binding must be list" (sexpr-line binding) (sexpr-col binding))))))
 
   (fn binding-starts-with-mut ((items (List (Ptr SExpr))))
     (@intent "Check if binding starts with 'mut'")
@@ -1016,7 +1017,7 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
       (if (< len 3)
-        (ctx-emit ctx "/* invalid if */")
+        (ctx-add-error-at ctx "invalid if" (list-first-line items) (list-first-col items))
         (do
           ;; Condition
           (match (list-get items 1)
@@ -1051,7 +1052,7 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
       (if (< len 3)
-        (ctx-emit ctx "/* invalid while */")
+        (ctx-add-error-at ctx "invalid while" (list-first-line items) (list-first-col items))
         (do
           ;; Condition
           (match (list-get items 1)
@@ -1113,6 +1114,54 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
       (cond
+        ;; 5-arg form: (set! target field Type value) - typed field assignment
+        ((== len 5)
+          (match (list-get items 1)
+            ((some target-expr)
+              (match (list-get items 2)
+                ((some field-expr)
+                  (match (list-get items 3)
+                    ((some type-expr)
+                      (match (list-get items 4)
+                        ((some value-expr)
+                          (let ((field-name (get-field-name-inline ctx field-expr))
+                                (c-type (to-c-type arena type-expr)))
+                            ;; Build target access
+                            (let ((target-access
+                                    (if (is-deref-inline target-expr)
+                                      (let ((inner-c (get-deref-inner-inline ctx target-expr)))
+                                        (ctx-str ctx "(*" (ctx-str ctx inner-c ").")))
+                                      (let ((target-c (transpile-expr ctx target-expr)))
+                                        (ctx-str ctx target-c ".")))))
+                              ;; Check if Option type
+                              (if (starts-with c-type "slop_option_")
+                                ;; Option type - handle none and (some x)
+                                (if (is-none-form-inline value-expr)
+                                  ;; none -> {.has_value = false}
+                                  (ctx-emit ctx (ctx-str ctx target-access
+                                    (ctx-str ctx field-name
+                                      (ctx-str3 ctx " = (" c-type "){.has_value = false};"))))
+                                  ;; Check for (some x)
+                                  (match (get-some-value-inline value-expr)
+                                    ((some inner-val)
+                                      (let ((val-c (transpile-expr ctx inner-val)))
+                                        (ctx-emit ctx (ctx-str ctx target-access
+                                          (ctx-str ctx field-name
+                                            (ctx-str5 ctx " = (" c-type "){.has_value = 1, .value = " val-c "};"))))))
+                                    ((none)
+                                      (let ((val-c (transpile-expr ctx value-expr)))
+                                        (ctx-emit ctx (ctx-str ctx target-access
+                                          (ctx-str ctx field-name
+                                            (ctx-str ctx " = " (ctx-str ctx val-c ";")))))))))
+                                ;; Not Option type - regular assignment
+                                (let ((val-c (transpile-expr ctx value-expr)))
+                                  (ctx-emit ctx (ctx-str ctx target-access
+                                    (ctx-str ctx field-name
+                                      (ctx-str ctx " = " (ctx-str ctx val-c ";"))))))))))
+                        ((none) (ctx-add-error-at ctx "missing set! value" (list-first-line items) (list-first-col items)))))
+                    ((none) (ctx-add-error-at ctx "missing set! type" (list-first-line items) (list-first-col items)))))
+                ((none) (ctx-add-error-at ctx "missing set! field" (list-first-line items) (list-first-col items)))))
+            ((none) (ctx-add-error-at ctx "missing set! target" (list-first-line items) (list-first-col items)))))
         ;; 4-arg form: (set! target field value) - field assignment
         ((== len 4)
           (match (list-get items 1)
@@ -1132,9 +1181,9 @@
                           (let ((target-c (transpile-expr ctx target-expr)))
                             ;; Assume value access for now: target.field = value;
                             (ctx-emit ctx (ctx-str ctx target-c (ctx-str ctx "." (ctx-str ctx field-name (ctx-str ctx " = " (ctx-str ctx value-c ";"))))))))))
-                    ((none) (ctx-emit ctx "/* missing set! value */;"))))
-                ((none) (ctx-emit ctx "/* missing set! field */;"))))
-            ((none) (ctx-emit ctx "/* missing set! target */;"))))
+                    ((none) (ctx-add-error-at ctx "missing set! value" (list-first-line items) (list-first-col items)))))
+                ((none) (ctx-add-error-at ctx "missing set! field" (list-first-line items) (list-first-col items)))))
+            ((none) (ctx-add-error-at ctx "missing set! target" (list-first-line items) (list-first-col items)))))
         ;; 3-arg form: (set! target value) - simple assignment
         ((>= len 3)
           (match (list-get items 1)
@@ -1167,9 +1216,9 @@
                       ((none)
                         (let ((val-c (transpile-expr ctx val-expr)))
                           (ctx-emit ctx (ctx-str4 ctx target-c " = " val-c ";")))))))
-                ((none) (ctx-emit ctx "/* missing set! value */;"))))
-            ((none) (ctx-emit ctx "/* missing set! target */;"))))
-        (else (ctx-emit ctx "/* invalid set! */")))))
+                ((none) (ctx-add-error-at ctx "missing set! value" (list-first-line items) (list-first-col items)))))
+            ((none) (ctx-add-error-at ctx "missing set! target" (list-first-line items) (list-first-col items)))))
+        (else (ctx-add-error-at ctx "invalid set!" (list-first-line items) (list-first-col items))))))
 
   (fn is-deref-inline ((expr (Ptr SExpr)))
     (@intent "Check if expression is (deref x)")
@@ -1218,7 +1267,7 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
       (if (< len 2)
-        (ctx-emit ctx "/* invalid when */")
+        (ctx-add-error-at ctx "invalid when" (list-first-line items) (list-first-col items))
         (do
           ;; Condition
           (match (list-get items 1)
@@ -1255,7 +1304,7 @@
                 (let ((clause-items (. clause-lst items))
                       (clause-len (list-len clause-items)))
                   (if (< clause-len 1)
-                    (ctx-emit ctx "/* invalid cond clause */")
+                    (ctx-add-error-at ctx "invalid cond clause" (sexpr-line clause-expr) (sexpr-col clause-expr))
                     (match (list-get clause-items 0)
                       ((some test-expr)
                         (match (deref test-expr)
@@ -1290,8 +1339,8 @@
                               (ctx-indent ctx)
                               (emit-inline-cond-body ctx clause-items 1 is-return is-last)
                               (ctx-dedent ctx)))))
-                      ((none) (ctx-emit ctx "/* missing test */"))))))
-              (else (ctx-emit ctx "/* cond clause must be list */"))))
+                      ((none) (ctx-add-error-at ctx "missing test" (sexpr-line clause-expr) (sexpr-col clause-expr)))))))
+              (else (ctx-add-error-at ctx "cond clause must be list" (sexpr-line clause-expr) (sexpr-col clause-expr)))))
           ((none) (do)))
         (set! i (+ i 1)))
       ;; Close final brace
@@ -1331,7 +1380,7 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
       (if (< len 2)
-        (ctx-emit ctx "/* invalid with-arena: need size */")
+        (ctx-add-error-at ctx "invalid with-arena: need size" (list-first-line items) (list-first-col items))
         (do
           ;; Open block
           (ctx-emit ctx "{")
@@ -1344,7 +1393,7 @@
                 ;; Emit arena creation
                 (ctx-emit ctx (ctx-str3 ctx "slop_arena _arena = slop_arena_new(" size-c ");"))
                 (ctx-emit ctx "slop_arena* arena = &_arena;")))
-            ((none) (ctx-emit ctx "/* missing size */")))
+            ((none) (ctx-add-error-at ctx "missing size" (list-first-line items) (list-first-col items))))
           ;; Bind arena variable in scope
           (ctx-bind-var ctx (VarEntry "arena" "arena" "slop_arena*" "" true false))
           ;; Process body statements (items 2 onwards)

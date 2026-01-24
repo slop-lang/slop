@@ -7,13 +7,15 @@
 
 (module resolve
   (export
-    resolve-imports resolve-import-stmt)
+    resolve-imports resolve-import-stmt resolve-module-file)
 
   (import parser (SExpr SExprList SExprSymbol is-form
                   sexpr-is-list sexpr-list-len sexpr-list-get))
   (import types (ResolvedType))
   (import env (TypeEnv env-arena env-add-import env-resolve-import
-               env-lookup-type env-set-module))
+               env-lookup-type env-set-module env-get-current-file))
+  (import path (path-dirname path-join))
+  (import file (file-exists))
 
   ;; ============================================================
   ;; Import Resolution
@@ -86,4 +88,39 @@
                   (_ (do))))
               ((none) (do)))))
         (_ (do)))))
+
+  ;; ============================================================
+  ;; Module File Resolution
+  ;; ============================================================
+
+  (fn contains-slash ((s String))
+    (@intent "Check if string contains a forward slash character")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (let ((len (cast Int (. s len)))
+          (mut found false))
+      (for (i 0 len)
+        (when (and (not found) (== (cast Int (@ (. s data) i)) 47))
+          (set! found true)))
+      found))
+
+  (fn resolve-module-file ((arena Arena) (module-name String) (from-file (Option String)))
+    (@intent "Resolve module name to file path, returning the resolved path or none")
+    (@spec ((Arena String (Option String)) -> (Option String)))
+    (@pure)
+    (@example (arena "utils/helper" (some "src/main.slop")) -> (some "src/utils/helper.slop"))
+    (@example (arena "strlib" (some "src/main.slop")) -> none)
+    ;; Only resolve path-style imports (containing '/')
+    ;; Regular imports like 'strlib' are handled by build orchestration
+    (if (not (contains-slash module-name))
+      (none)
+      (match from-file
+        ((some current-path)
+          (let ((dir (path-dirname arena current-path))
+                (rel-path (string-concat arena module-name ".slop"))
+                (full-path (path-join arena dir rel-path)))
+            (if (file-exists full-path)
+              (some full-path)
+              (none))))
+        ((none) (none)))))
 )

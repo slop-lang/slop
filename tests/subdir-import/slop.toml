@@ -1,0 +1,11 @@
+# Test subdirectory imports
+
+[project]
+name = "subdir-import-test"
+version = "0.1.0"
+entry = "main.slop"
+
+[build]
+output = "subdir-import-test"
+include = [".", "utils"]
+type = "executable"

@@ -236,7 +236,7 @@ def transpile_native(input_file: str):
                 c_parts.append(mod_data['header'])
                 # Strip self-include from impl when combining into single file
                 impl = mod_data['impl']
-                c_mod_name = mod_name.replace('-', '_')
+                c_mod_name = mod_name.replace('-', '_').replace('/', '_')
                 impl = impl.replace(f'#include "slop_{c_mod_name}.h"\n', '')
                 c_parts.append(impl)
                 # Check if this module exports main
@@ -303,7 +303,7 @@ def transpile_to_cache(module_path: Path, cache_dir: Path, search_paths: list) -
     results, success = transpile_native_split(str(module_path))
     if success and results:
         for mod_name, (header, impl) in results.items():
-            c_mod_name = mod_name.replace('-', '_')
+            c_mod_name = mod_name.replace('-', '_').replace('/', '_')
             header_path = cache_dir / f"slop_{c_mod_name}.h"
             impl_path = cache_dir / f"slop_{c_mod_name}.c"
 
@@ -364,7 +364,7 @@ def transpile_to_cache(module_path: Path, cache_dir: Path, search_paths: list) -
         c_code = transpiler.transpile(ast)
 
         # Generate header (declarations) and impl (definitions)
-        c_mod_name = module_name.replace('-', '_')
+        c_mod_name = module_name.replace('-', '_').replace('/', '_')
         header_path = cache_dir / f"slop_{c_mod_name}.h"
         impl_path = cache_dir / f"slop_{c_mod_name}.c"
 
@@ -569,7 +569,7 @@ def cmd_transpile(args):
                 results = transpile_multi_split(graph.modules, order)
                 for mod_name, (header, impl) in results.items():
                     # Prefix with slop_ to avoid C stdlib conflicts (e.g., ctype.h)
-                    c_mod_name = mod_name.replace('-', '_')
+                    c_mod_name = mod_name.replace('-', '_').replace('/', '_')
                     header_path = os.path.join(args.output, f"slop_{c_mod_name}.h")
                     impl_path = os.path.join(args.output, f"slop_{c_mod_name}.c")
                     with open(header_path, 'w') as f:
@@ -2175,7 +2175,7 @@ def _build_library_from_sources(
         header_files = []
         for mod_name, (header, impl) in results.items():
             # Prefix with slop_ to avoid C stdlib conflicts
-            c_mod_name = mod_name.replace('-', '_')
+            c_mod_name = mod_name.replace('-', '_').replace('/', '_')
             header_path = os.path.join(tmpdir, f"slop_{c_mod_name}.h")
             impl_path = os.path.join(tmpdir, f"slop_{c_mod_name}.c")
             with open(header_path, 'w') as f:
@@ -2514,7 +2514,7 @@ def cmd_build(args):
                 c_files = []
                 for mod_name, (header, impl) in results.items():
                     # Prefix with slop_ to avoid C stdlib conflicts (e.g., ctype.h)
-                    c_mod_name = mod_name.replace('-', '_')
+                    c_mod_name = mod_name.replace('-', '_').replace('/', '_')
                     header_path = os.path.join(tmpdir, f"slop_{c_mod_name}.h")
                     impl_path = os.path.join(tmpdir, f"slop_{c_mod_name}.c")
                     with open(header_path, 'w') as f:
@@ -2639,7 +2639,7 @@ def cmd_build(args):
             transpiler = None
             native_module_headers = {}  # Module headers from native transpiler (for library builds)
             module_name = input_path.stem
-            c_mod_name = module_name.replace('-', '_')
+            c_mod_name = module_name.replace('-', '_').replace('/', '_')
 
             if library_mode and native_transpiler_bin:
                 # For library builds with native transpiler, use split output to get separate header
@@ -2680,7 +2680,7 @@ def cmd_build(args):
             # Use same directory as output for header files
             output_dir = os.path.dirname(output) or '.'
             for mod_name, header in native_module_headers.items():
-                c_mod_name = mod_name.replace('-', '_')
+                c_mod_name = mod_name.replace('-', '_').replace('/', '_')
                 header_path = os.path.join(output_dir, f"slop_{c_mod_name}.h")
                 with open(header_path, 'w') as f:
                     f.write(header)
@@ -3187,7 +3187,7 @@ def cmd_test(args):
                 continue  # Skip the test file itself
 
             module_info = graph.modules[mod_name]
-            c_mod_name = mod_name.replace('-', '_')
+            c_mod_name = mod_name.replace('-', '_').replace('/', '_')
             header_path = cache_dir / f"slop_{c_mod_name}.h"
 
             # Check if needs retranspile (mtime-based caching)
@@ -3209,7 +3209,7 @@ def cmd_test(args):
         for mod_name in build_order:
             if graph.modules[mod_name].path == input_path.resolve():
                 continue  # Skip the test file itself
-            c_mod_name = mod_name.replace('-', '_')
+            c_mod_name = mod_name.replace('-', '_').replace('/', '_')
             c_path = cache_dir / f"slop_{c_mod_name}.c"
             if c_path.exists():
                 dep_sources.append(str(c_path))

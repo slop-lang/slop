@@ -68,7 +68,11 @@
     ;; Type alias tracking for resolving Map/Set types
     TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias
     ;; Error handling
-    ctx-fail)
+    ctx-fail
+    ;; Error collection
+    ctx-set-file ctx-add-error ctx-add-error-at ctx-has-errors ctx-get-errors ctx-report-errors
+    ;; Position extraction helpers
+    sexpr-line sexpr-col list-first-line list-first-col)
 
   (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
@@ -80,6 +84,10 @@
     (putchar ((c Int)) Int))
   (ffi "stdlib.h"
     (exit ((code Int)) Unit))
+  ;; FFI for stderr output (from slop_runtime.h)
+  (ffi "slop_runtime.h"
+    (slop-eprint ((s (Ptr Char))) Unit)
+    (slop-eputc ((c Int)) Unit))
 
   ;; ============================================================
   ;; Type Definitions
@@ -239,7 +247,11 @@
       ;; Struct key types needing hash/eq generation (C type names)
       (struct-key-types (List String))
       ;; Type alias definitions for resolving Map/Set type aliases
-      (type-aliases (List TypeAliasEntry))))
+      (type-aliases (List TypeAliasEntry))
+      ;; Current file being transpiled (for error messages)
+      (current-file String)
+      ;; Collected transpiler errors
+      (errors (List TranspileError))))
 
   ;; ============================================================
   ;; Context Creation
@@ -287,6 +299,8 @@
       (set! (deref ctx) capture-to-retval false)
       (set! (deref ctx) struct-key-types (list-new arena String))
       (set! (deref ctx) type-aliases (list-new arena TypeAliasEntry))
+      (set! (deref ctx) current-file "")
+      (set! (deref ctx) errors (list-new arena TranspileError))
       ctx))
 
   (fn ctx-reset-for-new-module ((ctx (Ptr TranspileContext)) (mod-name String))
@@ -384,9 +398,9 @@
     (@intent "Report a transpiler error and abort compilation")
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (do
-      (puts (cast (Ptr Char) "Transpiler error:"))
-      (print-string-stdout message)
-      (putchar 10)
+      (slop-eprint (cast (Ptr Char) "Transpiler error: "))
+      (print-string-stderr message)
+      (slop-eputc 10)
       (exit 1)))
 
   (fn print-string-stdout ((s String))
@@ -399,6 +413,120 @@
         (do
           (putchar (cast Int (@ data i)))
           (set! i (+ i 1))))))
+
+  (fn print-string-stderr ((s String))
+    (@intent "Print a String to stderr character by character")
+    (@spec ((String) -> Unit))
+    (let ((len (cast Int (. s len)))
+          (data (. s data))
+          (mut i 0))
+      (while (< i len)
+        (do
+          (slop-eputc (cast Int (@ data i)))
+          (set! i (+ i 1))))))
+
+  ;; ============================================================
+  ;; Error Collection
+  ;; ============================================================
+
+  (fn ctx-set-file ((ctx (Ptr TranspileContext)) (filename String))
+    (@intent "Set the current file being transpiled for error messages")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) current-file filename))
+
+  (fn ctx-add-error ((ctx (Ptr TranspileContext)) (message String))
+    (@intent "Add a transpiler error to the error list with no position info")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) errors) (TranspileError message 0 0)))
+
+  (fn ctx-add-error-at ((ctx (Ptr TranspileContext)) (message String) (line Int) (col Int))
+    (@intent "Add a transpiler error with position information")
+    (@spec (((Ptr TranspileContext) String Int Int) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) errors) (TranspileError message line col)))
+
+  (fn ctx-has-errors ((ctx (Ptr TranspileContext)))
+    (@intent "Check if any transpiler errors have been recorded")
+    (@spec (((Ptr TranspileContext)) -> Bool))
+    (@pre {ctx != nil})
+    (> (list-len (. (deref ctx) errors)) 0))
+
+  (fn ctx-get-errors ((ctx (Ptr TranspileContext)))
+    (@intent "Get all collected transpiler errors")
+    (@spec (((Ptr TranspileContext)) -> (List TranspileError)))
+    (@pre {ctx != nil})
+    (. (deref ctx) errors))
+
+  (fn ctx-report-errors ((ctx (Ptr TranspileContext)))
+    (@intent "Print all collected errors to stderr and return error count")
+    (@spec (((Ptr TranspileContext)) -> Int))
+    (@pre {ctx != nil})
+    (let ((errors (. (deref ctx) errors))
+          (count (list-len errors))
+          (arena (. (deref ctx) arena))
+          (current-file (. (deref ctx) current-file))
+          (mut i 0))
+      (while (< i count)
+        (match (list-get errors i)
+          ((some err)
+            (let ((line (. err line))
+                  (col (. err col)))
+              ;; Print file:line:col: error: message format to stderr
+              (if (> (string-len current-file) 0)
+                (print-string-stderr current-file)
+                (slop-eprint (cast (Ptr Char) "<unknown>")))
+              (slop-eputc 58)  ;; :
+              (print-string-stderr (int-to-string arena line))
+              (slop-eputc 58)  ;; :
+              (print-string-stderr (int-to-string arena col))
+              (slop-eprint (cast (Ptr Char) ": error: "))
+              (print-string-stderr (. err message))
+              (slop-eputc 10)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (cast Int count)))
+
+  ;; ============================================================
+  ;; SExpr Position Extraction
+  ;; ============================================================
+
+  (fn sexpr-line ((expr (Ptr SExpr)))
+    (@intent "Extract line number from an SExpr")
+    (@spec (((Ptr SExpr)) -> Int))
+    (if (== expr nil)
+      0
+      (match (deref expr)
+        ((sym s) (cast Int (. s line)))
+        ((str s) (cast Int (. s line)))
+        ((num n) (cast Int (. n line)))
+        ((lst l) (cast Int (. l line))))))
+
+  (fn sexpr-col ((expr (Ptr SExpr)))
+    (@intent "Extract column number from an SExpr")
+    (@spec (((Ptr SExpr)) -> Int))
+    (if (== expr nil)
+      0
+      (match (deref expr)
+        ((sym s) (cast Int (. s col)))
+        ((str s) (cast Int (. s col)))
+        ((num n) (cast Int (. n col)))
+        ((lst l) (cast Int (. l col))))))
+
+  (fn list-first-line ((items (List (Ptr SExpr))))
+    (@intent "Extract line number from the first element of an SExpr list")
+    (@spec (((List (Ptr SExpr))) -> Int))
+    (match (list-get items 0)
+      ((some first-expr) (sexpr-line first-expr))
+      ((none) 0)))
+
+  (fn list-first-col ((items (List (Ptr SExpr))))
+    (@intent "Extract column number from the first element of an SExpr list")
+    (@spec (((List (Ptr SExpr))) -> Int))
+    (match (list-get items 0)
+      ((some first-expr) (sexpr-col first-expr))
+      ((none) 0)))
 
   ;; ============================================================
   ;; Scope Management
