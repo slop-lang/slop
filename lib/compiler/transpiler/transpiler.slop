@@ -455,9 +455,12 @@
           (match (deref first)
             ((sym sym)
               (let ((name (. sym name)))
-                (or (string-eq name "mut")
-                    (or (string-eq name "ref")
-                        (string-eq name "out")))))
+                (cond
+                  ((string-eq name "in") true)
+                  ((string-eq name "mut") true)
+                  ((string-eq name "ref") true)
+                  ((string-eq name "out") true)
+                  (else false))))
             (else false)))
         ((none) false))))
 
