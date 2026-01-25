@@ -33,7 +33,8 @@ Thumbs.db
 # Build directories
 build/
 dist/
-/bin/
+bin/
+bootstrap/bin
 
 # Test artifacts
 *.log
