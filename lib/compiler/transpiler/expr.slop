@@ -721,6 +721,17 @@
         ""
         (substring arena s (cast (Int 0 ..) 0) (cast (Int 0 ..) (- len 1))))))
 
+  (fn extract-chan-elem-type ((ctx (Ptr TranspileContext)) (chan-type String))
+    (@intent "Extract element type from channel type name (slop_chan_foo -> foo)")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (prefix-len 10))  ;; length of "slop_chan_"
+      (let ((len (string-len chan-type)))
+        (if (<= len prefix-len)
+          "int64_t"  ;; fallback
+          (substring arena chan-type (cast (Int 0 ..) prefix-len) (cast (Int 0 ..) len))))))
+
   (fn infer-list-element-option-type ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)))
     (@intent "Infer the slop_option_* type for a list element (for list-get)")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
@@ -2232,6 +2243,65 @@
                 (do
                   (ctx-add-error-at ctx "spawn: missing function argument" (list-first-line items) (list-first-col items))
                   "NULL")))))
+        ;; send: type-specific channel send
+        ;; (send chan value) -> thread_send_<chan_type>(chan, value)
+        ((string-eq fn-name "send")
+          (if (< len 3)
+            (do
+              (ctx-add-error-at ctx "send: need channel and value arguments" (list-first-line items) (list-first-col items))
+              "0")
+            (match (list-get items 1)
+              ((some chan-expr)
+                (match (list-get items 2)
+                  ((some value-expr)
+                    (let ((chan-c (transpile-expr ctx chan-expr))
+                          (value-c (transpile-expr ctx value-expr))
+                          (chan-c-type (infer-expr-c-type ctx chan-expr)))
+                      ;; Extract channel struct type from pointer type (remove trailing *)
+                      (let ((chan-type (strip-pointer-suffix arena chan-c-type)))
+                        (if (and (starts-with chan-type "slop_chan_")
+                                 (not (string-eq chan-type "slop_chan_int")))
+                          ;; Custom channel type - use specialized function
+                          (let ((s1 (ctx-str3 ctx "thread_send_" chan-type "("))
+                                (s2 (ctx-str ctx s1 chan-c))
+                                (s3 (ctx-str ctx s2 ", ")))
+                            (ctx-str ctx s3 (ctx-str ctx value-c ")")))
+                          ;; Default int channel - use standard function
+                          (ctx-str5 ctx "thread_send(" chan-c ", " value-c ")")))))
+                  ((none)
+                    (do
+                      (ctx-add-error-at ctx "send: missing value argument" (list-first-line items) (list-first-col items))
+                      "0"))))
+              ((none)
+                (do
+                  (ctx-add-error-at ctx "send: missing channel argument" (list-first-line items) (list-first-col items))
+                  "0")))))
+        ;; recv: type-specific channel receive
+        ;; (recv chan) -> thread_recv(chan) which returns Result directly
+        ((string-eq fn-name "recv")
+          (if (< len 2)
+            (do
+              (ctx-add-error-at ctx "recv: need channel argument" (list-first-line items) (list-first-col items))
+              "0")
+            (match (list-get items 1)
+              ((some chan-expr)
+                (let ((chan-c (transpile-expr ctx chan-expr))
+                      (chan-c-type (infer-expr-c-type ctx chan-expr)))
+                  ;; Extract channel struct type from pointer type
+                  (let ((chan-type (strip-pointer-suffix arena chan-c-type)))
+                    (if (and (starts-with chan-type "slop_chan_")
+                             (not (string-eq chan-type "slop_chan_int")))
+                      ;; Custom channel type - use specialized function
+                      (let ((s1 (ctx-str ctx "thread_recv_" chan-type))
+                            (s2 (ctx-str ctx s1 "("))
+                            (s3 (ctx-str ctx s2 chan-c)))
+                        (ctx-str ctx s3 ")"))
+                      ;; Default int channel - use standard function
+                      (ctx-str3 ctx "thread_recv(" chan-c ")")))))
+              ((none)
+                (do
+                  (ctx-add-error-at ctx "recv: missing channel argument" (list-first-line items) (list-first-col items))
+                  "0")))))
         (else
       ;; Check if this is a type constructor (record or union instantiation)
       (match (ctx-lookup-type ctx fn-name)
@@ -4979,6 +5049,8 @@
     (@intent "Transpile lambda body expressions, return last as value")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> String))
     (@pre {ctx != nil})
+    ;; Thread Unit lambdas return int64_t but last expression may be Result
+    ;; We wrap to: (expr, 0) to evaluate and return 0
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut result "")
@@ -4993,8 +5065,9 @@
                 (let ((expr-c (transpile-expr ctx expr))
                       (is-last (== i (- len 1))))
                   (if is-last
-                    ;; Last expression: return it
-                    (set! result (ctx-str ctx result (ctx-str3 ctx "return " expr-c ";")))
+                    ;; Last expression: evaluate for side effects and return 0
+                    ;; This handles Thread Unit where body might return Result but lambda returns int
+                    (set! result (ctx-str ctx result (ctx-str ctx "(" (ctx-str ctx expr-c ", 0); return 0;"))))
                     ;; Not last: just evaluate for side effects
                     (set! result (ctx-str ctx result (ctx-str3 ctx expr-c "; " ""))))))
               ((none) (do)))

@@ -583,7 +583,9 @@
                                 (match (list-get var-items 1)
                                   ((some type-expr)
                                     (let ((c-type (to-c-type-prefixed ctx type-expr)))
-                                      (ctx-emit ctx (ctx-str5 ctx "        " c-type " " tag-name ";"))))
+                                      ;; Use int for void (Unit) type since void can't be a struct field
+                                      (let ((actual-type (if (string-eq c-type "void") "int" c-type)))
+                                        (ctx-emit ctx (ctx-str5 ctx "        " actual-type " " tag-name ";")))))
                                   ((none) (do))))))
                           (else (do))))
                       ((none) (do))))))

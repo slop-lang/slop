@@ -1535,13 +1535,16 @@
 
                     ;; (Thread T) -> slop_thread_<inner>
                     ((string-eq head "Thread")
-                      (set! result "slop_thread_void")
+                      (set! result "slop_thread_int")  ;; Safe default
                       (when (>= len 2)
                         (match (list-get items 1)
                           ((some inner)
-                            (let ((inner-c (to-c-type-prefixed ctx inner))
-                                  (inner-id (type-to-identifier arena inner-c)))
-                              (set! result (ctx-str ctx "slop_thread_" inner-id))))
+                            (let ((inner-c (to-c-type-prefixed ctx inner)))
+                              ;; Map void to int (void can't be a struct field)
+                              (if (string-eq inner-c "void")
+                                (set! result "slop_thread_int")
+                                (let ((inner-id (type-to-identifier arena inner-c)))
+                                  (set! result (ctx-str ctx "slop_thread_" inner-id))))))
                           ((none) (do)))))
 
                     ;; (record (field1 Type1) (field2 Type2) ...) -> _anon_record_<hash>
