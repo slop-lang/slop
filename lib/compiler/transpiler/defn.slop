@@ -178,7 +178,7 @@
                             (c-name (ctx-prefix-type ctx base-name)))
                         (do
                           ;; Register constant as variable for local lookup
-                          (ctx-bind-var ctx (VarEntry raw-name c-name "auto" "" false false))
+                          (ctx-bind-var ctx (VarEntry raw-name c-name "auto" "" false false false "" ""))
                           (match (list-get items 2)
                             ((some type-expr)
                               (match (list-get items 3)
@@ -1021,7 +1021,7 @@
                                   (c-type (to-c-type-prefixed ctx type-expr))
                                   (slop-type-str (pretty-print arena type-expr))
                                   (is-ptr (is-pointer-type type-expr)))
-                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false))))
+                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false false "" ""))))
                           ((none) (do))))
                       (else (do))))
                   ((none) (do)))))))

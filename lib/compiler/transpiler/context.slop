@@ -61,6 +61,12 @@
     to-c-type-prefixed
     ;; Gensym for unique variable names
     ctx-gensym
+    ;; Deferred lambda tracking
+    ctx-add-deferred-lambda ctx-get-deferred-lambdas ctx-clear-deferred-lambdas
+    ;; Last lambda info (for closure variable binding)
+    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
+    ;; Function output buffer for two-phase emission
+    ctx-start-function-buffer ctx-stop-function-buffer ctx-flush-function-buffer
     ;; Hash helper
     simple-hash
     ;; Struct key type tracking
@@ -106,7 +112,10 @@
       (c-type String)      ;; C type string
       (slop-type String)   ;; Original SLOP type string (e.g., "(Map String Int)")
       (is-pointer Bool)    ;; Is this a pointer variable?
-      (is-mutable Bool)))  ;; Is this mutable?
+      (is-mutable Bool)    ;; Is this mutable?
+      (is-closure Bool)    ;; Is this a closure (lambda capturing variables)?
+      (closure-env-type String)     ;; Env type name for closures (e.g., "mod__lambda_0_env_t")
+      (closure-lambda-name String)))  ;; Lambda function name (e.g., "mod__lambda_0")
 
   (type TypeEntry
     (record
@@ -251,7 +260,17 @@
       ;; Current file being transpiled (for error messages)
       (current-file String)
       ;; Collected transpiler errors
-      (errors (List TranspileError))))
+      (errors (List TranspileError))
+      ;; Deferred lambda function definitions (generated C code strings)
+      (deferred-lambdas (List String))
+      ;; Function output buffer for two-phase emission (lambdas first, then functions)
+      (function-output (List String))
+      ;; Flag to redirect ctx-emit to function-output instead of main output
+      (emit-to-function-buffer Bool)
+      ;; Last lambda info (for let binding to detect closures)
+      (last-lambda-is-closure Bool)
+      (last-lambda-env-type String)
+      (last-lambda-name String)))
 
   ;; ============================================================
   ;; Context Creation
@@ -301,6 +320,13 @@
       (set! (deref ctx) type-aliases (list-new arena TypeAliasEntry))
       (set! (deref ctx) current-file "")
       (set! (deref ctx) errors (list-new arena TranspileError))
+      (set! (deref ctx) deferred-lambdas (list-new arena String))
+      (set! (deref ctx) function-output (list-new arena String))
+      (set! (deref ctx) emit-to-function-buffer false)
+      ;; Initialize last-lambda tracking fields
+      (set! (deref ctx) last-lambda-is-closure false)
+      (set! (deref ctx) last-lambda-env-type "")
+      (set! (deref ctx) last-lambda-name "")
       ctx))
 
   (fn ctx-reset-for-new-module ((ctx (Ptr TranspileContext)) (mod-name String))
@@ -335,6 +361,11 @@
       (set! (deref ctx) inline-records (list-new arena InlineRecord))
       (set! (deref ctx) c-name-aliases (list-new arena FuncCNameAlias))
       (set! (deref ctx) struct-key-types (list-new arena String))
+      ;; Clear deferred lambdas for new module
+      (set! (deref ctx) deferred-lambdas (list-new arena String))
+      ;; Clear function output buffer for new module
+      (set! (deref ctx) function-output (list-new arena String))
+      (set! (deref ctx) emit-to-function-buffer false)
       ;; Set new module name
       (set! (deref ctx) current-module (Option String) (some mod-name))
       ;; KEEP preserved: types, funcs, enum-variants, result-type-aliases, pointer-vars
@@ -350,14 +381,18 @@
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
-          (indent-level (. (deref ctx) indent)))
+          (indent-level (. (deref ctx) indent))
+          (to-fn-buffer (. (deref ctx) emit-to-function-buffer)))
       ;; Build indented line
       (let ((mut indented line)
             (mut i 0))
         (while (< i indent-level)
           (set! indented (string-concat arena "    " indented))
           (set! i (+ i 1)))
-        (list-push (. (deref ctx) output) indented))))
+        ;; Route to appropriate buffer
+        (if to-fn-buffer
+          (list-push (. (deref ctx) function-output) indented)
+          (list-push (. (deref ctx) output) indented)))))
 
   (fn ctx-emit-header ((ctx (Ptr TranspileContext)) (line String))
     (@intent "Emit a line of header code")
@@ -1691,5 +1726,106 @@
           ((none) (do)))
         (set! i (+ i 1)))
       result))
+
+  ;; ============================================================
+  ;; Deferred Lambda Tracking
+  ;;
+  ;; Lambda expressions generate static helper functions that must
+  ;; be emitted before the function containing the lambda.
+  ;; ============================================================
+
+  (fn ctx-add-deferred-lambda ((ctx (Ptr TranspileContext)) (lambda-code String))
+    (@intent "Add a deferred lambda function definition to be emitted later")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) deferred-lambdas) lambda-code))
+
+  (fn ctx-get-deferred-lambdas ((ctx (Ptr TranspileContext)))
+    (@intent "Get all deferred lambda function definitions")
+    (@spec (((Ptr TranspileContext)) -> (List String)))
+    (@pre {ctx != nil})
+    (. (deref ctx) deferred-lambdas))
+
+  (fn ctx-clear-deferred-lambdas ((ctx (Ptr TranspileContext)))
+    (@intent "Clear deferred lambdas after emitting them")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (set! (deref ctx) deferred-lambdas (list-new arena String))))
+
+  ;; ============================================================
+  ;; Last Lambda Info Tracking
+  ;;
+  ;; When transpiling a lambda/closure, we record metadata here
+  ;; so that let-binding code can create a proper VarEntry for
+  ;; the closure variable.
+  ;; ============================================================
+
+  (type LastLambdaInfo
+    (record
+      (is-closure Bool)
+      (env-type String)
+      (lambda-name String)))
+
+  (fn ctx-set-last-lambda-info ((ctx (Ptr TranspileContext)) (is-closure Bool) (env-type String) (lambda-name String))
+    (@intent "Set info about the last transpiled lambda for closure tracking")
+    (@spec (((Ptr TranspileContext) Bool String String) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) last-lambda-is-closure is-closure)
+    (set! (deref ctx) last-lambda-env-type env-type)
+    (set! (deref ctx) last-lambda-name lambda-name))
+
+  (fn ctx-get-last-lambda-info ((ctx (Ptr TranspileContext)))
+    (@intent "Get info about the last transpiled lambda")
+    (@spec (((Ptr TranspileContext)) -> LastLambdaInfo))
+    (@pre {ctx != nil})
+    (LastLambdaInfo
+      (. (deref ctx) last-lambda-is-closure)
+      (. (deref ctx) last-lambda-env-type)
+      (. (deref ctx) last-lambda-name)))
+
+  (fn ctx-clear-last-lambda-info ((ctx (Ptr TranspileContext)))
+    (@intent "Clear last lambda info after use")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) last-lambda-is-closure false)
+    (set! (deref ctx) last-lambda-env-type "")
+    (set! (deref ctx) last-lambda-name ""))
+
+  ;; ============================================================
+  ;; Function Output Buffer
+  ;;
+  ;; Two-phase emission: functions are buffered while lambdas
+  ;; accumulate, then lambdas are emitted first.
+  ;; ============================================================
+
+  (fn ctx-start-function-buffer ((ctx (Ptr TranspileContext)))
+    (@intent "Start redirecting ctx-emit to the function buffer")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) emit-to-function-buffer true))
+
+  (fn ctx-stop-function-buffer ((ctx (Ptr TranspileContext)))
+    (@intent "Stop redirecting ctx-emit to the function buffer")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) emit-to-function-buffer false))
+
+  (fn ctx-flush-function-buffer ((ctx (Ptr TranspileContext)))
+    (@intent "Copy function buffer contents to main output")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((fn-output (. (deref ctx) function-output))
+          (count (list-len fn-output))
+          (mut i 0))
+      (while (< i count)
+        (match (list-get fn-output i)
+          ((some line)
+            (list-push (. (deref ctx) output) line))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      ;; Clear the function buffer
+      (let ((arena (. (deref ctx) arena)))
+        (set! (deref ctx) function-output (list-new arena String)))))
 
 ) ;; end module

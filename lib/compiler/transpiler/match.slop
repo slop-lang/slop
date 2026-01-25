@@ -298,7 +298,7 @@
                 ;; Infer the inner type from the scrutinee expression
                 (inner-slop-type (infer-option-inner-slop-type ctx scrutinee-expr)))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".value;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" inner-slop-type false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" inner-slop-type false false false "" ""))))
         ((none) (do)))
       ;; Emit body
       (emit-branch-body ctx branch-items is-return)
@@ -379,7 +379,7 @@
           (let ((c-name (to-c-name arena binding-name))
                 (ok-slop-type (infer-result-ok-slop-type ctx scrutinee-expr)))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.ok;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" ok-slop-type false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" ok-slop-type false false false "" ""))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
@@ -404,7 +404,7 @@
           (let ((c-name (to-c-name arena binding-name))
                 (err-slop-type (infer-result-err-slop-type ctx scrutinee-expr)))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.err;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" err-slop-type false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" err-slop-type false false false "" ""))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
@@ -606,7 +606,7 @@
           (let ((c-binding (to-c-name arena binding-name)))
             (ctx-emit ctx (ctx-str5 ctx "__auto_type " c-binding " = " scrutinee-c
                            (ctx-str3 ctx ".data." c-tag ";")))
-            (ctx-bind-var ctx (VarEntry binding-name c-binding "auto" "" false false))))
+            (ctx-bind-var ctx (VarEntry binding-name c-binding "auto" "" false false false "" ""))))
         ((none) (do)))
       ;; Emit body
       (emit-branch-body ctx branch-items is-return)
@@ -825,7 +825,7 @@
                                                 ;; Extract SLOP type string from type expression for proper type inference
                                                 (slop-type-str (sexpr-to-type-string arena type-expr)))
                                             (ctx-emit ctx (ctx-str5 ctx c-type " " c-name " = " (ctx-str ctx final-init ";")))
-                                            (ctx-bind-var ctx (VarEntry raw-name c-name c-type slop-type-str is-ptr has-mut)))))
+                                            (ctx-bind-var ctx (VarEntry raw-name c-name c-type slop-type-str is-ptr has-mut false "" "")))))
                                       ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))
                                     ;; Not typed - middle is actually value - infer type
                                     (match (list-get items type-idx)
@@ -839,13 +839,13 @@
                                             ((some ptr-type)
                                               ;; Arena-alloc returns pointer
                                               (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                              (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut)))
+                                              (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut false "" "")))
                                             ((none)
                                               ;; Infer type from expression
                                               (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                                     (is-ptr (ends-with inferred-type "*")))
                                                 (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                                (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut)))))))
+                                                (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "")))))))
                                       ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))))
                                 ((none) (ctx-add-error-at ctx "missing type/value" (sexpr-line binding) (sexpr-col binding)))))
                             ;; Simple: (name init)
@@ -861,13 +861,13 @@
                                       ((some ptr-type)
                                         ;; Arena-alloc returns pointer
                                         (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                        (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut)))
+                                        (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut false "" "")))
                                       ((none)
                                         ;; Infer type from expression
                                         (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                               (is-ptr (ends-with inferred-type "*")))
                                           (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                          (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut)))))))
+                                          (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "")))))))
                                 ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))))))
                       (else (ctx-add-error-at ctx "binding name must be symbol" (sexpr-line name-expr) (sexpr-col name-expr)))))
                   ((none) (ctx-add-error-at ctx "missing binding name" (sexpr-line binding) (sexpr-col binding))))))))
@@ -1395,7 +1395,7 @@
                 (ctx-emit ctx "slop_arena* arena = &_arena;")))
             ((none) (ctx-add-error-at ctx "missing size" (list-first-line items) (list-first-col items))))
           ;; Bind arena variable in scope
-          (ctx-bind-var ctx (VarEntry "arena" "arena" "slop_arena*" "" true false))
+          (ctx-bind-var ctx (VarEntry "arena" "arena" "slop_arena*" "" true false false "" ""))
           ;; Process body statements (items 2 onwards)
           (let ((mut i 2))
             (while (< i len)

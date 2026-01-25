@@ -37,7 +37,9 @@
                    to-c-type-prefixed
                    ctx-mark-type-emitted ctx-is-type-emitted
                    ctx-register-field-type
-                   ctx-register-struct-key-type ctx-get-struct-key-types))
+                   ctx-register-struct-key-type ctx-get-struct-key-types
+                   ctx-get-deferred-lambdas ctx-clear-deferred-lambdas
+                   ctx-start-function-buffer ctx-stop-function-buffer ctx-flush-function-buffer))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
   (import emit (emit-standard-includes emit-include))
   (import defn (transpile-type transpile-function transpile-const is-const-form emit-forward-declaration
@@ -784,7 +786,7 @@
                                         (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name)))
                                           (do
                                             (ctx-register-type ctx (TypeEntry sym-name c-name c-name false false false))
-                                            (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false))))
+                                            (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false false "" ""))))
                                         ;; Register function with module prefix
                                         ;; Try to copy param-types from existing entry (if already processed)
                                         (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name))
@@ -3929,15 +3931,41 @@
     (@intent "Emit all function definitions from module")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> Unit))
     (@pre {ctx != nil})
+    ;; Two-phase emission: collect function output while transpiling,
+    ;; then emit lambdas first, then function output.
     (let ((len (list-len items))
           (mut i start))
+      ;; Phase 1: Transpile all functions (output goes to function buffer)
+      (ctx-start-function-buffer ctx)
       (while (< i len)
         (match (list-get items i)
           ((some item)
             (when (is-fn-def item)
               (transpile-function ctx item)))
           ((none) (do)))
-        (set! i (+ i 1)))))
+        (set! i (+ i 1)))
+      (ctx-stop-function-buffer ctx)
+      ;; Phase 2: Emit all accumulated lambdas to main output
+      (emit-all-lambdas ctx)
+      ;; Phase 3: Copy function output to main output
+      (ctx-flush-function-buffer ctx)))
+
+  (fn emit-all-lambdas ((ctx (Ptr TranspileContext)))
+    (@intent "Emit all deferred lambda functions to main output")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((lambdas (ctx-get-deferred-lambdas ctx))
+          (count (list-len lambdas))
+          (mut i 0))
+      (when (> count 0)
+        (while (< i count)
+          (match (list-get lambdas i)
+            ((some lambda-code)
+              (ctx-emit ctx lambda-code)
+              (ctx-emit ctx ""))
+            ((none) (do)))
+          (set! i (+ i 1)))
+        (ctx-clear-deferred-lambdas ctx))))
 
   ;; ============================================================
   ;; Output Generation
