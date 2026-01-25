@@ -1112,6 +1112,7 @@ def extract_documentation(ast) -> dict:
             'exported': name in export_set or not doc['exports'],
             'params': [],
             'intent': None,
+            'doc': None,
             'spec': None,
             'pre': [],
             'post': [],
@@ -1147,6 +1148,8 @@ def extract_documentation(ast) -> dict:
         for item in fn_form.items[3:]:
             if is_form(item, '@intent') and len(item) > 1:
                 fn_info['intent'] = item[1].value if isinstance(item[1], String) else str(item[1])
+            elif is_form(item, '@doc') and len(item) > 1:
+                fn_info['doc'] = item[1].value if isinstance(item[1], String) else str(item[1])
             elif is_form(item, '@spec') and len(item) > 1:
                 fn_info['spec'] = compact(pretty_print(item[1]))
             elif is_form(item, '@pre') and len(item) > 1:
@@ -1282,6 +1285,11 @@ def render_markdown(doc: dict) -> str:
             # Intent
             if fn['intent']:
                 lines.append(f"> {fn['intent']}")
+                lines.append("")
+
+            # Doc (extended documentation)
+            if fn['doc']:
+                lines.append(fn['doc'])
                 lines.append("")
 
             # Signature

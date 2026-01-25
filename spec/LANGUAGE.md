@@ -205,6 +205,7 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 (@example (args...) -> result)   ; Example for testing
 (@property (forall (x T) expr))  ; Property that should hold
 (@deprecated "message")          ; Mark as deprecated with migration hint
+(@doc "Extended documentation")  ; Detailed docs, emits as C comment
 
 ; Memory annotations
 (@alloc arena)                   ; Function allocates in arena
