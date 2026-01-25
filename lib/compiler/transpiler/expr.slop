@@ -1252,9 +1252,15 @@
                     ;; No slop-type stored
                     "")))
               ((none) ""))))
-        ;; Field access or other expressions - cannot infer from slop-type
-        ;; Could potentially walk the expression to find the underlying variable
-        (_ ""))))
+        ;; Other expressions (field access, deref, etc.) - use infer-expr-slop-type
+        (_ (let ((slop-type (infer-expr-slop-type ctx map-expr)))
+             (if (> (string-len slop-type) 0)
+               (let ((value-slop-type (extract-map-value-from-slop-type arena slop-type)))
+                 (if (> (string-len value-slop-type) 0)
+                   (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
+                     (ctx-str ctx "slop_option_" option-id))
+                   ""))
+               ""))))))
 
   (fn option-type-to-value-c-type ((arena Arena) (option-type String))
     (@intent "Extract value C type from slop_option_<type> string")
@@ -3165,9 +3171,14 @@
                                     ;; Other types - generate slop_option_<type>
                                     (else (ctx-str3 ctx "slop_option_" val-type "")))))
                               ((none) "/* TRANSPILER ERROR: some with no value expression */"))))
-                        ;; none constructor - generic option
+                        ;; none constructor - use return type context if available
                         ((string-eq op "none")
-                          "slop_option_int")
+                          (match (ctx-get-current-return-type ctx)
+                            ((some ret-type)
+                              (if (starts-with ret-type "slop_option_")
+                                ret-type
+                                "slop_option_int"))
+                            ((none) "slop_option_int")))
                         ;; list-push returns void
                         ((string-eq op "list-push")
                           "void")
