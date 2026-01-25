@@ -17,12 +17,13 @@
                  FnSignature ParamInfo
                  resolved-type-new resolved-variant-new resolved-field-new
                  resolved-type-set-inner resolved-type-set-inner2
+                 resolved-type-is-pointer
                  fn-signature-new param-info-new))
   (import env (TypeEnv env-arena env-register-type env-lookup-type
                env-register-function env-register-constant env-set-module env-get-module
                env-get-int-type env-get-bool-type env-get-string-type
                env-get-unit-type env-register-variant env-check-variant-collisions
-               env-make-option-type env-add-warning))
+               env-make-option-type env-add-warning env-add-error))
 
   ;; ============================================================
   ;; Main Collection Functions
@@ -591,8 +592,70 @@
                       (params (collect-fn-params env arena fn-form))
                       (ret-type (find-fn-return-type env fn-form))
                       (sig (fn-signature-new arena qualified-name fn-name params ret-type)))
+                  ;; Validate main function parameters
+                  (when (string-eq fn-name "main")
+                    (validate-main-params env fn-form params))
                   (env-register-function env sig)))))
           ((none) (do))))))
+
+  (fn is-integer-type-name ((name String))
+    (@intent "Check if type name is an integer type suitable for argc")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Int")
+        (string-eq name "I8")
+        (string-eq name "I16")
+        (string-eq name "I32")
+        (string-eq name "I64")
+        (string-eq name "U8")
+        (string-eq name "U16")
+        (string-eq name "U32")
+        (string-eq name "U64")))
+
+  (fn validate-main-params ((env (Ptr TypeEnv)) (fn-form (Ptr SExpr)) (params (List ParamInfo)))
+    (@intent "Validate that main function has valid C entry point parameters")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) (List ParamInfo)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= fn-form nil))
+    ;; Valid main signatures:
+    ;; - () - no parameters
+    ;; - ((argc Int) (argv (Ptr (Ptr U8)))) - standard C main
+    ;; Invalid: any other parameter count or types like Arena
+    (let ((num-params (list-len params))
+          (line (sexpr-line fn-form))
+          (col (sexpr-col fn-form)))
+      (cond
+        ;; No params is fine
+        ((== num-params 0) (do))
+        ;; Two params is the standard argc/argv pattern
+        ((== num-params 2)
+          ;; First param should be integer-like (Int, I32, etc.)
+          (match (list-get params 0)
+            ((some p0)
+              (let ((t0 (. p0 param-type)))
+                (when (!= t0 nil)
+                  (let ((name0 (. (deref t0) name)))
+                    ;; Check for integer type names specifically
+                    (when (not (is-integer-type-name name0))
+                      (env-add-error env
+                        "main's first parameter must be an integer type (e.g., Int for argc)"
+                        line col))))))
+            ((none) (do)))
+          ;; Second param should be pointer-like (Ptr (Ptr U8) or similar)
+          (match (list-get params 1)
+            ((some p1)
+              (let ((t1 (. p1 param-type)))
+                (when (!= t1 nil)
+                  (when (not (resolved-type-is-pointer t1))
+                    (env-add-error env
+                      "main's second parameter must be a pointer type (e.g., (Ptr (Ptr U8)) for argv)"
+                      line col)))))
+            ((none) (do))))
+        ;; Any other count is invalid
+        (else
+          (env-add-error env
+            "main function must have either no parameters or exactly two parameters (argc: Int, argv: (Ptr (Ptr U8)))"
+            line col)))))
 
   (fn collect-fn-params ((env (Ptr TypeEnv)) (arena Arena) (fn-form (Ptr SExpr)))
     (@intent "Collect parameter types from a function definition")
