@@ -2363,26 +2363,52 @@
                         (mut args "")
                         (mut i 1)
                         (mut param-idx 0))
-                    (while (< i len)
-                      (match (list-get items i)
-                        ((some arg)
-                          (let ((arg-c (transpile-expr ctx arg))
-                                ;; Get expected type for this parameter if available
-                                (expected-type (match func-opt
-                                                 ((some func-entry)
-                                                   (match (list-get (. func-entry param-types) param-idx)
-                                                     ((some p) (. (deref p) c-type))
-                                                     ((none) "")))
-                                                 ((none) "")))
-                                ;; Convert none to typed Option if needed
-                                (final-arg (typed-none-arg ctx expected-type arg-c)))
-                            (if (string-eq args "")
-                              (set! args final-arg)
-                              (set! args (ctx-str3 ctx args ", " final-arg)))
-                            (set! param-idx (+ param-idx 1))))
-                        ((none) (do)))
-                      (set! i (+ i 1)))
-                    (transpile-call ctx fn-name args))))))))))))
+                    ;; Check if function is defined or is a runtime built-in
+                    (match func-opt
+                      ((none)
+                        ;; Not a user-defined function - check if it's a runtime built-in
+                        (let ((runtime-name (get-runtime-function-name fn-name))
+                              (var-opt (ctx-lookup-var ctx fn-name)))
+                          (if (and (== (string-len runtime-name) 0)
+                                   (match var-opt ((none) true) ((some _) false)))
+                            ;; Not a runtime built-in or local variable - emit error
+                            (do
+                              (ctx-add-error-at ctx
+                                (ctx-str3 ctx "undefined function '" fn-name "' - check imports")
+                                (list-first-line items) (list-first-col items))
+                              "0")
+                            ;; Runtime built-in - proceed without type info
+                            (do
+                              (while (< i len)
+                                (match (list-get items i)
+                                  ((some arg)
+                                    (let ((arg-c (transpile-expr ctx arg)))
+                                      (if (string-eq args "")
+                                        (set! args arg-c)
+                                        (set! args (ctx-str3 ctx args ", " arg-c)))))
+                                  ((none) (do)))
+                                (set! i (+ i 1)))
+                              (transpile-call ctx fn-name args)))))
+                      ((some func-entry)
+                        ;; User-defined function - process with typed none handling
+                        (do
+                          (while (< i len)
+                            (match (list-get items i)
+                              ((some arg)
+                                (let ((arg-c (transpile-expr ctx arg))
+                                      ;; Get expected type for this parameter
+                                      (expected-type (match (list-get (. func-entry param-types) param-idx)
+                                                       ((some p) (. (deref p) c-type))
+                                                       ((none) "")))
+                                      ;; Convert none to typed Option if needed
+                                      (final-arg (typed-none-arg ctx expected-type arg-c)))
+                                  (if (string-eq args "")
+                                    (set! args final-arg)
+                                    (set! args (ctx-str3 ctx args ", " final-arg)))
+                                  (set! param-idx (+ param-idx 1))))
+                              ((none) (do)))
+                            (set! i (+ i 1)))
+                          (transpile-call ctx fn-name args)))))))))))))))
 
   (fn transpile-print ((ctx (Ptr TranspileContext)) (arg (Ptr SExpr)) (newline Bool))
     (@intent "Transpile print/println with type-aware formatting")
@@ -5173,17 +5199,30 @@
     (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     ;; Build argument list and call transpile-call
+    ;; Look up function to get parameter types for typed none handling
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
+          (func-opt (ctx-lookup-func ctx fn-name))
           (mut args "")
-          (mut i 1))
+          (mut i 1)
+          (mut param-idx 0))
       (while (< i len)
         (match (list-get items i)
           ((some arg)
-            (let ((arg-c (transpile-expr ctx arg)))
+            (let ((arg-c (transpile-expr ctx arg))
+                  ;; Get expected type for this parameter if available
+                  (expected-type (match func-opt
+                                   ((some func-entry)
+                                     (match (list-get (. func-entry param-types) param-idx)
+                                       ((some p) (. (deref p) c-type))
+                                       ((none) "")))
+                                   ((none) "")))
+                  ;; Convert none to typed Option if needed
+                  (final-arg (typed-none-arg ctx expected-type arg-c)))
               (if (string-eq args "")
-                (set! args arg-c)
-                (set! args (ctx-str3 ctx args ", " arg-c)))))
+                (set! args final-arg)
+                (set! args (ctx-str3 ctx args ", " final-arg)))
+              (set! param-idx (+ param-idx 1))))
           ((none) (do)))
         (set! i (+ i 1)))
       (transpile-call ctx fn-name args)))
