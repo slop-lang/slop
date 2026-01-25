@@ -212,6 +212,7 @@ void transpiler_emit_const_header_decl(context_TranspileContext* ctx, slop_strin
 uint8_t transpiler_is_const_int_type(slop_string type_name);
 uint8_t transpiler_is_const_def(types_SExpr* item);
 void transpiler_emit_module_functions(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start);
+void transpiler_emit_all_lambdas(context_TranspileContext* ctx);
 slop_string transpiler_generate_c_output(context_TranspileContext* ctx);
 void transpiler_transpile_file(context_TranspileContext* ctx, slop_list_types_SExpr_ptr exprs);
 uint8_t transpiler_is_module_expr(slop_list_types_SExpr_ptr exprs);

@@ -2768,14 +2768,20 @@
                   (ctx-emit-header ctx "    pthread_t id;            /* pthread handle */")
                   (ctx-emit-header ctx (ctx-str3 ctx "    " result-type " result;          /* Thread return value */"))
                   (ctx-emit-header ctx "    void* func;              /* Function pointer */")
+                  (ctx-emit-header ctx "    void* env;               /* Closure environment */")
                   (ctx-emit-header ctx "    bool done;               /* Completion flag */")
                   (ctx-emit-header ctx (ctx-str3 ctx "} " c-name ";"))
-                  ;; Emit trampoline function
+                  ;; Emit trampoline function - handles both closures and regular functions
                   (ctx-emit-header ctx (ctx-str3 ctx "static void* " entry-name "(void* arg) {"))
-                  ;; "    slop_thread_int* s = (slop_thread_int*)arg;"
                   (ctx-emit-header ctx (ctx-str5 ctx "    " c-name "* s = (" c-name "*)arg;"))
-                  ;; "    s->result = ((int64_t(*)(void))(s->func))();"
-                  (ctx-emit-header ctx (ctx-str3 ctx "    s->result = ((" result-type "(*)(void))(s->func))();"))
+                  ;; Check if closure (env != NULL) or regular function
+                  (ctx-emit-header ctx "    if (s->env) {")
+                  ;; Closure: pass env as first argument
+                  (ctx-emit-header ctx (ctx-str3 ctx "        s->result = ((" result-type "(*)(void*))(s->func))(s->env);"))
+                  (ctx-emit-header ctx "    } else {")
+                  ;; Regular function: no arguments
+                  (ctx-emit-header ctx (ctx-str3 ctx "        s->result = ((" result-type "(*)(void))(s->func))();"))
+                  (ctx-emit-header ctx "    }")
                   (ctx-emit-header ctx "    s->done = true;")
                   (ctx-emit-header ctx "    return NULL;")
                   (ctx-emit-header ctx "}")

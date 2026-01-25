@@ -99,6 +99,15 @@ uint8_t context_ctx_has_struct_key_type(context_TranspileContext* ctx, slop_stri
 slop_list_string context_ctx_get_struct_key_types(context_TranspileContext* ctx);
 void context_ctx_register_type_alias(context_TranspileContext* ctx, slop_string name, slop_string slop_type);
 slop_option_string context_ctx_lookup_type_alias(context_TranspileContext* ctx, slop_string name);
+void context_ctx_add_deferred_lambda(context_TranspileContext* ctx, slop_string lambda_code);
+slop_list_string context_ctx_get_deferred_lambdas(context_TranspileContext* ctx);
+void context_ctx_clear_deferred_lambdas(context_TranspileContext* ctx);
+void context_ctx_set_last_lambda_info(context_TranspileContext* ctx, uint8_t is_closure, slop_string env_type, slop_string lambda_name);
+context_LastLambdaInfo context_ctx_get_last_lambda_info(context_TranspileContext* ctx);
+void context_ctx_clear_last_lambda_info(context_TranspileContext* ctx);
+void context_ctx_start_function_buffer(context_TranspileContext* ctx);
+void context_ctx_stop_function_buffer(context_TranspileContext* ctx);
+void context_ctx_flush_function_buffer(context_TranspileContext* ctx);
 
 context_TranspileContext* context_context_new(slop_arena* arena) {
     {
@@ -139,6 +148,12 @@ context_TranspileContext* context_context_new(slop_arena* arena) {
         (*ctx).type_aliases = ((slop_list_context_TypeAliasEntry){ .data = (context_TypeAliasEntry*)slop_arena_alloc(arena, 16 * sizeof(context_TypeAliasEntry)), .len = 0, .cap = 16 });
         (*ctx).current_file = SLOP_STR("");
         (*ctx).errors = ((slop_list_context_TranspileError){ .data = (context_TranspileError*)slop_arena_alloc(arena, 16 * sizeof(context_TranspileError)), .len = 0, .cap = 16 });
+        (*ctx).deferred_lambdas = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).function_output = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).emit_to_function_buffer = 0;
+        (*ctx).last_lambda_is_closure = 0;
+        (*ctx).last_lambda_env_type = SLOP_STR("");
+        (*ctx).last_lambda_name = SLOP_STR("");
         return ctx;
     }
 }
@@ -168,6 +183,9 @@ void context_ctx_reset_for_new_module(context_TranspileContext* ctx, slop_string
         (*ctx).inline_records = ((slop_list_context_InlineRecord){ .data = (context_InlineRecord*)slop_arena_alloc(arena, 16 * sizeof(context_InlineRecord)), .len = 0, .cap = 16 });
         (*ctx).c_name_aliases = ((slop_list_context_FuncCNameAlias){ .data = (context_FuncCNameAlias*)slop_arena_alloc(arena, 16 * sizeof(context_FuncCNameAlias)), .len = 0, .cap = 16 });
         (*ctx).struct_key_types = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).deferred_lambdas = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).function_output = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).emit_to_function_buffer = 0;
         (*ctx).current_module = (slop_option_string){.has_value = 1, .value = mod_name};
     }
 }
@@ -177,6 +195,7 @@ void context_ctx_emit(context_TranspileContext* ctx, slop_string line) {
     {
         __auto_type arena = (*ctx).arena;
         __auto_type indent_level = (*ctx).indent;
+        __auto_type to_fn_buffer = (*ctx).emit_to_function_buffer;
         {
             __auto_type indented = line;
             __auto_type i = 0;
@@ -184,7 +203,11 @@ void context_ctx_emit(context_TranspileContext* ctx, slop_string line) {
                 indented = string_concat(arena, SLOP_STR("    "), indented);
                 i = (i + 1);
             }
-            ({ __auto_type _lst_p = &((*ctx).output); __auto_type _item = (indented); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+            if (to_fn_buffer) {
+                ({ __auto_type _lst_p = &((*ctx).function_output); __auto_type _item = (indented); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+            } else {
+                ({ __auto_type _lst_p = &((*ctx).output); __auto_type _item = (indented); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+            }
         }
     }
 }
@@ -1703,6 +1726,75 @@ slop_option_string context_ctx_lookup_type_alias(context_TranspileContext* ctx, 
             i = (i + 1);
         }
         return result;
+    }
+}
+
+void context_ctx_add_deferred_lambda(context_TranspileContext* ctx, slop_string lambda_code) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    ({ __auto_type _lst_p = &((*ctx).deferred_lambdas); __auto_type _item = (lambda_code); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(ctx->arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+}
+
+slop_list_string context_ctx_get_deferred_lambdas(context_TranspileContext* ctx) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    return (*ctx).deferred_lambdas;
+}
+
+void context_ctx_clear_deferred_lambdas(context_TranspileContext* ctx) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    {
+        __auto_type arena = (*ctx).arena;
+        (*ctx).deferred_lambdas = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+    }
+}
+
+void context_ctx_set_last_lambda_info(context_TranspileContext* ctx, uint8_t is_closure, slop_string env_type, slop_string lambda_name) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    (*ctx).last_lambda_is_closure = is_closure;
+    (*ctx).last_lambda_env_type = env_type;
+    (*ctx).last_lambda_name = lambda_name;
+}
+
+context_LastLambdaInfo context_ctx_get_last_lambda_info(context_TranspileContext* ctx) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    return (context_LastLambdaInfo){(*ctx).last_lambda_is_closure, (*ctx).last_lambda_env_type, (*ctx).last_lambda_name};
+}
+
+void context_ctx_clear_last_lambda_info(context_TranspileContext* ctx) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    (*ctx).last_lambda_is_closure = 0;
+    (*ctx).last_lambda_env_type = SLOP_STR("");
+    (*ctx).last_lambda_name = SLOP_STR("");
+}
+
+void context_ctx_start_function_buffer(context_TranspileContext* ctx) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    (*ctx).emit_to_function_buffer = 1;
+}
+
+void context_ctx_stop_function_buffer(context_TranspileContext* ctx) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    (*ctx).emit_to_function_buffer = 0;
+}
+
+void context_ctx_flush_function_buffer(context_TranspileContext* ctx) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    {
+        __auto_type fn_output = (*ctx).function_output;
+        __auto_type count = ((int64_t)((fn_output).len));
+        __auto_type i = 0;
+        while ((i < count)) {
+            __auto_type _mv_97 = ({ __auto_type _lst = fn_output; size_t _idx = (size_t)i; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_97.has_value) {
+                __auto_type line = _mv_97.value;
+                ({ __auto_type _lst_p = &((*ctx).output); __auto_type _item = (line); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(ctx->arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+            } else if (!_mv_97.has_value) {
+            }
+            i = (i + 1);
+        }
+        {
+            __auto_type arena = (*ctx).arena;
+            (*ctx).function_output = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        }
     }
 }
 

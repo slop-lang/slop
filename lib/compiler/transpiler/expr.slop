@@ -2180,6 +2180,24 @@
                 (do
                   (ctx-add-error-at ctx "max: missing first argument" (list-first-line items) (list-first-col items))
                   "0")))))
+        ;; spawn: special handling for closures
+        ;; (spawn arena closure) -> inline thread creation with env
+        ((string-eq fn-name "spawn")
+          (if (< len 3)
+            (do
+              (ctx-add-error-at ctx "spawn: need arena and function arguments" (list-first-line items) (list-first-col items))
+              "NULL")
+            (match (list-get items 2)
+              ((some fn-expr)
+                (if (is-capturing-lambda fn-expr)
+                  ;; Capturing lambda - inline the thread creation with env
+                  (transpile-spawn-closure ctx items fn-expr)
+                  ;; Non-capturing - use regular spawn call
+                  (transpile-regular-fn-call ctx fn-name items)))
+              ((none)
+                (do
+                  (ctx-add-error-at ctx "spawn: missing function argument" (list-first-line items) (list-first-col items))
+                  "NULL")))))
         (else
       ;; Check if this is a type constructor (record or union instantiation)
       (match (ctx-lookup-type ctx fn-name)
@@ -4956,6 +4974,112 @@
     (let ((arena (. (deref ctx) arena)))
       ;; static ret_type name(params) { body }
       (ctx-str ctx "static " (ctx-str ctx ret-type (ctx-str ctx " " (ctx-str ctx name (ctx-str ctx params (ctx-str ctx " { " (ctx-str ctx body " }")))))))))
+
+  ;; ============================================================
+  ;; spawn + Closure Support
+  ;; ============================================================
+
+  (fn is-capturing-lambda ((expr (Ptr SExpr)))
+    (@intent "Check if expression is a lambda form (fn ((params...)) body)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {expr != nil})
+    ;; Check if expr is (fn ((params...)) body) form
+    ;; Note: This only checks the structure, not whether it actually captures
+    ;; The actual capture detection happens in transpile-spawn-closure
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 2)
+            false
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((sym sym)
+                    (if (not (string-eq (. sym name) "fn"))
+                      false
+                      ;; It's a fn form - check if it has params list (lambda vs named fn)
+                      (match (list-get items 1)
+                        ((some second)
+                          (match (deref second)
+                            ((lst _) true)  ;; Lambda form
+                            (_ false)))
+                        ((none) false))))
+                  (_ false)))
+              ((none) false)))))
+      (_ false)))
+
+  (fn transpile-spawn-closure ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (fn-expr (Ptr SExpr)))
+    (@intent "Transpile spawn call with lambda - inline thread creation, handles both capturing and non-capturing")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {fn-expr != nil})
+    ;; First check if the lambda actually captures anything
+    (let ((arena (. (deref ctx) arena)))
+      (match (list-get items 1)
+        ((some arena-expr)
+          (let ((arena-c (transpile-expr ctx arena-expr))
+                (has-captures (lambda-has-captures ctx fn-expr)))
+            (if has-captures
+              ;; Capturing lambda - transpile returns slop_closure_t
+              (let ((closure-c (transpile-expr ctx fn-expr)))
+                (ctx-str ctx "({ slop_closure_t _spawn_cl = " (ctx-str ctx closure-c
+                  (ctx-str ctx "; slop_thread_int* _spawn_th = slop_arena_alloc(" (ctx-str ctx arena-c
+                    (ctx-str ctx ", sizeof(slop_thread_int));"
+                      (ctx-str ctx " _spawn_th->func = _spawn_cl.fn;"
+                        (ctx-str ctx " _spawn_th->env = _spawn_cl.env;"
+                          (ctx-str ctx " _spawn_th->done = false;"
+                            (ctx-str ctx " pthread_create(&_spawn_th->id, NULL, (void*)slop_thread_int_entry, (void*)_spawn_th);"
+                              " _spawn_th; })"))))))))))
+              ;; Non-capturing lambda - use regular spawn call
+              (transpile-regular-fn-call ctx "spawn" items))))
+        ((none)
+          (do
+            (ctx-add-error-at ctx "spawn: missing arena argument" (list-first-line items) (list-first-col items))
+            "NULL")))))
+
+  (fn lambda-has-captures ((ctx (Ptr TranspileContext)) (fn-expr (Ptr SExpr)))
+    (@intent "Check if lambda expression has free variables that need capturing")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Bool))
+    (@pre {ctx != nil})
+    (@pre {fn-expr != nil})
+    ;; Extract params and body from lambda, then check for free vars
+    (match (deref fn-expr)
+      ((lst lst)
+        (let ((items (. lst items))
+              (arena (. (deref ctx) arena)))
+          (if (< (list-len items) 2)
+            false
+            (match (list-get items 1)
+              ((some params-expr)
+                (match (deref params-expr)
+                  ((lst params-lst)
+                    (let ((params (. params-lst items))
+                          (param-names (extract-param-names arena params))
+                          (free-vars (find-free-vars ctx param-names items 2)))
+                      (> (list-len free-vars) 0)))
+                  (_ false)))
+              ((none) false)))))
+      (_ false)))
+
+  (fn transpile-regular-fn-call ((ctx (Ptr TranspileContext)) (fn-name String) (items (List (Ptr SExpr))))
+    (@intent "Transpile regular function call (non-special cases)")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; Build argument list and call transpile-call
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          (mut args "")
+          (mut i 1))
+      (while (< i len)
+        (match (list-get items i)
+          ((some arg)
+            (let ((arg-c (transpile-expr ctx arg)))
+              (if (string-eq args "")
+                (set! args arg-c)
+                (set! args (ctx-str3 ctx args ", " arg-c)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (transpile-call ctx fn-name args)))
 
   ;; ============================================================
   ;; Free Variable Analysis for Closures

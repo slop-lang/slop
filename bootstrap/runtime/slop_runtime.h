@@ -165,6 +165,9 @@ typedef struct { bool is_ok; union { int64_t ok; int64_t err; } data; } _slop_re
 #define ok(v) ((_slop_result_generic){true, {.ok = (int64_t)(v)}})
 #define error(e) ((_slop_result_generic){false, {.err = (int64_t)(e)}})
 
+/* Closure type for lambda expressions with captured variables */
+typedef struct { void* fn; void* env; } slop_closure_t;
+
 static inline slop_string slop_string_new(slop_arena* arena, const char* cstr) {
     size_t len = strlen(cstr);
     char* data = (char*)slop_arena_alloc(arena, len + 1);

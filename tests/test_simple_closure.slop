@@ -1,0 +1,12 @@
+;; Simplest closure test
+(module test-simple-closure
+  (export main)
+
+  ;; Direct let with lambda - no nesting
+  (fn main ()
+    (@intent "Main")
+    (@spec (() -> Int))
+    (let ((y 10)
+          (f (fn ((x Int)) (+ x y))))
+      (f 5)))
+)

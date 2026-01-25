@@ -29,6 +29,7 @@ typedef struct context_FuncCNameAlias context_FuncCNameAlias;
 typedef struct context_TypeAliasEntry context_TypeAliasEntry;
 typedef struct context_InlineRecord context_InlineRecord;
 typedef struct context_TranspileContext context_TranspileContext;
+typedef struct context_LastLambdaInfo context_LastLambdaInfo;
 
 #ifndef SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
 #define SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
@@ -79,6 +80,9 @@ struct context_VarEntry {
     slop_string slop_type;
     uint8_t is_pointer;
     uint8_t is_mutable;
+    uint8_t is_closure;
+    slop_string closure_env_type;
+    slop_string closure_lambda_name;
 };
 typedef struct context_VarEntry context_VarEntry;
 
@@ -366,12 +370,30 @@ struct context_TranspileContext {
     slop_list_context_TypeAliasEntry type_aliases;
     slop_string current_file;
     slop_list_context_TranspileError errors;
+    slop_list_string deferred_lambdas;
+    slop_list_string function_output;
+    uint8_t emit_to_function_buffer;
+    uint8_t last_lambda_is_closure;
+    slop_string last_lambda_env_type;
+    slop_string last_lambda_name;
 };
 typedef struct context_TranspileContext context_TranspileContext;
 
 #ifndef SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 #define SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 SLOP_OPTION_DEFINE(context_TranspileContext, slop_option_context_TranspileContext)
+#endif
+
+struct context_LastLambdaInfo {
+    uint8_t is_closure;
+    slop_string env_type;
+    slop_string lambda_name;
+};
+typedef struct context_LastLambdaInfo context_LastLambdaInfo;
+
+#ifndef SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED
+#define SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED
+SLOP_OPTION_DEFINE(context_LastLambdaInfo, slop_option_context_LastLambdaInfo)
 #endif
 
 context_TranspileContext* context_context_new(slop_arena* arena);
@@ -472,6 +494,15 @@ uint8_t context_ctx_has_struct_key_type(context_TranspileContext* ctx, slop_stri
 slop_list_string context_ctx_get_struct_key_types(context_TranspileContext* ctx);
 void context_ctx_register_type_alias(context_TranspileContext* ctx, slop_string name, slop_string slop_type);
 slop_option_string context_ctx_lookup_type_alias(context_TranspileContext* ctx, slop_string name);
+void context_ctx_add_deferred_lambda(context_TranspileContext* ctx, slop_string lambda_code);
+slop_list_string context_ctx_get_deferred_lambdas(context_TranspileContext* ctx);
+void context_ctx_clear_deferred_lambdas(context_TranspileContext* ctx);
+void context_ctx_set_last_lambda_info(context_TranspileContext* ctx, uint8_t is_closure, slop_string env_type, slop_string lambda_name);
+context_LastLambdaInfo context_ctx_get_last_lambda_info(context_TranspileContext* ctx);
+void context_ctx_clear_last_lambda_info(context_TranspileContext* ctx);
+void context_ctx_start_function_buffer(context_TranspileContext* ctx);
+void context_ctx_stop_function_buffer(context_TranspileContext* ctx);
+void context_ctx_flush_function_buffer(context_TranspileContext* ctx);
 
 #ifndef SLOP_OPTION_CONTEXT_TRANSPILEERROR_DEFINED
 #define SLOP_OPTION_CONTEXT_TRANSPILEERROR_DEFINED
@@ -576,6 +607,11 @@ SLOP_OPTION_DEFINE(context_TranspileContext, slop_option_context_TranspileContex
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED
+#define SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED
+SLOP_OPTION_DEFINE(context_LastLambdaInfo, slop_option_context_LastLambdaInfo)
 #endif
 
 
