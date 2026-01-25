@@ -1,0 +1,131 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0)'
+        required: true
+        default: 'dev'
+      build_linux:
+        description: 'Build Linux x64'
+        type: boolean
+        default: true
+      build_macos:
+        description: 'Build macOS ARM64'
+        type: boolean
+        default: true
+      build_windows:
+        description: 'Build Windows x64'
+        type: boolean
+        default: true
+      create_release:
+        description: 'Create GitHub Release (only for tagged releases)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+
+jobs:
+  build-linux-x64:
+    if: github.event_name == 'push' || inputs.build_linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release binaries
+        run: cd bootstrap && make release
+
+      - name: Package distribution
+        run: |
+          chmod +x ./scripts/package.sh
+          ./scripts/package.sh linux-x64 tar.gz
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slop-linux-x64
+          path: dist/*.tar.gz
+
+  build-macos-arm64:
+    if: github.event_name == 'push' || inputs.build_macos
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release binaries
+        run: cd bootstrap && make release CC=clang
+
+      - name: Package distribution
+        run: |
+          chmod +x ./scripts/package.sh
+          ./scripts/package.sh macos-arm64 tar.gz
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slop-macos-arm64
+          path: dist/*.tar.gz
+
+  build-windows-x64:
+    if: github.event_name == 'push' || inputs.build_windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc make
+
+      - name: Build release binaries
+        run: cd bootstrap && make release
+
+      - name: Package distribution
+        shell: pwsh
+        run: ./scripts/package.ps1
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: slop-windows-x64
+          path: dist/*.zip
+
+  release:
+    if: always() && (github.event_name == 'push' || inputs.create_release)
+    needs: [build-linux-x64, build-macos-arm64, build-windows-x64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+        continue-on-error: true
+
+      - name: List artifacts
+        run: find artifacts -type f 2>/dev/null || echo "No artifacts found"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+          generate_release_notes: true
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
