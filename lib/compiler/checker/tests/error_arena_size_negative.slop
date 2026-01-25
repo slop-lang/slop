@@ -1,0 +1,12 @@
+;; Test: with-arena with negative size - should error
+
+(module error-arena-size-negative
+  (export main)
+
+  (fn main ()
+    (@intent "Test negative arena size")
+    (@spec (() -> Int))
+    ;; Negative size should error
+    (with-arena -100
+      42))
+)

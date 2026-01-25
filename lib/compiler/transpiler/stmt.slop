@@ -738,8 +738,16 @@
               (match (list-get items 1)
                 ((some size-expr)
                   (let ((size-c (transpile-expr ctx size-expr)))
+                    ;; Debug guard: check size > 0
+                    (ctx-emit ctx "#ifdef SLOP_DEBUG")
+                    (ctx-emit ctx (ctx-str3 ctx "SLOP_PRE((" size-c ") > 0, \"with-arena size must be positive\");"))
+                    (ctx-emit ctx "#endif")
                     ;; Emit arena creation
                     (ctx-emit ctx (ctx-str3 ctx "slop_arena _arena = slop_arena_new(" size-c ");"))
+                    ;; Debug guard: check allocation succeeded
+                    (ctx-emit ctx "#ifdef SLOP_DEBUG")
+                    (ctx-emit ctx "SLOP_PRE(_arena.base != NULL, \"arena allocation failed\");")
+                    (ctx-emit ctx "#endif")
                     (ctx-emit ctx "slop_arena* arena = &_arena;")))
                 ((none) (ctx-add-error-at ctx "missing size" (sexpr-line expr) (sexpr-col expr))))
               ;; Bind arena variable in scope

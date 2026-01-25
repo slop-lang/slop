@@ -1,0 +1,12 @@
+;; Test: with-arena with zero size - should error
+
+(module error-arena-size-zero
+  (export main)
+
+  (fn main ()
+    (@intent "Test zero arena size")
+    (@spec (() -> Int))
+    ;; Zero size should error
+    (with-arena 0
+      42))
+)
