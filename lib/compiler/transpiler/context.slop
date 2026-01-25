@@ -137,6 +137,7 @@
       (name String)
       (c-name String)
       (return-type String)        ;; Full C return type (e.g., "types_ResolvedType*")
+      (slop-return-type String)   ;; Original SLOP return type (e.g., "(List Term)")
       (returns-pointer Bool)
       (returns-string Bool)
       (param-types (List (Ptr FuncParamType)))))  ;; Parameter types for none inference

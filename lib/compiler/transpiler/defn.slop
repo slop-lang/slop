@@ -16,7 +16,7 @@
     ;; FFI definitions
     transpile-ffi transpile-ffi-struct is-ffi-form is-ffi-struct-form
     ;; Helpers
-    is-type-form is-function-form get-return-type get-result-type-name build-param-str get-type-name-str)
+    is-type-form is-function-form get-return-type get-slop-return-type get-result-type-name build-param-str get-type-name-str)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds))
   (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
@@ -966,8 +966,9 @@
         (ctx-emit ctx "}")
         (ctx-emit ctx "")
         ;; Register function with parameter types for typed none handling
-        (let ((param-types (collect-param-types ctx params-expr)))
-          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return false (string-eq actual-return "slop_string") param-types)))
+        (let ((param-types (collect-param-types ctx params-expr))
+              (slop-ret-type (get-slop-return-type ctx items)))
+          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return slop-ret-type false (string-eq actual-return "slop_string") param-types)))
         ;; Clear current result type and return type
         (ctx-clear-current-result-type ctx)
         (ctx-clear-current-return-type ctx))))
@@ -1197,6 +1198,51 @@
                     (else "void")))
                 ((none) "void")))))
         (else "void"))))
+
+  (fn extract-spec-slop-return-type ((ctx (Ptr TranspileContext)) (spec-expr (Ptr SExpr)))
+    (@intent "Extract SLOP return type string from @spec for type inference")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {spec-expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref spec-expr)
+        ((lst lst)
+          (let ((items (. lst items)))
+            ;; @spec has form (@spec ((ParamTypes) -> ReturnType))
+            (if (< (list-len items) 2)
+              ""
+              (match (list-get items 1)
+                ((some spec-body)
+                  (match (deref spec-body)
+                    ((lst body-lst)
+                      (let ((body-items (. body-lst items))
+                            (body-len (list-len body-items)))
+                        ;; Return type is the last element
+                        (if (< body-len 1)
+                          ""
+                          (match (list-get body-items (- body-len 1))
+                            ((some ret-type)
+                              (pretty-print arena ret-type))
+                            ((none) "")))))
+                    (else "")))
+                ((none) "")))))
+        (else ""))))
+
+  (fn get-slop-return-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Extract SLOP return type from @spec annotation")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items))
+          (mut i 3)  ;; Start after name and params
+          (mut result ""))
+      (while (< i len)
+        (match (list-get items i)
+          ((some item)
+            (when (is-spec-form item)
+              (set! result (extract-spec-slop-return-type ctx item))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
 
   (fn get-result-type-name ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Extract Result type name from @spec if return type is a Result")

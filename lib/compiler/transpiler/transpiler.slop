@@ -44,7 +44,7 @@
   (import emit (emit-standard-includes emit-include))
   (import defn (transpile-type transpile-function transpile-const is-const-form emit-forward-declaration
                 is-ffi-form is-ffi-struct-form transpile-ffi transpile-ffi-struct
-                get-return-type get-result-type-name build-param-str eval-const-value get-type-name-str))
+                get-return-type get-slop-return-type get-result-type-name build-param-str eval-const-value get-type-name-str))
   (import stmt (transpile-stmt))
   (import expr (transpile-expr))
   (import match (transpile-match))
@@ -260,13 +260,15 @@
                       (returns-str (fn-returns-string items))
                       ;; Get full return type from @spec
                       (return-type (fn-return-type ctx items))
+                      ;; Get SLOP return type for type inference
+                      (slop-ret-type (get-slop-return-type ctx items))
                       ;; Collect parameter types for typed none handling
                       (param-types (prescan-collect-param-types ctx items)))
                   ;; If c-name differs from mangled-name, register alias
                   (when (not (string-eq c-name mangled-name))
                     (ctx-add-c-name-alias ctx (FuncCNameAlias fn-name mangled-name c-name)))
                   ;; Register function with the clean name (c-name)
-                  (ctx-register-func ctx (FuncEntry fn-name c-name return-type false returns-str param-types))
+                  (ctx-register-func ctx (FuncEntry fn-name c-name return-type slop-ret-type false returns-str param-types))
                   ;; Scan param types for List/Option generics
                   (prescan-fn-params ctx items)
                   ;; Check for Result type and other generics in @spec
@@ -796,8 +798,11 @@
                                                              ;; Found existing entry - copy its param-types
                                                              ((some entry) (. entry param-types))
                                                              ;; Not found - fall back to empty params
-                                                             ((none) (list-new arena (Ptr FuncParamType))))))
-                                          (ctx-register-func ctx (FuncEntry sym-name c-name "" false false param-types))))))
+                                                             ((none) (list-new arena (Ptr FuncParamType)))))
+                                              (slop-ret (match existing-func
+                                                          ((some entry) (. entry slop-return-type))
+                                                          ((none) ""))))
+                                          (ctx-register-func ctx (FuncEntry sym-name c-name "" slop-ret false false param-types))))))
                                   (else (do))))
                               ((none) (do)))
                             (set! j (+ j 1)))))
@@ -882,8 +887,8 @@
                             (c-name (extract-ffi-c-name ctx items fn-name))
                             ;; Extract param types from FFI declaration for typed none handling
                             (param-types (extract-ffi-param-types ctx items)))
-                        ;; Register as external function with param types
-                        (ctx-register-func ctx (FuncEntry fn-name c-name "" true false param-types))))
+                        ;; Register as external function with param types (FFI has no SLOP return type)
+                        (ctx-register-func ctx (FuncEntry fn-name c-name "" "" true false param-types))))
                     (else (do))))
                 ((none) (do))))))
         (else (do)))))

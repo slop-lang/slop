@@ -592,10 +592,17 @@
           (match (ctx-lookup-var ctx name)
             ((some var-entry)
               (let ((c-type (. var-entry c-type))
+                    (slop-type (. var-entry slop-type))
                     (arena (. (deref ctx) arena)))
                 (cond
-                  ;; Handle auto type - emit error, don't guess
-                  ((string-eq c-type "auto") (ctx-str3 ctx "/* TRANSPILER ERROR: cannot infer Option type for variable '" name "' */"))
+                  ;; Handle auto type - try to derive from slop-type
+                  ((string-eq c-type "auto")
+                    (if (> (string-len slop-type) 0)
+                      ;; Convert SLOP type to C type and build Option type
+                      (let ((derived-c-type (slop-value-type-to-c-type ctx slop-type)))
+                        (c-type-to-option-type-name ctx derived-c-type))
+                      ;; No slop-type available - emit error
+                      (ctx-str3 ctx "/* TRANSPILER ERROR: cannot infer Option type for variable '" name "' */")))
                   ((string-eq c-type "int64_t") "slop_option_int")
                   ((string-eq c-type "double") "slop_option_double")
                   ((string-eq c-type "slop_string") "slop_option_string")
@@ -612,6 +619,30 @@
       ;; For complex expressions, try to infer type from the structure
       ((lst lst)
         (infer-list-expr-option-type ctx (. lst items)))))
+
+  (fn c-type-to-option-type-name ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Convert C type to corresponding Option type name")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (cond
+        ((string-eq c-type "int64_t") "slop_option_int")
+        ((string-eq c-type "double") "slop_option_double")
+        ((string-eq c-type "slop_string") "slop_option_string")
+        ((string-eq c-type "char") "slop_option_char")
+        ((string-eq c-type "uint8_t") "slop_option_u8")
+        ((string-eq c-type "int8_t") "slop_option_i8")
+        ((string-eq c-type "uint16_t") "slop_option_u16")
+        ((string-eq c-type "int16_t") "slop_option_i16")
+        ((string-eq c-type "uint32_t") "slop_option_u32")
+        ((string-eq c-type "int32_t") "slop_option_i32")
+        ((string-eq c-type "float") "slop_option_float")
+        ;; Check for pointer types (ends with *)
+        ((ends-with c-type "*")
+          (let ((base-type (strip-pointer-suffix arena c-type)))
+            (ctx-str3 ctx "slop_option_" base-type "_ptr")))
+        ;; Other custom types: build slop_option_<typename>
+        (else (ctx-str3 ctx "slop_option_" c-type "")))))
 
   (fn infer-list-expr-option-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Infer Option type for a list expression (field access, function call, etc.)")
@@ -957,8 +988,11 @@
                                       (_ "")))
                                   ((none) "")))
                               ((none) "")))
-                          ;; Default: no type info
-                          (else ""))))
+                          ;; Default: check if it's a function call
+                          (else
+                            (match (ctx-lookup-func ctx op)
+                              ((some func-entry) (. func-entry slop-return-type))
+                              ((none) ""))))))
                     (_ "")))
                 ((none) "")))))
         ;; Other forms - no type info
