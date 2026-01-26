@@ -28,7 +28,7 @@
                    ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info))
-  (import ctype (to-c-type to-c-name type-to-identifier))
+  (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
 
   ;; ============================================================
@@ -999,6 +999,47 @@
                                       (_ "")))
                                   ((none) "")))
                               ((none) "")))
+                          ;; record-new: (record-new TypeName ...) -> TypeName
+                          ((string-eq op "record-new")
+                            (if (>= len 2)
+                              (match (list-get items 1)
+                                ((some type-expr)
+                                  (match (deref type-expr)
+                                    ((sym type-sym) (. type-sym name))
+                                    (_ "")))
+                                ((none) ""))
+                              ""))
+                          ;; map-new: (map-new arena KeyType ValueType) -> (Map KeyType ValueType)
+                          ((string-eq op "map-new")
+                            (if (>= len 4)
+                              (match (list-get items 2)
+                                ((some key-expr)
+                                  (match (list-get items 3)
+                                    ((some val-expr)
+                                      (let ((key-str (sexpr-to-type-string arena key-expr))
+                                            (val-str (sexpr-to-type-string arena val-expr)))
+                                        (ctx-str5 ctx "(Map " key-str " " val-str ")")))
+                                    ((none) "")))
+                                ((none) ""))
+                              ""))
+                          ;; set-new: (set-new arena ElemType) -> (Set ElemType)
+                          ((string-eq op "set-new")
+                            (if (>= len 3)
+                              (match (list-get items 2)
+                                ((some elem-expr)
+                                  (let ((elem-str (sexpr-to-type-string arena elem-expr)))
+                                    (ctx-str3 ctx "(Set " elem-str ")")))
+                                ((none) ""))
+                              ""))
+                          ;; list-new: (list-new arena ElemType) -> (List ElemType)
+                          ((string-eq op "list-new")
+                            (if (>= len 3)
+                              (match (list-get items 2)
+                                ((some elem-expr)
+                                  (let ((elem-str (sexpr-to-type-string arena elem-expr)))
+                                    (ctx-str3 ctx "(List " elem-str ")")))
+                                ((none) ""))
+                              ""))
                           ;; Default: check if it's a function call
                           (else
                             (match (ctx-lookup-func ctx op)
@@ -1241,12 +1282,20 @@
               ((some var-entry)
                 (let ((slop-type (. var-entry slop-type)))
                   (if (> (string-len slop-type) 0)
-                    ;; We have a SLOP type string - extract value type from it
-                    (let ((value-slop-type (extract-map-value-from-slop-type arena slop-type)))
+                    ;; We have a SLOP type string - resolve alias and extract value type
+                    (let ((resolved-type (resolve-type-alias-for-map ctx slop-type))
+                          (value-slop-type (extract-map-value-from-slop-type arena resolved-type)))
                       (if (> (string-len value-slop-type) 0)
-                        ;; Got value type - convert to option type name
-                        (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
-                          (ctx-str ctx "slop_option_" option-id))
+                        ;; Got value type - check if it resolves to a container (pointer in C)
+                        (let ((resolved-value (resolve-type-alias-for-map ctx value-slop-type)))
+                          (if (or (starts-with resolved-value "(Map ")
+                                  (or (starts-with resolved-value "(Set ")
+                                      (starts-with resolved-value "(List ")))
+                            ;; Container types are pointers in C
+                            "slop_option_ptr"
+                            ;; Convert to option type name
+                            (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
+                              (ctx-str ctx "slop_option_" option-id))))
                         ;; Couldn't extract value type
                         ""))
                     ;; No slop-type stored
@@ -1255,10 +1304,19 @@
         ;; Other expressions (field access, deref, etc.) - use infer-expr-slop-type
         (_ (let ((slop-type (infer-expr-slop-type ctx map-expr)))
              (if (> (string-len slop-type) 0)
-               (let ((value-slop-type (extract-map-value-from-slop-type arena slop-type)))
+               ;; Resolve type alias before extracting map value type
+               (let ((resolved-type (resolve-type-alias-for-map ctx slop-type))
+                     (value-slop-type (extract-map-value-from-slop-type arena resolved-type)))
                  (if (> (string-len value-slop-type) 0)
-                   (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
-                     (ctx-str ctx "slop_option_" option-id))
+                   ;; Check if value type resolves to a container (pointer in C)
+                   (let ((resolved-value (resolve-type-alias-for-map ctx value-slop-type)))
+                     (if (or (starts-with resolved-value "(Map ")
+                             (or (starts-with resolved-value "(Set ")
+                                 (starts-with resolved-value "(List ")))
+                       ;; Container types are pointers in C
+                       "slop_option_ptr"
+                       (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
+                         (ctx-str ctx "slop_option_" option-id))))
                    ""))
                ""))))))
 
@@ -1272,6 +1330,7 @@
       ((string-eq option-type "slop_option_double") "double")
       ((string-eq option-type "slop_option_char") "char")
       ((string-eq option-type "slop_option_u8") "uint8_t")
+      ((string-eq option-type "slop_option_ptr") "void*")
       ((starts-with option-type "slop_option_")
         (let ((extracted (substring-after-prefix arena option-type "slop_option_")))
           ;; Handle set_ types - sets are implemented as slop_map*
