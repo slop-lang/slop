@@ -126,6 +126,8 @@ class FunctionSignature:
     name: str
     param_types: List[Type]  # Parameter types in order
     return_type: Type  # Return type (may include range bounds)
+    params: List[str] = field(default_factory=list)  # Parameter names for postcondition substitution
+    postconditions: List[SExpr] = field(default_factory=list)  # @post annotations
 
 
 @dataclass
@@ -739,6 +741,8 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
     """Extract function signature from a fn form.
 
     Looks for @spec annotation to get return type with range information.
+    Also extracts parameter names and @post annotations for cross-module
+    postcondition propagation.
     """
     if len(fn_form) < 3:
         return None
@@ -748,23 +752,29 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
         return None
 
     param_types: List[Type] = []
+    param_names: List[str] = []
     return_type: Type = UNKNOWN
 
-    # Extract param types from parameter list
-    params = fn_form[2] if isinstance(fn_form[2], SList) else SList([])
-    for param in params:
+    # Extract param types and names from parameter list
+    params_list = fn_form[2] if isinstance(fn_form[2], SList) else SList([])
+    for param in params_list:
         if isinstance(param, SList) and len(param) >= 2:
             first = param[0]
             if isinstance(first, Symbol) and first.name in ('in', 'out', 'mut'):
                 # Mode is explicit: (in name Type)
+                param_name = param[1].name if isinstance(param[1], Symbol) else None
                 type_expr = param[2] if len(param) > 2 else None
             else:
                 # No mode: (name Type)
+                param_name = first.name if isinstance(first, Symbol) else None
                 type_expr = param[1]
+            if param_name:
+                param_names.append(param_name)
             if type_expr:
                 param_types.append(_parse_type_expr_simple(type_expr, registry))
 
-    # Look for @spec to get return type
+    # Look for @spec to get return type and @post for postconditions
+    postconditions: List[SExpr] = []
     for item in fn_form.items[3:]:
         if is_form(item, '@spec') and len(item) > 1:
             spec = item[1]
@@ -776,8 +786,10 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
                         if i + 1 < len(spec):
                             return_type = _parse_type_expr_simple(spec[i + 1], registry)
                         break
+        elif is_form(item, '@post') and len(item) > 1:
+            postconditions.append(item[1])
 
-    return FunctionSignature(name, param_types, return_type)
+    return FunctionSignature(name, param_types, return_type, param_names, postconditions)
 
 
 def _extract_const_value(expr: SExpr) -> Any:
@@ -1606,7 +1618,12 @@ class Z3Translator:
                     init_z3 = self.translate_expr(init_value)
                     if init_z3 is not None:
                         # Declare variable with same sort as initial value
-                        var = z3.Int(var_name)  # Default to Int
+                        if z3.is_bool(init_z3):
+                            var = z3.Bool(var_name)
+                        elif z3.is_real(init_z3):
+                            var = z3.Real(var_name)
+                        else:
+                            var = z3.Int(var_name)
                         self.variables[var_name] = var
                         # Add constraint that variable equals initial value
                         self.constraints.append(var == init_z3)
@@ -2108,6 +2125,13 @@ class ContractVerifier:
             for body_expr in expr.items[2:]:
                 self._collect_call_postconditions(body_expr, translator, axioms)
 
+        # Handle set! expressions: (set! var (fn-call ...))
+        elif head.name == 'set!' and len(expr) >= 3:
+            var_sym = expr[1]
+            value_expr = expr[2]
+            if isinstance(var_sym, Symbol) and isinstance(value_expr, SList):
+                self._process_set_binding(var_sym.name, value_expr, translator, axioms)
+
         # Handle do blocks
         elif head.name == 'do':
             for item in expr.items[1:]:
@@ -2123,8 +2147,17 @@ class ContractVerifier:
             for item in expr.items[2:]:
                 self._collect_call_postconditions(item, translator, axioms)
 
+        # Handle when expressions
+        elif head.name == 'when' and len(expr) >= 3:
+            for item in expr.items[2:]:
+                self._collect_call_postconditions(item, translator, axioms)
+
     def _process_let_binding(self, binding: SExpr, translator: Z3Translator, axioms: List):
-        """Process a single let binding, extracting postcondition axioms if it's a function call."""
+        """Process a single let binding, extracting postcondition axioms if it's a function call.
+
+        Checks both local function definitions and imported function signatures
+        for postconditions to enable cross-module postcondition propagation.
+        """
         if not isinstance(binding, SList) or len(binding) < 2:
             return
 
@@ -2150,20 +2183,92 @@ class ContractVerifier:
             return
 
         fn_name = fn_head.name
-        fn_def = self.function_registry.functions.get(fn_name)
-        if not fn_def or not fn_def.postconditions:
+
+        # Check local functions first
+        fn_def = self.function_registry.functions.get(fn_name) if self.function_registry else None
+
+        # Get postconditions and params from local definition or imported signature
+        postconditions: List[SExpr] = []
+        params: List[str] = []
+
+        if fn_def and fn_def.postconditions:
+            # Use local function definition
+            postconditions = fn_def.postconditions
+            params = fn_def.params
+        elif self.imported_defs:
+            # Fall back to imported function signature
+            imported_sig = self.imported_defs.functions.get(fn_name)
+            if imported_sig and imported_sig.postconditions:
+                postconditions = imported_sig.postconditions
+                params = imported_sig.params
+
+        if not postconditions:
             return
 
         # Get the actual arguments to the function call
         call_args = list(init_expr.items[1:])
 
         # Skip if argument count doesn't match parameter count
-        if len(call_args) != len(fn_def.params):
+        if len(call_args) != len(params):
             return
 
         # For each postcondition, substitute $result and parameters, then translate
-        for post in fn_def.postconditions:
-            subst_post = self._substitute_postcondition(post, var_name, fn_def.params, call_args)
+        for post in postconditions:
+            subst_post = self._substitute_postcondition(post, var_name, params, call_args)
+            z3_axiom = translator.translate_expr(subst_post)
+            if z3_axiom is not None:
+                axioms.append(z3_axiom)
+
+    def _process_set_binding(self, var_name: str, call_expr: SExpr, translator: Z3Translator, axioms: List):
+        """Process a set! statement, extracting postcondition axioms if it's a function call.
+
+        For (set! result (fn-call args...)), extracts the callee's postconditions
+        and adds them as axioms with substituted values.
+
+        Note: This is a simplified approach that works when the postcondition
+        relates $result to other parameters. For postconditions that relate
+        $result to the previous value of the variable (like iteration preservation),
+        both $result and the parameter referring to the old value get substituted
+        to the same variable name, which works because Z3 sees them as the same.
+        """
+        if not isinstance(call_expr, SList) or len(call_expr) < 1:
+            return
+
+        fn_head = call_expr[0]
+        if not isinstance(fn_head, Symbol):
+            return
+
+        fn_name = fn_head.name
+
+        # Check local functions first
+        fn_def = self.function_registry.functions.get(fn_name) if self.function_registry else None
+
+        # Get postconditions and params from local definition or imported signature
+        postconditions: List[SExpr] = []
+        params: List[str] = []
+
+        if fn_def and fn_def.postconditions:
+            postconditions = fn_def.postconditions
+            params = fn_def.params
+        elif self.imported_defs:
+            imported_sig = self.imported_defs.functions.get(fn_name)
+            if imported_sig and imported_sig.postconditions:
+                postconditions = imported_sig.postconditions
+                params = imported_sig.params
+
+        if not postconditions:
+            return
+
+        # Get the actual arguments to the function call
+        call_args = list(call_expr.items[1:])
+
+        # Skip if argument count doesn't match parameter count
+        if len(call_args) != len(params):
+            return
+
+        # For each postcondition, substitute $result and parameters, then translate
+        for post in postconditions:
+            subst_post = self._substitute_postcondition(post, var_name, params, call_args)
             z3_axiom = translator.translate_expr(subst_post)
             if z3_axiom is not None:
                 axioms.append(z3_axiom)
