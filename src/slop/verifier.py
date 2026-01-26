@@ -161,6 +161,7 @@ class FunctionDef:
     params: List[str]  # Parameter names in order
     body: Optional[SExpr]
     is_pure: bool = True
+    postconditions: List[SExpr] = field(default_factory=list)
 
 
 class FunctionRegistry:
@@ -207,32 +208,49 @@ class FunctionRegistry:
                 if param_name:
                     params.append(param_name)
 
-        # Extract body (skip annotations and :keywords)
+        # Extract body, postconditions (skip other annotations and :keywords)
         body = None
         is_pure = False
+        postconditions: List[SExpr] = []
         annotation_forms = {'@intent', '@spec', '@pre', '@post', '@assume', '@pure',
                            '@alloc', '@example', '@deprecated', '@property',
                            '@generation-mode', '@requires'}
 
+        skip_next_string = False
         for item in fn_form.items[3:]:
             if isinstance(item, Symbol):
                 if item.name.startswith(':'):
+                    skip_next_string = True  # Next String is property value
                     continue
                 # Simple expression as body
                 body = item
+                skip_next_string = False
             elif isinstance(item, String):
-                # Skip string values (typically property values after :keyword)
-                continue
+                # Skip string values after :keyword (property values)
+                # But allow standalone String as function body
+                if skip_next_string:
+                    skip_next_string = False
+                    continue
+                body = item
             elif is_form(item, '@pure'):
                 is_pure = True
+                skip_next_string = False
+                continue
+            elif is_form(item, '@post') and len(item) > 1:
+                # Extract postcondition
+                postconditions.append(item[1])
+                skip_next_string = False
                 continue
             elif isinstance(item, SList) and len(item) > 0:
                 head = item[0]
                 if isinstance(head, Symbol) and head.name in annotation_forms:
+                    skip_next_string = False
                     continue
                 body = item
+                skip_next_string = False
 
-        self.functions[name] = FunctionDef(name=name, params=params, body=body, is_pure=is_pure)
+        self.functions[name] = FunctionDef(name=name, params=params, body=body,
+                                           is_pure=is_pure, postconditions=postconditions)
 
     def is_simple_accessor(self, name: str) -> bool:
         """Check if function is a simple field accessor: (. param field)"""
@@ -250,6 +268,98 @@ class FunctionRegistry:
             if isinstance(obj, Symbol) and isinstance(field, Symbol):
                 return (obj.name, field.name)
         return None
+
+    def is_simple_inlinable(self, name: str) -> bool:
+        """Check if function is a simple expression that can be inlined.
+
+        Criteria:
+        1. Function is marked @pure
+        2. Body is a single expression (no control flow)
+        3. Not recursive
+
+        Examples of inlinable functions:
+        - (fn iri-eq ((a IRI) (b IRI)) (@pure) (string-eq (. a value) (. b value)))
+        - (fn blank-eq ((a BlankNode) (b BlankNode)) (@pure) (== (. a id) (. b id)))
+        - (fn num-eq ((a Int) (b Int)) (@pure) (== a b))
+        """
+        fn = self.functions.get(name)
+        if not fn or not fn.body or not fn.is_pure:
+            return False
+        return self._is_simple_expression(fn.body, name)
+
+    def inlines_to_native_equality(self, name: str) -> bool:
+        """Check if function inlines to native ==.
+
+        Used by union equality axioms to determine if a helper-eq function
+        should be treated as native Z3 equality rather than an uninterpreted function.
+
+        Returns True ONLY for functions that directly use == on parameters:
+        - (fn num-eq ((a Int) (b Int)) (@pure) (== a b))
+
+        Does NOT return True for string-eq since that's modeled as an
+        uninterpreted function in Z3, not native equality.
+        """
+        fn = self.functions.get(name)
+        if not fn or not fn.body or not fn.is_pure:
+            return False
+
+        if not self._is_simple_expression(fn.body, name):
+            return False
+
+        # Check if body is (== param1 param2) - ONLY native ==
+        body = fn.body
+        if not isinstance(body, SList) or len(body) < 3:
+            return False
+
+        head = body[0]
+        if not isinstance(head, Symbol):
+            return False
+
+        # Only native == counts, not string-eq or other comparison functions
+        if head.name != '==':
+            return False
+
+        # Check if arguments are direct parameter references
+        arg1, arg2 = body[1], body[2]
+        if isinstance(arg1, Symbol) and isinstance(arg2, Symbol):
+            if arg1.name in fn.params and arg2.name in fn.params:
+                return True
+
+        return False
+
+    def _is_simple_expression(self, expr: SExpr, fn_name: str) -> bool:
+        """Check if expression is a simple expression suitable for inlining.
+
+        Returns False for:
+        - Control flow: if, cond, match, when, unless
+        - Loops: for-each, while
+        - Bindings: let, do (multiple expressions)
+        - Mutation: set!
+        - Recursive calls to fn_name
+        """
+        if isinstance(expr, (Symbol, Number, String)):
+            # Simple values are always inlinable
+            return True
+
+        if isinstance(expr, SList) and len(expr) > 0:
+            head = expr[0]
+            if isinstance(head, Symbol):
+                head_name = head.name
+                # Reject control flow and complex constructs
+                if head_name in ('if', 'cond', 'match', 'when', 'unless',
+                                 'for-each', 'while',
+                                 'let', 'do', 'set!'):
+                    return False
+                # Reject recursive calls
+                if head_name == fn_name:
+                    return False
+                # For other function calls, check all arguments are simple
+                for arg in expr.items[1:]:
+                    if not self._is_simple_expression(arg, fn_name):
+                        return False
+                return True
+
+        return False
 
 
 # ============================================================================
@@ -1041,6 +1151,22 @@ class Z3Translator:
                 return z3.RealVal(expr.value)
             return z3.IntVal(int(expr.value))
 
+        if isinstance(expr, String):
+            # Model string as unique integer ID with known length
+            # Use a hash to create a unique identifier
+            str_id = hash(expr.value) % (2**31)
+            str_var = z3.IntVal(str_id)
+            # Track string length for this specific string value
+            func_name = "string_len"
+            if func_name not in self.variables:
+                func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
+                self.variables[func_name] = func
+            else:
+                func = self.variables[func_name]
+            # Add axiom: string_len(this_string_id) == actual_length
+            self.constraints.append(func(str_var) == z3.IntVal(len(expr.value)))
+            return str_var
+
         if isinstance(expr, Symbol):
             return self._translate_symbol(expr)
 
@@ -1093,7 +1219,12 @@ class Z3Translator:
                 # String length
                 if op == 'string-len':
                     if len(expr) >= 2:
-                        s = self.translate_expr(expr[1])
+                        arg = expr[1]
+                        # Handle string literals directly - return actual length
+                        if isinstance(arg, String):
+                            return z3.IntVal(len(arg.value))
+
+                        s = self.translate_expr(arg)
                         if s is None:
                             return None
                         func_name = "string_len"
@@ -1585,6 +1716,35 @@ class Z3Translator:
 
         return result
 
+    def _translate_with_substitution(self, expr: SExpr, param_map: Dict[str, 'z3.ExprRef']) -> Optional[z3.ExprRef]:
+        """Translate expression with parameter substitution for function inlining.
+
+        Args:
+            expr: The expression to translate (function body)
+            param_map: Map from parameter names to Z3 expressions
+
+        This temporarily binds parameters to their argument values, translates
+        the expression, then restores the original variable state.
+        """
+        # Save current variable bindings for parameters
+        saved_vars: Dict[str, Optional[z3.ExprRef]] = {}
+        for param, z3_val in param_map.items():
+            saved_vars[param] = self.variables.get(param)
+            self.variables[param] = z3_val
+
+        try:
+            # Translate the expression with substituted parameters
+            result = self.translate_expr(expr)
+            return result
+        finally:
+            # Restore original variable bindings
+            for param, saved_val in saved_vars.items():
+                if saved_val is None:
+                    if param in self.variables:
+                        del self.variables[param]
+                else:
+                    self.variables[param] = saved_val
+
     def _translate_function_call(self, expr: SList) -> Optional[z3.ExprRef]:
         """Translate user-defined function calls as uninterpreted functions.
 
@@ -1613,6 +1773,27 @@ class Z3Translator:
                 if arg is not None:
                     # Return field access on the argument
                     return self._translate_field_for_obj(arg, field_name)
+
+        # Try to inline simple pure functions (e.g., iri-eq, blank-eq)
+        if self.function_registry and self.function_registry.is_simple_inlinable(fn_name):
+            fn_def = self.function_registry.functions[fn_name]
+            if fn_def.body and len(fn_def.params) == len(expr.items) - 1:
+                # Build parameter -> argument mapping
+                param_map: Dict[str, z3.ExprRef] = {}
+                all_args_translated = True
+                for i, param in enumerate(fn_def.params):
+                    arg_z3 = self.translate_expr(expr[i + 1])
+                    if arg_z3 is None:
+                        all_args_translated = False
+                        break
+                    param_map[param] = arg_z3
+
+                if all_args_translated:
+                    # Inline the function body with substituted parameters
+                    result = self._translate_with_substitution(fn_def.body, param_map)
+                    if result is not None:
+                        return result
+                    # Fall through to uninterpreted function if inlining fails
 
         # Translate arguments
         args = []
@@ -1884,6 +2065,161 @@ class ContractVerifier:
                             result.append((param_name, subst_inv))
 
         return result
+
+    def _extract_call_postcondition_axioms(self, body: SExpr, translator: Z3Translator) -> List:
+        """Extract postcondition axioms from function calls bound in let expressions.
+
+        When we see:
+            (let ((result (make-delta arena next-iter))) ...)
+
+        And make-delta has:
+            (@post {(. $result iteration) == iteration})
+
+        We add the axiom:
+            (. result iteration) == next-iter
+
+        This propagates known postconditions from called functions to help verify
+        the caller's postconditions.
+        """
+        axioms = []
+        if not self.function_registry:
+            return axioms
+
+        # Recursively search for let bindings
+        self._collect_call_postconditions(body, translator, axioms)
+        return axioms
+
+    def _collect_call_postconditions(self, expr: SExpr, translator: Z3Translator, axioms: List):
+        """Recursively collect postcondition axioms from let-bound function calls."""
+        if not isinstance(expr, SList) or len(expr) < 1:
+            return
+
+        head = expr[0]
+        if not isinstance(head, Symbol):
+            return
+
+        # Handle let expressions
+        if head.name == 'let' and len(expr) >= 3:
+            bindings = expr[1]
+            if isinstance(bindings, SList):
+                for binding in bindings.items:
+                    self._process_let_binding(binding, translator, axioms)
+            # Recurse into body expressions
+            for body_expr in expr.items[2:]:
+                self._collect_call_postconditions(body_expr, translator, axioms)
+
+        # Handle do blocks
+        elif head.name == 'do':
+            for item in expr.items[1:]:
+                self._collect_call_postconditions(item, translator, axioms)
+
+        # Handle for-each loops
+        elif head.name == 'for-each' and len(expr) >= 3:
+            for item in expr.items[2:]:
+                self._collect_call_postconditions(item, translator, axioms)
+
+        # Handle if expressions
+        elif head.name == 'if':
+            for item in expr.items[2:]:
+                self._collect_call_postconditions(item, translator, axioms)
+
+    def _process_let_binding(self, binding: SExpr, translator: Z3Translator, axioms: List):
+        """Process a single let binding, extracting postcondition axioms if it's a function call."""
+        if not isinstance(binding, SList) or len(binding) < 2:
+            return
+
+        # Handle both (var value) and (mut var value) patterns
+        first = binding[0]
+        if isinstance(first, Symbol) and first.name == 'mut' and len(binding) >= 3:
+            # (mut var value)
+            var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+            init_expr = binding[2]
+        elif isinstance(first, Symbol):
+            # (var value)
+            var_name = first.name
+            init_expr = binding[1]
+        else:
+            return
+
+        if not var_name or not isinstance(init_expr, SList) or len(init_expr) < 1:
+            return
+
+        # Check if init_expr is a function call
+        fn_head = init_expr[0]
+        if not isinstance(fn_head, Symbol):
+            return
+
+        fn_name = fn_head.name
+        fn_def = self.function_registry.functions.get(fn_name)
+        if not fn_def or not fn_def.postconditions:
+            return
+
+        # Get the actual arguments to the function call
+        call_args = list(init_expr.items[1:])
+
+        # Skip if argument count doesn't match parameter count
+        if len(call_args) != len(fn_def.params):
+            return
+
+        # For each postcondition, substitute $result and parameters, then translate
+        for post in fn_def.postconditions:
+            subst_post = self._substitute_postcondition(post, var_name, fn_def.params, call_args)
+            z3_axiom = translator.translate_expr(subst_post)
+            if z3_axiom is not None:
+                axioms.append(z3_axiom)
+
+    def _substitute_postcondition(self, post: SExpr, result_var: str,
+                                  params: List[str], args: List[SExpr]) -> SExpr:
+        """Substitute $result and parameters in a postcondition.
+
+        Args:
+            post: The postcondition expression
+            result_var: The name to substitute for $result
+            params: Parameter names in the callee
+            args: Actual argument expressions from the call site
+
+        Returns:
+            The substituted postcondition expression
+        """
+        # Build substitution map
+        subst_map: Dict[str, SExpr] = {'$result': Symbol(result_var)}
+        for param, arg in zip(params, args):
+            subst_map[param] = arg
+
+        return self._substitute_expr(post, subst_map)
+
+    def _substitute_expr(self, expr: SExpr, subst_map: Dict[str, SExpr]) -> SExpr:
+        """Recursively substitute symbols in an expression.
+
+        Special case: In field access (. obj field), don't substitute the field name
+        since it's a literal identifier, not a variable reference.
+        """
+        if isinstance(expr, Symbol):
+            name = expr.name
+            if name in subst_map:
+                return subst_map[name]
+            return expr
+        elif isinstance(expr, SList):
+            # Special handling for field access: (. obj field)
+            # Don't substitute the field name (3rd element)
+            if len(expr) >= 3:
+                head = expr[0]
+                if isinstance(head, Symbol) and head.name == '.':
+                    # Keep operator, substitute object, preserve field name
+                    new_items = [
+                        expr[0],  # Keep '.'
+                        self._substitute_expr(expr[1], subst_map),  # Substitute object
+                        expr[2]  # Keep field name as-is (don't substitute)
+                    ]
+                    # Handle any additional items (shouldn't be any for '.')
+                    new_items.extend(expr.items[3:])
+                    return SList(new_items, expr.line, expr.col)
+
+            new_items = [self._substitute_expr(item, subst_map) for item in expr.items]
+            return SList(new_items, expr.line, expr.col)
+        else:
+            # Number, String - return unchanged
+            return expr
 
     def _get_return_expr(self, expr: SExpr) -> SExpr:
         """Get the effective return expression from a body.
@@ -3092,14 +3428,36 @@ class ContractVerifier:
 
         Returns:
         - Function name ending in -eq (e.g., 'iri-eq', 'string-eq')
-        - '==' if the expression uses native equality
+        - '==' if the expression uses native equality OR if a -eq function
+          would inline to native equality
         - None if no equality comparison found
+
+        Note: If a -eq function is simple inlinable, we return what it INLINES TO
+        rather than the function name itself. This ensures union equality axioms
+        match the actual Z3 expressions generated during body translation.
+
+        Examples:
+        - (num-eq a b) where num-eq body is (== a b) → returns '=='
+        - (str-eq a b) where str-eq body is (string-eq a b) → returns 'string-eq'
+        - (iri-eq a b) where iri-eq body is (string-eq (. a value) ...) → returns 'iri-eq'
+          (not inlined because body isn't simple param comparison)
         """
         if isinstance(expr, SList) and len(expr) >= 1:
             head = expr[0]
             if isinstance(head, Symbol):
                 # Check for -eq function call
                 if head.name.endswith('-eq'):
+                    # Check if this function inlines to native equality
+                    if (self.function_registry and
+                        self.function_registry.inlines_to_native_equality(head.name)):
+                        return '=='
+
+                    # Check if this function inlines to another -eq function
+                    if self.function_registry:
+                        inlined_eq = self._get_inlined_equality_func(head.name)
+                        if inlined_eq:
+                            return inlined_eq
+
                     return head.name
                 # Check for == operator (native equality)
                 if head.name == '==':
@@ -3109,6 +3467,40 @@ class ContractVerifier:
                 result = self._find_eq_call_in_expr(item)
                 if result:
                     return result
+        return None
+
+    def _get_inlined_equality_func(self, name: str) -> Optional[str]:
+        """If function inlines to a simple equality call, return that function name.
+
+        For example, if str-eq has body (string-eq a b), returns 'string-eq'.
+        Returns None if the function doesn't inline to a simple equality.
+        """
+        if not self.function_registry:
+            return None
+
+        fn = self.function_registry.functions.get(name)
+        if not fn or not fn.body or not fn.is_pure:
+            return None
+
+        if not self.function_registry.is_simple_inlinable(name):
+            return None
+
+        # Check if body is (some-eq-func param1 param2)
+        body = fn.body
+        if not isinstance(body, SList) or len(body) < 3:
+            return None
+
+        head = body[0]
+        if not isinstance(head, Symbol):
+            return None
+
+        # Check if it's an equality-like function call on parameters
+        if head.name == '==' or head.name.endswith('-eq'):
+            arg1, arg2 = body[1], body[2]
+            if isinstance(arg1, Symbol) and isinstance(arg2, Symbol):
+                if arg1.name in fn.params and arg2.name in fn.params:
+                    return head.name
+
         return None
 
     def _extract_union_equality_axioms(self, fn_form: SList, fn_body: SExpr,
@@ -3251,6 +3643,7 @@ class ContractVerifier:
         annotation_forms = {'@intent', '@spec', '@pre', '@post', '@assume', '@pure',
                            '@alloc', '@example', '@deprecated', '@property',
                            '@generation-mode', '@requires'}
+        skip_next_string = False  # Track if next String is a property value after :keyword
 
         for item in fn_form.items[3:]:
             if is_form(item, '@pre') and len(item) > 1:
@@ -3279,15 +3672,22 @@ class ContractVerifier:
             elif isinstance(item, Symbol):
                 # Skip keyword properties like :c-name
                 if item.name.startswith(':'):
+                    skip_next_string = True  # The next String is a property value
                     continue
                 # Simple expression as body (e.g., variable reference)
                 fn_body = item
+                skip_next_string = False
             elif isinstance(item, Number):
                 # Simple numeric expression as body
                 fn_body = item
+                skip_next_string = False
             elif isinstance(item, String):
-                # Skip string values (typically property values after :keyword)
-                continue
+                # Skip string values after :keyword (property values)
+                # But allow standalone String as function body
+                if skip_next_string:
+                    skip_next_string = False
+                    continue
+                fn_body = item
 
         # Extract loop invariants from function body and treat them as assumptions
         # @loop-invariant provides axioms that help verify loops
@@ -3586,6 +3986,15 @@ class ContractVerifier:
         if fn_body is not None:
             union_eq_axioms = self._extract_union_equality_axioms(fn_form, fn_body, translator)
             for axiom in union_eq_axioms:
+                solver.add(axiom)
+
+        # Phase 12: Postcondition propagation from called functions
+        # When a function is called and its result is bound to a variable,
+        # add the called function's postconditions as axioms with substituted values.
+        # This enables reasoning about properties of intermediate results.
+        if fn_body is not None:
+            call_postcond_axioms = self._extract_call_postcondition_axioms(fn_body, translator)
+            for axiom in call_postcond_axioms:
                 solver.add(axiom)
 
         # First try all postconditions together (fast path)
