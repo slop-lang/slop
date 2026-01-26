@@ -754,6 +754,14 @@ class Z3Translator:
 
     def translate_expr(self, expr: SExpr) -> Optional[z3.ExprRef]:
         """Translate SLOP expression to Z3 expression"""
+        # Normalize native parser infix-in-parens pattern: ((a) op (b)) -> (op (a) (b))
+        # Native parser can produce ((list-len ...) == 0) instead of (== (list-len ...) 0)
+        if isinstance(expr, SList) and len(expr) == 3:
+            mid = expr[1]
+            if isinstance(mid, Symbol) and mid.name in ('==', '!=', '>', '<', '>=', '<=', 'and', 'or'):
+                # Convert infix to prefix
+                expr = SList([mid, expr[0], expr[2]])
+
         if isinstance(expr, Number):
             if isinstance(expr.value, float):
                 return z3.RealVal(expr.value)
@@ -962,6 +970,24 @@ class Z3Translator:
         if left is None or right is None:
             return None
 
+        # For equality/inequality, handle sort mismatches gracefully
+        if op in ('==', '!='):
+            left_is_bool = z3.is_bool(left)
+            right_is_bool = z3.is_bool(right)
+
+            # If sorts match, direct comparison works
+            if left_is_bool == right_is_bool:
+                return left == right if op == '==' else left != right
+
+            # Sort mismatch: coerce Int to Bool (non-zero = true)
+            if left_is_bool and not right_is_bool:
+                right = right != 0
+            elif right_is_bool and not left_is_bool:
+                left = left != 0
+
+            return left == right if op == '==' else left != right
+
+        # Arithmetic comparisons require matching numeric sorts
         if op == '>':
             return left > right
         if op == '<':
@@ -970,10 +996,6 @@ class Z3Translator:
             return left >= right
         if op == '<=':
             return left <= right
-        if op == '==':
-            return left == right
-        if op == '!=':
-            return left != right
 
         return None
 
@@ -1558,6 +1580,11 @@ class ContractVerifier:
         return_expr = self._get_return_expr(expr)
         return is_form(return_expr, 'record-new')
 
+    def _is_list_new(self, expr: SExpr) -> bool:
+        """Check if expression is list-new"""
+        return_expr = self._get_return_expr(expr)
+        return is_form(return_expr, 'list-new')
+
     def _is_conditional_with_record_new(self, expr: SExpr) -> bool:
         """Check if expression is (if cond (record-new ...) else) or (if cond then (record-new ...))"""
         if is_form(expr, 'if') and len(expr) >= 4:
@@ -1804,7 +1831,11 @@ class ContractVerifier:
         return tag_func(result_var) == z3.IntVal(tag_idx)
 
     def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator) -> List:
-        """Extract axioms: field_X($result) == value for each field in record-new"""
+        """Extract axioms: field_X($result) == value for each field in record-new
+
+        Also handles list-new as field value: if field value is (list-new ...),
+        add axiom: field_len(field_accessor($result)) == 0
+        """
         axioms = []
         result_var = translator.variables.get('$result')
         if result_var is None:
@@ -1815,10 +1846,43 @@ class ContractVerifier:
             if isinstance(item, SList) and len(item) >= 2:
                 field_name = item[0].name if isinstance(item[0], Symbol) else None
                 if field_name:
+                    field_func = translator._translate_field_for_obj(result_var, field_name)
                     field_value = translator.translate_expr(item[1])
                     if field_value is not None:
-                        field_func = translator._translate_field_for_obj(result_var, field_name)
                         axioms.append(field_func == field_value)
+
+                    # If field value is list-new, add length=0 axiom for the field
+                    if is_form(item[1], 'list-new'):
+                        func_name = "field_len"
+                        if func_name not in translator.variables:
+                            len_func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
+                            translator.variables[func_name] = len_func
+                        else:
+                            len_func = translator.variables[func_name]
+                        axioms.append(len_func(field_func) == z3.IntVal(0))
+        return axioms
+
+    def _extract_list_new_axioms(self, list_new_expr: SList, translator: Z3Translator) -> List:
+        """Extract axiom: field_len($result) == 0 for list-new
+
+        When list-new is called, the resulting list has length 0.
+        This allows proving postconditions like {(list-len $result) == 0}.
+        """
+        axioms = []
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return axioms
+
+        # Get or create field_len function
+        func_name = "field_len"
+        if func_name not in translator.variables:
+            func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
+            translator.variables[func_name] = func
+        else:
+            func = translator.variables[func_name]
+
+        # list-new returns empty list: len == 0
+        axioms.append(func(result_var) == z3.IntVal(0))
         return axioms
 
     # ========================================================================
@@ -3127,6 +3191,14 @@ class ContractVerifier:
             return_expr = self._get_return_expr(fn_body)
             field_axioms = self._extract_record_field_axioms(return_expr, translator)
             for axiom in field_axioms:
+                solver.add(axiom)
+
+        # Phase 3.5: Add list-new axioms if body is list-new
+        # For (list-new arena Type), add: field_len($result) == 0
+        if fn_body is not None and self._is_list_new(fn_body):
+            return_expr = self._get_return_expr(fn_body)
+            list_axioms = self._extract_list_new_axioms(return_expr, translator)
+            for axiom in list_axioms:
                 solver.add(axiom)
 
         # Phase 4: Add union tag axiom if body is union-new

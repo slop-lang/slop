@@ -23,7 +23,7 @@
                   sexpr-list-len sexpr-list-get sexpr-get-symbol-name
                   sexpr-number-string sexpr-string-value pretty-print))
   (import extract (TestCase))
-  (import strlib (contains to-lower string-build))
+  (import strlib (contains to-lower string-build starts-with substring))
   (import type-extract (TypeRegistry TypeEntry TypeEntryKind FieldEntry VariantEntry ImportEntry
                         registry-lookup registry-lookup-variant registry-lookup-enum-value
                         registry-lookup-import
@@ -47,13 +47,13 @@
         ((some mod-name)
           ;; Imported from another module - use that module's prefix
           (string-concat arena (to-c-name arena mod-name)
-            (string-concat arena "_" (convert-symbol-to-c arena name))))
+            (string-concat arena "_" (to-c-name arena name))))
         ((none)
           ;; Not imported - use current module prefix (for local functions/constants)
           (if (> (cast Int (. prefix len)) 0)
             (string-concat arena prefix
-              (string-concat arena "_" (convert-symbol-to-c arena name)))
-            (convert-symbol-to-c arena name))))))
+              (string-concat arena "_" (to-c-name arena name)))
+            (to-c-name arena name))))))
 
   ;; ============================================================
   ;; Emit Context - holds output list for mutation
@@ -147,19 +147,19 @@
               ;; Emit typed Option none - default to string for now
               "(slop_option_string){.has_value = false}")
             ;; Quoted symbol starting with '
-            ((string-starts-with name "'")
+            ((starts-with name "'")
               ;; Handle enum variant: 'variant -> prefix_EnumType_variant
-              (let ((variant-name (emit-emit-string-slice arena name 1 (cast Int (. name len)))))
+              (let ((variant-name (substring arena name 1 (cast (Int 0 ..) (- (cast Int (. name len)) 1)))))
                 ;; Look up enum type
                 (match (registry-lookup-enum-value types variant-name)
                   ((some enum-entry)
                     ;; Found the enum - emit prefix_enumname
                     (string-concat arena (. (deref enum-entry) c-name)
                       (string-concat arena "_"
-                        (convert-symbol-to-c arena variant-name))))
+                        (to-c-name arena variant-name))))
                   ((none)
                     ;; Not found in registry - fall back to generic prefix
-                    (convert-symbol-to-c arena variant-name)))))
+                    (to-c-name arena variant-name)))))
             (else
               ;; Regular symbol - prefix with appropriate module
               (prefix-symbol arena name prefix types)))))
@@ -214,14 +214,14 @@
                                             (string-concat arena "(slop_list_"
                                               (string-concat arena (to-c-name arena mod-name)
                                                 (string-concat arena "_"
-                                                  (string-concat arena (convert-symbol-to-c arena type-name)
+                                                  (string-concat arena (to-c-name arena type-name)
                                                     "){.data = NULL, .len = 0, .cap = 0}")))))
                                           ((none)
                                             ;; Not in imports - use current module prefix
                                             (string-concat arena "(slop_list_"
                                               (string-concat arena prefix
                                                 (string-concat arena "_"
-                                                  (string-concat arena (convert-symbol-to-c arena type-name)
+                                                  (string-concat arena (to-c-name arena type-name)
                                                     "){.data = NULL, .len = 0, .cap = 0}"))))))))))
                                 "/* error: list literal first element must be type symbol */"))
                             ((none)
@@ -262,11 +262,11 @@
                                     ((some enum-entry)
                                       (string-concat arena (. (deref enum-entry) c-name)
                                         (string-concat arena "_"
-                                          (convert-symbol-to-c arena variant-name))))
+                                          (to-c-name arena variant-name))))
                                     ((none)
                                       (string-concat arena prefix
                                         (string-concat arena "_"
-                                          (convert-symbol-to-c arena variant-name))))))
+                                          (to-c-name arena variant-name))))))
                                 (sexpr-to-c-typed arena quoted prefix types)))
                             ((none) "0"))
                           "0"))
@@ -308,7 +308,7 @@
                                   (string-concat arena (sexpr-to-c-typed arena obj prefix types)
                                     (string-concat arena "."
                                       (if (sexpr-is-symbol field)
-                                        (convert-symbol-to-c arena (sexpr-get-symbol-name field))
+                                        (to-c-name arena (sexpr-get-symbol-name field))
                                         (sexpr-to-c-typed arena field prefix types)))))
                                 ((none) "0")))
                             ((none) "0"))
@@ -361,7 +361,7 @@
     (@alloc arena)
     ;; Output: (TypeName){.tag = TypeName_variant, .data.variant = inner}
     (let ((c-name (. (deref union-entry) c-name))
-          (c-variant (convert-symbol-to-c arena variant-name)))
+          (c-variant (to-c-name arena variant-name)))
       ;; Build tag constant: TypeName_variant (e.g., rdf_Term_iri)
       (let ((tag-value (string-concat arena c-name
                          (string-concat arena "_" c-variant))))
@@ -660,12 +660,12 @@
             ((string-eq name "nil") "NULL")
             ((string-eq name "none") "none")
             ;; Quoted symbol starting with '
-            ((string-starts-with name "'")
+            ((starts-with name "'")
               ;; Handle enum variant: 'variant -> prefix_EnumType_variant
               ;; For now, just strip the quote and convert dashes
-              (convert-symbol-to-c arena (emit-emit-string-slice arena name 1 (cast Int (. name len)))))
+              (to-c-name arena (substring arena name 1 (cast (Int 0 ..) (- (cast Int (. name len)) 1)))))
             (else
-              (convert-symbol-to-c arena name)))))
+              (to-c-name arena name)))))
 
       ;; List: could be function call, operator, or constructor
       ((lst lst)
@@ -722,7 +722,7 @@
                                 (let ((name (sexpr-get-symbol-name quoted)))
                                   (string-concat arena prefix
                                     (string-concat arena "_"
-                                      (convert-symbol-to-c arena name))))
+                                      (to-c-name arena name))))
                                 (sexpr-to-c arena quoted prefix)))
                             ((none) "0"))
                           "0"))
@@ -764,7 +764,7 @@
                                   (string-concat arena (sexpr-to-c arena obj prefix)
                                     (string-concat arena "."
                                       (if (sexpr-is-symbol field)
-                                        (convert-symbol-to-c arena (sexpr-get-symbol-name field))
+                                        (to-c-name arena (sexpr-get-symbol-name field))
                                         (sexpr-to-c arena field prefix)))))
                                 ((none) "0")))
                             ((none) "0"))
@@ -831,7 +831,7 @@
           ((none) "(void)0")
           ((some head)
             (let ((fn-name (if (sexpr-is-symbol head)
-                              (convert-symbol-to-c arena (sexpr-get-symbol-name head))
+                              (to-c-name arena (sexpr-get-symbol-name head))
                               "unknown")))
               ;; Build args
               (let ((args-str (emit-args arena items 1 prefix)))
@@ -873,21 +873,6 @@
   ;; String Utility Functions
   ;; ============================================================
 
-  (fn convert-symbol-to-c ((arena Arena) (name String))
-    (@intent "Convert SLOP symbol name to C identifier (replace - with _)")
-    (@spec ((Arena String) -> String))
-    (@alloc arena)
-    (let ((len (cast Int (. name len)))
-          (buf (cast (Ptr U8) (arena-alloc arena (+ len 1))))
-          (mut i 0))
-      (while (< i len)
-        (let ((c (@ (. name data) i)))
-          (if (== c 45)  ;; '-'
-            (set! (@ buf i) 95)  ;; '_'
-            (set! (@ buf i) c)))
-        (set! i (+ i 1)))
-      (set! (@ buf len) 0)
-      (String buf (. name len))))
 
   (fn escape-string ((arena Arena) (s String))
     (@intent "Escape string for C string literal")
@@ -934,39 +919,6 @@
       (set! (@ buf out) 0)
       (String buf (cast U64 out))))
 
-  (fn string-starts-with ((s String) (prefix String))
-    (@intent "Check if string starts with prefix")
-    (@spec ((String String) -> Bool))
-    (@pure)
-    (let ((s-len (cast Int (. s len)))
-          (p-len (cast Int (. prefix len))))
-      (if (< s-len p-len)
-        false
-        (let ((mut i 0)
-              (mut matches true))
-          (while (and (< i p-len) matches)
-            (when (!= (@ (. s data) i) (@ (. prefix data) i))
-              (set! matches false))
-            (set! i (+ i 1)))
-          matches))))
-
-  (fn emit-emit-string-slice ((arena Arena) (s String) (start Int) (end Int))
-    (@intent "Get substring from start to end (exclusive)")
-    (@spec ((Arena String Int Int) -> String))
-    (@alloc arena)
-    (let ((s-len (cast Int (. s len)))
-          (actual-start (if (< start 0) 0 start))
-          (actual-end (if (> end s-len) s-len end)))
-      (if (>= actual-start actual-end)
-        ""
-        (let ((new-len (- actual-end actual-start))
-              (buf (cast (Ptr U8) (arena-alloc arena (+ new-len 1))))
-              (mut i 0))
-          (while (< i new-len)
-            (set! (@ buf i) (@ (. s data) (+ actual-start i)))
-            (set! i (+ i 1)))
-          (set! (@ buf new-len) 0)
-          (String buf (cast U64 new-len))))))
 
   ;; ============================================================
   ;; Test Harness Generation (Type-Aware Version)
@@ -1378,10 +1330,10 @@
     (@intent "Build C function name with module prefix if needed")
     (@spec ((Arena String (Option String) String) -> String))
     (@alloc arena)
-    (let ((c-name (convert-symbol-to-c arena fn-name)))
+    (let ((c-name (to-c-name arena fn-name)))
       (match module-name
         ((some mod)
-          (string-concat arena (convert-symbol-to-c arena mod)
+          (string-concat arena (to-c-name arena mod)
             (string-concat arena "_" c-name)))
         ((none)
           ;; Still apply prefix if provided (for cases without module)
@@ -1544,7 +1496,7 @@
                   ;; Compare union tag and specific variant field (not memcmp to avoid padding issues)
                   (let ((expected-var "expected_ok")
                         (variant-name (get-union-variant-name inner-expr))
-                        (c-variant (convert-symbol-to-c arena variant-name))
+                        (c-variant (to-c-name arena variant-name))
                         (is-string-variant (contains (to-lower arena variant-name) "string")))
                     (CompareInfo
                       (let ((parts (list-new arena String)))
@@ -1594,7 +1546,7 @@
                     ;; Compare union tag and specific variant field (not memcmp to avoid padding issues)
                     (let ((expected-var "expected_err")
                           (variant-name (get-union-variant-name inner-expr))
-                          (c-variant (convert-symbol-to-c arena variant-name))
+                          (c-variant (to-c-name arena variant-name))
                           (is-string-variant (contains (to-lower arena variant-name) "string")))
                       (CompareInfo
                         (let ((parts (list-new arena String)))
@@ -2022,7 +1974,7 @@
       ((sym sym)
         (let ((name (. sym name)))
           ;; Check for quoted symbol
-          (if (string-starts-with name "'")
+          (if (starts-with name "'")
             (let ((variant-name (emit-string-slice name 1)))
               (match (registry-lookup-enum-value types variant-name)
                 ((some _) true)

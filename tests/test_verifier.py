@@ -517,6 +517,29 @@ class TestInfixContractVerification:
         # Should process without errors
         assert len(results) >= 1
 
+    def test_infix_nested_equality_normalization(self):
+        """Native parser infix-in-parens pattern is normalized correctly"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import SList, Symbol, Number
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Simulate native parser output: ((list-len x) == 0)
+        # which is an SList with 3 elements: (SList), Symbol(==), Number
+        translator.declare_variable('x', None)
+        inner_expr = SList([Symbol('list-len'), Symbol('x')])
+        # Create infix pattern: (inner_expr == 0)
+        infix_expr = SList([inner_expr, Symbol('=='), Number(0)])
+
+        # translate_expr should normalize this and translate correctly
+        result = translator.translate_expr(infix_expr)
+        assert result is not None
+        # Should produce a comparison (equality)
+        # The result should be a Z3 bool expression
+        import z3
+        assert result.sort() == z3.BoolSort()
+
 
 class TestNewConstructs:
     """Test new constructs: string-len, dot notation, match, function calls"""
@@ -1419,6 +1442,79 @@ class TestListAxioms:
         check_fn = [r for r in results if r.name == 'check-len']
         assert len(check_fn) == 1
         # Should verify since list-len is always >= 0
+        assert check_fn[0].status == 'verified'
+
+    def test_list_new_empty(self):
+        """Test that list-new produces length 0 axiom"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn make-empty-list ((arena Arena))
+            (@spec ((Arena) -> (List Int)))
+            (@post {(list-len $result) == 0})
+            (list-new arena Int)))
+        """
+        results = verify_source(source)
+        make_empty = [r for r in results if r.name == 'make-empty-list']
+        assert len(make_empty) == 1
+        # Should verify because list-new produces a list with length 0
+        assert make_empty[0].status == 'verified'
+
+    def test_list_new_in_record_field(self):
+        """list-new as record field value produces length=0 axiom"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Container (record (items (List Int))))
+          (fn make-container ((arena Arena))
+            (@spec ((Arena) -> Container))
+            (@post (== (list-len (. $result items)) 0))
+            (record-new Container (items (list-new arena Int)))))
+        """
+        results = verify_source(source)
+        make_container = [r for r in results if r.name == 'make-container']
+        assert len(make_container) == 1
+        # Should verify because list-new in field produces length=0 axiom
+        assert make_container[0].status == 'verified'
+
+
+class TestBoolEquality:
+    """Test Bool == Bool comparison in postconditions"""
+
+    def test_bool_equality(self):
+        """Test Bool == Bool comparison in postconditions"""
+        from slop.verifier import verify_source
+
+        # Use prefix syntax to avoid native parser infix handling differences
+        source = """
+        (module test
+          (fn is-empty ((lst (List Int)))
+            (@spec (((List Int)) -> Bool))
+            (@post (== $result (== (list-len lst) 0)))
+            (== (list-len lst) 0)))
+        """
+        results = verify_source(source)
+        is_empty = [r for r in results if r.name == 'is-empty']
+        assert len(is_empty) == 1
+        # Should verify because the body computes exactly what the postcondition says
+        assert is_empty[0].status == 'verified'
+
+    def test_bool_to_int_coercion(self):
+        """Test that Int is coerced to Bool for comparisons"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn check-positive ((x Int))
+            (@spec ((Int) -> Bool))
+            (@post (or (== $result true) (== $result false)))
+            (> x 0)))
+        """
+        results = verify_source(source)
+        check_fn = [r for r in results if r.name == 'check-positive']
+        assert len(check_fn) == 1
         assert check_fn[0].status == 'verified'
 
 
