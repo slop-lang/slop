@@ -81,7 +81,8 @@
                   (do
                     (print "Unknown format: ")
                     (println fmt-arg)
-                    (return 1)))))
+                    (return 1)
+                    (do)))))
             (set! file-idx 3))
 
           ;; Get file path

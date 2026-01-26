@@ -42,8 +42,10 @@ slop_string expr_transpile_enum_variant(context_TranspileContext* ctx, slop_stri
 slop_string expr_transpile_ok(context_TranspileContext* ctx, slop_string value_c);
 slop_string expr_transpile_error(context_TranspileContext* ctx, slop_string value_c);
 slop_string expr_infer_option_type(context_TranspileContext* ctx, types_SExpr* val_expr);
+slop_string expr_c_type_to_option_type_name(context_TranspileContext* ctx, slop_string c_type);
 slop_string expr_infer_list_expr_option_type(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_strip_pointer_suffix(slop_arena* arena, slop_string s);
+slop_string expr_extract_chan_elem_type(context_TranspileContext* ctx, slop_string chan_type);
 slop_string expr_infer_list_element_option_type(context_TranspileContext* ctx, types_SExpr* list_expr);
 slop_string expr_infer_field_access_list_type(context_TranspileContext* ctx, types_SExpr* field_expr);
 slop_string expr_list_type_to_option_type(context_TranspileContext* ctx, slop_string c_type);

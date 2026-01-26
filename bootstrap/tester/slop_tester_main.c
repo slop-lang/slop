@@ -160,7 +160,13 @@ int main(int64_t argc, uint8_t** argv) {
         return 1;
     } else {
         {
+            #ifdef SLOP_DEBUG
+            SLOP_PRE((16777216) > 0, "with-arena size must be positive");
+            #endif
             slop_arena _arena = slop_arena_new(16777216);
+            #ifdef SLOP_DEBUG
+            SLOP_PRE(_arena.base != NULL, "arena allocation failed");
+            #endif
             slop_arena* arena = &_arena;
             __auto_type _mv_206 = tester_main_read_file(arena, ((char*)(argv[1])));
             if (_mv_206.has_value) {

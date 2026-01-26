@@ -62,6 +62,8 @@ types_ResolvedType* collect_get_const_type(env_TypeEnv* env, slop_arena* arena, 
 void collect_collect_functions(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 void collect_collect_module_functions(env_TypeEnv* env, types_SExpr* module_form);
 void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_SExpr* fn_form);
+uint8_t collect_is_integer_type_name(slop_string name);
+void collect_validate_main_params(env_TypeEnv* env, types_SExpr* fn_form, slop_list_types_ParamInfo params);
 slop_list_types_ParamInfo collect_collect_fn_params(env_TypeEnv* env, slop_arena* arena, types_SExpr* fn_form);
 types_ResolvedType* collect_find_fn_return_type(env_TypeEnv* env, types_SExpr* fn_form);
 types_ResolvedType* collect_extract_spec_return_type(env_TypeEnv* env, types_SExpr* spec_form);

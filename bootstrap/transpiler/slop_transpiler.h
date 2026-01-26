@@ -37,6 +37,36 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 SLOP_OPTION_DEFINE(context_FuncParamType*, slop_option_context_FuncParamType_ptr)
 #endif
 
+#ifndef SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
+SLOP_LIST_DEFINE(context_UnionVariantEntry, slop_list_context_UnionVariantEntry)
+#endif
+
+#ifndef SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
+SLOP_LIST_DEFINE(context_FieldEntry, slop_list_context_FieldEntry)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_UNIONVARIANTENTRY_DEFINED
+#define SLOP_OPTION_CONTEXT_UNIONVARIANTENTRY_DEFINED
+SLOP_OPTION_DEFINE(context_UnionVariantEntry, slop_option_context_UnionVariantEntry)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_FIELDENTRY_DEFINED
+#define SLOP_OPTION_CONTEXT_FIELDENTRY_DEFINED
+SLOP_OPTION_DEFINE(context_FieldEntry, slop_option_context_FieldEntry)
+#endif
+
+#ifndef SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
+SLOP_LIST_DEFINE(context_UnionVariantEntry, slop_list_context_UnionVariantEntry)
+#endif
+
+#ifndef SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
+SLOP_LIST_DEFINE(context_FieldEntry, slop_list_context_FieldEntry)
+#endif
+
 struct transpiler_RangeBoundsHeader {
     int64_t min;
     int64_t max;
@@ -152,14 +182,29 @@ void transpiler_emit_imported_option_types_header(context_TranspileContext* ctx)
 void transpiler_emit_late_registered_option_types_header(context_TranspileContext* ctx);
 void transpiler_emit_value_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_complex_value_list_types_header(context_TranspileContext* ctx);
+void transpiler_emit_struct_hash_eq(context_TranspileContext* ctx, slop_string c_type);
+void transpiler_emit_union_payload_hash_eq(context_TranspileContext* ctx, slop_list_context_UnionVariantEntry variants);
+uint8_t transpiler_is_primitive_slop_type(slop_string slop_type);
+uint8_t transpiler_is_range_type_alias(context_TranspileContext* ctx, slop_string slop_type);
+void transpiler_emit_union_hash_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_UnionVariantEntry variants);
+void transpiler_emit_union_variant_hash(context_TranspileContext* ctx, slop_string union_name, context_UnionVariantEntry variant);
+void transpiler_emit_union_eq_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_UnionVariantEntry variants);
+void transpiler_emit_union_variant_eq(context_TranspileContext* ctx, slop_string union_name, context_UnionVariantEntry variant);
+void transpiler_emit_struct_hash_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_FieldEntry fields);
+void transpiler_emit_field_hash(context_TranspileContext* ctx, context_FieldEntry field);
+void transpiler_emit_struct_eq_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_FieldEntry fields);
+void transpiler_emit_field_eq(context_TranspileContext* ctx, context_FieldEntry field);
 void transpiler_emit_struct_key_types_header(context_TranspileContext* ctx);
 uint8_t transpiler_is_pointer_elem_type(slop_string elem_type);
 void transpiler_emit_single_list_type_header(context_TranspileContext* ctx, context_ListType lt);
 uint8_t transpiler_is_runtime_option_type(slop_string name);
 uint8_t transpiler_is_runtime_list_type(slop_string name);
 void transpiler_emit_chan_types_header(context_TranspileContext* ctx);
+void transpiler_emit_chan_funcs_header(context_TranspileContext* ctx);
+void transpiler_emit_chan_send_recv_funcs(context_TranspileContext* ctx, slop_string c_name, slop_string elem_type);
 void transpiler_emit_thread_types_header(context_TranspileContext* ctx);
 uint8_t transpiler_is_runtime_chan_type(slop_string name);
+uint8_t transpiler_is_default_chan_type(slop_string name);
 uint8_t transpiler_is_runtime_thread_type(slop_string name);
 slop_string transpiler_uppercase_name(context_TranspileContext* ctx, slop_string name);
 uint8_t transpiler_is_simple_enum_def(types_SExpr* item);
@@ -230,6 +275,16 @@ SLOP_OPTION_DEFINE(context_FuncParamType*, slop_option_context_FuncParamType_ptr
 #ifndef SLOP_OPTION_TRANSPILER_RANGEBOUNDSHEADER_DEFINED
 #define SLOP_OPTION_TRANSPILER_RANGEBOUNDSHEADER_DEFINED
 SLOP_OPTION_DEFINE(transpiler_RangeBoundsHeader, slop_option_transpiler_RangeBoundsHeader)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_UNIONVARIANTENTRY_DEFINED
+#define SLOP_OPTION_CONTEXT_UNIONVARIANTENTRY_DEFINED
+SLOP_OPTION_DEFINE(context_UnionVariantEntry, slop_option_context_UnionVariantEntry)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_FIELDENTRY_DEFINED
+#define SLOP_OPTION_CONTEXT_FIELDENTRY_DEFINED
+SLOP_OPTION_DEFINE(context_FieldEntry, slop_option_context_FieldEntry)
 #endif
 
 

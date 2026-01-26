@@ -520,19 +520,20 @@
       (while (< i count)
         (match (list-get errors i)
           ((some err)
-            (let ((line (. err line))
-                  (col (. err col)))
-              ;; Print file:line:col: error: message format to stderr
-              (if (> (string-len current-file) 0)
-                (print-string-stderr current-file)
-                (slop-eprint (cast (Ptr Char) "<unknown>")))
-              (slop-eputc 58)  ;; :
-              (print-string-stderr (int-to-string arena line))
-              (slop-eputc 58)  ;; :
-              (print-string-stderr (int-to-string arena col))
-              (slop-eprint (cast (Ptr Char) ": error: "))
-              (print-string-stderr (. err message))
-              (slop-eputc 10)))
+            (cast Unit (let ((line (. err line))
+                             (col (. err col)))
+                         ;; Print file:line:col: error: message format to stderr
+                         (do
+                           (if (> (string-len current-file) 0)
+                             (do (print-string-stderr current-file))
+                             (do (slop-eprint (cast (Ptr Char) "<unknown>"))))
+                           (slop-eputc 58)  ;; :
+                           (print-string-stderr (int-to-string arena line))
+                           (slop-eputc 58)  ;; :
+                           (print-string-stderr (int-to-string arena col))
+                           (slop-eprint (cast (Ptr Char) ": error: "))
+                           (print-string-stderr (. err message))
+                           (slop-eputc 10)))))
           ((none) (do)))
         (set! i (+ i 1)))
       (cast Int count)))

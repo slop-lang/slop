@@ -92,26 +92,35 @@ static inline slop_arena slop_arena_new(size_t capacity) {
     slop_arena arena;
     arena.base = (uint8_t*)malloc(capacity);
     arena.offset = 0;
-    arena.capacity = capacity;
+    arena.capacity = (arena.base != NULL) ? capacity : 0;
     arena.next = NULL;
     return arena;
 }
 
 static inline void* slop_arena_alloc(slop_arena* arena, size_t size) {
+    /* Handle failed arena */
+    if (arena->base == NULL) return NULL;
+
     /* Align to 8 bytes */
     size = (size + 7) & ~7;
-    
+
     /* Check if we need overflow arena */
     if (arena->offset + size > arena->capacity) {
         if (arena->next == NULL) {
             size_t new_cap = arena->capacity * 2;
             if (new_cap < size) new_cap = size * 2;
             arena->next = (slop_arena*)malloc(sizeof(slop_arena));
+            if (arena->next == NULL) return NULL;  /* malloc failed */
             *arena->next = slop_arena_new(new_cap);
+            if (arena->next->base == NULL) {       /* inner malloc failed */
+                free(arena->next);
+                arena->next = NULL;
+                return NULL;
+            }
         }
         return slop_arena_alloc(arena->next, size);
     }
-    
+
     void* ptr = arena->base + arena->offset;
     arena->offset += size;
     return ptr;
