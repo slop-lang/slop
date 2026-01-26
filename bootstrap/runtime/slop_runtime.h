@@ -92,26 +92,35 @@ static inline slop_arena slop_arena_new(size_t capacity) {
     slop_arena arena;
     arena.base = (uint8_t*)malloc(capacity);
     arena.offset = 0;
-    arena.capacity = capacity;
+    arena.capacity = (arena.base != NULL) ? capacity : 0;
     arena.next = NULL;
     return arena;
 }
 
 static inline void* slop_arena_alloc(slop_arena* arena, size_t size) {
+    /* Handle failed arena */
+    if (arena->base == NULL) return NULL;
+
     /* Align to 8 bytes */
     size = (size + 7) & ~7;
-    
+
     /* Check if we need overflow arena */
     if (arena->offset + size > arena->capacity) {
         if (arena->next == NULL) {
             size_t new_cap = arena->capacity * 2;
             if (new_cap < size) new_cap = size * 2;
             arena->next = (slop_arena*)malloc(sizeof(slop_arena));
+            if (arena->next == NULL) return NULL;  /* malloc failed */
             *arena->next = slop_arena_new(new_cap);
+            if (arena->next->base == NULL) {       /* inner malloc failed */
+                free(arena->next);
+                arena->next = NULL;
+                return NULL;
+            }
         }
         return slop_arena_alloc(arena->next, size);
     }
-    
+
     void* ptr = arena->base + arena->offset;
     arena->offset += size;
     return ptr;
@@ -164,6 +173,9 @@ typedef struct { bool has_value; int64_t value; } _slop_option_generic;
 typedef struct { bool is_ok; union { int64_t ok; int64_t err; } data; } _slop_result_generic;
 #define ok(v) ((_slop_result_generic){true, {.ok = (int64_t)(v)}})
 #define error(e) ((_slop_result_generic){false, {.err = (int64_t)(e)}})
+
+/* Closure type for lambda expressions with captured variables */
+typedef struct { void* fn; void* env; } slop_closure_t;
 
 static inline slop_string slop_string_new(slop_arena* arena, const char* cstr) {
     size_t len = strlen(cstr);

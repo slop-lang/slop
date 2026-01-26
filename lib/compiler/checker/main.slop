@@ -15,14 +15,15 @@
     type-check type-check-with-env TypeCheckResult (main 2))
 
   (import parser (SExpr parse is-form
-                  sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name))
+                  sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name
+                  sexpr-line sexpr-col))
   (import types (TypeError TypeErrorKind type-error-new
                  Diagnostic DiagnosticLevel ResolvedType))
   (import env (TypeEnv env-new env-get-diagnostics env-clear-diagnostics
                env-arena env-push-scope env-pop-scope env-bind-var
                env-lookup-type env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
-               env-set-module))
+               env-set-module env-add-error))
   (import collect (collect-module))
   (import resolve (resolve-imports))
   (import infer (infer-fn-body infer-expr))
@@ -101,6 +102,42 @@
               (else (do))))
           ((none) (do))))))
 
+  (fn is-annotation-form ((item (Ptr SExpr)))
+    (@intent "Check if item starts with @ symbol")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (if (sexpr-is-list item)
+      (match (sexpr-list-get item 0)
+        ((some head)
+          (cast Bool (let ((name (sexpr-get-symbol-name head)))
+                       (if (> (. name len) 0)
+                         (= (@ (. name data) 0) 64)
+                         false))))
+        ((none) false))
+      false))
+
+  (fn is-valid-toplevel-form ((item (Ptr SExpr)))
+    (@intent "Check if item is a valid top-level form")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (cond
+      ((is-form item "fn") true)
+      ((is-form item "type") true)
+      ((is-form item "const") true)
+      ((is-form item "ffi") true)
+      ((is-form item "ffi-struct") true)
+      ((is-form item "import") true)
+      ((is-form item "export") true)
+      ((is-annotation-form item) true)
+      (else false)))
+
+  (fn get-form-name ((item (Ptr SExpr)))
+    (@intent "Get the head symbol name of a form, or <unknown>")
+    (@spec (((Ptr SExpr)) -> String))
+    (if (sexpr-is-list item)
+      (match (sexpr-list-get item 0)
+        ((some head) (sexpr-get-symbol-name head))
+        ((none) "<empty>"))
+      "<non-list>"))
+
   (fn check-module-functions ((env (Ptr TypeEnv)) (module-form (Ptr SExpr)))
     (@intent "Type check all function bodies inside a module")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
@@ -119,9 +156,15 @@
         (for (i 2 len)
           (match (sexpr-list-get module-form i)
             ((some item)
-              (when (is-form item "fn")
-                (let ((_ (infer-fn-body env item)))
-                  (do))))
+              (cond
+                ((is-form item "fn")
+                  (let ((_ (infer-fn-body env item)))
+                    (do)))
+                ((is-valid-toplevel-form item) (do))
+                (else
+                  (let ((arena (env-arena env))
+                        (msg (string-concat arena "Unknown top-level form: " (get-form-name item))))
+                    (env-add-error env msg (sexpr-line item) (sexpr-col item))))))
             ((none) (do)))))))
 
   ;; ============================================================

@@ -506,7 +506,13 @@ slop_result_int_strlib_ParseError strlib_parse_int(slop_string s) {
         return ((slop_result_int_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_empty_string });
     } else {
         {
+            #ifdef SLOP_DEBUG
+            SLOP_PRE((16) > 0, "with-arena size must be positive");
+            #endif
             slop_arena _arena = slop_arena_new(16);
+            #ifdef SLOP_DEBUG
+            SLOP_PRE(_arena.base != NULL, "arena allocation failed");
+            #endif
             slop_arena* arena = &_arena;
             {
                 __auto_type endptr = (uint8_t*)slop_arena_alloc(arena, 8);
@@ -530,7 +536,13 @@ slop_result_double_strlib_ParseError strlib_parse_float(slop_string s) {
         return ((slop_result_double_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_empty_string });
     } else {
         {
+            #ifdef SLOP_DEBUG
+            SLOP_PRE((16) > 0, "with-arena size must be positive");
+            #endif
             slop_arena _arena = slop_arena_new(16);
+            #ifdef SLOP_DEBUG
+            SLOP_PRE(_arena.base != NULL, "arena allocation failed");
+            #endif
             slop_arena* arena = &_arena;
             {
                 __auto_type endptr = (uint8_t*)slop_arena_alloc(arena, 8);

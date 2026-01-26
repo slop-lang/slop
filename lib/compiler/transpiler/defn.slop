@@ -16,7 +16,7 @@
     ;; FFI definitions
     transpile-ffi transpile-ffi-struct is-ffi-form is-ffi-struct-form
     ;; Helpers
-    is-type-form is-function-form get-return-type get-result-type-name build-param-str get-type-name-str)
+    is-type-form is-function-form get-return-type get-slop-return-type get-result-type-name build-param-str get-type-name-str)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds))
   (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
@@ -176,16 +176,17 @@
                       (let ((raw-name (. name-sym name))
                             (base-name (to-c-name arena raw-name))
                             (c-name (ctx-prefix-type ctx base-name)))
-                        (do
-                          ;; Register constant as variable for local lookup
-                          (ctx-bind-var ctx (VarEntry raw-name c-name "auto" "" false false))
-                          (match (list-get items 2)
-                            ((some type-expr)
-                              (match (list-get items 3)
-                                ((some value-expr)
-                                  (emit-const-def ctx c-name type-expr value-expr is-exported))
-                                ((none) (ctx-fail ctx "missing const value"))))
-                            ((none) (ctx-fail ctx "missing const type"))))))
+                        (match (list-get items 2)
+                          ((some type-expr)
+                            (let ((slop-type-str (pretty-print arena type-expr)))
+                              (do
+                                ;; Register constant as variable for local lookup
+                                (ctx-bind-var ctx (VarEntry raw-name c-name "auto" slop-type-str false false false "" ""))
+                                (match (list-get items 3)
+                                  ((some value-expr)
+                                    (emit-const-def ctx c-name type-expr value-expr is-exported))
+                                  ((none) (ctx-fail ctx "missing const value"))))))
+                          ((none) (ctx-fail ctx "missing const type")))))
                     (else (ctx-fail ctx "const name must be symbol"))))
                 ((none) (ctx-fail ctx "missing const name"))))))
         (else (ctx-fail ctx "invalid const form")))))
@@ -583,7 +584,9 @@
                                 (match (list-get var-items 1)
                                   ((some type-expr)
                                     (let ((c-type (to-c-type-prefixed ctx type-expr)))
-                                      (ctx-emit ctx (ctx-str5 ctx "        " c-type " " tag-name ";"))))
+                                      ;; Use int for void (Unit) type since void can't be a struct field
+                                      (let ((actual-type (if (string-eq c-type "void") "int" c-type)))
+                                        (ctx-emit ctx (ctx-str5 ctx "        " actual-type " " tag-name ";")))))
                                   ((none) (do))))))
                           (else (do))))
                       ((none) (do))))))
@@ -859,7 +862,9 @@
       (ctx-emit ctx "}")
       (ctx-emit ctx "")
       ;; Register type
-      (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))))
+      (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))
+      ;; Register as type alias so hash/eq generation can detect range types
+      (ctx-register-type-alias ctx raw-name (pretty-print arena type-expr))))
 
   ;; ============================================================
   ;; Function Definition
@@ -915,7 +920,9 @@
           ;; Collect contract annotations
           (preconditions (collect-preconditions arena items))
           (postconditions (collect-postconditions arena items))
-          (assumptions (collect-assumptions arena items)))
+          (assumptions (collect-assumptions arena items))
+          ;; Collect @doc string if present
+          (doc-string (collect-doc-string arena items)))
       ;; Determine actual return type, preferring Result type name if available
       (let ((return-type String (match result-type-opt
                                   ((some result-name) result-name)
@@ -935,6 +942,11 @@
             (ctx-set-current-result-type ctx result-name))
           ((none)
             (ctx-clear-current-result-type ctx)))
+        ;; Emit @doc as C comment if present
+        (match doc-string
+          ((some doc)
+            (ctx-emit ctx (ctx-str3 ctx "/* " doc " */")))
+          ((none) (do)))
         ;; Emit function signature
         (ctx-emit ctx (ctx-str5 ctx actual-return " " fn-name "(" (ctx-str ctx (if (string-eq param-str "") "void" param-str) ") {")))
         (ctx-indent ctx)
@@ -966,8 +978,9 @@
         (ctx-emit ctx "}")
         (ctx-emit ctx "")
         ;; Register function with parameter types for typed none handling
-        (let ((param-types (collect-param-types ctx params-expr)))
-          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return false (string-eq actual-return "slop_string") param-types)))
+        (let ((param-types (collect-param-types ctx params-expr))
+              (slop-ret-type (get-slop-return-type ctx items)))
+          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return slop-ret-type false (string-eq actual-return "slop_string") param-types)))
         ;; Clear current result type and return type
         (ctx-clear-current-result-type ctx)
         (ctx-clear-current-return-type ctx))))
@@ -1021,7 +1034,7 @@
                                   (c-type (to-c-type-prefixed ctx type-expr))
                                   (slop-type-str (pretty-print arena type-expr))
                                   (is-ptr (is-pointer-type type-expr)))
-                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false))))
+                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false false "" ""))))
                           ((none) (do))))
                       (else (do))))
                   ((none) (do)))))))
@@ -1197,6 +1210,51 @@
                     (else "void")))
                 ((none) "void")))))
         (else "void"))))
+
+  (fn extract-spec-slop-return-type ((ctx (Ptr TranspileContext)) (spec-expr (Ptr SExpr)))
+    (@intent "Extract SLOP return type string from @spec for type inference")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {spec-expr != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref spec-expr)
+        ((lst lst)
+          (let ((items (. lst items)))
+            ;; @spec has form (@spec ((ParamTypes) -> ReturnType))
+            (if (< (list-len items) 2)
+              ""
+              (match (list-get items 1)
+                ((some spec-body)
+                  (match (deref spec-body)
+                    ((lst body-lst)
+                      (let ((body-items (. body-lst items))
+                            (body-len (list-len body-items)))
+                        ;; Return type is the last element
+                        (if (< body-len 1)
+                          ""
+                          (match (list-get body-items (- body-len 1))
+                            ((some ret-type)
+                              (pretty-print arena ret-type))
+                            ((none) "")))))
+                    (else "")))
+                ((none) "")))))
+        (else ""))))
+
+  (fn get-slop-return-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Extract SLOP return type from @spec annotation")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items))
+          (mut i 3)  ;; Start after name and params
+          (mut result ""))
+      (while (< i len)
+        (match (list-get items i)
+          ((some item)
+            (when (is-spec-form item)
+              (set! result (extract-spec-slop-return-type ctx item))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
 
   (fn get-result-type-name ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Extract Result type name from @spec if return type is a Result")
@@ -1547,7 +1605,8 @@
                           (string-eq name "@assume")
                           (string-eq name "@alloc")
                           (string-eq name "@example")
-                          (string-eq name "@pure"))))
+                          (string-eq name "@pure")
+                          (string-eq name "@doc"))))
                   (else false)))
               ((none) false)))))
       (else false)))
@@ -1606,6 +1665,57 @@
                   (else false)))
               ((none) false)))))
       (else false)))
+
+  (fn is-doc-form ((expr (Ptr SExpr)))
+    (@intent "Check if expression is a @doc annotation")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 1)
+            false
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((sym sym) (string-eq (. sym name) "@doc"))
+                  (else false)))
+              ((none) false)))))
+      (else false)))
+
+  (fn get-doc-string ((expr (Ptr SExpr)))
+    (@intent "Extract string value from @doc annotation")
+    (@spec (((Ptr SExpr)) -> (Option String)))
+    (@pre {expr != nil})
+    ;; Annotation has form (@doc "documentation string")
+    (let ((mut result (Option String) none))
+      (match (deref expr)
+        ((lst lst)
+          (let ((items (. lst items)))
+            (when (>= (list-len items) 2)
+              (match (list-get items 1)
+                ((some val)
+                  (match (deref val)
+                    ((str str) (set! result (some (. str value))))
+                    (else (do))))
+                ((none) (do))))))
+        (else (do)))
+      result))
+
+  (fn collect-doc-string ((arena Arena) (items (List (Ptr SExpr))))
+    (@intent "Collect the first @doc string from function items")
+    (@spec ((Arena (List (Ptr SExpr))) -> (Option String)))
+    (let ((len (list-len items))
+          (mut i 3)  ;; Start after name and params
+          (mut result (Option String) none))
+      (while (and (< i len) (match result ((none) true) (else false)))
+        (match (list-get items i)
+          ((some item)
+            (when (is-doc-form item)
+              (set! result (get-doc-string item))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
 
   (fn get-annotation-condition ((expr (Ptr SExpr)))
     (@intent "Extract condition expression from @pre/@post/@assume annotation")

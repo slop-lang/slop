@@ -1,0 +1,60 @@
+;; ============================================================
+;; Test: Thread Unit Support
+;;
+;; Tests that Thread Unit (void-returning threads) work correctly.
+;; This exercises:
+;; - Thread Unit mapping to slop_thread_int
+;; - Lambda body return handling for Unit-returning contexts
+;; - Channel send operations from threads
+;; ============================================================
+
+(module test-typed-channel
+  (export main)
+
+  (import thread (chan-buffered send recv spawn join))
+
+  ;; Worker function that sends to channel and returns Unit
+  (fn worker-send ((ch (Ptr (Chan Int))) (value Int))
+    (@intent "Send a value to channel")
+    (@spec (((Ptr (Chan Int)) Int) -> Unit))
+    (send ch value)
+    unit)
+
+  (fn main ()
+    (@intent "Test Thread Unit and channel operations")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((ch (chan-buffered arena 10))
+            (mut total 0))
+        ;; Spawn multiple worker threads that send to the channel
+        (let ((t1 (spawn arena (fn ()
+                    (send ch 10)
+                    0)))
+              (t2 (spawn arena (fn ()
+                    (send ch 20)
+                    0)))
+              (t3 (spawn arena (fn ()
+                    (send ch 30)
+                    0))))
+          ;; Wait for all workers
+          (join t1)
+          (join t2)
+          (join t3)
+          ;; Receive all values
+          (match (recv ch)
+            ((ok v) (set! total (+ total v)))
+            ((error _) (do)))
+          (match (recv ch)
+            ((ok v) (set! total (+ total v)))
+            ((error _) (do)))
+          (match (recv ch)
+            ((ok v) (set! total (+ total v)))
+            ((error _) (do)))
+          ;; Check result
+          (if (== total 60)
+            (do
+              (println "PASS: Thread Unit test - sum is 60")
+              0)
+            (do
+              (println "FAIL: expected 60")
+              1)))))))

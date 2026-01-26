@@ -21,7 +21,8 @@
                    ctx-bind-var ctx-lookup-var ctx-lookup-type
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
                    ctx-get-current-return-type ctx-is-capture-retval
-                   to-c-type-prefixed ctx-add-error ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col))
+                   to-c-type-prefixed ctx-add-error ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col
+                   LastLambdaInfo ctx-get-last-lambda-info ctx-clear-last-lambda-info))
   (import ctype (to-c-type to-c-name))
   (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-collection-element-slop-type))
   (import strlib (starts-with ends-with))
@@ -266,7 +267,7 @@
                                         (ctx-emit ctx (ctx-str5 ctx c-type " " var-name " = " (ctx-str ctx final-init ";")))
                                         ;; Bind variable in scope with SLOP type for map-get inference
                                         (let ((slop-type-str (sexpr-to-type-string arena type-expr)))
-                                          (ctx-bind-var ctx (VarEntry raw-name var-name c-type slop-type-str false has-mut))))))
+                                          (ctx-bind-var ctx (VarEntry raw-name var-name c-type slop-type-str false has-mut false "" ""))))))
                                   ((none) (ctx-add-error-at ctx "missing init" (sexpr-line binding) (sexpr-col binding)))))
                               ((none) (ctx-add-error-at ctx "missing type" (sexpr-line binding) (sexpr-col binding))))
                             ;; Untyped binding: (name init)
@@ -281,13 +282,20 @@
                                     ((some ptr-type)
                                       ;; Arena-alloc returns pointer - register as pointer type
                                       (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
-                                      (ctx-bind-var ctx (VarEntry raw-name var-name ptr-type inferred-slop-type true has-mut)))
+                                      (ctx-bind-var ctx (VarEntry raw-name var-name ptr-type inferred-slop-type true has-mut false "" "")))
                                     ((none)
                                       ;; Regular binding - infer type from init expression
-                                      (let ((inferred-type (infer-expr-c-type ctx init-expr)))
+                                      (let ((inferred-type (infer-expr-c-type ctx init-expr))
+                                            (lambda-info (ctx-get-last-lambda-info ctx)))
                                         (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
-                                        ;; Check if inferred type is a pointer (ends with *)
-                                        (ctx-bind-var ctx (VarEntry raw-name var-name inferred-type inferred-slop-type (ends-with inferred-type "*") has-mut)))))))
+                                        ;; Check if this is a closure binding
+                                        (if (. lambda-info is-closure)
+                                          (do
+                                            ;; Closure - record lambda info in VarEntry
+                                            (ctx-bind-var ctx (VarEntry raw-name var-name "slop_closure_t" inferred-slop-type false has-mut true (. lambda-info env-type) (. lambda-info lambda-name)))
+                                            (ctx-clear-last-lambda-info ctx))
+                                          ;; Regular binding - check if inferred type is a pointer (ends with *)
+                                          (ctx-bind-var ctx (VarEntry raw-name var-name inferred-type inferred-slop-type (ends-with inferred-type "*") has-mut false "" ""))))))))
                               ((none) (ctx-add-error-at ctx "missing init" (sexpr-line binding) (sexpr-col binding)))))))
                       (else (ctx-add-error-at ctx "binding name must be symbol" (sexpr-line name-expr) (sexpr-col name-expr)))))
                   ((none) (ctx-add-error-at ctx "missing binding name" (sexpr-line binding) (sexpr-col binding))))))))
@@ -730,12 +738,20 @@
               (match (list-get items 1)
                 ((some size-expr)
                   (let ((size-c (transpile-expr ctx size-expr)))
+                    ;; Debug guard: check size > 0
+                    (ctx-emit ctx "#ifdef SLOP_DEBUG")
+                    (ctx-emit ctx (ctx-str3 ctx "SLOP_PRE((" size-c ") > 0, \"with-arena size must be positive\");"))
+                    (ctx-emit ctx "#endif")
                     ;; Emit arena creation
                     (ctx-emit ctx (ctx-str3 ctx "slop_arena _arena = slop_arena_new(" size-c ");"))
+                    ;; Debug guard: check allocation succeeded
+                    (ctx-emit ctx "#ifdef SLOP_DEBUG")
+                    (ctx-emit ctx "SLOP_PRE(_arena.base != NULL, \"arena allocation failed\");")
+                    (ctx-emit ctx "#endif")
                     (ctx-emit ctx "slop_arena* arena = &_arena;")))
                 ((none) (ctx-add-error-at ctx "missing size" (sexpr-line expr) (sexpr-col expr))))
               ;; Bind arena variable in scope
-              (ctx-bind-var ctx (VarEntry "arena" "arena" "slop_arena*" "" true false))
+              (ctx-bind-var ctx (VarEntry "arena" "arena" "slop_arena*" "" true false false "" ""))
               ;; Process body statements (items 2 onwards)
               (let ((mut i 2))
                 (while (< i len)
@@ -877,7 +893,7 @@
                                               (ctx-indent ctx)
                                               ;; Bind loop variable
                                               (ctx-push-scope ctx)
-                                              (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "" false false))
+                                              (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "" false false false "" ""))
                                               ;; Process body
                                               (let ((mut i 2))
                                                 (while (< i len)
@@ -937,7 +953,7 @@
                                           ;; Bind loop variable with inferred element type
                                           (ctx-push-scope ctx)
                                           (let ((elem-slop-type (infer-collection-element-slop-type ctx coll-expr)))
-                                            (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false)))
+                                            (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false false "" "")))
                                           ;; Process body
                                           (let ((mut i 2))
                                             (while (< i len)

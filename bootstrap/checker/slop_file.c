@@ -48,7 +48,7 @@ slop_result_uint8_t_file_FileError file_file_close(file_File* f) {
 slop_result_bytes_file_FileError file_file_read(slop_arena* arena, file_File* f, int64_t max_bytes) {
     SLOP_PRE(((*f).is_open), "(. (deref f) is-open)");
     {
-        __auto_type buf = (uint8_t*)slop_arena_alloc(arena, max_bytes);
+        __auto_type buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, max_bytes)));
         {
             __auto_type bytes_read = fread(buf, 1, ((uint64_t)(max_bytes)), (*f).handle);
             if (((bytes_read == 0) && (ferror((*f).handle) != 0))) {
@@ -168,7 +168,13 @@ uint8_t file_file_exists(slop_string path) {
 
 slop_result_int_file_FileError file_file_size(slop_string path) {
     {
+        #ifdef SLOP_DEBUG
+        SLOP_PRE((256) > 0, "with-arena size must be positive");
+        #endif
         slop_arena _arena = slop_arena_new(256);
+        #ifdef SLOP_DEBUG
+        SLOP_PRE(_arena.base != NULL, "arena allocation failed");
+        #endif
         slop_arena* arena = &_arena;
         {
             __auto_type buf = (struct stat*)slop_arena_alloc(arena, sizeof(struct stat));

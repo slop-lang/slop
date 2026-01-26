@@ -1,0 +1,35 @@
+;; Test file for lambda expressions
+
+(module test-lambda
+  (export main)
+
+  (ffi "stdio.h"
+    (printf ((fmt (Ptr Char))) Int))
+
+  ;; Test 1: Simple non-capturing lambda
+  (fn test-simple ()
+    (@intent "Test basic lambda")
+    (@spec (() -> Int))
+    (let ((f (fn ((x Int)) (* x 2))))
+      (f 21)))
+
+  ;; Test 2: Lambda passed to higher-order function
+  (fn apply-fn ((f (Fn (Int) Int)) (x Int))
+    (@intent "Apply function to value")
+    (@spec (((Fn (Int) Int) Int) -> Int))
+    (f x))
+
+  (fn test-higher-order ()
+    (@intent "Test HOF")
+    (@spec (() -> Int))
+    (apply-fn (fn ((n Int)) (+ n 10)) 5))
+
+  (fn main ()
+    (@intent "Main")
+    (@spec (() -> Int))
+    (let ((r1 (test-simple))
+          (r2 (test-higher-order)))
+      (printf (cast (Ptr Char) "Simple: %lld (expect 42)\n") r1)
+      (printf (cast (Ptr Char) "HOF: %lld (expect 15)\n") r2)
+      (if (and (== r1 42) (== r2 15)) 0 1)))
+)

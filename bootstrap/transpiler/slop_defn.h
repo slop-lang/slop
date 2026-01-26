@@ -78,6 +78,8 @@ void defn_emit_forward_declaration(context_TranspileContext* ctx, types_SExpr* e
 slop_string defn_get_return_type(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 uint8_t defn_is_spec_form(types_SExpr* expr);
 slop_string defn_extract_spec_return_type(context_TranspileContext* ctx, types_SExpr* spec_expr);
+slop_string defn_extract_spec_slop_return_type(context_TranspileContext* ctx, types_SExpr* spec_expr);
+slop_string defn_get_slop_return_type(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_option_string defn_get_result_type_name(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_option_string defn_extract_result_type_name(context_TranspileContext* ctx, types_SExpr* spec_expr);
 slop_option_string defn_check_result_type(context_TranspileContext* ctx, types_SExpr* type_expr);
@@ -97,6 +99,9 @@ uint8_t defn_is_annotation(types_SExpr* expr);
 uint8_t defn_is_pre_form(types_SExpr* expr);
 uint8_t defn_is_post_form(types_SExpr* expr);
 uint8_t defn_is_assume_form(types_SExpr* expr);
+uint8_t defn_is_doc_form(types_SExpr* expr);
+slop_option_string defn_get_doc_string(types_SExpr* expr);
+slop_option_string defn_collect_doc_string(slop_arena* arena, slop_list_types_SExpr_ptr items);
 slop_option_types_SExpr_ptr defn_get_annotation_condition(types_SExpr* expr);
 slop_list_types_SExpr_ptr defn_collect_preconditions(slop_arena* arena, slop_list_types_SExpr_ptr items);
 slop_list_types_SExpr_ptr defn_collect_postconditions(slop_arena* arena, slop_list_types_SExpr_ptr items);

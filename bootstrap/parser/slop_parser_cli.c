@@ -56,7 +56,13 @@ int main(int64_t argc, uint8_t** argv) {
         return 1;
     } else {
         {
+            #ifdef SLOP_DEBUG
+            SLOP_PRE((2097152) > 0, "with-arena size must be positive");
+            #endif
             slop_arena _arena = slop_arena_new(2097152);
+            #ifdef SLOP_DEBUG
+            SLOP_PRE(_arena.base != NULL, "arena allocation failed");
+            #endif
             slop_arena* arena = &_arena;
             {
                 __auto_type format = parser_cli_OutputFormat_fmt_sexp;

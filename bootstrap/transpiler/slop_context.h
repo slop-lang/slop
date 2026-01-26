@@ -19,6 +19,7 @@ typedef struct context_FuncEntry context_FuncEntry;
 typedef struct context_FieldEntry context_FieldEntry;
 typedef struct context_Scope context_Scope;
 typedef struct context_EnumVariant context_EnumVariant;
+typedef struct context_UnionVariantEntry context_UnionVariantEntry;
 typedef struct context_ResultType context_ResultType;
 typedef struct context_OptionType context_OptionType;
 typedef struct context_ListType context_ListType;
@@ -29,6 +30,7 @@ typedef struct context_FuncCNameAlias context_FuncCNameAlias;
 typedef struct context_TypeAliasEntry context_TypeAliasEntry;
 typedef struct context_InlineRecord context_InlineRecord;
 typedef struct context_TranspileContext context_TranspileContext;
+typedef struct context_LastLambdaInfo context_LastLambdaInfo;
 
 #ifndef SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
 #define SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
@@ -79,6 +81,9 @@ struct context_VarEntry {
     slop_string slop_type;
     uint8_t is_pointer;
     uint8_t is_mutable;
+    uint8_t is_closure;
+    slop_string closure_env_type;
+    slop_string closure_lambda_name;
 };
 typedef struct context_VarEntry context_VarEntry;
 
@@ -126,6 +131,7 @@ struct context_FuncEntry {
     slop_string name;
     slop_string c_name;
     slop_string return_type;
+    slop_string slop_return_type;
     uint8_t returns_pointer;
     uint8_t returns_string;
     slop_list_context_FuncParamType_ptr param_types;
@@ -186,6 +192,25 @@ SLOP_OPTION_DEFINE(context_EnumVariant, slop_option_context_EnumVariant)
 #ifndef SLOP_LIST_CONTEXT_ENUMVARIANT_DEFINED
 #define SLOP_LIST_CONTEXT_ENUMVARIANT_DEFINED
 SLOP_LIST_DEFINE(context_EnumVariant, slop_list_context_EnumVariant)
+#endif
+
+struct context_UnionVariantEntry {
+    slop_string variant_name;
+    slop_string union_name;
+    slop_string c_variant_name;
+    slop_string slop_type;
+    slop_string c_type;
+};
+typedef struct context_UnionVariantEntry context_UnionVariantEntry;
+
+#ifndef SLOP_OPTION_CONTEXT_UNIONVARIANTENTRY_DEFINED
+#define SLOP_OPTION_CONTEXT_UNIONVARIANTENTRY_DEFINED
+SLOP_OPTION_DEFINE(context_UnionVariantEntry, slop_option_context_UnionVariantEntry)
+#endif
+
+#ifndef SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
+SLOP_LIST_DEFINE(context_UnionVariantEntry, slop_list_context_UnionVariantEntry)
 #endif
 
 struct context_ResultType {
@@ -349,6 +374,7 @@ struct context_TranspileContext {
     slop_list_string includes;
     slop_list_string emitted_types;
     slop_list_context_EnumVariant enum_variants;
+    slop_list_context_UnionVariantEntry union_variants;
     slop_list_context_ResultType result_types;
     slop_option_string current_result_type;
     slop_option_string current_return_c_type;
@@ -366,12 +392,30 @@ struct context_TranspileContext {
     slop_list_context_TypeAliasEntry type_aliases;
     slop_string current_file;
     slop_list_context_TranspileError errors;
+    slop_list_string deferred_lambdas;
+    slop_list_string function_output;
+    uint8_t emit_to_function_buffer;
+    uint8_t last_lambda_is_closure;
+    slop_string last_lambda_env_type;
+    slop_string last_lambda_name;
 };
 typedef struct context_TranspileContext context_TranspileContext;
 
 #ifndef SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 #define SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 SLOP_OPTION_DEFINE(context_TranspileContext, slop_option_context_TranspileContext)
+#endif
+
+struct context_LastLambdaInfo {
+    uint8_t is_closure;
+    slop_string env_type;
+    slop_string lambda_name;
+};
+typedef struct context_LastLambdaInfo context_LastLambdaInfo;
+
+#ifndef SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED
+#define SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED
+SLOP_OPTION_DEFINE(context_LastLambdaInfo, slop_option_context_LastLambdaInfo)
 #endif
 
 context_TranspileContext* context_context_new(slop_arena* arena);
@@ -410,6 +454,7 @@ slop_option_string context_ctx_lookup_field_type(context_TranspileContext* ctx, 
 slop_string context_strip_module_prefix(slop_arena* arena, slop_string type_name);
 slop_option_string context_ctx_lookup_field_slop_type(context_TranspileContext* ctx, slop_string type_name, slop_string field_name);
 slop_option_string context_ctx_lookup_field_type_by_index(context_TranspileContext* ctx, slop_string type_name, int64_t index);
+slop_list_context_FieldEntry context_ctx_get_fields_for_type(context_TranspileContext* ctx, slop_string type_name);
 void context_ctx_mark_pointer_var(context_TranspileContext* ctx, slop_string name);
 uint8_t context_ctx_is_pointer_var(context_TranspileContext* ctx, slop_string name);
 void context_ctx_set_module(context_TranspileContext* ctx, slop_option_string name);
@@ -423,6 +468,8 @@ void context_ctx_mark_type_emitted(context_TranspileContext* ctx, slop_string ty
 uint8_t context_ctx_is_type_emitted(context_TranspileContext* ctx, slop_string type_name);
 void context_ctx_register_enum_variant(context_TranspileContext* ctx, slop_string variant_name, slop_string enum_name);
 slop_option_string context_ctx_lookup_enum_variant(context_TranspileContext* ctx, slop_string variant_name);
+void context_ctx_register_union_variant(context_TranspileContext* ctx, slop_string variant_name, slop_string union_name, slop_string c_variant_name, slop_string slop_type, slop_string c_type);
+slop_list_context_UnionVariantEntry context_ctx_get_union_variants(context_TranspileContext* ctx, slop_string union_name);
 void context_ctx_register_result_type(context_TranspileContext* ctx, slop_string ok_type, slop_string err_type, slop_string c_name);
 uint8_t context_ctx_has_result_type(context_TranspileContext* ctx, slop_string c_name);
 slop_list_context_ResultType context_ctx_get_result_types(context_TranspileContext* ctx);
@@ -472,6 +519,15 @@ uint8_t context_ctx_has_struct_key_type(context_TranspileContext* ctx, slop_stri
 slop_list_string context_ctx_get_struct_key_types(context_TranspileContext* ctx);
 void context_ctx_register_type_alias(context_TranspileContext* ctx, slop_string name, slop_string slop_type);
 slop_option_string context_ctx_lookup_type_alias(context_TranspileContext* ctx, slop_string name);
+void context_ctx_add_deferred_lambda(context_TranspileContext* ctx, slop_string lambda_code);
+slop_list_string context_ctx_get_deferred_lambdas(context_TranspileContext* ctx);
+void context_ctx_clear_deferred_lambdas(context_TranspileContext* ctx);
+void context_ctx_set_last_lambda_info(context_TranspileContext* ctx, uint8_t is_closure, slop_string env_type, slop_string lambda_name);
+context_LastLambdaInfo context_ctx_get_last_lambda_info(context_TranspileContext* ctx);
+void context_ctx_clear_last_lambda_info(context_TranspileContext* ctx);
+void context_ctx_start_function_buffer(context_TranspileContext* ctx);
+void context_ctx_stop_function_buffer(context_TranspileContext* ctx);
+void context_ctx_flush_function_buffer(context_TranspileContext* ctx);
 
 #ifndef SLOP_OPTION_CONTEXT_TRANSPILEERROR_DEFINED
 #define SLOP_OPTION_CONTEXT_TRANSPILEERROR_DEFINED
@@ -521,6 +577,11 @@ SLOP_OPTION_DEFINE(context_Scope, slop_option_context_Scope)
 #ifndef SLOP_OPTION_CONTEXT_ENUMVARIANT_DEFINED
 #define SLOP_OPTION_CONTEXT_ENUMVARIANT_DEFINED
 SLOP_OPTION_DEFINE(context_EnumVariant, slop_option_context_EnumVariant)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_UNIONVARIANTENTRY_DEFINED
+#define SLOP_OPTION_CONTEXT_UNIONVARIANTENTRY_DEFINED
+SLOP_OPTION_DEFINE(context_UnionVariantEntry, slop_option_context_UnionVariantEntry)
 #endif
 
 #ifndef SLOP_OPTION_CONTEXT_RESULTTYPE_DEFINED
@@ -576,6 +637,11 @@ SLOP_OPTION_DEFINE(context_TranspileContext, slop_option_context_TranspileContex
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED
+#define SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED
+SLOP_OPTION_DEFINE(context_LastLambdaInfo, slop_option_context_LastLambdaInfo)
 #endif
 
 

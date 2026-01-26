@@ -479,18 +479,27 @@
                       (do (check-builtin-args env "list-len" 1 (- len 1) line col)
                           (env-get-int-type env)))
                     ;; (arena-alloc arena Type) - return (Ptr Type)
+                    ;; Also supports (arena-alloc arena size-expr) for raw byte allocation
                     ((string-eq op "arena-alloc")
-                      (if (>= len 3)
+                      (if (< len 3)
+                        (do
+                          (env-add-error env "arena-alloc requires arena and type/size arguments" line col)
+                          (env-get-int-type env))
                         (match (list-get items 2)
                           ((some type-expr)
                             (let ((type-name (sexpr-get-symbol-name type-expr)))
                               (if (string-eq type-name "")
+                                ;; Not a symbol - size expression, can't determine exact return type
                                 (env-get-int-type env)
                                 (match (env-lookup-type env type-name)
                                   ((some resolved) (env-make-ptr-type env resolved))
-                                  ((none) (env-get-int-type env))))))
-                          ((none) (env-get-int-type env)))
-                        (env-get-int-type env)))
+                                  ((none)
+                                    ;; Symbol but unknown type - emit warning but continue
+                                    (do
+                                      (let ((arena (env-arena env)))
+                                        (env-add-warning env (string-concat arena "arena-alloc: unknown type: " type-name) line col))
+                                      (env-get-int-type env)))))))
+                          ((none) (env-get-int-type env)))))
                     ;; cast returns Int (approximation)
                     ((string-eq op "cast") (env-get-int-type env))
                     ;; String builtins
@@ -1455,19 +1464,34 @@
     (@pre (!= env nil))
     (@pre (!= expr nil))
     ;; (with-arena size body...) - size at index 1, body starts at index 2
-    (env-push-scope env)
-    ;; Bind 'arena' to Arena type
-    (env-bind-var env "arena" (env-get-arena-type env))
-    ;; Infer all body expressions, return type of last one
-    (let ((len (sexpr-list-len expr))
-          (mut result-type (Ptr ResolvedType) (env-get-unit-type env)))
-      (for (i 2 len)
-        (match (sexpr-list-get expr i)
-          ((some body-expr)
-            (set! result-type (infer-expr env body-expr)))
-          ((none) (do))))
-      (env-pop-scope env)
-      result-type))
+    ;; Validate size argument
+    (let ((len (sexpr-list-len expr)))
+      (if (< len 2)
+        (do
+          (env-add-error env "with-arena requires size argument" (sexpr-line expr) (sexpr-col expr))
+          (env-get-unit-type env))
+        (do
+          ;; Check for negative literal
+          (match (sexpr-list-get expr 1)
+            ((some size-expr)
+              (match (deref size-expr)
+                ((num num)
+                  (if (<= (. num int-value) 0)
+                    (env-add-error env "with-arena size must be positive" (. num line) (. num col))
+                    (do)))
+                (else (do))))
+            ((none) (do)))
+          ;; Proceed with normal type inference
+          (env-push-scope env)
+          (env-bind-var env "arena" (env-get-arena-type env))
+          (let ((mut result-type (Ptr ResolvedType) (env-get-unit-type env)))
+            (for (i 2 len)
+              (match (sexpr-list-get expr i)
+                ((some body-expr)
+                  (set! result-type (infer-expr env body-expr)))
+                ((none) (do))))
+            (env-pop-scope env)
+            result-type)))))
 
   (fn get-fn-name ((fn-form (Ptr SExpr)))
     (@intent "Extract function name from fn form")

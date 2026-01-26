@@ -25,8 +25,10 @@
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias
-                   ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col))
-  (import ctype (to-c-type to-c-name type-to-identifier))
+                   ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col
+                   ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
+                   LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info))
+  (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
 
   ;; ============================================================
@@ -406,11 +408,32 @@
           ;; Handle qualified names like "file.open" or regular names like "open"
           (let ((base-name (get-base-function-name arena fn-name))
                 (mod-name (get-module-from-qualified-name arena fn-name)))
-            ;; First check if this is a local variable (function pointer)
+            ;; First check if this is a local variable (function pointer or closure)
             (match (ctx-lookup-var ctx fn-name)
               ((some var-entry)
-                ;; Local function pointer variable - use its c-name directly
-                (ctx-str4 ctx (. var-entry c-name) "(" args ")"))
+                ;; Check if this is a closure (captured lambda)
+                (if (. var-entry is-closure)
+                  ;; Closure call: lambda_name((env_type*)f.env, args...)
+                  (let ((lambda-name (. var-entry closure-lambda-name))
+                        (env-type (. var-entry closure-env-type))
+                        (var-c-name (. var-entry c-name)))
+                    (if (> (string-len args) 0)
+                      ;; Has arguments: lambda_name((env_type*)var.env, args)
+                      (let ((s1 (ctx-str ctx lambda-name "(("))
+                            (s2 (ctx-str ctx s1 env-type))
+                            (s3 (ctx-str ctx s2 "*)"))
+                            (s4 (ctx-str ctx s3 var-c-name))
+                            (s5 (ctx-str ctx s4 ".env, "))
+                            (s6 (ctx-str ctx s5 args)))
+                        (ctx-str ctx s6 ")"))
+                      ;; No arguments (just env): lambda_name((env_type*)var.env)
+                      (let ((s1 (ctx-str ctx lambda-name "(("))
+                            (s2 (ctx-str ctx s1 env-type))
+                            (s3 (ctx-str ctx s2 "*)"))
+                            (s4 (ctx-str ctx s3 var-c-name)))
+                        (ctx-str ctx s4 ".env)"))))
+                  ;; Local function pointer variable - use its c-name directly
+                  (ctx-str4 ctx (. var-entry c-name) "(" args ")")))
               ((none)
                 ;; Look up registered function using base name
                 (let ((c-name (match (ctx-lookup-func ctx base-name)
@@ -569,10 +592,17 @@
           (match (ctx-lookup-var ctx name)
             ((some var-entry)
               (let ((c-type (. var-entry c-type))
+                    (slop-type (. var-entry slop-type))
                     (arena (. (deref ctx) arena)))
                 (cond
-                  ;; Handle auto type - emit error, don't guess
-                  ((string-eq c-type "auto") (ctx-str3 ctx "/* TRANSPILER ERROR: cannot infer Option type for variable '" name "' */"))
+                  ;; Handle auto type - try to derive from slop-type
+                  ((string-eq c-type "auto")
+                    (if (> (string-len slop-type) 0)
+                      ;; Convert SLOP type to C type and build Option type
+                      (let ((derived-c-type (slop-value-type-to-c-type ctx slop-type)))
+                        (c-type-to-option-type-name ctx derived-c-type))
+                      ;; No slop-type available - emit error
+                      (ctx-str3 ctx "/* TRANSPILER ERROR: cannot infer Option type for variable '" name "' */")))
                   ((string-eq c-type "int64_t") "slop_option_int")
                   ((string-eq c-type "double") "slop_option_double")
                   ((string-eq c-type "slop_string") "slop_option_string")
@@ -589,6 +619,30 @@
       ;; For complex expressions, try to infer type from the structure
       ((lst lst)
         (infer-list-expr-option-type ctx (. lst items)))))
+
+  (fn c-type-to-option-type-name ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Convert C type to corresponding Option type name")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (cond
+        ((string-eq c-type "int64_t") "slop_option_int")
+        ((string-eq c-type "double") "slop_option_double")
+        ((string-eq c-type "slop_string") "slop_option_string")
+        ((string-eq c-type "char") "slop_option_char")
+        ((string-eq c-type "uint8_t") "slop_option_u8")
+        ((string-eq c-type "int8_t") "slop_option_i8")
+        ((string-eq c-type "uint16_t") "slop_option_u16")
+        ((string-eq c-type "int16_t") "slop_option_i16")
+        ((string-eq c-type "uint32_t") "slop_option_u32")
+        ((string-eq c-type "int32_t") "slop_option_i32")
+        ((string-eq c-type "float") "slop_option_float")
+        ;; Check for pointer types (ends with *)
+        ((ends-with c-type "*")
+          (let ((base-type (strip-pointer-suffix arena c-type)))
+            (ctx-str3 ctx "slop_option_" base-type "_ptr")))
+        ;; Other custom types: build slop_option_<typename>
+        (else (ctx-str3 ctx "slop_option_" c-type "")))))
 
   (fn infer-list-expr-option-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Infer Option type for a list expression (field access, function call, etc.)")
@@ -666,6 +720,17 @@
       (if (< len 1)
         ""
         (substring arena s (cast (Int 0 ..) 0) (cast (Int 0 ..) (- len 1))))))
+
+  (fn extract-chan-elem-type ((ctx (Ptr TranspileContext)) (chan-type String))
+    (@intent "Extract element type from channel type name (slop_chan_foo -> foo)")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (prefix-len 10))  ;; length of "slop_chan_"
+      (let ((len (string-len chan-type)))
+        (if (<= len prefix-len)
+          "int64_t"  ;; fallback
+          (substring arena chan-type (cast (Int 0 ..) prefix-len) (cast (Int 0 ..) len))))))
 
   (fn infer-list-element-option-type ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)))
     (@intent "Infer the slop_option_* type for a list element (for list-get)")
@@ -934,8 +999,52 @@
                                       (_ "")))
                                   ((none) "")))
                               ((none) "")))
-                          ;; Default: no type info
-                          (else ""))))
+                          ;; record-new: (record-new TypeName ...) -> TypeName
+                          ((string-eq op "record-new")
+                            (if (>= len 2)
+                              (match (list-get items 1)
+                                ((some type-expr)
+                                  (match (deref type-expr)
+                                    ((sym type-sym) (. type-sym name))
+                                    (_ "")))
+                                ((none) ""))
+                              ""))
+                          ;; map-new: (map-new arena KeyType ValueType) -> (Map KeyType ValueType)
+                          ((string-eq op "map-new")
+                            (if (>= len 4)
+                              (match (list-get items 2)
+                                ((some key-expr)
+                                  (match (list-get items 3)
+                                    ((some val-expr)
+                                      (let ((key-str (sexpr-to-type-string arena key-expr))
+                                            (val-str (sexpr-to-type-string arena val-expr)))
+                                        (ctx-str5 ctx "(Map " key-str " " val-str ")")))
+                                    ((none) "")))
+                                ((none) ""))
+                              ""))
+                          ;; set-new: (set-new arena ElemType) -> (Set ElemType)
+                          ((string-eq op "set-new")
+                            (if (>= len 3)
+                              (match (list-get items 2)
+                                ((some elem-expr)
+                                  (let ((elem-str (sexpr-to-type-string arena elem-expr)))
+                                    (ctx-str3 ctx "(Set " elem-str ")")))
+                                ((none) ""))
+                              ""))
+                          ;; list-new: (list-new arena ElemType) -> (List ElemType)
+                          ((string-eq op "list-new")
+                            (if (>= len 3)
+                              (match (list-get items 2)
+                                ((some elem-expr)
+                                  (let ((elem-str (sexpr-to-type-string arena elem-expr)))
+                                    (ctx-str3 ctx "(List " elem-str ")")))
+                                ((none) ""))
+                              ""))
+                          ;; Default: check if it's a function call
+                          (else
+                            (match (ctx-lookup-func ctx op)
+                              ((some func-entry) (. func-entry slop-return-type))
+                              ((none) ""))))))
                     (_ "")))
                 ((none) "")))))
         ;; Other forms - no type info
@@ -1173,20 +1282,43 @@
               ((some var-entry)
                 (let ((slop-type (. var-entry slop-type)))
                   (if (> (string-len slop-type) 0)
-                    ;; We have a SLOP type string - extract value type from it
-                    (let ((value-slop-type (extract-map-value-from-slop-type arena slop-type)))
+                    ;; We have a SLOP type string - resolve alias and extract value type
+                    (let ((resolved-type (resolve-type-alias-for-map ctx slop-type))
+                          (value-slop-type (extract-map-value-from-slop-type arena resolved-type)))
                       (if (> (string-len value-slop-type) 0)
-                        ;; Got value type - convert to option type name
-                        (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
-                          (ctx-str ctx "slop_option_" option-id))
+                        ;; Got value type - check if it resolves to a container (pointer in C)
+                        (let ((resolved-value (resolve-type-alias-for-map ctx value-slop-type)))
+                          (if (or (starts-with resolved-value "(Map ")
+                                  (or (starts-with resolved-value "(Set ")
+                                      (starts-with resolved-value "(List ")))
+                            ;; Container types are pointers in C
+                            "slop_option_ptr"
+                            ;; Convert to option type name
+                            (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
+                              (ctx-str ctx "slop_option_" option-id))))
                         ;; Couldn't extract value type
                         ""))
                     ;; No slop-type stored
                     "")))
               ((none) ""))))
-        ;; Field access or other expressions - cannot infer from slop-type
-        ;; Could potentially walk the expression to find the underlying variable
-        (_ ""))))
+        ;; Other expressions (field access, deref, etc.) - use infer-expr-slop-type
+        (_ (let ((slop-type (infer-expr-slop-type ctx map-expr)))
+             (if (> (string-len slop-type) 0)
+               ;; Resolve type alias before extracting map value type
+               (let ((resolved-type (resolve-type-alias-for-map ctx slop-type))
+                     (value-slop-type (extract-map-value-from-slop-type arena resolved-type)))
+                 (if (> (string-len value-slop-type) 0)
+                   ;; Check if value type resolves to a container (pointer in C)
+                   (let ((resolved-value (resolve-type-alias-for-map ctx value-slop-type)))
+                     (if (or (starts-with resolved-value "(Map ")
+                             (or (starts-with resolved-value "(Set ")
+                                 (starts-with resolved-value "(List ")))
+                       ;; Container types are pointers in C
+                       "slop_option_ptr"
+                       (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
+                         (ctx-str ctx "slop_option_" option-id))))
+                   ""))
+               ""))))))
 
   (fn option-type-to-value-c-type ((arena Arena) (option-type String))
     (@intent "Extract value C type from slop_option_<type> string")
@@ -1198,6 +1330,7 @@
       ((string-eq option-type "slop_option_double") "double")
       ((string-eq option-type "slop_option_char") "char")
       ((string-eq option-type "slop_option_u8") "uint8_t")
+      ((string-eq option-type "slop_option_ptr") "void*")
       ((starts-with option-type "slop_option_")
         (let ((extracted (substring-after-prefix arena option-type "slop_option_")))
           ;; Handle set_ types - sets are implemented as slop_map*
@@ -2041,6 +2174,10 @@
                     ;; for-each as expression: (for-each (item coll) body...) -> ({ for (...) {...} 0; })
                     ((string-eq op "for-each")
                       (transpile-for-each-as-expr ctx items))
+                    ;; Lambda expression: (fn ((params...)) body) -> generate static fn, return name
+                    ;; Distinguish from named fn by checking if items[1] is a list (params) not a symbol (name)
+                    ((string-eq op "fn")
+                      (transpile-lambda-expr ctx items))
                     ;; Default: function call
                     (else
                       (transpile-fn-call ctx op items)))))
@@ -2153,6 +2290,83 @@
                 (do
                   (ctx-add-error-at ctx "max: missing first argument" (list-first-line items) (list-first-col items))
                   "0")))))
+        ;; spawn: special handling for closures
+        ;; (spawn arena closure) -> inline thread creation with env
+        ((string-eq fn-name "spawn")
+          (if (< len 3)
+            (do
+              (ctx-add-error-at ctx "spawn: need arena and function arguments" (list-first-line items) (list-first-col items))
+              "NULL")
+            (match (list-get items 2)
+              ((some fn-expr)
+                (if (is-capturing-lambda fn-expr)
+                  ;; Capturing lambda - inline the thread creation with env
+                  (transpile-spawn-closure ctx items fn-expr)
+                  ;; Non-capturing - use regular spawn call
+                  (transpile-regular-fn-call ctx fn-name items)))
+              ((none)
+                (do
+                  (ctx-add-error-at ctx "spawn: missing function argument" (list-first-line items) (list-first-col items))
+                  "NULL")))))
+        ;; send: type-specific channel send
+        ;; (send chan value) -> thread_send_<chan_type>(chan, value)
+        ((string-eq fn-name "send")
+          (if (< len 3)
+            (do
+              (ctx-add-error-at ctx "send: need channel and value arguments" (list-first-line items) (list-first-col items))
+              "0")
+            (match (list-get items 1)
+              ((some chan-expr)
+                (match (list-get items 2)
+                  ((some value-expr)
+                    (let ((chan-c (transpile-expr ctx chan-expr))
+                          (value-c (transpile-expr ctx value-expr))
+                          (chan-c-type (infer-expr-c-type ctx chan-expr)))
+                      ;; Extract channel struct type from pointer type (remove trailing *)
+                      (let ((chan-type (strip-pointer-suffix arena chan-c-type)))
+                        (if (and (starts-with chan-type "slop_chan_")
+                                 (not (string-eq chan-type "slop_chan_int")))
+                          ;; Custom channel type - use specialized function
+                          (let ((s1 (ctx-str3 ctx "thread_send_" chan-type "("))
+                                (s2 (ctx-str ctx s1 chan-c))
+                                (s3 (ctx-str ctx s2 ", ")))
+                            (ctx-str ctx s3 (ctx-str ctx value-c ")")))
+                          ;; Default int channel - use standard function
+                          (ctx-str5 ctx "thread_send(" chan-c ", " value-c ")")))))
+                  ((none)
+                    (do
+                      (ctx-add-error-at ctx "send: missing value argument" (list-first-line items) (list-first-col items))
+                      "0"))))
+              ((none)
+                (do
+                  (ctx-add-error-at ctx "send: missing channel argument" (list-first-line items) (list-first-col items))
+                  "0")))))
+        ;; recv: type-specific channel receive
+        ;; (recv chan) -> thread_recv(chan) which returns Result directly
+        ((string-eq fn-name "recv")
+          (if (< len 2)
+            (do
+              (ctx-add-error-at ctx "recv: need channel argument" (list-first-line items) (list-first-col items))
+              "0")
+            (match (list-get items 1)
+              ((some chan-expr)
+                (let ((chan-c (transpile-expr ctx chan-expr))
+                      (chan-c-type (infer-expr-c-type ctx chan-expr)))
+                  ;; Extract channel struct type from pointer type
+                  (let ((chan-type (strip-pointer-suffix arena chan-c-type)))
+                    (if (and (starts-with chan-type "slop_chan_")
+                             (not (string-eq chan-type "slop_chan_int")))
+                      ;; Custom channel type - use specialized function
+                      (let ((s1 (ctx-str ctx "thread_recv_" chan-type))
+                            (s2 (ctx-str ctx s1 "("))
+                            (s3 (ctx-str ctx s2 chan-c)))
+                        (ctx-str ctx s3 ")"))
+                      ;; Default int channel - use standard function
+                      (ctx-str3 ctx "thread_recv(" chan-c ")")))))
+              ((none)
+                (do
+                  (ctx-add-error-at ctx "recv: missing channel argument" (list-first-line items) (list-first-col items))
+                  "0")))))
         (else
       ;; Check if this is a type constructor (record or union instantiation)
       (match (ctx-lookup-type ctx fn-name)
@@ -2214,26 +2428,52 @@
                         (mut args "")
                         (mut i 1)
                         (mut param-idx 0))
-                    (while (< i len)
-                      (match (list-get items i)
-                        ((some arg)
-                          (let ((arg-c (transpile-expr ctx arg))
-                                ;; Get expected type for this parameter if available
-                                (expected-type (match func-opt
-                                                 ((some func-entry)
-                                                   (match (list-get (. func-entry param-types) param-idx)
-                                                     ((some p) (. (deref p) c-type))
-                                                     ((none) "")))
-                                                 ((none) "")))
-                                ;; Convert none to typed Option if needed
-                                (final-arg (typed-none-arg ctx expected-type arg-c)))
-                            (if (string-eq args "")
-                              (set! args final-arg)
-                              (set! args (ctx-str3 ctx args ", " final-arg)))
-                            (set! param-idx (+ param-idx 1))))
-                        ((none) (do)))
-                      (set! i (+ i 1)))
-                    (transpile-call ctx fn-name args))))))))))))
+                    ;; Check if function is defined or is a runtime built-in
+                    (match func-opt
+                      ((none)
+                        ;; Not a user-defined function - check if it's a runtime built-in
+                        (let ((runtime-name (get-runtime-function-name fn-name))
+                              (var-opt (ctx-lookup-var ctx fn-name)))
+                          (if (and (== (string-len runtime-name) 0)
+                                   (match var-opt ((none) true) ((some _) false)))
+                            ;; Not a runtime built-in or local variable - emit error
+                            (do
+                              (ctx-add-error-at ctx
+                                (ctx-str3 ctx "undefined function '" fn-name "' - check imports")
+                                (list-first-line items) (list-first-col items))
+                              "0")
+                            ;; Runtime built-in - proceed without type info
+                            (do
+                              (while (< i len)
+                                (match (list-get items i)
+                                  ((some arg)
+                                    (let ((arg-c (transpile-expr ctx arg)))
+                                      (if (string-eq args "")
+                                        (set! args arg-c)
+                                        (set! args (ctx-str3 ctx args ", " arg-c)))))
+                                  ((none) (do)))
+                                (set! i (+ i 1)))
+                              (transpile-call ctx fn-name args)))))
+                      ((some func-entry)
+                        ;; User-defined function - process with typed none handling
+                        (do
+                          (while (< i len)
+                            (match (list-get items i)
+                              ((some arg)
+                                (let ((arg-c (transpile-expr ctx arg))
+                                      ;; Get expected type for this parameter
+                                      (expected-type (match (list-get (. func-entry param-types) param-idx)
+                                                       ((some p) (. (deref p) c-type))
+                                                       ((none) "")))
+                                      ;; Convert none to typed Option if needed
+                                      (final-arg (typed-none-arg ctx expected-type arg-c)))
+                                  (if (string-eq args "")
+                                    (set! args final-arg)
+                                    (set! args (ctx-str3 ctx args ", " final-arg)))
+                                  (set! param-idx (+ param-idx 1))))
+                              ((none) (do)))
+                            (set! i (+ i 1)))
+                          (transpile-call ctx fn-name args)))))))))))))))
 
   (fn transpile-print ((ctx (Ptr TranspileContext)) (arg (Ptr SExpr)) (newline Bool))
     (@intent "Transpile print/println with type-aware formatting")
@@ -2663,7 +2903,7 @@
             (c-name (to-c-name arena binding-name))
             ;; Infer the inner SLOP type from the scrutinee for proper map/set iteration
             (inner-slop-type (infer-option-inner-slop-type ctx scrutinee)))
-        (ctx-bind-var ctx (VarEntry binding-name c-name "auto" inner-slop-type false false))))
+        (ctx-bind-var ctx (VarEntry binding-name c-name "auto" inner-slop-type false false false "" ""))))
     ;; Transpile body expression
     (let ((result (get-match-branch-body ctx branch-items)))
       ;; Pop scope
@@ -2990,9 +3230,14 @@
                                     ;; Other types - generate slop_option_<type>
                                     (else (ctx-str3 ctx "slop_option_" val-type "")))))
                               ((none) "/* TRANSPILER ERROR: some with no value expression */"))))
-                        ;; none constructor - generic option
+                        ;; none constructor - use return type context if available
                         ((string-eq op "none")
-                          "slop_option_int")
+                          (match (ctx-get-current-return-type ctx)
+                            ((some ret-type)
+                              (if (starts-with ret-type "slop_option_")
+                                ret-type
+                                "slop_option_int"))
+                            ((none) "slop_option_int")))
                         ;; list-push returns void
                         ((string-eq op "list-push")
                           "void")
@@ -3759,8 +4004,12 @@
                           ((sym name-sym)
                             (match (list-get field-items 1)
                               ((some val-expr)
-                                (let ((field-name (to-c-name arena (. name-sym name)))
-                                      (field-val (transpile-expr ctx val-expr)))
+                                (let ((raw-field-name (. name-sym name))
+                                      (field-name (to-c-name arena raw-field-name))
+                                      (field-type-opt (ctx-lookup-field-type ctx type-name raw-field-name))
+                                      (field-val (match field-type-opt
+                                                   ((some field-type) (transpile-typed-init ctx val-expr field-type))
+                                                   ((none) (transpile-expr ctx val-expr)))))
                                   (if first
                                     (set! result (ctx-str ctx result (ctx-str ctx "." (ctx-str ctx field-name (ctx-str ctx " = " field-val)))))
                                     (set! result (ctx-str ctx result (ctx-str ctx ", ." (ctx-str ctx field-name (ctx-str ctx " = " field-val))))))
@@ -4473,7 +4722,7 @@
                                                             (ctx-str3 ctx "; " var-name "++) { ")))))
                                         ;; Bind loop variable for body expressions
                                         (ctx-push-scope ctx)
-                                        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "" false false))
+                                        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "" false false false "" ""))
                                         ;; Process body expressions
                                         (let ((mut i 2))
                                           (while (< i len)
@@ -4529,7 +4778,7 @@
                                                       (ctx-str5 ctx ".len; _i++) { __auto_type " var-name " = " coll-c ".data[_i]; "))))
                                     ;; Bind loop variable for body expressions with inferred element type
                                     (ctx-push-scope ctx)
-                                    (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false))
+                                    (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false false "" ""))
                                     ;; Process body expressions
                                     (let ((mut i 2))
                                       (while (< i len)
@@ -4547,6 +4796,787 @@
                       ((none) "({ /* for-each: missing var */ 0; })")))))
               (else "({ /* for-each: binding must be list */ 0; })")))
           ((none) "({ /* for-each: missing binding */ 0; })")))))
+
+  ;; ============================================================
+  ;; Lambda Expression Transpilation
+  ;; ============================================================
+
+  (fn transpile-lambda-expr ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile lambda expression to static function, return function name")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; Lambda: (fn ((param Type)...) body...)
+    ;; items[0] = "fn", items[1] = params list, items[2..] = body
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items)))
+      (if (< len 2)
+        (do
+          (ctx-add-error-at ctx "lambda needs params" (list-first-line items) (list-first-col items))
+          "NULL")
+        ;; Check if items[1] is a list (lambda) or symbol (named fn - error in expr context)
+        (match (list-get items 1)
+          ((some second)
+            (match (deref second)
+              ;; Lambda: params list is second element
+              ((lst params-lst)
+                (transpile-lambda-with-params ctx items (. params-lst items)))
+              ;; Named function definition in expression context - error
+              ((sym _)
+                (do
+                  (ctx-add-error-at ctx "named function not allowed in expression context" (list-first-line items) (list-first-col items))
+                  "NULL"))
+              (else
+                (do
+                  (ctx-add-error-at ctx "invalid lambda form" (list-first-line items) (list-first-col items))
+                  "NULL"))))
+          ((none)
+            (do
+              (ctx-add-error-at ctx "lambda missing params" (list-first-line items) (list-first-col items))
+              "NULL"))))))
+
+  (fn transpile-lambda-with-params ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (params (List (Ptr SExpr))))
+    (@intent "Transpile lambda with extracted parameter list")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          ;; Extract param names for free variable analysis
+          (param-names (extract-param-names arena params))
+          ;; Find free variables BEFORE pushing scope
+          ;; (so we can see what's captured from enclosing scope)
+          (free-vars (find-free-vars ctx param-names items 2)))
+      ;; Generate unique lambda name with module prefix
+      (let ((base-name (ctx-gensym ctx "_lambda"))
+            (lambda-name (match (ctx-get-module ctx)
+                           ((some mod) (ctx-str3 ctx (to-c-name arena mod) "_" base-name))
+                           ((none) base-name))))
+        ;; Check if we have captures
+        (if (> (list-len free-vars) 0)
+          ;; Closure: generate struct and modified lambda
+          (transpile-closure ctx items params param-names free-vars lambda-name)
+          ;; Simple lambda: no captures
+          (transpile-simple-lambda ctx items params lambda-name)))))
+
+  (fn extract-param-names ((arena Arena) (params (List (Ptr SExpr))))
+    (@intent "Extract parameter names from params list")
+    (@spec ((Arena (List (Ptr SExpr))) -> (List String)))
+    (let ((names (list-new arena String))
+          (count (list-len params))
+          (mut i 0))
+      (while (< i count)
+        (match (list-get params i)
+          ((some param-expr)
+            (match (deref param-expr)
+              ((lst param-lst)
+                (let ((param-items (. param-lst items)))
+                  (when (>= (list-len param-items) 1)
+                    (match (list-get param-items 0)
+                      ((some name-expr)
+                        (match (deref name-expr)
+                          ((sym name-sym)
+                            (list-push names (. name-sym name)))
+                          (else (do))))
+                      ((none) (do))))))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      names))
+
+  (fn transpile-simple-lambda ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (params (List (Ptr SExpr))) (lambda-name String))
+    (@intent "Transpile non-capturing lambda")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (List (Ptr SExpr)) String) -> String))
+    (@pre {ctx != nil})
+    (let ((param-str (build-lambda-params ctx params))
+          ;; For now, default return type is int64_t
+          (return-type "int64_t"))
+      ;; Push scope for lambda body
+      (ctx-push-scope ctx)
+      ;; Bind parameter names in scope
+      (bind-lambda-params ctx params)
+      ;; Transpile body expressions
+      (let ((body-start 2)
+            (body-code (transpile-lambda-body ctx items body-start)))
+        (ctx-pop-scope ctx)
+        ;; Build complete function definition
+        (let ((fn-def (build-lambda-function ctx lambda-name return-type param-str body-code)))
+          ;; Add to deferred lambdas
+          (ctx-add-deferred-lambda ctx fn-def)
+          ;; Return the lambda name as expression value (function pointer)
+          lambda-name))))
+
+  (fn transpile-closure ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (params (List (Ptr SExpr))) (param-names (List String)) (free-vars (List String)) (lambda-name String))
+    (@intent "Transpile capturing lambda (closure)")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (List (Ptr SExpr)) (List String) (List String) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          ;; Generate closure struct name
+          (env-name (ctx-str ctx lambda-name "_env"))
+          (env-type (ctx-str ctx env-name "_t")))
+      ;; Build closure environment struct
+      (let ((struct-def (build-closure-struct ctx env-type free-vars)))
+        ;; Add struct to deferred lambdas (before the function)
+        (ctx-add-deferred-lambda ctx struct-def)
+        ;; Build lambda with env parameter
+        (let ((param-str (build-closure-params ctx params))
+              (return-type "int64_t"))
+          ;; Push scope for lambda body
+          (ctx-push-scope ctx)
+          ;; Bind env-accessed variables (they come from _env)
+          (bind-closure-captures ctx free-vars)
+          ;; Bind regular parameters
+          (bind-lambda-params ctx params)
+          ;; Transpile body expressions
+          (let ((body-start 2)
+                (body-code (transpile-lambda-body ctx items body-start)))
+            (ctx-pop-scope ctx)
+            ;; Build closure function (takes void* env as first param)
+            (let ((fn-def (build-closure-function ctx lambda-name env-type return-type param-str body-code free-vars)))
+              (ctx-add-deferred-lambda ctx fn-def)
+              ;; Set last lambda info for closure variable binding
+              (ctx-set-last-lambda-info ctx true env-type lambda-name)
+              ;; Generate closure instantiation expression
+              ;; This creates the env struct and returns a packaged closure
+              (build-closure-instance ctx lambda-name env-name env-type free-vars)))))))
+
+  (fn build-closure-struct ((ctx (Ptr TranspileContext)) (env-type String) (free-vars (List String)))
+    (@intent "Build typedef for closure environment struct")
+    (@spec (((Ptr TranspileContext) String (List String)) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (count (list-len free-vars))
+          (mut fields "")
+          (mut i 0))
+      ;; Build fields for each captured variable
+      (while (< i count)
+        (match (list-get free-vars i)
+          ((some var-name)
+            ;; Look up variable type
+            (let ((var-type (match (ctx-lookup-var ctx var-name)
+                              ((some entry) (. entry c-type))
+                              ((none) "int64_t")))  ;; Default to int64_t
+                  (c-name (to-c-name arena var-name)))
+              (set! fields (ctx-str ctx fields (ctx-str4 ctx var-type " " c-name "; ")))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      ;; typedef struct { fields } env_type;
+      (ctx-str ctx "typedef struct { " (ctx-str3 ctx fields "} " (ctx-str ctx env-type ";")))))
+
+  (fn build-closure-params ((ctx (Ptr TranspileContext)) (params (List (Ptr SExpr))))
+    (@intent "Build C parameter string for closure (without env, added separately)")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; Same as build-lambda-params but we prepend void* _env in the function def
+    (build-lambda-params ctx params))
+
+  (fn bind-closure-captures ((ctx (Ptr TranspileContext)) (free-vars (List String)))
+    (@intent "Bind captured variables to access via _env pointer")
+    (@spec (((Ptr TranspileContext) (List String)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (count (list-len free-vars))
+          (mut i 0))
+      (while (< i count)
+        (match (list-get free-vars i)
+          ((some var-name)
+            ;; The variable access will be translated to _env->var_name
+            ;; We bind it with a special marker that the transpiler recognizes
+            (let ((c-name (to-c-name arena var-name))
+                  (access-expr (ctx-str3 ctx "_env->" c-name ""))
+                  (var-type (match (ctx-lookup-var ctx var-name)
+                              ((some entry) (. entry c-type))
+                              ((none) "int64_t"))))
+              ;; Bind with the access expression as the C name
+              (ctx-bind-var ctx (VarEntry var-name access-expr var-type "" false false false "" ""))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn build-closure-function ((ctx (Ptr TranspileContext)) (name String) (env-type String) (ret-type String) (params String) (body String) (free-vars (List String)))
+    (@intent "Build static closure function with env parameter")
+    (@spec (((Ptr TranspileContext) String String String String String (List String)) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      ;; static ret_type name(env_type* _env, params) { body }
+      (let ((env-param (ctx-str3 ctx env-type "* _env" ""))
+            (full-params (if (string-eq params "(void)")
+                           (ctx-str3 ctx "(" env-param ")")
+                           (ctx-str5 ctx "(" env-param ", " (trim-parens arena params) ")"))))
+        (ctx-str ctx "static " (ctx-str ctx ret-type (ctx-str ctx " " (ctx-str ctx name (ctx-str ctx full-params (ctx-str ctx " { " (ctx-str ctx body " }"))))))))))
+
+  (fn trim-parens ((arena Arena) (s String))
+    (@intent "Remove leading ( and trailing ) from string")
+    (@spec ((Arena String) -> String))
+    (let ((len (cast Int (string-len s))))
+      (if (< len 2)
+        s
+        (substring arena s (cast (Int 0 ..) 1) (cast (Int 0 ..) (- len 2))))))
+
+  (fn build-closure-instance ((ctx (Ptr TranspileContext)) (lambda-name String) (env-name String) (env-type String) (free-vars (List String)))
+    (@intent "Build expression that creates closure instance")
+    (@spec (((Ptr TranspileContext) String String String (List String)) -> String))
+    (@pre {ctx != nil})
+    ;; For now, return a compound literal that packages the env
+    ;; The caller needs to handle allocating the env struct
+    ;; This generates: ({ static env_type _env = { .field1 = val1, ... }; (void*)&_env; })
+    ;; But that's complex. For simplicity, just return the lambda name.
+    ;; The caller (like spawn) should handle env creation.
+    ;;
+    ;; Actually, we need to emit the env creation at the call site.
+    ;; For now, emit an error placeholder.
+    (let ((arena (. (deref ctx) arena)))
+      ;; Emit env declaration as a separate statement so it has proper scope
+      ;; env_type env_name = { captures... };
+      (let ((initializer (build-env-initializer ctx free-vars)))
+        (let ((env-decl (ctx-str ctx env-type
+                          (ctx-str ctx " "
+                            (ctx-str ctx env-name
+                              (ctx-str ctx " = "
+                                (ctx-str ctx initializer ";")))))))
+          ;; Emit the env declaration
+          (ctx-emit ctx env-decl)
+          ;; Return just the closure struct literal (no compound expression)
+          ;; (slop_closure_t){ (void*)lambda, (void*)&env_name }
+          (ctx-str ctx "(slop_closure_t){ (void*)"
+            (ctx-str ctx lambda-name
+              (ctx-str ctx ", (void*)&"
+                (ctx-str ctx env-name " }"))))))))
+
+  (fn build-env-initializer ((ctx (Ptr TranspileContext)) (free-vars (List String)))
+    (@intent "Build initializer for closure environment struct")
+    (@spec (((Ptr TranspileContext) (List String)) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (count (list-len free-vars))
+          (mut result "{ ")
+          (mut i 0))
+      (while (< i count)
+        (match (list-get free-vars i)
+          ((some var-name)
+            (let ((c-name (to-c-name arena var-name)))
+              (if (> i 0)
+                (set! result (ctx-str ctx result (ctx-str5 ctx ", ." c-name " = " c-name "")))
+                (set! result (ctx-str ctx result (ctx-str5 ctx "." c-name " = " c-name ""))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (ctx-str ctx result " }")))
+
+  (fn build-lambda-params ((ctx (Ptr TranspileContext)) (params (List (Ptr SExpr))))
+    (@intent "Build C parameter string from lambda params list")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (param-count (list-len params)))
+      (if (== param-count 0)
+        "(void)"
+        (let ((mut result "(")
+              (mut i 0))
+          (while (< i param-count)
+            (match (list-get params i)
+              ((some param-expr)
+                (match (deref param-expr)
+                  ((lst param-lst)
+                    (let ((param-items (. param-lst items)))
+                      (when (>= (list-len param-items) 2)
+                        (match (list-get param-items 0)
+                          ((some name-expr)
+                            (match (deref name-expr)
+                              ((sym name-sym)
+                                (match (list-get param-items 1)
+                                  ((some type-expr)
+                                    (let ((param-name (to-c-name arena (. name-sym name)))
+                                          (param-type (to-c-type-prefixed ctx type-expr)))
+                                      (if (> i 0)
+                                        (set! result (ctx-str ctx result (ctx-str5 ctx ", " param-type " " param-name "")))
+                                        (set! result (ctx-str ctx result (ctx-str4 ctx param-type " " param-name ""))))))
+                                  ((none) (do))))
+                              (else (do))))
+                          ((none) (do))))))
+                  (else (do))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          (ctx-str ctx result ")")))))
+
+  (fn bind-lambda-params ((ctx (Ptr TranspileContext)) (params (List (Ptr SExpr))))
+    (@intent "Bind lambda parameters in current scope")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (param-count (list-len params))
+          (mut i 0))
+      (while (< i param-count)
+        (match (list-get params i)
+          ((some param-expr)
+            (match (deref param-expr)
+              ((lst param-lst)
+                (let ((param-items (. param-lst items)))
+                  (when (>= (list-len param-items) 2)
+                    (match (list-get param-items 0)
+                      ((some name-expr)
+                        (match (deref name-expr)
+                          ((sym name-sym)
+                            (match (list-get param-items 1)
+                              ((some type-expr)
+                                (let ((param-name (. name-sym name))
+                                      (c-name (to-c-name arena param-name))
+                                      (c-type (to-c-type-prefixed ctx type-expr))
+                                      (is-ptr (is-pointer-type-sexpr type-expr)))
+                                  (ctx-bind-var ctx (VarEntry param-name c-name c-type "" is-ptr false false "" ""))))
+                              ((none) (do))))
+                          (else (do))))
+                      ((none) (do))))))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn is-pointer-type-sexpr ((type-expr (Ptr SExpr)))
+    (@intent "Check if type expression is a pointer type")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (match (deref type-expr)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 1)
+            false
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((sym sym)
+                    (or (string-eq (. sym name) "Ptr")
+                        (string-eq (. sym name) "ScopedPtr")))
+                  (else false)))
+              ((none) false)))))
+      (else false)))
+
+  (fn transpile-lambda-body ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start Int))
+    (@intent "Transpile lambda body expressions, return last as value")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> String))
+    (@pre {ctx != nil})
+    ;; Thread Unit lambdas return int64_t but last expression may be Result
+    ;; We wrap to: (expr, 0) to evaluate and return 0
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          (mut result "")
+          (mut i start))
+      (if (<= len start)
+        ;; No body - return 0
+        "return 0;"
+        (do
+          (while (< i len)
+            (match (list-get items i)
+              ((some expr)
+                (let ((expr-c (transpile-expr ctx expr))
+                      (is-last (== i (- len 1))))
+                  (if is-last
+                    ;; Last expression: evaluate for side effects and return 0
+                    ;; This handles Thread Unit where body might return Result but lambda returns int
+                    (set! result (ctx-str ctx result (ctx-str ctx "(" (ctx-str ctx expr-c ", 0); return 0;"))))
+                    ;; Not last: just evaluate for side effects
+                    (set! result (ctx-str ctx result (ctx-str3 ctx expr-c "; " ""))))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          result))))
+
+  (fn build-lambda-function ((ctx (Ptr TranspileContext)) (name String) (ret-type String) (params String) (body String))
+    (@intent "Build complete static function definition for lambda")
+    (@spec (((Ptr TranspileContext) String String String String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      ;; static ret_type name(params) { body }
+      (ctx-str ctx "static " (ctx-str ctx ret-type (ctx-str ctx " " (ctx-str ctx name (ctx-str ctx params (ctx-str ctx " { " (ctx-str ctx body " }")))))))))
+
+  ;; ============================================================
+  ;; spawn + Closure Support
+  ;; ============================================================
+
+  (fn is-capturing-lambda ((expr (Ptr SExpr)))
+    (@intent "Check if expression is a lambda form (fn ((params...)) body)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {expr != nil})
+    ;; Check if expr is (fn ((params...)) body) form
+    ;; Note: This only checks the structure, not whether it actually captures
+    ;; The actual capture detection happens in transpile-spawn-closure
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 2)
+            false
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((sym sym)
+                    (if (not (string-eq (. sym name) "fn"))
+                      false
+                      ;; It's a fn form - check if it has params list (lambda vs named fn)
+                      (match (list-get items 1)
+                        ((some second)
+                          (match (deref second)
+                            ((lst _) true)  ;; Lambda form
+                            (_ false)))
+                        ((none) false))))
+                  (_ false)))
+              ((none) false)))))
+      (_ false)))
+
+  (fn transpile-spawn-closure ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (fn-expr (Ptr SExpr)))
+    (@intent "Transpile spawn call with lambda - inline thread creation, handles both capturing and non-capturing")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {fn-expr != nil})
+    ;; First check if the lambda actually captures anything
+    (let ((arena (. (deref ctx) arena)))
+      (match (list-get items 1)
+        ((some arena-expr)
+          (let ((arena-c (transpile-expr ctx arena-expr))
+                (has-captures (lambda-has-captures ctx fn-expr)))
+            (if has-captures
+              ;; Capturing lambda - transpile returns slop_closure_t
+              (let ((closure-c (transpile-expr ctx fn-expr)))
+                (ctx-str ctx "({ slop_closure_t _spawn_cl = " (ctx-str ctx closure-c
+                  (ctx-str ctx "; slop_thread_int* _spawn_th = slop_arena_alloc(" (ctx-str ctx arena-c
+                    (ctx-str ctx ", sizeof(slop_thread_int));"
+                      (ctx-str ctx " _spawn_th->func = _spawn_cl.fn;"
+                        (ctx-str ctx " _spawn_th->env = _spawn_cl.env;"
+                          (ctx-str ctx " _spawn_th->done = false;"
+                            (ctx-str ctx " pthread_create(&_spawn_th->id, NULL, (void*)slop_thread_int_entry, (void*)_spawn_th);"
+                              " _spawn_th; })"))))))))))
+              ;; Non-capturing lambda - use regular spawn call
+              (transpile-regular-fn-call ctx "spawn" items))))
+        ((none)
+          (do
+            (ctx-add-error-at ctx "spawn: missing arena argument" (list-first-line items) (list-first-col items))
+            "NULL")))))
+
+  (fn lambda-has-captures ((ctx (Ptr TranspileContext)) (fn-expr (Ptr SExpr)))
+    (@intent "Check if lambda expression has free variables that need capturing")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Bool))
+    (@pre {ctx != nil})
+    (@pre {fn-expr != nil})
+    ;; Extract params and body from lambda, then check for free vars
+    (match (deref fn-expr)
+      ((lst lst)
+        (let ((items (. lst items))
+              (arena (. (deref ctx) arena)))
+          (if (< (list-len items) 2)
+            false
+            (match (list-get items 1)
+              ((some params-expr)
+                (match (deref params-expr)
+                  ((lst params-lst)
+                    (let ((params (. params-lst items))
+                          (param-names (extract-param-names arena params))
+                          (free-vars (find-free-vars ctx param-names items 2)))
+                      (> (list-len free-vars) 0)))
+                  (_ false)))
+              ((none) false)))))
+      (_ false)))
+
+  (fn transpile-regular-fn-call ((ctx (Ptr TranspileContext)) (fn-name String) (items (List (Ptr SExpr))))
+    (@intent "Transpile regular function call (non-special cases)")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; Build argument list and call transpile-call
+    ;; Look up function to get parameter types for typed none handling
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          (func-opt (ctx-lookup-func ctx fn-name))
+          (mut args "")
+          (mut i 1)
+          (mut param-idx 0))
+      (while (< i len)
+        (match (list-get items i)
+          ((some arg)
+            (let ((arg-c (transpile-expr ctx arg))
+                  ;; Get expected type for this parameter if available
+                  (expected-type (match func-opt
+                                   ((some func-entry)
+                                     (match (list-get (. func-entry param-types) param-idx)
+                                       ((some p) (. (deref p) c-type))
+                                       ((none) "")))
+                                   ((none) "")))
+                  ;; Convert none to typed Option if needed
+                  (final-arg (typed-none-arg ctx expected-type arg-c)))
+              (if (string-eq args "")
+                (set! args final-arg)
+                (set! args (ctx-str3 ctx args ", " final-arg)))
+              (set! param-idx (+ param-idx 1))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (transpile-call ctx fn-name args)))
+
+  ;; ============================================================
+  ;; Free Variable Analysis for Closures
+  ;; ============================================================
+
+  (fn find-free-vars ((ctx (Ptr TranspileContext)) (param-names (List String)) (body-items (List (Ptr SExpr))) (start Int))
+    (@intent "Find variables in lambda body that are captured from enclosing scope")
+    (@spec (((Ptr TranspileContext) (List String) (List (Ptr SExpr)) Int) -> (List String)))
+    (@pre {ctx != nil})
+    ;; Collect all symbol references in the body
+    ;; Filter out: params, known functions, builtins, type names
+    ;; What remains are captured variables
+    (let ((arena (. (deref ctx) arena))
+          (all-symbols (list-new arena String))
+          (free-vars (list-new arena String))
+          (len (list-len body-items))
+          (mut i start))
+      ;; Collect all symbols from body expressions
+      (while (< i len)
+        (match (list-get body-items i)
+          ((some expr)
+            (collect-symbols-in-expr ctx (addr all-symbols) expr))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      ;; Filter to find truly free variables
+      (let ((sym-count (list-len all-symbols))
+            (mut j 0))
+        (while (< j sym-count)
+          (match (list-get all-symbols j)
+            ((some sym-name)
+              (when (is-free-var ctx param-names sym-name)
+                ;; Check not already in free-vars
+                (when (not (list-contains-string free-vars sym-name))
+                  (list-push free-vars sym-name))))
+            ((none) (do)))
+          (set! j (+ j 1))))
+      free-vars))
+
+  (fn collect-symbols-in-expr ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (expr (Ptr SExpr)))
+    (@intent "Recursively collect all symbol references in an expression")
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((sym sym)
+        ;; Add symbol name if not a special keyword
+        (let ((name (. sym name)))
+          (when (not (is-special-keyword name))
+            (list-push (deref symbols) name))))
+      ((lst lst)
+        ;; Recursively collect from list items
+        ;; But be smart about special forms that introduce bindings
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (when (> len 0)
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((sym head-sym)
+                    (let ((op (. head-sym name)))
+                      (cond
+                        ;; let: skip binding names, recurse into values and body
+                        ((string-eq op "let")
+                          (collect-symbols-in-let ctx symbols items))
+                        ;; fn: skip (we're analyzing inside a lambda, nested lambdas are separate)
+                        ((string-eq op "fn")
+                          (do))  ;; Don't recurse into nested lambdas
+                        ;; match: recurse into scrutinee and bodies (pattern vars are local)
+                        ((string-eq op "match")
+                          (collect-symbols-in-match ctx symbols items))
+                        ;; for/for-each: skip loop var, recurse into range/collection and body
+                        ((or (string-eq op "for") (string-eq op "for-each"))
+                          (collect-symbols-in-for ctx symbols items))
+                        ;; Default: recurse into all items
+                        (else
+                          (collect-symbols-in-list ctx symbols items 0)))))
+                  (else
+                    ;; Non-symbol head, recurse into all
+                    (collect-symbols-in-list ctx symbols items 0))))
+              ((none) (do))))))
+      (else (do))))
+
+  (fn collect-symbols-in-list ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (items (List (Ptr SExpr))) (start Int))
+    (@intent "Collect symbols from list items starting at index")
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List (Ptr SExpr)) Int) -> Unit))
+    (@pre {ctx != nil})
+    (let ((len (list-len items))
+          (mut i start))
+      (while (< i len)
+        (match (list-get items i)
+          ((some item)
+            (collect-symbols-in-expr ctx symbols item))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn collect-symbols-in-let ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (items (List (Ptr SExpr))))
+    (@intent "Collect symbols from let form, excluding bound names")
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; (let ((name val) ...) body...)
+    ;; Recurse into values and body, but not binding names
+    (let ((len (list-len items)))
+      (when (>= len 2)
+        (match (list-get items 1)
+          ((some bindings-expr)
+            (match (deref bindings-expr)
+              ((lst bindings-lst)
+                ;; For each binding, only collect from the value
+                (let ((bindings (. bindings-lst items))
+                      (binding-count (list-len bindings))
+                      (mut i 0))
+                  (while (< i binding-count)
+                    (match (list-get bindings i)
+                      ((some binding)
+                        (match (deref binding)
+                          ((lst bind-lst)
+                            (let ((bind-items (. bind-lst items)))
+                              ;; binding is (name value) or (mut name value)
+                              ;; Collect from value only
+                              (when (>= (list-len bind-items) 2)
+                                (let ((val-idx (if (is-mut-binding bind-items) 2 1)))
+                                  (match (list-get bind-items val-idx)
+                                    ((some val-expr)
+                                      (collect-symbols-in-expr ctx symbols val-expr))
+                                    ((none) (do)))))))
+                          (else (do))))
+                      ((none) (do)))
+                    (set! i (+ i 1)))))
+              (else (do))))
+          ((none) (do)))
+        ;; Collect from body expressions
+        (collect-symbols-in-list ctx symbols items 2))))
+
+  (fn is-mut-binding ((items (List (Ptr SExpr))))
+    (@intent "Check if binding starts with mut keyword")
+    (@spec (((List (Ptr SExpr))) -> Bool))
+    (if (< (list-len items) 1)
+      false
+      (match (list-get items 0)
+        ((some first)
+          (match (deref first)
+            ((sym sym) (string-eq (. sym name) "mut"))
+            (else false)))
+        ((none) false))))
+
+  (fn collect-symbols-in-match ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (items (List (Ptr SExpr))))
+    (@intent "Collect symbols from match form")
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; (match scrutinee (pattern body)...)
+    ;; Collect from scrutinee and bodies (pattern vars are local)
+    (let ((len (list-len items)))
+      (when (>= len 2)
+        ;; Collect from scrutinee
+        (match (list-get items 1)
+          ((some scrutinee)
+            (collect-symbols-in-expr ctx symbols scrutinee))
+          ((none) (do)))
+        ;; Collect from clause bodies (skip patterns)
+        (let ((mut i 2))
+          (while (< i len)
+            (match (list-get items i)
+              ((some clause)
+                (match (deref clause)
+                  ((lst clause-lst)
+                    (let ((clause-items (. clause-lst items)))
+                      ;; Clause is (pattern body...), collect from body only
+                      (collect-symbols-in-list ctx symbols clause-items 1)))
+                  (else (do))))
+              ((none) (do)))
+            (set! i (+ i 1)))))))
+
+  (fn collect-symbols-in-for ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (items (List (Ptr SExpr))))
+    (@intent "Collect symbols from for/for-each form")
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; (for (i start end) body...) or (for-each (item coll) body...)
+    ;; Skip loop variable, collect from range/collection and body
+    (let ((len (list-len items)))
+      (when (>= len 2)
+        (match (list-get items 1)
+          ((some binding)
+            (match (deref binding)
+              ((lst bind-lst)
+                (let ((bind-items (. bind-lst items)))
+                  ;; Collect from start/end or collection (items after first)
+                  (collect-symbols-in-list ctx symbols bind-items 1)))
+              (else (do))))
+          ((none) (do)))
+        ;; Collect from body
+        (collect-symbols-in-list ctx symbols items 2))))
+
+  (fn is-special-keyword ((name String))
+    (@intent "Check if name is a special keyword that shouldn't be collected")
+    (@spec ((String) -> Bool))
+    ;; Special forms, operators, and type names
+    (or (string-eq name "let")
+        (string-eq name "if")
+        (string-eq name "cond")
+        (string-eq name "match")
+        (string-eq name "when")
+        (string-eq name "while")
+        (string-eq name "for")
+        (string-eq name "for-each")
+        (string-eq name "do")
+        (string-eq name "set!")
+        (string-eq name "deref")
+        (string-eq name "cast")
+        (string-eq name "fn")
+        (string-eq name "true")
+        (string-eq name "false")
+        (string-eq name "nil")
+        (string-eq name "none")
+        (string-eq name "some")
+        (string-eq name "ok")
+        (string-eq name "error")
+        (string-eq name "mut")
+        (string-eq name "else")
+        (string-eq name "and")
+        (string-eq name "or")
+        (string-eq name "not")))
+
+  (fn is-free-var ((ctx (Ptr TranspileContext)) (param-names (List String)) (sym-name String))
+    (@intent "Check if symbol is a free variable (captured from enclosing scope)")
+    (@spec (((Ptr TranspileContext) (List String) String) -> Bool))
+    (@pre {ctx != nil})
+    ;; A symbol is free if:
+    ;; - Not a lambda parameter
+    ;; - Not a known function
+    ;; - Not a type name
+    ;; - Not a builtin operator
+    ;; - IS a variable in the current scope (from enclosing context)
+    (if (list-contains-string param-names sym-name)
+      false  ;; Lambda parameter, not free
+      (if (is-builtin-op sym-name)
+        false  ;; Builtin operator
+        (match (ctx-lookup-func ctx sym-name)
+          ((some _) false)  ;; Known function
+          ((none)
+            (match (ctx-lookup-type ctx sym-name)
+              ((some _) false)  ;; Type name
+              ((none)
+                ;; Check if it's a variable in scope
+                (match (ctx-lookup-var ctx sym-name)
+                  ((some _) true)  ;; It's a captured variable!
+                  ((none) false)))))))))  ;; Unknown symbol
+
+  (fn is-builtin-op ((name String))
+    (@intent "Check if name is a builtin operator")
+    (@spec ((String) -> Bool))
+    (or (string-eq name "+")
+        (string-eq name "-")
+        (string-eq name "*")
+        (string-eq name "/")
+        (string-eq name "%")
+        (string-eq name "==")
+        (string-eq name "!=")
+        (string-eq name "<")
+        (string-eq name ">")
+        (string-eq name "<=")
+        (string-eq name ">=")
+        (string-eq name "@")))
+
+  (fn list-contains-string ((lst (List String)) (needle String))
+    (@intent "Check if string list contains the given string")
+    (@spec (((List String) String) -> Bool))
+    (let ((len (list-len lst))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get lst i)
+          ((some s)
+            (when (string-eq s needle)
+              (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
 
   ;; ============================================================
   ;; Type Argument Extraction Helpers
