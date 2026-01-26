@@ -315,12 +315,15 @@ Use only at FFI boundaries. For general code, use `U8` or `String`.
 (cast Type expr)                 ; Cast expression to Type
 """,
 
-    'stdlib': """## Standard Library
+    'builtins': """## Builtins
+
+Language primitives that are always available without imports.
 
 ### Memory
 (arena-new size) -> Arena
 (arena-alloc arena size) -> (Ptr U8)
 (arena-free arena) -> Unit
+(with-arena size body) -> T              ; Scoped arena, auto-freed
 
 ### Strings
 (string-new arena cstr) -> String
@@ -357,26 +360,44 @@ Use only at FFI boundaries. For general code, use `U8` or `String`.
 (unwrap r) -> T                          ; Panics on error
 
 ### I/O
-(print val) -> Unit                          ; Print to stdout (no newline)
-(println val) -> Unit                        ; Print to stdout with newline
-(file-read path) -> (Result String IoError)
-(file-write path content) -> (Result Unit IoError)
+(print val) -> Unit                      ; Print to stdout (no newline)
+(println val) -> Unit                    ; Print to stdout with newline
 
 ### Time
 (now-ms) -> (Int 0 ..)
 (sleep-ms ms) -> Unit
+""",
 
-### Concurrency (import thread, link -lpthread)
-(import thread (chan chan-buffered chan-close send recv try-recv spawn join))
+    'stdlib': """## Standard Library Modules
 
-(chan arena) -> (Ptr (Chan T))              ; Unbuffered channel
-(chan-buffered arena cap) -> (Ptr (Chan T)) ; Buffered channel
-(chan-close ch) -> Unit                     ; Close channel
-(send ch val) -> (Result Unit ChanError)    ; Blocking send
-(recv ch) -> (Result T ChanError)           ; Blocking receive
-(try-recv ch) -> (Result T ChanError)       ; Non-blocking receive
-(spawn arena func) -> (Ptr (Thread T))      ; Spawn thread
-(join thread) -> T                          ; Wait and get result
+Use `slop ref <module>` for detailed documentation, or `slop doc <path>`.
+
+| Module    | Description                      | Import                          |
+|-----------|----------------------------------|---------------------------------|
+| strlib    | String manipulation              | `(import strlib (...))`         |
+| mathlib   | Math functions and constants     | `(import mathlib (...))`        |
+| file      | File I/O operations              | `(import file (...))`           |
+| thread    | Concurrency primitives           | `(import thread (...))`         |
+| env       | Environment variables            | `(import env (...))`            |
+| path      | Path manipulation                | `(import path (...))`           |
+
+### Example Usage
+
+```lisp
+(module my-app
+  (import strlib (starts-with trim))
+  (import file (read-file write-file))
+
+  (fn main ()
+    (@intent "Process a file")
+    (@spec (() -> Int))
+    ...))
+```
+
+### See Also
+
+- `slop ref builtins` - Language primitives (always available, no import needed)
+- `slop doc lib/std/<module>/<module>.slop` - Full module documentation
 """,
 
     'expressions': """## Expressions
@@ -623,6 +644,7 @@ TOPIC_ORDER = [
     'holes',
     'memory',
     'ffi',
+    'builtins',
     'stdlib',
     'expressions',
     'patterns',

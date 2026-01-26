@@ -116,6 +116,39 @@ class MinimalTypeEnv:
             return self.invariant_registry.get_invariants(type_name)
         return []
 
+# ============================================================================
+# Imported Definitions (for verifying contracts with imported symbols)
+# ============================================================================
+
+@dataclass
+class FunctionSignature:
+    """Signature of an imported function for verification."""
+    name: str
+    param_types: List[Type]  # Parameter types in order
+    return_type: Type  # Return type (may include range bounds)
+
+
+@dataclass
+class ConstantDef:
+    """Definition of an imported constant."""
+    name: str
+    type: Type
+    value: Any  # String, int, float
+
+
+@dataclass
+class ImportedDefinitions:
+    """Definitions extracted from imported modules for verification."""
+    functions: Dict[str, FunctionSignature] = field(default_factory=dict)
+    types: Dict[str, Type] = field(default_factory=dict)  # RecordType, EnumType, UnionType, RangeType
+    constants: Dict[str, ConstantDef] = field(default_factory=dict)
+
+    def merge(self, other: 'ImportedDefinitions'):
+        """Merge another ImportedDefinitions into this one."""
+        self.functions.update(other.functions)
+        self.types.update(other.types)
+        self.constants.update(other.constants)
+
 
 # ============================================================================
 # Function Registry (for inlining during verification)
@@ -538,11 +571,205 @@ def _parse_range_bounds(expr: SExpr) -> Optional[RangeBounds]:
 
 
 # ============================================================================
+# Import Resolution for Verification
+# ============================================================================
+
+def extract_module_definitions(ast: List[SExpr], registry: Dict[str, Type]) -> ImportedDefinitions:
+    """Extract all exportable definitions from a module AST.
+
+    Args:
+        ast: Parsed module AST
+        registry: Type registry built from the module (for resolving type references)
+
+    Returns:
+        ImportedDefinitions with functions, types, and constants
+    """
+    defs = ImportedDefinitions()
+
+    for form in ast:
+        if is_form(form, 'module'):
+            # Process forms inside module
+            for item in form.items[1:]:
+                _extract_definition(item, defs, registry)
+        else:
+            _extract_definition(form, defs, registry)
+
+    return defs
+
+
+def _extract_definition(form: SExpr, defs: ImportedDefinitions, registry: Dict[str, Type]):
+    """Extract a single definition from a form."""
+    if not isinstance(form, SList) or len(form) < 2:
+        return
+
+    # Functions: extract @spec for return type
+    if is_form(form, 'fn') and len(form) > 2:
+        name = form[1].name if isinstance(form[1], Symbol) else None
+        if name:
+            sig = _extract_function_signature(form, registry)
+            if sig:
+                defs.functions[name] = sig
+
+    # Types: extract record fields, enum variants, range types
+    elif is_form(form, 'type') and len(form) > 2:
+        type_name = form[1].name if isinstance(form[1], Symbol) else None
+        if type_name and type_name in registry:
+            defs.types[type_name] = registry[type_name]
+
+    # Constants: extract type and value
+    elif is_form(form, 'const') and len(form) >= 4:
+        name = form[1].name if isinstance(form[1], Symbol) else None
+        if name:
+            const_type = _parse_type_expr_simple(form[2], registry)
+            value = _extract_const_value(form[3])
+            defs.constants[name] = ConstantDef(name, const_type, value)
+
+
+def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Optional[FunctionSignature]:
+    """Extract function signature from a fn form.
+
+    Looks for @spec annotation to get return type with range information.
+    """
+    if len(fn_form) < 3:
+        return None
+
+    name = fn_form[1].name if isinstance(fn_form[1], Symbol) else None
+    if not name:
+        return None
+
+    param_types: List[Type] = []
+    return_type: Type = UNKNOWN
+
+    # Extract param types from parameter list
+    params = fn_form[2] if isinstance(fn_form[2], SList) else SList([])
+    for param in params:
+        if isinstance(param, SList) and len(param) >= 2:
+            first = param[0]
+            if isinstance(first, Symbol) and first.name in ('in', 'out', 'mut'):
+                # Mode is explicit: (in name Type)
+                type_expr = param[2] if len(param) > 2 else None
+            else:
+                # No mode: (name Type)
+                type_expr = param[1]
+            if type_expr:
+                param_types.append(_parse_type_expr_simple(type_expr, registry))
+
+    # Look for @spec to get return type
+    for item in fn_form.items[3:]:
+        if is_form(item, '@spec') and len(item) > 1:
+            spec = item[1]
+            if isinstance(spec, SList) and len(spec) >= 3:
+                # (@spec ((ParamTypes) -> ReturnType))
+                # Find the return type (after ->)
+                for i, s in enumerate(spec.items):
+                    if isinstance(s, Symbol) and s.name == '->':
+                        if i + 1 < len(spec):
+                            return_type = _parse_type_expr_simple(spec[i + 1], registry)
+                        break
+
+    return FunctionSignature(name, param_types, return_type)
+
+
+def _extract_const_value(expr: SExpr) -> Any:
+    """Extract the value from a constant definition."""
+    if isinstance(expr, Number):
+        return expr.value
+    elif isinstance(expr, String):
+        return expr.value
+    elif isinstance(expr, Symbol):
+        # Could be a reference to another constant or a special value
+        return expr.name
+    return None
+
+
+def resolve_imported_definitions(
+    ast: List[SExpr],
+    file_path: Path,
+    search_paths: Optional[List[Path]] = None
+) -> ImportedDefinitions:
+    """Resolve definitions from imported modules.
+
+    For each import statement in the AST, finds the module file,
+    parses it, and extracts definitions for imported symbols.
+
+    Args:
+        ast: The AST of the file being verified
+        file_path: Path to the file being verified
+        search_paths: Additional paths to search for modules
+
+    Returns:
+        ImportedDefinitions with functions, types, and constants from imports
+    """
+    from slop.parser import get_imports, parse_import
+
+    result = ImportedDefinitions()
+
+    # Collect all import statements
+    imports = []
+    for form in ast:
+        if is_form(form, 'module'):
+            for item in form.items[1:]:
+                if is_form(item, 'import'):
+                    imports.append(item)
+        elif is_form(form, 'import'):
+            imports.append(form)
+
+    if not imports:
+        return result
+
+    # Set up module resolver
+    from slop.resolver import ModuleResolver
+    paths = list(search_paths) if search_paths else []
+    resolver = ModuleResolver(paths)
+
+    # Process each import
+    for imp_form in imports:
+        try:
+            imp_spec = parse_import(imp_form)
+            module_name = imp_spec.module_name
+            imported_symbols = set(imp_spec.symbols)
+
+            # Find and load the module
+            module_path = resolver.resolve_module(module_name, file_path)
+            module_info = resolver.load_module(module_path)
+
+            # Build type registry for the module
+            module_registry = build_type_registry_from_ast(module_info.ast)
+
+            # Extract definitions
+            module_defs = extract_module_definitions(module_info.ast, module_registry)
+
+            # Only keep the symbols that are actually imported
+            for fn_name in list(module_defs.functions.keys()):
+                if fn_name in imported_symbols:
+                    result.functions[fn_name] = module_defs.functions[fn_name]
+
+            for type_name in list(module_defs.types.keys()):
+                if type_name in imported_symbols:
+                    result.types[type_name] = module_defs.types[type_name]
+
+            for const_name in list(module_defs.constants.keys()):
+                if const_name in imported_symbols:
+                    result.constants[const_name] = module_defs.constants[const_name]
+
+        except Exception:
+            # Skip modules that can't be resolved - they may be external
+            # The type checker will have already reported errors for missing modules
+            pass
+
+    return result
+
+
+# ============================================================================
 # Native Type Checker Integration
 # ============================================================================
 
-def _run_native_checker(path: str) -> Tuple[bool, List[dict]]:
+def _run_native_checker(path: str, include_paths: Optional[List[Path]] = None) -> Tuple[bool, List[dict]]:
     """Run native type checker and return (success, diagnostics).
+
+    Args:
+        path: Path to the file to check
+        include_paths: Paths to search for imported modules
 
     Returns (True, []) if checker not available or succeeds.
     Returns (False, diagnostics) if type errors found.
@@ -552,8 +779,35 @@ def _run_native_checker(path: str) -> Tuple[bool, List[dict]]:
         return True, []  # Fall through if native checker not available
 
     try:
+        # Build list of all files to check
+        files_to_check = []
+
+        if include_paths:
+            # Resolve all dependencies using ModuleResolver
+            # The native checker processes multiple files with a shared type environment,
+            # so we pass all dependencies in topological order
+            from slop.resolver import ModuleResolver, ResolverError
+
+            search_paths = list(include_paths) + [Path(path).parent]
+            resolver = ModuleResolver(search_paths)
+
+            try:
+                graph = resolver.build_dependency_graph(Path(path))
+                # Get files in topological order (dependencies first)
+                for mod_name in resolver.topological_sort(graph):
+                    mod_info = graph.modules[mod_name]
+                    files_to_check.append(str(mod_info.path))
+            except ResolverError:
+                # If resolution fails, just check the single file
+                files_to_check = [path]
+        else:
+            files_to_check = [path]
+
+        # Build command: slop-checker --json file1.slop file2.slop ...
+        cmd = [str(checker_bin), '--json'] + files_to_check
+
         result = subprocess.run(
-            [str(checker_bin), '--json', path],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30
@@ -594,8 +848,12 @@ class NativeDiagnostic:
         return f"{loc}{self.severity}: {self.message}"
 
 
-def run_native_checker_diagnostics(path: str) -> Tuple[List[NativeDiagnostic], bool]:
+def run_native_checker_diagnostics(path: str, include_paths: Optional[List[Path]] = None) -> Tuple[List[NativeDiagnostic], bool]:
     """Run native checker and return diagnostics in compatible format.
+
+    Args:
+        path: Path to the file to check
+        include_paths: Paths to search for imported modules
 
     Returns (diagnostics, native_available).
     If native not available, returns ([], False) so caller can fall back.
@@ -604,7 +862,7 @@ def run_native_checker_diagnostics(path: str) -> Tuple[List[NativeDiagnostic], b
     if not checker_bin.exists():
         return [], False  # Native checker not available
 
-    success, raw_diagnostics = _run_native_checker(path)
+    success, raw_diagnostics = _run_native_checker(path, include_paths)
 
     if success:
         return [], True  # No errors
@@ -683,12 +941,14 @@ class Z3Translator:
     """Translates SLOP AST expressions to Z3 constraints"""
 
     def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>",
-                 function_registry: Optional[FunctionRegistry] = None):
+                 function_registry: Optional[FunctionRegistry] = None,
+                 imported_defs: Optional[ImportedDefinitions] = None):
         if not Z3_AVAILABLE:
             raise RuntimeError("Z3 is not available")
         self.type_env = type_env
         self.filename = filename
         self.function_registry = function_registry
+        self.imported_defs = imported_defs or ImportedDefinitions()
         self.variables: Dict[str, z3.ExprRef] = {}
         self.constraints: List[z3.BoolRef] = []
         self.enum_values: Dict[str, int] = {}  # 'Fizz' -> 0, etc.
@@ -696,6 +956,7 @@ class Z3Translator:
 
     def _build_enum_map(self):
         """Build mapping from enum/union variant names to integer values"""
+        # Build from local type registry
         for typ in self.type_env.type_registry.values():
             if isinstance(typ, EnumType):
                 for i, variant in enumerate(typ.variants):
@@ -706,6 +967,19 @@ class Z3Translator:
                 for i, variant in enumerate(typ.variants.keys()):
                     self.enum_values[variant] = i
                     self.enum_values[f"'{variant}"] = i
+
+        # Also build from imported types
+        for typ in self.imported_defs.types.values():
+            if isinstance(typ, EnumType):
+                for i, variant in enumerate(typ.variants):
+                    if variant not in self.enum_values:
+                        self.enum_values[variant] = i
+                        self.enum_values[f"'{variant}"] = i
+            elif isinstance(typ, UnionType):
+                for i, variant in enumerate(typ.variants.keys()):
+                    if variant not in self.enum_values:
+                        self.enum_values[variant] = i
+                        self.enum_values[f"'{variant}"] = i
 
     def declare_variable(self, name: str, typ: Type) -> z3.ExprRef:
         """Create Z3 variable with appropriate sort and add range constraints"""
@@ -935,6 +1209,20 @@ class Z3Translator:
             return z3.BoolVal(False)
         if name == 'nil':
             return z3.IntVal(0)
+
+        # Check imported constants
+        if name in self.imported_defs.constants:
+            const = self.imported_defs.constants[name]
+            if isinstance(const.value, (int, float)):
+                if isinstance(const.value, float):
+                    return z3.RealVal(const.value)
+                return z3.IntVal(int(const.value))
+            elif isinstance(const.value, str):
+                # For string constants, use a hash as a unique identifier
+                return z3.IntVal(hash(const.value) % (2**31))
+            # If value is a symbol name, try to look it up
+            elif const.value is not None:
+                return z3.IntVal(hash(str(const.value)) % (2**31))
 
         # Shorthand dot notation: t.field -> (. t field)
         if '.' in name and not name.startswith('.'):
@@ -1336,13 +1624,30 @@ class Z3Translator:
 
         # Create uninterpreted function with unique key based on name and arity
         func_key = f"fn_{fn_name}_{len(args)}"
+
+        # Check if we have imported signature with type info
+        imported_sig = self.imported_defs.functions.get(fn_name)
+
         if func_key not in self.variables:
-            # Determine return type based on naming conventions
-            is_predicate = (fn_name.endswith('-eq') or fn_name.endswith('?') or
-                          fn_name.startswith('is-') or fn_name.endswith('-contains') or
-                          fn_name == 'graph-contains' or fn_name == 'contains' or
-                          fn_name.startswith('has-'))
-            return_sort = z3.BoolSort() if is_predicate else z3.IntSort()
+            # Determine return type based on imported signature or naming conventions
+            return_sort = z3.IntSort()  # Default
+            return_type: Optional[Type] = None
+
+            if imported_sig:
+                return_type = imported_sig.return_type
+                if isinstance(return_type, PrimitiveType) and return_type.name == 'Bool':
+                    return_sort = z3.BoolSort()
+                elif isinstance(return_type, RangeType):
+                    return_sort = z3.IntSort()  # Range types are integers
+                # Other types default to IntSort
+            else:
+                # Use naming conventions for functions without imported signature
+                is_predicate = (fn_name.endswith('-eq') or fn_name.endswith('?') or
+                              fn_name.startswith('is-') or fn_name.endswith('-contains') or
+                              fn_name == 'graph-contains' or fn_name == 'contains' or
+                              fn_name.startswith('has-'))
+                if is_predicate:
+                    return_sort = z3.BoolSort()
 
             # Build argument sorts (default to Int for all args)
             if args:
@@ -1354,12 +1659,24 @@ class Z3Translator:
             self.variables[func_key] = func
         else:
             func = self.variables[func_key]
+            # Get return type from imported signature if available
+            return_type = imported_sig.return_type if imported_sig else None
 
         # Apply the function to arguments
         if args:
-            return func(*args)
+            result = func(*args)
         else:
-            return func()
+            result = func()
+
+        # Add range constraints for imported functions with range return types
+        if imported_sig and isinstance(imported_sig.return_type, RangeType):
+            bounds = imported_sig.return_type.bounds
+            if bounds.min_val is not None:
+                self.constraints.append(result >= bounds.min_val)
+            if bounds.max_val is not None:
+                self.constraints.append(result <= bounds.max_val)
+
+        return result
 
 
 # ============================================================================
@@ -1370,13 +1687,15 @@ class ContractVerifier:
     """Verifies @pre/@post contracts for functions"""
 
     def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>",
-                 timeout_ms: int = 5000, function_registry: Optional[FunctionRegistry] = None):
+                 timeout_ms: int = 5000, function_registry: Optional[FunctionRegistry] = None,
+                 imported_defs: Optional[ImportedDefinitions] = None):
         if not Z3_AVAILABLE:
             raise RuntimeError("Z3 is not available")
         self.type_env = type_env
         self.filename = filename
         self.timeout_ms = timeout_ms
         self.function_registry = function_registry
+        self.imported_defs = imported_defs or ImportedDefinitions()
 
     def _references_mutable_state(self, expr: SExpr) -> bool:
         """Check if expression references mutable state (deref field access)"""
@@ -2998,7 +3317,8 @@ class ContractVerifier:
             )
 
         # Create translator and declare parameters
-        translator = Z3Translator(self.type_env, self.filename, self.function_registry)
+        translator = Z3Translator(self.type_env, self.filename, self.function_registry,
+                                  self.imported_defs)
 
         # Declare parameter variables
         for param in params:
@@ -3498,7 +3818,8 @@ def verify_source(source: str, filename: str = "<string>",
 
 
 def verify_ast(ast: List[SExpr], filename: str = "<string>",
-               mode: str = "error", timeout_ms: int = 5000) -> List[VerificationResult]:
+               mode: str = "error", timeout_ms: int = 5000,
+               search_paths: Optional[List[Path]] = None) -> List[VerificationResult]:
     """Verify a pre-parsed SLOP AST.
 
     Args:
@@ -3506,6 +3827,7 @@ def verify_ast(ast: List[SExpr], filename: str = "<string>",
         filename: Source filename (for error messages)
         mode: Failure mode ('error' or 'warn')
         timeout_ms: Z3 solver timeout in milliseconds
+        search_paths: Paths to search for imported modules
 
     Returns:
         List of verification results
@@ -3522,6 +3844,16 @@ def verify_ast(ast: List[SExpr], filename: str = "<string>",
     type_registry = build_type_registry_from_ast(ast)
     # Build invariant registry for type invariants
     invariant_registry = build_invariant_registry_from_ast(ast)
+
+    # Resolve imported definitions for verification
+    file_path = Path(filename)
+    imported_defs = resolve_imported_definitions(ast, file_path, search_paths)
+
+    # Merge imported types into type_registry for type lookups
+    for type_name, typ in imported_defs.types.items():
+        if type_name not in type_registry:
+            type_registry[type_name] = typ
+
     type_env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
 
     # Build function registry for inlining
@@ -3529,7 +3861,7 @@ def verify_ast(ast: List[SExpr], filename: str = "<string>",
     function_registry.register_from_ast(ast)
 
     # Run contract verification
-    contract_verifier = ContractVerifier(type_env, filename, timeout_ms, function_registry)
+    contract_verifier = ContractVerifier(type_env, filename, timeout_ms, function_registry, imported_defs)
     results = contract_verifier.verify_all(ast)
 
     # Run range verification
@@ -3540,8 +3872,19 @@ def verify_ast(ast: List[SExpr], filename: str = "<string>",
 
 
 def verify_file(path: str, mode: str = "error",
-                timeout_ms: int = 5000) -> List[VerificationResult]:
-    """Verify a SLOP file"""
+                timeout_ms: int = 5000,
+                search_paths: Optional[List[Path]] = None) -> List[VerificationResult]:
+    """Verify a SLOP file.
+
+    Args:
+        path: Path to the SLOP file to verify
+        mode: Failure mode ('error' or 'warn')
+        timeout_ms: Z3 solver timeout in milliseconds
+        search_paths: Paths to search for imported modules
+
+    Returns:
+        List of verification results
+    """
     if not Z3_AVAILABLE:
         return [VerificationResult(
             name="z3",
@@ -3572,8 +3915,8 @@ def verify_file(path: str, mode: str = "error",
             message=f"Could not read/parse file: {e}"
         )]
 
-    # Run native type checker first
-    success, diagnostics = _run_native_checker(path)
+    # Run native type checker first (with include paths)
+    success, diagnostics = _run_native_checker(path, search_paths)
 
     # Check for type errors
     if not success:
@@ -3589,6 +3932,16 @@ def verify_file(path: str, mode: str = "error",
     type_registry = build_type_registry_from_ast(ast)
     # Build invariant registry for type invariants
     invariant_registry = build_invariant_registry_from_ast(ast)
+
+    # Resolve imported definitions for verification
+    file_path = Path(path)
+    imported_defs = resolve_imported_definitions(ast, file_path, search_paths)
+
+    # Merge imported types into type_registry for type lookups
+    for type_name, typ in imported_defs.types.items():
+        if type_name not in type_registry:
+            type_registry[type_name] = typ
+
     type_env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
 
     # Build function registry for inlining
@@ -3596,7 +3949,7 @@ def verify_file(path: str, mode: str = "error",
     function_registry.register_from_ast(ast)
 
     # Run contract verification
-    contract_verifier = ContractVerifier(type_env, path, timeout_ms, function_registry)
+    contract_verifier = ContractVerifier(type_env, path, timeout_ms, function_registry, imported_defs)
     results = contract_verifier.verify_all(ast)
 
     # Run range verification

@@ -2911,16 +2911,39 @@ def cmd_format(args):
 def cmd_ref(args):
     """Display language reference for AI assistants"""
     from slop.reference import get_reference, list_topics, TOPICS
+    from slop import paths
+
+    # Build stdlib module mapping
+    stdlib_modules = {p.stem: p for p in paths.list_stdlib_modules()}
 
     if args.list:
+        # Static topics
         for topic in list_topics():
             print(topic)
+        # Dynamic stdlib modules
+        for module_name in sorted(stdlib_modules.keys()):
+            print(f"{module_name} (stdlib)")
         return 0
 
     topic = args.topic or 'all'
+
+    # Check if it's a stdlib module - generate docs dynamically
+    if topic in stdlib_modules:
+        module_path = stdlib_modules[topic]
+        try:
+            ast = parse_file(str(module_path))
+            doc = extract_documentation(ast)
+            print(render_markdown(doc))
+            return 0
+        except Exception as e:
+            print(f"Error generating docs for {topic}: {e}", file=sys.stderr)
+            return 1
+
+    # Existing static topic handling
     if topic != 'all' and topic not in TOPICS:
         print(f"Unknown topic: {topic}", file=sys.stderr)
         print(f"Available: {', '.join(list_topics())}", file=sys.stderr)
+        print(f"Stdlib modules: {', '.join(sorted(stdlib_modules.keys()))}", file=sys.stderr)
         return 1
 
     print(get_reference(topic))
@@ -3989,13 +4012,14 @@ def sexpr_to_c(expr):
         return str(expr)
 
 
-def _run_verify_multi(args, verify_files: list, verify_cfg) -> int:
+def _run_verify_multi(args, verify_files: list, verify_cfg, search_paths: list = None) -> int:
     """Run verification on multiple files and aggregate results.
 
     Args:
         args: CLI arguments
         verify_files: List of Path objects for files to verify
         verify_cfg: VerifyConfig instance
+        search_paths: List of Paths to search for imported modules
 
     Returns:
         0 if all verifications pass, 1 if any fail
@@ -4009,6 +4033,9 @@ def _run_verify_multi(args, verify_files: list, verify_cfg) -> int:
     if not Z3_AVAILABLE:
         print("Error: Z3 solver not available.", file=sys.stderr)
         return 1
+
+    if search_paths is None:
+        search_paths = []
 
     total_files = len(verify_files)
     passed_files = 0
@@ -4034,8 +4061,10 @@ def _run_verify_multi(args, verify_files: list, verify_cfg) -> int:
 
         print(f"[{i}/{total_files}] Verifying {rel_path}")
 
-        # Run verification on single file
-        results = verify_file(str(verify_file_path), mode=mode, timeout_ms=timeout)
+        # Run verification on single file (include file's directory in search paths)
+        file_search_paths = [verify_file_path.parent] + search_paths
+        results = verify_file(str(verify_file_path), mode=mode, timeout_ms=timeout,
+                              search_paths=file_search_paths)
 
         # Categorize results
         verified = [r for r in results if r.status == 'verified']
@@ -4124,6 +4153,34 @@ def cmd_verify(args):
     # Load project config
     project_cfg, build_cfg, _, verify_cfg = load_project_config()
 
+    # Collect include paths from CLI and config
+    # Priority: CLI args > [verify].include > [build].include
+    config_dir = Path.cwd()
+    search_paths: List[Path] = []
+
+    # Add CLI include paths first (highest priority)
+    for p in getattr(args, 'include', []):
+        inc_path = Path(p).resolve()
+        if inc_path.exists() and inc_path not in search_paths:
+            search_paths.append(inc_path)
+
+    # Add [verify].include paths
+    if verify_cfg and verify_cfg.include:
+        for p in verify_cfg.include:
+            inc_path = (config_dir / p).resolve()
+            if inc_path.exists() and inc_path not in search_paths:
+                search_paths.append(inc_path)
+
+    # Add [build].include paths as fallback
+    if build_cfg and build_cfg.include:
+        for p in build_cfg.include:
+            inc_path = (config_dir / p).resolve()
+            if inc_path.exists() and inc_path not in search_paths:
+                search_paths.append(inc_path)
+
+    # Add standard library paths
+    search_paths.extend(paths.get_stdlib_include_paths())
+
     # Determine files to verify
     verify_files = []
 
@@ -4165,10 +4222,14 @@ def cmd_verify(args):
 
     # Run verification on multiple files or single file
     if len(verify_files) > 1:
-        return _run_verify_multi(args, verify_files, verify_cfg)
+        return _run_verify_multi(args, verify_files, verify_cfg, search_paths)
 
     # Single file mode - use original logic
     input_file = str(verify_files[0])
+    input_path = verify_files[0]
+
+    # Add the file's directory to search paths
+    file_search_paths = [input_path.parent] + search_paths
 
     # Determine failure mode
     mode = args.mode if args.mode else "error"
@@ -4185,14 +4246,15 @@ def cmd_verify(args):
             else:
                 print("Native parser not available, falling back to Python", file=sys.stderr)
                 # Fall back to Python parser
-                results = verify_file(input_file, mode=mode, timeout_ms=args.timeout)
+                results = verify_file(input_file, mode=mode, timeout_ms=args.timeout,
+                                      search_paths=file_search_paths)
                 use_native = False
         if use_native and success:
             if args.verbose:
                 print("Using native parser", file=sys.stderr)
             # Run native type checker first
             from slop.verifier import _run_native_checker, VerificationResult
-            check_success, diagnostics = _run_native_checker(input_file)
+            check_success, diagnostics = _run_native_checker(input_file, file_search_paths)
             if not check_success:
                 error_msgs = [d.get('message', 'Unknown error') for d in diagnostics if d.get('level') == 'error']
                 results = [VerificationResult(
@@ -4202,10 +4264,12 @@ def cmd_verify(args):
                     message=f"Type errors found: {'; '.join(error_msgs) if error_msgs else 'check failed'}"
                 )]
             else:
-                results = verify_ast(ast, filename=input_file, mode=mode, timeout_ms=args.timeout)
+                results = verify_ast(ast, filename=input_file, mode=mode, timeout_ms=args.timeout,
+                                     search_paths=file_search_paths)
     else:
         # Run verification with Python parser
-        results = verify_file(input_file, mode=mode, timeout_ms=args.timeout)
+        results = verify_file(input_file, mode=mode, timeout_ms=args.timeout,
+                              search_paths=file_search_paths)
 
     # Categorize results
     verified = [r for r in results if r.status == 'verified']
@@ -4460,6 +4524,8 @@ def main():
     p = subparsers.add_parser('verify', help='Verify contracts with Z3')
     p.add_argument('input', nargs='?', default=None,
         help='Input file or directory (optional if [verify].sources in slop.toml)')
+    p.add_argument('-I', '--include', action='append', default=[],
+        help='Add search path for module imports')
     p.add_argument('--mode', choices=['error', 'warn'],
         help='Failure mode: error (block, default) or warn')
     p.add_argument('--timeout', type=int, default=5000,
