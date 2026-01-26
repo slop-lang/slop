@@ -4004,8 +4004,12 @@
                           ((sym name-sym)
                             (match (list-get field-items 1)
                               ((some val-expr)
-                                (let ((field-name (to-c-name arena (. name-sym name)))
-                                      (field-val (transpile-expr ctx val-expr)))
+                                (let ((raw-field-name (. name-sym name))
+                                      (field-name (to-c-name arena raw-field-name))
+                                      (field-type-opt (ctx-lookup-field-type ctx type-name raw-field-name))
+                                      (field-val (match field-type-opt
+                                                   ((some field-type) (transpile-typed-init ctx val-expr field-type))
+                                                   ((none) (transpile-expr ctx val-expr)))))
                                   (if first
                                     (set! result (ctx-str ctx result (ctx-str ctx "." (ctx-str ctx field-name (ctx-str ctx " = " field-val)))))
                                     (set! result (ctx-str ctx result (ctx-str ctx ", ." (ctx-str ctx field-name (ctx-str ctx " = " field-val))))))

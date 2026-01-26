@@ -176,16 +176,17 @@
                       (let ((raw-name (. name-sym name))
                             (base-name (to-c-name arena raw-name))
                             (c-name (ctx-prefix-type ctx base-name)))
-                        (do
-                          ;; Register constant as variable for local lookup
-                          (ctx-bind-var ctx (VarEntry raw-name c-name "auto" "" false false false "" ""))
-                          (match (list-get items 2)
-                            ((some type-expr)
-                              (match (list-get items 3)
-                                ((some value-expr)
-                                  (emit-const-def ctx c-name type-expr value-expr is-exported))
-                                ((none) (ctx-fail ctx "missing const value"))))
-                            ((none) (ctx-fail ctx "missing const type"))))))
+                        (match (list-get items 2)
+                          ((some type-expr)
+                            (let ((slop-type-str (pretty-print arena type-expr)))
+                              (do
+                                ;; Register constant as variable for local lookup
+                                (ctx-bind-var ctx (VarEntry raw-name c-name "auto" slop-type-str false false false "" ""))
+                                (match (list-get items 3)
+                                  ((some value-expr)
+                                    (emit-const-def ctx c-name type-expr value-expr is-exported))
+                                  ((none) (ctx-fail ctx "missing const value"))))))
+                          ((none) (ctx-fail ctx "missing const type")))))
                     (else (ctx-fail ctx "const name must be symbol"))))
                 ((none) (ctx-fail ctx "missing const name"))))))
         (else (ctx-fail ctx "invalid const form")))))
