@@ -17,7 +17,7 @@
 
 (module tester-main
   (import types (SExpr SExprList SExprSymbol))
-  (import tester (generate-tests TestResult))
+  (import tester (generate-tests generate-tests-with-imports TestResult))
 
   ;; FFI for file I/O and command-line arguments
   (ffi "stdio.h"
@@ -175,6 +175,27 @@
     (do))
 
   ;; ============================================================
+  ;; Import File Reading
+  ;; ============================================================
+
+  (fn read-import-files ((arena Arena) (argc Int) (argv (Ptr (Ptr U8))))
+    (@intent "Read import file contents from argv[2..argc]")
+    (@spec ((Arena Int (Ptr (Ptr U8))) -> (List String)))
+    (@alloc arena)
+    (let ((sources (list-new arena String))
+          (mut i 2))
+      (while (< i argc)
+        (let ((path-ptr (cast (Ptr Char) (@ argv i))))
+          (match (read-file arena path-ptr)
+            ((some source)
+              (list-push sources source))
+            ((none)
+              ;; Skip files that can't be read
+              (do))))
+        (set! i (+ i 1)))
+      sources))
+
+  ;; ============================================================
   ;; Main Entry Point
   ;; ============================================================
 
@@ -184,12 +205,14 @@
     ;; Check arguments
     (if (< argc 2)
       (do
-        (print-str (cast (Ptr Char) "Usage: slop-tester <input.slop>\n"))
+        (print-str (cast (Ptr Char) "Usage: slop-tester <input.slop> [import-files...]\n"))
         1)
       (with-arena 16777216  ;; 16MB arena
         (match (read-file arena (cast (Ptr Char) (@ argv 1)))
             ((some source)
-              (let ((result (generate-tests arena source)))
+              ;; Read import file contents from additional arguments
+              (let ((import-sources (read-import-files arena argc argv))
+                    (result (generate-tests-with-imports arena source import-sources)))
                 (if (. result success)
                   (do
                     ;; Output JSON: {"test_harness": "...", "test_count": N, "module_name": "..."}

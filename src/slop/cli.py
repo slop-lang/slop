@@ -391,8 +391,12 @@ def transpile_to_cache(module_path: Path, cache_dir: Path, search_paths: list) -
         return False
 
 
-def test_native(input_file: str):
+def test_native(input_file: str, dep_files: list = None):
     """Generate test harness using native tester.
+
+    Args:
+        input_file: Path to main .slop file to test
+        dep_files: List of dependency file paths for import type extraction
 
     Returns tuple of (test_harness, test_count, module_name, success).
     test_harness is the C code string for the test harness.
@@ -406,8 +410,11 @@ def test_native(input_file: str):
         return None, 0, '', False
 
     try:
+        cmd = [str(tester_bin), input_file]
+        if dep_files:
+            cmd.extend(dep_files)
         result = subprocess.run(
-            [str(tester_bin), input_file],
+            cmd,
             capture_output=True,
             text=True
         )
@@ -3243,21 +3250,22 @@ def cmd_test(args):
             if c_path.exists():
                 dep_sources.append(str(c_path))
 
+        # Collect dependency file paths (used by both tester and transpiler)
+        dep_files = [str(graph.modules[mod_name].path)
+                     for mod_name in build_order
+                     if graph.modules[mod_name].path != input_path.resolve()]
+
         # Try native tester first (if not --python flag)
         use_native = not getattr(args, 'python', False)
         if use_native:
             native_tester_bin = find_native_component('tester')
             if native_tester_bin:
                 print(f"  Using native tester: {native_tester_bin}")
-                test_harness, test_count, module_name, tester_success = test_native(str(input_path))
+                test_harness, test_count, module_name, tester_success = test_native(str(input_path), dep_files=dep_files)
                 if tester_success and test_count > 0:
                     # Native tester succeeded - now get transpiled code
                     print(f"Found {test_count} test case(s)")
                     print("  Transpiling...")
-                    # Collect dependency file paths for native transpiler
-                    dep_files = [str(graph.modules[mod_name].path)
-                                 for mod_name in build_order
-                                 if graph.modules[mod_name].path != input_path.resolve()]
                     c_code, transpiler_success = transpile_native(str(input_path), dep_files=dep_files)
                     if transpiler_success:
                         # Combine transpiled code (without main) with test harness
