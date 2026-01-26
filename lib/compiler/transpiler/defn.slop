@@ -861,7 +861,9 @@
       (ctx-emit ctx "}")
       (ctx-emit ctx "")
       ;; Register type
-      (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))))
+      (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))
+      ;; Register as type alias so hash/eq generation can detect range types
+      (ctx-register-type-alias ctx raw-name (pretty-print arena type-expr))))
 
   ;; ============================================================
   ;; Function Definition

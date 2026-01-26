@@ -20,7 +20,7 @@
     ;; Type/function registration
     ctx-register-type ctx-lookup-type
     ctx-register-func ctx-lookup-func
-    ctx-register-field-type ctx-lookup-field-type ctx-lookup-field-slop-type ctx-lookup-field-type-by-index
+    ctx-register-field-type ctx-lookup-field-type ctx-lookup-field-slop-type ctx-lookup-field-type-by-index ctx-get-fields-for-type
     ctx-mark-pointer-var ctx-is-pointer-var
     ;; Module context
     ctx-set-module ctx-get-module
@@ -33,6 +33,8 @@
     ctx-mark-type-emitted ctx-is-type-emitted
     ;; Enum variant tracking
     EnumVariant ctx-register-enum-variant ctx-lookup-enum-variant
+    ;; Union variant tracking (for hash/eq generation)
+    UnionVariantEntry ctx-register-union-variant ctx-get-union-variants
     ;; Result type tracking
     ResultType ctx-register-result-type ctx-has-result-type ctx-get-result-types
     ;; Current function result type (for ok/error expressions)
@@ -162,6 +164,14 @@
     (variant-name String)
     (enum-name String)))
 
+  ;; Union variant with payload type info (for hash/eq generation)
+  (type UnionVariantEntry (record
+    (variant-name String)    ;; Raw variant name (e.g., "term-iri")
+    (union-name String)      ;; C union type name (e.g., "rdf_Term")
+    (c-variant-name String)  ;; C variant name (e.g., "term_iri")
+    (slop-type String)       ;; SLOP payload type (e.g., "String", "IriData")
+    (c-type String)))        ;; C payload type (e.g., "slop_string", "rdf_IriData")
+
   (type ResultType (record
     (ok-type String)      ;; C type for ok value
     (err-type String)     ;; C type for error value
@@ -228,6 +238,8 @@
       (emitted-types (List String))
       ;; Enum variant to type mapping (for quote operator)
       (enum-variants (List EnumVariant))
+      ;; Union variant info (for hash/eq generation)
+      (union-variants (List UnionVariantEntry))
       ;; Result types to generate
       (result-types (List ResultType))
       ;; Current function's result type (for ok/error expressions)
@@ -304,6 +316,7 @@
       (set! (deref ctx) includes (list-new arena String))
       (set! (deref ctx) emitted-types (list-new arena String))
       (set! (deref ctx) enum-variants (list-new arena EnumVariant))
+      (set! (deref ctx) union-variants (list-new arena UnionVariantEntry))
       (set! (deref ctx) result-types (list-new arena ResultType))
       (set! (deref ctx) current-result-type (Option String) none)
       (set! (deref ctx) current-return-c-type (Option String) none)
@@ -799,6 +812,24 @@
         (set! i (+ i 1)))
       result))
 
+  (fn ctx-get-fields-for-type ((ctx (Ptr TranspileContext)) (type-name String))
+    (@intent "Get all fields for a record type")
+    (@spec (((Ptr TranspileContext) String) -> (List FieldEntry)))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (all-fields (. (deref ctx) field-types))
+          (result (list-new arena FieldEntry))
+          (len (list-len all-fields))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get all-fields i)
+          ((some entry)
+            (when (string-eq (. entry type-name) type-name)
+              (list-push result entry)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
   (fn ctx-mark-pointer-var ((ctx (Ptr TranspileContext)) (name String))
     (@intent "Mark a variable as a pointer")
     (@spec (((Ptr TranspileContext) String) -> Unit))
@@ -942,6 +973,36 @@
           ((some entry)
             (when (string-eq (. entry variant-name) variant-name)
               (set! result (some (. entry enum-name)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  ;; ============================================================
+  ;; Union Variant Tracking (for hash/eq generation)
+  ;; ============================================================
+
+  (fn ctx-register-union-variant ((ctx (Ptr TranspileContext)) (variant-name String) (union-name String)
+                                  (c-variant-name String) (slop-type String) (c-type String))
+    (@intent "Register a union variant with payload type info")
+    (@spec (((Ptr TranspileContext) String String String String String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) union-variants)
+               (UnionVariantEntry variant-name union-name c-variant-name slop-type c-type)))
+
+  (fn ctx-get-union-variants ((ctx (Ptr TranspileContext)) (union-name String))
+    (@intent "Get all variants for a union type")
+    (@spec (((Ptr TranspileContext) String) -> (List UnionVariantEntry)))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (all-variants (. (deref ctx) union-variants))
+          (result (list-new arena UnionVariantEntry))
+          (len (list-len all-variants))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get all-variants i)
+          ((some entry)
+            (when (string-eq (. entry union-name) union-name)
+              (list-push result entry)))
           ((none) (do)))
         (set! i (+ i 1)))
       result))
