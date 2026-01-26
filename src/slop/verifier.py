@@ -3282,6 +3282,39 @@ class ContractVerifier:
             return self._get_return_expr(expr.items[-1])
         return expr
 
+    def _collect_all_return_exprs(self, expr: SExpr) -> List[SExpr]:
+        """Collect ALL return expressions from a function body.
+
+        This includes:
+        - Explicit (return ...) expressions
+        - The final expression (implicit return)
+
+        Used to add axioms for all possible return paths.
+        """
+        returns = []
+        self._collect_returns_recursive(expr, returns)
+
+        # Also add the final expression (if not already a return)
+        final = self._get_return_expr(expr)
+        if not is_form(final, 'return'):
+            returns.append(final)
+
+        return returns
+
+    def _collect_returns_recursive(self, expr: SExpr, returns: List[SExpr]) -> None:
+        """Recursively collect (return ...) expressions."""
+        if not isinstance(expr, SList):
+            return
+
+        if is_form(expr, 'return') and len(expr) >= 2:
+            returns.append(expr[1])
+            return
+
+        # Recurse into subexpressions
+        for item in expr.items:
+            if isinstance(item, SList):
+                self._collect_returns_recursive(item, returns)
+
     def _is_record_new(self, expr: SExpr) -> bool:
         """Check if expression is a record-new form (handles do blocks)"""
         return_expr = self._get_return_expr(expr)
@@ -3581,6 +3614,124 @@ class ContractVerifier:
 
                 axioms.append(payload_func(result_var) == payload_z3)
 
+                # Axiom 3: If payload is a record-new, propagate field axioms
+                # For (some (record-new Type (field1 val1) ...)), add:
+                #   field_field1(union_payload_some($result)) == val1
+                #   string_len(field_field1(union_payload_some($result))) == len if val1 is string
+                if is_form(payload_expr, 'record-new') and len(payload_expr) >= 3:
+                    payload_var = payload_func(result_var)  # This is union_payload_some($result)
+                    for item in payload_expr.items[2:]:  # Skip 'record-new' and Type
+                        if isinstance(item, SList) and len(item) >= 2:
+                            field_name = item[0].name if isinstance(item[0], Symbol) else None
+                            if field_name:
+                                field_func = translator._translate_field_for_obj(payload_var, field_name)
+                                field_value = translator.translate_expr(item[1])
+                                if field_value is not None:
+                                    axioms.append(field_func == field_value)
+
+                                # If field value is a string literal, add string_len axiom
+                                if isinstance(item[1], String):
+                                    str_len_func_name = "string_len"
+                                    if str_len_func_name not in translator.variables:
+                                        str_len_func = z3.Function(str_len_func_name, z3.IntSort(), z3.IntSort())
+                                        translator.variables[str_len_func_name] = str_len_func
+                                    else:
+                                        str_len_func = translator.variables[str_len_func_name]
+                                    actual_len = len(item[1].value)
+                                    axioms.append(str_len_func(field_func) == z3.IntVal(actual_len))
+
+        return axioms
+
+    def _extract_union_constructor_axioms_for_expr(
+        self, return_expr: SExpr, translator: Z3Translator
+    ) -> List:
+        """Extract CONDITIONAL axioms for a union constructor return expression.
+
+        For functions with multiple return paths (e.g., early return (some ...) and
+        final (none)), we add conditional axioms:
+            union_tag($result) == some_tag => field_X(payload($result)) == value
+
+        This allows Z3 to use these axioms when exploring the 'some' case in a
+        match postcondition, without conflicting with the 'none' return path.
+        """
+        axioms = []
+
+        if not isinstance(return_expr, SList) or len(return_expr) < 1:
+            return axioms
+
+        head = return_expr[0]
+        if not isinstance(head, Symbol):
+            return axioms
+
+        constructor_name = head.name
+        constructors = {'ok', 'error', 'some', 'none'}
+
+        if constructor_name not in constructors:
+            return axioms
+
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return axioms
+
+        # Get tag index using same calculation as _translate_match
+        tag_idx = translator.enum_values.get(
+            constructor_name,
+            translator.enum_values.get(f"'{constructor_name}", hash(constructor_name) % 256)
+        )
+
+        # Get or create union_tag function
+        tag_func_name = "union_tag"
+        if tag_func_name not in translator.variables:
+            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+            translator.variables[tag_func_name] = tag_func
+        else:
+            tag_func = translator.variables[tag_func_name]
+
+        # Condition: this return path was taken (i.e., tag matches this constructor)
+        tag_condition = tag_func(result_var) == z3.IntVal(tag_idx)
+
+        # For constructors with payload (some, ok, error), add conditional field axioms
+        if len(return_expr) >= 2 and constructor_name != 'none':
+            payload_expr = return_expr[1]
+
+            # Get or create payload function
+            payload_func_name = f"union_payload_{constructor_name}"
+            if payload_func_name not in translator.variables:
+                payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
+                translator.variables[payload_func_name] = payload_func
+            else:
+                payload_func = translator.variables[payload_func_name]
+
+            payload_var = payload_func(result_var)
+
+            # If payload is a record-new, add conditional field axioms
+            if is_form(payload_expr, 'record-new') and len(payload_expr) >= 3:
+                for item in payload_expr.items[2:]:  # Skip 'record-new' and Type
+                    if isinstance(item, SList) and len(item) >= 2:
+                        field_name = item[0].name if isinstance(item[0], Symbol) else None
+                        if field_name:
+                            field_func = translator._translate_field_for_obj(payload_var, field_name)
+                            field_value = translator.translate_expr(item[1])
+
+                            if field_value is not None:
+                                # Conditional: tag == X => field == value
+                                axioms.append(z3.Implies(tag_condition, field_func == field_value))
+
+                            # If field is string literal, add conditional string_len axiom
+                            if isinstance(item[1], String):
+                                str_len_func_name = "string_len"
+                                if str_len_func_name not in translator.variables:
+                                    str_len_func = z3.Function(str_len_func_name, z3.IntSort(), z3.IntSort())
+                                    translator.variables[str_len_func_name] = str_len_func
+                                else:
+                                    str_len_func = translator.variables[str_len_func_name]
+                                actual_len = len(item[1].value)
+                                # Conditional: tag == X => string_len(field) == actual_len
+                                axioms.append(z3.Implies(
+                                    tag_condition,
+                                    str_len_func(field_func) == z3.IntVal(actual_len)
+                                ))
+
         return axioms
 
     def _extract_union_tag_axiom(self, union_new: SList, translator: Z3Translator) -> Optional:
@@ -3625,6 +3776,79 @@ class ContractVerifier:
 
         return tag_func(result_var) == z3.IntVal(tag_idx)
 
+    def _extract_match_exhaustiveness_constraints(
+        self, postconditions: List[SExpr], translator: Z3Translator
+    ) -> List:
+        """Extract exhaustiveness constraints for match postconditions.
+
+        For a match like:
+            (match $result ((none) true) ((some report) cond))
+
+        Add constraint: union_tag($result) == none_tag OR union_tag($result) == some_tag
+
+        This prevents Z3 from finding counterexamples with invalid tag values
+        that don't correspond to any constructor.
+        """
+        constraints = []
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return constraints
+
+        for post in postconditions:
+            if is_form(post, 'match') and len(post) >= 3:
+                scrutinee = post[1]
+                # Only process match on $result
+                if not (isinstance(scrutinee, Symbol) and scrutinee.name == '$result'):
+                    continue
+
+                # Get or create union_tag function
+                tag_func_name = "union_tag"
+                if tag_func_name not in translator.variables:
+                    tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+                    translator.variables[tag_func_name] = tag_func
+                else:
+                    tag_func = translator.variables[tag_func_name]
+
+                tag_value = tag_func(result_var)
+
+                # Collect all tag indices from the match patterns
+                tag_conditions = []
+                for clause in post.items[2:]:
+                    if not isinstance(clause, SList) or len(clause) < 1:
+                        continue
+
+                    pattern = clause[0]
+
+                    # Extract tag name from pattern
+                    tag_name = None
+                    if isinstance(pattern, Symbol):
+                        if pattern.name == '_':
+                            # Wildcard - match is already exhaustive, no constraint needed
+                            tag_conditions = []
+                            break
+                        tag_name = pattern.name
+                    elif isinstance(pattern, SList) and len(pattern) >= 1:
+                        tag_elem = pattern[0]
+                        if isinstance(tag_elem, Symbol):
+                            tag_name = tag_elem.name.lstrip("'")
+                        elif is_form(tag_elem, 'quote') and len(tag_elem) >= 2:
+                            inner = tag_elem[1]
+                            tag_name = inner.name if isinstance(inner, Symbol) else None
+
+                    if tag_name:
+                        # Get tag index using same calculation as _translate_match
+                        tag_idx = translator.enum_values.get(
+                            tag_name,
+                            translator.enum_values.get(f"'{tag_name}", hash(tag_name) % 256)
+                        )
+                        tag_conditions.append(tag_value == z3.IntVal(tag_idx))
+
+                # Add disjunction constraint: tag must be one of the pattern tags
+                if tag_conditions:
+                    constraints.append(z3.Or(*tag_conditions))
+
+        return constraints
+
     def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator) -> List:
         """Extract axioms: field_X($result) == value for each field in record-new
 
@@ -3655,6 +3879,18 @@ class ContractVerifier:
                         else:
                             len_func = translator.variables[func_name]
                         axioms.append(len_func(field_func) == z3.IntVal(0))
+
+                    # If field value is a string literal, add string_len axiom
+                    # This allows proving postconditions like {(string-len (. report reason)) > 0}
+                    if isinstance(item[1], String):
+                        str_len_func_name = "string_len"
+                        if str_len_func_name not in translator.variables:
+                            str_len_func = z3.Function(str_len_func_name, z3.IntSort(), z3.IntSort())
+                            translator.variables[str_len_func_name] = str_len_func
+                        else:
+                            str_len_func = translator.variables[str_len_func_name]
+                        actual_len = len(item[1].value)
+                        axioms.append(str_len_func(field_func) == z3.IntVal(actual_len))
         return axioms
 
     def _extract_list_new_axioms(self, list_new_expr: SList, translator: Z3Translator) -> List:
@@ -5072,14 +5308,45 @@ class ContractVerifier:
                 solver.add(tag_axiom)
 
         # Phase 4.5: Add union constructor axioms for (ok result), (error e), etc.
-        # For (ok result), adds:
-        #   union_tag($result) == 0
-        #   union_payload_ok($result) == result
-        # This enables proving match postconditions on Result/Option types.
+        # For the final return, add UNCONDITIONAL axioms (tag == X, payload == value).
+        # This handles single-return-path functions like apply-cax-rules.
         if fn_body is not None and self._is_union_constructor(fn_body):
             constructor_axioms = self._extract_union_constructor_axioms(fn_body, translator)
             for axiom in constructor_axioms:
                 solver.add(axiom)
+
+        # Phase 4.6: Add CONDITIONAL axioms for early return statements
+        # For functions with multiple return paths like cax-dw:
+        #   (return (some (record-new ...))) ... (none)
+        # Add conditional axioms: tag == some => field_reason(...) == "..."
+        # This allows Z3 to use the axioms when exploring the 'some' case.
+        if fn_body is not None:
+            all_returns = self._collect_all_return_exprs(fn_body)
+            final_return = self._get_return_expr(fn_body)
+            for return_expr in all_returns:
+                # Skip the final return (already handled by Phase 4.5)
+                if return_expr is final_return:
+                    continue
+                # Check if this return is a union constructor
+                if isinstance(return_expr, SList) and len(return_expr) >= 1:
+                    head = return_expr[0]
+                    if isinstance(head, Symbol) and head.name in {'ok', 'error', 'some', 'none'}:
+                        constructor_axioms = self._extract_union_constructor_axioms_for_expr(
+                            return_expr, translator
+                        )
+                        for axiom in constructor_axioms:
+                            solver.add(axiom)
+
+        # Phase 4.7: Add match exhaustiveness constraints
+        # For match postconditions like (match $result ((none) true) ((some r) cond)),
+        # add constraint: union_tag($result) == none_tag OR union_tag($result) == some_tag
+        # This prevents Z3 from finding counterexamples with invalid tag values.
+        if postconditions:
+            exhaustiveness_constraints = self._extract_match_exhaustiveness_constraints(
+                postconditions, translator
+            )
+            for constraint in exhaustiveness_constraints:
+                solver.add(constraint)
 
         # Phase 5: Add conditional record-new axioms
         # For (if cond (record-new Type (f1 v1) ...) else), add: cond => field_f1($result) == v1
