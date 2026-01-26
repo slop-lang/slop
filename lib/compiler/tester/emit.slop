@@ -172,12 +172,40 @@
                                   ;; Built-in types don't use module prefix
                                   (if (string-eq type-name "String")
                                     "(slop_list_string){.data = NULL, .len = 0, .cap = 0}"
-                                    ;; Module types use prefix: (slop_list_prefix_Type){...}
-                                    (string-concat arena "(slop_list_"
-                                      (string-concat arena prefix
-                                        (string-concat arena "_"
-                                          (string-concat arena (convert-symbol-to-c arena type-name)
-                                            "){.data = NULL, .len = 0, .cap = 0}"))))))
+                                    ;; Look up type in registry to get correct C name with module prefix
+                                    (match (registry-lookup types type-name)
+                                      ((some entry)
+                                        ;; Use the type's c-name which has correct prefix (e.g., "rdf_Triple")
+                                        (string-concat arena "(slop_list_"
+                                          (string-concat arena (. (deref entry) c-name)
+                                            "){.data = NULL, .len = 0, .cap = 0}")))
+                                      ((none)
+                                        ;; Type not in local registry - check imports
+                                        ;; Try first import module that might have this type
+                                        (let ((imports (. types imports))
+                                              (import-count (list-len imports)))
+                                          (if (> import-count 0)
+                                            ;; Use first import's prefix (common case: rdf for Triple)
+                                            (match (list-get imports 0)
+                                              ((some first-import)
+                                                (string-concat arena "(slop_list_"
+                                                  (string-concat arena (to-c-name arena first-import)
+                                                    (string-concat arena "_"
+                                                      (string-concat arena (convert-symbol-to-c arena type-name)
+                                                        "){.data = NULL, .len = 0, .cap = 0}")))))
+                                              ((none)
+                                                ;; Fallback: use current module prefix
+                                                (string-concat arena "(slop_list_"
+                                                  (string-concat arena prefix
+                                                    (string-concat arena "_"
+                                                      (string-concat arena (convert-symbol-to-c arena type-name)
+                                                        "){.data = NULL, .len = 0, .cap = 0}"))))))
+                                            ;; No imports - use current module prefix
+                                            (string-concat arena "(slop_list_"
+                                              (string-concat arena prefix
+                                                (string-concat arena "_"
+                                                  (string-concat arena (convert-symbol-to-c arena type-name)
+                                                    "){.data = NULL, .len = 0, .cap = 0}"))))))))))
                                 "/* error: list literal first element must be type symbol */"))
                             ((none)
                               "/* error: list literal requires type */"))

@@ -20,7 +20,7 @@
   (import parser (parse ParseResult is-form sexpr-is-symbol sexpr-list-len sexpr-list-get sexpr-get-symbol-name))
   (import extract (TestCase extract-examples-from-ast))
   (import emit (emit-test-harness emit-test-harness-typed))
-  (import type-extract (TypeRegistry extract-types-from-ast))
+  (import type-extract (TypeRegistry extract-types-from-ast-with-imports))
   (import ctype (to-c-name))
 
   ;; ============================================================
@@ -107,11 +107,11 @@
             (if (== test-count 0)
               ;; No tests found
               (TestResult true (list-new arena String) 0 mod-name "")
-              ;; Step 4: Extract type definitions
+              ;; Step 4: Extract type definitions (with imports for type lookup)
               (let ((prefix (if (> (cast Int (. mod-name len)) 0)
                               (to-c-name arena mod-name)
                               ""))
-                    (types (extract-types-from-ast arena exprs mod-name)))
+                    (types (extract-types-from-ast-with-imports arena exprs mod-name imports)))
                 ;; Step 5: Generate test harness (type-aware)
                 (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types imports)))
                   (TestResult true harness-lines test-count mod-name "")))))))

@@ -208,8 +208,12 @@ def parse_native_json_string(source: str):
         os.unlink(temp_path)
 
 
-def transpile_native(input_file: str):
+def transpile_native(input_file: str, dep_files: list[str] = None):
     """Transpile using native transpiler, returns (c_code, success).
+
+    Args:
+        input_file: The main file to transpile
+        dep_files: Optional list of dependency files (in dependency order)
 
     Returns tuple of (output, success). If native transpiler isn't available,
     returns (None, False).
@@ -221,9 +225,14 @@ def transpile_native(input_file: str):
     if not transpiler_bin:
         return None, False
 
+    # Build file list: dependencies first, then main file
+    all_files = [input_file]
+    if dep_files:
+        all_files = dep_files + [input_file]
+
     try:
         result = subprocess.run(
-            [str(transpiler_bin), input_file],
+            [str(transpiler_bin)] + all_files,
             capture_output=True,
             text=True
         )
@@ -232,12 +241,17 @@ def transpile_native(input_file: str):
             data = json.loads(result.stdout)
             c_parts = ['#include "slop_runtime.h"', '']
             main_mod = None
+            # Collect all module C names for stripping includes
+            all_c_mod_names = [name.replace('-', '_').replace('/', '_') for name in data.keys()]
             for mod_name, mod_data in data.items():
-                c_parts.append(mod_data['header'])
-                # Strip self-include from impl when combining into single file
+                # Strip ALL inter-module includes when combining into single file
+                # (all headers are now inline, so includes would fail or cause redefinitions)
+                header = mod_data['header']
                 impl = mod_data['impl']
-                c_mod_name = mod_name.replace('-', '_').replace('/', '_')
-                impl = impl.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                for c_mod_name in all_c_mod_names:
+                    header = header.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                    impl = impl.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                c_parts.append(header)
                 c_parts.append(impl)
                 # Check if this module exports main
                 if f'{mod_name}_main' in mod_data['header']:
@@ -3138,16 +3152,23 @@ def cmd_test(args):
             import tomllib
             with open(config_dir / 'slop.toml', 'rb') as f:
                 toml_cfg = tomllib.load(f)
+
+        if toml_cfg and config_dir:
+            # Collect include paths from both [build] and [test] sections
+            # [test].include takes precedence for test command
             build_section = toml_cfg.get('build', {})
-            include_paths = build_section.get('include', [])
-            for p in include_paths:
+            test_section = toml_cfg.get('test', {})
+
+            # Add [test].include paths first (higher priority)
+            test_include_paths = test_section.get('include', [])
+            for p in test_include_paths:
                 inc_path = (config_dir / p).resolve()
                 if inc_path.exists() and str(inc_path) not in [str(Path(x).resolve()) for x in args.include]:
                     args.include.append(str(inc_path))
-        elif toml_cfg and config_dir:
-            build_section = toml_cfg.get('build', {})
-            include_paths = build_section.get('include', [])
-            for p in include_paths:
+
+            # Then add [build].include paths (if not already present)
+            build_include_paths = build_section.get('include', [])
+            for p in build_include_paths:
                 inc_path = (config_dir / p).resolve()
                 if inc_path.exists() and str(inc_path) not in [str(Path(x).resolve()) for x in args.include]:
                     args.include.append(str(inc_path))
@@ -3233,11 +3254,20 @@ def cmd_test(args):
                     # Native tester succeeded - now get transpiled code
                     print(f"Found {test_count} test case(s)")
                     print("  Transpiling...")
-                    c_code, transpiler_success = transpile_native(str(input_path))
+                    # Collect dependency file paths for native transpiler
+                    dep_files = [str(graph.modules[mod_name].path)
+                                 for mod_name in build_order
+                                 if graph.modules[mod_name].path != input_path.resolve()]
+                    c_code, transpiler_success = transpile_native(str(input_path), dep_files=dep_files)
                     if transpiler_success:
                         # Combine transpiled code (without main) with test harness
                         c_code_stripped = _strip_main_function(c_code)
-                        test_code = c_code_stripped + "\n\n" + test_harness
+                        # Strip inter-module includes from test harness (headers already inline)
+                        harness_stripped = test_harness
+                        for mod_name in build_order:
+                            c_mod_name = mod_name.replace('-', '_').replace('/', '_')
+                            harness_stripped = harness_stripped.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                        test_code = c_code_stripped + "\n\n" + harness_stripped
 
                         # Write to temp file and compile
                         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3250,13 +3280,15 @@ def cmd_test(args):
                             # Compile
                             print("  Compiling...")
                             runtime_path = _get_runtime_path()
+                            # Native transpiler combines all modules, so don't include
+                            # cached deps (they'd cause redefinition errors)
                             compile_cmd = [
                                 "cc", "-O0", "-g",
                                 "-I", str(runtime_path),
-                                "-I", str(cache_dir),
                                 "-o", test_bin_path,
                                 test_c_path,
-                            ] + dep_sources + ["-lm"]
+                                "-lm"
+                            ]
 
                             result = subprocess.run(compile_cmd, capture_output=True, text=True)
                             if result.returncode != 0:
@@ -3432,7 +3464,11 @@ def cmd_test(args):
             native_transpiler_bin = find_native_component('transpiler')
             if native_transpiler_bin:
                 print(f"  Using native transpiler: {native_transpiler_bin}")
-                c_code, success = transpile_native(str(input_path))
+                # Collect dependency file paths for native transpiler
+                dep_files = [str(graph.modules[mod_name].path)
+                             for mod_name in build_order
+                             if graph.modules[mod_name].path != input_path.resolve()]
+                c_code, success = transpile_native(str(input_path), dep_files=dep_files)
                 if not success:
                     print("  Native transpiler failed, falling back to Python")
                     if c_code:  # c_code contains error message on failure
