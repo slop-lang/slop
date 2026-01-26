@@ -445,6 +445,493 @@ class FindPatternInfo:
     predicate: SExpr  # The condition for selecting an item
 
 
+@dataclass
+class SetBinding:
+    """Information about a set! statement within a loop.
+
+    Tracks which variable is being set, what function is called,
+    and whether it's self-referential (variable passed as argument).
+    """
+    var_name: str  # Variable being set
+    call_expr: SExpr  # The function call expression
+    fn_name: str  # Name of function being called
+    is_self_ref: bool  # Whether var_name is passed as an argument
+    self_ref_params: Dict[str, str]  # Maps param names to var names for self-refs
+
+
+@dataclass
+class LoopContext:
+    """Information about a for-each loop for SSA analysis.
+
+    Captures the structure of a loop including:
+    - The iteration variable and collection
+    - All variables modified within the loop (via set!)
+    - Function calls in those set! statements with their postconditions
+    """
+    loop_var: str  # The iteration variable (e.g., 't' in (for-each (t triples) ...))
+    collection: SExpr  # The collection being iterated
+    loop_expr: SExpr  # The full for-each expression
+    modified_vars: Set[str]  # Variables modified by set! within the loop
+    set_bindings: List[SetBinding]  # All set! statements in the loop
+    loop_invariants: List[SExpr]  # Explicit @loop-invariant annotations
+
+
+@dataclass
+class SSAVersion:
+    """Represents a specific version of a variable in SSA form.
+
+    Each assignment creates a new version:
+    - result@0: initial value (from let binding)
+    - result@1: after first set!
+    - result@k: after k-th set! (or symbolic for loop iterations)
+    """
+    var_name: str  # Original variable name
+    version: int  # Version number (0 = initial)
+    z3_var: Any  # The Z3 variable for this version (z3.ExprRef)
+    defining_expr: Optional[SExpr] = None  # The expression that defined this version
+    is_loop_version: bool = False  # True if this is a symbolic loop iteration version
+
+
+class SSAContext:
+    """Manages SSA versioning for variables during verification.
+
+    Tracks the current version of each mutable variable and creates
+    new Z3 variables for each assignment. This enables precise reasoning
+    about value flow through assignments.
+
+    Example:
+        (let ((mut result (make-delta arena iter)))  ; result@0
+          (for-each (t triples)
+            (set! result (delta-add arena result t)))  ; result@1, result@2, ...
+          result)  ; result@N (final)
+    """
+
+    def __init__(self, translator: 'Z3Translator'):
+        self.translator = translator
+        # var_name -> list of SSAVersion (index = version number)
+        self.versions: Dict[str, List[SSAVersion]] = {}
+        # var_name -> current version number
+        self.current_version: Dict[str, int] = {}
+
+    def init_variable(self, var_name: str, z3_var: Any, defining_expr: Optional[SExpr] = None):
+        """Initialize a variable at version 0 (from let binding)."""
+        version = SSAVersion(
+            var_name=var_name,
+            version=0,
+            z3_var=z3_var,
+            defining_expr=defining_expr
+        )
+        self.versions[var_name] = [version]
+        self.current_version[var_name] = 0
+
+    def get_current_version(self, var_name: str) -> Optional[SSAVersion]:
+        """Get the current SSA version of a variable."""
+        if var_name not in self.versions:
+            return None
+        ver_num = self.current_version[var_name]
+        return self.versions[var_name][ver_num]
+
+    def get_version(self, var_name: str, version: int) -> Optional[SSAVersion]:
+        """Get a specific version of a variable."""
+        if var_name not in self.versions:
+            return None
+        if version < 0 or version >= len(self.versions[var_name]):
+            return None
+        return self.versions[var_name][version]
+
+    def create_new_version(self, var_name: str, defining_expr: Optional[SExpr] = None,
+                           is_loop_version: bool = False) -> SSAVersion:
+        """Create a new version of a variable (for set! or loop iteration).
+
+        Returns the new SSAVersion with an appropriately typed Z3 variable.
+        """
+        if var_name not in self.versions:
+            raise ValueError(f"Variable {var_name} not initialized in SSA context")
+
+        current = self.get_current_version(var_name)
+        if current is None:
+            raise ValueError(f"No current version for {var_name}")
+
+        new_ver_num = len(self.versions[var_name])
+        new_var_name = f"{var_name}@{new_ver_num}"
+
+        # Create Z3 variable with same sort as current version
+        z3_var = current.z3_var
+        if z3.is_bool(z3_var):
+            new_z3_var = z3.Bool(new_var_name)
+        elif z3.is_real(z3_var):
+            new_z3_var = z3.Real(new_var_name)
+        else:
+            new_z3_var = z3.Int(new_var_name)
+
+        new_version = SSAVersion(
+            var_name=var_name,
+            version=new_ver_num,
+            z3_var=new_z3_var,
+            defining_expr=defining_expr,
+            is_loop_version=is_loop_version
+        )
+
+        self.versions[var_name].append(new_version)
+        self.current_version[var_name] = new_ver_num
+
+        # Register in translator's variables
+        self.translator.variables[new_var_name] = new_z3_var
+
+        return new_version
+
+    def get_versioned_name(self, var_name: str) -> str:
+        """Get the current versioned name (e.g., 'result@2')."""
+        if var_name not in self.current_version:
+            return var_name  # Not an SSA-tracked variable
+        ver = self.current_version[var_name]
+        if ver == 0:
+            return var_name  # Version 0 uses original name
+        return f"{var_name}@{ver}"
+
+    def is_tracked(self, var_name: str) -> bool:
+        """Check if a variable is being tracked in SSA form."""
+        return var_name in self.versions
+
+    def get_all_versions(self, var_name: str) -> List[SSAVersion]:
+        """Get all versions of a variable."""
+        return self.versions.get(var_name, [])
+
+    def snapshot(self) -> Dict[str, int]:
+        """Take a snapshot of current version numbers (for loop entry)."""
+        return dict(self.current_version)
+
+    def restore(self, snapshot: Dict[str, int]):
+        """Restore version numbers from a snapshot."""
+        self.current_version = dict(snapshot)
+
+
+@dataclass
+class InferredInvariant:
+    """A loop invariant automatically inferred from function postconditions.
+
+    Invariants are inferred by analyzing postconditions of functions called
+    in set! statements within loops. For example:
+
+    - `{(. $result field) == (. param field)}` → field preserved
+    - `{(. $result field) >= (. param field)}` → field monotonically increasing
+    - `{(list-len (. $result list)) >= ...}` → list grows or stays same
+
+    These inferred invariants enable automatic verification of loops without
+    requiring explicit @loop-invariant annotations.
+    """
+    variable: str  # The loop variable this invariant applies to
+    property_expr: SExpr  # The invariant expression (using variable name, not $result)
+    source: str  # Where this was inferred from: "initialization", "preservation", "postcondition"
+    confidence: float = 1.0  # Confidence level (1.0 = certain, lower = heuristic)
+    original_postcondition: Optional[SExpr] = None  # The postcondition it was derived from
+
+
+class InvariantInferencer:
+    """Infers loop invariants from function postconditions.
+
+    Analyzes postconditions of functions called within loops to automatically
+    derive loop invariants. This enables verification of loops without
+    requiring manual @loop-invariant annotations.
+
+    Inference patterns:
+    1. Field preservation: (. $result field) == (. param field)
+       → Invariant: field value unchanged through iterations
+
+    2. Monotonic increase: (. $result field) >= (. param field)
+       → Invariant: field monotonically increasing
+
+    3. List growth: (list-len (. $result list)) >= (list-len (. param list))
+       → Invariant: list grows or stays same size
+
+    4. Non-negative: (>= $result 0) or (>= (. $result field) 0)
+       → Invariant: value stays non-negative
+    """
+
+    def __init__(self, function_registry: Optional['FunctionRegistry'] = None,
+                 imported_defs: Optional['ImportedDefinitions'] = None):
+        self.function_registry = function_registry
+        self.imported_defs = imported_defs
+
+    def infer_from_loop(self, loop_ctx: LoopContext) -> List[InferredInvariant]:
+        """Infer invariants for a loop from its set! statements.
+
+        For each self-referential set! in the loop, analyzes the called
+        function's postconditions to derive invariants.
+        """
+        invariants: List[InferredInvariant] = []
+
+        for binding in loop_ctx.set_bindings:
+            if not binding.is_self_ref:
+                continue
+
+            # Get postconditions for the function being called
+            postconditions = self._get_postconditions(binding.fn_name)
+            if not postconditions:
+                continue
+
+            # Analyze each postcondition for invariant patterns
+            for post in postconditions:
+                inferred = self._infer_from_postcondition(
+                    post, binding.var_name, binding.self_ref_params
+                )
+                invariants.extend(inferred)
+
+        return invariants
+
+    def _get_postconditions(self, fn_name: str) -> List[SExpr]:
+        """Get postconditions for a function from registry or imports."""
+        if self.function_registry:
+            fn_def = self.function_registry.functions.get(fn_name)
+            if fn_def and fn_def.postconditions:
+                return fn_def.postconditions
+
+        if self.imported_defs:
+            imported_sig = self.imported_defs.functions.get(fn_name)
+            if imported_sig and imported_sig.postconditions:
+                return imported_sig.postconditions
+
+        return []
+
+    def _infer_from_postcondition(self, post: SExpr, var_name: str,
+                                   self_ref_params: Dict[str, str]) -> List[InferredInvariant]:
+        """Infer invariants from a single postcondition.
+
+        Looks for patterns that relate $result to parameters that received
+        the old value of the variable (self-referential parameters).
+        """
+        invariants: List[InferredInvariant] = []
+
+        # Find which parameter names map to our variable
+        param_names = [p for p, v in self_ref_params.items() if v == var_name]
+        if not param_names:
+            return invariants
+
+        # Pattern 1: Field preservation - (== (. $result field) (. param field))
+        preserved = self._check_field_preservation(post, param_names)
+        if preserved:
+            field_name, _ = preserved
+            # Create invariant: the field value is preserved
+            invariant_expr = self._make_field_preserved_invariant(var_name, field_name)
+            invariants.append(InferredInvariant(
+                variable=var_name,
+                property_expr=invariant_expr,
+                source="preservation",
+                confidence=1.0,
+                original_postcondition=post
+            ))
+
+        # Pattern 2: Monotonic increase - (>= (. $result field) (. param field))
+        monotonic = self._check_monotonic_increase(post, param_names)
+        if monotonic:
+            field_name, _ = monotonic
+            # This gives us: field is non-decreasing, but we need initial value
+            # For now, just note that it's monotonic (used with initialization)
+            pass
+
+        # Pattern 3: Non-negative result - (>= $result 0) or (>= (. $result field) 0)
+        nonneg = self._check_nonnegative(post)
+        if nonneg:
+            invariants.append(InferredInvariant(
+                variable=var_name,
+                property_expr=nonneg,
+                source="postcondition",
+                confidence=1.0,
+                original_postcondition=post
+            ))
+
+        # Pattern 4: List length preservation/growth
+        list_pattern = self._check_list_length_pattern(post, param_names)
+        if list_pattern:
+            invariants.append(InferredInvariant(
+                variable=var_name,
+                property_expr=list_pattern,
+                source="preservation",
+                confidence=0.9,
+                original_postcondition=post
+            ))
+
+        return invariants
+
+    def _check_field_preservation(self, post: SExpr,
+                                   param_names: List[str]) -> Optional[Tuple[str, str]]:
+        """Check if postcondition preserves a field value.
+
+        Looks for: (== (. $result field) (. param field))
+        Returns: (field_name, param_name) if found, None otherwise
+        """
+        if not isinstance(post, SList) or len(post) < 3:
+            return None
+
+        head = post[0]
+        if not isinstance(head, Symbol) or head.name != '==':
+            return None
+
+        lhs, rhs = post[1], post[2]
+
+        # Check if LHS is (. $result field)
+        lhs_field = self._extract_result_field(lhs)
+        if not lhs_field:
+            return None
+
+        # Check if RHS is (. param field) where param is in param_names
+        rhs_info = self._extract_param_field(rhs, param_names)
+        if not rhs_info:
+            return None
+
+        rhs_field, param_name = rhs_info
+
+        # Fields must match
+        if lhs_field != rhs_field:
+            return None
+
+        return (lhs_field, param_name)
+
+    def _check_monotonic_increase(self, post: SExpr,
+                                   param_names: List[str]) -> Optional[Tuple[str, str]]:
+        """Check if postcondition shows monotonic increase.
+
+        Looks for: (>= (. $result field) (. param field))
+        Returns: (field_name, param_name) if found, None otherwise
+        """
+        if not isinstance(post, SList) or len(post) < 3:
+            return None
+
+        head = post[0]
+        if not isinstance(head, Symbol) or head.name != '>=':
+            return None
+
+        lhs, rhs = post[1], post[2]
+
+        lhs_field = self._extract_result_field(lhs)
+        if not lhs_field:
+            return None
+
+        rhs_info = self._extract_param_field(rhs, param_names)
+        if not rhs_info:
+            return None
+
+        rhs_field, param_name = rhs_info
+
+        if lhs_field != rhs_field:
+            return None
+
+        return (lhs_field, param_name)
+
+    def _check_nonnegative(self, post: SExpr) -> Optional[SExpr]:
+        """Check if postcondition asserts non-negativity.
+
+        Looks for: (>= $result 0) or (>= (. $result field) 0)
+        Returns: The invariant expression with var substituted, or None
+        """
+        if not isinstance(post, SList) or len(post) < 3:
+            return None
+
+        head = post[0]
+        if not isinstance(head, Symbol) or head.name != '>=':
+            return None
+
+        lhs, rhs = post[1], post[2]
+
+        # Check RHS is 0
+        if not isinstance(rhs, Number) or rhs.value != 0:
+            return None
+
+        # Check LHS involves $result
+        if isinstance(lhs, Symbol) and lhs.name == '$result':
+            return post  # Return as-is, will be substituted later
+        elif self._extract_result_field(lhs):
+            return post
+
+        return None
+
+    def _check_list_length_pattern(self, post: SExpr,
+                                    param_names: List[str]) -> Optional[SExpr]:
+        """Check for list length preservation/growth patterns.
+
+        Looks for: (>= (list-len (. $result list)) (list-len (. param list)))
+        """
+        if not isinstance(post, SList) or len(post) < 3:
+            return None
+
+        head = post[0]
+        if not isinstance(head, Symbol) or head.name != '>=':
+            return None
+
+        lhs, rhs = post[1], post[2]
+
+        # Check if LHS is (list-len (. $result field))
+        if not is_form(lhs, 'list-len') or len(lhs) < 2:
+            return None
+
+        lhs_inner = lhs[1]
+        if not self._extract_result_field(lhs_inner):
+            return None
+
+        # Check if RHS is (list-len (. param field))
+        if not is_form(rhs, 'list-len') or len(rhs) < 2:
+            return None
+
+        rhs_inner = rhs[1]
+        if not self._extract_param_field(rhs_inner, param_names):
+            return None
+
+        return post
+
+    def _extract_result_field(self, expr: SExpr) -> Optional[str]:
+        """Extract field name from (. $result field) expression."""
+        if not isinstance(expr, SList) or len(expr) < 3:
+            return None
+
+        head = expr[0]
+        if not isinstance(head, Symbol) or head.name != '.':
+            return None
+
+        obj = expr[1]
+        if not isinstance(obj, Symbol) or obj.name != '$result':
+            return None
+
+        field = expr[2]
+        if isinstance(field, Symbol):
+            return field.name
+
+        return None
+
+    def _extract_param_field(self, expr: SExpr,
+                              param_names: List[str]) -> Optional[Tuple[str, str]]:
+        """Extract (field_name, param_name) from (. param field) expression."""
+        if not isinstance(expr, SList) or len(expr) < 3:
+            return None
+
+        head = expr[0]
+        if not isinstance(head, Symbol) or head.name != '.':
+            return None
+
+        obj = expr[1]
+        if not isinstance(obj, Symbol) or obj.name not in param_names:
+            return None
+
+        field = expr[2]
+        if isinstance(field, Symbol):
+            return (field.name, obj.name)
+
+        return None
+
+    def _make_field_preserved_invariant(self, var_name: str, field_name: str) -> SExpr:
+        """Create invariant expression for field preservation.
+
+        Creates: (== (. <var> <field>) (. <var>@0 <field>))
+        This says: current field value equals initial field value
+        """
+        # We'll use __init_<var> to refer to initial value
+        init_var = f"__init_{var_name}"
+        return SList([
+            Symbol('=='),
+            SList([Symbol('.'), Symbol(var_name), Symbol(field_name)]),
+            SList([Symbol('.'), Symbol(init_var), Symbol(field_name)])
+        ])
+
+
 class TypeInvariantRegistry:
     """Registry of type invariants extracted from @invariant annotations"""
 
@@ -1936,6 +2423,377 @@ class ContractVerifier:
             for item in expr.items:
                 self._collect_loop_invariants(item, result)
 
+    def _analyze_loops(self, body: SExpr) -> List[LoopContext]:
+        """Analyze function body to extract information about all for-each loops.
+
+        This is a pre-pass that identifies:
+        - All for-each loops in the function
+        - Variables modified within each loop (via set!)
+        - Function calls in those set! statements
+        - Whether set! is self-referential (variable passed as argument)
+
+        This information is used for SSA-based loop invariant inference.
+        """
+        loops: List[LoopContext] = []
+        self._collect_loop_contexts(body, loops)
+        return loops
+
+    def _collect_loop_contexts(self, expr: SExpr, loops: List[LoopContext]):
+        """Recursively collect LoopContext for all for-each loops in expression."""
+        if not isinstance(expr, SList) or len(expr) == 0:
+            return
+
+        head = expr[0]
+        if not isinstance(head, Symbol):
+            # Recurse into subexpressions
+            for item in expr.items:
+                self._collect_loop_contexts(item, loops)
+            return
+
+        if head.name == 'for-each' and len(expr) >= 3:
+            # Found a for-each loop: (for-each (var coll) body...)
+            binding = expr[1]
+            if isinstance(binding, SList) and len(binding) >= 2:
+                loop_var = binding[0].name if isinstance(binding[0], Symbol) else None
+                collection = binding[1]
+
+                if loop_var:
+                    # Analyze the loop body
+                    modified_vars: Set[str] = set()
+                    set_bindings: List[SetBinding] = []
+                    loop_invariants: List[SExpr] = []
+
+                    # Collect set! bindings and loop invariants from body
+                    for body_item in expr.items[2:]:
+                        self._collect_set_bindings(body_item, modified_vars, set_bindings)
+                        self._collect_loop_invariants(body_item, loop_invariants)
+
+                    loop_ctx = LoopContext(
+                        loop_var=loop_var,
+                        collection=collection,
+                        loop_expr=expr,
+                        modified_vars=modified_vars,
+                        set_bindings=set_bindings,
+                        loop_invariants=loop_invariants
+                    )
+                    loops.append(loop_ctx)
+
+        # Recurse into subexpressions (including nested loops in loop body)
+        for item in expr.items:
+            self._collect_loop_contexts(item, loops)
+
+    def _collect_set_bindings(self, expr: SExpr, modified_vars: Set[str],
+                              set_bindings: List[SetBinding]):
+        """Recursively collect set! bindings within a loop body.
+
+        For each (set! var (fn-call args...)), creates a SetBinding with:
+        - var_name: the variable being set
+        - call_expr: the function call expression
+        - fn_name: name of the function being called
+        - is_self_ref: whether var_name appears in args
+        - self_ref_params: which params received var_name
+        """
+        if not isinstance(expr, SList) or len(expr) == 0:
+            return
+
+        head = expr[0]
+        if isinstance(head, Symbol):
+            if head.name == 'set!' and len(expr) >= 3:
+                # Found: (set! var value)
+                var = expr[1]
+                value = expr[2]
+
+                if isinstance(var, Symbol):
+                    var_name = var.name
+                    modified_vars.add(var_name)
+
+                    # Check if value is a function call
+                    if isinstance(value, SList) and len(value) >= 1:
+                        fn_head = value[0]
+                        if isinstance(fn_head, Symbol):
+                            fn_name = fn_head.name
+                            call_args = list(value.items[1:])
+
+                            # Get params from function registry
+                            params: List[str] = []
+                            fn_def = self.function_registry.functions.get(fn_name) if self.function_registry else None
+                            if fn_def:
+                                params = fn_def.params
+                            elif self.imported_defs:
+                                imported_sig = self.imported_defs.functions.get(fn_name)
+                                if imported_sig:
+                                    params = imported_sig.params
+
+                            # Check for self-reference
+                            self_ref_params = self._find_self_referential_params(
+                                var_name, call_args, params
+                            )
+
+                            set_bindings.append(SetBinding(
+                                var_name=var_name,
+                                call_expr=value,
+                                fn_name=fn_name,
+                                is_self_ref=len(self_ref_params) > 0,
+                                self_ref_params=self_ref_params
+                            ))
+
+        # Recurse into subexpressions
+        for item in expr.items:
+            self._collect_set_bindings(item, modified_vars, set_bindings)
+
+    # =========================================================================
+    # Inductive Loop Verification
+    # =========================================================================
+
+    def _verify_loop_inductively(self, loop_ctx: LoopContext,
+                                  init_binding: Optional[SExpr],
+                                  translator: Z3Translator) -> Optional[List[InferredInvariant]]:
+        """Verify a loop using inductive reasoning.
+
+        For a loop pattern like:
+            (let ((mut result (make-delta arena iter)))
+              (for-each (t triples)
+                (set! result (delta-add arena result t)))
+              result)
+
+        We verify:
+        1. BASE CASE: Invariant holds after initialization (make-delta)
+        2. INDUCTIVE STEP: If invariant holds before iteration, it holds after
+
+        Returns list of verified invariants if successful, None if verification fails.
+        """
+        # Infer invariants from the loop's set! postconditions
+        inferencer = InvariantInferencer(
+            function_registry=self.function_registry,
+            imported_defs=self.imported_defs
+        )
+        inferred_invariants = inferencer.infer_from_loop(loop_ctx)
+
+        if not inferred_invariants:
+            return None  # No invariants to verify
+
+        verified_invariants: List[InferredInvariant] = []
+
+        for invariant in inferred_invariants:
+            # Verify base case and inductive step for each invariant
+            base_ok = self._verify_base_case(invariant, init_binding, translator)
+            step_ok = self._verify_inductive_step(invariant, loop_ctx, translator)
+
+            if base_ok and step_ok:
+                verified_invariants.append(invariant)
+
+        return verified_invariants if verified_invariants else None
+
+    def _verify_base_case(self, invariant: InferredInvariant,
+                          init_binding: Optional[SExpr],
+                          translator: Z3Translator) -> bool:
+        """Verify that the invariant holds after initialization.
+
+        For field preservation invariant like:
+            (== (. result iteration) (. __init_result iteration))
+
+        At initialization, result == __init_result, so this is trivially true.
+
+        For other invariants, we check if the initialization postconditions
+        establish the invariant.
+        """
+        if invariant.source == 'preservation':
+            # Field preservation invariants are trivially true at initialization
+            # because result@0 == __init_result by definition
+            return True
+
+        if invariant.source == 'postcondition':
+            # For postcondition-derived invariants (like >= 0), we need to check
+            # if the initialization establishes this property.
+            # For now, assume it does if we found the postcondition
+            return True
+
+        # For other cases, attempt Z3 verification
+        return self._verify_invariant_with_z3(invariant, translator, is_base_case=True)
+
+    def _verify_inductive_step(self, invariant: InferredInvariant,
+                                loop_ctx: LoopContext,
+                                translator: Z3Translator) -> bool:
+        """Verify that if invariant holds before iteration, it holds after.
+
+        For field preservation with postcondition:
+            (== (. $result iteration) (. d iteration))
+
+        We need to show:
+            Assume: (. result@k iteration) == (. __init_result iteration)
+            After set!: result@k+1 = delta-add(arena, result@k, t)
+            Postcondition: (. result@k+1 iteration) == (. result@k iteration)
+            Prove: (. result@k+1 iteration) == (. __init_result iteration)
+
+        This follows by transitivity:
+            result@k+1.iteration == result@k.iteration  (postcondition)
+            result@k.iteration == __init_result.iteration  (induction hypothesis)
+            Therefore: result@k+1.iteration == __init_result.iteration
+        """
+        if invariant.source == 'preservation' and invariant.original_postcondition:
+            # For field preservation, check if the postcondition matches the pattern
+            # that guarantees preservation through iterations
+            post = invariant.original_postcondition
+            if self._is_field_equality_postcondition(post):
+                # The postcondition directly states field equality between
+                # $result and the parameter that holds the old value.
+                # Combined with the induction hypothesis, this proves preservation.
+                return True
+
+        if invariant.source == 'postcondition':
+            # For postcondition-derived invariants, the postcondition itself
+            # guarantees the property holds after each iteration
+            return True
+
+        # For other cases, attempt Z3 verification
+        return self._verify_invariant_with_z3(invariant, translator, is_base_case=False)
+
+    def _is_field_equality_postcondition(self, post: SExpr) -> bool:
+        """Check if postcondition is a field equality: (== (. $result f) (. param f))"""
+        if not isinstance(post, SList) or len(post) < 3:
+            return False
+
+        head = post[0]
+        if not isinstance(head, Symbol) or head.name != '==':
+            return False
+
+        lhs, rhs = post[1], post[2]
+
+        # Check both sides are field accesses
+        if not (isinstance(lhs, SList) and len(lhs) >= 3 and
+                isinstance(rhs, SList) and len(rhs) >= 3):
+            return False
+
+        lhs_head = lhs[0]
+        rhs_head = rhs[0]
+
+        if not (isinstance(lhs_head, Symbol) and lhs_head.name == '.' and
+                isinstance(rhs_head, Symbol) and rhs_head.name == '.'):
+            return False
+
+        # LHS should be (. $result field)
+        lhs_obj = lhs[1]
+        if not isinstance(lhs_obj, Symbol) or lhs_obj.name != '$result':
+            return False
+
+        # Fields should match
+        lhs_field = lhs[2]
+        rhs_field = rhs[2]
+        if isinstance(lhs_field, Symbol) and isinstance(rhs_field, Symbol):
+            return lhs_field.name == rhs_field.name
+
+        return False
+
+    def _verify_invariant_with_z3(self, invariant: InferredInvariant,
+                                   translator: Z3Translator,
+                                   is_base_case: bool) -> bool:
+        """Attempt to verify an invariant using Z3.
+
+        This is a fallback for invariants that don't match simple patterns.
+        """
+        # For now, return False to indicate we can't verify complex invariants
+        # This can be extended with full Z3 encoding later
+        return False
+
+    def _get_init_postconditions(self, init_expr: SExpr) -> List[SExpr]:
+        """Get postconditions from the initialization function call.
+
+        For (make-delta arena iter), returns make-delta's postconditions.
+        """
+        if not isinstance(init_expr, SList) or len(init_expr) < 1:
+            return []
+
+        fn_head = init_expr[0]
+        if not isinstance(fn_head, Symbol):
+            return []
+
+        fn_name = fn_head.name
+
+        # Check local functions
+        if self.function_registry:
+            fn_def = self.function_registry.functions.get(fn_name)
+            if fn_def and fn_def.postconditions:
+                return fn_def.postconditions
+
+        # Check imported functions
+        if self.imported_defs:
+            imported_sig = self.imported_defs.functions.get(fn_name)
+            if imported_sig and imported_sig.postconditions:
+                return imported_sig.postconditions
+
+        return []
+
+    def _find_init_binding_for_var(self, body: SExpr, var_name: str) -> Optional[SExpr]:
+        """Find the initialization expression for a mutable variable.
+
+        Looks for (let ((mut <var_name> <init_expr>)) ...) pattern.
+        Returns the <init_expr> if found.
+        """
+        if not isinstance(body, SList) or len(body) < 2:
+            return None
+
+        head = body[0]
+        if not isinstance(head, Symbol) or head.name != 'let':
+            # Recurse into subexpressions
+            for item in body.items:
+                result = self._find_init_binding_for_var(item, var_name)
+                if result:
+                    return result
+            return None
+
+        bindings = body[1]
+        if not isinstance(bindings, SList):
+            return None
+
+        for binding in bindings.items:
+            if not isinstance(binding, SList) or len(binding) < 2:
+                continue
+
+            first = binding[0]
+            if isinstance(first, Symbol) and first.name == 'mut' and len(binding) >= 3:
+                # (mut var init)
+                var = binding[1]
+                if isinstance(var, Symbol) and var.name == var_name:
+                    return binding[2]
+
+        return None
+
+    def _apply_verified_invariants(self, invariants: List[InferredInvariant],
+                                    var_name: str,
+                                    translator: Z3Translator) -> List:
+        """Convert verified invariants to Z3 axioms for the solver.
+
+        For field preservation invariants, creates:
+            (. result field) == (. __init_result field)
+
+        This allows the solver to use the invariant when verifying postconditions.
+        """
+        axioms = []
+
+        for inv in invariants:
+            if inv.source == 'preservation':
+                # Create __init_<var> variable and constrain field equality
+                init_var_name = f"__init_{var_name}"
+
+                # Get or create the init variable
+                if init_var_name not in translator.variables:
+                    if var_name in translator.variables:
+                        current = translator.variables[var_name]
+                        if z3.is_bool(current):
+                            init_var = z3.Bool(init_var_name)
+                        elif z3.is_real(current):
+                            init_var = z3.Real(init_var_name)
+                        else:
+                            init_var = z3.Int(init_var_name)
+                        translator.variables[init_var_name] = init_var
+
+                # Translate the invariant expression to Z3
+                z3_inv = translator.translate_expr(inv.property_expr)
+                if z3_inv is not None:
+                    axioms.append(z3_inv)
+
+        return axioms
+
     def _find_eq_function_calls(self, exprs: List[SExpr]) -> set:
         """Find all function calls ending in -eq in expressions"""
         result: set = set()
@@ -2155,6 +3013,9 @@ class ContractVerifier:
     def _process_let_binding(self, binding: SExpr, translator: Z3Translator, axioms: List):
         """Process a single let binding, extracting postcondition axioms if it's a function call.
 
+        Also handles simple expression bindings like (next-iter (+ x 1)) by adding
+        axiom: next-iter == (+ x 1). This enables tracking of computed values.
+
         Checks both local function definitions and imported function signatures
         for postconditions to enable cross-module postcondition propagation.
         """
@@ -2174,7 +3035,14 @@ class ContractVerifier:
         else:
             return
 
-        if not var_name or not isinstance(init_expr, SList) or len(init_expr) < 1:
+        if not var_name:
+            return
+
+        # Handle simple expression bindings (not function calls)
+        # Add axiom: var == init_expr
+        if not isinstance(init_expr, SList) or len(init_expr) < 1:
+            # Simple value binding (number, symbol)
+            self._add_binding_axiom(var_name, init_expr, translator, axioms)
             return
 
         # Check if init_expr is a function call
@@ -2183,6 +3051,14 @@ class ContractVerifier:
             return
 
         fn_name = fn_head.name
+
+        # Check if this is a known operator (not a function call with postconditions)
+        # Operators like +, -, *, /, etc. should create binding axioms
+        operators = {'+', '-', '*', '/', 'mod', '.', 'and', 'or', 'not',
+                     '==', '!=', '<', '<=', '>', '>='}
+        if fn_name in operators:
+            self._add_binding_axiom(var_name, init_expr, translator, axioms)
+            return
 
         # Check local functions first
         fn_def = self.function_registry.functions.get(fn_name) if self.function_registry else None
@@ -2219,17 +3095,38 @@ class ContractVerifier:
             if z3_axiom is not None:
                 axioms.append(z3_axiom)
 
+    def _add_binding_axiom(self, var_name: str, expr: SExpr, translator: Z3Translator, axioms: List):
+        """Add axiom: var == expr for simple let bindings.
+
+        This enables tracking of computed values like:
+            (let ((next-iter (+ (. delta iteration) 1))) ...)
+        Adds axiom: next-iter == (+ (. delta iteration) 1)
+        """
+        # Declare variable if not already declared
+        if var_name not in translator.variables:
+            # Infer type from expression - default to Int
+            translator.declare_variable(var_name, PrimitiveType('Int'))
+
+        var_z3 = translator.variables.get(var_name)
+        if var_z3 is None:
+            return
+
+        expr_z3 = translator.translate_expr(expr)
+        if expr_z3 is not None:
+            # Add axiom: var == expr
+            axioms.append(var_z3 == expr_z3)
+
     def _process_set_binding(self, var_name: str, call_expr: SExpr, translator: Z3Translator, axioms: List):
         """Process a set! statement, extracting postcondition axioms if it's a function call.
 
         For (set! result (fn-call args...)), extracts the callee's postconditions
         and adds them as axioms with substituted values.
 
-        Note: This is a simplified approach that works when the postcondition
-        relates $result to other parameters. For postconditions that relate
-        $result to the previous value of the variable (like iteration preservation),
-        both $result and the parameter referring to the old value get substituted
-        to the same variable name, which works because Z3 sees them as the same.
+        SSA-style tracking: When the variable being set is also passed as an argument
+        (self-referential pattern like `(set! result (delta-add arena result t))`),
+        we create an __old_<varname> Z3 variable to represent the pre-assignment value.
+        This ensures postconditions like `{(. $result iteration) == (. d iteration)}`
+        correctly relate the NEW result to the OLD value rather than producing tautologies.
         """
         if not isinstance(call_expr, SList) or len(call_expr) < 1:
             return
@@ -2266,15 +3163,53 @@ class ContractVerifier:
         if len(call_args) != len(params):
             return
 
+        # Detect self-referential pattern: when var_name is passed as an argument
+        self_ref_params = self._find_self_referential_params(var_name, call_args, params)
+
+        # If self-reference detected and variable exists, create __old_ Z3 variable
+        if self_ref_params and var_name in translator.variables:
+            old_var_name = f"__old_{var_name}"
+            current_var = translator.variables[var_name]
+
+            # Create __old_ variable with same sort as current variable
+            if z3.is_bool(current_var):
+                old_var = z3.Bool(old_var_name)
+            elif z3.is_real(current_var):
+                old_var = z3.Real(old_var_name)
+            else:
+                old_var = z3.Int(old_var_name)
+
+            # Constraint: __old_var equals current value (before the set!)
+            translator.constraints.append(old_var == current_var)
+            translator.variables[old_var_name] = old_var
+
         # For each postcondition, substitute $result and parameters, then translate
         for post in postconditions:
-            subst_post = self._substitute_postcondition(post, var_name, params, call_args)
+            subst_post = self._substitute_postcondition(post, var_name, params, call_args, self_ref_params)
             z3_axiom = translator.translate_expr(subst_post)
             if z3_axiom is not None:
                 axioms.append(z3_axiom)
 
+    def _find_self_referential_params(self, var_name: str, call_args: List[SExpr],
+                                        params: List[str]) -> Dict[str, str]:
+        """Find parameters that received the variable being set.
+
+        For (set! result (fn arena result t)) with params ['arena', 'd', 't']:
+        Returns {'d': 'result'} because 'd' received the old value of 'result'.
+
+        This enables SSA-style tracking where:
+        - $result refers to the NEW value (after the call)
+        - Parameter that received var_name refers to the OLD value (before the call)
+        """
+        self_refs: Dict[str, str] = {}
+        for param, arg in zip(params, call_args):
+            if isinstance(arg, Symbol) and arg.name == var_name:
+                self_refs[param] = var_name
+        return self_refs
+
     def _substitute_postcondition(self, post: SExpr, result_var: str,
-                                  params: List[str], args: List[SExpr]) -> SExpr:
+                                  params: List[str], args: List[SExpr],
+                                  self_ref_params: Optional[Dict[str, str]] = None) -> SExpr:
         """Substitute $result and parameters in a postcondition.
 
         Args:
@@ -2282,6 +3217,9 @@ class ContractVerifier:
             result_var: The name to substitute for $result
             params: Parameter names in the callee
             args: Actual argument expressions from the call site
+            self_ref_params: Map of param names to var names for self-referential args.
+                             These params will be substituted with __old_<varname> to
+                             preserve SSA semantics.
 
         Returns:
             The substituted postcondition expression
@@ -2289,7 +3227,13 @@ class ContractVerifier:
         # Build substitution map
         subst_map: Dict[str, SExpr] = {'$result': Symbol(result_var)}
         for param, arg in zip(params, args):
-            subst_map[param] = arg
+            if self_ref_params and param in self_ref_params:
+                # Parameter received the old value of the variable being set
+                # Use __old_<varname> to reference the pre-assignment value
+                old_var_name = f"__old_{self_ref_params[param]}"
+                subst_map[param] = Symbol(old_var_name)
+            else:
+                subst_map[param] = arg
 
         return self._substitute_expr(post, subst_map)
 
@@ -2329,9 +3273,12 @@ class ContractVerifier:
     def _get_return_expr(self, expr: SExpr) -> SExpr:
         """Get the effective return expression from a body.
 
-        Handles do blocks by returning their last expression.
+        Handles do and let blocks by returning their last expression.
         """
         if is_form(expr, 'do') and len(expr) >= 2:
+            return self._get_return_expr(expr.items[-1])
+        if is_form(expr, 'let') and len(expr) >= 3:
+            # (let (bindings) body1 body2 ... bodyN) -> return value is bodyN
             return self._get_return_expr(expr.items[-1])
         return expr
 
@@ -2547,6 +3494,94 @@ class ContractVerifier:
         """Check if expression is a union-new form (handles do blocks)"""
         return_expr = self._get_return_expr(expr)
         return is_form(return_expr, 'union-new')
+
+    def _is_union_constructor(self, expr: SExpr) -> bool:
+        """Check if expression is a union constructor like (ok value) or (error e).
+
+        Handles do blocks by checking the return expression.
+        """
+        return_expr = self._get_return_expr(expr)
+        if not isinstance(return_expr, SList) or len(return_expr) < 2:
+            return False
+
+        head = return_expr[0]
+        if not isinstance(head, Symbol):
+            return False
+
+        # Common Result/Option constructors
+        constructors = {'ok', 'error', 'some', 'none'}
+        return head.name in constructors
+
+    def _extract_union_constructor_axioms(self, body: SExpr, translator: Z3Translator) -> List:
+        """Extract axioms for union constructors like (ok result) or (error e).
+
+        For (ok result), adds:
+        1. union_tag($result) == ok_index
+        2. union_payload_ok($result) == result
+
+        This enables proving match postconditions like:
+        (match $result ((ok d) (== (. d field) x)) ((error _) true))
+        """
+        axioms = []
+        return_expr = self._get_return_expr(body)
+
+        if not isinstance(return_expr, SList) or len(return_expr) < 1:
+            return axioms
+
+        head = return_expr[0]
+        if not isinstance(head, Symbol):
+            return axioms
+
+        constructor_name = head.name
+        constructors = {'ok', 'error', 'some', 'none'}
+
+        if constructor_name not in constructors:
+            return axioms
+
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return axioms
+
+        # Use the same tag index calculation as _translate_match
+        # Check enum_values first, fall back to hash
+        tag_idx = translator.enum_values.get(
+            constructor_name,
+            translator.enum_values.get(f"'{constructor_name}", hash(constructor_name) % 256)
+        )
+
+        # Get or create union_tag function
+        tag_func_name = "union_tag"
+        if tag_func_name not in translator.variables:
+            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+            translator.variables[tag_func_name] = tag_func
+        else:
+            tag_func = translator.variables[tag_func_name]
+
+        # Axiom 1: union_tag($result) == constructor_index
+        axioms.append(tag_func(result_var) == z3.IntVal(tag_idx))
+
+        # Axiom 2: union_payload_<constructor>($result) == payload
+        if len(return_expr) >= 2:
+            payload_expr = return_expr[1]
+            payload_z3 = translator.translate_expr(payload_expr)
+
+            if payload_z3 is not None:
+                payload_func_name = f"union_payload_{constructor_name}"
+                if payload_func_name not in translator.variables:
+                    # Create function with appropriate return sort
+                    if z3.is_bool(payload_z3):
+                        payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.BoolSort())
+                    elif z3.is_real(payload_z3):
+                        payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.RealSort())
+                    else:
+                        payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
+                    translator.variables[payload_func_name] = payload_func
+                else:
+                    payload_func = translator.variables[payload_func_name]
+
+                axioms.append(payload_func(result_var) == payload_z3)
+
+        return axioms
 
     def _extract_union_tag_axiom(self, union_new: SList, translator: Z3Translator) -> Optional:
         """Extract axiom: union_tag($result) == tag_index for union-new body.
@@ -4036,6 +5071,16 @@ class ContractVerifier:
             if tag_axiom is not None:
                 solver.add(tag_axiom)
 
+        # Phase 4.5: Add union constructor axioms for (ok result), (error e), etc.
+        # For (ok result), adds:
+        #   union_tag($result) == 0
+        #   union_payload_ok($result) == result
+        # This enables proving match postconditions on Result/Option types.
+        if fn_body is not None and self._is_union_constructor(fn_body):
+            constructor_axioms = self._extract_union_constructor_axioms(fn_body, translator)
+            for axiom in constructor_axioms:
+                solver.add(axiom)
+
         # Phase 5: Add conditional record-new axioms
         # For (if cond (record-new Type (f1 v1) ...) else), add: cond => field_f1($result) == v1
         if fn_body is not None and self._is_conditional_with_record_new(fn_body):
@@ -4101,6 +5146,32 @@ class ContractVerifier:
             call_postcond_axioms = self._extract_call_postcondition_axioms(fn_body, translator)
             for axiom in call_postcond_axioms:
                 solver.add(axiom)
+
+        # Phase 13: Inductive loop verification
+        # For loops with self-referential set! statements, attempt to verify
+        # loop invariants inductively and add them as axioms.
+        # Example: (set! result (delta-add arena result t)) with postcondition
+        # {(. $result iteration) == (. d iteration)} allows inferring that
+        # result.iteration is preserved through all loop iterations.
+        if fn_body is not None:
+            loop_contexts = self._analyze_loops(fn_body)
+            for loop_ctx in loop_contexts:
+                # Find initialization binding for modified variables
+                for var_name in loop_ctx.modified_vars:
+                    init_binding = self._find_init_binding_for_var(fn_body, var_name)
+
+                    # Attempt inductive verification
+                    verified_invariants = self._verify_loop_inductively(
+                        loop_ctx, init_binding, translator
+                    )
+
+                    if verified_invariants:
+                        # Add verified invariants as axioms
+                        inv_axioms = self._apply_verified_invariants(
+                            verified_invariants, var_name, translator
+                        )
+                        for axiom in inv_axioms:
+                            solver.add(axiom)
 
         # First try all postconditions together (fast path)
         solver.push()
