@@ -821,10 +821,14 @@
                                                              ((some entry) (. entry param-types))
                                                              ;; Not found - fall back to empty params
                                                              ((none) (list-new arena (Ptr FuncParamType)))))
+                                              ;; Copy return-type from existing entry
+                                              (ret-type (match existing-func
+                                                          ((some entry) (. entry return-type))
+                                                          ((none) "")))
                                               (slop-ret (match existing-func
                                                           ((some entry) (. entry slop-return-type))
                                                           ((none) ""))))
-                                          (ctx-register-func ctx (FuncEntry sym-name c-name "" slop-ret false false param-types))))))
+                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret false false param-types))))))
                                   (else (do))))
                               ((none) (do)))
                             (set! j (+ j 1)))))

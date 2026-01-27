@@ -1169,7 +1169,7 @@ def build_prompt(
 def _try_native_checker(
     expr_str: str,
     expected_type: str,
-    context: dict,
+    context_file: Optional[str] = None,
     params: str = '',
 ) -> Optional[tuple]:
     """Try to use the native checker for expression validation.
@@ -1177,7 +1177,7 @@ def _try_native_checker(
     Args:
         expr_str: SLOP expression string
         expected_type: Expected type string (e.g., "Int")
-        context: Context dict with type_defs, fn_specs, etc.
+        context_file: Path to .slop file for context (types, functions, etc.)
         params: Parameter string like "((x Int) (y String))"
 
     Returns:
@@ -1186,7 +1186,6 @@ def _try_native_checker(
     """
     import json
     import subprocess
-    import tempfile
 
     # Check if native checker is available using paths module
     checker_path = paths.find_native_binary('checker')
@@ -1194,112 +1193,80 @@ def _try_native_checker(
         return None
 
     try:
-        # Build context file content
-        context_lines = []
+        # Build command
+        cmd = [str(checker_path), '--expr', expr_str, '--type', expected_type]
+        if context_file:
+            cmd.extend(['--context', context_file])
+        if params:
+            cmd.extend(['--params', params])
 
-        # Add type definitions
-        for type_def in context.get('type_defs', []):
-            context_lines.append(type_def)
+        # Run native checker
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
 
-        # Add imported types
-        for type_info in context.get('imported_types', []):
-            if 'type_def' in type_info:
-                context_lines.append(type_info['type_def'])
+        # Parse JSON output
+        output = result.stdout.strip()
+        if not output:
+            return None
 
-        # Add function specs as minimal fn declarations
-        for spec in context.get('fn_specs', []):
-            fn_name = spec.get('name', '')
-            ret_type = spec.get('return_type', 'Unit')
-            fn_params = spec.get('params', '()')
-            if fn_name:
-                context_lines.append(f'(fn {fn_name} {fn_params} (@spec ({fn_params} -> {ret_type})) (do))')
+        data = json.loads(output)
 
-        # Add FFI specs as minimal fn declarations
-        for spec in context.get('ffi_specs', []):
-            fn_name = spec.get('name', '')
-            ret_type = spec.get('return_type', 'Unit')
-            fn_params = spec.get('params', '()')
-            if fn_name:
-                context_lines.append(f'(fn {fn_name} {fn_params} (@spec ({fn_params} -> {ret_type})) (do))')
+        errors = []
+        if not data.get('valid', True):
+            # Check for diagnostics
+            for diag in data.get('diagnostics', []):
+                if diag.get('level') == 'error':
+                    errors.append(diag.get('message', 'Unknown error'))
 
-        # Add imported function specs
-        for spec in context.get('imported_specs', []):
-            fn_name = spec.get('name', '')
-            ret_type = spec.get('return_type', 'Unit')
-            fn_params = spec.get('params', '()')
-            if fn_name:
-                context_lines.append(f'(fn {fn_name} {fn_params} (@spec ({fn_params} -> {ret_type})) (do))')
+            # If no diagnostics but not valid, add type mismatch error
+            if not errors:
+                inferred = data.get('inferred_type', 'Unknown')
+                expected = data.get('expected_type', expected_type)
+                if inferred != expected:
+                    errors.append(f"Type mismatch: expected {expected}, got {inferred}")
 
-        # Add constant definitions
-        for spec in context.get('const_specs', []):
-            const_name = spec.get('name', '')
-            type_expr = spec.get('type_expr', 'Int')
-            if const_name:
-                context_lines.append(f'(const {const_name} {type_expr} 0)')
-
-        context_content = '\n'.join(context_lines)
-
-        # Create temp context file if we have context
-        context_file = None
-        if context_content.strip():
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.slop', delete=False) as f:
-                f.write(context_content)
-                context_file = f.name
-
-        try:
-            # Build command
-            cmd = [str(checker_path), '--expr', expr_str, '--type', expected_type]
-            if context_file:
-                cmd.extend(['--context', context_file])
-            if params:
-                cmd.extend(['--params', params])
-
-            # Run native checker
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-
-            # Parse JSON output
-            output = result.stdout.strip()
-            if not output:
-                return None
-
-            data = json.loads(output)
-
-            errors = []
-            if not data.get('valid', True):
-                # Check for diagnostics
-                for diag in data.get('diagnostics', []):
-                    if diag.get('level') == 'error':
-                        errors.append(diag.get('message', 'Unknown error'))
-
-                # If no diagnostics but not valid, add type mismatch error
-                if not errors:
-                    inferred = data.get('inferred_type', 'Unknown')
-                    expected = data.get('expected_type', expected_type)
-                    if inferred != expected:
-                        errors.append(f"Type mismatch: expected {expected}, got {inferred}")
-
-            return (
-                errors,
-                data.get('inferred_type'),
-                data.get('expected_type', expected_type)
-            )
-
-        finally:
-            # Clean up temp file
-            if context_file:
-                import os
-                try:
-                    os.unlink(context_file)
-                except:
-                    pass
+        return (
+            errors,
+            data.get('inferred_type'),
+            data.get('expected_type', expected_type)
+        )
 
     except Exception as e:
         logger.debug(f"Native checker failed, falling back to Python: {e}")
+        return None
+
+
+def _extract_fn_params(context_file: str, fn_name: str) -> Optional[str]:
+    """Extract params string for a specific function from context file.
+
+    Args:
+        context_file: Path to .slop file
+        fn_name: Name of function to extract params for
+
+    Returns:
+        Params string like "((x Int) (y String))" or None if not found.
+    """
+    from slop.parser import parse_file, is_form, Symbol
+
+    try:
+        ast = parse_file(context_file)
+        for form in ast:
+            if is_form(form, 'fn') and len(form) > 2:
+                name = form[1].name if isinstance(form[1], Symbol) else str(form[1])
+                if name == fn_name:
+                    return str(form[2])
+            elif is_form(form, 'module'):
+                for item in form.items:
+                    if is_form(item, 'fn') and len(item) > 2:
+                        name = item[1].name if isinstance(item[1], Symbol) else str(item[1])
+                        if name == fn_name:
+                            return str(item[2])
+        return None
+    except Exception:
         return None
 
 
@@ -1559,9 +1526,54 @@ def check_hole_impl(
     Returns:
         CheckResult with valid flag, errors list, and type information
     """
-    from pathlib import Path
+    import os
 
-    # Build context from file if provided
+    # Validate context file exists if provided
+    if context_file and not os.path.isfile(context_file):
+        return CheckResult(valid=False, errors=[f"Error reading context file: File not found: {context_file}"])
+
+    # Validate parsing early - these errors should be returned before any checker
+    try:
+        expr_ast = parse(expr_str)
+        if not expr_ast:
+            return CheckResult(valid=False, errors=["Empty expression"])
+        expr = expr_ast[0]
+    except ParseError as e:
+        return CheckResult(valid=False, errors=[f"Parse error in expression: {e}"])
+
+    try:
+        type_ast = parse(expected_type)
+        if not type_ast:
+            return CheckResult(valid=False, errors=["Empty type expression"])
+        expected_type_expr = type_ast[0]
+    except ParseError as e:
+        return CheckResult(valid=False, errors=[f"Parse error in type: {e}"])
+
+    # Extract params from fn_name if needed
+    effective_params = params or ''
+    if not params and fn_name and context_file:
+        extracted = _extract_fn_params(context_file, fn_name)
+        if extracted:
+            effective_params = extracted
+
+    # Try native checker first if enabled - pass context file directly
+    if use_native:
+        native_result = _try_native_checker(
+            expr_str,
+            expected_type,
+            context_file=context_file,
+            params=effective_params
+        )
+        if native_result is not None:
+            errors, inferred_str, expected_str = native_result
+            return CheckResult(
+                valid=len(errors) == 0,
+                errors=errors,
+                inferred_type=inferred_str,
+                expected_type=expected_str,
+            )
+
+    # Build context for Python fallback (only when native checker unavailable)
     context: Dict[str, Any] = {
         'type_defs': [],
         'fn_specs': [],
@@ -1569,7 +1581,7 @@ def check_hole_impl(
         'const_specs': [],
         'imported_specs': [],
         'imported_types': [],
-        'params': params or '',
+        'params': effective_params,
     }
 
     if context_file:
@@ -1582,42 +1594,6 @@ def check_hole_impl(
                 context['params'] = params
         except Exception as e:
             return CheckResult(valid=False, errors=[f"Error reading context file: {e}"])
-
-    # Try native checker first if enabled
-    if use_native:
-        native_result = _try_native_checker(
-            expr_str,
-            expected_type,
-            context,
-            params=context.get('params', '')
-        )
-        if native_result is not None:
-            errors, inferred_str, expected_str = native_result
-            return CheckResult(
-                valid=len(errors) == 0,
-                errors=errors,
-                inferred_type=inferred_str,
-                expected_type=expected_str,
-            )
-
-    # Fall back to Python type checker
-    # Parse the expression
-    try:
-        expr_ast = parse(expr_str)
-        if not expr_ast:
-            return CheckResult(valid=False, errors=["Empty expression"])
-        expr = expr_ast[0]
-    except ParseError as e:
-        return CheckResult(valid=False, errors=[f"Parse error in expression: {e}"])
-
-    # Parse the expected type
-    try:
-        type_ast = parse(expected_type)
-        if not type_ast:
-            return CheckResult(valid=False, errors=["Empty type expression"])
-        expected_type_expr = type_ast[0]
-    except ParseError as e:
-        return CheckResult(valid=False, errors=[f"Parse error in type: {e}"])
 
     # Validate expression type with Python checker
     errors, inferred_str, expected_str = _validate_expr_type(expr, expected_type_expr, context)

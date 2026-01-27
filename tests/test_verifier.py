@@ -3478,3 +3478,225 @@ class TestQuantifiedPostconditions:
         # Should find the pushed predicate values (may be empty if type-pred not tracked)
         # The key is that the method runs without error
         assert isinstance(axioms, list)
+
+
+class TestPropertyVerification:
+    """Tests for @property (universal assertion) verification"""
+
+    def test_property_with_forall_verifies(self):
+        """Valid property with forall verifies successfully"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Property: for all x > 0, x * 2 > x
+        code = """
+        (fn positive-double ((x Int))
+          (@spec ((Int) -> Int))
+          (@property (forall (n Int) (implies (> n 0) (> (* n 2) n))))
+          (* x 2))
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+    def test_property_false_fails(self):
+        """False property fails with counterexample"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Property: for all x, x > x (always false)
+        code = """
+        (fn broken-property ((x Int))
+          (@spec ((Int) -> Int))
+          (@property (forall (n Int) (> n n)))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is False
+        assert result.status == "failed"
+        assert "Property failed" in result.message
+
+    def test_property_independent_of_preconditions(self):
+        """Properties are verified independently of preconditions"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Precondition says x > 0, but property doesn't assume that
+        # Property (forall n: n > n) is still false regardless of precondition
+        code = """
+        (fn property-ignores-pre ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre (> x 0))
+          (@property (forall (n Int) (> n n)))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        # Property should still fail even though precondition is satisfied
+        assert result.verified is False
+        assert result.status == "failed"
+        assert "Property failed" in result.message
+
+    def test_multiple_properties(self):
+        """All @property annotations are verified"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Two valid properties
+        code = """
+        (fn multi-property ((x Int))
+          (@spec ((Int) -> Int))
+          (@property (forall (n Int) (implies (> n 0) (> (* n 2) n))))
+          (@property (forall (n Int) (implies (< n 0) (< (* n 2) n))))
+          (* x 2))
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+    def test_multiple_properties_one_fails(self):
+        """If one property fails, verification fails"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # First property valid, second invalid
+        code = """
+        (fn multi-property-fail ((x Int))
+          (@spec ((Int) -> Int))
+          (@property (forall (n Int) (implies (> n 0) (> (* n 2) n))))
+          (@property (forall (n Int) (> n n)))
+          (* x 2))
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is False
+        assert result.status == "failed"
+        assert "Property failed" in result.message
+
+    def test_property_with_implies(self):
+        """Common pattern with implies verifies"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # implies (x > 0 and x < 10) then x < 100
+        code = """
+        (fn implies-property ((x Int))
+          (@spec ((Int) -> Int))
+          (@property (forall (n Int) (implies (and (> n 0) (< n 10)) (< n 100))))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+    def test_property_tautology(self):
+        """Simple tautologies verify"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # x == x is always true
+        code = """
+        (fn tautology ((x Int))
+          (@spec ((Int) -> Int))
+          (@property (forall (n Int) (== n n)))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+    def test_property_only_no_postcondition(self):
+        """Function with only @property (no @post) is verified"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Only property, no postcondition
+        code = """
+        (fn property-only ((x Int))
+          (@spec ((Int) -> Int))
+          (@property (forall (n Int) (>= (* n n) 0)))
+          (* x x))
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+    def test_property_with_postcondition(self):
+        """Both @property and @post are verified together"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Both property and postcondition
+        code = """
+        (fn property-and-post ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre (> x 0))
+          (@property (forall (n Int) (>= (* n n) 0)))
+          (@post (> $result 0))
+          (* x x))
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+    def test_function_registry_extracts_properties(self):
+        """FunctionRegistry extracts @property annotations"""
+        from slop.verifier import FunctionRegistry
+        from slop.parser import parse
+
+        registry = FunctionRegistry()
+        code = """
+        (fn with-property ((x Int))
+          (@spec ((Int) -> Int))
+          (@property (forall (n Int) (>= n 0)))
+          x)
+        """
+        ast = parse(code)
+        registry.register_from_ast(ast)
+
+        fn_def = registry.functions.get('with-property')
+        assert fn_def is not None
+        assert len(fn_def.properties) == 1

@@ -164,6 +164,7 @@ class FunctionDef:
     body: Optional[SExpr]
     is_pure: bool = True
     postconditions: List[SExpr] = field(default_factory=list)
+    properties: List[SExpr] = field(default_factory=list)  # @property - universal assertions
 
 
 class FunctionRegistry:
@@ -210,10 +211,11 @@ class FunctionRegistry:
                 if param_name:
                     params.append(param_name)
 
-        # Extract body, postconditions (skip other annotations and :keywords)
+        # Extract body, postconditions, properties (skip other annotations and :keywords)
         body = None
         is_pure = False
         postconditions: List[SExpr] = []
+        properties: List[SExpr] = []
         annotation_forms = {'@intent', '@spec', '@pre', '@post', '@assume', '@pure',
                            '@alloc', '@example', '@deprecated', '@property',
                            '@generation-mode', '@requires'}
@@ -243,6 +245,11 @@ class FunctionRegistry:
                 postconditions.append(item[1])
                 skip_next_string = False
                 continue
+            elif is_form(item, '@property') and len(item) > 1:
+                # Extract property (universal assertion)
+                properties.append(item[1])
+                skip_next_string = False
+                continue
             elif isinstance(item, SList) and len(item) > 0:
                 head = item[0]
                 if isinstance(head, Symbol) and head.name in annotation_forms:
@@ -252,7 +259,8 @@ class FunctionRegistry:
                 skip_next_string = False
 
         self.functions[name] = FunctionDef(name=name, params=params, body=body,
-                                           is_pure=is_pure, postconditions=postconditions)
+                                           is_pure=is_pure, postconditions=postconditions,
+                                           properties=properties)
 
     def is_simple_accessor(self, name: str) -> bool:
         """Check if function is a simple field accessor: (. param field)"""
@@ -5979,6 +5987,7 @@ class ContractVerifier:
         preconditions: List[SExpr] = []
         postconditions: List[SExpr] = []
         assumptions: List[SExpr] = []  # @assume - trusted axioms for verification
+        properties: List[SExpr] = []  # @property - universal assertions
         spec_return_type: Optional[Type] = None
         fn_body: Optional[SExpr] = None  # Function body for path-sensitive analysis
 
@@ -5995,6 +6004,8 @@ class ContractVerifier:
                 postconditions.append(item[1])
             elif is_form(item, '@assume') and len(item) > 1:
                 assumptions.append(item[1])
+            elif is_form(item, '@property') and len(item) > 1:
+                properties.append(item[1])
             elif is_form(item, '@spec') and len(item) > 1:
                 spec = item[1]
                 if isinstance(spec, SList) and len(spec) >= 3:
@@ -6039,7 +6050,7 @@ class ContractVerifier:
             assumptions.extend(loop_invariants)
 
         # Skip if no contracts to verify
-        if not preconditions and not postconditions and not assumptions:
+        if not preconditions and not postconditions and not assumptions and not properties:
             return VerificationResult(
                 name=fn_name,
                 verified=True,
@@ -6145,6 +6156,16 @@ class ContractVerifier:
             else:
                 failed_assumes.append(assume)
 
+        # Translate properties (universal assertions)
+        prop_z3: List[z3.BoolRef] = []
+        failed_props: List[SExpr] = []
+        for prop in properties:
+            z3_prop = translator.translate_expr(prop)
+            if z3_prop is not None:
+                prop_z3.append(z3_prop)
+            else:
+                failed_props.append(prop)
+
         # Report translation failures
         if failed_pres:
             return VerificationResult(
@@ -6173,7 +6194,16 @@ class ContractVerifier:
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
-        if not post_z3 and not postconditions:
+        if failed_props:
+            return VerificationResult(
+                name=fn_name,
+                verified=False,
+                status="failed",
+                message=f"Could not translate {len(failed_props)} property/properties",
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+            )
+
+        if not post_z3 and not postconditions and not prop_z3:
             # No postconditions to verify
             if assume_z3:
                 # Only @assume (trusted axioms), consider verified via assumption
@@ -6464,6 +6494,46 @@ class ContractVerifier:
 
         if result == z3.unsat:
             # Postconditions always hold when preconditions are met
+            # Now verify properties (universal assertions - independent of preconditions)
+            if prop_z3:
+                for i, (prop_expr, prop_z3_expr) in enumerate(zip(properties, prop_z3)):
+                    prop_solver = z3.Solver()
+                    prop_solver.set("timeout", self.timeout_ms)
+
+                    # Add type constraints only (not preconditions)
+                    for c in translator.constraints:
+                        prop_solver.add(c)
+
+                    # Check if NOT property is satisfiable
+                    prop_solver.add(z3.Not(prop_z3_expr))
+                    prop_result = prop_solver.check()
+
+                    if prop_result == z3.sat:
+                        model = prop_solver.model()
+                        counterexample = {str(decl.name()): str(model[decl])
+                                         for decl in model.decls()
+                                         if not str(decl.name()).startswith('field_')}
+                        from slop.parser import pretty_print
+                        prop_str = pretty_print(prop_expr)
+                        return VerificationResult(
+                            name=fn_name,
+                            verified=False,
+                            status="failed",
+                            message=f"Property failed: {prop_str}",
+                            counterexample=counterexample,
+                            location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                        )
+                    elif prop_result == z3.unknown:
+                        from slop.parser import pretty_print
+                        prop_str = pretty_print(prop_expr)
+                        return VerificationResult(
+                            name=fn_name,
+                            verified=False,
+                            status="unknown",
+                            message=f"Could not verify property: {prop_str}",
+                            location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                        )
+
             return VerificationResult(
                 name=fn_name,
                 verified=True,

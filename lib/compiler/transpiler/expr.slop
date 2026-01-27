@@ -602,7 +602,9 @@
                       (let ((derived-c-type (slop-value-type-to-c-type ctx slop-type)))
                         (c-type-to-option-type-name ctx derived-c-type))
                       ;; No slop-type available - emit error
-                      (ctx-str3 ctx "/* TRANSPILER ERROR: cannot infer Option type for variable '" name "' */")))
+                      (do
+                        (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for variable '" name "' - type is 'auto' with no SLOP type") (sexpr-line val-expr) (sexpr-col val-expr))
+                        "__type_error__")))
                   ((string-eq c-type "int64_t") "slop_option_int")
                   ((string-eq c-type "double") "slop_option_double")
                   ((string-eq c-type "slop_string") "slop_option_string")
@@ -615,7 +617,10 @@
                   ;; Other custom types: build slop_option_<typename>
                   (else (ctx-str3 ctx "slop_option_" c-type "")))))
             ;; Unknown variable - emit error
-            ((none) (ctx-str3 ctx "/* TRANSPILER ERROR: unknown variable '" name "' for Option type inference */")))))
+            ((none)
+              (do
+                (ctx-add-error-at ctx (ctx-str3 ctx "Unknown variable '" name "' for Option type inference") (sexpr-line val-expr) (sexpr-col val-expr))
+                "__type_error__")))))
       ;; For complex expressions, try to infer type from the structure
       ((lst lst)
         (infer-list-expr-option-type ctx (. lst items)))))
@@ -649,9 +654,13 @@
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items))
-          (arena (. (deref ctx) arena)))
+          (arena (. (deref ctx) arena))
+          (line (list-first-line items))
+          (col (list-first-col items)))
       (if (< len 1)
-        "/* TRANSPILER ERROR: empty list in option type inference */"
+        (do
+          (ctx-add-error-at ctx "Empty list in option type inference" line col)
+          "__type_error__")
         (match (list-get items 0)
           ((some head-expr)
             (match (deref head-expr)
@@ -661,7 +670,9 @@
                     ;; Field access: (. obj field) - try to infer field type
                     ((string-eq op ".")
                       (if (< len 3)
-                        "/* TRANSPILER ERROR: incomplete field access for option type inference */"
+                        (do
+                          (ctx-add-error-at ctx "Incomplete field access for option type inference" line col)
+                          "__type_error__")
                         (match (list-get items 2)
                           ((some field-expr)
                             (match (deref field-expr)
@@ -676,9 +687,18 @@
                                     ((string-eq field-name "c-type") "slop_option_string")
                                     ((string-eq field-name "slop-name") "slop_option_string")
                                     ;; Unknown field - emit error
-                                    (else (ctx-str3 ctx "/* TRANSPILER ERROR: unknown field '" field-name "' for option type inference */")))))
-                              (else "/* TRANSPILER ERROR: non-symbol field for option type inference */")))
-                          ((none) "/* TRANSPILER ERROR: missing field for option type inference */"))))
+                                    (else
+                                      (do
+                                        (ctx-add-error-at ctx (ctx-str3 ctx "Unknown field '" field-name "' for option type inference") (sexpr-line field-expr) (sexpr-col field-expr))
+                                        "__type_error__")))))
+                              (else
+                                (do
+                                  (ctx-add-error-at ctx "Non-symbol field for option type inference" (sexpr-line field-expr) (sexpr-col field-expr))
+                                  "__type_error__"))))
+                          ((none)
+                            (do
+                              (ctx-add-error-at ctx "Missing field for option type inference" line col)
+                              "__type_error__")))))
                     ;; String functions that return strings
                     ((or (string-eq op "string-concat")
                          (or (string-eq op "string-copy")
@@ -707,11 +727,23 @@
                                   ;; Other types - generate slop_option_<type>
                                   (else (ctx-str3 ctx "slop_option_" ret-type ""))))
                               ;; No return type info - emit error
-                              (else (ctx-str3 ctx "/* TRANSPILER ERROR: cannot infer Option type for function '" op "' */")))))
+                              (else
+                                (do
+                                  (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for function '" op "' - no return type info") line col)
+                                  "__type_error__")))))
                         ;; Unknown function - emit error
-                        ((none) (ctx-str3 ctx "/* TRANSPILER ERROR: unknown function '" op "' for Option type inference */")))))))
-              (else "/* TRANSPILER ERROR: non-symbol head in option type inference */")))
-          ((none) "/* TRANSPILER ERROR: missing list head in option type inference */")))))
+                        ((none)
+                          (do
+                            (ctx-add-error-at ctx (ctx-str3 ctx "Unknown function '" op "' for Option type inference") line col)
+                            "__type_error__")))))))
+              (else
+                (do
+                  (ctx-add-error-at ctx "Non-symbol head in option type inference" (sexpr-line head-expr) (sexpr-col head-expr))
+                  "__type_error__"))))
+          ((none)
+            (do
+              (ctx-add-error-at ctx "Missing list head in option type inference" line col)
+              "__type_error__"))))))
 
   (fn strip-pointer-suffix ((arena Arena) (s String))
     (@intent "Strip trailing * from pointer type string")
@@ -1722,6 +1754,10 @@
                     ;; while as expression (side effect only, returns 0)
                     ((and (string-eq op "while") (>= len 3))
                       (transpile-while-expr ctx items))
+                    ;; Annotations (@loop-invariant, @property, etc.) - no-op, returns 0
+                    ;; (bare "@" is array indexing, handled below)
+                    ((and (starts-with op "@") (not (string-eq op "@")))
+                      "0")
                     ;; do as expression: sequence, returns last value
                     ((and (string-eq op "do") (>= len 1))
                       (transpile-do-expr ctx items))
@@ -1813,15 +1849,29 @@
                                 ;; Use infer-expr-c-type for more accurate type inference
                                 (val-type (infer-expr-c-type ctx val-expr))
                                 (option-type (cond
+                                               ;; Check for type inference error marker
+                                               ((string-eq val-type "__type_error__")
+                                                 (do
+                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (sexpr-line val-expr) (sexpr-col val-expr))
+                                                   "__type_error__"))
                                                ((string-eq val-type "slop_string") "slop_option_string")
                                                ((string-eq val-type "int64_t") "slop_option_int")
                                                ((string-eq val-type "double") "slop_option_double")
                                                ;; For auto/unknown type, emit error - don't guess
                                                ((string-eq val-type "auto")
-                                                 (ctx-str3 ctx "/* TRANSPILER ERROR: cannot infer Option type for '" val-c "' */"))
+                                                 (do
+                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "' - type is 'auto'") (sexpr-line val-expr) (sexpr-col val-expr))
+                                                   "__type_error__"))
                                                (else (infer-option-type ctx val-expr)))))
-                            ;; Typed option construction
-                            (ctx-str5 ctx "(" option-type "){.has_value = 1, .value = " val-c "}")))
+                            ;; Check if option-type is an error
+                            (if (or (string-eq option-type "__type_error__") (starts-with option-type "/*"))
+                              ;; Error in type inference - return placeholder
+                              (do
+                                (when (starts-with option-type "/*")
+                                  (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (sexpr-line val-expr) (sexpr-col val-expr)))
+                                "(slop_option_int){.has_value = 0}")
+                              ;; Typed option construction
+                              (ctx-str5 ctx "(" option-type "){.has_value = 1, .value = " val-c "}"))))
                         ((none)
                           (do
                             (ctx-add-error-at ctx "missing some value" (list-first-line items) (list-first-col items))
@@ -3271,11 +3321,13 @@
                                       ((. func-entry returns-string) "slop_string")
                                       ((string-eq ret-type "void") "void")
                                       ((> (string-len ret-type) 0) ret-type)
-                                      (else "int64_t"))))
-                                ((none) "int64_t"))))))))
-                  (else "int64_t")))
-              ((none) "int64_t")))))
-      (else "int64_t")))
+                                      ;; Empty return type = incomplete info (e.g., imported but not processed)
+                                      (else "__type_error__"))))
+                                ;; Function not found in registry - return error marker
+                                ((none) "__type_error__"))))))))
+                  (else "__type_error__")))
+              ((none) "__type_error__")))))
+      (else "__type_error__")))
 
   (fn build-result-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build Result match as GCC statement expression")
