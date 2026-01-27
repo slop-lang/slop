@@ -3700,3 +3700,231 @@ class TestPropertyVerification:
         fn_def = registry.functions.get('with-property')
         assert fn_def is not None
         assert len(fn_def.properties) == 1
+        # Properties are now (name, expr) tuples
+        prop_name, prop_expr = fn_def.properties[0]
+        assert prop_name is None  # Unnamed property
+        assert prop_expr is not None
+
+    def test_named_property_verifies(self):
+        """Named property with forall verifies successfully"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Named property: for all x > 0, x * 2 > x
+        code = """
+        (fn positive-double ((x Int))
+          (@spec ((Int) -> Int))
+          (@property positivity (forall (n Int) (implies (> n 0) (> (* n 2) n))))
+          (* x 2))
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+    def test_named_property_fails_with_name_in_message(self):
+        """Failed named property includes name in error message"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Named property that fails: for all x, x > x (always false)
+        code = """
+        (fn broken-property ((x Int))
+          (@spec ((Int) -> Int))
+          (@property impossibility (forall (n Int) (> n n)))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is False
+        assert result.status == "failed"
+        assert "impossibility" in result.message
+        assert "Property 'impossibility' failed" in result.message
+
+    def test_mixed_named_unnamed_properties(self):
+        """Both named and unnamed properties in same function"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FunctionRegistry
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Mix of named and unnamed properties
+        code = """
+        (fn mixed-properties ((x Int))
+          (@spec ((Int) -> Int))
+          (@property reflexivity (forall (n Int) (== n n)))
+          (@property (forall (n Int) (implies (> n 0) (> (* n 2) n))))
+          (* x 2))
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+        # Also check FunctionRegistry extraction
+        registry = FunctionRegistry()
+        registry.register_from_ast(ast)
+        fn_def = registry.functions.get('mixed-properties')
+        assert fn_def is not None
+        assert len(fn_def.properties) == 2
+        # First is named
+        assert fn_def.properties[0][0] == "reflexivity"
+        # Second is unnamed
+        assert fn_def.properties[1][0] is None
+
+
+class TestImprovedVerificationOutput:
+    """Tests for improved verification output with multiple conditions"""
+
+    def test_named_precondition_single(self):
+        """Single named precondition is extracted correctly"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Use prefix syntax for named precondition
+        code = """
+        (fn check-positive ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre positive (> x 0))
+          (@post (> $result 0))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+    def test_named_precondition_unsatisfiable(self):
+        """Unsatisfiable named precondition shows name in error"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Two conflicting named preconditions (using prefix syntax)
+        code = """
+        (fn impossible ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre too-big (> x 10))
+          (@pre too-small (< x 5))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is False
+        assert result.status == "failed"
+        assert "unsatisfiable" in result.message.lower()
+        # Should include both precondition names
+        assert "too-big" in result.message
+        assert "too-small" in result.message
+
+    def test_multiple_postconditions_show_all_failed(self):
+        """Multiple failed postconditions are all listed in message"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Multiple postconditions that will fail
+        code = """
+        (fn bad-post ((x Int))
+          (@spec ((Int) -> Int))
+          (@post (> $result 100))
+          (@post (< $result 0))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is False
+        assert result.status == "failed"
+        # Should show both postconditions in message, not just count
+        assert "Postconditions failed:" in result.message or "Postcondition failed:" in result.message
+
+    def test_multiple_properties_show_all_failed(self):
+        """Multiple failed properties are all listed in message"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Multiple properties that will fail
+        code = """
+        (fn multi-prop-fail ((x Int))
+          (@spec ((Int) -> Int))
+          (@property p1 (forall (n Int) (> n n)))
+          (@property p2 (forall (n Int) (< n n)))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is False
+        assert result.status == "failed"
+        # Should show both property names
+        assert "p1" in result.message
+        assert "p2" in result.message
+        assert "Properties failed:" in result.message
+
+    def test_mixed_named_unnamed_preconditions(self):
+        """Mix of named and unnamed preconditions works correctly"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Use prefix syntax for named, infix for unnamed
+        code = """
+        (fn mixed-pre ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre positive (> x 0))
+          (@pre (< x 100))
+          (@post (> $result 0))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is True
+        assert result.status == "verified"
+
+    def test_counterexample_present_on_failure(self):
+        """Counterexample is included in failed verification result"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        code = """
+        (fn fail-with-ce ((x Int))
+          (@spec ((Int) -> Int))
+          (@post (> $result 100))
+          x)
+        """
+        ast = parse(code)
+        result = verifier.verify_function(ast[0])
+
+        assert result.verified is False
+        assert result.counterexample is not None
+        # Should have a counterexample value
+        assert len(result.counterexample) > 0

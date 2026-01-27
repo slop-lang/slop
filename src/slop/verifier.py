@@ -164,7 +164,7 @@ class FunctionDef:
     body: Optional[SExpr]
     is_pure: bool = True
     postconditions: List[SExpr] = field(default_factory=list)
-    properties: List[SExpr] = field(default_factory=list)  # @property - universal assertions
+    properties: List[Tuple[Optional[str], SExpr]] = field(default_factory=list)  # @property - (name, expr) tuples
 
 
 class FunctionRegistry:
@@ -247,7 +247,13 @@ class FunctionRegistry:
                 continue
             elif is_form(item, '@property') and len(item) > 1:
                 # Extract property (universal assertion)
-                properties.append(item[1])
+                # Named: (@property name expr) or Unnamed: (@property expr)
+                if isinstance(item[1], Symbol) and len(item) > 2:
+                    # Named property: (@property name expr)
+                    properties.append((item[1].name, item[2]))
+                else:
+                    # Unnamed property: (@property expr)
+                    properties.append((None, item[1]))
                 skip_next_string = False
                 continue
             elif isinstance(item, SList) and len(item) > 0:
@@ -5984,10 +5990,10 @@ class ContractVerifier:
         params = fn_form[2] if isinstance(fn_form[2], SList) else SList([])
 
         # Extract contracts and function body
-        preconditions: List[SExpr] = []
+        preconditions: List[Tuple[Optional[str], SExpr]] = []  # @pre - (name, expr) tuples
         postconditions: List[SExpr] = []
         assumptions: List[SExpr] = []  # @assume - trusted axioms for verification
-        properties: List[SExpr] = []  # @property - universal assertions
+        properties: List[Tuple[Optional[str], SExpr]] = []  # @property - (name, expr) tuples
         spec_return_type: Optional[Type] = None
         fn_body: Optional[SExpr] = None  # Function body for path-sensitive analysis
 
@@ -5999,13 +6005,21 @@ class ContractVerifier:
 
         for item in fn_form.items[3:]:
             if is_form(item, '@pre') and len(item) > 1:
-                preconditions.append(item[1])
+                # Named: (@pre name expr) or Unnamed: (@pre expr)
+                if isinstance(item[1], Symbol) and len(item) > 2 and not item[1].name.startswith('{'):
+                    preconditions.append((item[1].name, item[2]))
+                else:
+                    preconditions.append((None, item[1]))
             elif is_form(item, '@post') and len(item) > 1:
                 postconditions.append(item[1])
             elif is_form(item, '@assume') and len(item) > 1:
                 assumptions.append(item[1])
             elif is_form(item, '@property') and len(item) > 1:
-                properties.append(item[1])
+                # Named: (@property name expr) or Unnamed: (@property expr)
+                if isinstance(item[1], Symbol) and len(item) > 2:
+                    properties.append((item[1].name, item[2]))
+                else:
+                    properties.append((None, item[1]))
             elif is_form(item, '@spec') and len(item) > 1:
                 spec = item[1]
                 if isinstance(spec, SList) and len(spec) >= 3:
@@ -6119,13 +6133,13 @@ class ContractVerifier:
 
         # Translate preconditions
         pre_z3: List[z3.BoolRef] = []
-        failed_pres: List[SExpr] = []
-        for pre in preconditions:
-            z3_pre = translator.translate_expr(pre)
+        failed_pres: List[Tuple[Optional[str], SExpr]] = []
+        for pre_name, pre_expr in preconditions:
+            z3_pre = translator.translate_expr(pre_expr)
             if z3_pre is not None:
                 pre_z3.append(z3_pre)
             else:
-                failed_pres.append(pre)
+                failed_pres.append((pre_name, pre_expr))
 
         # Translate postconditions
         post_z3: List[z3.BoolRef] = []
@@ -6157,49 +6171,86 @@ class ContractVerifier:
                 failed_assumes.append(assume)
 
         # Translate properties (universal assertions)
+        # properties is List[Tuple[Optional[str], SExpr]] - (name, expr) tuples
         prop_z3: List[z3.BoolRef] = []
-        failed_props: List[SExpr] = []
-        for prop in properties:
-            z3_prop = translator.translate_expr(prop)
+        failed_props: List[Tuple[Optional[str], SExpr]] = []
+        for prop_name, prop_expr in properties:
+            z3_prop = translator.translate_expr(prop_expr)
             if z3_prop is not None:
                 prop_z3.append(z3_prop)
             else:
-                failed_props.append(prop)
+                failed_props.append((prop_name, prop_expr))
 
         # Report translation failures
         if failed_pres:
+            from slop.parser import pretty_print
+            pre_details = []
+            for pre_name, pre_expr in failed_pres:
+                pre_str = pretty_print(pre_expr)
+                if pre_name:
+                    pre_details.append(f"'{pre_name}': {pre_str}")
+                else:
+                    pre_details.append(pre_str)
+            if len(failed_pres) == 1:
+                message = f"Could not translate precondition: {pre_details[0]}"
+            else:
+                message = "Could not translate preconditions:\n" + "\n".join(f"  • {p}" for p in pre_details)
             return VerificationResult(
                 name=fn_name,
                 verified=False,
                 status="failed",
-                message=f"Could not translate {len(failed_pres)} precondition(s)",
+                message=message,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         if failed_posts:
+            from slop.parser import pretty_print
+            post_details = [pretty_print(p) for p in failed_posts]
+            if len(failed_posts) == 1:
+                message = f"Could not translate postcondition: {post_details[0]}"
+            else:
+                message = "Could not translate postconditions:\n" + "\n".join(f"  • {p}" for p in post_details)
             return VerificationResult(
                 name=fn_name,
                 verified=False,
                 status="failed",
-                message=f"Could not translate {len(failed_posts)} postcondition(s)",
+                message=message,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         if failed_assumes:
+            from slop.parser import pretty_print
+            assume_details = [pretty_print(a) for a in failed_assumes]
+            if len(failed_assumes) == 1:
+                message = f"Could not translate assumption: {assume_details[0]}"
+            else:
+                message = "Could not translate assumptions:\n" + "\n".join(f"  • {a}" for a in assume_details)
             return VerificationResult(
                 name=fn_name,
                 verified=False,
                 status="failed",
-                message=f"Could not translate {len(failed_assumes)} assumption(s)",
+                message=message,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         if failed_props:
+            from slop.parser import pretty_print
+            prop_details = []
+            for prop_name, prop_expr in failed_props:
+                prop_str = pretty_print(prop_expr)
+                if prop_name:
+                    prop_details.append(f"'{prop_name}': {prop_str}")
+                else:
+                    prop_details.append(prop_str)
+            if len(failed_props) == 1:
+                message = f"Could not translate property: {prop_details[0]}"
+            else:
+                message = "Could not translate properties:\n" + "\n".join(f"  • {p}" for p in prop_details)
             return VerificationResult(
                 name=fn_name,
                 verified=False,
                 status="failed",
-                message=f"Could not translate {len(failed_props)} property/properties",
+                message=message,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
@@ -6225,11 +6276,27 @@ class ContractVerifier:
 
             result = solver.check()
             if result == z3.unsat:
+                # Build message with precondition names/details
+                from slop.parser import pretty_print
+                if preconditions:
+                    pre_details = []
+                    for pre_name, pre_expr in preconditions:
+                        pre_str = pretty_print(pre_expr)
+                        if pre_name:
+                            pre_details.append(f"'{pre_name}': {pre_str}")
+                        else:
+                            pre_details.append(pre_str)
+                    if len(preconditions) == 1:
+                        message = f"Precondition is unsatisfiable: {pre_details[0]}"
+                    else:
+                        message = "Preconditions are unsatisfiable:\n" + "\n".join(f"  • {p}" for p in pre_details)
+                else:
+                    message = "Preconditions are unsatisfiable"
                 return VerificationResult(
                     name=fn_name,
                     verified=False,
                     status="failed",
-                    message="Preconditions are unsatisfiable",
+                    message=message,
                     location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                 )
             return VerificationResult(
@@ -6496,7 +6563,12 @@ class ContractVerifier:
             # Postconditions always hold when preconditions are met
             # Now verify properties (universal assertions - independent of preconditions)
             if prop_z3:
-                for i, (prop_expr, prop_z3_expr) in enumerate(zip(properties, prop_z3)):
+                from slop.parser import pretty_print
+                # Collect all failures instead of returning on first failure
+                failed_properties: List[Tuple[Optional[str], str, Dict[str, str]]] = []  # (name, expr_str, counterexample)
+                unknown_properties: List[Tuple[Optional[str], str]] = []  # (name, expr_str)
+
+                for i, ((prop_name, prop_expr), prop_z3_expr) in enumerate(zip(properties, prop_z3)):
                     prop_solver = z3.Solver()
                     prop_solver.set("timeout", self.timeout_ms)
 
@@ -6508,31 +6580,67 @@ class ContractVerifier:
                     prop_solver.add(z3.Not(prop_z3_expr))
                     prop_result = prop_solver.check()
 
+                    prop_str = pretty_print(prop_expr)
+
                     if prop_result == z3.sat:
                         model = prop_solver.model()
                         counterexample = {str(decl.name()): str(model[decl])
                                          for decl in model.decls()
                                          if not str(decl.name()).startswith('field_')}
-                        from slop.parser import pretty_print
-                        prop_str = pretty_print(prop_expr)
-                        return VerificationResult(
-                            name=fn_name,
-                            verified=False,
-                            status="failed",
-                            message=f"Property failed: {prop_str}",
-                            counterexample=counterexample,
-                            location=SourceLocation(self.filename, fn_form.line, fn_form.col)
-                        )
+                        failed_properties.append((prop_name, prop_str, counterexample))
                     elif prop_result == z3.unknown:
-                        from slop.parser import pretty_print
-                        prop_str = pretty_print(prop_expr)
-                        return VerificationResult(
-                            name=fn_name,
-                            verified=False,
-                            status="unknown",
-                            message=f"Could not verify property: {prop_str}",
-                            location=SourceLocation(self.filename, fn_form.line, fn_form.col)
-                        )
+                        unknown_properties.append((prop_name, prop_str))
+
+                # Report all failures at once
+                if failed_properties:
+                    if len(failed_properties) == 1:
+                        prop_name, prop_str, counterexample = failed_properties[0]
+                        if prop_name:
+                            message = f"Property '{prop_name}' failed: {prop_str}"
+                        else:
+                            message = f"Property failed: {prop_str}"
+                    else:
+                        lines = []
+                        for prop_name, prop_str, _ in failed_properties:
+                            if prop_name:
+                                lines.append(f"  • '{prop_name}': {prop_str}")
+                            else:
+                                lines.append(f"  • {prop_str}")
+                        message = "Properties failed:\n" + "\n".join(lines)
+                        # Use first failure's counterexample
+                        counterexample = failed_properties[0][2]
+                    return VerificationResult(
+                        name=fn_name,
+                        verified=False,
+                        status="failed",
+                        message=message,
+                        counterexample=counterexample,
+                        location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                    )
+
+                # Report unknown properties if no failures
+                if unknown_properties:
+                    if len(unknown_properties) == 1:
+                        prop_name, prop_str = unknown_properties[0]
+                        if prop_name:
+                            message = f"Could not verify property '{prop_name}': {prop_str}"
+                        else:
+                            message = f"Could not verify property: {prop_str}"
+                    else:
+                        lines = []
+                        for prop_name, prop_str in unknown_properties:
+                            if prop_name:
+                                lines.append(f"  • '{prop_name}': {prop_str}")
+                            else:
+                                lines.append(f"  • {prop_str}")
+                        message = "Could not verify properties:\n" + "\n".join(lines)
+                    return VerificationResult(
+                        name=fn_name,
+                        verified=False,
+                        status="unknown",
+                        message=message,
+                        location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                    )
 
             return VerificationResult(
                 name=fn_name,
@@ -6566,7 +6674,7 @@ class ContractVerifier:
                 if len(failed_posts) == 1:
                     message = f"Postcondition failed: {failed_posts[0]}"
                 else:
-                    message = f"{len(failed_posts)} postconditions failed"
+                    message = "Postconditions failed:\n" + "\n".join(f"  • {p}" for p in failed_posts)
             else:
                 message = "Contract may be violated"
 

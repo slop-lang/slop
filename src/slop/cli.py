@@ -4323,7 +4323,7 @@ def cmd_verify(args):
 
     for r in failed:
         print(f"  failed: {r.name} - {r.message}")
-        if args.verbose and r.counterexample:
+        if r.counterexample:
             ce_str = ", ".join(f"{k}={v}" for k, v in r.counterexample.items())
             print(f"    counterexample: {ce_str}")
         if r.suggestions:
