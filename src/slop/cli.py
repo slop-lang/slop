@@ -4078,10 +4078,17 @@ def _run_verify_multi(args, verify_files: list, verify_cfg, search_paths: list =
         total_warnings += len(warnings)
         total_unknown += len(unknown)
 
-        file_total = len(verified) + len(failed) + len(unknown) + len(warnings)
+        file_total = len(verified) + len(failed) + len(unknown) + len(warnings) + len(errors)
         if file_total == 0:
             no_contracts_files += 1
             print(f"  No contracts to verify")
+        elif errors and not verified and not failed and not unknown and not warnings:
+            # File has only errors (e.g., type errors), no contracts to verify
+            failed_files += 1
+            print(f"  ERROR: {len(errors)} error(s)")
+            if args.verbose:
+                for r in errors:
+                    print(f"    error: {r.name} - {r.message}")
         elif failed or errors:
             failed_files += 1
             print(f"  FAILED: {len(verified)} verified, {len(failed)} failed")

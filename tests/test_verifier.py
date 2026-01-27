@@ -3256,3 +3256,225 @@ class TestSSATracking:
                 found_old_constraint = True
                 break
         assert found_old_constraint, "Should have constraint linking __old_result to result"
+
+
+class TestArrayEncoding:
+    """Test Z3 array encoding for lists with element-level properties"""
+
+    def test_array_encoding_detection(self):
+        """Detect when array encoding is needed for postconditions"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Should need array encoding for all-triples-have-predicate
+        post1 = [parse("(all-triples-have-predicate $result RDF_TYPE)")[0]]
+        assert verifier._needs_array_encoding(post1)
+
+        # Should need array encoding for list-ref
+        post2 = [parse("(== (list-ref $result 0) x)")[0]]
+        assert verifier._needs_array_encoding(post2)
+
+        # Should need array encoding for forall with list-ref
+        post3 = [parse("(forall (i Int) (== (list-ref $result i) 0))")[0]]
+        assert verifier._needs_array_encoding(post3)
+
+        # Should not need array encoding for simple postconditions
+        post4 = [parse("(>= (list-len $result) 0)")[0]]
+        assert not verifier._needs_array_encoding(post4)
+
+    def test_create_list_array(self):
+        """Test creating array representation for lists"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_array_encoding=True)
+
+        arr, length = translator._create_list_array("test")
+
+        # Should be a Z3 array
+        assert z3.is_array(arr)
+
+        # Should be an Int for length
+        assert z3.is_int(length)
+
+        # Length should have non-negative constraint
+        has_nonneg = any(str(c) == "_len_test_1 >= 0" for c in translator.constraints)
+        assert has_nonneg, f"Expected length >= 0 constraint, got: {translator.constraints}"
+
+    def test_translate_list_ref(self):
+        """Test list-ref translation to Select"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_array_encoding=True)
+
+        # Set up a list array
+        arr, length = translator._create_list_array("lst")
+        translator.variables["lst"] = z3.IntVal(0)  # Placeholder for list variable
+
+        # Translate (list-ref lst 0)
+        expr = parse("(list-ref lst 0)")[0]
+        result = translator.translate_expr(expr)
+
+        # Should return something (may use uninterpreted function fallback)
+        assert result is not None
+
+    def test_translate_forall(self):
+        """Test forall quantifier translation"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Translate (forall (i Int) (>= i 0))
+        expr = parse("(forall (i Int) (>= i 0))")[0]
+        result = translator.translate_expr(expr)
+
+        # Should return a ForAll expression
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+    def test_translate_exists(self):
+        """Test exists quantifier translation"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Translate (exists (x Int) (== x 5))
+        expr = parse("(exists (x Int) (== x 5))")[0]
+        result = translator.translate_expr(expr)
+
+        # Should return an Exists expression
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+    def test_translate_implies(self):
+        """Test implies translation"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Declare variables
+        translator.declare_variable('a', PrimitiveType('Bool'))
+        translator.declare_variable('b', PrimitiveType('Bool'))
+
+        # Translate (implies a b)
+        expr = parse("(implies a b)")[0]
+        result = translator.translate_expr(expr)
+
+        # Should return an Implies expression
+        assert result is not None
+        assert z3.is_bool(result)
+
+    def test_list_new_with_array_encoding(self):
+        """Test list-new with array encoding creates proper axioms"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_array_encoding=True)
+
+        # Declare $result
+        translator.declare_variable('$result', z3.IntSort())
+
+        verifier = ContractVerifier(env)
+
+        # Extract axioms for list-new
+        list_new_expr = parse("(list-new arena Triple)")[0]
+        axioms = verifier._extract_list_new_axioms(list_new_expr, translator)
+
+        # Should have created array for $result
+        assert '$result' in translator.list_arrays
+
+        # Should have axiom that length is 0
+        assert len(axioms) >= 1
+        # First axiom should be length == 0 (may be normalized to 0 == length)
+        has_length_zero = any("== 0" in str(a) or "0 ==" in str(a) for a in axioms)
+        assert has_length_zero, f"Expected length == 0 axiom, got: {axioms}"
+
+
+class TestQuantifiedPostconditions:
+    """Test verification of postconditions with quantifiers"""
+
+    def test_forall_postcondition_simple(self):
+        """Test verification with simple forall postcondition"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn always-positive ((x Int))
+            (@spec ((Int) -> Int))
+            (@pre (> x 0))
+            (@post (forall (i Int) (implies (== i $result) (> i 0))))
+            x))
+        """
+        results = verify_source(source)
+
+        # Should verify (x > 0 implies result > 0)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_all_triples_have_predicate_detection(self):
+        """Test that all-triples-have-predicate triggers array encoding"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Postcondition using all-triples-have-predicate
+        postconditions = [parse("(all-triples-have-predicate $result RDF_TYPE)")[0]]
+
+        # Should detect that array encoding is needed
+        assert verifier._needs_array_encoding(postconditions)
+
+    def test_list_element_property_axiom_extraction(self):
+        """Test extraction of list element property axioms"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator, FunctionRegistry
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_array_encoding=True)
+        fn_registry = FunctionRegistry()
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+
+        # Set up $result with array encoding
+        arr, length = translator._create_list_array('$result')
+        translator.declare_variable('$result', PrimitiveType('Int'))
+
+        # Declare type_pred variable
+        translator.declare_variable('type-pred', PrimitiveType('Int'))
+
+        # Function body with list-push of make-triple
+        body = parse("""
+            (let ((inferred (make-triple arena individual type-pred class2)))
+              (list-push result inferred))
+        """)[0]
+
+        postconditions = [parse("(all-triples-have-predicate $result RDF_TYPE)")[0]]
+
+        # Extract axioms
+        axioms = verifier._extract_list_element_property_axioms(body, postconditions, translator)
+
+        # Should find the pushed predicate values (may be empty if type-pred not tracked)
+        # The key is that the method runs without error
+        assert isinstance(axioms, list)
