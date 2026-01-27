@@ -164,6 +164,7 @@ class FunctionDef:
     body: Optional[SExpr]
     is_pure: bool = True
     postconditions: List[SExpr] = field(default_factory=list)
+    properties: List[Tuple[Optional[str], SExpr]] = field(default_factory=list)  # @property - (name, expr) tuples
 
 
 class FunctionRegistry:
@@ -210,10 +211,11 @@ class FunctionRegistry:
                 if param_name:
                     params.append(param_name)
 
-        # Extract body, postconditions (skip other annotations and :keywords)
+        # Extract body, postconditions, properties (skip other annotations and :keywords)
         body = None
         is_pure = False
         postconditions: List[SExpr] = []
+        properties: List[SExpr] = []
         annotation_forms = {'@intent', '@spec', '@pre', '@post', '@assume', '@pure',
                            '@alloc', '@example', '@deprecated', '@property',
                            '@generation-mode', '@requires'}
@@ -243,6 +245,17 @@ class FunctionRegistry:
                 postconditions.append(item[1])
                 skip_next_string = False
                 continue
+            elif is_form(item, '@property') and len(item) > 1:
+                # Extract property (universal assertion)
+                # Named: (@property name expr) or Unnamed: (@property expr)
+                if isinstance(item[1], Symbol) and len(item) > 2:
+                    # Named property: (@property name expr)
+                    properties.append((item[1].name, item[2]))
+                else:
+                    # Unnamed property: (@property expr)
+                    properties.append((None, item[1]))
+                skip_next_string = False
+                continue
             elif isinstance(item, SList) and len(item) > 0:
                 head = item[0]
                 if isinstance(head, Symbol) and head.name in annotation_forms:
@@ -252,7 +265,8 @@ class FunctionRegistry:
                 skip_next_string = False
 
         self.functions[name] = FunctionDef(name=name, params=params, body=body,
-                                           is_pure=is_pure, postconditions=postconditions)
+                                           is_pure=is_pure, postconditions=postconditions,
+                                           properties=properties)
 
     def is_simple_accessor(self, name: str) -> bool:
         """Check if function is a simple field accessor: (. param field)"""
@@ -473,6 +487,22 @@ class LoopContext:
     loop_expr: SExpr  # The full for-each expression
     modified_vars: Set[str]  # Variables modified by set! within the loop
     set_bindings: List[SetBinding]  # All set! statements in the loop
+    loop_invariants: List[SExpr]  # Explicit @loop-invariant annotations
+
+
+@dataclass
+class WhileLoopContext:
+    """Information about a while loop for verification.
+
+    Captures the structure of a while loop including:
+    - The loop condition
+    - The full while expression
+    - All variables modified within the loop (via set!)
+    - Explicit @loop-invariant annotations
+    """
+    condition: SExpr  # The loop condition
+    loop_expr: SExpr  # The full (while ...) expression
+    modified_vars: Set[str]  # Variables modified by set! within the loop
     loop_invariants: List[SExpr]  # Explicit @loop-invariant annotations
 
 
@@ -2818,6 +2848,89 @@ class ContractVerifier:
         for item in expr.items:
             self._collect_loop_contexts(item, loops)
 
+    def _analyze_while_loops(self, body: SExpr) -> List[WhileLoopContext]:
+        """Analyze function body to extract information about all while loops.
+
+        This is a pre-pass that identifies:
+        - All while loops in the function
+        - The loop condition
+        - Variables modified within each loop (via set!)
+        - Explicit @loop-invariant annotations
+
+        This information is used for while loop exit axiom generation.
+        """
+        loops: List[WhileLoopContext] = []
+        self._collect_while_loop_contexts(body, loops)
+        return loops
+
+    def _collect_while_loop_contexts(self, expr: SExpr, loops: List[WhileLoopContext]):
+        """Recursively collect WhileLoopContext for all while loops in expression."""
+        if not isinstance(expr, SList) or len(expr) == 0:
+            return
+
+        head = expr[0]
+        if not isinstance(head, Symbol):
+            # Recurse into subexpressions
+            for item in expr.items:
+                self._collect_while_loop_contexts(item, loops)
+            return
+
+        if head.name == 'while' and len(expr) >= 2:
+            # Found a while loop: (while condition body...)
+            condition = expr[1]
+
+            # Analyze the loop body
+            modified_vars: Set[str] = set()
+            set_bindings: List[SetBinding] = []
+            loop_invariants: List[SExpr] = []
+
+            # Collect set! bindings and loop invariants from body
+            for body_item in expr.items[2:]:
+                self._collect_set_bindings(body_item, modified_vars, set_bindings)
+                self._collect_loop_invariants(body_item, loop_invariants)
+
+            loop_ctx = WhileLoopContext(
+                condition=condition,
+                loop_expr=expr,
+                modified_vars=modified_vars,
+                loop_invariants=loop_invariants
+            )
+            loops.append(loop_ctx)
+
+        # Recurse into subexpressions (including nested loops in loop body)
+        for item in expr.items:
+            self._collect_while_loop_contexts(item, loops)
+
+    def _extract_while_exit_axioms(self, body: SExpr, translator: 'Z3Translator') -> List:
+        """Extract axioms for while loop exit conditions.
+
+        When a while loop exits normally (not via return/break), the negation
+        of the loop condition holds. This is the standard Hoare logic rule:
+        {P && B} body {P} implies {P} while(B) body {P && !B}
+
+        For a while loop like:
+            (while (and (not done) (< iteration max))
+              ...)
+
+        After the loop, we know:
+            NOT (and (not done) (< iteration max))
+
+        Which means either:
+            - done is true, OR
+            - iteration >= max
+        """
+        axioms = []
+        while_loops = self._analyze_while_loops(body)
+
+        for ctx in while_loops:
+            # Translate the loop condition
+            cond_z3 = translator.translate_expr(ctx.condition)
+            if cond_z3 is not None:
+                # After while loop exits, the condition is false
+                axioms.append(z3.Not(cond_z3))
+
+        return axioms
+
     def _collect_set_bindings(self, expr: SExpr, modified_vars: Set[str],
                               set_bindings: List[SetBinding]):
         """Recursively collect set! bindings within a loop body.
@@ -3309,6 +3422,17 @@ class ContractVerifier:
         if not isinstance(head, Symbol):
             return
 
+        # Handle direct function call return: body is (fn-name args...)
+        # In this case, $result == fn-call result, so we propagate fn's postconditions to $result
+        # Check if this is a function call (not a special form)
+        special_forms = {'let', 'do', 'if', 'when', 'match', 'for-each', 'while', 'set!',
+                         'record-new', 'union-new', 'ok', 'error', 'some', 'none', 'return',
+                         'lambda', 'cast', 'deref', 'sizeof', 'arena-alloc', 'with-arena',
+                         'list-new', 'list-push', 'list-get', 'quote'}
+        if head.name not in special_forms and self.function_registry:
+            # This is a function call - check if it has postconditions
+            self._process_direct_call_return(expr, translator, axioms)
+
         # Handle let expressions
         if head.name == 'let' and len(expr) >= 3:
             bindings = expr[1]
@@ -3507,6 +3631,69 @@ class ContractVerifier:
                 # This connects make-iri result to the IRI constant
                 axioms.append(var_z3 == iri_z3)
 
+    def _process_direct_call_return(self, call_expr: SExpr, translator: Z3Translator, axioms: List):
+        """Process a function body that is a direct function call return.
+
+        When a function body is just (fn-call args...), the result of fn-call
+        becomes $result. We propagate fn-call's postconditions to $result.
+
+        For example:
+            (fn reason-with-config ...
+              (engine-run arena config input))
+
+        If engine-run has postcondition about iterations <= max-iterations,
+        we add that as an axiom for reason-with-config's $result.
+        """
+        if not isinstance(call_expr, SList) or len(call_expr) < 1:
+            return
+
+        head = call_expr[0]
+        if not isinstance(head, Symbol):
+            return
+
+        fn_name = head.name
+
+        # Look up the called function's postconditions from local registry or imported defs
+        postconditions: List[SExpr] = []
+        params: List[str] = []
+
+        # Check local functions first
+        if self.function_registry:
+            fn_def = self.function_registry.functions.get(fn_name)
+            if fn_def and fn_def.postconditions:
+                postconditions = fn_def.postconditions
+                params = fn_def.params
+
+        # Fall back to imported function signature
+        if not postconditions and self.imported_defs:
+            imported_sig = self.imported_defs.functions.get(fn_name)
+            if imported_sig and imported_sig.postconditions:
+                postconditions = imported_sig.postconditions
+                params = imported_sig.params
+
+        if not postconditions:
+            return
+
+        # Get $result variable
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return
+
+        # Get the actual arguments to the function call
+        args = list(call_expr.items[1:])
+
+        # For each postcondition, substitute $result and parameters, then translate
+        # Since this is a direct return, the callee's $result IS our $result
+        for post in postconditions:
+            # Substitute parameters with actual arguments
+            if len(args) == len(params):
+                subst_post = self._substitute_postcondition(post, '$result', params, args)
+            else:
+                subst_post = post
+            post_z3 = translator.translate_expr(subst_post)
+            if post_z3 is not None:
+                axioms.append(post_z3)
+
     def _process_set_binding(self, var_name: str, call_expr: SExpr, translator: Z3Translator, axioms: List):
         """Process a set! statement, extracting postcondition axioms if it's a function call.
 
@@ -3679,6 +3866,7 @@ class ContractVerifier:
         This includes:
         - Explicit (return ...) expressions
         - The final expression (implicit return)
+        - All branches of a match expression (when match is final expression)
 
         Used to add axioms for all possible return paths.
         """
@@ -3688,7 +3876,16 @@ class ContractVerifier:
         # Also add the final expression (if not already a return)
         final = self._get_return_expr(expr)
         if not is_form(final, 'return'):
-            returns.append(final)
+            # If final is a match, collect all branch results
+            if is_form(final, 'match') and len(final) >= 3:
+                # (match expr ((pattern) body) ...)
+                for branch in final.items[2:]:
+                    if isinstance(branch, SList) and len(branch) >= 2:
+                        branch_body = branch[-1]  # Last item is the body/result
+                        branch_result = self._get_return_expr(branch_body)
+                        returns.append(branch_result)
+            else:
+                returns.append(final)
 
         return returns
 
@@ -3886,6 +4083,29 @@ class ContractVerifier:
                 translator.variables[post_len_name] = post_len
                 axioms.append(post_len == pre_len + 1)
                 axioms.append(post_len >= 1)  # After push, length is at least 1
+
+        # Connect returned list to $result
+        # If the function returns a list variable that had push called on it,
+        # add axiom: field_len($result) >= number_of_pushes
+        result_var = translator.variables.get('$result')
+        if result_var is not None and push_calls:
+            # Find the return expression
+            return_expr = self._get_return_expr(body)
+            if isinstance(return_expr, Symbol):
+                # Check if this variable had push calls
+                for list_expr, _ in push_calls:
+                    if isinstance(list_expr, Symbol) and list_expr.name == return_expr.name:
+                        # The returned variable is the one we pushed to
+                        func_name = "field_len"
+                        if func_name in translator.variables:
+                            func = translator.variables[func_name]
+                            # Count pushes to this list
+                            push_count = sum(
+                                1 for lst, _ in push_calls
+                                if isinstance(lst, Symbol) and lst.name == return_expr.name
+                            )
+                            # $result is the list after all pushes, so length >= push_count
+                            axioms.append(func(result_var) >= push_count)
 
         return axioms
 
@@ -4267,6 +4487,67 @@ class ContractVerifier:
 
         return tag_func(result_var) == z3.IntVal(tag_idx)
 
+    def _extract_union_new_field_axioms(self, union_new: SList, translator: Z3Translator) -> List:
+        """Extract field axioms for union-new with record-new payload.
+
+        For (union-new ReasonerResult reason-success (record-new ReasonerSuccess ... (iterations x) ...)),
+        adds axioms like:
+            field_iterations(union_payload_reason_success($result)) == x
+        """
+        axioms = []
+
+        # union-new Type tag payload
+        if len(union_new) < 4:
+            return axioms
+
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return axioms
+
+        # Get tag name
+        tag_expr = union_new[2]
+        if isinstance(tag_expr, Symbol):
+            tag_name = tag_expr.name.lstrip("'")
+        elif is_form(tag_expr, 'quote') and len(tag_expr) >= 2:
+            inner = tag_expr[1]
+            tag_name = inner.name if isinstance(inner, Symbol) else None
+        else:
+            tag_name = None
+
+        if tag_name is None:
+            return axioms
+
+        # Get payload
+        payload_expr = union_new[3]
+
+        # Check if payload is record-new
+        if not is_form(payload_expr, 'record-new') or len(payload_expr) < 3:
+            return axioms
+
+        # Get or create union_payload function for this tag
+        payload_func_name = f"union_payload_{tag_name}"
+        if payload_func_name not in translator.variables:
+            payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
+            translator.variables[payload_func_name] = payload_func
+        else:
+            payload_func = translator.variables[payload_func_name]
+
+        # payload_var represents union_payload_tag($result)
+        payload_var = payload_func(result_var)
+
+        # Extract field values from record-new
+        # (record-new Type (field1 val1) (field2 val2) ...)
+        for item in payload_expr.items[2:]:  # Skip 'record-new' and Type
+            if isinstance(item, SList) and len(item) >= 2:
+                field_name = item[0].name if isinstance(item[0], Symbol) else None
+                if field_name:
+                    field_func = translator._translate_field_for_obj(payload_var, field_name)
+                    field_value = translator.translate_expr(item[1])
+                    if field_value is not None:
+                        axioms.append(field_func == field_value)
+
+        return axioms
+
     def _extract_match_exhaustiveness_constraints(
         self, postconditions: List[SExpr], translator: Z3Translator
     ) -> List:
@@ -4414,6 +4695,58 @@ class ContractVerifier:
 
         # list-new returns empty list: len == 0
         axioms.append(func(result_var) == z3.IntVal(0))
+        return axioms
+
+    def _extract_record_field_range_axioms(self, translator: Z3Translator) -> List:
+        """Extract range type axioms for record fields.
+
+        For record types with range-typed fields like:
+            (type ReasonerSuccess (record (inferred-count (Int 0 ..)) ...))
+
+        This adds universal axioms:
+            ForAll x: field_inferred_count(x) >= 0
+
+        This enables proving postconditions that depend on the range type bounds
+        of record fields, such as {(. s inferred-count) >= 0}.
+        """
+        axioms = []
+
+        # Collect record types from imported definitions and local type registry
+        record_types: Dict[str, RecordType] = {}
+
+        # Add imported record types
+        if self.imported_defs:
+            for type_name, typ in self.imported_defs.types.items():
+                if isinstance(typ, RecordType):
+                    record_types[type_name] = typ
+
+        # Add local record types from type registry
+        for type_name, typ in self.type_env.type_registry.items():
+            if isinstance(typ, RecordType):
+                record_types[type_name] = typ
+
+        # Generate axioms for range-typed fields
+        for type_name, record_type in record_types.items():
+            for field_name, field_type in record_type.fields.items():
+                if isinstance(field_type, RangeType):
+                    # Get or create the field accessor function
+                    func_name = f"field_{field_name}"
+                    if func_name not in translator.variables:
+                        func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
+                        translator.variables[func_name] = func
+                    else:
+                        func = translator.variables[func_name]
+
+                    # Create universal variable for the axiom
+                    x = z3.Int(f"_range_{field_name}_x")
+
+                    # Add bound constraints
+                    bounds = field_type.bounds
+                    if bounds.min_val is not None:
+                        axioms.append(z3.ForAll([x], func(x) >= bounds.min_val))
+                    if bounds.max_val is not None:
+                        axioms.append(z3.ForAll([x], func(x) <= bounds.max_val))
+
         return axioms
 
     def _extract_list_element_property_axioms(self, body: SExpr,
@@ -5657,9 +5990,10 @@ class ContractVerifier:
         params = fn_form[2] if isinstance(fn_form[2], SList) else SList([])
 
         # Extract contracts and function body
-        preconditions: List[SExpr] = []
+        preconditions: List[Tuple[Optional[str], SExpr]] = []  # @pre - (name, expr) tuples
         postconditions: List[SExpr] = []
         assumptions: List[SExpr] = []  # @assume - trusted axioms for verification
+        properties: List[Tuple[Optional[str], SExpr]] = []  # @property - (name, expr) tuples
         spec_return_type: Optional[Type] = None
         fn_body: Optional[SExpr] = None  # Function body for path-sensitive analysis
 
@@ -5671,11 +6005,21 @@ class ContractVerifier:
 
         for item in fn_form.items[3:]:
             if is_form(item, '@pre') and len(item) > 1:
-                preconditions.append(item[1])
+                # Named: (@pre name expr) or Unnamed: (@pre expr)
+                if isinstance(item[1], Symbol) and len(item) > 2 and not item[1].name.startswith('{'):
+                    preconditions.append((item[1].name, item[2]))
+                else:
+                    preconditions.append((None, item[1]))
             elif is_form(item, '@post') and len(item) > 1:
                 postconditions.append(item[1])
             elif is_form(item, '@assume') and len(item) > 1:
                 assumptions.append(item[1])
+            elif is_form(item, '@property') and len(item) > 1:
+                # Named: (@property name expr) or Unnamed: (@property expr)
+                if isinstance(item[1], Symbol) and len(item) > 2:
+                    properties.append((item[1].name, item[2]))
+                else:
+                    properties.append((None, item[1]))
             elif is_form(item, '@spec') and len(item) > 1:
                 spec = item[1]
                 if isinstance(spec, SList) and len(spec) >= 3:
@@ -5720,7 +6064,7 @@ class ContractVerifier:
             assumptions.extend(loop_invariants)
 
         # Skip if no contracts to verify
-        if not preconditions and not postconditions and not assumptions:
+        if not preconditions and not postconditions and not assumptions and not properties:
             return VerificationResult(
                 name=fn_name,
                 verified=True,
@@ -5789,13 +6133,13 @@ class ContractVerifier:
 
         # Translate preconditions
         pre_z3: List[z3.BoolRef] = []
-        failed_pres: List[SExpr] = []
-        for pre in preconditions:
-            z3_pre = translator.translate_expr(pre)
+        failed_pres: List[Tuple[Optional[str], SExpr]] = []
+        for pre_name, pre_expr in preconditions:
+            z3_pre = translator.translate_expr(pre_expr)
             if z3_pre is not None:
                 pre_z3.append(z3_pre)
             else:
-                failed_pres.append(pre)
+                failed_pres.append((pre_name, pre_expr))
 
         # Translate postconditions
         post_z3: List[z3.BoolRef] = []
@@ -5826,35 +6170,91 @@ class ContractVerifier:
             else:
                 failed_assumes.append(assume)
 
+        # Translate properties (universal assertions)
+        # properties is List[Tuple[Optional[str], SExpr]] - (name, expr) tuples
+        prop_z3: List[z3.BoolRef] = []
+        failed_props: List[Tuple[Optional[str], SExpr]] = []
+        for prop_name, prop_expr in properties:
+            z3_prop = translator.translate_expr(prop_expr)
+            if z3_prop is not None:
+                prop_z3.append(z3_prop)
+            else:
+                failed_props.append((prop_name, prop_expr))
+
         # Report translation failures
         if failed_pres:
+            from slop.parser import pretty_print
+            pre_details = []
+            for pre_name, pre_expr in failed_pres:
+                pre_str = pretty_print(pre_expr)
+                if pre_name:
+                    pre_details.append(f"'{pre_name}': {pre_str}")
+                else:
+                    pre_details.append(pre_str)
+            if len(failed_pres) == 1:
+                message = f"Could not translate precondition: {pre_details[0]}"
+            else:
+                message = "Could not translate preconditions:\n" + "\n".join(f"  • {p}" for p in pre_details)
             return VerificationResult(
                 name=fn_name,
                 verified=False,
                 status="failed",
-                message=f"Could not translate {len(failed_pres)} precondition(s)",
+                message=message,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         if failed_posts:
+            from slop.parser import pretty_print
+            post_details = [pretty_print(p) for p in failed_posts]
+            if len(failed_posts) == 1:
+                message = f"Could not translate postcondition: {post_details[0]}"
+            else:
+                message = "Could not translate postconditions:\n" + "\n".join(f"  • {p}" for p in post_details)
             return VerificationResult(
                 name=fn_name,
                 verified=False,
                 status="failed",
-                message=f"Could not translate {len(failed_posts)} postcondition(s)",
+                message=message,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
         if failed_assumes:
+            from slop.parser import pretty_print
+            assume_details = [pretty_print(a) for a in failed_assumes]
+            if len(failed_assumes) == 1:
+                message = f"Could not translate assumption: {assume_details[0]}"
+            else:
+                message = "Could not translate assumptions:\n" + "\n".join(f"  • {a}" for a in assume_details)
             return VerificationResult(
                 name=fn_name,
                 verified=False,
                 status="failed",
-                message=f"Could not translate {len(failed_assumes)} assumption(s)",
+                message=message,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
-        if not post_z3 and not postconditions:
+        if failed_props:
+            from slop.parser import pretty_print
+            prop_details = []
+            for prop_name, prop_expr in failed_props:
+                prop_str = pretty_print(prop_expr)
+                if prop_name:
+                    prop_details.append(f"'{prop_name}': {prop_str}")
+                else:
+                    prop_details.append(prop_str)
+            if len(failed_props) == 1:
+                message = f"Could not translate property: {prop_details[0]}"
+            else:
+                message = "Could not translate properties:\n" + "\n".join(f"  • {p}" for p in prop_details)
+            return VerificationResult(
+                name=fn_name,
+                verified=False,
+                status="failed",
+                message=message,
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+            )
+
+        if not post_z3 and not postconditions and not prop_z3:
             # No postconditions to verify
             if assume_z3:
                 # Only @assume (trusted axioms), consider verified via assumption
@@ -5876,11 +6276,27 @@ class ContractVerifier:
 
             result = solver.check()
             if result == z3.unsat:
+                # Build message with precondition names/details
+                from slop.parser import pretty_print
+                if preconditions:
+                    pre_details = []
+                    for pre_name, pre_expr in preconditions:
+                        pre_str = pretty_print(pre_expr)
+                        if pre_name:
+                            pre_details.append(f"'{pre_name}': {pre_str}")
+                        else:
+                            pre_details.append(pre_str)
+                    if len(preconditions) == 1:
+                        message = f"Precondition is unsatisfiable: {pre_details[0]}"
+                    else:
+                        message = "Preconditions are unsatisfiable:\n" + "\n".join(f"  • {p}" for p in pre_details)
+                else:
+                    message = "Preconditions are unsatisfiable"
                 return VerificationResult(
                     name=fn_name,
                     verified=False,
                     status="failed",
-                    message="Preconditions are unsatisfiable",
+                    message=message,
                     location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                 )
             return VerificationResult(
@@ -5916,6 +6332,13 @@ class ContractVerifier:
             inv_z3 = translator.translate_expr(inv_expr)
             if inv_z3 is not None:
                 solver.add(inv_z3)
+
+        # Phase 1b: Add range type axioms for record fields
+        # For record types with range-typed fields like (inferred-count (Int 0 ..)),
+        # add universal axioms: ForAll x: field_inferred_count(x) >= 0
+        range_field_axioms = self._extract_record_field_range_axioms(translator)
+        for axiom in range_field_axioms:
+            solver.add(axiom)
 
         # Add body constraint for path-sensitive analysis
         # This constrains $result to equal the translated function body
@@ -5964,6 +6387,10 @@ class ContractVerifier:
             tag_axiom = self._extract_union_tag_axiom(return_expr, translator)
             if tag_axiom is not None:
                 solver.add(tag_axiom)
+            # Also add field axioms for record-new payloads
+            field_axioms = self._extract_union_new_field_axioms(return_expr, translator)
+            for axiom in field_axioms:
+                solver.add(axiom)
 
         # Phase 4.5: Add union constructor axioms for (ok result), (error e), etc.
         # For the final return, add UNCONDITIONAL axioms (tag == X, payload == value).
@@ -5985,15 +6412,24 @@ class ContractVerifier:
                 # Skip the final return (already handled by Phase 4.5)
                 if return_expr is final_return:
                     continue
-                # Check if this return is a union constructor
+                # Check if this return is a union constructor or union-new
                 if isinstance(return_expr, SList) and len(return_expr) >= 1:
                     head = return_expr[0]
-                    if isinstance(head, Symbol) and head.name in {'ok', 'error', 'some', 'none'}:
-                        constructor_axioms = self._extract_union_constructor_axioms_for_expr(
-                            return_expr, translator
-                        )
-                        for axiom in constructor_axioms:
-                            solver.add(axiom)
+                    if isinstance(head, Symbol):
+                        if head.name in {'ok', 'error', 'some', 'none'}:
+                            constructor_axioms = self._extract_union_constructor_axioms_for_expr(
+                                return_expr, translator
+                            )
+                            for axiom in constructor_axioms:
+                                solver.add(axiom)
+                        elif head.name == 'union-new':
+                            # Handle union-new returns from match branches
+                            tag_axiom = self._extract_union_tag_axiom(return_expr, translator)
+                            if tag_axiom is not None:
+                                solver.add(tag_axiom)
+                            field_axioms = self._extract_union_new_field_axioms(return_expr, translator)
+                            for axiom in field_axioms:
+                                solver.add(axiom)
 
         # Phase 4.7: Add match exhaustiveness constraints
         # For match postconditions like (match $result ((none) true) ((some r) cond)),
@@ -6026,6 +6462,14 @@ class ContractVerifier:
         if fn_body is not None:
             list_axioms = self._extract_list_axioms(fn_body, translator)
             for axiom in list_axioms:
+                solver.add(axiom)
+
+        # Phase 7b: While loop exit axioms
+        # When a while loop exits, the negation of the condition holds.
+        # For (while (and (not done) (< i max)) ...), after loop: done OR (i >= max)
+        if fn_body is not None:
+            while_axioms = self._extract_while_exit_axioms(fn_body, translator)
+            for axiom in while_axioms:
                 solver.add(axiom)
 
         # Phase 8: Filter pattern detection and axiom generation
@@ -6117,6 +6561,87 @@ class ContractVerifier:
 
         if result == z3.unsat:
             # Postconditions always hold when preconditions are met
+            # Now verify properties (universal assertions - independent of preconditions)
+            if prop_z3:
+                from slop.parser import pretty_print
+                # Collect all failures instead of returning on first failure
+                failed_properties: List[Tuple[Optional[str], str, Dict[str, str]]] = []  # (name, expr_str, counterexample)
+                unknown_properties: List[Tuple[Optional[str], str]] = []  # (name, expr_str)
+
+                for i, ((prop_name, prop_expr), prop_z3_expr) in enumerate(zip(properties, prop_z3)):
+                    prop_solver = z3.Solver()
+                    prop_solver.set("timeout", self.timeout_ms)
+
+                    # Add type constraints only (not preconditions)
+                    for c in translator.constraints:
+                        prop_solver.add(c)
+
+                    # Check if NOT property is satisfiable
+                    prop_solver.add(z3.Not(prop_z3_expr))
+                    prop_result = prop_solver.check()
+
+                    prop_str = pretty_print(prop_expr)
+
+                    if prop_result == z3.sat:
+                        model = prop_solver.model()
+                        counterexample = {str(decl.name()): str(model[decl])
+                                         for decl in model.decls()
+                                         if not str(decl.name()).startswith('field_')}
+                        failed_properties.append((prop_name, prop_str, counterexample))
+                    elif prop_result == z3.unknown:
+                        unknown_properties.append((prop_name, prop_str))
+
+                # Report all failures at once
+                if failed_properties:
+                    if len(failed_properties) == 1:
+                        prop_name, prop_str, counterexample = failed_properties[0]
+                        if prop_name:
+                            message = f"Property '{prop_name}' failed: {prop_str}"
+                        else:
+                            message = f"Property failed: {prop_str}"
+                    else:
+                        lines = []
+                        for prop_name, prop_str, _ in failed_properties:
+                            if prop_name:
+                                lines.append(f"  • '{prop_name}': {prop_str}")
+                            else:
+                                lines.append(f"  • {prop_str}")
+                        message = "Properties failed:\n" + "\n".join(lines)
+                        # Use first failure's counterexample
+                        counterexample = failed_properties[0][2]
+                    return VerificationResult(
+                        name=fn_name,
+                        verified=False,
+                        status="failed",
+                        message=message,
+                        counterexample=counterexample,
+                        location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                    )
+
+                # Report unknown properties if no failures
+                if unknown_properties:
+                    if len(unknown_properties) == 1:
+                        prop_name, prop_str = unknown_properties[0]
+                        if prop_name:
+                            message = f"Could not verify property '{prop_name}': {prop_str}"
+                        else:
+                            message = f"Could not verify property: {prop_str}"
+                    else:
+                        lines = []
+                        for prop_name, prop_str in unknown_properties:
+                            if prop_name:
+                                lines.append(f"  • '{prop_name}': {prop_str}")
+                            else:
+                                lines.append(f"  • {prop_str}")
+                        message = "Could not verify properties:\n" + "\n".join(lines)
+                    return VerificationResult(
+                        name=fn_name,
+                        verified=False,
+                        status="unknown",
+                        message=message,
+                        location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                    )
+
             return VerificationResult(
                 name=fn_name,
                 verified=True,
@@ -6149,7 +6674,7 @@ class ContractVerifier:
                 if len(failed_posts) == 1:
                     message = f"Postcondition failed: {failed_posts[0]}"
                 else:
-                    message = f"{len(failed_posts)} postconditions failed"
+                    message = "Postconditions failed:\n" + "\n".join(f"  • {p}" for p in failed_posts)
             else:
                 message = "Contract may be violated"
 

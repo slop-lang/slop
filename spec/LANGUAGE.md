@@ -203,6 +203,7 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 ; Use () for grouping: {(a + b) * c}
 ; Use prefix for function calls: {(len arr) > 0}
 (@example (args...) -> result)   ; Example for testing
+(@example :eq eq-fn (args...) -> result)  ; Use custom equality function
 (@property (forall (x T) expr))  ; Property that should hold
 (@deprecated "message")          ; Mark as deprecated with migration hint
 (@doc "Extended documentation")  ; Detailed docs, emits as C comment

@@ -425,7 +425,7 @@
             ((some field)
               (match (list-get items (+ i 1))
                 ((some item)
-                  (let ((fname (. field name))
+                  (let ((fname (to-c-name arena (. field name)))  ;; Convert to C-safe identifier
                         (ftype (. field type-name))
                         ;; Use type-aware emission for Option fields
                         (val-c (emit-field-value-typed arena item ftype prefix types)))
@@ -1078,7 +1078,7 @@
                 (string-concat arena call-expr ";")))))
         ;; Generate comparison
         (let ((compare-info (build-comparison-typed arena (. tc expected)
-                             (. tc return-type) prefix (deref types))))
+                             (. tc return-type) prefix (deref types) (. tc eq-fn))))
           ;; If statement
           (emit ctx
             (string-concat arena "    if ("
@@ -1411,9 +1411,9 @@
   ;; ============================================================
 
   (fn build-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (return-type (Option String))
-                               (prefix String) (types TypeRegistry))
+                               (prefix String) (types TypeRegistry) (eq-fn (Option String)))
     (@intent "Build comparison info with type awareness")
-    (@spec ((Arena (Ptr SExpr) (Option String) String TypeRegistry) -> CompareInfo))
+    (@spec ((Arena (Ptr SExpr) (Option String) String TypeRegistry (Option String)) -> CompareInfo))
     (@alloc arena)
     (let ((ret-type-str (match return-type ((some s) s) ((none) "Int"))))
       ;; Check for user-defined union types first
@@ -1610,7 +1610,7 @@
                     part4)))
               ;; Check for List type
               (if (contains ret-type-str "List")
-                (build-list-comparison-typed arena expected prefix types)
+                (build-list-comparison-typed arena expected prefix types ret-type-str eq-fn)
                 ;; Check for Bool type
                 (if (contains ret-type-str "Bool")
                   (let ((c-expected (sexpr-to-c-typed arena expected prefix types)))
@@ -1665,7 +1665,7 @@
         ((some fields)
           ;; Build field-by-field comparison, skipping wildcards
           (let ((expected-var-name "expected_value")
-                (compare-expr (build-record-field-comparisons-with-values arena fields field-values prefix expected-var-name)))
+                (compare-expr (build-record-field-comparisons-with-values arena fields field-values "result" expected-var-name)))
             (CompareInfo
               (string-concat arena "({ typeof(result) "
                 (string-concat arena expected-var-name
@@ -1757,7 +1757,7 @@
                                 ((some val) (is-wildcard-expr val))
                                 ((none) false))))
               (when (not is-wildcard)
-                (let ((fname (. field name))
+                (let ((fname (to-c-name arena (. field name)))  ;; Convert to C-safe identifier
                       (ftype (. field type-name))
                       (field-cmp (build-single-field-comparison-with-accessor arena fname ftype result-accessor expected-var)))
                   (set! comp-result (string-concat arena comp-result
@@ -1807,7 +1807,7 @@
       (while (< i len)
         (match (list-get fields i)
           ((some field)
-            (let ((fname (. field name))
+            (let ((fname (to-c-name arena (. field name)))  ;; Convert to C-safe identifier
                   (ftype (. field type-name))
                   (field-cmp (build-single-field-comparison arena fname ftype expected-var)))
               (set! result (string-concat arena result
@@ -1848,75 +1848,136 @@
 
   (fn build-union-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (prefix String)
                                     (types TypeRegistry) (ret-type-str String))
-    (@intent "Build comparison for union types using equality function")
+    (@intent "Build comparison for union types with inline payload comparison")
     (@spec ((Arena (Ptr SExpr) String TypeRegistry String) -> CompareInfo))
     (@alloc arena)
-    ;; For union types, we need to:
-    ;; 1. Emit the expected value as a proper struct literal
-    ;; 2. Call the type's equality function (e.g., rdf_term_eq for Term)
+    ;; Generate inline comparison based on payload type:
+    ;; 1. Compare tags first
+    ;; 2. For payload, generate type-appropriate comparison
     (let ((c-expected (sexpr-to-c-typed arena expected prefix types))
           (expected-var-name "expected_value")
-          ;; Extract variant name from expected expr to find the union type
-          (eq-fn-name (get-union-eq-fn-name arena expected prefix types)))
-      (CompareInfo
-        ;; Use equality function if we found one, otherwise fall back to memcmp
-        (if (string-eq eq-fn-name "")
-          ;; Fallback: memcmp comparison
-          (string-concat arena "({ typeof(result) "
-            (string-concat arena expected-var-name
-              (string-concat arena " = "
-                (string-concat arena c-expected
-                  (string-concat arena "; result.tag == "
-                    (string-concat arena expected-var-name
-                      (string-concat arena ".tag && memcmp(&result.data, &"
-                        (string-concat arena expected-var-name
-                          ".data, sizeof(result.data)) == 0; })"))))))))
-          ;; Use equality function
-          (string-concat arena eq-fn-name
-            (string-concat arena "(result, "
-              (string-concat arena c-expected ")"))))
-        "%s"
-        "\"<union>\""
-        "%s"
-        "\"<expected>\"")))
+          (variant-name (get-union-variant-name expected))
+          (c-variant (to-c-name arena variant-name)))
+      ;; Look up variant info to determine payload type
+      (let ((payload-cmp (match (registry-get-variant-info types variant-name)
+                           ((some ve)
+                             (let ((payload-type (. ve payload-type)))
+                               (build-union-payload-comparison arena payload-type c-variant expected-var-name types)))
+                           ((none)
+                             ;; Fallback to memcmp if variant not found
+                             (string-concat arena "memcmp(&result.data, &"
+                               (string-concat arena expected-var-name ".data, sizeof(result.data)) == 0"))))))
+        (CompareInfo
+          (let ((parts (list-new arena String)))
+            (list-push parts "({ typeof(result) ")
+            (list-push parts expected-var-name)
+            (list-push parts " = ")
+            (list-push parts c-expected)
+            (list-push parts "; result.tag == ")
+            (list-push parts expected-var-name)
+            (list-push parts ".tag && ")
+            (list-push parts payload-cmp)
+            (list-push parts "; })")
+            (string-build arena parts))
+          "%s"
+          "\"<union>\""
+          "%s"
+          "\"<expected>\""))))
 
-  (fn get-union-eq-fn-name ((arena Arena) (expr (Ptr SExpr)) (prefix String) (types TypeRegistry))
-    (@intent "Get the equality function name for a union type from an expression")
-    (@spec ((Arena (Ptr SExpr) String TypeRegistry) -> String))
+  (fn build-union-payload-comparison ((arena Arena) (payload-type String) (c-variant String)
+                                       (expected-var String) (types TypeRegistry))
+    (@intent "Build comparison expression for union payload based on type")
+    (@spec ((Arena String String String TypeRegistry) -> String))
     (@alloc arena)
-    ;; Extract the variant name from the expression (e.g., "iri" from (iri ...))
-    ;; Then look up which union type contains that variant
-    ;; Build function name: prefix_typename_eq (e.g., rdf_term_eq)
-    (match (deref expr)
-      ((lst lst)
-        (let ((items (. lst items)))
-          (if (== (list-len items) 0)
-            ""
-            (match (list-get items 0)
-              ((some first)
-                (if (sexpr-is-symbol first)
-                  (let ((variant-name (sexpr-get-symbol-name first)))
-                    ;; Look up the parent union type
-                    (match (registry-lookup-variant types variant-name)
-                      ((some entry)
-                        ;; Build eq function name: prefix_typename_eq
-                        ;; Convert SLOP name to C name (lowercase with underscores)
-                        (let ((slop-name (. (deref entry) name)))
-                          (string-concat arena prefix
-                            (string-concat arena "_"
-                              (string-concat arena (slop-name-to-c-lower arena slop-name) "_eq")))))
-                      ((none) "")))
-                  ""))
-              ((none) "")))))
-      (_ "")))
+    (cond
+      ;; No payload - tag comparison is sufficient
+      ((string-eq payload-type "")
+        "1")
+      ;; String payload - use slop_string_eq
+      ((string-eq payload-type "String")
+        (string-concat arena "slop_string_eq(result.data."
+          (string-concat arena c-variant
+            (string-concat arena ", "
+              (string-concat arena expected-var
+                (string-concat arena ".data." (string-concat arena c-variant ")")))))))
+      ;; Check if it's a record type - compare fields
+      (else
+        (match (registry-get-record-fields types payload-type)
+          ((some fields)
+            ;; It's a record - compare each field appropriately
+            (build-union-record-payload-comparison arena fields c-variant expected-var))
+          ((none)
+            ;; Not a record, use memcmp (works for primitives)
+            (string-concat arena "memcmp(&result.data."
+              (string-concat arena c-variant
+                (string-concat arena ", &"
+                  (string-concat arena expected-var
+                    (string-concat arena ".data."
+                      (string-concat arena c-variant
+                        (string-concat arena ", sizeof(result.data." (string-concat arena c-variant "))")))))))))))))
 
-  (fn slop-name-to-c-lower ((arena Arena) (name String))
-    (@intent "Convert SLOP type name to lowercase C identifier")
-    (@spec ((Arena String) -> String))
+  (fn build-union-record-payload-comparison ((arena Arena) (fields (List FieldEntry))
+                                              (c-variant String) (expected-var String))
+    (@intent "Build comparison for a record payload, comparing each field")
+    (@spec ((Arena (List FieldEntry) String String) -> String))
     (@alloc arena)
-    ;; Simple conversion: just lowercase everything
-    ;; E.g., "Term" -> "term", "BlankNode" -> "blanknode"
-    (to-lower arena name))
+    (let ((len (list-len fields))
+          (mut result "1")  ;; Start with true
+          (mut i 0))
+      (while (< i len)
+        (match (list-get fields i)
+          ((some field)
+            (let ((fname (to-c-name arena (. field name)))
+                  (ftype (. field type-name))
+                  (field-cmp (build-union-field-comparison arena fname ftype c-variant expected-var)))
+              (set! result (string-concat arena result
+                             (string-concat arena " && " field-cmp)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  (fn build-union-field-comparison ((arena Arena) (fname String) (ftype String)
+                                     (c-variant String) (expected-var String))
+    (@intent "Build comparison for a single field within a union's record payload")
+    (@spec ((Arena String String String String) -> String))
+    (@alloc arena)
+    ;; Access path: result.data.variant.field vs expected_var.data.variant.field
+    (let ((result-path (string-concat arena "result.data."
+                         (string-concat arena c-variant
+                           (string-concat arena "." fname))))
+          (expected-path (string-concat arena expected-var
+                           (string-concat arena ".data."
+                             (string-concat arena c-variant
+                               (string-concat arena "." fname))))))
+      (cond
+        ;; String field - use slop_string_eq
+        ((string-eq ftype "String")
+          (string-concat arena "slop_string_eq("
+            (string-concat arena result-path
+              (string-concat arena ", " (string-concat arena expected-path ")")))))
+        ;; Option String field - compare has_value, then values if both present
+        ((string-eq ftype "(Option String)")
+          (let ((parts (list-new arena String)))
+            (list-push parts "(")
+            (list-push parts result-path)
+            (list-push parts ".has_value == ")
+            (list-push parts expected-path)
+            (list-push parts ".has_value && (!")
+            (list-push parts result-path)
+            (list-push parts ".has_value || slop_string_eq(")
+            (list-push parts result-path)
+            (list-push parts ".value, ")
+            (list-push parts expected-path)
+            (list-push parts ".value)))")
+            (string-build arena parts)))
+        ;; List field - compare lengths
+        ((contains ftype "List")
+          (string-concat arena result-path
+            (string-concat arena ".len == " (string-concat arena expected-path ".len"))))
+        ;; Default - use == for primitives
+        (else
+          (string-concat arena result-path
+            (string-concat arena " == " expected-path))))))
 
   ;; ============================================================
   ;; Type Detection Helpers (Type-Aware)
@@ -2089,9 +2150,63 @@
             expected)))
       (_ expected)))
 
-  (fn build-list-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (prefix String) (types TypeRegistry))
+  ;; ============================================================
+  ;; List Element Type and Eq Function Helpers
+  ;; ============================================================
+
+  (fn extract-list-element-type ((arena Arena) (list-type-str String))
+    (@intent "Extract element type from '(List ElementType)' string")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (@pure)
+    ;; "(List Triple)" -> "Triple"
+    ;; "(List (Option Term))" -> "(Option Term)"
+    ;; Returns empty string if not parseable
+    (let ((len (cast Int (. list-type-str len))))
+      (if (< len 7)  ;; "(List X)" minimum length
+        ""
+        ;; Skip "(List " prefix (6 chars) and ")" suffix (1 char)
+        (let ((start 6)
+              (end-offset 1))
+          ;; Check if it starts with "(List "
+          (if (and (== (@ (. list-type-str data) 0) 40)   ;; '('
+                   (== (@ (. list-type-str data) 1) 76)   ;; 'L'
+                   (== (@ (. list-type-str data) 2) 105)  ;; 'i'
+                   (== (@ (. list-type-str data) 3) 115)  ;; 's'
+                   (== (@ (. list-type-str data) 4) 116)  ;; 't'
+                   (== (@ (. list-type-str data) 5) 32))  ;; ' '
+            ;; Extract substring from start to len-end_offset
+            (let ((elem-len (- (- len start) end-offset))
+                  (buf (cast (Ptr U8) (arena-alloc arena (+ elem-len 1)))))
+              (let ((mut i 0))
+                (while (< i elem-len)
+                  (set! (@ buf i) (@ (. list-type-str data) (+ start i)))
+                  (set! i (+ i 1))))
+              (set! (@ buf elem-len) 0)
+              (String buf (cast U64 elem-len)))
+            "")))))
+
+  (fn build-eq-function-name ((arena Arena) (type-name String) (prefix String) (types TypeRegistry))
+    (@intent "Build eq function name: {module}_{lowercase_type}_eq")
+    (@spec ((Arena String String TypeRegistry) -> String))
+    (@alloc arena)
+    ;; Build eq function name following convention: {module}_{type}_eq
+    ;; e.g., Triple from rdf module -> rdf_triple_eq
+    (let ((type-c (to-lower arena (to-c-name arena type-name))))
+      (match (registry-lookup-import types type-name)
+        ((some mod-name)
+          ;; Imported from another module
+          (string-build arena (list String (to-c-name arena mod-name) "_" type-c "_eq")))
+        ((none)
+          ;; Local type - use current module prefix
+          (if (> (cast Int (. prefix len)) 0)
+            (string-build arena (list String prefix "_" type-c "_eq"))
+            (string-build arena (list String type-c "_eq")))))))
+
+  (fn build-list-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (prefix String)
+                                    (types TypeRegistry) (ret-type-str String) (eq-fn (Option String)))
     (@intent "Build comparison info for List types with type awareness")
-    (@spec ((Arena (Ptr SExpr) String TypeRegistry) -> CompareInfo))
+    (@spec ((Arena (Ptr SExpr) String TypeRegistry String (Option String)) -> CompareInfo))
     (@alloc arena)
     (match (deref expected)
       ((lst lst)
@@ -2115,35 +2230,89 @@
                 "(long long)result.len"
                 "len=%lld"
                 "0LL")
-              (let ((mut arr-init "{")
-                    (mut i start-idx)
-                    (mut first true))
-                (while (< i total-count)
-                  (match (list-get elements i)
+              ;; Check if any elements are wildcards
+              (let ((mut has-wildcard false)
+                    (mut j start-idx))
+                (while (< j total-count)
+                  (match (list-get elements j)
                     ((some elem)
-                      (let ((elem-c (sexpr-to-c-typed arena elem prefix types)))
-                        (if first
-                          (do
-                            (set! arr-init (string-concat arena arr-init elem-c))
-                            (set! first false))
-                          (set! arr-init (string-concat arena arr-init
-                                           (string-concat arena ", " elem-c))))))
+                      (when (is-wildcard-expr elem)
+                        (set! has-wildcard true)))
                     ((none) (do)))
-                  (set! i (+ i 1)))
-                (set! arr-init (string-concat arena arr-init "}"))
-                (let ((len-str (int-to-string arena elem-count))
-                    (cmp-expr (string-concat arena "(result.len == "
-                                (string-concat arena len-str
-                                  (string-concat arena " && memcmp(result.data, (typeof(*result.data)[])"
-                                    (string-concat arena arr-init
-                                      (string-concat arena ", sizeof(typeof(*result.data)) * "
-                                        (string-concat arena len-str ") == 0)"))))))))
-                (CompareInfo
-                  cmp-expr
-                  "len=%lld"
-                  "(long long)result.len"
-                  "len=%lld"
-                  (string-concat arena "(long long)" len-str))))))))
+                  (set! j (+ j 1)))
+                (let ((len-str (int-to-string arena elem-count)))
+                  (if has-wildcard
+                    ;; Wildcards present - only compare length
+                    (CompareInfo
+                      (string-build arena (list String "result.len == " len-str))
+                      "len=%lld"
+                      "(long long)result.len"
+                      "len=%lld"
+                      (string-build arena (list String "(long long)" len-str)))
+                    ;; No wildcards - determine comparison strategy based on element type
+                    (let ((elem-type (extract-list-element-type arena ret-type-str))
+                          (is-complex (or (registry-is-record types elem-type)
+                                          (registry-is-union types elem-type))))
+                      ;; Build array initializer (used by both strategies)
+                      (let ((mut arr-init "{")
+                            (mut i start-idx)
+                            (mut first true))
+                        (while (< i total-count)
+                          (match (list-get elements i)
+                            ((some elem)
+                              (let ((elem-c (sexpr-to-c-typed arena elem prefix types)))
+                                (if first
+                                  (do
+                                    (set! arr-init (string-concat arena arr-init elem-c))
+                                    (set! first false))
+                                  (set! arr-init (string-concat arena arr-init
+                                                   (string-concat arena ", " elem-c))))))
+                            ((none) (do)))
+                          (set! i (+ i 1)))
+                        (set! arr-init (string-concat arena arr-init "}"))
+                        (if (not is-complex)
+                          ;; Simple type: use memcmp
+                          (let ((cmp-expr (string-build arena (list String
+                                            "(result.len == " len-str
+                                            " && memcmp(result.data, (typeof(*result.data)[])"
+                                            arr-init ", sizeof(typeof(*result.data)) * "
+                                            len-str ") == 0)"))))
+                            (CompareInfo
+                              cmp-expr
+                              "len=%lld"
+                              "(long long)result.len"
+                              "len=%lld"
+                              (string-build arena (list String "(long long)" len-str))))
+                          ;; Complex type: use eq function for element-wise comparison
+                          (let ((eq-fn-name (match eq-fn
+                                              ;; Explicit annotation takes priority - apply symbol prefixing
+                                              ((some fn-name) (prefix-symbol arena fn-name prefix types))
+                                              ;; Fall back to compiler-generated
+                                              ((none) (build-eq-function-name arena elem-type prefix types)))))
+                            ;; Generate: result.len == N && eq_fn(result.data[0], _expected[0]) && ...
+                            (let ((cmp-parts (list-new arena String)))
+                              (list-push cmp-parts "({ typeof(*result.data) _expected[] = ")
+                              (list-push cmp-parts arr-init)
+                              (list-push cmp-parts "; result.len == ")
+                              (list-push cmp-parts len-str)
+                              ;; Add element-wise comparisons
+                              (let ((mut k 0))
+                                (while (< k elem-count)
+                                  (list-push cmp-parts " && ")
+                                  (list-push cmp-parts eq-fn-name)
+                                  (list-push cmp-parts "(result.data[")
+                                  (list-push cmp-parts (int-to-string arena k))
+                                  (list-push cmp-parts "], _expected[")
+                                  (list-push cmp-parts (int-to-string arena k))
+                                  (list-push cmp-parts "])")
+                                  (set! k (+ k 1))))
+                              (list-push cmp-parts "; })")
+                              (CompareInfo
+                                (string-build arena cmp-parts)
+                                "len=%lld"
+                                "(long long)result.len"
+                                "len=%lld"
+                                (string-build arena (list String "(long long)" len-str)))))))))))))))
       (_ (CompareInfo
            "result.len == 0"
            "len=%lld"

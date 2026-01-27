@@ -32,7 +32,8 @@
     (expected (Ptr SExpr))            ;; Expected result (S-expression)
     (return-type (Option String))     ;; Return type from @spec
     (needs-arena Bool)                ;; Whether function needs arena param
-    (arena-position Int)))            ;; Position of arena param (0-indexed)
+    (arena-position Int)              ;; Position of arena param (0-indexed)
+    (eq-fn (Option String))))         ;; Custom equality function for comparison
 
   ;; ============================================================
   ;; Test Case Constructor
@@ -40,12 +41,13 @@
 
   (fn test-case-new ((arena Arena) (fn-name String) (module-name (Option String))
                      (args (List (Ptr SExpr))) (expected (Ptr SExpr))
-                     (return-type (Option String)) (needs-arena Bool) (arena-position Int))
+                     (return-type (Option String)) (needs-arena Bool) (arena-position Int)
+                     (eq-fn (Option String)))
     (@intent "Create a new TestCase record")
-    (@spec ((Arena String (Option String) (List (Ptr SExpr)) (Ptr SExpr) (Option String) Bool Int) -> (Ptr TestCase)))
+    (@spec ((Arena String (Option String) (List (Ptr SExpr)) (Ptr SExpr) (Option String) Bool Int (Option String)) -> (Ptr TestCase)))
     (@alloc arena)
-    (let ((tc (cast (Ptr TestCase) (arena-alloc arena 128))))
-      (set! (deref tc) (TestCase fn-name module-name args expected return-type needs-arena arena-position))
+    (let ((tc (cast (Ptr TestCase) (arena-alloc arena 160))))
+      (set! (deref tc) (TestCase fn-name module-name args expected return-type needs-arena arena-position eq-fn))
       tc))
 
   ;; ============================================================
@@ -58,6 +60,23 @@
     (@pure)
     (let ((len (list-len items))
           (mut i 0)
+          (mut found -1))
+      (while (and (< i len) (== found -1))
+        (match (list-get items i)
+          ((some item)
+            (when (sexpr-is-symbol item)
+              (when (string-eq (sexpr-get-symbol-name item) "->")
+                (set! found i))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn find-arrow-separator-from ((items (List (Ptr SExpr))) (start Int))
+    (@intent "Find index of -> separator in list starting from given index, returns -1 if not found")
+    (@spec (((List (Ptr SExpr)) Int) -> Int))
+    (@pure)
+    (let ((len (list-len items))
+          (mut i start)
           (mut found -1))
       (while (and (< i len) (== found -1))
         (match (list-get items i)
@@ -192,6 +211,7 @@
     (@spec ((Arena (Ptr SExpr) String (Option String) (Option String) Bool Int) -> (Option (Ptr TestCase))))
     (@alloc arena)
     ;; @example form: (@example arg1 arg2 ... -> expected)
+    ;; or: (@example :eq eq-fn arg1 arg2 ... -> expected) for custom equality
     ;; or: (@example (arg1 arg2) -> expected) for grouped args
     (let ((example-len (sexpr-list-len example-form)))
       (if (< example-len 2)
@@ -204,30 +224,47 @@
               ((some item) (list-push items item))
               ((none) (do)))
             (set! i (+ i 1)))
-          ;; Find -> separator
-          (let ((arrow-idx (find-arrow-separator items)))
-            (if (< arrow-idx 0)
-              (none)  ;; No arrow found
-              (if (>= arrow-idx (- (list-len items) 1))
-                (none)  ;; Arrow at end, no expected value
-                ;; Get args (before arrow) and expected (after arrow)
-                (let ((args (list-new arena (Ptr SExpr)))
-                      (mut j 0))
-                  ;; Collect args before arrow
-                  (while (< j arrow-idx)
-                    (match (list-get items j)
-                      ((some arg) (list-push args arg))
-                      ((none) (do)))
-                    (set! j (+ j 1)))
-                  ;; Handle grouped args case: (@example (arg1 arg2) -> expected)
-                  ;; If single arg is a list, check if it should be unpacked
-                  (let ((final-args (unpack-grouped-args arena args)))
-                    ;; Get expected (after arrow)
-                    (match (list-get items (+ arrow-idx 1))
-                      ((some expected)
-                        (some (test-case-new arena fn-name module-name final-args
-                                             expected return-type needs-arena arena-pos)))
-                      ((none) (none))))))))))))
+          ;; Check for :eq annotation at the beginning
+          (let ((mut eq-fn (Option String) (none))
+                (mut args-start 0))
+            ;; Check if first item is :eq keyword
+            (when (>= (list-len items) 2)
+              (match (list-get items 0)
+                ((some first-item)
+                  (when (sexpr-is-symbol first-item)
+                    (when (string-eq (sexpr-get-symbol-name first-item) ":eq")
+                      ;; Next item should be the eq function name
+                      (match (list-get items 1)
+                        ((some eq-name-expr)
+                          (when (sexpr-is-symbol eq-name-expr)
+                            (set! eq-fn (some (sexpr-get-symbol-name eq-name-expr)))
+                            (set! args-start 2)))
+                        ((none) (do))))))
+                ((none) (do))))
+            ;; Find -> separator (starting from args-start)
+            (let ((arrow-idx (find-arrow-separator-from items args-start)))
+              (if (< arrow-idx 0)
+                (none)  ;; No arrow found
+                (if (>= arrow-idx (- (list-len items) 1))
+                  (none)  ;; Arrow at end, no expected value
+                  ;; Get args (from args-start to arrow) and expected (after arrow)
+                  (let ((args (list-new arena (Ptr SExpr)))
+                        (mut j args-start))
+                    ;; Collect args before arrow
+                    (while (< j arrow-idx)
+                      (match (list-get items j)
+                        ((some arg) (list-push args arg))
+                        ((none) (do)))
+                      (set! j (+ j 1)))
+                    ;; Handle grouped args case: (@example (arg1 arg2) -> expected)
+                    ;; If single arg is a list, check if it should be unpacked
+                    (let ((final-args (unpack-grouped-args arena args)))
+                      ;; Get expected (after arrow)
+                      (match (list-get items (+ arrow-idx 1))
+                        ((some expected)
+                          (some (test-case-new arena fn-name module-name final-args
+                                               expected return-type needs-arena arena-pos eq-fn)))
+                        ((none) (none)))))))))))))
 
   ;; ============================================================
   ;; Unpack Grouped Arguments

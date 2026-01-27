@@ -1,3 +1,7 @@
 [project]
 name = "strlib"
 entry = "strlib.slop"
+
+[build]
+type = "static"
+debug = false

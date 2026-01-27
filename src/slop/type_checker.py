@@ -1064,6 +1064,12 @@ class TypeChecker:
         if op == 'while':
             return self._infer_while(expr)
 
+        # Loop invariant annotation: (@loop-invariant condition)
+        # Just accept it - the verifier will handle the actual condition
+        # Don't type-check the condition here as imports may not be resolved
+        if op == '@loop-invariant':
+            return UNIT
+
         # Function call
         return self._infer_call(expr)
 
