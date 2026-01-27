@@ -425,7 +425,7 @@
             ((some field)
               (match (list-get items (+ i 1))
                 ((some item)
-                  (let ((fname (. field name))
+                  (let ((fname (to-c-name arena (. field name)))  ;; Convert to C-safe identifier
                         (ftype (. field type-name))
                         ;; Use type-aware emission for Option fields
                         (val-c (emit-field-value-typed arena item ftype prefix types)))
@@ -1757,7 +1757,7 @@
                                 ((some val) (is-wildcard-expr val))
                                 ((none) false))))
               (when (not is-wildcard)
-                (let ((fname (. field name))
+                (let ((fname (to-c-name arena (. field name)))  ;; Convert to C-safe identifier
                       (ftype (. field type-name))
                       (field-cmp (build-single-field-comparison-with-accessor arena fname ftype result-accessor expected-var)))
                   (set! comp-result (string-concat arena comp-result
@@ -1807,7 +1807,7 @@
       (while (< i len)
         (match (list-get fields i)
           ((some field)
-            (let ((fname (. field name))
+            (let ((fname (to-c-name arena (. field name)))  ;; Convert to C-safe identifier
                   (ftype (. field type-name))
                   (field-cmp (build-single-field-comparison arena fname ftype expected-var)))
               (set! result (string-concat arena result
