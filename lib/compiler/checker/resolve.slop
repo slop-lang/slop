@@ -13,7 +13,7 @@
                   sexpr-is-list sexpr-list-len sexpr-list-get))
   (import types (ResolvedType))
   (import env (TypeEnv env-arena env-add-import env-resolve-import
-               env-lookup-type env-set-module env-get-current-file))
+               env-lookup-type env-lookup-type-direct env-set-module env-get-current-file))
   (import path (path-dirname path-join))
   (import file (file-exists))
 
@@ -78,7 +78,18 @@
                                     (match (deref name-expr)
                                       ((sym name-sym)
                                         (let ((local-name (. name-sym name))
-                                              (qualified-name (string-concat arena (. mod-sym name)
+                                              ;; Look up the type to find its actual defining module
+                                              ;; This handles re-exports: if parser exports SExpr from types,
+                                              ;; we want "types:SExpr" not "parser:SExpr"
+                                              (actual-module (match (env-lookup-type-direct env local-name)
+                                                               ((some t)
+                                                                 (match (. (deref t) module-name)
+                                                                   ((some mod) mod)
+                                                                   ;; Builtin - use specified module
+                                                                   ((none) (. mod-sym name))))
+                                                               ;; Type not found - might be a function, use specified module
+                                                               ((none) (. mod-sym name))))
+                                              (qualified-name (string-concat arena actual-module
                                                                 (string-concat arena ":" local-name))))
                                           (do (env-add-import env local-name qualified-name))))
                                       (_ (do))))

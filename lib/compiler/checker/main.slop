@@ -23,7 +23,7 @@
                env-arena env-push-scope env-pop-scope env-bind-var
                env-lookup-type env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
-               env-set-module env-add-error))
+               env-set-module env-add-error env-clear-imports))
   (import collect (collect-module))
   (import resolve (resolve-imports))
   (import infer (infer-fn-body infer-expr))
@@ -381,7 +381,8 @@
                 (match (parse arena source)
                   ((ok ast)
                     (let ((mod-name (extract-module-name ast)))
-                      ;; Clear diagnostics before checking this module
+                      ;; Clear imports and diagnostics before checking this module
+                      (env-clear-imports env)
                       (env-clear-diagnostics env)
                       ;; Type check with shared env
                       (type-check-with-env env ast)

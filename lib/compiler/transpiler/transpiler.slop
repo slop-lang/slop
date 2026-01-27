@@ -19,7 +19,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext context-new ctx-emit ctx-emit-header ctx-get-output ctx-get-header
                    ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
-                   ctx-register-type ctx-register-func ctx-lookup-type ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
+                   ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
                    ctx-add-include ctx-get-includes ctx-register-enum-variant
                    ctx-register-union-variant ctx-get-union-variants UnionVariantEntry
                    ctx-register-result-type ctx-has-result-type ctx-get-result-types ResultType
@@ -29,7 +29,7 @@
                    ctx-register-chan-type ctx-has-chan-type ctx-get-chan-types ChanType
                    ctx-register-thread-type ctx-has-thread-type ctx-get-thread-types ThreadType
                    ctx-register-result-type-alias ctx-lookup-result-type-alias ResultTypeAlias
-                   ctx-register-type-alias
+                   ctx-register-type-alias ctx-lookup-type-alias
                    ctx-get-inline-records InlineRecord
                    ctx-add-c-name-alias ctx-get-c-name-aliases FuncCNameAlias extract-fn-c-name
                    ctx-add-import ctx-get-imports

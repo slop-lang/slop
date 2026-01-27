@@ -139,7 +139,7 @@
     (@example (arena closed-file 1024) -> (error 'closed))
 
     (let ((buf (cast (Ptr U8) (arena-alloc arena max-bytes))))
-      (let ((bytes-read (fread buf 1 (cast U64 max-bytes) (. (deref f) handle))))
+      (let ((bytes-read (fread (cast (Ptr Void) buf) (cast U64 1) (cast U64 max-bytes) (. (deref f) handle))))
         (if (and (== bytes-read 0) (!= (ferror (. (deref f) handle)) 0))
           (error 'io-error)
           (ok (Bytes buf bytes-read bytes-read))))))
@@ -167,11 +167,11 @@
 
     (do
       (let ((start-pos (ftell (. (deref f) handle))))
-        (fseek (. (deref f) handle) 0 SEEK_END)
+        (fseek (. (deref f) handle) (cast I64 0) SEEK_END)
         (let ((size (ftell (. (deref f) handle))))
           (fseek (. (deref f) handle) start-pos SEEK_SET)
           (let ((buf (arena-alloc arena (+ size 1))))
-            (let ((bytes-read (fread buf 1 (cast U64 size) (. (deref f) handle))))
+            (let ((bytes-read (fread (cast (Ptr Void) buf) (cast U64 1) (cast U64 size) (. (deref f) handle))))
               ;; Use String constructor with explicit length since fread doesn't null-terminate
               (ok (String (cast (Ptr U8) buf) bytes-read))))))))
 
@@ -185,7 +185,7 @@
     (@pre (. (deref f) is-open))
     (@example (file (Bytes "hello" 5)) -> (ok 5))
 
-    (let ((written (fwrite (cast (Ptr Void) (. data data)) 1 (. data len) (. (deref f) handle))))
+    (let ((written (fwrite (cast (Ptr Void) (. data data)) (cast U64 1) (cast U64 (. data len)) (. (deref f) handle))))
       (if (!= (ferror (. (deref f) handle)) 0)
         (error 'io-error)
         (ok (cast (Int 0 ..) written)))))
@@ -196,8 +196,8 @@
     (@pre (. (deref f) is-open))
     (@example (file "hello") -> (ok 6))
 
-    (let ((written1 (fwrite (cast (Ptr Void) (. line data)) 1 (. line len) (. (deref f) handle))))
-      (let ((written2 (fwrite (cast (Ptr Void) "\n") 1 1 (. (deref f) handle))))
+    (let ((written1 (fwrite (cast (Ptr Void) (. line data)) (cast U64 1) (cast U64 (. line len)) (. (deref f) handle))))
+      (let ((written2 (fwrite (cast (Ptr Void) "\n") (cast U64 1) (cast U64 1) (. (deref f) handle))))
         (if (!= (ferror (. (deref f) handle)) 0)
           (error 'io-error)
           (ok (cast (Int 0 ..) (+ written1 written2)))))))
@@ -265,7 +265,7 @@
     ;; Using with-arena as a workaround for temporary allocation.
     (with-arena 256
       (let ((buf (arena-alloc arena (sizeof stat_buf))))
-        (let ((result (stat (cast (Ptr U8) (. path data)) buf)))
+        (let ((result (stat (cast (Ptr U8) (. path data)) (cast (Ptr Void) buf))))
           (if (!= result 0)
             (error 'not-found)
             (ok (cast I64 (. (cast (Ptr stat_buf) buf) st_size))))))))

@@ -29,6 +29,51 @@
   (import strlib (starts-with string-build))
 
   ;; ============================================================
+  ;; String Utilities
+  ;; ============================================================
+
+  (fn string-contains-char ((s String) (c Int))
+    (@intent "Check if string contains the given character (as ASCII code)")
+    (@spec ((String Int) -> Bool))
+    (@pure)
+    (let ((len (cast Int (. s len)))
+          (data (. s data))
+          (mut found false))
+      (for (i 0 len)
+        (when (and (not found) (== (cast Int (@ data i)) c))
+          (set! found true)))
+      found))
+
+  (fn string-index-of ((s String) (c Int))
+    (@intent "Find index of first occurrence of character, or -1 if not found")
+    (@spec ((String Int) -> Int))
+    (@pure)
+    (let ((len (cast Int (. s len)))
+          (data (. s data))
+          (mut result -1))
+      (for (i 0 len)
+        (when (and (== result -1) (== (cast Int (@ data i)) c))
+          (set! result i)))
+      result))
+
+  (fn string-substring ((arena Arena) (s String) (start Int) (end Int))
+    (@intent "Extract substring from start to end (exclusive)")
+    (@spec ((Arena String Int Int) -> String))
+    (@pure)
+    (let ((s-len (cast Int (. s len)))
+          (actual-end (if (< end s-len) end s-len))
+          (actual-start (if (< start 0) 0 start))
+          (new-len (- actual-end actual-start)))
+      (if (<= new-len 0)
+        (String (cast (Ptr U8) "") 0)
+        (let ((buf (cast (Ptr U8) (arena-alloc arena (+ new-len 1))))
+              (src (. s data)))
+          (for (i 0 new-len)
+            (set! (@ buf i) (@ src (+ actual-start i))))
+          (set! (@ buf new-len) 0)
+          (String buf new-len)))))
+
+  ;; ============================================================
   ;; Type Comparison
   ;; ============================================================
 
@@ -446,6 +491,20 @@
               ((none) (env-get-unit-type env)))
             (env-get-unit-type env)))
 
+        ;; (union-new TypeName variant value) - create union instance
+        ((string-eq op "union-new")
+          (if (>= len 2)
+            (match (list-get items 1)
+              ((some type-expr)
+                (let ((type-name (sexpr-get-symbol-name type-expr)))
+                  (if (string-eq type-name "")
+                    (env-get-unit-type env)
+                    (match (env-lookup-type env type-name)
+                      ((some t) t)
+                      ((none) (env-get-unit-type env))))))
+              ((none) (env-get-unit-type env)))
+            (env-get-unit-type env)))
+
         ;; (hole Type "prompt" [:context ...]) - unfilled hole
         ((string-eq op "hole")
           (let ((hole-type (resolve-hole-type env items len))
@@ -722,8 +781,23 @@
                                            (string-concat arena op "'"))))
                                 (env-add-error env msg line col)
                                 (env-get-unknown-type env))
-                              ;; May be an FFI function - pass through
-                              (env-get-unknown-type env)))))))))))))))
+                              ;; Check if it's a local variable (function pointer call)
+                              (match (env-lookup-var env op)
+                                ((some var-type)
+                                  ;; It's a local variable being called - infer args but don't error
+                                  (infer-builtin-args env expr)
+                                  var-type)
+                                ((none)
+                                  ;; Check if it looks like a SLOP function (contains hyphen)
+                                  ;; If so, emit error - likely missing import
+                                  (if (string-contains-char op 45)  ;; 45 = '-'
+                                    (let ((msg (string-concat arena "Unknown function: '"
+                                                 (string-concat arena op
+                                                   "' - did you forget to import it?"))))
+                                      (env-add-error env msg line col)
+                                      (env-get-unknown-type env))
+                                    ;; May be an FFI function - pass through with no error
+                                    (env-get-unknown-type env))))))))))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
                            (line Int) (col Int))
@@ -802,6 +876,8 @@
                   ;; - Generic container types (Ptr_T, Ptr_Ptr_SExpr vs List, etc.)
                   ;; - Unit (nil) passed to pointer types
                   ;; - Range types compatible with their base type (e.g., Score vs Int)
+                  ;; - Any Ptr_* matching Ptr_Void (C void* compatibility)
+                  ;; - Integer types compatible with each other (FFI compatibility)
                   (when (and (not (types-equal expected-type actual-type))
                              (not (string-eq actual-name "Unknown"))
                              (not (string-eq actual-name "T"))
@@ -816,7 +892,13 @@
                              (not (starts-with actual-name "Ptr_Ptr_"))
                              ;; Allow Unit (nil) to match pointer types
                              (not (and (string-eq actual-name "Unit")
-                                       (starts-with expected-name "Ptr_"))))
+                                       (starts-with expected-name "Ptr_")))
+                             ;; Allow any Ptr_* to match Ptr_Void (C void* compatibility)
+                             (not (and (starts-with actual-name "Ptr_")
+                                       (string-eq expected-name "Ptr_Void")))
+                             ;; Allow integer types to be compatible (FFI compatibility)
+                             (not (and (is-integer-type actual-name)
+                                       (is-integer-type expected-name))))
                     (let ((msg (string-concat arena "argument "
                                  (string-concat arena (int-to-string arena (+ arg-idx 1))
                                    (string-concat arena " to '"
@@ -1161,6 +1243,21 @@
                                                         (or (string-eq name "F32")
                                                             (string-eq name "F64"))))))))))))))))
 
+  (fn is-integer-type ((name String))
+    (@intent "Check if type name is an integer type (for FFI compatibility)")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Int")
+        (or (string-eq name "I8")
+            (or (string-eq name "I16")
+                (or (string-eq name "I32")
+                    (or (string-eq name "I64")
+                        (or (string-eq name "U8")
+                            (or (string-eq name "U16")
+                                (or (string-eq name "U32")
+                                    (or (string-eq name "U64")
+                                        (string-eq name "Size")))))))))))
+
   (fn check-return-expr ((env (Ptr TypeEnv)) (ret-expr (Ptr SExpr))
                          (fn-name String) (inferred-type (Ptr ResolvedType))
                          (fn-line Int) (fn-col Int))
@@ -1240,16 +1337,8 @@
               (if (sexpr-is-list type-expr)
                 (resolve-complex-type-expr env type-expr)
                 (env-get-unknown-type env))
-              ;; Simple symbol type - look it up
-              (match (env-lookup-type env type-name)
-                ((some t) t)
-                ((none)
-                  (cond
-                    ((string-eq type-name "Int") (env-get-int-type env))
-                    ((string-eq type-name "Bool") (env-get-bool-type env))
-                    ((string-eq type-name "String") (env-get-string-type env))
-                    ((string-eq type-name "Unit") (env-get-unit-type env))
-                    (else (env-get-unknown-type env))))))))
+              ;; Simple symbol type - use resolve-simple-type for consistent handling
+              (resolve-simple-type env type-name))))
         ((none) (env-get-unknown-type env)))))
 
   (fn resolve-complex-type-expr ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
@@ -1374,11 +1463,13 @@
             ((string-eq type-name "Char") (resolved-type-new arena 'rk-primitive "Char" (none) "char"))
             ;; Void - for FFI opaque pointers (void*)
             ((string-eq type-name "Void") (resolved-type-new arena 'rk-primitive "Void" (none) "void"))
-          ;; Unknown type - emit warning and use generic type to avoid cascading errors
+            ;; Bytes - for binary data buffers
+            ((string-eq type-name "Bytes") (resolved-type-new arena 'rk-primitive "Bytes" (none) "slop_bytes"))
+          ;; Unknown type - emit error (may be missing import)
           (else
             (let ((arena (env-arena env))
-                  (msg (string-concat arena "Unknown type in parameter: " type-name)))
-              (env-add-warning env msg 0 0)
+                  (msg (string-concat arena "Unknown type: " type-name)))
+              (env-add-error env msg 0 0)
               (env-get-generic-type env))))))))
 
   ;; ============================================================

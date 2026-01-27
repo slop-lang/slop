@@ -2,5 +2,11 @@
 name = "thread"
 entry = "thread.slop"
 
+[build]
+output = "build/thread"
+type = "static"
+debug = false
+
 [build.link]
 libraries = ["pthread"]
+
