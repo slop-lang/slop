@@ -1368,9 +1368,23 @@ def render_markdown(doc: dict) -> str:
 def cmd_doc(args):
     """Generate documentation from SLOP source."""
     import json
+    from slop import paths
+
+    # Resolve stdlib shortcuts (e.g., "strlib" -> lib/std/strlib/strlib.slop)
+    input_path = args.input
+    if not os.path.exists(input_path) and '/' not in input_path and '\\' not in input_path:
+        # Looks like a module name, check stdlib
+        stdlib_modules = {p.stem: p for p in paths.list_stdlib_modules()}
+        if input_path in stdlib_modules:
+            input_path = str(stdlib_modules[input_path])
+        elif input_path.endswith('.slop'):
+            # Try without extension
+            base = input_path[:-5]
+            if base in stdlib_modules:
+                input_path = str(stdlib_modules[base])
 
     try:
-        ast = parse_file(args.input)
+        ast = parse_file(input_path)
         doc = extract_documentation(ast)
 
         if args.format == 'json':
@@ -3239,25 +3253,34 @@ def cmd_test(args):
             print(f"Dependency error: {e}", file=sys.stderr)
             return 1
 
+        # Determine if we'll use native transpiler (check early to skip cache generation)
+        use_native = not getattr(args, 'python', False)
+        if use_native:
+            native_tester_bin = find_native_component('tester')
+            use_native = native_tester_bin is not None
+
         # Transpile each dependency (except the test file itself)
+        # SKIP for native path - native transpiler handles deps internally with full
+        # cross-module type information, avoiding incorrect fallback to memcmp for unions
         test_module_name = input_path.stem
-        for mod_name in build_order:
-            if graph.modules[mod_name].path == input_path.resolve():
-                continue  # Skip the test file itself
+        if not use_native:
+            for mod_name in build_order:
+                if graph.modules[mod_name].path == input_path.resolve():
+                    continue  # Skip the test file itself
 
-            module_info = graph.modules[mod_name]
-            c_mod_name = mod_name.replace('-', '_').replace('/', '_')
-            header_path = cache_dir / f"slop_{c_mod_name}.h"
+                module_info = graph.modules[mod_name]
+                c_mod_name = mod_name.replace('-', '_').replace('/', '_')
+                header_path = cache_dir / f"slop_{c_mod_name}.h"
 
-            # Check if needs retranspile (mtime-based caching)
-            force_rebuild = getattr(args, 'rebuild', False)
-            if not force_rebuild and header_path.exists() and header_path.stat().st_mtime > module_info.path.stat().st_mtime:
-                continue  # Already up to date
+                # Check if needs retranspile (mtime-based caching)
+                force_rebuild = getattr(args, 'rebuild', False)
+                if not force_rebuild and header_path.exists() and header_path.stat().st_mtime > module_info.path.stat().st_mtime:
+                    continue  # Already up to date
 
-            print(f"  Transpiling dependency: {mod_name}")
-            if not transpile_to_cache(module_info.path, cache_dir, search_paths):
-                print(f"Failed to transpile dependency: {mod_name}", file=sys.stderr)
-                return 1
+                print(f"  Transpiling dependency: {mod_name}")
+                if not transpile_to_cache(module_info.path, cache_dir, search_paths):
+                    print(f"Failed to transpile dependency: {mod_name}", file=sys.stderr)
+                    return 1
 
         # Add cache dir to include paths for compilation
         if str(cache_dir) not in args.include:
@@ -3279,77 +3302,75 @@ def cmd_test(args):
                      if graph.modules[mod_name].path != input_path.resolve()]
 
         # Try native tester first (if not --python flag)
-        use_native = not getattr(args, 'python', False)
+        # use_native was determined earlier (before cache generation)
         if use_native:
-            native_tester_bin = find_native_component('tester')
-            if native_tester_bin:
-                print(f"  Using native tester: {native_tester_bin}")
-                test_harness, test_count, module_name, tester_success = test_native(str(input_path), dep_files=dep_files)
-                if tester_success and test_count > 0:
-                    # Native tester succeeded - now get transpiled code
-                    print(f"Found {test_count} test case(s)")
-                    print("  Transpiling...")
-                    c_code, transpiler_success = transpile_native(str(input_path), dep_files=dep_files)
-                    if transpiler_success:
-                        # Combine transpiled code (without main) with test harness
-                        c_code_stripped = _strip_main_function(c_code)
-                        # Strip inter-module includes from test harness (headers already inline)
-                        harness_stripped = test_harness
-                        for mod_name in build_order:
-                            c_mod_name = mod_name.replace('-', '_').replace('/', '_')
-                            harness_stripped = harness_stripped.replace(f'#include "slop_{c_mod_name}.h"\n', '')
-                        test_code = c_code_stripped + "\n\n" + harness_stripped
+            print(f"  Using native tester: {native_tester_bin}")
+            test_harness, test_count, module_name, tester_success = test_native(str(input_path), dep_files=dep_files)
+            if tester_success and test_count > 0:
+                # Native tester succeeded - now get transpiled code
+                print(f"Found {test_count} test case(s)")
+                print("  Transpiling...")
+                c_code, transpiler_success = transpile_native(str(input_path), dep_files=dep_files)
+                if transpiler_success:
+                    # Combine transpiled code (without main) with test harness
+                    c_code_stripped = _strip_main_function(c_code)
+                    # Strip inter-module includes from test harness (headers already inline)
+                    harness_stripped = test_harness
+                    for mod_name in build_order:
+                        c_mod_name = mod_name.replace('-', '_').replace('/', '_')
+                        harness_stripped = harness_stripped.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                    test_code = c_code_stripped + "\n\n" + harness_stripped
 
-                        # Write to temp file and compile
-                        with tempfile.TemporaryDirectory() as tmpdir:
-                            test_c_path = os.path.join(tmpdir, "test.c")
-                            test_bin_path = os.path.join(tmpdir, "test_runner")
+                    # Write to temp file and compile
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        test_c_path = os.path.join(tmpdir, "test.c")
+                        test_bin_path = os.path.join(tmpdir, "test_runner")
 
-                            with open(test_c_path, 'w') as f:
-                                f.write(test_code)
+                        with open(test_c_path, 'w') as f:
+                            f.write(test_code)
 
-                            # Compile
-                            print("  Compiling...")
-                            runtime_path = _get_runtime_path()
-                            # Native transpiler combines all modules, so don't include
-                            # cached deps (they'd cause redefinition errors)
-                            compile_cmd = [
-                                "cc", "-O0", "-g",
-                                "-I", str(runtime_path),
-                                "-o", test_bin_path,
-                                test_c_path,
-                                "-lm"
-                            ]
+                        # Compile
+                        print("  Compiling...")
+                        runtime_path = _get_runtime_path()
+                        # Native transpiler combines all modules, so don't include
+                        # cached deps (they'd cause redefinition errors)
+                        compile_cmd = [
+                            "cc", "-O0", "-g",
+                            "-I", str(runtime_path),
+                            "-o", test_bin_path,
+                            test_c_path,
+                            "-lm"
+                        ]
 
-                            result = subprocess.run(compile_cmd, capture_output=True, text=True)
-                            if result.returncode != 0:
-                                print(f"Compilation failed:\n{result.stderr}")
-                                if args.verbose:
-                                    print("\n--- Generated test code ---")
-                                    print(test_code)
-                                return 1
+                        result = subprocess.run(compile_cmd, capture_output=True, text=True)
+                        if result.returncode != 0:
+                            print(f"Compilation failed:\n{result.stderr}")
+                            if args.verbose:
+                                print("\n--- Generated test code ---")
+                                print(test_code)
+                            return 1
 
-                            # Run tests
-                            print("  Running tests...")
-                            result = subprocess.run([test_bin_path], capture_output=True)
-                            stdout = result.stdout.decode('utf-8', errors='replace')
-                            stderr = result.stderr.decode('utf-8', errors='replace')
-                            print(stdout, end='')
-                            if stderr:
-                                print(stderr, end='', file=sys.stderr)
-                            return result.returncode
-                    else:
-                        print("  Native transpiler failed, falling back to Python")
-                        if c_code:
-                            print(f"    Error: {c_code}")
-                elif tester_success and test_count == 0:
-                    print("No @example annotations found")
-                    return 0
+                        # Run tests
+                        print("  Running tests...")
+                        result = subprocess.run([test_bin_path], capture_output=True)
+                        stdout = result.stdout.decode('utf-8', errors='replace')
+                        stderr = result.stderr.decode('utf-8', errors='replace')
+                        print(stdout, end='')
+                        if stderr:
+                            print(stderr, end='', file=sys.stderr)
+                        return result.returncode
                 else:
-                    # Native tester failed
-                    if test_harness:  # Contains error message
-                        print(f"  Native tester failed: {test_harness}")
-                    print("  Falling back to Python test extraction")
+                    print("  Native transpiler failed, falling back to Python")
+                    if c_code:
+                        print(f"    Error: {c_code}")
+            elif tester_success and test_count == 0:
+                print("No @example annotations found")
+                return 0
+            else:
+                # Native tester failed
+                if test_harness:  # Contains error message
+                    print(f"  Native tester failed: {test_harness}")
+                print("  Falling back to Python test extraction")
 
         ast = parse_file(str(input_path))
 
