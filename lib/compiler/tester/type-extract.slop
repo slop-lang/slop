@@ -12,15 +12,18 @@
 (module type-extract
   (export
     ;; Types
-    TypeEntry TypeEntryKind FieldEntry VariantEntry EnumValueEntry TypeRegistry
+    TypeEntry TypeEntryKind FieldEntry VariantEntry EnumValueEntry TypeRegistry ImportEntry
     ;; Constructor
-    make-type-registry
+    make-type-registry make-type-registry-with-imports
     ;; Extraction
-    extract-types-from-ast
+    extract-types-from-ast extract-types-from-ast-with-imports
+    ;; Registry mutation
+    registry-add-type
     ;; Lookup functions
     registry-lookup
     registry-lookup-variant
     registry-lookup-enum-value
+    registry-lookup-import
     registry-is-union
     registry-is-record
     registry-is-enum
@@ -55,6 +58,11 @@
     (name String)
     (index Int)))
 
+  ;; An import entry - maps module to its imported symbols
+  (type ImportEntry (record
+    (module-name String)
+    (symbols (List String))))
+
   ;; Complete type entry
   (type TypeEntry (record
     (name String)            ;; SLOP type name (e.g., "Term")
@@ -71,7 +79,8 @@
 
   (type TypeRegistry (record
     (types (List (Ptr TypeEntry)))
-    (module-prefix String)))
+    (module-prefix String)
+    (import-entries (List ImportEntry))))  ;; Full import mappings for symbol lookup
 
   ;; ============================================================
   ;; Constructor
@@ -81,7 +90,24 @@
     (@intent "Create empty type registry with module prefix")
     (@spec ((Arena String) -> TypeRegistry))
     (@alloc arena)
-    (TypeRegistry (list-new arena (Ptr TypeEntry)) prefix))
+    (TypeRegistry (list-new arena (Ptr TypeEntry)) prefix (list-new arena ImportEntry)))
+
+  (fn make-type-registry-with-imports ((arena Arena) (prefix String) (imports (List ImportEntry)))
+    (@intent "Create empty type registry with module prefix and import mappings")
+    (@spec ((Arena String (List ImportEntry)) -> TypeRegistry))
+    (@alloc arena)
+    (TypeRegistry (list-new arena (Ptr TypeEntry)) prefix imports))
+
+  ;; ============================================================
+  ;; Registry Mutation
+  ;; ============================================================
+
+  (fn registry-add-type ((arena Arena) (reg (Ptr TypeRegistry)) (entry (Ptr TypeEntry)))
+    (@intent "Add a type entry to the registry")
+    (@spec ((Arena (Ptr TypeRegistry) (Ptr TypeEntry)) -> Unit))
+    (@alloc arena)
+    (list-push (. (deref reg) types) entry)
+    (do))
 
   ;; ============================================================
   ;; Type Entry Constructor
@@ -126,9 +152,16 @@
     (@intent "Build TypeRegistry from parsed AST")
     (@spec ((Arena (List (Ptr SExpr)) String) -> (Ptr TypeRegistry)))
     (@alloc arena)
+    (extract-types-from-ast-with-imports arena ast module-prefix (list-new arena ImportEntry)))
+
+  (fn extract-types-from-ast-with-imports ((arena Arena) (ast (List (Ptr SExpr)))
+                                            (module-prefix String) (imports (List ImportEntry)))
+    (@intent "Build TypeRegistry from parsed AST with import mappings")
+    (@spec ((Arena (List (Ptr SExpr)) String (List ImportEntry)) -> (Ptr TypeRegistry)))
+    (@alloc arena)
     ;; Allocate the registry on the arena
     (let ((reg-ptr (cast (Ptr TypeRegistry) (arena-alloc arena 128))))
-      (set! (deref reg-ptr) (make-type-registry arena module-prefix))
+      (set! (deref reg-ptr) (make-type-registry-with-imports arena module-prefix imports))
       (let ((len (list-len ast))
             (mut i 0))
         (while (< i len)
@@ -371,6 +404,35 @@
                         (set! found (some entry))))
                     ((none) (do)))
                   (set! j (+ j 1))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  ;; ============================================================
+  ;; Import Lookup
+  ;; ============================================================
+
+  (fn registry-lookup-import ((reg TypeRegistry) (symbol-name String))
+    (@intent "Find which module a symbol was imported from")
+    (@spec ((TypeRegistry String) -> (Option String)))
+    (@pure)
+    (let ((entries (. reg import-entries))
+          (len (list-len entries))
+          (mut i 0)
+          (mut found (Option String) (none)))
+      (while (and (< i len) (match found ((none) true) (_ false)))
+        (match (list-get entries i)
+          ((some entry)
+            (let ((symbols (. entry symbols))
+                  (slen (list-len symbols))
+                  (mut j 0))
+              (while (and (< j slen) (match found ((none) true) (_ false)))
+                (match (list-get symbols j)
+                  ((some sym)
+                    (when (string-eq sym symbol-name)
+                      (set! found (some (. entry module-name)))))
+                  ((none) (do)))
+                (set! j (+ j 1)))))
           ((none) (do)))
         (set! i (+ i 1)))
       found))

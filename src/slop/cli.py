@@ -208,8 +208,12 @@ def parse_native_json_string(source: str):
         os.unlink(temp_path)
 
 
-def transpile_native(input_file: str):
+def transpile_native(input_file: str, dep_files: list[str] = None):
     """Transpile using native transpiler, returns (c_code, success).
+
+    Args:
+        input_file: The main file to transpile
+        dep_files: Optional list of dependency files (in dependency order)
 
     Returns tuple of (output, success). If native transpiler isn't available,
     returns (None, False).
@@ -221,9 +225,14 @@ def transpile_native(input_file: str):
     if not transpiler_bin:
         return None, False
 
+    # Build file list: dependencies first, then main file
+    all_files = [input_file]
+    if dep_files:
+        all_files = dep_files + [input_file]
+
     try:
         result = subprocess.run(
-            [str(transpiler_bin), input_file],
+            [str(transpiler_bin)] + all_files,
             capture_output=True,
             text=True
         )
@@ -232,12 +241,17 @@ def transpile_native(input_file: str):
             data = json.loads(result.stdout)
             c_parts = ['#include "slop_runtime.h"', '']
             main_mod = None
+            # Collect all module C names for stripping includes
+            all_c_mod_names = [name.replace('-', '_').replace('/', '_') for name in data.keys()]
             for mod_name, mod_data in data.items():
-                c_parts.append(mod_data['header'])
-                # Strip self-include from impl when combining into single file
+                # Strip ALL inter-module includes when combining into single file
+                # (all headers are now inline, so includes would fail or cause redefinitions)
+                header = mod_data['header']
                 impl = mod_data['impl']
-                c_mod_name = mod_name.replace('-', '_').replace('/', '_')
-                impl = impl.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                for c_mod_name in all_c_mod_names:
+                    header = header.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                    impl = impl.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                c_parts.append(header)
                 c_parts.append(impl)
                 # Check if this module exports main
                 if f'{mod_name}_main' in mod_data['header']:
@@ -377,8 +391,12 @@ def transpile_to_cache(module_path: Path, cache_dir: Path, search_paths: list) -
         return False
 
 
-def test_native(input_file: str):
+def test_native(input_file: str, dep_files: list = None):
     """Generate test harness using native tester.
+
+    Args:
+        input_file: Path to main .slop file to test
+        dep_files: List of dependency file paths for import type extraction
 
     Returns tuple of (test_harness, test_count, module_name, success).
     test_harness is the C code string for the test harness.
@@ -392,8 +410,11 @@ def test_native(input_file: str):
         return None, 0, '', False
 
     try:
+        cmd = [str(tester_bin), input_file]
+        if dep_files:
+            cmd.extend(dep_files)
         result = subprocess.run(
-            [str(tester_bin), input_file],
+            cmd,
             capture_output=True,
             text=True
         )
@@ -2890,16 +2911,39 @@ def cmd_format(args):
 def cmd_ref(args):
     """Display language reference for AI assistants"""
     from slop.reference import get_reference, list_topics, TOPICS
+    from slop import paths
+
+    # Build stdlib module mapping
+    stdlib_modules = {p.stem: p for p in paths.list_stdlib_modules()}
 
     if args.list:
+        # Static topics
         for topic in list_topics():
             print(topic)
+        # Dynamic stdlib modules
+        for module_name in sorted(stdlib_modules.keys()):
+            print(f"{module_name} (stdlib)")
         return 0
 
     topic = args.topic or 'all'
+
+    # Check if it's a stdlib module - generate docs dynamically
+    if topic in stdlib_modules:
+        module_path = stdlib_modules[topic]
+        try:
+            ast = parse_file(str(module_path))
+            doc = extract_documentation(ast)
+            print(render_markdown(doc))
+            return 0
+        except Exception as e:
+            print(f"Error generating docs for {topic}: {e}", file=sys.stderr)
+            return 1
+
+    # Existing static topic handling
     if topic != 'all' and topic not in TOPICS:
         print(f"Unknown topic: {topic}", file=sys.stderr)
         print(f"Available: {', '.join(list_topics())}", file=sys.stderr)
+        print(f"Stdlib modules: {', '.join(sorted(stdlib_modules.keys()))}", file=sys.stderr)
         return 1
 
     print(get_reference(topic))
@@ -3138,16 +3182,23 @@ def cmd_test(args):
             import tomllib
             with open(config_dir / 'slop.toml', 'rb') as f:
                 toml_cfg = tomllib.load(f)
+
+        if toml_cfg and config_dir:
+            # Collect include paths from both [build] and [test] sections
+            # [test].include takes precedence for test command
             build_section = toml_cfg.get('build', {})
-            include_paths = build_section.get('include', [])
-            for p in include_paths:
+            test_section = toml_cfg.get('test', {})
+
+            # Add [test].include paths first (higher priority)
+            test_include_paths = test_section.get('include', [])
+            for p in test_include_paths:
                 inc_path = (config_dir / p).resolve()
                 if inc_path.exists() and str(inc_path) not in [str(Path(x).resolve()) for x in args.include]:
                     args.include.append(str(inc_path))
-        elif toml_cfg and config_dir:
-            build_section = toml_cfg.get('build', {})
-            include_paths = build_section.get('include', [])
-            for p in include_paths:
+
+            # Then add [build].include paths (if not already present)
+            build_include_paths = build_section.get('include', [])
+            for p in build_include_paths:
                 inc_path = (config_dir / p).resolve()
                 if inc_path.exists() and str(inc_path) not in [str(Path(x).resolve()) for x in args.include]:
                     args.include.append(str(inc_path))
@@ -3222,22 +3273,32 @@ def cmd_test(args):
             if c_path.exists():
                 dep_sources.append(str(c_path))
 
+        # Collect dependency file paths (used by both tester and transpiler)
+        dep_files = [str(graph.modules[mod_name].path)
+                     for mod_name in build_order
+                     if graph.modules[mod_name].path != input_path.resolve()]
+
         # Try native tester first (if not --python flag)
         use_native = not getattr(args, 'python', False)
         if use_native:
             native_tester_bin = find_native_component('tester')
             if native_tester_bin:
                 print(f"  Using native tester: {native_tester_bin}")
-                test_harness, test_count, module_name, tester_success = test_native(str(input_path))
+                test_harness, test_count, module_name, tester_success = test_native(str(input_path), dep_files=dep_files)
                 if tester_success and test_count > 0:
                     # Native tester succeeded - now get transpiled code
                     print(f"Found {test_count} test case(s)")
                     print("  Transpiling...")
-                    c_code, transpiler_success = transpile_native(str(input_path))
+                    c_code, transpiler_success = transpile_native(str(input_path), dep_files=dep_files)
                     if transpiler_success:
                         # Combine transpiled code (without main) with test harness
                         c_code_stripped = _strip_main_function(c_code)
-                        test_code = c_code_stripped + "\n\n" + test_harness
+                        # Strip inter-module includes from test harness (headers already inline)
+                        harness_stripped = test_harness
+                        for mod_name in build_order:
+                            c_mod_name = mod_name.replace('-', '_').replace('/', '_')
+                            harness_stripped = harness_stripped.replace(f'#include "slop_{c_mod_name}.h"\n', '')
+                        test_code = c_code_stripped + "\n\n" + harness_stripped
 
                         # Write to temp file and compile
                         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3250,13 +3311,15 @@ def cmd_test(args):
                             # Compile
                             print("  Compiling...")
                             runtime_path = _get_runtime_path()
+                            # Native transpiler combines all modules, so don't include
+                            # cached deps (they'd cause redefinition errors)
                             compile_cmd = [
                                 "cc", "-O0", "-g",
                                 "-I", str(runtime_path),
-                                "-I", str(cache_dir),
                                 "-o", test_bin_path,
                                 test_c_path,
-                            ] + dep_sources + ["-lm"]
+                                "-lm"
+                            ]
 
                             result = subprocess.run(compile_cmd, capture_output=True, text=True)
                             if result.returncode != 0:
@@ -3432,7 +3495,11 @@ def cmd_test(args):
             native_transpiler_bin = find_native_component('transpiler')
             if native_transpiler_bin:
                 print(f"  Using native transpiler: {native_transpiler_bin}")
-                c_code, success = transpile_native(str(input_path))
+                # Collect dependency file paths for native transpiler
+                dep_files = [str(graph.modules[mod_name].path)
+                             for mod_name in build_order
+                             if graph.modules[mod_name].path != input_path.resolve()]
+                c_code, success = transpile_native(str(input_path), dep_files=dep_files)
                 if not success:
                     print("  Native transpiler failed, falling back to Python")
                     if c_code:  # c_code contains error message on failure
@@ -3945,13 +4012,14 @@ def sexpr_to_c(expr):
         return str(expr)
 
 
-def _run_verify_multi(args, verify_files: list, verify_cfg) -> int:
+def _run_verify_multi(args, verify_files: list, verify_cfg, search_paths: list = None) -> int:
     """Run verification on multiple files and aggregate results.
 
     Args:
         args: CLI arguments
         verify_files: List of Path objects for files to verify
         verify_cfg: VerifyConfig instance
+        search_paths: List of Paths to search for imported modules
 
     Returns:
         0 if all verifications pass, 1 if any fail
@@ -3965,6 +4033,9 @@ def _run_verify_multi(args, verify_files: list, verify_cfg) -> int:
     if not Z3_AVAILABLE:
         print("Error: Z3 solver not available.", file=sys.stderr)
         return 1
+
+    if search_paths is None:
+        search_paths = []
 
     total_files = len(verify_files)
     passed_files = 0
@@ -3990,8 +4061,10 @@ def _run_verify_multi(args, verify_files: list, verify_cfg) -> int:
 
         print(f"[{i}/{total_files}] Verifying {rel_path}")
 
-        # Run verification on single file
-        results = verify_file(str(verify_file_path), mode=mode, timeout_ms=timeout)
+        # Run verification on single file (include file's directory in search paths)
+        file_search_paths = [verify_file_path.parent] + search_paths
+        results = verify_file(str(verify_file_path), mode=mode, timeout_ms=timeout,
+                              search_paths=file_search_paths)
 
         # Categorize results
         verified = [r for r in results if r.status == 'verified']
@@ -4005,10 +4078,17 @@ def _run_verify_multi(args, verify_files: list, verify_cfg) -> int:
         total_warnings += len(warnings)
         total_unknown += len(unknown)
 
-        file_total = len(verified) + len(failed) + len(unknown) + len(warnings)
+        file_total = len(verified) + len(failed) + len(unknown) + len(warnings) + len(errors)
         if file_total == 0:
             no_contracts_files += 1
             print(f"  No contracts to verify")
+        elif errors and not verified and not failed and not unknown and not warnings:
+            # File has only errors (e.g., type errors), no contracts to verify
+            failed_files += 1
+            print(f"  ERROR: {len(errors)} error(s)")
+            if args.verbose:
+                for r in errors:
+                    print(f"    error: {r.name} - {r.message}")
         elif failed or errors:
             failed_files += 1
             print(f"  FAILED: {len(verified)} verified, {len(failed)} failed")
@@ -4080,6 +4160,34 @@ def cmd_verify(args):
     # Load project config
     project_cfg, build_cfg, _, verify_cfg = load_project_config()
 
+    # Collect include paths from CLI and config
+    # Priority: CLI args > [verify].include > [build].include
+    config_dir = Path.cwd()
+    search_paths: List[Path] = []
+
+    # Add CLI include paths first (highest priority)
+    for p in getattr(args, 'include', []):
+        inc_path = Path(p).resolve()
+        if inc_path.exists() and inc_path not in search_paths:
+            search_paths.append(inc_path)
+
+    # Add [verify].include paths
+    if verify_cfg and verify_cfg.include:
+        for p in verify_cfg.include:
+            inc_path = (config_dir / p).resolve()
+            if inc_path.exists() and inc_path not in search_paths:
+                search_paths.append(inc_path)
+
+    # Add [build].include paths as fallback
+    if build_cfg and build_cfg.include:
+        for p in build_cfg.include:
+            inc_path = (config_dir / p).resolve()
+            if inc_path.exists() and inc_path not in search_paths:
+                search_paths.append(inc_path)
+
+    # Add standard library paths
+    search_paths.extend(paths.get_stdlib_include_paths())
+
     # Determine files to verify
     verify_files = []
 
@@ -4121,10 +4229,14 @@ def cmd_verify(args):
 
     # Run verification on multiple files or single file
     if len(verify_files) > 1:
-        return _run_verify_multi(args, verify_files, verify_cfg)
+        return _run_verify_multi(args, verify_files, verify_cfg, search_paths)
 
     # Single file mode - use original logic
     input_file = str(verify_files[0])
+    input_path = verify_files[0]
+
+    # Add the file's directory to search paths
+    file_search_paths = [input_path.parent] + search_paths
 
     # Determine failure mode
     mode = args.mode if args.mode else "error"
@@ -4141,14 +4253,15 @@ def cmd_verify(args):
             else:
                 print("Native parser not available, falling back to Python", file=sys.stderr)
                 # Fall back to Python parser
-                results = verify_file(input_file, mode=mode, timeout_ms=args.timeout)
+                results = verify_file(input_file, mode=mode, timeout_ms=args.timeout,
+                                      search_paths=file_search_paths)
                 use_native = False
         if use_native and success:
             if args.verbose:
                 print("Using native parser", file=sys.stderr)
             # Run native type checker first
             from slop.verifier import _run_native_checker, VerificationResult
-            check_success, diagnostics = _run_native_checker(input_file)
+            check_success, diagnostics = _run_native_checker(input_file, file_search_paths)
             if not check_success:
                 error_msgs = [d.get('message', 'Unknown error') for d in diagnostics if d.get('level') == 'error']
                 results = [VerificationResult(
@@ -4158,10 +4271,12 @@ def cmd_verify(args):
                     message=f"Type errors found: {'; '.join(error_msgs) if error_msgs else 'check failed'}"
                 )]
             else:
-                results = verify_ast(ast, filename=input_file, mode=mode, timeout_ms=args.timeout)
+                results = verify_ast(ast, filename=input_file, mode=mode, timeout_ms=args.timeout,
+                                     search_paths=file_search_paths)
     else:
         # Run verification with Python parser
-        results = verify_file(input_file, mode=mode, timeout_ms=args.timeout)
+        results = verify_file(input_file, mode=mode, timeout_ms=args.timeout,
+                              search_paths=file_search_paths)
 
     # Categorize results
     verified = [r for r in results if r.status == 'verified']
@@ -4416,6 +4531,8 @@ def main():
     p = subparsers.add_parser('verify', help='Verify contracts with Z3')
     p.add_argument('input', nargs='?', default=None,
         help='Input file or directory (optional if [verify].sources in slop.toml)')
+    p.add_argument('-I', '--include', action='append', default=[],
+        help='Add search path for module imports')
     p.add_argument('--mode', choices=['error', 'warn'],
         help='Failure mode: error (block, default) or warn')
     p.add_argument('--timeout', type=int, default=5000,

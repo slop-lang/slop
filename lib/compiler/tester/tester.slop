@@ -14,13 +14,18 @@
     TestResult
     ;; Main functions
     generate-tests
+    generate-tests-with-imports
     extract-module-name)
 
   (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
   (import parser (parse ParseResult is-form sexpr-is-symbol sexpr-list-len sexpr-list-get sexpr-get-symbol-name))
   (import extract (TestCase extract-examples-from-ast))
   (import emit (emit-test-harness emit-test-harness-typed))
-  (import type-extract (TypeRegistry extract-types-from-ast))
+  (import type-extract (TypeRegistry TypeEntry TypeEntryKind
+                        FieldEntry VariantEntry EnumValueEntry
+                        ImportEntry
+                        extract-types-from-ast-with-imports
+                        registry-add-type))
   (import ctype (to-c-name))
 
   ;; ============================================================
@@ -53,10 +58,10 @@
   ;; ============================================================
 
   (fn extract-imports ((arena Arena) (exprs (List (Ptr SExpr))))
-    (@intent "Extract imported module names from parsed expressions")
-    (@spec ((Arena (List (Ptr SExpr))) -> (List String)))
+    (@intent "Extract full import mappings (module -> symbols) from parsed expressions")
+    (@spec ((Arena (List (Ptr SExpr))) -> (List ImportEntry)))
     (@alloc arena)
-    (let ((result (list-new arena String)))
+    (let ((result (list-new arena ImportEntry)))
       ;; Find the module form (first expression) - imports are nested inside it
       (when (> (list-len exprs) 0)
         (match (list-get exprs 0)
@@ -69,11 +74,27 @@
                   (match (sexpr-list-get module-expr i)
                     ((some child)
                       (when (is-form child "import")
-                        (when (>= (sexpr-list-len child) 2)
+                        (when (>= (sexpr-list-len child) 3)
+                          ;; (import module-name (sym1 sym2 ...))
                           (match (sexpr-list-get child 1)
                             ((some name-expr)
                               (when (sexpr-is-symbol name-expr)
-                                (list-push result (sexpr-get-symbol-name name-expr))))
+                                (let ((mod-name (sexpr-get-symbol-name name-expr))
+                                      (symbols (list-new arena String)))
+                                  ;; Extract symbols from the import list
+                                  (match (sexpr-list-get child 2)
+                                    ((some sym-list)
+                                      (let ((sym-len (sexpr-list-len sym-list))
+                                            (mut j 0))
+                                        (while (< j sym-len)
+                                          (match (sexpr-list-get sym-list j)
+                                            ((some sym-expr)
+                                              (when (sexpr-is-symbol sym-expr)
+                                                (list-push symbols (sexpr-get-symbol-name sym-expr))))
+                                            ((none) (do)))
+                                          (set! j (+ j 1)))))
+                                    ((none) (do)))
+                                  (list-push result (ImportEntry mod-name symbols)))))
                             ((none) (do))))))
                     ((none) (do)))
                   (set! i (+ i 1))))))
@@ -107,11 +128,11 @@
             (if (== test-count 0)
               ;; No tests found
               (TestResult true (list-new arena String) 0 mod-name "")
-              ;; Step 4: Extract type definitions
+              ;; Step 4: Extract type definitions (with imports for type lookup)
               (let ((prefix (if (> (cast Int (. mod-name len)) 0)
                               (to-c-name arena mod-name)
                               ""))
-                    (types (extract-types-from-ast arena exprs mod-name)))
+                    (types (extract-types-from-ast-with-imports arena exprs mod-name imports)))
                 ;; Step 5: Generate test harness (type-aware)
                 (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types imports)))
                   (TestResult true harness-lines test-count mod-name "")))))))
@@ -124,5 +145,268 @@
                                (string-concat arena (int-to-string arena (. err col))
                                  (string-concat arena ": " (. err message))))))))
           (TestResult false (list-new arena String) 0 "" error-msg)))))
+
+  ;; ============================================================
+  ;; Test Generation with Import Type Extraction
+  ;; ============================================================
+
+  (fn generate-tests-with-imports ((arena Arena) (source String) (import-sources (List String)))
+    (@intent "Generate test harness with types from import files")
+    (@spec ((Arena String (List String)) -> TestResult))
+    (@alloc arena)
+    ;; Step 1: Parse the main source
+    (match (parse arena source)
+      ((ok exprs)
+        ;; Step 2: Extract module name and imports
+        (let ((mod-name (extract-module-name exprs))
+              (imports (extract-imports arena exprs)))
+          ;; Step 3: Extract test cases
+          (let ((test-cases (extract-examples-from-ast arena exprs))
+                (test-count (list-len test-cases)))
+            (if (== test-count 0)
+              ;; No tests found
+              (TestResult true (list-new arena String) 0 mod-name "")
+              ;; Step 4: Extract type definitions from main source
+              (let ((prefix (if (> (cast Int (. mod-name len)) 0)
+                              (to-c-name arena mod-name)
+                              ""))
+                    (types (extract-types-from-ast-with-imports arena exprs mod-name imports)))
+                ;; Step 5: Extract types from each import source
+                (let ((import-count (list-len import-sources))
+                      (mut i 0))
+                  (while (< i import-count)
+                    (match (list-get import-sources i)
+                      ((some import-src)
+                        (match (parse arena import-src)
+                          ((ok import-exprs)
+                            ;; Extract module name from import file for prefix
+                            (let ((import-mod-name (extract-module-name import-exprs))
+                                  (import-prefix (if (> (cast Int (. import-mod-name len)) 0)
+                                                    (to-c-name arena import-mod-name)
+                                                    "")))
+                              ;; Extract and add types from this import
+                              (extract-types-from-module-ast arena import-exprs types import-prefix)))
+                          ((error _) (do))))
+                      ((none) (do)))
+                    (set! i (+ i 1))))
+                ;; Step 6: Generate test harness
+                (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types imports)))
+                  (TestResult true harness-lines test-count mod-name "")))))))
+
+      ((error err)
+        ;; Parse error
+        (let ((error-msg (string-concat arena "Parse error at line "
+                           (string-concat arena (int-to-string arena (. err line))
+                             (string-concat arena ", col "
+                               (string-concat arena (int-to-string arena (. err col))
+                                 (string-concat arena ": " (. err message))))))))
+          (TestResult false (list-new arena String) 0 "" error-msg)))))
+
+  ;; ============================================================
+  ;; Type Extraction from Import Module AST
+  ;; ============================================================
+
+  (fn extract-types-from-module-ast ((arena Arena) (ast (List (Ptr SExpr)))
+                                      (types (Ptr TypeRegistry)) (prefix String))
+    (@intent "Extract types from import module AST and add to registry")
+    (@spec ((Arena (List (Ptr SExpr)) (Ptr TypeRegistry) String) -> Unit))
+    (let ((len (list-len ast))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get ast i)
+          ((some expr)
+            ;; Check for module form
+            (when (is-form expr "module")
+              (extract-types-from-module-form arena expr types prefix))
+            ;; Check for top-level type definition
+            (when (is-form expr "type")
+              (extract-single-type-def arena expr types prefix)))
+          ((none) (do)))
+        (set! i (+ i 1))))
+    (do))
+
+  (fn extract-types-from-module-form ((arena Arena) (module-form (Ptr SExpr))
+                                       (types (Ptr TypeRegistry)) (prefix String))
+    (@intent "Extract type definitions from a module form")
+    (@spec ((Arena (Ptr SExpr) (Ptr TypeRegistry) String) -> Unit))
+    (let ((len (sexpr-list-len module-form))
+          (mut i 2))  ;; Skip 'module' and module name
+      (while (< i len)
+        (match (sexpr-list-get module-form i)
+          ((some form)
+            (when (is-form form "type")
+              (extract-single-type-def arena form types prefix)))
+          ((none) (do)))
+        (set! i (+ i 1))))
+    (do))
+
+  (fn extract-single-type-def ((arena Arena) (type-form (Ptr SExpr))
+                                (types (Ptr TypeRegistry)) (prefix String))
+    (@intent "Extract a single type definition and add to registry")
+    (@spec ((Arena (Ptr SExpr) (Ptr TypeRegistry) String) -> Unit))
+    ;; type-form: (type Name definition)
+    (when (>= (sexpr-list-len type-form) 3)
+      (match (sexpr-list-get type-form 1)
+        ((some name-expr)
+          (when (sexpr-is-symbol name-expr)
+            (let ((type-name (sexpr-get-symbol-name name-expr))
+                  (c-name (make-prefixed-c-name arena prefix type-name)))
+              (match (sexpr-list-get type-form 2)
+                ((some def-expr)
+                  (cond
+                    ;; Record: (type Name (record (field1 Type1) ...))
+                    ((is-form def-expr "record")
+                      (let ((entry (extract-record-type-entry arena type-name c-name def-expr)))
+                        (registry-add-type arena types entry)))
+
+                    ;; Union: (type Name (union (variant1 Type1) ...))
+                    ((is-form def-expr "union")
+                      (let ((entry (extract-union-type-entry arena type-name c-name def-expr)))
+                        (registry-add-type arena types entry)))
+
+                    ;; Enum: (type Name (enum val1 val2 ...))
+                    ((is-form def-expr "enum")
+                      (let ((entry (extract-enum-type-entry arena type-name c-name def-expr)))
+                        (registry-add-type arena types entry)))
+
+                    ;; Other types (range, alias) - skip for now
+                    (else (do))))
+                ((none) (do))))))
+        ((none) (do))))
+    (do))
+
+  (fn make-prefixed-c-name ((arena Arena) (prefix String) (name String))
+    (@intent "Generate C type name with prefix")
+    (@spec ((Arena String String) -> String))
+    (@alloc arena)
+    (if (== (cast Int (. prefix len)) 0)
+      (convert-to-c-ident arena name)
+      (string-concat arena prefix
+        (string-concat arena "_" (convert-to-c-ident arena name)))))
+
+  (fn convert-to-c-ident ((arena Arena) (name String))
+    (@intent "Convert SLOP name to C identifier (replace - with _)")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (let ((len (cast Int (. name len)))
+          (buf (cast (Ptr U8) (arena-alloc arena (+ len 1))))
+          (mut i 0))
+      (while (< i len)
+        (let ((c (@ (. name data) i)))
+          (if (== c 45)  ;; '-'
+            (set! (@ buf i) 95)  ;; '_'
+            (set! (@ buf i) c)))
+        (set! i (+ i 1)))
+      (set! (@ buf len) 0)
+      (String buf (. name len))))
+
+  ;; ============================================================
+  ;; Type Entry Extraction Helpers
+  ;; ============================================================
+
+  (fn type-entry-new-local ((arena Arena) (name String) (c-name String) (kind Int))
+    (@intent "Create a new type entry for local use")
+    (@spec ((Arena String String Int) -> (Ptr TypeEntry)))
+    (@alloc arena)
+    (let ((entry (cast (Ptr TypeEntry) (arena-alloc arena 256))))
+      (set! (. (deref entry) name) name)
+      (set! (. (deref entry) c-name) c-name)
+      (set! (. (deref entry) kind) (cast TypeEntryKind kind))
+      (set! (. (deref entry) fields) (list-new arena FieldEntry))
+      (set! (. (deref entry) variants) (list-new arena VariantEntry))
+      (set! (. (deref entry) enum-values) (list-new arena EnumValueEntry))
+      (set! (. (deref entry) inner-type) "")
+      entry))
+
+  (fn extract-record-type-entry ((arena Arena) (name String) (c-name String) (def (Ptr SExpr)))
+    (@intent "Extract record type definition")
+    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TypeEntry)))
+    (@alloc arena)
+    ;; def: (record (field1 Type1) (field2 Type2) ...)
+    (let ((entry (type-entry-new-local arena name c-name 0))  ;; 0 = te-record
+          (len (sexpr-list-len def))
+          (mut i 1))  ;; Skip 'record' keyword
+      (while (< i len)
+        (match (sexpr-list-get def i)
+          ((some field-def)
+            ;; field-def: (field-name FieldType)
+            (when (>= (sexpr-list-len field-def) 2)
+              (match (sexpr-list-get field-def 0)
+                ((some field-name-expr)
+                  (when (sexpr-is-symbol field-name-expr)
+                    (let ((field-name (sexpr-get-symbol-name field-name-expr)))
+                      (match (sexpr-list-get field-def 1)
+                        ((some field-type-expr)
+                          (let ((field-type (sexpr-to-string-simple arena field-type-expr))
+                                (fe (FieldEntry field-name field-type)))
+                            (list-push (. (deref entry) fields) fe)))
+                        ((none) (do))))))
+                ((none) (do)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      entry))
+
+  (fn extract-union-type-entry ((arena Arena) (name String) (c-name String) (def (Ptr SExpr)))
+    (@intent "Extract union type definition")
+    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TypeEntry)))
+    (@alloc arena)
+    ;; def: (union (variant1 Type1) (variant2 Type2) ...)
+    (let ((entry (type-entry-new-local arena name c-name 1))  ;; 1 = te-union
+          (len (sexpr-list-len def))
+          (mut i 1)   ;; Skip 'union' keyword
+          (mut idx 0))
+      (while (< i len)
+        (match (sexpr-list-get def i)
+          ((some variant-def)
+            ;; variant-def: (variant-name PayloadType) or (variant-name)
+            (let ((vlen (sexpr-list-len variant-def)))
+              (when (>= vlen 1)
+                (match (sexpr-list-get variant-def 0)
+                  ((some variant-name-expr)
+                    (when (sexpr-is-symbol variant-name-expr)
+                      (let ((variant-name (sexpr-get-symbol-name variant-name-expr))
+                            (payload-type (if (>= vlen 2)
+                                            (match (sexpr-list-get variant-def 1)
+                                              ((some pt-expr) (sexpr-to-string-simple arena pt-expr))
+                                              ((none) ""))
+                                            ""))
+                            (ve (VariantEntry variant-name idx payload-type)))
+                        (list-push (. (deref entry) variants) ve)
+                        (set! idx (+ idx 1)))))
+                  ((none) (do))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      entry))
+
+  (fn extract-enum-type-entry ((arena Arena) (name String) (c-name String) (def (Ptr SExpr)))
+    (@intent "Extract enum type definition")
+    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TypeEntry)))
+    (@alloc arena)
+    ;; def: (enum val1 val2 val3 ...)
+    (let ((entry (type-entry-new-local arena name c-name 2))  ;; 2 = te-enum
+          (len (sexpr-list-len def))
+          (mut i 1)   ;; Skip 'enum' keyword
+          (mut idx 0))
+      (while (< i len)
+        (match (sexpr-list-get def i)
+          ((some val-expr)
+            (when (sexpr-is-symbol val-expr)
+              (let ((val-name (sexpr-get-symbol-name val-expr))
+                    (eve (EnumValueEntry val-name idx)))
+                (list-push (. (deref entry) enum-values) eve)
+                (set! idx (+ idx 1)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      entry))
+
+  (fn sexpr-to-string-simple ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Convert sexpr to simple string representation")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@alloc arena)
+    (match (deref expr)
+      ((sym sym) (. sym name))
+      ((num num) (. num raw))
+      ((str str) (. str value))
+      ((lst _) "(list)")))
 
 ) ;; end module

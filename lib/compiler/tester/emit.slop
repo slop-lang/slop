@@ -23,12 +23,37 @@
                   sexpr-list-len sexpr-list-get sexpr-get-symbol-name
                   sexpr-number-string sexpr-string-value pretty-print))
   (import extract (TestCase))
-  (import strlib (contains to-lower string-build))
-  (import type-extract (TypeRegistry TypeEntry TypeEntryKind FieldEntry VariantEntry
+  (import strlib (contains to-lower string-build starts-with substring))
+  (import type-extract (TypeRegistry TypeEntry TypeEntryKind FieldEntry VariantEntry ImportEntry
                         registry-lookup registry-lookup-variant registry-lookup-enum-value
+                        registry-lookup-import
                         registry-is-union registry-is-record registry-is-enum
                         registry-get-variant-info registry-get-record-fields))
   (import ctype (to-c-name))
+
+  ;; ============================================================
+  ;; Symbol Prefixing for Test Harness
+  ;; ============================================================
+
+  (fn prefix-symbol ((arena Arena) (name String) (prefix String) (types TypeRegistry))
+    (@intent "Prefix a symbol with appropriate module name for test harness")
+    (@spec ((Arena String String TypeRegistry) -> String))
+    (@alloc arena)
+    ;; Special case: arena -> test_arena
+    (if (string-eq name "arena")
+      "test_arena"
+      ;; Check if it's an imported symbol
+      (match (registry-lookup-import types name)
+        ((some mod-name)
+          ;; Imported from another module - use that module's prefix
+          (string-concat arena (to-c-name arena mod-name)
+            (string-concat arena "_" (to-c-name arena name))))
+        ((none)
+          ;; Not imported - use current module prefix (for local functions/constants)
+          (if (> (cast Int (. prefix len)) 0)
+            (string-concat arena prefix
+              (string-concat arena "_" (to-c-name arena name)))
+            (to-c-name arena name))))))
 
   ;; ============================================================
   ;; Emit Context - holds output list for mutation
@@ -117,25 +142,27 @@
             ((string-eq name "true") "true")
             ((string-eq name "false") "false")
             ((string-eq name "nil") "NULL")
+            ((string-eq name "_") "{0}")  ;; Wildcard - zero-initialized placeholder
             ((string-eq name "none")
               ;; Emit typed Option none - default to string for now
               "(slop_option_string){.has_value = false}")
             ;; Quoted symbol starting with '
-            ((string-starts-with name "'")
+            ((starts-with name "'")
               ;; Handle enum variant: 'variant -> prefix_EnumType_variant
-              (let ((variant-name (emit-emit-string-slice arena name 1 (cast Int (. name len)))))
+              (let ((variant-name (substring arena name 1 (cast (Int 0 ..) (- (cast Int (. name len)) 1)))))
                 ;; Look up enum type
                 (match (registry-lookup-enum-value types variant-name)
                   ((some enum-entry)
                     ;; Found the enum - emit prefix_enumname
                     (string-concat arena (. (deref enum-entry) c-name)
                       (string-concat arena "_"
-                        (convert-symbol-to-c arena variant-name))))
+                        (to-c-name arena variant-name))))
                   ((none)
                     ;; Not found in registry - fall back to generic prefix
-                    (convert-symbol-to-c arena variant-name)))))
+                    (to-c-name arena variant-name)))))
             (else
-              (convert-symbol-to-c arena name)))))
+              ;; Regular symbol - prefix with appropriate module
+              (prefix-symbol arena name prefix types)))))
 
       ;; List: could be function call, operator, or constructor
       ((lst lst)
@@ -172,12 +199,30 @@
                                   ;; Built-in types don't use module prefix
                                   (if (string-eq type-name "String")
                                     "(slop_list_string){.data = NULL, .len = 0, .cap = 0}"
-                                    ;; Module types use prefix: (slop_list_prefix_Type){...}
-                                    (string-concat arena "(slop_list_"
-                                      (string-concat arena prefix
-                                        (string-concat arena "_"
-                                          (string-concat arena (convert-symbol-to-c arena type-name)
-                                            "){.data = NULL, .len = 0, .cap = 0}"))))))
+                                    ;; Look up type in registry to get correct C name with module prefix
+                                    (match (registry-lookup types type-name)
+                                      ((some entry)
+                                        ;; Use the type's c-name which has correct prefix (e.g., "rdf_Triple")
+                                        (string-concat arena "(slop_list_"
+                                          (string-concat arena (. (deref entry) c-name)
+                                            "){.data = NULL, .len = 0, .cap = 0}")))
+                                      ((none)
+                                        ;; Type not in local registry - check imports
+                                        (match (registry-lookup-import types type-name)
+                                          ((some mod-name)
+                                            ;; Found in imports - use that module's prefix
+                                            (string-concat arena "(slop_list_"
+                                              (string-concat arena (to-c-name arena mod-name)
+                                                (string-concat arena "_"
+                                                  (string-concat arena (to-c-name arena type-name)
+                                                    "){.data = NULL, .len = 0, .cap = 0}")))))
+                                          ((none)
+                                            ;; Not in imports - use current module prefix
+                                            (string-concat arena "(slop_list_"
+                                              (string-concat arena prefix
+                                                (string-concat arena "_"
+                                                  (string-concat arena (to-c-name arena type-name)
+                                                    "){.data = NULL, .len = 0, .cap = 0}"))))))))))
                                 "/* error: list literal first element must be type symbol */"))
                             ((none)
                               "/* error: list literal requires type */"))
@@ -217,11 +262,11 @@
                                     ((some enum-entry)
                                       (string-concat arena (. (deref enum-entry) c-name)
                                         (string-concat arena "_"
-                                          (convert-symbol-to-c arena variant-name))))
+                                          (to-c-name arena variant-name))))
                                     ((none)
                                       (string-concat arena prefix
                                         (string-concat arena "_"
-                                          (convert-symbol-to-c arena variant-name))))))
+                                          (to-c-name arena variant-name))))))
                                 (sexpr-to-c-typed arena quoted prefix types)))
                             ((none) "0"))
                           "0"))
@@ -263,7 +308,7 @@
                                   (string-concat arena (sexpr-to-c-typed arena obj prefix types)
                                     (string-concat arena "."
                                       (if (sexpr-is-symbol field)
-                                        (convert-symbol-to-c arena (sexpr-get-symbol-name field))
+                                        (to-c-name arena (sexpr-get-symbol-name field))
                                         (sexpr-to-c-typed arena field prefix types)))))
                                 ((none) "0")))
                             ((none) "0"))
@@ -316,7 +361,7 @@
     (@alloc arena)
     ;; Output: (TypeName){.tag = TypeName_variant, .data.variant = inner}
     (let ((c-name (. (deref union-entry) c-name))
-          (c-variant (convert-symbol-to-c arena variant-name)))
+          (c-variant (to-c-name arena variant-name)))
       ;; Build tag constant: TypeName_variant (e.g., rdf_Term_iri)
       (let ((tag-value (string-concat arena c-name
                          (string-concat arena "_" c-variant))))
@@ -545,7 +590,8 @@
           ((none) "(void)0")
           ((some head)
             (let ((fn-name (if (sexpr-is-symbol head)
-                              (convert-symbol-to-c arena (sexpr-get-symbol-name head))
+                              ;; Prefix function name with appropriate module
+                              (prefix-symbol arena (sexpr-get-symbol-name head) prefix types)
                               "unknown")))
               (let ((args-str (emit-args-typed arena items 1 prefix types)))
                 (string-concat arena fn-name
@@ -614,12 +660,12 @@
             ((string-eq name "nil") "NULL")
             ((string-eq name "none") "none")
             ;; Quoted symbol starting with '
-            ((string-starts-with name "'")
+            ((starts-with name "'")
               ;; Handle enum variant: 'variant -> prefix_EnumType_variant
               ;; For now, just strip the quote and convert dashes
-              (convert-symbol-to-c arena (emit-emit-string-slice arena name 1 (cast Int (. name len)))))
+              (to-c-name arena (substring arena name 1 (cast (Int 0 ..) (- (cast Int (. name len)) 1)))))
             (else
-              (convert-symbol-to-c arena name)))))
+              (to-c-name arena name)))))
 
       ;; List: could be function call, operator, or constructor
       ((lst lst)
@@ -676,7 +722,7 @@
                                 (let ((name (sexpr-get-symbol-name quoted)))
                                   (string-concat arena prefix
                                     (string-concat arena "_"
-                                      (convert-symbol-to-c arena name))))
+                                      (to-c-name arena name))))
                                 (sexpr-to-c arena quoted prefix)))
                             ((none) "0"))
                           "0"))
@@ -718,7 +764,7 @@
                                   (string-concat arena (sexpr-to-c arena obj prefix)
                                     (string-concat arena "."
                                       (if (sexpr-is-symbol field)
-                                        (convert-symbol-to-c arena (sexpr-get-symbol-name field))
+                                        (to-c-name arena (sexpr-get-symbol-name field))
                                         (sexpr-to-c arena field prefix)))))
                                 ((none) "0")))
                             ((none) "0"))
@@ -785,7 +831,7 @@
           ((none) "(void)0")
           ((some head)
             (let ((fn-name (if (sexpr-is-symbol head)
-                              (convert-symbol-to-c arena (sexpr-get-symbol-name head))
+                              (to-c-name arena (sexpr-get-symbol-name head))
                               "unknown")))
               ;; Build args
               (let ((args-str (emit-args arena items 1 prefix)))
@@ -827,21 +873,6 @@
   ;; String Utility Functions
   ;; ============================================================
 
-  (fn convert-symbol-to-c ((arena Arena) (name String))
-    (@intent "Convert SLOP symbol name to C identifier (replace - with _)")
-    (@spec ((Arena String) -> String))
-    (@alloc arena)
-    (let ((len (cast Int (. name len)))
-          (buf (cast (Ptr U8) (arena-alloc arena (+ len 1))))
-          (mut i 0))
-      (while (< i len)
-        (let ((c (@ (. name data) i)))
-          (if (== c 45)  ;; '-'
-            (set! (@ buf i) 95)  ;; '_'
-            (set! (@ buf i) c)))
-        (set! i (+ i 1)))
-      (set! (@ buf len) 0)
-      (String buf (. name len))))
 
   (fn escape-string ((arena Arena) (s String))
     (@intent "Escape string for C string literal")
@@ -888,39 +919,6 @@
       (set! (@ buf out) 0)
       (String buf (cast U64 out))))
 
-  (fn string-starts-with ((s String) (prefix String))
-    (@intent "Check if string starts with prefix")
-    (@spec ((String String) -> Bool))
-    (@pure)
-    (let ((s-len (cast Int (. s len)))
-          (p-len (cast Int (. prefix len))))
-      (if (< s-len p-len)
-        false
-        (let ((mut i 0)
-              (mut matches true))
-          (while (and (< i p-len) matches)
-            (when (!= (@ (. s data) i) (@ (. prefix data) i))
-              (set! matches false))
-            (set! i (+ i 1)))
-          matches))))
-
-  (fn emit-emit-string-slice ((arena Arena) (s String) (start Int) (end Int))
-    (@intent "Get substring from start to end (exclusive)")
-    (@spec ((Arena String Int Int) -> String))
-    (@alloc arena)
-    (let ((s-len (cast Int (. s len)))
-          (actual-start (if (< start 0) 0 start))
-          (actual-end (if (> end s-len) s-len end)))
-      (if (>= actual-start actual-end)
-        ""
-        (let ((new-len (- actual-end actual-start))
-              (buf (cast (Ptr U8) (arena-alloc arena (+ new-len 1))))
-              (mut i 0))
-          (while (< i new-len)
-            (set! (@ buf i) (@ (. s data) (+ actual-start i)))
-            (set! i (+ i 1)))
-          (set! (@ buf new-len) 0)
-          (String buf (cast U64 new-len))))))
 
   ;; ============================================================
   ;; Test Harness Generation (Type-Aware Version)
@@ -928,9 +926,9 @@
 
   (fn emit-test-harness-typed ((arena Arena) (tests (List (Ptr TestCase)))
                                 (module-prefix String) (types (Ptr TypeRegistry))
-                                (imports (List String)))
+                                (imports (List ImportEntry)))
     (@intent "Generate complete C test harness code with type awareness")
-    (@spec ((Arena (List (Ptr TestCase)) String (Ptr TypeRegistry) (List String)) -> (List String)))
+    (@spec ((Arena (List (Ptr TestCase)) String (Ptr TypeRegistry) (List ImportEntry)) -> (List String)))
     (@alloc arena)
     (let ((ctx (emit-ctx-new-typed arena types)))
       ;; Header comment
@@ -943,13 +941,13 @@
       (emit ctx "#include <stdio.h>")
       (emit ctx "#include <string.h>")
       (emit ctx "#include <math.h>")
-      ;; Emit dependency includes (like transpiler's emit-header-dependency-includes)
+      ;; Emit dependency includes from import entries
       (let ((import-count (list-len imports))
             (mut j 0))
         (while (< j import-count)
           (match (list-get imports j)
-            ((some mod-name)
-              (let ((c-name (to-c-name arena mod-name)))
+            ((some entry)
+              (let ((c-name (to-c-name arena (. entry module-name))))
                 (emit ctx (string-concat arena "#include \"slop_"
                             (string-concat arena c-name ".h\"")))))
             ((none) (do)))
@@ -1332,10 +1330,10 @@
     (@intent "Build C function name with module prefix if needed")
     (@spec ((Arena String (Option String) String) -> String))
     (@alloc arena)
-    (let ((c-name (convert-symbol-to-c arena fn-name)))
+    (let ((c-name (to-c-name arena fn-name)))
       (match module-name
         ((some mod)
-          (string-concat arena (convert-symbol-to-c arena mod)
+          (string-concat arena (to-c-name arena mod)
             (string-concat arena "_" c-name)))
         ((none)
           ;; Still apply prefix if provided (for cases without module)
@@ -1431,21 +1429,56 @@
               "%s"
               "\"none\"")
             (if (is-some-value expected)
-              (let ((inner-expected (get-some-inner-typed arena expected prefix types)))
-                (if (contains ret-type-str "String")
-                  (CompareInfo
-                    (string-concat arena "result.has_value && slop_string_eq(result.value, "
-                      (string-concat arena inner-expected ")"))
-                    "%s"
-                    "result.has_value ? \"some(...)\" : \"none\""
-                    "%s"
-                    "\"some(...)\"")
-                  (CompareInfo
-                    (string-concat arena "result.has_value && result.value == " inner-expected)
-                    "%s"
-                    "result.has_value ? \"some(...)\" : \"none\""
-                    "%s"
-                    "\"some(...)\"")))
+              (let ((inner-expected (get-some-inner-typed arena expected prefix types))
+                    (inner-expr (get-some-inner-expr expected)))
+                (cond
+                  ;; String comparison
+                  ((contains ret-type-str "String")
+                   (CompareInfo
+                     (string-concat arena "result.has_value && slop_string_eq(result.value, "
+                       (string-concat arena inner-expected ")"))
+                     "%s"
+                     "result.has_value ? \"some(...)\" : \"none\""
+                     "%s"
+                     "\"some(...)\""))
+                  ;; Record type - use field-by-field comparison
+                  ((is-record-constructor-typed inner-expr types)
+                   (let ((record-name (get-record-name-from-expr inner-expr))
+                         (field-values (get-record-field-values arena inner-expr)))
+                     (match (registry-get-record-fields types record-name)
+                       ((some fields)
+                        (let ((expected-var-name "expected_value")
+                              (compare-expr (build-record-field-comparisons-with-values
+                                              arena fields field-values "result.value" expected-var-name)))
+                          (CompareInfo
+                            (string-concat arena "({ typeof(result.value) "
+                              (string-concat arena expected-var-name
+                                (string-concat arena " = "
+                                  (string-concat arena inner-expected
+                                    (string-concat arena "; result.has_value && "
+                                      (string-concat arena compare-expr "; })"))))))
+                            "%s"
+                            "result.has_value ? \"some(...)\" : \"none\""
+                            "%s"
+                            "\"some(...)\"")))
+                       ((none)
+                        ;; Fallback to memcmp
+                        (CompareInfo
+                          (string-concat arena "({ typeof(result.value) expected_value = "
+                            (string-concat arena inner-expected
+                              "; result.has_value && memcmp(&result.value, &expected_value, sizeof(result.value)) == 0; })"))
+                          "%s"
+                          "result.has_value ? \"some(...)\" : \"none\""
+                          "%s"
+                          "\"some(...)\"")))))
+                  ;; Default: direct comparison for primitives
+                  (else
+                   (CompareInfo
+                     (string-concat arena "result.has_value && result.value == " inner-expected)
+                     "%s"
+                     "result.has_value ? \"some(...)\" : \"none\""
+                     "%s"
+                     "\"some(...)\""))))
               (let ((c-expected (sexpr-to-c-typed arena expected prefix types)))
                 (CompareInfo
                   (string-concat arena "result == " c-expected)
@@ -1463,7 +1496,7 @@
                   ;; Compare union tag and specific variant field (not memcmp to avoid padding issues)
                   (let ((expected-var "expected_ok")
                         (variant-name (get-union-variant-name inner-expr))
-                        (c-variant (convert-symbol-to-c arena variant-name))
+                        (c-variant (to-c-name arena variant-name))
                         (is-string-variant (contains (to-lower arena variant-name) "string")))
                     (CompareInfo
                       (let ((parts (list-new arena String)))
@@ -1513,7 +1546,7 @@
                     ;; Compare union tag and specific variant field (not memcmp to avoid padding issues)
                     (let ((expected-var "expected_err")
                           (variant-name (get-union-variant-name inner-expr))
-                          (c-variant (convert-symbol-to-c arena variant-name))
+                          (c-variant (to-c-name arena variant-name))
                           (is-string-variant (contains (to-lower arena variant-name) "string")))
                       (CompareInfo
                         (let ((parts (list-new arena String)))
@@ -1626,12 +1659,13 @@
     (@alloc arena)
     ;; Extract record type name from expected expression (first symbol)
     (let ((record-name (get-record-name-from-expr expected))
-          (c-expected (sexpr-to-c-typed arena expected prefix types)))
+          (c-expected (sexpr-to-c-typed arena expected prefix types))
+          (field-values (get-record-field-values arena expected)))
       (match (registry-get-record-fields types record-name)
         ((some fields)
-          ;; Build field-by-field comparison
+          ;; Build field-by-field comparison, skipping wildcards
           (let ((expected-var-name "expected_value")
-                (compare-expr (build-record-field-comparisons arena fields prefix expected-var-name)))
+                (compare-expr (build-record-field-comparisons-with-values arena fields field-values prefix expected-var-name)))
             (CompareInfo
               (string-concat arena "({ typeof(result) "
                 (string-concat arena expected-var-name
@@ -1675,6 +1709,93 @@
                   ""))
               ((none) "")))))
       (_ "")))
+
+  (fn get-record-field-values ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Extract field values from record constructor (RecordType val1 val2 ...)")
+    (@spec ((Arena (Ptr SExpr)) -> (List (Ptr SExpr))))
+    (@alloc arena)
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          ;; Return items[1..] (skip the type name)
+          (if (< len 2)
+            items  ;; Return empty or single-element list as-is
+            (let ((result (list-new arena (Ptr SExpr)))
+                  (mut i 1))
+              (while (< i len)
+                (match (list-get items i)
+                  ((some val) (list-push result val))
+                  ((none) (do)))
+                (set! i (+ i 1)))
+              result))))
+      (_ (list-new arena (Ptr SExpr)))))
+
+  (fn is-wildcard-expr ((expr (Ptr SExpr)))
+    (@intent "Check if expression is the wildcard symbol _")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((sym sym) (string-eq (. sym name) "_"))
+      (_ false)))
+
+  (fn build-record-field-comparisons-with-values ((arena Arena) (fields (List FieldEntry))
+                                                   (field-values (List (Ptr SExpr)))
+                                                   (result-accessor String) (expected-var String))
+    (@intent "Build comparison expressions for record fields, skipping wildcards")
+    (@spec ((Arena (List FieldEntry) (List (Ptr SExpr)) String String) -> String))
+    (@alloc arena)
+    ;; result-accessor: e.g., "result" or "result.value" for Options
+    (let ((len (list-len fields))
+          (mut comp-result "1")  ;; Start with true
+          (mut i 0))
+      (while (< i len)
+        (match (list-get fields i)
+          ((some field)
+            ;; Check if this field's value is a wildcard
+            (let ((is-wildcard (match (list-get field-values i)
+                                ((some val) (is-wildcard-expr val))
+                                ((none) false))))
+              (when (not is-wildcard)
+                (let ((fname (. field name))
+                      (ftype (. field type-name))
+                      (field-cmp (build-single-field-comparison-with-accessor arena fname ftype result-accessor expected-var)))
+                  (set! comp-result (string-concat arena comp-result
+                                      (string-concat arena " && " field-cmp)))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      comp-result))
+
+  (fn build-single-field-comparison-with-accessor ((arena Arena) (fname String) (ftype String)
+                                                    (result-accessor String) (expected-var String))
+    (@intent "Build comparison for a single record field with custom result accessor")
+    (@spec ((Arena String String String String) -> String))
+    (@alloc arena)
+    ;; Check field type and generate appropriate comparison
+    (if (contains ftype "List")
+      ;; For List fields, compare lengths
+      (string-concat arena result-accessor
+        (string-concat arena "."
+          (string-concat arena fname
+            (string-concat arena ".len == "
+              (string-concat arena expected-var
+                (string-concat arena "." (string-concat arena fname ".len")))))))
+      (if (contains ftype "String")
+        ;; For String fields, use slop_string_eq
+        (string-concat arena "slop_string_eq("
+          (string-concat arena result-accessor
+            (string-concat arena "."
+              (string-concat arena fname
+                (string-concat arena ", "
+                  (string-concat arena expected-var
+                    (string-concat arena "." (string-concat arena fname ")"))))))))
+        ;; For other fields (Int, Bool, etc), use ==
+        (string-concat arena result-accessor
+          (string-concat arena "."
+            (string-concat arena fname
+              (string-concat arena " == "
+                (string-concat arena expected-var
+                  (string-concat arena "." fname)))))))))
 
   (fn build-record-field-comparisons ((arena Arena) (fields (List FieldEntry)) (prefix String) (expected-var String))
     (@intent "Build comparison expressions for all record fields")
@@ -1853,7 +1974,7 @@
       ((sym sym)
         (let ((name (. sym name)))
           ;; Check for quoted symbol
-          (if (string-starts-with name "'")
+          (if (starts-with name "'")
             (let ((variant-name (emit-string-slice name 1)))
               (match (registry-lookup-enum-value types variant-name)
                 ((some _) true)
@@ -1934,6 +2055,20 @@
     (@alloc arena)
     (get-some-inner-typed arena expr prefix types))
 
+  (fn get-some-inner-expr ((expected (Ptr SExpr)))
+    (@intent "Get inner expression from (some val) for type checking")
+    (@spec (((Ptr SExpr)) -> (Ptr SExpr)))
+    (@pure)
+    (match (deref expected)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (> (list-len items) 1)
+            (match (list-get items 1)
+              ((some inner) inner)
+              ((none) expected))
+            expected)))
+      (_ expected)))
+
   (fn get-error-inner-typed ((arena Arena) (expr (Ptr SExpr)) (prefix String) (types TypeRegistry))
     (@intent "Get inner value from (error val) with type awareness")
     (@spec ((Arena (Ptr SExpr) String TypeRegistry) -> String))
@@ -1961,31 +2096,42 @@
     (match (deref expected)
       ((lst lst)
         (let ((elements (. lst items))
-              (elem-count (list-len elements)))
-          (if (== elem-count 0)
-            (CompareInfo
-              "result.len == 0"
-              "len=%lld"
-              "(long long)result.len"
-              "len=%lld"
-              "0LL")
-            (let ((mut arr-init "{")
-                  (mut i 0)
-                  (mut first true))
-              (while (< i elem-count)
-                (match (list-get elements i)
-                  ((some elem)
-                    (let ((elem-c (sexpr-to-c-typed arena elem prefix types)))
-                      (if first
-                        (do
-                          (set! arr-init (string-concat arena arr-init elem-c))
-                          (set! first false))
-                        (set! arr-init (string-concat arena arr-init
-                                         (string-concat arena ", " elem-c))))))
-                  ((none) (do)))
-                (set! i (+ i 1)))
-              (set! arr-init (string-concat arena arr-init "}"))
-              (let ((len-str (int-to-string arena elem-count))
+              (total-count (list-len elements)))
+          ;; Skip the first element if it's "list" keyword
+          ;; (list elem1 elem2) -> elements are [list, elem1, elem2], we want [elem1, elem2]
+          (let ((start-idx (if (and (> total-count 0)
+                                    (match (list-get elements 0)
+                                      ((some first-elem)
+                                        (and (sexpr-is-symbol first-elem)
+                                             (string-eq (sexpr-get-symbol-name first-elem) "list")))
+                                      ((none) false)))
+                             1  ;; Skip "list" keyword
+                             0))
+                (elem-count (- total-count start-idx)))
+            (if (== elem-count 0)
+              (CompareInfo
+                "result.len == 0"
+                "len=%lld"
+                "(long long)result.len"
+                "len=%lld"
+                "0LL")
+              (let ((mut arr-init "{")
+                    (mut i start-idx)
+                    (mut first true))
+                (while (< i total-count)
+                  (match (list-get elements i)
+                    ((some elem)
+                      (let ((elem-c (sexpr-to-c-typed arena elem prefix types)))
+                        (if first
+                          (do
+                            (set! arr-init (string-concat arena arr-init elem-c))
+                            (set! first false))
+                          (set! arr-init (string-concat arena arr-init
+                                           (string-concat arena ", " elem-c))))))
+                    ((none) (do)))
+                  (set! i (+ i 1)))
+                (set! arr-init (string-concat arena arr-init "}"))
+                (let ((len-str (int-to-string arena elem-count))
                     (cmp-expr (string-concat arena "(result.len == "
                                 (string-concat arena len-str
                                   (string-concat arena " && memcmp(result.data, (typeof(*result.data)[])"
@@ -1997,7 +2143,7 @@
                   "len=%lld"
                   "(long long)result.len"
                   "len=%lld"
-                  (string-concat arena "(long long)" len-str)))))))
+                  (string-concat arena "(long long)" len-str))))))))
       (_ (CompareInfo
            "result.len == 0"
            "len=%lld"

@@ -305,12 +305,15 @@ class VerifyConfig:
     pattern: str = "*.slop"  # File pattern for directories
     exclude: list = None  # Directories/patterns to exclude
     timeout: int = 5000  # Z3 timeout per file in ms
+    include: list = None  # Include paths for module imports
 
     def __post_init__(self):
         if self.sources is None:
             self.sources = []
         if self.exclude is None:
             self.exclude = []
+        if self.include is None:
+            self.include = []
 
 
 def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Optional[BuildConfig], Optional[TestConfig], Optional[VerifyConfig]]:
@@ -373,6 +376,7 @@ def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Opti
         pattern=verify_data.get('pattern', '*.slop'),
         exclude=verify_data.get('exclude', []),
         timeout=verify_data.get('timeout', 5000),
+        include=verify_data.get('include', []),
     ) if verify_data else None
 
     return project, build, test_config, verify_config

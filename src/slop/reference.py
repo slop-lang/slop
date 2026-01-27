@@ -183,6 +183,97 @@ Transpiler emits both the clean name and a #define alias.
 (@requires category :prompt "..." ...)  ; Dependency requirements
 """,
 
+    'verification': """## Verification (Z3 SMT Solver)
+
+The verifier uses Z3 to prove that functions satisfy their contracts.
+
+### Running Verification
+slop verify file.slop                   ; Verify a file
+slop verify file.slop -I path -v        ; With includes, verbose
+
+### What the Verifier Can Prove
+
+#### 1. String Literal Lengths
+(fn error-code ((arena Arena))
+  (@spec ((Arena) -> String))
+  (@post {(> (string-len $result) 0)})  ; PASSES: "error" has length 5
+  "error")
+
+#### 2. Pure Function Inlining
+Functions marked @pure with single-expression bodies are inlined:
+
+(fn iri-eq ((a IRI) (b IRI))
+  (@pure)
+  (@spec ((IRI IRI) -> Bool))
+  (string-eq (. a value) (. b value)))  ; Inlined during verification
+
+; When verifying (iri-eq x y), the verifier expands to (string-eq (. x value) (. y value))
+
+#### 3. Postcondition Propagation
+When calling a function, its postconditions become axioms:
+
+(fn make-delta ((arena Arena) (iteration Int))
+  (@spec ((Arena Int) -> (Ptr Delta)))
+  (@post {(. $result iteration) == iteration})  ; Postcondition
+  ...)
+
+(fn use-delta ((arena Arena))
+  (let ((d (make-delta arena 5)))
+    ; Verifier knows: d.iteration == 5 (from make-delta's postcondition)
+    ...))
+
+### Function Inlining Criteria
+A function is inlined if ALL of these are true:
+1. Marked with @pure
+2. Body is a single expression (no let, do, if, match, for-each)
+3. Not recursive
+
+### When to Use @assume
+Use @assume for properties the verifier cannot deduce:
+
+(fn count-items ((items (List Item)))
+  (@spec (((List Item)) -> Int))
+  (@post {(>= $result 0)})               ; Want to prove this
+  (@assume {(>= (list-len items) 0)})    ; Verifier needs this hint
+  (list-len items))
+
+Common uses:
+- Loop invariants: Properties preserved through iterations
+- FFI properties: External function behavior
+- Collection bounds: List/array length properties
+- Algebraic identities: Mathematical properties
+
+### When to Use @trusted
+Skip verification entirely for functions that cannot be verified:
+
+(fn platform-random ((arena Arena))
+  (@trusted)                             ; Skip verification
+  (@spec ((Arena) -> Int))
+  (ffi-call "random"))
+
+Use @trusted for:
+- FFI wrappers with unprovable contracts
+- Performance-critical code verified manually
+- Platform-specific implementations
+
+### Verification Limitations
+The verifier CANNOT prove:
+- Loop-dependent properties (use @loop-invariant)
+- Quantified predicates over collections
+- Complex recursive function properties
+- Properties requiring induction
+
+### Example: Fully Verified Function
+(fn increment-counter ((mut counter Int))
+  (@intent "Add 1 to counter, clamped to 100")
+  (@spec (((Int 0 .. 100)) -> (Int 0 .. 100)))
+  (@pre {(>= counter 0)})
+  (@pre {(<= counter 100)})
+  (@post {(>= $result counter)})         ; Result >= input
+  (@post {(<= $result 100)})             ; Result <= 100
+  (if (< counter 100) (+ counter 1) 100))
+""",
+
     'holes': """## Holes (LLM Generation Points)
 
 Holes support two modes: generation (new code) and refactoring (improve existing code).
@@ -315,12 +406,15 @@ Use only at FFI boundaries. For general code, use `U8` or `String`.
 (cast Type expr)                 ; Cast expression to Type
 """,
 
-    'stdlib': """## Standard Library
+    'builtins': """## Builtins
+
+Language primitives that are always available without imports.
 
 ### Memory
 (arena-new size) -> Arena
 (arena-alloc arena size) -> (Ptr U8)
 (arena-free arena) -> Unit
+(with-arena size body) -> T              ; Scoped arena, auto-freed
 
 ### Strings
 (string-new arena cstr) -> String
@@ -357,26 +451,44 @@ Use only at FFI boundaries. For general code, use `U8` or `String`.
 (unwrap r) -> T                          ; Panics on error
 
 ### I/O
-(print val) -> Unit                          ; Print to stdout (no newline)
-(println val) -> Unit                        ; Print to stdout with newline
-(file-read path) -> (Result String IoError)
-(file-write path content) -> (Result Unit IoError)
+(print val) -> Unit                      ; Print to stdout (no newline)
+(println val) -> Unit                    ; Print to stdout with newline
 
 ### Time
 (now-ms) -> (Int 0 ..)
 (sleep-ms ms) -> Unit
+""",
 
-### Concurrency (import thread, link -lpthread)
-(import thread (chan chan-buffered chan-close send recv try-recv spawn join))
+    'stdlib': """## Standard Library Modules
 
-(chan arena) -> (Ptr (Chan T))              ; Unbuffered channel
-(chan-buffered arena cap) -> (Ptr (Chan T)) ; Buffered channel
-(chan-close ch) -> Unit                     ; Close channel
-(send ch val) -> (Result Unit ChanError)    ; Blocking send
-(recv ch) -> (Result T ChanError)           ; Blocking receive
-(try-recv ch) -> (Result T ChanError)       ; Non-blocking receive
-(spawn arena func) -> (Ptr (Thread T))      ; Spawn thread
-(join thread) -> T                          ; Wait and get result
+Use `slop ref <module>` for detailed documentation, or `slop doc <path>`.
+
+| Module    | Description                      | Import                          |
+|-----------|----------------------------------|---------------------------------|
+| strlib    | String manipulation              | `(import strlib (...))`         |
+| mathlib   | Math functions and constants     | `(import mathlib (...))`        |
+| file      | File I/O operations              | `(import file (...))`           |
+| thread    | Concurrency primitives           | `(import thread (...))`         |
+| env       | Environment variables            | `(import env (...))`            |
+| path      | Path manipulation                | `(import path (...))`           |
+
+### Example Usage
+
+```lisp
+(module my-app
+  (import strlib (starts-with trim))
+  (import file (read-file write-file))
+
+  (fn main ()
+    (@intent "Process a file")
+    (@spec (() -> Int))
+    ...))
+```
+
+### See Also
+
+- `slop ref builtins` - Language primitives (always available, no import needed)
+- `slop doc lib/std/<module>/<module>.slop` - Full module documentation
 """,
 
     'expressions': """## Expressions
@@ -623,6 +735,7 @@ TOPIC_ORDER = [
     'holes',
     'memory',
     'ffi',
+    'builtins',
     'stdlib',
     'expressions',
     'patterns',

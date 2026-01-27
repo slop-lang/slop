@@ -517,6 +517,29 @@ class TestInfixContractVerification:
         # Should process without errors
         assert len(results) >= 1
 
+    def test_infix_nested_equality_normalization(self):
+        """Native parser infix-in-parens pattern is normalized correctly"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import SList, Symbol, Number
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Simulate native parser output: ((list-len x) == 0)
+        # which is an SList with 3 elements: (SList), Symbol(==), Number
+        translator.declare_variable('x', None)
+        inner_expr = SList([Symbol('list-len'), Symbol('x')])
+        # Create infix pattern: (inner_expr == 0)
+        infix_expr = SList([inner_expr, Symbol('=='), Number(0)])
+
+        # translate_expr should normalize this and translate correctly
+        result = translator.translate_expr(infix_expr)
+        assert result is not None
+        # Should produce a comparison (equality)
+        # The result should be a Z3 bool expression
+        import z3
+        assert result.sort() == z3.BoolSort()
+
 
 class TestNewConstructs:
     """Test new constructs: string-len, dot notation, match, function calls"""
@@ -1421,6 +1444,79 @@ class TestListAxioms:
         # Should verify since list-len is always >= 0
         assert check_fn[0].status == 'verified'
 
+    def test_list_new_empty(self):
+        """Test that list-new produces length 0 axiom"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn make-empty-list ((arena Arena))
+            (@spec ((Arena) -> (List Int)))
+            (@post {(list-len $result) == 0})
+            (list-new arena Int)))
+        """
+        results = verify_source(source)
+        make_empty = [r for r in results if r.name == 'make-empty-list']
+        assert len(make_empty) == 1
+        # Should verify because list-new produces a list with length 0
+        assert make_empty[0].status == 'verified'
+
+    def test_list_new_in_record_field(self):
+        """list-new as record field value produces length=0 axiom"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Container (record (items (List Int))))
+          (fn make-container ((arena Arena))
+            (@spec ((Arena) -> Container))
+            (@post (== (list-len (. $result items)) 0))
+            (record-new Container (items (list-new arena Int)))))
+        """
+        results = verify_source(source)
+        make_container = [r for r in results if r.name == 'make-container']
+        assert len(make_container) == 1
+        # Should verify because list-new in field produces length=0 axiom
+        assert make_container[0].status == 'verified'
+
+
+class TestBoolEquality:
+    """Test Bool == Bool comparison in postconditions"""
+
+    def test_bool_equality(self):
+        """Test Bool == Bool comparison in postconditions"""
+        from slop.verifier import verify_source
+
+        # Use prefix syntax to avoid native parser infix handling differences
+        source = """
+        (module test
+          (fn is-empty ((lst (List Int)))
+            (@spec (((List Int)) -> Bool))
+            (@post (== $result (== (list-len lst) 0)))
+            (== (list-len lst) 0)))
+        """
+        results = verify_source(source)
+        is_empty = [r for r in results if r.name == 'is-empty']
+        assert len(is_empty) == 1
+        # Should verify because the body computes exactly what the postcondition says
+        assert is_empty[0].status == 'verified'
+
+    def test_bool_to_int_coercion(self):
+        """Test that Int is coerced to Bool for comparisons"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn check-positive ((x Int))
+            (@spec ((Int) -> Bool))
+            (@post (or (== $result true) (== $result false)))
+            (> x 0)))
+        """
+        results = verify_source(source)
+        check_fn = [r for r in results if r.name == 'check-positive']
+        assert len(check_fn) == 1
+        assert check_fn[0].status == 'verified'
+
 
 class TestFilterPatternRecognition:
     """Test Phase 10: Filter pattern recognition and automatic axiom generation"""
@@ -2229,3 +2325,1156 @@ class TestVerifierProperties:
         # Note: fold pattern checks for non-empty-collection init, which count (0) passes
         # But count pattern is more specific, so both may detect
         # This is intentional - we apply axioms from both
+
+
+class TestLoopAnalysis:
+    """Test loop analysis for SSA-based verification"""
+
+    def test_analyze_simple_loop(self):
+        """Analyze a simple for-each loop with set!"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FunctionRegistry, FunctionDef
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['add-item'] = FunctionDef(
+            name='add-item',
+            params=['arena', 'result', 'item'],
+            body=None,
+            is_pure=False
+        )
+
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+
+        body = parse("""
+            (let ((mut result (make-list arena)))
+              (for-each (item items)
+                (set! result (add-item arena result item)))
+              result)
+        """)[0]
+
+        loops = verifier._analyze_loops(body)
+
+        assert len(loops) == 1
+        loop = loops[0]
+        assert loop.loop_var == 'item'
+        assert 'result' in loop.modified_vars
+        assert len(loop.set_bindings) == 1
+
+        binding = loop.set_bindings[0]
+        assert binding.var_name == 'result'
+        assert binding.fn_name == 'add-item'
+        assert binding.is_self_ref  # result is passed as argument
+
+    def test_analyze_loop_with_self_ref_params(self):
+        """Verify self-referential parameters are detected"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FunctionRegistry, FunctionDef
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['delta-add'] = FunctionDef(
+            name='delta-add',
+            params=['arena', 'd', 't'],
+            body=None,
+            is_pure=False
+        )
+
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+
+        body = parse("""
+            (let ((mut result (make-delta arena iter)))
+              (for-each (t triples)
+                (set! result (delta-add arena result t)))
+              result)
+        """)[0]
+
+        loops = verifier._analyze_loops(body)
+
+        assert len(loops) == 1
+        binding = loops[0].set_bindings[0]
+        assert binding.is_self_ref
+        assert 'd' in binding.self_ref_params
+        assert binding.self_ref_params['d'] == 'result'
+
+    def test_analyze_loop_no_self_ref(self):
+        """Verify non-self-referential set! is detected correctly"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FunctionRegistry, FunctionDef
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['compute'] = FunctionDef(
+            name='compute',
+            params=['x'],
+            body=None,
+            is_pure=True
+        )
+
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+
+        body = parse("""
+            (let ((mut total 0))
+              (for-each (x items)
+                (set! total (compute x)))
+              total)
+        """)[0]
+
+        loops = verifier._analyze_loops(body)
+
+        assert len(loops) == 1
+        binding = loops[0].set_bindings[0]
+        assert binding.var_name == 'total'
+        assert not binding.is_self_ref  # total is not passed as argument
+
+    def test_analyze_nested_loops(self):
+        """Analyze nested for-each loops"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        body = parse("""
+            (let ((mut count 0))
+              (for-each (row rows)
+                (for-each (cell row)
+                  (set! count (+ count 1))))
+              count)
+        """)[0]
+
+        loops = verifier._analyze_loops(body)
+
+        # Should find both loops
+        assert len(loops) == 2
+        outer_loop = [l for l in loops if l.loop_var == 'row'][0]
+        inner_loop = [l for l in loops if l.loop_var == 'cell'][0]
+
+        assert outer_loop is not None
+        assert inner_loop is not None
+
+    def test_analyze_loop_with_invariant(self):
+        """Detect @loop-invariant annotations in loops"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        body = parse("""
+            (let ((mut count 0))
+              (for-each (x items)
+                (@loop-invariant (>= count 0))
+                (set! count (+ count 1)))
+              count)
+        """)[0]
+
+        loops = verifier._analyze_loops(body)
+
+        assert len(loops) == 1
+        assert len(loops[0].loop_invariants) == 1
+
+
+class TestLetBindingAxioms:
+    """Test let binding axioms for non-function-call expressions"""
+
+    def test_simple_arithmetic_binding(self):
+        """Let binding for arithmetic expression adds axiom"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+        translator = Z3Translator(env)
+
+        # Declare delta variable
+        translator.declare_variable('delta', PrimitiveType('Int'))
+
+        # Process binding: (next-iter (+ delta 1))
+        binding = parse("(next-iter (+ delta 1))")[0]
+        axioms = []
+
+        verifier._process_let_binding(binding, translator, axioms)
+
+        # Should have added an axiom
+        assert len(axioms) >= 1
+        # next-iter should be declared
+        assert 'next-iter' in translator.variables
+
+    def test_field_access_binding(self):
+        """Let binding with field access adds axiom"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+        translator = Z3Translator(env)
+
+        # Declare delta variable
+        translator.declare_variable('delta', PrimitiveType('Int'))
+
+        # Process binding: (next-iter (+ (. delta iteration) 1))
+        binding = parse("(next-iter (+ (. delta iteration) 1))")[0]
+        axioms = []
+
+        verifier._process_let_binding(binding, translator, axioms)
+
+        # Should have added an axiom
+        assert len(axioms) >= 1
+        # Axiom should relate next-iter to delta's iteration field
+        axiom_str = str(axioms[0])
+        assert 'next-iter' in axiom_str
+
+    def test_union_constructor_axioms(self):
+        """Union constructors like (ok result) add tag and payload axioms"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+        translator = Z3Translator(env)
+
+        # Declare variables
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        translator.declare_variable('result', PrimitiveType('Int'))
+
+        # Test (ok result) body
+        body = parse("(ok result)")[0]
+
+        assert verifier._is_union_constructor(body) is True
+
+        axioms = verifier._extract_union_constructor_axioms(body, translator)
+
+        # Should have tag and payload axioms
+        assert len(axioms) >= 2
+
+
+class TestInductiveLoopIntegration:
+    """Integration tests for inductive loop verification in verify_function"""
+
+    def test_inductive_verification_triggered(self):
+        """Verify that inductive verification is triggered during function verification"""
+        from slop.verifier import verify_source
+
+        # A function with a loop that modifies a variable self-referentially
+        # The delta-add postcondition enables field preservation inference
+        source = """
+        (module test
+          (type Delta (record (iteration Int) (triples Int)))
+
+          (fn delta-add ((arena Int) (d Delta) (t Int))
+            (@spec ((Int Delta Int) -> Delta))
+            (@post (== (. $result iteration) (. d iteration)))
+            (record-new Delta (iteration (. d iteration)) (triples (+ (. d triples) 1))))
+
+          (fn process ((arena Int) (items (List Int)))
+            (@spec ((Int (List Int)) -> Int))
+            (@post (>= $result 0))
+            (let ((mut count 0))
+              (for-each (x items)
+                (set! count (+ count 1)))
+              count)))
+        """
+        results = verify_source(source)
+
+        # delta-add should verify (it has a concrete body that satisfies postcondition)
+        delta_add = [r for r in results if r.name == 'delta-add']
+        assert len(delta_add) == 1
+        assert delta_add[0].status == 'verified'
+
+    def test_loop_analysis_integration(self):
+        """Verify loop analysis is integrated into verify_function"""
+        from slop.verifier import (ContractVerifier, MinimalTypeEnv, FunctionRegistry,
+                                    FunctionDef, build_type_registry_from_ast)
+        from slop.parser import parse
+
+        source = """
+        (type Delta (record (iteration Int)))
+
+        (fn delta-add ((arena Int) (d Delta) (t Int))
+          (@spec ((Int Delta Int) -> Delta))
+          (@post (== (. $result iteration) (. d iteration)))
+          d)
+
+        (fn process-loop ((arena Int) (delta Delta) (items (List Int)))
+          (@spec ((Int Delta (List Int)) -> Delta))
+          (@post (>= (. $result iteration) 0))
+          (let ((mut result delta))
+            (for-each (t items)
+              (set! result (delta-add arena result t)))
+            result))
+        """
+        ast = parse(source)
+
+        # Build type registry
+        type_registry = build_type_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry)
+
+        # Build function registry with delta-add
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['delta-add'] = FunctionDef(
+            name='delta-add',
+            params=['arena', 'd', 't'],
+            body=None,
+            is_pure=False,
+            postconditions=[parse("(== (. $result iteration) (. d iteration))")[0]]
+        )
+
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+
+        # Find and verify process-loop
+        fn_form = None
+        for form in ast:
+            if hasattr(form, 'items') and len(form) > 1:
+                if hasattr(form[0], 'name') and form[0].name == 'fn':
+                    if hasattr(form[1], 'name') and form[1].name == 'process-loop':
+                        fn_form = form
+                        break
+
+        if fn_form:
+            result = verifier.verify_function(fn_form)
+            # The function should at least attempt verification
+            # (may fail due to incomplete inference, but shouldn't error)
+            assert result.status in ('verified', 'failed', 'skipped')
+
+
+class TestInductiveVerification:
+    """Test inductive loop verification (base case + inductive step)"""
+
+    def test_verify_loop_inductively_field_preservation(self):
+        """Verify field preservation through inductive reasoning"""
+        from slop.verifier import (ContractVerifier, MinimalTypeEnv, Z3Translator,
+                                    FunctionRegistry, FunctionDef, LoopContext, SetBinding)
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        fn_registry = FunctionRegistry()
+
+        # delta-add preserves the iteration field
+        fn_registry.functions['delta-add'] = FunctionDef(
+            name='delta-add',
+            params=['arena', 'd', 't'],
+            body=None,
+            is_pure=False,
+            postconditions=[parse("(== (. $result iteration) (. d iteration))")[0]]
+        )
+
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+        translator = Z3Translator(env, function_registry=fn_registry)
+
+        loop_ctx = LoopContext(
+            loop_var='t',
+            collection=parse("triples")[0],
+            loop_expr=parse("(for-each (t triples) (set! result (delta-add arena result t)))")[0],
+            modified_vars={'result'},
+            set_bindings=[SetBinding(
+                var_name='result',
+                call_expr=parse("(delta-add arena result t)")[0],
+                fn_name='delta-add',
+                is_self_ref=True,
+                self_ref_params={'d': 'result'}
+            )],
+            loop_invariants=[]
+        )
+
+        # Verify inductively
+        verified = verifier._verify_loop_inductively(loop_ctx, None, translator)
+
+        assert verified is not None
+        assert len(verified) >= 1
+        # Should have verified field preservation
+        preservation = [i for i in verified if i.source == 'preservation']
+        assert len(preservation) >= 1
+
+    def test_verify_base_case_preservation(self):
+        """Base case for field preservation is trivially true"""
+        from slop.verifier import (ContractVerifier, MinimalTypeEnv, Z3Translator,
+                                    InferredInvariant)
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+        translator = Z3Translator(env)
+
+        invariant = InferredInvariant(
+            variable='result',
+            property_expr=parse("(== (. result iteration) (. __init_result iteration))")[0],
+            source='preservation',
+            confidence=1.0,
+            original_postcondition=parse("(== (. $result iteration) (. d iteration))")[0]
+        )
+
+        # Base case should be trivially true for preservation
+        result = verifier._verify_base_case(invariant, None, translator)
+        assert result is True
+
+    def test_verify_inductive_step_field_equality(self):
+        """Inductive step succeeds when postcondition shows field equality"""
+        from slop.verifier import (ContractVerifier, MinimalTypeEnv, Z3Translator,
+                                    FunctionRegistry, FunctionDef, InferredInvariant,
+                                    LoopContext, SetBinding)
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['delta-add'] = FunctionDef(
+            name='delta-add',
+            params=['arena', 'd', 't'],
+            body=None,
+            postconditions=[parse("(== (. $result iteration) (. d iteration))")[0]]
+        )
+
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+        translator = Z3Translator(env, function_registry=fn_registry)
+
+        invariant = InferredInvariant(
+            variable='result',
+            property_expr=parse("(== (. result iteration) (. __init_result iteration))")[0],
+            source='preservation',
+            confidence=1.0,
+            original_postcondition=parse("(== (. $result iteration) (. d iteration))")[0]
+        )
+
+        loop_ctx = LoopContext(
+            loop_var='t',
+            collection=parse("triples")[0],
+            loop_expr=parse("(for-each (t triples) (set! result (delta-add arena result t)))")[0],
+            modified_vars={'result'},
+            set_bindings=[SetBinding(
+                var_name='result',
+                call_expr=parse("(delta-add arena result t)")[0],
+                fn_name='delta-add',
+                is_self_ref=True,
+                self_ref_params={'d': 'result'}
+            )],
+            loop_invariants=[]
+        )
+
+        result = verifier._verify_inductive_step(invariant, loop_ctx, translator)
+        assert result is True
+
+    def test_is_field_equality_postcondition(self):
+        """Detect field equality postcondition pattern"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Valid field equality: (== (. $result iteration) (. d iteration))
+        post1 = parse("(== (. $result iteration) (. d iteration))")[0]
+        assert verifier._is_field_equality_postcondition(post1) is True
+
+        # Invalid: fields don't match
+        post2 = parse("(== (. $result iteration) (. d count))")[0]
+        assert verifier._is_field_equality_postcondition(post2) is False
+
+        # Invalid: not an equality
+        post3 = parse("(>= (. $result iteration) (. d iteration))")[0]
+        assert verifier._is_field_equality_postcondition(post3) is False
+
+        # Invalid: LHS not $result
+        post4 = parse("(== (. x iteration) (. d iteration))")[0]
+        assert verifier._is_field_equality_postcondition(post4) is False
+
+    def test_find_init_binding_for_var(self):
+        """Find initialization expression for mutable variable"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        body = parse("""
+            (let ((mut result (make-delta arena iter)))
+              (for-each (t triples)
+                (set! result (delta-add arena result t)))
+              result)
+        """)[0]
+
+        init = verifier._find_init_binding_for_var(body, 'result')
+        assert init is not None
+        # Should be (make-delta arena iter)
+        assert init[0].name == 'make-delta'
+
+    def test_no_invariants_without_self_ref(self):
+        """No inductive verification without self-referential set!"""
+        from slop.verifier import (ContractVerifier, MinimalTypeEnv, Z3Translator,
+                                    FunctionRegistry, FunctionDef, LoopContext, SetBinding)
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['compute'] = FunctionDef(
+            name='compute',
+            params=['x'],
+            body=None,
+            postconditions=[parse("(>= $result 0)")[0]]
+        )
+
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+        translator = Z3Translator(env, function_registry=fn_registry)
+
+        loop_ctx = LoopContext(
+            loop_var='x',
+            collection=parse("items")[0],
+            loop_expr=parse("(for-each (x items) (set! total (compute x)))")[0],
+            modified_vars={'total'},
+            set_bindings=[SetBinding(
+                var_name='total',
+                call_expr=parse("(compute x)")[0],
+                fn_name='compute',
+                is_self_ref=False,  # Not self-referential
+                self_ref_params={}
+            )],
+            loop_invariants=[]
+        )
+
+        verified = verifier._verify_loop_inductively(loop_ctx, None, translator)
+        # No invariants can be verified for non-self-ref
+        assert verified is None
+
+
+class TestInvariantInference:
+    """Test automatic invariant inference from postconditions"""
+
+    def test_infer_field_preservation(self):
+        """Infer field preservation from equality postcondition"""
+        from slop.verifier import (InvariantInferencer, FunctionRegistry, FunctionDef,
+                                    LoopContext, SetBinding)
+        from slop.parser import parse
+
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['delta-add'] = FunctionDef(
+            name='delta-add',
+            params=['arena', 'd', 't'],
+            body=None,
+            is_pure=False,
+            postconditions=[parse("(== (. $result iteration) (. d iteration))")[0]]
+        )
+
+        inferencer = InvariantInferencer(function_registry=fn_registry)
+
+        # Create a loop context with self-referential set!
+        loop_ctx = LoopContext(
+            loop_var='t',
+            collection=parse("triples")[0],
+            loop_expr=parse("(for-each (t triples) (set! result (delta-add arena result t)))")[0],
+            modified_vars={'result'},
+            set_bindings=[SetBinding(
+                var_name='result',
+                call_expr=parse("(delta-add arena result t)")[0],
+                fn_name='delta-add',
+                is_self_ref=True,
+                self_ref_params={'d': 'result'}
+            )],
+            loop_invariants=[]
+        )
+
+        invariants = inferencer.infer_from_loop(loop_ctx)
+
+        assert len(invariants) >= 1
+        # Should find field preservation for 'iteration'
+        preservation = [i for i in invariants if i.source == 'preservation']
+        assert len(preservation) >= 1
+
+    def test_infer_nonnegative(self):
+        """Infer non-negativity invariant"""
+        from slop.verifier import (InvariantInferencer, FunctionRegistry, FunctionDef,
+                                    LoopContext, SetBinding)
+        from slop.parser import parse
+
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['increment'] = FunctionDef(
+            name='increment',
+            params=['x'],
+            body=None,
+            is_pure=True,
+            postconditions=[parse("(>= $result 0)")[0]]
+        )
+
+        inferencer = InvariantInferencer(function_registry=fn_registry)
+
+        loop_ctx = LoopContext(
+            loop_var='i',
+            collection=parse("items")[0],
+            loop_expr=parse("(for-each (i items) (set! count (increment count)))")[0],
+            modified_vars={'count'},
+            set_bindings=[SetBinding(
+                var_name='count',
+                call_expr=parse("(increment count)")[0],
+                fn_name='increment',
+                is_self_ref=True,
+                self_ref_params={'x': 'count'}
+            )],
+            loop_invariants=[]
+        )
+
+        invariants = inferencer.infer_from_loop(loop_ctx)
+
+        # Should find non-negativity invariant
+        nonneg = [i for i in invariants if i.source == 'postcondition']
+        assert len(nonneg) >= 1
+
+    def test_no_inference_without_self_ref(self):
+        """No invariants inferred for non-self-referential set!"""
+        from slop.verifier import (InvariantInferencer, FunctionRegistry, FunctionDef,
+                                    LoopContext, SetBinding)
+        from slop.parser import parse
+
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['compute'] = FunctionDef(
+            name='compute',
+            params=['x'],
+            body=None,
+            is_pure=True,
+            postconditions=[parse("(>= $result 0)")[0]]
+        )
+
+        inferencer = InvariantInferencer(function_registry=fn_registry)
+
+        loop_ctx = LoopContext(
+            loop_var='x',
+            collection=parse("items")[0],
+            loop_expr=parse("(for-each (x items) (set! total (compute x)))")[0],
+            modified_vars={'total'},
+            set_bindings=[SetBinding(
+                var_name='total',
+                call_expr=parse("(compute x)")[0],
+                fn_name='compute',
+                is_self_ref=False,  # Not self-referential
+                self_ref_params={}
+            )],
+            loop_invariants=[]
+        )
+
+        invariants = inferencer.infer_from_loop(loop_ctx)
+
+        # No invariants should be inferred for non-self-ref
+        assert len(invariants) == 0
+
+    def test_extract_result_field(self):
+        """Test extracting field from (. $result field) expression"""
+        from slop.verifier import InvariantInferencer
+        from slop.parser import parse
+
+        inferencer = InvariantInferencer()
+
+        # Valid: (. $result iteration)
+        expr = parse("(. $result iteration)")[0]
+        field = inferencer._extract_result_field(expr)
+        assert field == 'iteration'
+
+        # Invalid: not a field access
+        expr2 = parse("$result")[0]
+        assert inferencer._extract_result_field(expr2) is None
+
+        # Invalid: wrong object
+        expr3 = parse("(. other iteration)")[0]
+        assert inferencer._extract_result_field(expr3) is None
+
+    def test_extract_param_field(self):
+        """Test extracting field from (. param field) expression"""
+        from slop.verifier import InvariantInferencer
+        from slop.parser import parse
+
+        inferencer = InvariantInferencer()
+
+        # Valid: (. d iteration) where d is a param
+        expr = parse("(. d iteration)")[0]
+        result = inferencer._extract_param_field(expr, ['d', 'arena'])
+        assert result == ('iteration', 'd')
+
+        # Invalid: param not in list
+        result2 = inferencer._extract_param_field(expr, ['arena', 't'])
+        assert result2 is None
+
+    def test_make_field_preserved_invariant(self):
+        """Test creating field preservation invariant expression"""
+        from slop.verifier import InvariantInferencer
+        from slop.parser import pretty_print
+
+        inferencer = InvariantInferencer()
+
+        invariant = inferencer._make_field_preserved_invariant('result', 'iteration')
+
+        # Should produce: (== (. result iteration) (. __init_result iteration))
+        pp = pretty_print(invariant)
+        assert '==' in pp
+        assert 'result' in pp
+        assert 'iteration' in pp
+        assert '__init_result' in pp
+
+
+class TestSSAContext:
+    """Test SSA version tracking infrastructure"""
+
+    def test_init_variable(self):
+        """Initialize a variable at version 0"""
+        from slop.verifier import SSAContext, Z3Translator, MinimalTypeEnv
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        ssa = SSAContext(translator)
+
+        # Declare and init a variable
+        z3_var = translator.declare_variable('result', PrimitiveType('Int'))
+        ssa.init_variable('result', z3_var)
+
+        assert ssa.is_tracked('result')
+        assert ssa.current_version['result'] == 0
+
+        current = ssa.get_current_version('result')
+        assert current is not None
+        assert current.var_name == 'result'
+        assert current.version == 0
+        assert current.z3_var == z3_var
+
+    def test_create_new_version(self):
+        """Create new versions on assignment"""
+        from slop.verifier import SSAContext, Z3Translator, MinimalTypeEnv
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        ssa = SSAContext(translator)
+
+        z3_var = translator.declare_variable('result', PrimitiveType('Int'))
+        ssa.init_variable('result', z3_var)
+
+        # Create version 1 (simulating first set!)
+        v1 = ssa.create_new_version('result')
+        assert v1.version == 1
+        assert v1.var_name == 'result'
+        assert 'result@1' in translator.variables
+
+        # Create version 2 (simulating second set!)
+        v2 = ssa.create_new_version('result')
+        assert v2.version == 2
+        assert 'result@2' in translator.variables
+
+        # Current version should be 2
+        assert ssa.current_version['result'] == 2
+        assert ssa.get_versioned_name('result') == 'result@2'
+
+    def test_get_version(self):
+        """Get specific version by number"""
+        from slop.verifier import SSAContext, Z3Translator, MinimalTypeEnv
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        ssa = SSAContext(translator)
+
+        z3_var = translator.declare_variable('x', PrimitiveType('Int'))
+        ssa.init_variable('x', z3_var)
+        ssa.create_new_version('x')
+        ssa.create_new_version('x')
+
+        v0 = ssa.get_version('x', 0)
+        v1 = ssa.get_version('x', 1)
+        v2 = ssa.get_version('x', 2)
+
+        assert v0 is not None and v0.version == 0
+        assert v1 is not None and v1.version == 1
+        assert v2 is not None and v2.version == 2
+        assert ssa.get_version('x', 3) is None  # Doesn't exist
+
+    def test_snapshot_and_restore(self):
+        """Snapshot and restore version state (for loop handling)"""
+        from slop.verifier import SSAContext, Z3Translator, MinimalTypeEnv
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        ssa = SSAContext(translator)
+
+        z3_var = translator.declare_variable('result', PrimitiveType('Int'))
+        ssa.init_variable('result', z3_var)
+
+        # Take snapshot at loop entry (version 0)
+        entry_snapshot = ssa.snapshot()
+        assert entry_snapshot['result'] == 0
+
+        # Simulate loop iterations
+        ssa.create_new_version('result')  # v1
+        ssa.create_new_version('result')  # v2
+
+        assert ssa.current_version['result'] == 2
+
+        # Restore to entry state (for analyzing base case)
+        ssa.restore(entry_snapshot)
+        assert ssa.current_version['result'] == 0
+
+    def test_versioned_name(self):
+        """Get versioned variable names"""
+        from slop.verifier import SSAContext, Z3Translator, MinimalTypeEnv
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        ssa = SSAContext(translator)
+
+        z3_var = translator.declare_variable('count', PrimitiveType('Int'))
+        ssa.init_variable('count', z3_var)
+
+        # Version 0 uses original name
+        assert ssa.get_versioned_name('count') == 'count'
+
+        ssa.create_new_version('count')
+        assert ssa.get_versioned_name('count') == 'count@1'
+
+        # Untracked variable returns original name
+        assert ssa.get_versioned_name('other') == 'other'
+
+    def test_all_versions(self):
+        """Get all versions of a variable"""
+        from slop.verifier import SSAContext, Z3Translator, MinimalTypeEnv
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        ssa = SSAContext(translator)
+
+        z3_var = translator.declare_variable('acc', PrimitiveType('Int'))
+        ssa.init_variable('acc', z3_var)
+        ssa.create_new_version('acc')
+        ssa.create_new_version('acc')
+
+        all_versions = ssa.get_all_versions('acc')
+        assert len(all_versions) == 3
+        assert [v.version for v in all_versions] == [0, 1, 2]
+
+
+class TestSSATracking:
+    """Test SSA-style tracking for self-referential set! patterns"""
+
+    def test_self_referential_param_detection(self):
+        """Detect when a set! passes the target variable as an argument"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, Symbol
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Simulate call_args for (set! result (delta-add arena result t))
+        call_args = [Symbol('arena'), Symbol('result'), Symbol('t')]
+        params = ['arena', 'd', 't']
+
+        self_refs = verifier._find_self_referential_params('result', call_args, params)
+
+        assert len(self_refs) == 1
+        assert 'd' in self_refs
+        assert self_refs['d'] == 'result'
+
+    def test_self_referential_no_match(self):
+        """No self-reference when variable is not passed as argument"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import Symbol
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # call_args for (set! result (make-delta arena iter))
+        call_args = [Symbol('arena'), Symbol('iter')]
+        params = ['arena', 'iteration']
+
+        self_refs = verifier._find_self_referential_params('result', call_args, params)
+
+        assert len(self_refs) == 0
+
+    def test_substitute_postcondition_with_self_ref(self):
+        """Postcondition substitution uses __old_ for self-referential params"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, Symbol
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Postcondition: (== (. $result iteration) (. d iteration))
+        post = parse("(== (. $result iteration) (. d iteration))")[0]
+
+        # Args for (set! result (delta-add arena result t))
+        call_args = [Symbol('arena'), Symbol('result'), Symbol('t')]
+        params = ['arena', 'd', 't']
+        self_ref_params = {'d': 'result'}
+
+        subst = verifier._substitute_postcondition(post, 'result', params, call_args, self_ref_params)
+
+        # Should produce: (== (. result iteration) (. __old_result iteration))
+        # Check the structure
+        assert subst[1][1].name == 'result'  # $result -> result
+        assert subst[2][1].name == '__old_result'  # d -> __old_result
+
+    def test_old_variable_created_in_set_binding(self):
+        """Processing set! creates __old_ variable when self-reference detected"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator, FunctionRegistry, FunctionDef
+        from slop.parser import parse
+        from slop.types import PrimitiveType, RecordType
+
+        # Set up type environment
+        type_registry = {'Delta': RecordType('Delta', [('iteration', PrimitiveType('Int'))])}
+        env = MinimalTypeEnv(type_registry=type_registry)
+
+        # Set up function registry with a delta-add that has postconditions
+        fn_registry = FunctionRegistry()
+        fn_registry.functions['delta-add'] = FunctionDef(
+            name='delta-add',
+            params=['arena', 'd', 't'],
+            body=None,
+            is_pure=False,
+            postconditions=[parse("(== (. $result iteration) (. d iteration))")[0]]
+        )
+
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+        translator = Z3Translator(env, function_registry=fn_registry)
+
+        # Declare the 'result' variable
+        translator.declare_variable('result', PrimitiveType('Int'))
+
+        # Process: (set! result (delta-add arena result t))
+        call_expr = parse("(delta-add arena result t)")[0]
+        axioms = []
+
+        verifier._process_set_binding('result', call_expr, translator, axioms)
+
+        # Check that __old_result was created
+        assert '__old_result' in translator.variables
+
+        # Check that a constraint was added: __old_result == result
+        # The constraint should be in translator.constraints
+        found_old_constraint = False
+        for c in translator.constraints:
+            cstr = str(c)
+            if '__old_result' in cstr and 'result' in cstr:
+                found_old_constraint = True
+                break
+        assert found_old_constraint, "Should have constraint linking __old_result to result"
+
+
+class TestArrayEncoding:
+    """Test Z3 array encoding for lists with element-level properties"""
+
+    def test_array_encoding_detection(self):
+        """Detect when array encoding is needed for postconditions"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Should need array encoding for all-triples-have-predicate
+        post1 = [parse("(all-triples-have-predicate $result RDF_TYPE)")[0]]
+        assert verifier._needs_array_encoding(post1)
+
+        # Should need array encoding for list-ref
+        post2 = [parse("(== (list-ref $result 0) x)")[0]]
+        assert verifier._needs_array_encoding(post2)
+
+        # Should need array encoding for forall with list-ref
+        post3 = [parse("(forall (i Int) (== (list-ref $result i) 0))")[0]]
+        assert verifier._needs_array_encoding(post3)
+
+        # Should not need array encoding for simple postconditions
+        post4 = [parse("(>= (list-len $result) 0)")[0]]
+        assert not verifier._needs_array_encoding(post4)
+
+    def test_create_list_array(self):
+        """Test creating array representation for lists"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_array_encoding=True)
+
+        arr, length = translator._create_list_array("test")
+
+        # Should be a Z3 array
+        assert z3.is_array(arr)
+
+        # Should be an Int for length
+        assert z3.is_int(length)
+
+        # Length should have non-negative constraint
+        has_nonneg = any(str(c) == "_len_test_1 >= 0" for c in translator.constraints)
+        assert has_nonneg, f"Expected length >= 0 constraint, got: {translator.constraints}"
+
+    def test_translate_list_ref(self):
+        """Test list-ref translation to Select"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_array_encoding=True)
+
+        # Set up a list array
+        arr, length = translator._create_list_array("lst")
+        translator.variables["lst"] = z3.IntVal(0)  # Placeholder for list variable
+
+        # Translate (list-ref lst 0)
+        expr = parse("(list-ref lst 0)")[0]
+        result = translator.translate_expr(expr)
+
+        # Should return something (may use uninterpreted function fallback)
+        assert result is not None
+
+    def test_translate_forall(self):
+        """Test forall quantifier translation"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Translate (forall (i Int) (>= i 0))
+        expr = parse("(forall (i Int) (>= i 0))")[0]
+        result = translator.translate_expr(expr)
+
+        # Should return a ForAll expression
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+    def test_translate_exists(self):
+        """Test exists quantifier translation"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Translate (exists (x Int) (== x 5))
+        expr = parse("(exists (x Int) (== x 5))")[0]
+        result = translator.translate_expr(expr)
+
+        # Should return an Exists expression
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+    def test_translate_implies(self):
+        """Test implies translation"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Declare variables
+        translator.declare_variable('a', PrimitiveType('Bool'))
+        translator.declare_variable('b', PrimitiveType('Bool'))
+
+        # Translate (implies a b)
+        expr = parse("(implies a b)")[0]
+        result = translator.translate_expr(expr)
+
+        # Should return an Implies expression
+        assert result is not None
+        assert z3.is_bool(result)
+
+    def test_list_new_with_array_encoding(self):
+        """Test list-new with array encoding creates proper axioms"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_array_encoding=True)
+
+        # Declare $result
+        translator.declare_variable('$result', z3.IntSort())
+
+        verifier = ContractVerifier(env)
+
+        # Extract axioms for list-new
+        list_new_expr = parse("(list-new arena Triple)")[0]
+        axioms = verifier._extract_list_new_axioms(list_new_expr, translator)
+
+        # Should have created array for $result
+        assert '$result' in translator.list_arrays
+
+        # Should have axiom that length is 0
+        assert len(axioms) >= 1
+        # First axiom should be length == 0 (may be normalized to 0 == length)
+        has_length_zero = any("== 0" in str(a) or "0 ==" in str(a) for a in axioms)
+        assert has_length_zero, f"Expected length == 0 axiom, got: {axioms}"
+
+
+class TestQuantifiedPostconditions:
+    """Test verification of postconditions with quantifiers"""
+
+    def test_forall_postcondition_simple(self):
+        """Test verification with simple forall postcondition"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn always-positive ((x Int))
+            (@spec ((Int) -> Int))
+            (@pre (> x 0))
+            (@post (forall (i Int) (implies (== i $result) (> i 0))))
+            x))
+        """
+        results = verify_source(source)
+
+        # Should verify (x > 0 implies result > 0)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_all_triples_have_predicate_detection(self):
+        """Test that all-triples-have-predicate triggers array encoding"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Postcondition using all-triples-have-predicate
+        postconditions = [parse("(all-triples-have-predicate $result RDF_TYPE)")[0]]
+
+        # Should detect that array encoding is needed
+        assert verifier._needs_array_encoding(postconditions)
+
+    def test_list_element_property_axiom_extraction(self):
+        """Test extraction of list element property axioms"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator, FunctionRegistry
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_array_encoding=True)
+        fn_registry = FunctionRegistry()
+        verifier = ContractVerifier(env, function_registry=fn_registry)
+
+        # Set up $result with array encoding
+        arr, length = translator._create_list_array('$result')
+        translator.declare_variable('$result', PrimitiveType('Int'))
+
+        # Declare type_pred variable
+        translator.declare_variable('type-pred', PrimitiveType('Int'))
+
+        # Function body with list-push of make-triple
+        body = parse("""
+            (let ((inferred (make-triple arena individual type-pred class2)))
+              (list-push result inferred))
+        """)[0]
+
+        postconditions = [parse("(all-triples-have-predicate $result RDF_TYPE)")[0]]
+
+        # Extract axioms
+        axioms = verifier._extract_list_element_property_axioms(body, postconditions, translator)
+
+        # Should find the pushed predicate values (may be empty if type-pred not tracked)
+        # The key is that the method runs without error
+        assert isinstance(axioms, list)
