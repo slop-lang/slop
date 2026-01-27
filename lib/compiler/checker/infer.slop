@@ -327,6 +327,12 @@
           (do (infer-body-exprs env expr 1)
               (env-get-unit-type env)))
 
+        ;; (@loop-invariant cond) - loop invariant annotation, returns Unit
+        ;; Type-check the condition expression, used by verifier
+        ((string-eq op "@loop-invariant")
+          (do (infer-body-exprs env expr 1)
+              (env-get-unit-type env)))
+
         ;; (with-arena size body...) - binds 'arena' and returns last body type
         ((string-eq op "with-arena")
           (infer-with-arena-expr env expr))

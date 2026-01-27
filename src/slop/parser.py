@@ -226,7 +226,7 @@ class Parser:
                 return SList(items, line, col)
 
             # Detect contract annotations after parsing first item
-            if len(items) == 0 and kind == 'SYMBOL' and value in ('@pre', '@post', '@assume'):
+            if len(items) == 0 and kind == 'SYMBOL' and value in ('@pre', '@post', '@assume', '@loop-invariant'):
                 is_contract_form = True
 
             # Set in_contract context when parsing the argument of a contract
@@ -245,13 +245,13 @@ class Parser:
     def parse_infix_expr(self) -> SExpr:
         """Parse {infix expression} and convert to prefix AST.
 
-        Only allowed inside @pre, @post, or @assume contracts.
+        Only allowed inside @pre, @post, @assume, or @loop-invariant contracts.
         """
         _, _, line, col = self.tokens[self.pos]
 
         if not self.in_contract:
             raise ParseError(
-                "Infix syntax {expr} is only allowed inside @pre, @post, or @assume",
+                "Infix syntax {expr} is only allowed inside @pre, @post, @assume, or @loop-invariant",
                 line, col
             )
 
