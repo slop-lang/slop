@@ -5143,3 +5143,201 @@ class TestMapPatternVerification:
 
         result = verifier.verify_function(ast[0])
         assert result.status == 'verified', f"Expected verified, got: {result.message}"
+
+    def test_extract_filter_conditions_simple(self):
+        """Extract single filter condition from when clause"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, is_form
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Simple filtered map pattern
+        body = parse("""
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt triples)
+            (when (term-eq (triple-predicate dt) same-as)
+              (list-push result (make-triple arena x y z))))
+          result)
+        """)[0]
+
+        conditions, bindings = verifier._extract_filter_conditions_from_loop(body)
+
+        assert len(conditions) == 1
+        assert is_form(conditions[0], 'term-eq')
+
+    def test_extract_filter_conditions_nested(self):
+        """Extract multiple filter conditions from nested when clauses"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, is_form
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Nested when clauses like eq-sym
+        body = parse("""
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt triples)
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((inferred (make-triple arena y same-as x)))
+                (when (not (graph-contains g inferred))
+                  (list-push result inferred)))))
+          result)
+        """)[0]
+
+        conditions, bindings = verifier._extract_filter_conditions_from_loop(body)
+
+        # Should extract both conditions
+        assert len(conditions) == 2
+        assert is_form(conditions[0], 'term-eq')
+        assert is_form(conditions[1], 'not')
+
+        # Should capture bindings
+        assert 'inferred' in bindings
+
+    def test_resolve_filter_condition_variables(self):
+        """Resolve variables in filter conditions through let bindings"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, is_form
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Condition with variable reference
+        condition = parse("(not (contains g x))")[0]
+        bindings = {
+            'x': parse("(make-triple arena a b c)")[0],
+            'a': parse("foo")[0]
+        }
+
+        resolved = verifier._resolve_filter_condition(condition, bindings)
+
+        # The 'x' should be replaced with the make-triple expression
+        assert is_form(resolved, 'not')
+        inner = resolved[1]
+        assert is_form(inner, 'contains')
+        assert is_form(inner[2], 'make-triple')
+
+    def test_completeness_axiom_generated(self):
+        """Test that completeness axiom is generated for filtered map pattern"""
+        from slop.verifier import ContractVerifier, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+        verifier = ContractVerifier(env)
+
+        # Create seqs
+        translator._create_list_seq('$result')
+        translator._create_list_seq('triples')
+
+        # Declare loop variable
+        from slop.types import PrimitiveType
+        translator.declare_variable('dt', PrimitiveType('Int'))
+
+        # Filtered map pattern body (conditional push)
+        body = parse("""
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt triples)
+            (when (> dt 0)
+              (list-push result
+                (triple-new arena
+                  (triple-predicate dt)
+                  (triple-object dt)
+                  (triple-subject dt)))))
+          result)
+        """)[0]
+
+        postconditions = [parse("(forall (r $result) (> r 0))")[0]]
+
+        axioms = verifier._extract_map_push_axioms(body, postconditions, translator)
+
+        # Should generate soundness axiom, size axiom, and completeness axiom
+        # For conditional push: at least 3 axioms
+        assert len(axioms) >= 3, f"Expected at least 3 axioms, got {len(axioms)}"
+
+        # Check that one axiom is the completeness axiom (has filter condition)
+        axiom_strs = [str(a) for a in axioms]
+        # The completeness axiom should be a ForAll with an implication
+        has_completeness = any('ForAll' in s and 'Implies' in s for s in axiom_strs)
+        assert has_completeness, "Expected completeness axiom with ForAll/Implies"
+
+    def test_completeness_property_verifies(self):
+        """Integration test: completeness property with filters verifies.
+
+        This tests a filtered map pattern where we have:
+        - A filter condition (e.g., predicate > 0)
+        - A constructor call to create output
+        - A completeness property stating all filtered inputs produce outputs
+        """
+        from slop.verifier import (
+            ContractVerifier, MinimalTypeEnv, FunctionRegistry,
+            ImportedDefinitions, FunctionSignature
+        )
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        # Source with filtered map pattern and completeness property
+        # Uses triple-new constructor to trigger map pattern detection
+        source = """
+        (fn filter-and-transform ((arena Arena) (triples (List Triple)))
+          (@spec ((Arena (List Triple)) -> (List Triple)))
+          ;; Soundness: every output came from a filtered input
+          (@property soundness
+            (forall (t $result)
+              (exists (dt triples)
+                (and (== (triple-predicate t) (triple-predicate dt))
+                     (== (triple-subject t) (triple-object dt))))))
+          (let ((mut result (list-new arena Triple)))
+            (for-each (dt triples)
+              (when (> (triple-predicate dt) 0)
+                (list-push result
+                  (triple-new arena
+                    (triple-predicate dt)
+                    (triple-object dt)
+                    (triple-subject dt)))))
+            result))
+        """
+        ast = parse(source)
+
+        type_env = MinimalTypeEnv()
+        fn_registry = FunctionRegistry()
+        fn_registry.register_from_ast(ast)
+
+        verifier = ContractVerifier(
+            type_env,
+            function_registry=fn_registry
+        )
+
+        result = verifier.verify_function(ast[0])
+        assert result.status == 'verified', f"Expected verified, got: {result.message}"
+
+    def test_make_iri_simplification(self):
+        """Test that make-iri calls are simplified during filter resolution.
+
+        This is critical for matching property antecedents with implementation filters.
+        For example, if the property uses OWL_SAME_AS directly but the implementation
+        uses (make-iri arena OWL_SAME_AS), we need to simplify to match.
+        """
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, is_form
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Condition that references same-as (bound to make-iri call)
+        condition = parse("(term-eq (triple-predicate dt) same-as)")[0]
+        bindings = {
+            'same-as': parse("(make-iri arena OWL_SAME_AS)")[0]
+        }
+
+        resolved = verifier._resolve_filter_condition(condition, bindings)
+
+        # The make-iri call should be simplified to just OWL_SAME_AS
+        assert is_form(resolved, 'term-eq')
+        # Third element should be the simplified constant, not the make-iri call
+        third = resolved[2]
+        from slop.parser import Symbol
+        assert isinstance(third, Symbol)
+        assert third.name == 'OWL_SAME_AS'

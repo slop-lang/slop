@@ -3890,9 +3890,52 @@ class ContractVerifier:
             )
             axioms.append(axiom)
 
-            # Also add size equality axiom (map produces same-size output)
-            size_axiom = z3.Length(result_seq) == z3.Length(source_seq)
+            # Size relationship: result size <= source size
+            # For unfiltered maps they're equal; for filtered maps result may be smaller
+            size_axiom = z3.Length(result_seq) <= z3.Length(source_seq)
             axioms.append(size_axiom)
+
+            # Completeness axiom (inverse direction):
+            # ForAll j in source: filter_conditions(source[j]) =>
+            #     Exists i in result: field_constraints(result[i], source[j])
+            #
+            # This enables proving "for every filtered source, there's a matching result"
+            filter_conditions, filter_bindings = self._extract_filter_conditions_from_loop(fn_body)
+            if filter_conditions:
+                # Resolve variables in filter conditions through bindings
+                resolved_conditions = [
+                    self._resolve_filter_condition(cond, filter_bindings)
+                    for cond in filter_conditions
+                ]
+
+                # Translate filter conditions with loop var bound to source[j]
+                filter_z3 = []
+                for cond in resolved_conditions:
+                    cond_z3 = translator.translate_expr(cond)
+                    if cond_z3 is not None:
+                        filter_z3.append(cond_z3)
+
+                if filter_z3:
+                    # Build: filter1 AND filter2 AND ... => Exists result matching
+                    result_constraint = z3.Exists([result_idx],
+                        z3.And(
+                            result_idx >= 0,
+                            result_idx < z3.Length(result_seq),
+                            *field_constraints
+                        )
+                    )
+
+                    completeness_axiom = z3.ForAll([source_idx],
+                        z3.Implies(
+                            z3.And(
+                                source_idx >= 0,
+                                source_idx < z3.Length(source_seq),
+                                *filter_z3
+                            ),
+                            result_constraint
+                        )
+                    )
+                    axioms.append(completeness_axiom)
 
         finally:
             # Restore binding
@@ -3902,6 +3945,197 @@ class ContractVerifier:
                 del translator.variables[map_pattern.loop_var]
 
         return axioms
+
+    def _extract_filter_conditions_from_loop(
+        self, fn_body: SExpr
+    ) -> Tuple[List[SExpr], Dict[str, SExpr]]:
+        """Extract filter conditions from (when ...) clauses leading to list-push.
+
+        For patterns like:
+            (let ((mut result (list-new arena Type)))
+              (for-each (dt source)
+                (when cond1
+                  (let ((x expr1))
+                    (when cond2
+                      (list-push result ...)))))
+              result)
+
+        Returns:
+            - List of filter condition expressions [cond1, cond2]
+            - Bindings context for variable resolution {'x': expr1}
+
+        This is used to generate completeness axioms for filtered map patterns.
+        """
+        # Must be a let expression
+        if not is_form(fn_body, 'let') or len(fn_body) < 3:
+            return [], {}
+
+        bindings = fn_body[1]
+        if not isinstance(bindings, SList):
+            return [], {}
+
+        # Build initial bindings context from outer let
+        initial_bindings: Dict[str, SExpr] = {}
+        for binding in bindings.items:
+            if isinstance(binding, SList) and len(binding) >= 2:
+                first = binding[0]
+                if isinstance(first, Symbol):
+                    if first.name == 'mut' and len(binding) >= 3:
+                        var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                        var_value = binding[2]
+                    else:
+                        var_name = first.name
+                        var_value = binding[1]
+                    if var_name and var_value:
+                        initial_bindings[var_name] = var_value
+
+        # Find for-each loop in body
+        body_exprs = fn_body.items[2:]
+        for body_expr in body_exprs:
+            if is_form(body_expr, 'for-each') and len(body_expr) >= 3:
+                loop_body = body_expr.items[2:]
+                # Extract conditions from the loop body
+                conditions, bindings_ctx = self._collect_filter_conditions(
+                    loop_body, initial_bindings.copy()
+                )
+                return conditions, bindings_ctx
+
+        return [], initial_bindings
+
+    def _collect_filter_conditions(
+        self, stmts: List[SExpr], bindings: Dict[str, SExpr]
+    ) -> Tuple[List[SExpr], Dict[str, SExpr]]:
+        """Recursively collect filter conditions from when clauses on path to list-push.
+
+        Traverses into when, let, and do forms, collecting:
+        - Conditions from (when cond ...) clauses
+        - Variable bindings from (let ((x val)) ...)
+
+        Returns (conditions, bindings) when list-push is found, or ([], bindings) otherwise.
+        """
+        for stmt in stmts:
+            # Skip annotations
+            if isinstance(stmt, SList) and len(stmt) >= 1:
+                head = stmt[0]
+                if isinstance(head, Symbol) and head.name.startswith('@'):
+                    continue
+
+            # Handle (when condition body)
+            if is_form(stmt, 'when') and len(stmt) >= 3:
+                condition = stmt[1]
+                then_body = stmt[2]
+
+                # Check if then_body contains list-push (possibly nested)
+                if self._contains_list_push([then_body]):
+                    # Recursively collect conditions from then_body
+                    inner_conditions, inner_bindings = self._collect_filter_conditions(
+                        [then_body], bindings.copy()
+                    )
+                    # Prepend this condition
+                    return [condition] + inner_conditions, inner_bindings
+
+            # Handle (let ((x val) ...) body...)
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                let_bindings = stmt[1]
+                new_bindings = bindings.copy()
+
+                # Extract bindings
+                if isinstance(let_bindings, SList):
+                    for binding in let_bindings.items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            var_name = None
+                            var_value = None
+                            if isinstance(binding[0], Symbol):
+                                if binding[0].name == 'mut' and len(binding) >= 3:
+                                    var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                                    var_value = binding[2]
+                                else:
+                                    var_name = binding[0].name
+                                    var_value = binding[1]
+                            if var_name and var_value:
+                                new_bindings[var_name] = var_value
+
+                # Recurse into let body
+                inner_conditions, inner_bindings = self._collect_filter_conditions(
+                    stmt.items[2:], new_bindings
+                )
+                if inner_conditions or self._contains_list_push(stmt.items[2:]):
+                    return inner_conditions, inner_bindings
+
+            # Handle (do body...)
+            if is_form(stmt, 'do') and len(stmt) >= 2:
+                inner_conditions, inner_bindings = self._collect_filter_conditions(
+                    stmt.items[1:], bindings.copy()
+                )
+                if inner_conditions or self._contains_list_push(stmt.items[1:]):
+                    return inner_conditions, inner_bindings
+
+            # Found list-push - return empty conditions (base case)
+            if is_form(stmt, 'list-push'):
+                return [], bindings
+
+        return [], bindings
+
+    def _contains_list_push(self, stmts: List[SExpr]) -> bool:
+        """Check if any statement contains a list-push call."""
+        for stmt in stmts:
+            if is_form(stmt, 'list-push'):
+                return True
+            if isinstance(stmt, SList):
+                # Recurse into nested forms
+                if is_form(stmt, 'when') and len(stmt) >= 3:
+                    if self._contains_list_push([stmt[2]]):
+                        return True
+                elif is_form(stmt, 'let') and len(stmt) >= 3:
+                    if self._contains_list_push(stmt.items[2:]):
+                        return True
+                elif is_form(stmt, 'do') and len(stmt) >= 2:
+                    if self._contains_list_push(stmt.items[1:]):
+                        return True
+        return False
+
+    def _resolve_filter_condition(
+        self, condition: SExpr, bindings: Dict[str, SExpr]
+    ) -> SExpr:
+        """Resolve variables in filter condition through let bindings.
+
+        For condition: (not (indexed-graph-contains g inferred))
+        With bindings: {'inferred': (make-triple arena y same-as x),
+                        'same-as': (make-iri arena OWL_SAME_AS)}
+
+        Recursively substitutes variable references with their bound values.
+        Also simplifies constructor calls like (make-iri arena X) to X for
+        verification purposes, since these wrappers don't affect equality semantics.
+
+        Returns fully resolved condition.
+        """
+        if isinstance(condition, Symbol):
+            var_name = condition.name
+            if var_name in bindings:
+                # Recursively resolve the bound value
+                return self._resolve_filter_condition(bindings[var_name], bindings)
+            return condition
+
+        if isinstance(condition, SList) and len(condition) >= 1:
+            head = condition[0]
+
+            # Simplify (make-iri arena X) -> X
+            # make-iri is a constructor that wraps a string to create an IRI Term
+            # For verification, we treat it as identity since term-eq on make-iri(X)
+            # is equivalent to checking the underlying value X
+            if isinstance(head, Symbol) and head.name == 'make-iri' and len(condition) >= 3:
+                # (make-iri arena value) -> value
+                value = condition[2]
+                return self._resolve_filter_condition(value, bindings)
+
+            # Recursively resolve each element
+            resolved_items = [
+                self._resolve_filter_condition(item, bindings)
+                for item in condition.items
+            ]
+            return SList(resolved_items, condition.line, condition.col)
+
+        return condition
 
     def _infer_element_type_prefix(self, collection: SExpr) -> Optional[str]:
         """Infer the element type prefix from a collection expression.
