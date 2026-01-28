@@ -53,6 +53,19 @@ class Z3Translator:
 
     def _build_enum_map(self):
         """Build mapping from enum/union variant names to integer values"""
+        # Add built-in Option/Result union constructors
+        # Option has: none=0, some=1
+        # Result has: ok=0, error=1
+        builtin_constructors = [
+            ('none', 0),
+            ('some', 1),
+            ('ok', 0),
+            ('error', 1),
+        ]
+        for name, idx in builtin_constructors:
+            self.enum_values[name] = idx
+            self.enum_values[f"'{name}"] = idx
+
         # Build from local type registry
         for typ in self.type_env.type_registry.values():
             if isinstance(typ, EnumType):
@@ -249,10 +262,10 @@ class Z3Translator:
         if isinstance(coll_expr, SList) and len(coll_expr) >= 1:
             head = coll_expr[0]
             if isinstance(head, Symbol) and self._is_function_call(coll_expr):
-                # Build unique name from function and args
+                # Build unique name from function and args using stable representation
                 fn_name = head.name
                 args_str = "_".join(
-                    arg.name if isinstance(arg, Symbol) else str(id(arg))
+                    self._expr_to_stable_name(arg)
                     for arg in coll_expr.items[1:]
                 )
                 seq_name = f"_fn_{fn_name}_{args_str}" if args_str else f"_fn_{fn_name}"
@@ -263,6 +276,39 @@ class Z3Translator:
                     return self._create_list_seq(seq_name)
 
         return None
+
+    def _expr_to_stable_name(self, expr: SExpr) -> str:
+        """Convert an expression to a stable string name for Seq naming.
+
+        This produces consistent names for expressions regardless of Python object identity.
+        Important for self-referential postconditions where the same expression
+        (e.g., (none)) may appear multiple times as different SList objects.
+        """
+        if isinstance(expr, Symbol):
+            return expr.name
+        elif isinstance(expr, Number):
+            return str(expr.value)
+        elif isinstance(expr, String):
+            # Use hash for strings to avoid special characters in names
+            return f"str{hash(expr.value) % 10000}"
+        elif isinstance(expr, SList):
+            if len(expr) == 0:
+                return "nil"
+            head = expr[0]
+            if isinstance(head, Symbol):
+                head_name = head.name
+                # Handle common nullary constructors
+                if head_name == 'none' and len(expr) == 1:
+                    return "none"
+                elif head_name == 'some' and len(expr) == 2:
+                    return f"some_{self._expr_to_stable_name(expr[1])}"
+                # General function call
+                if len(expr) == 1:
+                    return head_name
+                args = "_".join(self._expr_to_stable_name(arg) for arg in expr.items[1:])
+                return f"{head_name}_{args}"
+        # Fallback for unknown expressions
+        return f"expr{id(expr) % 10000}"
 
     def _is_function_call(self, expr: SExpr) -> bool:
         """Check if expression is a function call that could return a collection.
@@ -1003,12 +1049,99 @@ class Z3Translator:
 
         return None
 
+    def _is_union_constructor_form(self, expr: SExpr) -> Optional[Tuple[str, Optional[SExpr]]]:
+        """Check if expression is a union constructor like (none) or (some x).
+
+        Returns:
+            (constructor_name, payload_or_None) if it's a constructor, else None
+        """
+        if not isinstance(expr, SList) or len(expr) < 1:
+            return None
+        head = expr[0]
+        if not isinstance(head, Symbol):
+            return None
+        constructors = {'none', 'some', 'ok', 'error'}
+        if head.name not in constructors:
+            return None
+        payload = expr[1] if len(expr) >= 2 else None
+        return (head.name, payload)
+
+    def _try_translate_union_comparison(self, expr: SList) -> Optional[z3.BoolRef]:
+        """Try to translate comparison with union constructor.
+
+        Patterns:
+        - (== var (none)) → union_tag(var) == none_idx
+        - (== var (some x)) → union_tag(var) == some_idx AND payload == x
+        - (!= var (none)) → union_tag(var) != none_idx
+        """
+        op = expr[0].name if isinstance(expr[0], Symbol) else None
+        left_expr = expr[1]
+        right_expr = expr[2]
+
+        # Check if either side is a union constructor
+        left_ctor = self._is_union_constructor_form(left_expr)
+        right_ctor = self._is_union_constructor_form(right_expr)
+
+        if left_ctor is None and right_ctor is None:
+            return None  # Not a union constructor comparison
+
+        # Normalize: put constructor on right, variable on left
+        if left_ctor is not None:
+            var_expr, (ctor_name, payload) = right_expr, left_ctor
+        else:
+            var_expr, (ctor_name, payload) = left_expr, right_ctor
+
+        # Translate the variable
+        var_z3 = self.translate_expr(var_expr)
+        if var_z3 is None:
+            return None
+
+        # Get or create union_tag function
+        tag_func_name = "union_tag"
+        if tag_func_name not in self.variables:
+            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+            self.variables[tag_func_name] = tag_func
+        else:
+            tag_func = self.variables[tag_func_name]
+
+        # Get tag index
+        tag_idx = self.enum_values.get(
+            ctor_name,
+            self.enum_values.get(f"'{ctor_name}", hash(ctor_name) % 256)
+        )
+
+        # Build comparison
+        tag_cmp = tag_func(var_z3) == z3.IntVal(tag_idx)
+        if op == '!=':
+            tag_cmp = tag_func(var_z3) != z3.IntVal(tag_idx)
+
+        # For constructors with payload, also compare payload
+        if payload is not None and op == '==':
+            payload_z3 = self.translate_expr(payload)
+            if payload_z3 is not None:
+                payload_func_name = f"union_payload_{ctor_name}"
+                if payload_func_name not in self.variables:
+                    payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
+                    self.variables[payload_func_name] = payload_func
+                else:
+                    payload_func = self.variables[payload_func_name]
+                return z3.And(tag_cmp, payload_func(var_z3) == payload_z3)
+
+        return tag_cmp
+
     def _translate_comparison(self, expr: SList) -> Optional[z3.BoolRef]:
         """Translate comparison expression"""
         if len(expr) < 3:
             return None
 
         op = expr[0].name if isinstance(expr[0], Symbol) else None
+
+        # Check for union constructor comparison: (== var (none)) or (== (some x) var)
+        if op in ('==', '!='):
+            result = self._try_translate_union_comparison(expr)
+            if result is not None:
+                return result
+
         left = self.translate_expr(expr[1])
         right = self.translate_expr(expr[2])
 

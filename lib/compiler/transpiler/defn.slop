@@ -1668,6 +1668,39 @@
               ((none) false)))))
       (else false)))
 
+  (fn is-verification-only-expr ((expr (Ptr SExpr)))
+    (@intent "Check if expression contains verification-only constructs like forall/exists")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (< len 1)
+            false
+            (let ((mut found false)
+                  (mut i 0))
+              ;; Check if head is forall/exists/implies
+              (match (list-get items 0)
+                ((some head)
+                  (match (deref head)
+                    ((sym sym)
+                      (let ((name (. sym name)))
+                        (when (or (string-eq name "forall")
+                                  (string-eq name "exists")
+                                  (string-eq name "implies"))
+                          (set! found true))))
+                    (else (do))))
+                ((none) (do)))
+              ;; Recursively check all items if not already found
+              (while (and (< i len) (not found))
+                (match (list-get items i)
+                  ((some item) (when (is-verification-only-expr item) (set! found true)))
+                  ((none) (do)))
+                (set! i (+ i 1)))
+              found))))
+      (else false)))
+
   (fn is-doc-form ((expr (Ptr SExpr)))
     (@intent "Check if expression is a @doc annotation")
     (@spec (((Ptr SExpr)) -> Bool))
@@ -1835,15 +1868,18 @@
       (while (< i len)
         (match (list-get postconditions i)
           ((some cond-expr)
-            ;; Transpile the condition to C
-            (let ((cond-c-raw (transpile-expr ctx cond-expr))
-                  ;; Replace $result and _result with _retval
-                  (cond-c (replace arena (replace arena cond-c-raw "_result" "_retval") "$result" "_retval"))
-                  ;; Get the original expression as string for the error message
-                  (expr-str (pretty-print arena cond-expr))
-                  ;; Escape double quotes in the string
-                  (escaped-str (escape-for-c-string arena expr-str)))
-              (ctx-emit ctx (ctx-str5 ctx "SLOP_POST((" cond-c "), \"" escaped-str "\");"))))
+            ;; Skip verification-only postconditions (forall, exists, etc.)
+            ;; These are for the Z3 verifier, not runtime checks
+            (when (not (is-verification-only-expr cond-expr))
+              ;; Transpile the condition to C
+              (let ((cond-c-raw (transpile-expr ctx cond-expr))
+                    ;; Replace $result and _result with _retval
+                    (cond-c (replace arena (replace arena cond-c-raw "_result" "_retval") "$result" "_retval"))
+                    ;; Get the original expression as string for the error message
+                    (expr-str (pretty-print arena cond-expr))
+                    ;; Escape double quotes in the string
+                    (escaped-str (escape-for-c-string arena expr-str)))
+                (ctx-emit ctx (ctx-str5 ctx "SLOP_POST((" cond-c "), \"" escaped-str "\");")))))
           ((none) (do)))
         (set! i (+ i 1)))))
 
@@ -1857,15 +1893,18 @@
       (while (< i len)
         (match (list-get assumptions i)
           ((some cond-expr)
-            ;; Transpile the condition to C
-            (let ((cond-c-raw (transpile-expr ctx cond-expr))
-                  ;; Replace $result and _result with _retval
-                  (cond-c (replace arena (replace arena cond-c-raw "_result" "_retval") "$result" "_retval"))
-                  ;; Get the original expression as string for the error message
-                  (expr-str (pretty-print arena cond-expr))
-                  ;; Escape double quotes in the string
-                  (escaped-str (escape-for-c-string arena expr-str)))
-              (ctx-emit ctx (ctx-str5 ctx "SLOP_POST((" cond-c "), \"" escaped-str "\");"))))
+            ;; Skip verification-only assumptions (forall, exists, implies, etc.)
+            ;; These are for the Z3 verifier, not runtime checks
+            (when (not (is-verification-only-expr cond-expr))
+              ;; Transpile the condition to C
+              (let ((cond-c-raw (transpile-expr ctx cond-expr))
+                    ;; Replace $result and _result with _retval
+                    (cond-c (replace arena (replace arena cond-c-raw "_result" "_retval") "$result" "_retval"))
+                    ;; Get the original expression as string for the error message
+                    (expr-str (pretty-print arena cond-expr))
+                    ;; Escape double quotes in the string
+                    (escaped-str (escape-for-c-string arena expr-str)))
+                (ctx-emit ctx (ctx-str5 ctx "SLOP_POST((" cond-c "), \"" escaped-str "\");")))))
           ((none) (do)))
         (set! i (+ i 1)))))
 

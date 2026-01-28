@@ -1009,6 +1009,59 @@ class TestUnionTagAxioms:
         assert translator.enum_values['blank'] == 1
         assert translator.enum_values['literal'] == 2
 
+    def test_option_constructor_comparison(self):
+        """Comparison with (none) and (some x) uses union_tag"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn option-is-none ((x (Option Int)))
+            (@spec (((Option Int)) -> Bool))
+            (@post (implies (== x (none)) $result))
+            (@post (implies (!= x (none)) (not $result)))
+            (match x
+              ((none) true)
+              ((some _) false))))
+        """
+        results = verify_source(source)
+        option_is_none = [r for r in results if r.name == 'option-is-none']
+        assert len(option_is_none) == 1
+        assert option_is_none[0].status == 'verified'
+
+    def test_option_constructor_comparison_with_some(self):
+        """Comparison with (some value) checks both tag and payload"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn wrap-in-some ((x Int))
+            (@spec ((Int) -> (Option Int)))
+            (@post (!= $result (none)))
+            (some x)))
+        """
+        results = verify_source(source)
+        wrap_in_some = [r for r in results if r.name == 'wrap-in-some']
+        assert len(wrap_in_some) == 1
+        assert wrap_in_some[0].status == 'verified'
+
+    def test_builtin_constructors_in_enum_map(self):
+        """Built-in Option/Result constructors are in enum_values"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Check built-in constructors are present
+        assert 'none' in translator.enum_values
+        assert 'some' in translator.enum_values
+        assert 'ok' in translator.enum_values
+        assert 'error' in translator.enum_values
+        # Check indices
+        assert translator.enum_values['none'] == 0
+        assert translator.enum_values['some'] == 1
+        assert translator.enum_values['ok'] == 0
+        assert translator.enum_values['error'] == 1
+
 
 class TestTypeInvariants:
     """Test Phase 5: Type invariants with @invariant or @assume"""
