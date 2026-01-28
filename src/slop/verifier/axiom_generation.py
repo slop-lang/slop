@@ -20,6 +20,7 @@ from .loop_patterns import (
 if TYPE_CHECKING:
     from slop.parser import SExpr
     from .translator import Z3Translator
+    from .types import FunctionSignature
 
 
 class AxiomGenerationMixin:
@@ -951,6 +952,192 @@ class AxiomGenerationMixin:
         # Generate axiom: ForAll a, b: fn(a, b) == (a == b)
         axiom = z3.ForAll([a, b], func(a, b) == (a == b))
         return axiom
+
+    def _extract_imported_postcondition_axioms(
+        self, translator: 'Z3Translator'
+    ) -> List[z3.BoolRef]:
+        """Extract universal axioms from imported function postconditions.
+
+        For imported functions with postconditions, generate universally quantified
+        axioms that enable reasoning about relational properties involving multiple
+        calls to the same function.
+
+        For example, for a function like indexed-graph-match with postcondition:
+            (@post (forall (t $result) (indexed-graph-contains g t)))
+
+        We generate an axiom that universally quantifies over the function's parameters:
+            ForAll arena, g, s, p, o:
+                ForAll t in (indexed-graph-match arena g s p o):
+                    indexed-graph-contains(g, t)
+
+        This enables verifying properties like completeness-forward that involve
+        both filtered and unfiltered calls to the same function.
+        """
+        axioms: List[z3.BoolRef] = []
+
+        for fn_name, sig in self.imported_defs.functions.items():
+            if not sig.postconditions:
+                continue
+
+            # Skip equality functions - handled by _extract_imported_equality_axioms
+            if fn_name.endswith('-eq') and len(sig.params) == 2:
+                continue
+
+            for post in sig.postconditions:
+                axiom = self._translate_postcondition_as_universal_axiom(
+                    fn_name, sig, post, translator
+                )
+                if axiom is not None:
+                    axioms.append(axiom)
+
+        return axioms
+
+    def _translate_postcondition_as_universal_axiom(
+        self,
+        fn_name: str,
+        sig: 'FunctionSignature',
+        post: SExpr,
+        translator: 'Z3Translator'
+    ) -> Optional[z3.BoolRef]:
+        """Translate a single postcondition as a universal axiom.
+
+        The postcondition is universally quantified over the function's parameters.
+        $result is replaced with a call to the function with the quantified params.
+
+        For example:
+            fn: indexed-graph-match(arena, g, s, p, o)
+            @post: (forall (t $result) (pred t))
+
+        Becomes:
+            ForAll arena, g, s, p, o:
+                ForAll t in (indexed-graph-match arena g s p o):
+                    pred(t)
+        """
+        from .types import FunctionSignature
+
+        if not sig.params:
+            return None
+
+        # Create quantified variables for each parameter
+        param_vars: List[z3.ArithRef] = []
+        param_map: Dict[str, z3.ArithRef] = {}
+
+        for i, param_name in enumerate(sig.params):
+            # Create a unique Z3 variable for this parameter
+            var = z3.Int(f'_ax_{fn_name}_{param_name}')
+            param_vars.append(var)
+            param_map[param_name] = var
+
+        # Create or get the Z3 function for the function call
+        func_key = f"fn_{fn_name}_{len(sig.params)}"
+        if func_key not in translator.variables:
+            # Determine return sort based on postcondition patterns
+            # If postcondition uses forall/exists with $result, it's a collection
+            if self._postcondition_treats_result_as_collection(post):
+                # For collections, we model the function result as an Int (id)
+                # and create a corresponding Seq if needed
+                return_sort = z3.IntSort()
+            else:
+                return_sort = z3.IntSort()
+
+            arg_sorts = [z3.IntSort()] * len(sig.params)
+            func = z3.Function(func_key, *arg_sorts, return_sort)
+            translator.variables[func_key] = func
+        else:
+            func = translator.variables[func_key]
+
+        # Create the function call with quantified parameters
+        fn_result = func(*param_vars)
+
+        # Save current variable bindings
+        saved_vars: Dict[str, z3.ExprRef] = {}
+        for param_name, param_var in param_map.items():
+            saved_vars[param_name] = translator.variables.get(param_name)
+            translator.variables[param_name] = param_var
+
+        # For collection-returning functions, set up a Seq for $result
+        # that represents the function's result with these specific parameters
+        saved_result = translator.variables.get('$result')
+        saved_result_seq = translator.list_seqs.get('$result')
+
+        try:
+            # If postcondition uses $result as a collection, create a Seq for it
+            if self._postcondition_treats_result_as_collection(post):
+                # Create a unique Seq name for this function call
+                seq_name = f'_ax_{fn_name}_result'
+                if seq_name not in translator.list_seqs:
+                    translator._create_list_seq(seq_name)
+                result_seq = translator.list_seqs.get(seq_name)
+                if result_seq is not None:
+                    translator.list_seqs['$result'] = result_seq
+                    # Also bind $result to the function result (id)
+                    translator.variables['$result'] = fn_result
+            else:
+                translator.variables['$result'] = fn_result
+
+            # Translate the postcondition body
+            post_z3 = translator.translate_expr(post)
+            if post_z3 is None or not z3.is_bool(post_z3):
+                return None
+
+            # Wrap in universal quantifier over all parameters
+            if param_vars:
+                return z3.ForAll(param_vars, post_z3)
+            else:
+                return post_z3
+
+        finally:
+            # Restore variable bindings
+            for param_name, saved_val in saved_vars.items():
+                if saved_val is None:
+                    if param_name in translator.variables:
+                        del translator.variables[param_name]
+                else:
+                    translator.variables[param_name] = saved_val
+
+            if saved_result is None:
+                if '$result' in translator.variables:
+                    del translator.variables['$result']
+            else:
+                translator.variables['$result'] = saved_result
+
+            if saved_result_seq is None:
+                if '$result' in translator.list_seqs:
+                    del translator.list_seqs['$result']
+            else:
+                translator.list_seqs['$result'] = saved_result_seq
+
+    def _postcondition_treats_result_as_collection(self, post: SExpr) -> bool:
+        """Check if a postcondition treats $result as a collection.
+
+        Returns True if the postcondition contains patterns like:
+        - (forall (t $result) ...)
+        - (exists (t $result) ...)
+        - (list-len $result)
+        """
+        if isinstance(post, SList) and len(post) >= 1:
+            head = post[0]
+            if isinstance(head, Symbol):
+                # Check for (forall (t $result) ...) or (exists (t $result) ...)
+                if head.name in ('forall', 'exists') and len(post) >= 3:
+                    binding = post[1]
+                    if isinstance(binding, SList) and len(binding) == 2:
+                        coll = binding[1]
+                        if isinstance(coll, Symbol) and coll.name == '$result':
+                            return True
+
+                # Check for (list-len $result)
+                if head.name == 'list-len' and len(post) >= 2:
+                    arg = post[1]
+                    if isinstance(arg, Symbol) and arg.name == '$result':
+                        return True
+
+            # Recursively check subexpressions
+            for item in post.items:
+                if self._postcondition_treats_result_as_collection(item):
+                    return True
+
+        return False
 
     def _generate_filter_axioms(self, pattern: FilterPatternInfo,
                                 translator: Z3Translator) -> List:

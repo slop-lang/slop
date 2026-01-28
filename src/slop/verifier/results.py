@@ -18,7 +18,7 @@ class VerificationResult:
     """Result of verification for a single item (function, assignment, etc.)"""
     name: str  # Function name or description
     verified: bool
-    status: str  # 'verified', 'failed', 'unknown', 'skipped'
+    status: str  # 'verified', 'failed', 'unknown', 'timeout', 'skipped'
     message: str
     counterexample: Optional[Dict[str, Any]] = None
     location: Optional[SourceLocation] = None

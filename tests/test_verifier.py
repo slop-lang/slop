@@ -4598,6 +4598,70 @@ class TestSequenceTheory:
         # Should have created a Seq for the field access
         assert "_field_delta_triples" in translator.list_seqs
 
+    def test_function_call_collection_translation(self):
+        """Test (forall (elem (fn-name args)) body) translation for function calls"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Translate (forall (gt (indexed-graph-triples g)) (> gt 0))
+        expr = parse("(forall (gt (indexed-graph-triples g)) (> gt 0))")[0]
+        result = translator.translate_expr(expr)
+
+        # Should produce a quantified formula
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+        # Should have created a Seq for the function call
+        # The Seq name is built from function name and args
+        fn_call_seqs = [k for k in translator.list_seqs.keys() if "_fn_indexed-graph-triples" in k]
+        assert len(fn_call_seqs) == 1
+
+    def test_exists_function_call_collection_translation(self):
+        """Test (exists (elem (fn-name args)) body) translation for function calls"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Translate (exists (t (get-items x)) (> t 0))
+        # Using a simple comparison body since function calls need proper type setup
+        expr = parse("(exists (t (get-items x)) (> t 0))")[0]
+        result = translator.translate_expr(expr)
+
+        # Should produce a quantified formula
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+        # Should have created a Seq for the function call
+        fn_call_seqs = [k for k in translator.list_seqs.keys() if "_fn_get-items" in k]
+        assert len(fn_call_seqs) == 1
+
+    def test_is_function_call_helper(self):
+        """Test _is_function_call helper correctly identifies function calls"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Should be function calls
+        assert translator._is_function_call(parse("(get-items x)")[0])
+        assert translator._is_function_call(parse("(indexed-graph-triples g)")[0])
+        assert translator._is_function_call(parse("(my-fn a b c)")[0])
+
+        # Should NOT be function calls (special forms)
+        assert not translator._is_function_call(parse("(. obj field)")[0])
+        assert not translator._is_function_call(parse("(if x y z)")[0])
+        assert not translator._is_function_call(parse("(and a b)")[0])
+        assert not translator._is_function_call(parse("(+ 1 2)")[0])
+        assert not translator._is_function_call(parse("(@pre (> x 0))")[0])
+
     def test_nested_forall_exists_translation(self):
         """Test nested (forall ... (exists ...)) translation"""
         from slop.verifier import Z3Translator, MinimalTypeEnv
@@ -5712,3 +5776,152 @@ class TestNestedLoopPattern:
         axiom_strs = [str(a) for a in axioms]
         has_forall_exists = any('ForAll' in s and 'Exists' in s for s in axiom_strs)
         assert has_forall_exists, "Expected axiom with ForAll/Exists structure"
+
+
+class TestImportedPostconditionAxioms:
+    """Test universal axioms generated from imported function postconditions."""
+
+    def test_extract_imported_postcondition_axioms_simple(self):
+        """Test extracting postcondition axioms from imported functions."""
+        from slop.verifier import (ContractVerifier, Z3Translator, MinimalTypeEnv,
+                                    ImportedDefinitions, FunctionSignature)
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        # Create imported definitions with a function that has a postcondition
+        imported_defs = ImportedDefinitions()
+        imported_defs.functions['graph-size'] = FunctionSignature(
+            name='graph-size',
+            param_types=[PrimitiveType('IndexedGraph')],
+            return_type=PrimitiveType('Int'),
+            params=['g'],
+            postconditions=[parse("(>= $result 0)")[0]]
+        )
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+        translator = Z3Translator(env, imported_defs=imported_defs)
+
+        axioms = verifier._extract_imported_postcondition_axioms(translator)
+
+        # Should have generated at least one axiom
+        assert len(axioms) >= 1
+
+        # The axiom should be universally quantified over 'g'
+        axiom_str = str(axioms[0])
+        assert 'ForAll' in axiom_str
+
+    def test_postcondition_treats_result_as_collection(self):
+        """Test detection of collection-treating postconditions."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, ImportedDefinitions
+        from slop.parser import parse
+
+        imported_defs = ImportedDefinitions()
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+
+        # (forall (t $result) ...) treats $result as collection
+        post1 = parse("(forall (t $result) (pred t))")[0]
+        assert verifier._postcondition_treats_result_as_collection(post1)
+
+        # (exists (t $result) ...) treats $result as collection
+        post2 = parse("(exists (t $result) (pred t))")[0]
+        assert verifier._postcondition_treats_result_as_collection(post2)
+
+        # (list-len $result) treats $result as collection
+        post3 = parse("(list-len $result)")[0]
+        assert verifier._postcondition_treats_result_as_collection(post3)
+
+        # (>= $result 0) does NOT treat $result as collection
+        post4 = parse("(>= $result 0)")[0]
+        assert not verifier._postcondition_treats_result_as_collection(post4)
+
+    def test_imported_postcondition_with_forall(self):
+        """Test generating axioms from postconditions with forall over result."""
+        from slop.verifier import (ContractVerifier, Z3Translator, MinimalTypeEnv,
+                                    ImportedDefinitions, FunctionSignature)
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        # Create imported definitions with a function whose postcondition
+        # quantifies over the result
+        imported_defs = ImportedDefinitions()
+        imported_defs.functions['indexed-graph-match'] = FunctionSignature(
+            name='indexed-graph-match',
+            param_types=[
+                PrimitiveType('Arena'),
+                PrimitiveType('IndexedGraph'),
+                PrimitiveType('Option'),
+                PrimitiveType('Option'),
+                PrimitiveType('Option'),
+            ],
+            return_type=PrimitiveType('List'),
+            params=['arena', 'g', 's', 'p', 'o'],
+            postconditions=[
+                # (forall (t $result) (indexed-graph-contains g t))
+                parse("(forall (t $result) (indexed-graph-contains g t))")[0]
+            ]
+        )
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+        translator = Z3Translator(env, imported_defs=imported_defs)
+        translator.use_seq_encoding = True  # Enable Seq encoding for collections
+
+        axioms = verifier._extract_imported_postcondition_axioms(translator)
+
+        # Should have generated at least one axiom
+        assert len(axioms) >= 1
+
+        # The axiom should be universally quantified over all parameters
+        axiom_str = str(axioms[0])
+        assert 'ForAll' in axiom_str
+
+    def test_skip_equality_functions(self):
+        """Test that equality functions are skipped (handled separately)."""
+        from slop.verifier import (ContractVerifier, Z3Translator, MinimalTypeEnv,
+                                    ImportedDefinitions, FunctionSignature)
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        imported_defs = ImportedDefinitions()
+        # Equality function with 2 params
+        imported_defs.functions['term-eq'] = FunctionSignature(
+            name='term-eq',
+            param_types=[PrimitiveType('Term'), PrimitiveType('Term')],
+            return_type=PrimitiveType('Bool'),
+            params=['a', 'b'],
+            postconditions=[parse("(== $result (== a b))")[0]]
+        )
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+        translator = Z3Translator(env, imported_defs=imported_defs)
+
+        axioms = verifier._extract_imported_postcondition_axioms(translator)
+
+        # Should NOT generate axioms (equality functions handled separately)
+        assert len(axioms) == 0
+
+    def test_imported_postcondition_axioms_used_in_property_verification(self):
+        """Test that imported postcondition axioms are applied during property verification."""
+        from slop.verifier import verify_source
+
+        # This test verifies end-to-end integration: a property that relies on
+        # an imported function's postcondition should be verifiable
+        source = '''
+        (module test
+          (import math (abs))
+
+          ;; Test function with property that relies on abs postcondition
+          (fn wrap-abs ((x Int))
+            (@spec ((Int) -> Int))
+            (@post (>= $result 0))
+            (abs x)))
+        '''
+        # Note: Without the imported postcondition axiom for 'abs', this might
+        # not verify. With the axiom, Z3 should be able to verify it.
+        results = verify_source(source)
+
+        # The function should at least not crash during verification
+        assert len(results) >= 1

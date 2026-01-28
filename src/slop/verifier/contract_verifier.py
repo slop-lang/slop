@@ -2349,7 +2349,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 from slop.parser import pretty_print
                 # Collect all failures instead of returning on first failure
                 failed_properties: List[Tuple[Optional[str], str, Dict[str, str]]] = []  # (name, expr_str, counterexample)
-                unknown_properties: List[Tuple[Optional[str], str]] = []  # (name, expr_str)
+                unknown_properties: List[Tuple[Optional[str], str, str]] = []  # (name, expr_str, reason)
 
                 for i, ((prop_name, prop_expr), prop_z3_expr) in enumerate(zip(properties, prop_z3)):
                     prop_solver = z3.Solver()
@@ -2370,6 +2370,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     for axiom in imported_eq_axioms:
                         prop_solver.add(axiom)
 
+                    # Add universal axioms from imported function postconditions
+                    # This enables verifying relational properties that involve multiple
+                    # calls to the same function (e.g., filtered vs unfiltered results)
+                    imported_postcond_axioms = self._extract_imported_postcondition_axioms(translator)
+                    for axiom in imported_postcond_axioms:
+                        prop_solver.add(axiom)
+
                     # Check if NOT property is satisfiable
                     prop_solver.add(z3.Not(prop_z3_expr))
                     prop_result = prop_solver.check()
@@ -2383,7 +2390,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                                          if not str(decl.name()).startswith('field_')}
                         failed_properties.append((prop_name, prop_str, counterexample))
                     elif prop_result == z3.unknown:
-                        unknown_properties.append((prop_name, prop_str))
+                        reason = prop_solver.reason_unknown()
+                        unknown_properties.append((prop_name, prop_str, reason))
 
                 # Report all failures at once
                 if failed_properties:
@@ -2414,24 +2422,30 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
                 # Report unknown properties if no failures
                 if unknown_properties:
+                    # Check if any are timeouts
+                    has_timeout = any(reason == "timeout" for _, _, reason in unknown_properties)
+                    status = "timeout" if has_timeout else "unknown"
+
                     if len(unknown_properties) == 1:
-                        prop_name, prop_str = unknown_properties[0]
+                        prop_name, prop_str, reason = unknown_properties[0]
+                        reason_suffix = f" ({reason})" if reason else ""
                         if prop_name:
-                            message = f"Could not verify property '{prop_name}': {prop_str}"
+                            message = f"Could not verify property '{prop_name}'{reason_suffix}: {prop_str}"
                         else:
-                            message = f"Could not verify property: {prop_str}"
+                            message = f"Could not verify property{reason_suffix}: {prop_str}"
                     else:
                         lines = []
-                        for prop_name, prop_str in unknown_properties:
+                        for prop_name, prop_str, reason in unknown_properties:
+                            reason_suffix = f" ({reason})" if reason else ""
                             if prop_name:
-                                lines.append(f"  • '{prop_name}': {prop_str}")
+                                lines.append(f"  • '{prop_name}'{reason_suffix}: {prop_str}")
                             else:
-                                lines.append(f"  • {prop_str}")
+                                lines.append(f"  • {prop_str}{reason_suffix}")
                         message = "Could not verify properties:\n" + "\n".join(lines)
                     return VerificationResult(
                         name=fn_name,
                         verified=False,
-                        status="unknown",
+                        status=status,
                         message=message,
                         location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                     )

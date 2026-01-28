@@ -244,7 +244,46 @@ class Z3Translator:
             else:
                 return self._create_list_seq(seq_name)
 
+        # Handle function calls: (fn-name args...)
+        # These are modeled as uninterpreted functions returning collections
+        if isinstance(coll_expr, SList) and len(coll_expr) >= 1:
+            head = coll_expr[0]
+            if isinstance(head, Symbol) and self._is_function_call(coll_expr):
+                # Build unique name from function and args
+                fn_name = head.name
+                args_str = "_".join(
+                    arg.name if isinstance(arg, Symbol) else str(id(arg))
+                    for arg in coll_expr.items[1:]
+                )
+                seq_name = f"_fn_{fn_name}_{args_str}" if args_str else f"_fn_{fn_name}"
+
+                if seq_name in self.list_seqs:
+                    return self.list_seqs[seq_name]
+                else:
+                    return self._create_list_seq(seq_name)
+
         return None
+
+    def _is_function_call(self, expr: SExpr) -> bool:
+        """Check if expression is a function call that could return a collection.
+
+        This excludes special forms and operators that are handled elsewhere.
+        """
+        if not isinstance(expr, SList) or len(expr) < 1:
+            return False
+        head = expr[0]
+        if not isinstance(head, Symbol):
+            return False
+        # Exclude special forms and operators
+        special_forms = {
+            'if', 'let', 'match', 'and', 'or', 'not', '.',
+            'forall', 'exists', 'implies', 'quote',
+            '+', '-', '*', '/', '%',
+            '==', '!=', '>', '<', '>=', '<=',
+        }
+        if head.name.startswith('@') or head.name in special_forms:
+            return False
+        return True
 
     def _translate_forall_collection(self, expr: SList) -> Optional[z3.BoolRef]:
         """Translate (forall (elem coll) body) to a quantified formula.
@@ -285,8 +324,11 @@ class Z3Translator:
             # Skip if it looks like a type (uppercase first letter, not $result)
             if coll_name != '$result' and coll_name[0].isupper():
                 return None
-        elif not (isinstance(coll_expr, SList) and is_form(coll_expr, '.')):
-            # Must be either a symbol or field access
+        elif isinstance(coll_expr, SList):
+            # Allow field access (. obj field) or function calls (fn args...)
+            if not (is_form(coll_expr, '.') or self._is_function_call(coll_expr)):
+                return None
+        else:
             return None
 
         # Get the sequence for the collection
@@ -355,7 +397,11 @@ class Z3Translator:
             coll_name = coll_expr.name
             if coll_name != '$result' and coll_name[0].isupper():
                 return None
-        elif not (isinstance(coll_expr, SList) and is_form(coll_expr, '.')):
+        elif isinstance(coll_expr, SList):
+            # Allow field access (. obj field) or function calls (fn args...)
+            if not (is_form(coll_expr, '.') or self._is_function_call(coll_expr)):
+                return None
+        else:
             return None
 
         # Get the sequence

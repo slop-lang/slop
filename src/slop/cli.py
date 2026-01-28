@@ -4090,7 +4090,7 @@ def _run_verify_multi(args, verify_files: list, verify_cfg, search_paths: list =
         # Categorize results
         verified = [r for r in results if r.status == 'verified']
         failed = [r for r in results if r.status == 'failed']
-        unknown = [r for r in results if r.status == 'unknown']
+        unknown = [r for r in results if r.status in ('unknown', 'timeout')]
         warnings = [r for r in results if r.status == 'warning']
         errors = [r for r in results if r.status == 'error']
 
@@ -4302,7 +4302,7 @@ def cmd_verify(args):
     # Categorize results
     verified = [r for r in results if r.status == 'verified']
     failed = [r for r in results if r.status == 'failed']
-    unknown = [r for r in results if r.status == 'unknown']
+    unknown = [r for r in results if r.status in ('unknown', 'timeout')]
     warnings = [r for r in results if r.status == 'warning']
     errors = [r for r in results if r.status == 'error']
     skipped = [r for r in results if r.status == 'skipped']
