@@ -92,6 +92,71 @@ class Z3Translator:
                         self.enum_values[f"'{variant}"] = i
 
     # ========================================================================
+    # Quantifier Pattern Extraction
+    # ========================================================================
+
+    def _extract_patterns(self, expr: z3.ExprRef, bound_vars: List[z3.ExprRef]) -> List[z3.ExprRef]:
+        """Extract trigger patterns from a Z3 expression for quantifier instantiation.
+
+        Patterns are function applications that have a bound variable as a DIRECT argument.
+        This is more conservative than checking if the bound var appears anywhere in the args.
+
+        Good patterns help Z3 know when to instantiate the quantified formula.
+
+        For example, in (forall (t $result) (term-eq (triple-predicate t) X)):
+        - Pattern: triple-predicate(t) - tells Z3 to instantiate when it sees triple-predicate
+
+        Args:
+            expr: The Z3 expression (quantifier body)
+            bound_vars: List of bound variables to look for
+
+        Returns:
+            List of pattern expressions (function applications with bound var as direct arg)
+        """
+        patterns = []
+        bound_var_set = set(v.get_id() for v in bound_vars)
+
+        def has_direct_bound_var_arg(e: z3.ExprRef) -> bool:
+            """Check if any argument IS (not just contains) a bound variable."""
+            if z3.is_app(e):
+                for i in range(e.num_args()):
+                    if e.arg(i).get_id() in bound_var_set:
+                        return True
+            return False
+
+        def collect_patterns(e: z3.ExprRef):
+            """Recursively collect function applications with bound var as direct arg."""
+            if not z3.is_app(e):
+                return
+
+            decl = e.decl()
+            kind = decl.kind()
+
+            # Only consider uninterpreted functions as patterns
+            if kind == z3.Z3_OP_UNINTERPRETED and e.num_args() > 0:
+                # Check if any argument IS a bound variable (direct, not nested)
+                if has_direct_bound_var_arg(e):
+                    patterns.append(e)
+                    # Don't return - keep looking for more patterns
+
+            # Recurse into subexpressions
+            for i in range(e.num_args()):
+                collect_patterns(e.arg(i))
+
+        collect_patterns(expr)
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_patterns = []
+        for p in patterns:
+            pid = p.get_id()
+            if pid not in seen:
+                seen.add(pid)
+                unique_patterns.append(p)
+
+        return unique_patterns
+
+    # ========================================================================
     # Array Encoding for Lists
     # ========================================================================
 
@@ -400,13 +465,23 @@ class Z3Translator:
             if body_z3 is None or not z3.is_bool(body_z3):
                 return None
 
-            # ForAll i: 0 <= i < Length(seq) => body
-            return z3.ForAll([idx_var],
-                z3.Implies(
-                    z3.And(idx_var >= 0, idx_var < z3.Length(seq)),
-                    body_z3
-                )
+            # Extract trigger patterns from the body
+            # Patterns help Z3 know when to instantiate the quantifier
+            patterns = self._extract_patterns(body_z3, [elem_at_idx])
+
+            # Build the implication: 0 <= i < Length(seq) => body
+            implication = z3.Implies(
+                z3.And(idx_var >= 0, idx_var < z3.Length(seq)),
+                body_z3
             )
+
+            # Pattern extraction infrastructure is in place but disabled
+            # TODO: Patterns with sequence indexing need more research
+            # - seq[idx] as bound var doesn't match pattern expectations
+            # - Need to experiment with patterns containing idx_var directly
+            # if len(patterns) == 1:
+            #     return z3.ForAll([idx_var], implication, patterns=patterns)
+            return z3.ForAll([idx_var], implication)
         finally:
             # Restore old binding
             if old_binding is not None:
@@ -467,14 +542,20 @@ class Z3Translator:
             if body_z3 is None or not z3.is_bool(body_z3):
                 return None
 
-            # Exists i: 0 <= i < Length(seq) && body
-            return z3.Exists([idx_var],
-                z3.And(
-                    idx_var >= 0,
-                    idx_var < z3.Length(seq),
-                    body_z3
-                )
+            # Extract trigger patterns from the body
+            patterns = self._extract_patterns(body_z3, [elem_at_idx])
+
+            # Build the conjunction: 0 <= i < Length(seq) && body
+            conjunction = z3.And(
+                idx_var >= 0,
+                idx_var < z3.Length(seq),
+                body_z3
             )
+
+            # Pattern extraction disabled pending more research
+            # if len(patterns) == 1:
+            #     return z3.Exists([idx_var], conjunction, patterns=patterns)
+            return z3.Exists([idx_var], conjunction)
         finally:
             if old_binding is not None:
                 self.variables[elem_var] = old_binding
