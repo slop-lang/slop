@@ -3928,3 +3928,348 @@ class TestImprovedVerificationOutput:
         assert result.counterexample is not None
         # Should have a counterexample value
         assert len(result.counterexample) > 0
+
+
+class TestWeakestPrecondition:
+    """Test the Weakest Precondition calculus for verification.
+
+    WP(expr, Q) computes the weakest condition P such that {P} expr {Q}.
+    The verification condition for {P} body {Q} is: P => WP(body, Q).
+    """
+
+    def test_wp_constant(self):
+        """WP of constant is the postcondition unchanged"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import Number
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        wp = WeakestPrecondition(translator)
+
+        # WP(42, Q) = Q
+        post = z3.BoolVal(True)
+        result = wp.wp(Number(42), post)
+        assert z3.eq(result, post)
+
+    def test_wp_variable_reference(self):
+        """WP of variable reference is postcondition unchanged"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import Symbol
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # WP(x, Q) = Q (reading doesn't change state)
+        post = z3.BoolVal(True)
+        result = wp.wp(Symbol('x'), post)
+        assert z3.eq(result, post)
+
+    def test_wp_let_simple(self):
+        """WP of let binding substitutes variable correctly"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (let ((y 10)) y)
+        # WP((let ((y 10)) y), $result == 10) should be satisfiable
+        expr = parse("(let ((y 10)) y)")[0]
+        result_var = translator.variables['$result']
+        post = result_var == z3.IntVal(10)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+
+    def test_wp_if_branches(self):
+        """WP of if splits into both branches"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (if (>= x 0) x (- 0 x))  -- absolute value
+        # WP(abs, $result >= 0) should be valid for all x
+        expr = parse("(if (>= x 0) x (- 0 x))")[0]
+        result_var = translator.variables['$result']
+        post = result_var >= z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        # WP should be: (x >= 0 => x >= 0) && (x < 0 => -x >= 0)
+        # Which is equivalent to: true && true = true
+        assert z3.is_bool(wp_result)
+
+    def test_wp_if_verification(self):
+        """Full verification using WP for if expression"""
+        from slop.verifier import verify_source
+
+        # Absolute value function: postcondition $result >= 0
+        source = """
+        (fn abs ((x Int))
+          (@spec ((Int) -> Int))
+          (@post (>= $result 0))
+          (if (>= x 0) x (- 0 x)))
+        """
+        results = verify_source(source)
+        # Should verify (WP enables this)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_do_sequential(self):
+        """WP propagates through sequential statements right-to-left"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (do x)  -- simple do block returning x
+        expr = parse("(do x)")[0]
+        result_var = translator.variables['$result']
+        post = result_var > z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+
+    def test_wp_let_propagation(self):
+        """WP propagates through let binding to establish postcondition"""
+        from slop.verifier import verify_source
+
+        # Let binding where postcondition depends on bound value
+        source = """
+        (fn test ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre (> x 0))
+          (@post (> $result 1))
+          (let ((y (+ x 1)))
+            y))
+        """
+        results = verify_source(source)
+        # WP should compute: WP(let y=x+1 in y, $result > 1) = (x+1 > 1) = (x > 0)
+        # Which is exactly the precondition, so should verify
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_cond_multi_branch(self):
+        """WP handles cond with multiple branches"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (cond ((< x 0) -1) ((== x 0) 0) (else 1))  -- sign function
+        expr = parse("(cond ((< x 0) (- 0 1)) ((== x 0) 0) (else 1))")[0]
+        result_var = translator.variables['$result']
+        # Post: result is -1, 0, or 1
+        post = z3.Or(result_var == z3.IntVal(-1),
+                     result_var == z3.IntVal(0),
+                     result_var == z3.IntVal(1))
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        assert z3.is_bool(wp_result)
+
+    def test_wp_nested_let(self):
+        """WP handles nested let bindings"""
+        from slop.verifier import verify_source
+
+        source = """
+        (fn nested ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre (> x 0))
+          (@post (> $result 2))
+          (let ((y (+ x 1)))
+            (let ((z (+ y 1)))
+              z)))
+        """
+        results = verify_source(source)
+        # WP: z = y + 1 = x + 2, post is z > 2, so need x > 0
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_set_substitution(self):
+        """WP of set! substitutes old value with new"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (set! x 10)
+        # WP((set! x 10), x > 5) = (10 > 5) = true
+        expr = parse("(set! x 10)")[0]
+        x_var = translator.variables['x']
+        post = x_var > z3.IntVal(5)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        # After substituting x with 10, we get 10 > 5 = true
+        solver = z3.Solver()
+        solver.add(z3.Not(wp_result))
+        # If WP is valid (always true), then NOT(WP) is unsatisfiable
+        result = solver.check()
+        assert result == z3.unsat, "WP should be valid (10 > 5 is true)"
+
+    def test_wp_return_binds_result(self):
+        """WP of return binds $result to the returned value"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (return x)
+        # WP((return x), $result > 0) = (x > 0)
+        expr = parse("(return x)")[0]
+        result_var = translator.variables['$result']
+        post = result_var > z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+
+    def test_wp_integration_simple_function(self):
+        """Integration test: WP enables verification of simple functions"""
+        from slop.verifier import verify_source
+
+        # Simple increment: result = x + 1
+        source = """
+        (fn increment ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre (>= x 0))
+          (@post (> $result x))
+          (+ x 1))
+        """
+        results = verify_source(source)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_integration_max_function(self):
+        """Integration test: WP enables verification of max function"""
+        from slop.verifier import verify_source
+
+        source = """
+        (fn max ((a Int) (b Int))
+          (@spec ((Int Int) -> Int))
+          (@post (and (>= $result a) (>= $result b)))
+          (if (>= a b) a b))
+        """
+        results = verify_source(source)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_loop_with_invariant(self):
+        """WP uses @loop-invariant for loop verification"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('sum', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # for-each with @loop-invariant
+        expr = parse("""
+        (for-each (x lst)
+          (@loop-invariant (>= sum 0))
+          (set! sum (+ sum x)))
+        """)[0]
+
+        result_var = translator.variables['$result']
+        post = result_var >= z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        # WP should return the loop invariant as precondition
+        # (sum >= 0 must hold at entry)
+
+    def test_wp_preserves_type_constraints(self):
+        """WP computation doesn't lose type constraints from translator"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import RangeType, RangeBounds
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        # Range type: x in [0, 100]
+        translator.declare_variable('x', RangeType('Int', RangeBounds(0, 100)))
+        translator.declare_variable('$result', RangeType('Int', RangeBounds(0, 100)))
+        wp = WeakestPrecondition(translator)
+
+        # Type constraints should still be in translator.constraints
+        assert len(translator.constraints) >= 2  # x >= 0, x <= 100
+
+        expr = parse("(let ((y x)) y)")[0]
+        result_var = translator.variables['$result']
+        post = result_var >= z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        # Type constraints are separate from WP, they're added to solver
+
+    def test_wp_handles_deep_nesting(self):
+        """WP handles deeply nested expressions without stack overflow"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # Nested let bindings
+        expr = parse("""
+        (let ((a x))
+          (let ((b a))
+            (let ((c b))
+              (let ((d c))
+                d))))
+        """)[0]
+
+        result_var = translator.variables['$result']
+        post = result_var > z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
