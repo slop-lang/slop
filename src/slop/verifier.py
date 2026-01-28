@@ -409,6 +409,27 @@ class FilterPatternInfo:
 
 
 @dataclass
+class MapPatternInfo:
+    """Information about a detected map/transform loop pattern.
+
+    Map pattern:
+    (let ((mut result (list-new arena Type)))
+      (for-each (item collection)
+        (list-push result (constructor-new arena (field1 item) (field2 item) ...)))
+      result)
+
+    Unlike filter patterns which have a conditional push, map patterns have
+    unconditional push of a transformed/constructed element.
+    """
+    result_var: str  # The mutable result variable name
+    collection: SExpr  # The collection being iterated (may be field access)
+    loop_var: str  # The loop variable name
+    constructor_expr: SExpr  # The transformation/constructor expression
+    field_mappings: Dict[str, SExpr]  # result_field -> source_expression
+                                       # e.g., {'subject': (triple-object dt)}
+
+
+@dataclass
 class CountPatternInfo:
     """Information about a detected count loop pattern.
 
@@ -2009,7 +2030,8 @@ class Z3Translator:
     def __init__(self, type_env: MinimalTypeEnv, filename: str = "<unknown>",
                  function_registry: Optional[FunctionRegistry] = None,
                  imported_defs: Optional[ImportedDefinitions] = None,
-                 use_array_encoding: bool = False):
+                 use_array_encoding: bool = False,
+                 use_seq_encoding: bool = False):
         if not Z3_AVAILABLE:
             raise RuntimeError("Z3 is not available")
         self.type_env = type_env
@@ -2023,6 +2045,11 @@ class Z3Translator:
         self.use_array_encoding = use_array_encoding
         self.list_arrays: Dict[str, Tuple[z3.ArrayRef, z3.ArithRef]] = {}
         self._array_counter = 0  # Counter for unique array names
+        # Sequence encoding for lists: maps list variable name to Seq variable
+        # Seq encoding enables proper reasoning about list contents via Z3's native Sequence theory
+        self.use_seq_encoding = use_seq_encoding
+        self.list_seqs: Dict[str, z3.SeqRef] = {}
+        self._seq_counter = 0  # Counter for unique seq names
         self._build_enum_map()
 
     def _build_enum_map(self):
@@ -2087,6 +2114,281 @@ class Z3Translator:
     def _get_list_array(self, name: str) -> Optional[Tuple[z3.ArrayRef, z3.ArithRef]]:
         """Get the array and length for a list variable."""
         return self.list_arrays.get(name)
+
+    # ========================================================================
+    # Sequence Encoding for Lists (Z3 Seq Theory)
+    # ========================================================================
+
+    def _create_list_seq(self, name: str, elem_sort: Optional[z3.SortRef] = None) -> z3.SeqRef:
+        """Create a Z3 Seq variable for a list.
+
+        Sequences provide native support for list operations:
+        - z3.Length(seq) - length of sequence
+        - z3.At(seq, i) - element at index i (returns Unit sequence)
+        - z3.Concat(seq1, seq2) - concatenation
+        - z3.Unit(elem) - singleton sequence
+        - z3.Empty(sort) - empty sequence
+
+        Args:
+            name: Variable name for the sequence
+            elem_sort: Element sort (defaults to IntSort for pointer/id representation)
+
+        Returns:
+            Z3 Seq variable
+        """
+        if name in self.list_seqs:
+            return self.list_seqs[name]
+
+        self._seq_counter += 1
+        seq_name = f"_seq_{name}_{self._seq_counter}"
+
+        # Default to Int elements (representing pointers/ids)
+        if elem_sort is None:
+            elem_sort = z3.IntSort()
+
+        seq_sort = z3.SeqSort(elem_sort)
+        seq = z3.Const(seq_name, seq_sort)
+
+        self.list_seqs[name] = seq
+        return seq
+
+    def _get_list_seq(self, name: str) -> Optional[z3.SeqRef]:
+        """Get the Seq variable for a list."""
+        return self.list_seqs.get(name)
+
+    def _translate_list_len_seq(self, lst_expr: SExpr) -> Optional[z3.ArithRef]:
+        """Translate (list-len lst) using Seq encoding.
+
+        Returns z3.Length(seq) for the sequence.
+        """
+        if isinstance(lst_expr, Symbol):
+            lst_name = lst_expr.name
+            if lst_name in self.list_seqs:
+                return z3.Length(self.list_seqs[lst_name])
+        return None
+
+    def _translate_list_ref_seq(self, expr: SList) -> Optional[z3.ExprRef]:
+        """Translate (list-ref lst i) using Seq encoding.
+
+        Returns the element at index i. Note that z3.At returns a unit sequence,
+        so we extract the actual element for integer sequences.
+        """
+        if len(expr) < 3:
+            return None
+
+        lst_expr = expr[1]
+        idx_expr = expr[2]
+
+        # Check for Seq encoding first
+        if isinstance(lst_expr, Symbol):
+            lst_name = lst_expr.name
+            if lst_name in self.list_seqs:
+                seq = self.list_seqs[lst_name]
+                idx = self.translate_expr(idx_expr)
+                if idx is None:
+                    return None
+                # z3.At returns a unit sequence; extract the element
+                # For IntSort elements, use SubSeq then IndexOf trick
+                # Actually, z3.At on SeqSort<Int> returns Seq<Int>, need z3.Nth
+                # z3.Nth(seq, i) extracts the i-th element directly
+                return seq[idx]  # seq[i] is syntactic sugar for z3.Nth(seq, i)
+
+        return None
+
+    def _seq_push(self, seq: z3.SeqRef, elem: z3.ExprRef) -> z3.SeqRef:
+        """Model list-push as sequence concatenation.
+
+        (list-push lst elem) becomes Concat(lst, Unit(elem))
+        """
+        return z3.Concat(seq, z3.Unit(elem))
+
+    def _seq_empty(self, elem_sort: Optional[z3.SortRef] = None) -> z3.SeqRef:
+        """Create an empty sequence.
+
+        Models (list-new arena Type).
+        """
+        if elem_sort is None:
+            elem_sort = z3.IntSort()
+        return z3.Empty(z3.SeqSort(elem_sort))
+
+    def _get_or_create_collection_seq(self, coll_expr: SExpr) -> Optional[z3.SeqRef]:
+        """Get or create a Seq for a collection expression.
+
+        Handles:
+        - Simple symbols: $result, items, etc.
+        - Field access: (. delta triples), (. obj field)
+
+        For field access, creates a Seq with a name like "_field_delta_triples".
+        """
+        if isinstance(coll_expr, Symbol):
+            coll_name = coll_expr.name
+            if coll_name == '$result':
+                return self.list_seqs.get('$result')
+            elif coll_name in self.list_seqs:
+                return self.list_seqs[coll_name]
+            else:
+                # Create a new Seq for this collection
+                return self._create_list_seq(coll_name)
+
+        # Handle field access: (. obj field)
+        if isinstance(coll_expr, SList) and is_form(coll_expr, '.') and len(coll_expr) >= 3:
+            obj_expr = coll_expr[1]
+            field_expr = coll_expr[2]
+
+            # Build a unique name for this field access
+            obj_name = obj_expr.name if isinstance(obj_expr, Symbol) else "_obj"
+            field_name = field_expr.name if isinstance(field_expr, Symbol) else "_field"
+            seq_name = f"_field_{obj_name}_{field_name}"
+
+            if seq_name in self.list_seqs:
+                return self.list_seqs[seq_name]
+            else:
+                return self._create_list_seq(seq_name)
+
+        return None
+
+    def _translate_forall_collection(self, expr: SList) -> Optional[z3.BoolRef]:
+        """Translate (forall (elem coll) body) to a quantified formula.
+
+        This is the collection-bound forall syntax:
+            (forall (t $result) (is-valid t))
+            (forall (dt (. delta triples)) (pred dt))
+
+        Expansion:
+            ForAll i: 0 <= i < Length(seq) => body[t/seq[i]]
+
+        Args:
+            expr: The forall expression (forall (elem coll) body)
+
+        Returns:
+            Z3 ForAll expression or None if not a collection-bound pattern
+        """
+        if len(expr) < 3:
+            return None
+
+        binding = expr[1]
+        body = expr[2]
+
+        # Check for collection-bound pattern: (elem collection)
+        if not isinstance(binding, SList) or len(binding) != 2:
+            return None
+
+        # First element must be a symbol (the element variable)
+        if not isinstance(binding[0], Symbol):
+            return None
+
+        elem_var = binding[0].name
+        coll_expr = binding[1]
+
+        # Check if this is a collection reference (not a type annotation)
+        if isinstance(coll_expr, Symbol):
+            coll_name = coll_expr.name
+            # Skip if it looks like a type (uppercase first letter, not $result)
+            if coll_name != '$result' and coll_name[0].isupper():
+                return None
+        elif not (isinstance(coll_expr, SList) and is_form(coll_expr, '.')):
+            # Must be either a symbol or field access
+            return None
+
+        # Get the sequence for the collection
+        seq = self._get_or_create_collection_seq(coll_expr)
+        if seq is None:
+            return None
+
+        # Create index variable
+        idx_var = z3.Int(f'_idx_{elem_var}')
+
+        # Get the element at index
+        elem_at_idx = seq[idx_var]  # z3.Nth(seq, idx_var)
+
+        # Save old binding if any
+        old_binding = self.variables.get(elem_var)
+
+        try:
+            # Bind elem_var to the element expression
+            self.variables[elem_var] = elem_at_idx
+
+            # Translate the body with elem_var bound
+            body_z3 = self.translate_expr(body)
+            if body_z3 is None or not z3.is_bool(body_z3):
+                return None
+
+            # ForAll i: 0 <= i < Length(seq) => body
+            return z3.ForAll([idx_var],
+                z3.Implies(
+                    z3.And(idx_var >= 0, idx_var < z3.Length(seq)),
+                    body_z3
+                )
+            )
+        finally:
+            # Restore old binding
+            if old_binding is not None:
+                self.variables[elem_var] = old_binding
+            elif elem_var in self.variables:
+                del self.variables[elem_var]
+
+    def _translate_exists_collection(self, expr: SList) -> Optional[z3.BoolRef]:
+        """Translate (exists (elem coll) body) to existential quantifier.
+
+        Similar to forall but uses existential:
+            Exists i: 0 <= i < Length(seq) && body[elem/seq[i]]
+
+        Handles both simple symbols and field access collections.
+        """
+        if len(expr) < 3:
+            return None
+
+        binding = expr[1]
+        body = expr[2]
+
+        # Check for collection-bound pattern
+        if not isinstance(binding, SList) or len(binding) != 2:
+            return None
+
+        if not isinstance(binding[0], Symbol):
+            return None
+
+        elem_var = binding[0].name
+        coll_expr = binding[1]
+
+        # Check if this is a collection reference (not a type annotation)
+        if isinstance(coll_expr, Symbol):
+            coll_name = coll_expr.name
+            if coll_name != '$result' and coll_name[0].isupper():
+                return None
+        elif not (isinstance(coll_expr, SList) and is_form(coll_expr, '.')):
+            return None
+
+        # Get the sequence
+        seq = self._get_or_create_collection_seq(coll_expr)
+        if seq is None:
+            return None
+
+        idx_var = z3.Int(f'_idx_{elem_var}')
+        elem_at_idx = seq[idx_var]
+
+        old_binding = self.variables.get(elem_var)
+
+        try:
+            self.variables[elem_var] = elem_at_idx
+
+            body_z3 = self.translate_expr(body)
+            if body_z3 is None or not z3.is_bool(body_z3):
+                return None
+
+            # Exists i: 0 <= i < Length(seq) && body
+            return z3.Exists([idx_var],
+                z3.And(
+                    idx_var >= 0,
+                    idx_var < z3.Length(seq),
+                    body_z3
+                )
+            )
+        finally:
+            if old_binding is not None:
+                self.variables[elem_var] = old_binding
+            elif elem_var in self.variables:
+                del self.variables[elem_var]
 
     def _translate_list_ref(self, expr: SList) -> Optional[z3.ExprRef]:
         """Translate (list-ref lst i) to z3.Select(arr, i).
@@ -2432,7 +2734,12 @@ class Z3Translator:
                 if op == 'list-len':
                     if len(expr) >= 2:
                         lst_expr = expr[1]
-                        # Check for array encoding first
+                        # Check for Seq encoding first (preferred)
+                        if self.use_seq_encoding:
+                            seq_result = self._translate_list_len_seq(lst_expr)
+                            if seq_result is not None:
+                                return seq_result
+                        # Check for array encoding
                         if self.use_array_encoding and isinstance(lst_expr, Symbol):
                             lst_name = lst_expr.name
                             if lst_name in self.list_arrays:
@@ -2454,15 +2761,30 @@ class Z3Translator:
                         return result
                     return None
 
-                # List element access (array encoding)
+                # List element access (array/seq encoding)
                 if op == 'list-ref':
+                    # Try Seq encoding first
+                    if self.use_seq_encoding:
+                        seq_result = self._translate_list_ref_seq(expr)
+                        if seq_result is not None:
+                            return seq_result
                     return self._translate_list_ref(expr)
 
                 # Quantifiers
                 if op == 'forall':
+                    # Try collection-bound pattern first with Seq encoding
+                    if self.use_seq_encoding:
+                        coll_result = self._translate_forall_collection(expr)
+                        if coll_result is not None:
+                            return coll_result
                     return self._translate_forall(expr)
 
                 if op == 'exists':
+                    # Try collection-bound pattern first with Seq encoding
+                    if self.use_seq_encoding:
+                        coll_result = self._translate_exists_collection(expr)
+                        if coll_result is not None:
+                            return coll_result
                     return self._translate_exists(expr)
 
                 # Implication
@@ -3226,6 +3548,555 @@ class ContractVerifier:
                 if self._expr_needs_array_encoding(item):
                     return True
         return False
+
+    def _needs_seq_encoding(self, exprs: List[SExpr]) -> bool:
+        """Check if expressions require Sequence encoding for lists.
+
+        Returns True if any expression uses collection-bound quantifiers:
+        - (forall (elem collection) body) - iterates over all elements
+        - (exists (elem collection) body) - checks if any element satisfies
+
+        This is distinct from index-based quantifiers like (forall (i Int) ...).
+
+        Works for both postconditions and properties.
+        """
+        for expr in exprs:
+            if self._expr_needs_seq_encoding(expr):
+                return True
+        return False
+
+    def _expr_needs_seq_encoding(self, expr: SExpr) -> bool:
+        """Check if an expression needs Sequence encoding.
+
+        Detects collection-bound quantifier patterns:
+        - (forall (elem coll) body) where coll is a symbol (not (elem Type))
+        - (exists (elem coll) body) where coll is a symbol
+        - (forall (elem (. obj field)) body) where collection is a field access
+        - (exists (elem (. obj field)) body) where collection is a field access
+        """
+        if isinstance(expr, SList) and len(expr) > 0:
+            head = expr[0]
+            if isinstance(head, Symbol):
+                # Check for collection-bound forall/exists
+                if head.name in ('forall', 'exists') and len(expr) >= 3:
+                    binding = expr[1]
+                    # Collection-bound pattern: (elem collection)
+                    if isinstance(binding, SList) and len(binding) == 2:
+                        elem = binding[0]
+                        coll = binding[1]
+                        if isinstance(elem, Symbol):
+                            # Case 1: coll is a symbol like $result or items
+                            if isinstance(coll, Symbol):
+                                coll_name = coll.name
+                                if coll_name == '$result' or not coll_name[0].isupper():
+                                    return True
+                            # Case 2: coll is a field access like (. delta triples)
+                            elif isinstance(coll, SList) and is_form(coll, '.'):
+                                return True
+            # Recursively check subexpressions
+            for item in expr.items:
+                if self._expr_needs_seq_encoding(item):
+                    return True
+        return False
+
+    def _references_result_collection(self, exprs: List[SExpr]) -> bool:
+        """Check if any expression references $result as a collection in forall/exists."""
+        for expr in exprs:
+            if self._expr_references_result_collection(expr):
+                return True
+        return False
+
+    def _expr_references_result_collection(self, expr: SExpr) -> bool:
+        """Check if expression references $result as a collection."""
+        if isinstance(expr, SList) and len(expr) > 0:
+            head = expr[0]
+            if isinstance(head, Symbol):
+                if head.name in ('forall', 'exists') and len(expr) >= 3:
+                    binding = expr[1]
+                    if isinstance(binding, SList) and len(binding) == 2:
+                        coll = binding[1]
+                        if isinstance(coll, Symbol) and coll.name == '$result':
+                            return True
+            # Recursively check subexpressions
+            for item in expr.items:
+                if self._expr_references_result_collection(item):
+                    return True
+        return False
+
+    def _extract_seq_push_axioms(self, fn_body: SExpr, postconditions: List[SExpr],
+                                  translator: 'Z3Translator') -> List[z3.BoolRef]:
+        """Generate axioms connecting pushed elements to their source.
+
+        For filter patterns like:
+            (let ((mut result (list-new ...)))
+              (for-each (t items)
+                (when (pred t)
+                  (list-push result t)))
+              result)
+
+        Generates axiom:
+            ForAll i: 0 <= i < Length($result) =>
+                Exists j: 0 <= j < Length(items) &&
+                          $result[i] == items[j] && pred(items[j])
+
+        This enables proving postconditions like:
+            (forall (t $result) (pred t))
+        """
+        axioms: List[z3.BoolRef] = []
+
+        # Find filter patterns
+        filter_pattern = self._detect_filter_pattern(fn_body)
+        if filter_pattern is None:
+            return axioms
+
+        # Need Seq for $result
+        if '$result' not in translator.list_seqs:
+            return axioms
+
+        result_seq = translator.list_seqs['$result']
+
+        # Get or create Seq for source collection
+        if isinstance(filter_pattern.collection, Symbol):
+            source_name = filter_pattern.collection.name
+            if source_name not in translator.list_seqs:
+                # Create Seq for the source collection
+                translator._create_list_seq(source_name)
+            source_seq = translator.list_seqs.get(source_name)
+        else:
+            return axioms
+
+        if source_seq is None:
+            return axioms
+
+        # Create index variables for the quantified formula
+        result_idx = z3.Int('_push_res_i')
+        source_idx = z3.Int('_push_src_j')
+
+        # Translate the predicate with loop variable bound to source element
+        old_binding = translator.variables.get(filter_pattern.loop_var)
+        try:
+            # Bind loop var to source element at j
+            translator.variables[filter_pattern.loop_var] = source_seq[source_idx]
+
+            pred_z3 = translator.translate_expr(filter_pattern.predicate)
+            if pred_z3 is None:
+                return axioms
+
+            # Handle negated predicates (exclusion filters)
+            if filter_pattern.is_negated:
+                # For (not (eq item excluded)), all result elements satisfy (not (eq elem excluded))
+                # This is a simpler axiom: just propagate the predicate
+                pass
+
+            # Build the axiom:
+            # ForAll i in result: Exists j in source: result[i] == source[j] && pred(source[j])
+            #
+            # This says: every element in result came from source and satisfies the predicate
+            source_constraint = z3.Exists([source_idx],
+                z3.And(
+                    source_idx >= 0,
+                    source_idx < z3.Length(source_seq),
+                    result_seq[result_idx] == source_seq[source_idx],
+                    pred_z3
+                )
+            )
+
+            axiom = z3.ForAll([result_idx],
+                z3.Implies(
+                    z3.And(result_idx >= 0, result_idx < z3.Length(result_seq)),
+                    source_constraint
+                )
+            )
+            axioms.append(axiom)
+
+            # Also add a simpler axiom that directly states the postcondition property
+            # For filter (pred t), every element in result satisfies pred
+            # ForAll i: 0 <= i < Length(result) => pred(result[i])
+            translator.variables[filter_pattern.loop_var] = result_seq[result_idx]
+            pred_on_result = translator.translate_expr(filter_pattern.predicate)
+            if pred_on_result is not None:
+                direct_axiom = z3.ForAll([result_idx],
+                    z3.Implies(
+                        z3.And(result_idx >= 0, result_idx < z3.Length(result_seq)),
+                        pred_on_result
+                    )
+                )
+                axioms.append(direct_axiom)
+
+        finally:
+            # Restore binding
+            if old_binding is not None:
+                translator.variables[filter_pattern.loop_var] = old_binding
+            elif filter_pattern.loop_var in translator.variables:
+                del translator.variables[filter_pattern.loop_var]
+
+        return axioms
+
+    def _extract_map_push_axioms(self, fn_body: SExpr, postconditions: List[SExpr],
+                                  translator: 'Z3Translator') -> List[z3.BoolRef]:
+        """Generate axioms connecting result fields to source fields for map patterns.
+
+        For map patterns like:
+            (let ((mut result (list-new ...)))
+              (for-each (dt (. delta triples))
+                (list-push result
+                  (triple-new arena
+                    (triple-predicate dt)  ; predicate preserved
+                    (triple-object dt)     ; subject <- object (swapped)
+                    (triple-subject dt)))) ; object <- subject (swapped)
+              result)
+
+        Generates axiom:
+            ForAll i: 0 <= i < Length($result) =>
+                Exists j: 0 <= j < Length(source) &&
+                    field_predicate($result[i]) == field_predicate(source[j]) &&
+                    field_subject($result[i]) == field_object(source[j]) &&
+                    field_object($result[i]) == field_subject(source[j])
+
+        This enables proving postconditions like:
+            (forall (t $result)
+              (exists (dt (. delta triples))
+                (and (term-eq (triple-predicate dt) (triple-predicate t))
+                     (term-eq (triple-subject t) (triple-object dt))
+                     (term-eq (triple-object t) (triple-subject dt)))))
+        """
+        axioms: List[z3.BoolRef] = []
+
+        # Find map patterns
+        map_pattern = self._detect_map_pattern(fn_body)
+        if map_pattern is None:
+            return axioms
+
+        # Need Seq for $result
+        if '$result' not in translator.list_seqs:
+            return axioms
+
+        result_seq = translator.list_seqs['$result']
+
+        # Get or create Seq for source collection
+        source_seq = None
+        source_name = None
+
+        if isinstance(map_pattern.collection, Symbol):
+            source_name = map_pattern.collection.name
+            if source_name not in translator.list_seqs:
+                translator._create_list_seq(source_name)
+            source_seq = translator.list_seqs.get(source_name)
+        elif is_form(map_pattern.collection, '.') and len(map_pattern.collection) >= 3:
+            # Field access: (. obj field) - use same naming as property translator
+            obj = map_pattern.collection[1]
+            field = map_pattern.collection[2]
+            if isinstance(obj, Symbol) and isinstance(field, Symbol):
+                # Must match naming convention in _get_or_create_collection_seq:
+                # "_field_{obj_name}_{field_name}"
+                source_name = f"_field_{obj.name}_{field.name}"
+                if source_name not in translator.list_seqs:
+                    translator._create_list_seq(source_name)
+                source_seq = translator.list_seqs.get(source_name)
+
+        if source_seq is None:
+            return axioms
+
+        # Create index variables for the quantified formula
+        result_idx = z3.Int('_map_res_i')
+        source_idx = z3.Int('_map_src_j')
+
+        # Build field correspondence constraints
+        # For each (result_field, source_expr) in field_mappings,
+        # generate: field_{result_field}($result[i]) == translate(source_expr)[loop_var/source[j]]
+
+        old_binding = translator.variables.get(map_pattern.loop_var)
+        try:
+            # Bind loop var to source element at j for translating source expressions
+            translator.variables[map_pattern.loop_var] = source_seq[source_idx]
+
+            field_constraints = []
+
+            # Determine the type prefix from the collection being iterated
+            # For (. delta triples) iterating Triple elements, prefix is "triple"
+            type_prefix = self._infer_element_type_prefix(map_pattern.collection)
+
+            for result_field, source_expr in map_pattern.field_mappings.items():
+                # Determine result accessor name
+                if type_prefix:
+                    result_accessor_name = f"{type_prefix}-{result_field}"
+                else:
+                    result_accessor_name = result_field
+
+                # Create the result field function
+                result_field_func_name = f"fn_{result_accessor_name}_1"
+                if result_field_func_name not in translator.variables:
+                    result_field_func = z3.Function(
+                        result_field_func_name,
+                        z3.IntSort(),
+                        z3.IntSort()
+                    )
+                    translator.variables[result_field_func_name] = result_field_func
+                else:
+                    result_field_func = translator.variables[result_field_func_name]
+
+                result_field_z3 = result_field_func(result_seq[result_idx])
+
+                # Find appropriate equality function for the field type
+                eq_func = self._get_type_equality_function(
+                    result_accessor_name, translator
+                )
+
+                # Check if source_expr references the loop variable
+                # If not, it's a constant field - use source field == result field
+                if not self._references_var(source_expr, map_pattern.loop_var):
+                    # Constant field: add constraint that source field equals result field
+                    # This is valid because filter conditions ensure matching values
+                    source_field_z3 = result_field_func(source_seq[source_idx])
+                    if eq_func is not None:
+                        field_constraints.append(eq_func(result_field_z3, source_field_z3))
+                    else:
+                        field_constraints.append(result_field_z3 == source_field_z3)
+                    continue
+
+                # Translate the source expression with loop var bound to source[j]
+                source_z3 = translator.translate_expr(source_expr)
+                if source_z3 is None:
+                    continue
+
+                # For map pattern: result.subject = source.object
+                # We need: term-eq(triple-subject(result[i]), triple-object(source[j]))
+
+                if eq_func is not None:
+                    # Use type-specific equality: eq_func(result_field, source_field)
+                    field_constraints.append(eq_func(result_field_z3, source_z3))
+                else:
+                    # Fallback to native equality
+                    field_constraints.append(result_field_z3 == source_z3)
+
+            if not field_constraints:
+                return axioms
+
+            # Build the axiom:
+            # ForAll i in result: Exists j in source: AND(field_constraints...)
+            source_constraint = z3.Exists([source_idx],
+                z3.And(
+                    source_idx >= 0,
+                    source_idx < z3.Length(source_seq),
+                    *field_constraints
+                )
+            )
+
+            axiom = z3.ForAll([result_idx],
+                z3.Implies(
+                    z3.And(result_idx >= 0, result_idx < z3.Length(result_seq)),
+                    source_constraint
+                )
+            )
+            axioms.append(axiom)
+
+            # Also add size equality axiom (map produces same-size output)
+            size_axiom = z3.Length(result_seq) == z3.Length(source_seq)
+            axioms.append(size_axiom)
+
+        finally:
+            # Restore binding
+            if old_binding is not None:
+                translator.variables[map_pattern.loop_var] = old_binding
+            elif map_pattern.loop_var in translator.variables:
+                del translator.variables[map_pattern.loop_var]
+
+        return axioms
+
+    def _infer_element_type_prefix(self, collection: SExpr) -> Optional[str]:
+        """Infer the element type prefix from a collection expression.
+
+        For (. delta triples) where triples is a list of Triple, returns "triple".
+        For a variable 'triples' that is (List Triple), returns "triple".
+
+        This is used to construct field accessor names like triple-subject.
+        """
+        # Check for field access: (. obj field)
+        if is_form(collection, '.') and len(collection) >= 3:
+            field = collection[2]
+            if isinstance(field, Symbol):
+                field_name = field.name
+                # Common patterns: "triples" -> "triple", "terms" -> "term"
+                if field_name.endswith('s'):
+                    return field_name[:-1]  # Remove trailing 's'
+                return field_name
+
+        # Check for simple variable name
+        if isinstance(collection, Symbol):
+            var_name = collection.name
+            if var_name.endswith('s'):
+                return var_name[:-1]
+            return var_name
+
+        return None
+
+    def _get_type_equality_function(
+        self, accessor_name: str, translator: 'Z3Translator'
+    ) -> Optional[z3.FuncDeclRef]:
+        """Get the appropriate equality function for a field type.
+
+        For field accessors like triple-predicate, triple-subject, triple-object,
+        the field type is Term, so we check for imported term-eq function.
+
+        IMPORTANT: Only returns an equality function if:
+        1. The function is imported with a postcondition defining its semantics, OR
+        2. The function already exists in the translator's variables
+
+        If no imported equality function is found, returns None to use native ==.
+        This ensures axioms align with what Z3 can actually reason about.
+
+        Returns Z3 function or None if no specific equality function found.
+        """
+        # Known mappings: accessor pattern -> equality function name
+        # Triple fields (predicate, subject, object) are Term type
+        triple_field_accessors = {'triple-predicate', 'triple-subject', 'triple-object'}
+
+        if accessor_name in triple_field_accessors:
+            eq_func_name = "fn_term-eq_2"
+            # Only use if already exists (imported and set up)
+            if eq_func_name in translator.variables:
+                return translator.variables[eq_func_name]
+            # Check if term-eq is imported with semantics
+            if self._has_imported_equality_semantics('term-eq'):
+                eq_func = z3.Function(
+                    eq_func_name,
+                    z3.IntSort(), z3.IntSort(), z3.BoolSort()
+                )
+                translator.variables[eq_func_name] = eq_func
+                return eq_func
+            # No imported term-eq with semantics - use native ==
+            return None
+
+        # Try to infer from accessor pattern: {type}-{field} -> {type}-eq
+        if '-' in accessor_name:
+            type_prefix = accessor_name.rsplit('-', 1)[0]
+            eq_func_name = f"fn_{type_prefix}-eq_2"
+            if eq_func_name in translator.variables:
+                return translator.variables[eq_func_name]
+            # Check if type-eq is imported with semantics
+            if self._has_imported_equality_semantics(f'{type_prefix}-eq'):
+                eq_func = z3.Function(
+                    eq_func_name,
+                    z3.IntSort(), z3.IntSort(), z3.BoolSort()
+                )
+                translator.variables[eq_func_name] = eq_func
+                return eq_func
+            # No imported equality function with semantics - use native ==
+            return None
+
+        return None
+
+    def _has_imported_equality_semantics(self, eq_func_name: str) -> bool:
+        """Check if an equality function is imported with postcondition semantics.
+
+        Returns True if the function is imported with (@post (== $result (== a b))).
+        """
+        sig = self.imported_defs.functions.get(eq_func_name)
+        if sig is None or len(sig.params) != 2:
+            return False
+
+        # Check postconditions for pattern: (== $result (== a b))
+        for post in sig.postconditions:
+            if is_form(post, '==') and len(post) == 3:
+                lhs, rhs = post[1], post[2]
+                # Check for (== $result (== ...)) or (== (== ...) $result)
+                if isinstance(lhs, Symbol) and lhs.name == '$result':
+                    if is_form(rhs, '==') and len(rhs) == 3:
+                        return True
+                elif isinstance(rhs, Symbol) and rhs.name == '$result':
+                    if is_form(lhs, '==') and len(lhs) == 3:
+                        return True
+        return False
+
+    def _extract_imported_equality_axioms(
+        self, translator: 'Z3Translator'
+    ) -> List[z3.BoolRef]:
+        """Extract axioms from imported equality functions.
+
+        For imported functions like term-eq with postcondition:
+            (@post (== $result (== a b)))
+
+        Generate a Z3 axiom that tells Z3 what the equality function means:
+            ForAll a, b: fn_term-eq_2(a, b) == (a == b)
+
+        This allows Z3 to reason about equality in properties.
+        """
+        axioms: List[z3.BoolRef] = []
+
+        for fn_name, sig in self.imported_defs.functions.items():
+            # Check if this looks like an equality function
+            if not (fn_name.endswith('-eq') or fn_name.endswith('?')):
+                continue
+
+            # Must have exactly 2 parameters
+            if len(sig.params) != 2:
+                continue
+
+            # Check postconditions for pattern: (== $result (== a b))
+            for post in sig.postconditions:
+                eq_axiom = self._parse_equality_postcondition(
+                    fn_name, sig.params, post, translator
+                )
+                if eq_axiom is not None:
+                    axioms.append(eq_axiom)
+
+        return axioms
+
+    def _parse_equality_postcondition(
+        self,
+        fn_name: str,
+        params: List[str],
+        post: SExpr,
+        translator: 'Z3Translator'
+    ) -> Optional[z3.BoolRef]:
+        """Parse an equality postcondition and generate a Z3 axiom.
+
+        Pattern: (== $result (== a b)) or (== $result (== b a))
+        where a, b are the function's parameters.
+
+        Returns: ForAll a, b: fn_name(a, b) == (a == b)
+        """
+        if not is_form(post, '==') or len(post) != 3:
+            return None
+
+        lhs, rhs = post[1], post[2]
+
+        # Check for (== $result (== ...))
+        if not (isinstance(lhs, Symbol) and lhs.name == '$result'):
+            # Try swapped: (== (== ...) $result)
+            if isinstance(rhs, Symbol) and rhs.name == '$result':
+                lhs, rhs = rhs, lhs
+            else:
+                return None
+
+        # rhs should be (== a b) where a, b are the params
+        if not is_form(rhs, '==') or len(rhs) != 3:
+            return None
+
+        inner_lhs, inner_rhs = rhs[1], rhs[2]
+        if not (isinstance(inner_lhs, Symbol) and isinstance(inner_rhs, Symbol)):
+            return None
+
+        # Check that these are the function's parameters
+        param_names = {inner_lhs.name, inner_rhs.name}
+        if param_names != set(params):
+            return None
+
+        # Create or get the Z3 function
+        func_key = f"fn_{fn_name}_2"
+        if func_key not in translator.variables:
+            func = z3.Function(func_key, z3.IntSort(), z3.IntSort(), z3.BoolSort())
+            translator.variables[func_key] = func
+        else:
+            func = translator.variables[func_key]
+
+        # Create quantified variables
+        a = z3.Int(f'{fn_name}_a')
+        b = z3.Int(f'{fn_name}_b')
+
+        # Generate axiom: ForAll a, b: fn(a, b) == (a == b)
+        axiom = z3.ForAll([a, b], func(a, b) == (a == b))
+        return axiom
 
     def _extract_loop_invariants(self, expr: SExpr) -> List[SExpr]:
         """Extract all @loop-invariant annotations from an expression recursively.
@@ -5375,6 +6246,7 @@ class ContractVerifier:
         Patterns:
         - (make-graph arena)
         - (make-list arena)
+        - (list-new arena Type)
         - (record-new Type (field nil/empty) ...)
         """
         if isinstance(expr, SList) and len(expr) >= 1:
@@ -5386,6 +6258,9 @@ class ContractVerifier:
                 # (graph-empty arena) or similar
                 if head.name.endswith('-empty'):
                     return True
+                # (list-new arena Type) pattern
+                if head.name == 'list-new':
+                    return True
         return False
 
     def _is_conditional_set(self, expr: SExpr, result_var: str, loop_var: str) -> Optional[SExpr]:
@@ -5394,6 +6269,7 @@ class ContractVerifier:
         Also handles:
         - (when predicate (set! result ...))
         - (if predicate (set! result (add-X arena result item)))
+        - (when predicate (list-push result item))
         """
         if is_form(expr, 'if') or is_form(expr, 'when'):
             if len(expr) >= 3:
@@ -5402,6 +6278,12 @@ class ContractVerifier:
 
                 # Check if then_branch is (set! result (add result item))
                 if is_form(then_branch, 'set!') and len(then_branch) >= 3:
+                    target = then_branch[1]
+                    if isinstance(target, Symbol) and target.name == result_var:
+                        return predicate
+
+                # Check if then_branch is (list-push result item)
+                if is_form(then_branch, 'list-push') and len(then_branch) >= 3:
                     target = then_branch[1]
                     if isinstance(target, Symbol) and target.name == result_var:
                         return predicate
@@ -5521,6 +6403,442 @@ class ContractVerifier:
                                 )
 
         return None
+
+    def _detect_map_pattern(self, body: SExpr) -> Optional[MapPatternInfo]:
+        """Detect map/transform loop pattern in function body.
+
+        Map pattern (unconditional push with constructor):
+        (let ((mut result (list-new arena Type)))
+          (for-each (item collection)
+            (list-push result (constructor-new arena ...)))
+          result)
+
+        Also detects conditional map patterns (filter-and-transform):
+        (let ((mut result (list-new arena Type)))
+          (for-each (item collection)
+            (when condition
+              (let ((x ...) (y ...))
+                (list-push result (make-triple arena y pred x)))))
+          result)
+
+        Returns MapPatternInfo if detected, None otherwise.
+        """
+        # Must be a let expression
+        if not is_form(body, 'let') or len(body) < 3:
+            return None
+
+        bindings = body[1]
+        if not isinstance(bindings, SList):
+            return None
+
+        # Build initial bindings context from let bindings
+        initial_bindings: Dict[str, SExpr] = {}
+        for binding in bindings.items:
+            if isinstance(binding, SList) and len(binding) >= 2:
+                first = binding[0]
+                if isinstance(first, Symbol):
+                    if first.name == 'mut' and len(binding) >= 3:
+                        # (mut var value)
+                        var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                        var_value = binding[2]
+                    else:
+                        # (var value)
+                        var_name = first.name
+                        var_value = binding[1]
+                    if var_name and var_value:
+                        initial_bindings[var_name] = var_value
+
+        # Find mutable result binding
+        result_var = None
+        for binding in bindings.items:
+            if self._is_mutable_binding(binding) and len(binding) >= 3:
+                var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                init_expr = binding[2]
+                if var_name and self._is_empty_collection_init(init_expr):
+                    result_var = var_name
+                    break
+
+        if not result_var:
+            return None
+
+        # Find for-each loop in body
+        body_exprs = body.items[2:]
+        for body_expr in body_exprs:
+            if is_form(body_expr, 'for-each') and len(body_expr) >= 3:
+                loop_binding = body_expr[1]
+                if isinstance(loop_binding, SList) and len(loop_binding) >= 2:
+                    loop_var = loop_binding[0].name if isinstance(loop_binding[0], Symbol) else None
+                    collection = loop_binding[1]
+
+                    if loop_var:
+                        loop_body = body_expr.items[2:]
+
+                        # First try: UNCONDITIONAL push with constructor
+                        push_info = self._find_unconditional_push_in_expr(
+                            loop_body, result_var, loop_var
+                        )
+                        if push_info is not None:
+                            constructor_expr, field_mappings = push_info
+                            return MapPatternInfo(
+                                result_var=result_var,
+                                collection=collection,
+                                loop_var=loop_var,
+                                constructor_expr=constructor_expr,
+                                field_mappings=field_mappings
+                            )
+
+                        # Second try: CONDITIONAL push with constructor (filter-and-transform)
+                        cond_push_info = self._find_conditional_push_with_constructor(
+                            loop_body, result_var, loop_var, initial_bindings
+                        )
+                        if cond_push_info is not None:
+                            constructor_expr, field_mappings, predicate = cond_push_info
+                            return MapPatternInfo(
+                                result_var=result_var,
+                                collection=collection,
+                                loop_var=loop_var,
+                                constructor_expr=constructor_expr,
+                                field_mappings=field_mappings
+                            )
+
+        return None
+
+    def _find_unconditional_push_in_expr(
+        self, stmts: List[SExpr], result_var: str, loop_var: str
+    ) -> Optional[Tuple[SExpr, Dict[str, SExpr]]]:
+        """Find unconditional list-push with constructor in loop body.
+
+        Returns (constructor_expr, field_mappings) if found.
+
+        Patterns recognized:
+        - Direct: (list-push result (constructor ...))
+        - In let: (let (...) ... (list-push result (constructor ...)))
+        - In do: (do ... (list-push result (constructor ...)))
+
+        Does NOT match conditional pushes (when/if), as those are filter patterns.
+        """
+        for stmt in stmts:
+            # Skip annotations
+            if isinstance(stmt, SList) and len(stmt) >= 1:
+                head = stmt[0]
+                if isinstance(head, Symbol) and head.name.startswith('@'):
+                    continue
+
+            # Check for unconditional (list-push result (constructor ...))
+            if is_form(stmt, 'list-push') and len(stmt) >= 3:
+                target = stmt[1]
+                pushed_expr = stmt[2]
+                if isinstance(target, Symbol) and target.name == result_var:
+                    # Check if pushed expr is a constructor call
+                    if isinstance(pushed_expr, SList) and len(pushed_expr) >= 1:
+                        field_mappings = self._extract_field_mappings(
+                            pushed_expr, loop_var
+                        )
+                        if field_mappings:
+                            return (pushed_expr, field_mappings)
+
+            # Recurse into let bindings (but NOT conditionals)
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                nested_result = self._find_unconditional_push_in_expr(
+                    stmt.items[2:], result_var, loop_var
+                )
+                if nested_result is not None:
+                    return nested_result
+
+            # Recurse into do blocks
+            if is_form(stmt, 'do'):
+                nested_result = self._find_unconditional_push_in_expr(
+                    stmt.items[1:], result_var, loop_var
+                )
+                if nested_result is not None:
+                    return nested_result
+
+            # Skip conditionals - those are filter patterns, not map patterns
+            # (if ...) and (when ...) are handled by _detect_filter_pattern
+
+        return None
+
+    def _find_conditional_push_with_constructor(
+        self, stmts: List[SExpr], result_var: str, loop_var: str,
+        bindings_context: Dict[str, SExpr]
+    ) -> Optional[Tuple[SExpr, Dict[str, SExpr], SExpr]]:
+        """Find conditional list-push with constructor (filter-and-transform pattern).
+
+        Returns (constructor_expr, field_mappings, predicate) if found.
+
+        This handles patterns like:
+        (when condition
+          (let ((x (accessor loop_var)) ...)
+            (when condition2
+              (list-push result (make-triple arena y same-as x)))))
+
+        The bindings_context maps variable names to their definitions, allowing
+        us to trace variables back to their source expressions.
+        """
+        for stmt in stmts:
+            # Skip annotations
+            if isinstance(stmt, SList) and len(stmt) >= 1:
+                head = stmt[0]
+                if isinstance(head, Symbol) and head.name.startswith('@'):
+                    continue
+
+            # Handle (when condition body) or (if condition body)
+            if (is_form(stmt, 'when') or is_form(stmt, 'if')) and len(stmt) >= 3:
+                predicate = stmt[1]
+                then_body = stmt[2]
+
+                # Check if then_body directly contains list-push with constructor
+                push_result = self._check_push_with_constructor(
+                    then_body, result_var, loop_var, bindings_context
+                )
+                if push_result is not None:
+                    constructor_expr, field_mappings = push_result
+                    return (constructor_expr, field_mappings, predicate)
+
+                # Recurse into then_body (may have nested let/when)
+                nested_result = self._find_conditional_push_with_constructor(
+                    [then_body], result_var, loop_var, bindings_context
+                )
+                if nested_result is not None:
+                    # Combine predicates: outer AND inner
+                    inner_constructor, inner_mappings, inner_pred = nested_result
+                    return (inner_constructor, inner_mappings, predicate)
+
+            # Handle let bindings - add to context and recurse
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                let_bindings = stmt[1]
+                new_context = bindings_context.copy()
+
+                # Extract bindings
+                if isinstance(let_bindings, SList):
+                    for binding in let_bindings.items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            var_name = None
+                            var_value = None
+                            # Handle (var value) or (mut var value)
+                            if isinstance(binding[0], Symbol):
+                                if binding[0].name == 'mut' and len(binding) >= 3:
+                                    var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                                    var_value = binding[2]
+                                else:
+                                    var_name = binding[0].name
+                                    var_value = binding[1]
+                            if var_name and var_value:
+                                new_context[var_name] = var_value
+
+                # Recurse into let body with expanded context
+                nested_result = self._find_conditional_push_with_constructor(
+                    stmt.items[2:], result_var, loop_var, new_context
+                )
+                if nested_result is not None:
+                    return nested_result
+
+        return None
+
+    def _check_push_with_constructor(
+        self, expr: SExpr, result_var: str, loop_var: str,
+        bindings_context: Dict[str, SExpr]
+    ) -> Optional[Tuple[SExpr, Dict[str, SExpr]]]:
+        """Check if expr is (list-push result (constructor ...)) and extract field mappings.
+
+        Uses bindings_context to resolve variable references to their source expressions.
+        Handles both direct constructor calls and variable references to constructors:
+        - (list-push result (make-triple arena y pred x))
+        - (list-push result inferred) where inferred = (make-triple ...)
+        """
+        if not is_form(expr, 'list-push') or len(expr) < 3:
+            return None
+
+        target = expr[1]
+        pushed_expr = expr[2]
+
+        if not isinstance(target, Symbol) or target.name != result_var:
+            return None
+
+        # Resolve pushed_expr if it's a variable reference
+        resolved_pushed = pushed_expr
+        if isinstance(pushed_expr, Symbol) and pushed_expr.name in bindings_context:
+            resolved_pushed = bindings_context[pushed_expr.name]
+
+        if not isinstance(resolved_pushed, SList) or len(resolved_pushed) < 1:
+            return None
+
+        # Extract field mappings, resolving variables through bindings_context
+        field_mappings = self._extract_field_mappings_with_context(
+            resolved_pushed, loop_var, bindings_context
+        )
+        if field_mappings:
+            return (resolved_pushed, field_mappings)
+
+        return None
+
+    def _extract_field_mappings_with_context(
+        self, constructor: SExpr, loop_var: str,
+        bindings_context: Dict[str, SExpr]
+    ) -> Dict[str, SExpr]:
+        """Extract field mappings from constructor, resolving variables through context.
+
+        For (make-triple arena y same-as x) where:
+            x = (triple-subject dt)
+            y = (triple-object dt)
+            same-as = (make-iri arena OWL_SAME_AS)
+
+        Returns: {
+            'subject': (triple-object dt),   # resolved from y
+            'predicate': same-as (or resolved expr),
+            'object': (triple-subject dt)    # resolved from x
+        }
+
+        Note: make-triple uses RDF order (arena, subject, predicate, object)
+        """
+        if not isinstance(constructor, SList) or len(constructor) < 1:
+            return {}
+
+        head = constructor[0]
+        if not isinstance(head, Symbol):
+            return {}
+
+        head_name = head.name
+        mappings: Dict[str, SExpr] = {}
+
+        # Handle make-triple: (make-triple arena subj pred obj)
+        # Note: Different from triple-new! Uses RDF order.
+        if head_name == 'make-triple' and len(constructor) >= 5:
+            # Args: arena, subject, predicate, object
+            subj_arg = constructor[2]
+            pred_arg = constructor[3]
+            obj_arg = constructor[4]
+
+            # Resolve through bindings context
+            mappings['subject'] = self._resolve_through_context(subj_arg, bindings_context)
+            mappings['predicate'] = self._resolve_through_context(pred_arg, bindings_context)
+            mappings['object'] = self._resolve_through_context(obj_arg, bindings_context)
+            return mappings
+
+        # Fall back to regular extraction if not make-triple
+        return self._extract_field_mappings(constructor, loop_var)
+
+    def _resolve_through_context(
+        self, expr: SExpr, bindings_context: Dict[str, SExpr]
+    ) -> SExpr:
+        """Resolve a variable through the bindings context to its source expression.
+
+        If expr is a Symbol that exists in bindings_context, return its definition.
+        Otherwise return expr unchanged.
+        """
+        if isinstance(expr, Symbol) and expr.name in bindings_context:
+            return bindings_context[expr.name]
+        return expr
+
+    def _extract_field_mappings(
+        self, constructor: SExpr, loop_var: str
+    ) -> Dict[str, SExpr]:
+        """Extract field -> source_expr mappings from a constructor call.
+
+        For (triple-new arena (triple-predicate dt) (triple-object dt) (triple-subject dt)):
+        Returns: {
+            'predicate': (triple-predicate dt),
+            'subject': (triple-object dt),   # Note: swapped positions
+            'object': (triple-subject dt)    # Note: swapped positions
+        }
+
+        For (record-new Type (field1 expr1) (field2 expr2) ...):
+        Returns: {'field1': expr1, 'field2': expr2, ...}
+
+        Returns empty dict if pattern is not recognized.
+        """
+        if not isinstance(constructor, SList) or len(constructor) < 1:
+            return {}
+
+        head = constructor[0]
+        if not isinstance(head, Symbol):
+            return {}
+
+        head_name = head.name
+        mappings: Dict[str, SExpr] = {}
+
+        # Handle triple-new: (triple-new arena pred subj obj)
+        # Known positional constructor for Triple type
+        if head_name == 'triple-new' and len(constructor) >= 5:
+            # Args: arena, predicate, subject, object
+            mappings['predicate'] = constructor[2]
+            mappings['subject'] = constructor[3]
+            mappings['object'] = constructor[4]
+            return mappings
+
+        # Handle make-triple: (make-triple arena subj pred obj)
+        # Note: Different argument order from triple-new!
+        # make-triple follows RDF convention: (subject, predicate, object)
+        if head_name == 'make-triple' and len(constructor) >= 5:
+            # Args: arena, subject, predicate, object
+            mappings['subject'] = constructor[2]
+            mappings['predicate'] = constructor[3]
+            mappings['object'] = constructor[4]
+            return mappings
+
+        # Handle record-new: (record-new Type (field1 val1) (field2 val2) ...)
+        # Must be checked BEFORE generic -new suffix to avoid matching positional pattern
+        if head_name == 'record-new' and len(constructor) >= 3:
+            # Skip type name at position 1
+            for i, field_binding in enumerate(constructor.items[2:]):
+                if isinstance(field_binding, SList) and len(field_binding) >= 2:
+                    field_name = field_binding[0]
+                    field_value = field_binding[1]
+                    if isinstance(field_name, Symbol):
+                        mappings[field_name.name] = field_value
+            if mappings:
+                return mappings
+
+        # Handle struct-new: (struct-new Type (field1 val1) ...)
+        # Must be checked BEFORE generic -new suffix
+        if head_name == 'struct-new' and len(constructor) >= 3:
+            for field_binding in constructor.items[2:]:
+                if isinstance(field_binding, SList) and len(field_binding) >= 2:
+                    field_name = field_binding[0]
+                    field_value = field_binding[1]
+                    if isinstance(field_name, Symbol):
+                        mappings[field_name.name] = field_value
+            if mappings:
+                return mappings
+
+        # Handle Type-new: (Type-new arena field1 field2 ...)
+        # Generic positional constructor pattern (after specific patterns)
+        if head_name.endswith('-new'):
+            type_name = head_name[:-4]  # Remove '-new' suffix
+            # Return positional mappings with numeric keys
+            for i, arg in enumerate(constructor.items[2:]):  # Skip constructor name and arena
+                mappings[f'field_{i}'] = arg
+            if mappings:
+                return mappings
+
+        # General fallback: any constructor-like call with arguments
+        # Map positional arguments to field_0, field_1, etc.
+        if len(constructor) >= 2:
+            # Check if any argument references the loop variable
+            has_loop_var_ref = False
+            for arg in constructor.items[1:]:
+                if self._references_var(arg, loop_var):
+                    has_loop_var_ref = True
+                    break
+
+            if has_loop_var_ref:
+                for i, arg in enumerate(constructor.items[1:]):
+                    # Skip arena argument if it's the first
+                    if i == 0 and isinstance(arg, Symbol) and arg.name == 'arena':
+                        continue
+                    mappings[f'arg_{i}'] = arg
+
+        return mappings
+
+    def _references_var(self, expr: SExpr, var_name: str) -> bool:
+        """Check if expression references a variable."""
+        if isinstance(expr, Symbol):
+            return expr.name == var_name
+        if isinstance(expr, SList):
+            for item in expr.items:
+                if self._references_var(item, var_name):
+                    return True
+        return False
 
     def _generate_filter_axioms(self, pattern: FilterPatternInfo,
                                 translator: Z3Translator) -> List:
@@ -6545,12 +7863,17 @@ class ContractVerifier:
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
-        # Determine if array encoding is needed for postconditions
+        # Determine if array or sequence encoding is needed for postconditions or properties
         use_array_encoding = self._needs_array_encoding(postconditions)
+        # Check both postconditions and properties for seq encoding need
+        property_exprs = [prop_expr for _, prop_expr in properties]
+        use_seq_encoding = (self._needs_seq_encoding(postconditions) or
+                           self._needs_seq_encoding(property_exprs))
 
         # Create translator and declare parameters
         translator = Z3Translator(self.type_env, self.filename, self.function_registry,
-                                  self.imported_defs, use_array_encoding=use_array_encoding)
+                                  self.imported_defs, use_array_encoding=use_array_encoding,
+                                  use_seq_encoding=use_seq_encoding)
 
         # Declare parameter variables
         for param in params:
@@ -6591,6 +7914,16 @@ class ContractVerifier:
             arr, length = translator._create_list_array('$result')
             # Empty list initially: length >= 0 (will be constrained to 0 in list-new axioms)
             translator.constraints.append(length >= 0)
+
+        # Set up sequence encoding for $result BEFORE translating postconditions/properties
+        # This enables collection-bound quantifiers like (forall (t $result) ...)
+        if use_seq_encoding:
+            # Create $result Seq if body returns a list
+            if fn_body is not None and self._is_list_new(fn_body):
+                translator._create_list_seq('$result')
+            # Also create $result Seq if postconditions/properties reference it as a collection
+            elif self._references_result_collection(postconditions) or self._references_result_collection(property_exprs):
+                translator._create_list_seq('$result')
 
         # Translate preconditions
         pre_z3: List[z3.BoolRef] = []
@@ -7007,12 +8340,42 @@ class ContractVerifier:
         # For postconditions like (all-triples-have-predicate $result RDF_TYPE),
         # detect that all pushed elements have the required property and add
         # a universally quantified axiom.
+        #
+        # Collect pattern axioms to share with property verification
+        pattern_axioms: List[z3.BoolRef] = []
+
         if fn_body is not None and translator.use_array_encoding:
             element_property_axioms = self._extract_list_element_property_axioms(
                 fn_body, postconditions, translator
             )
             for axiom in element_property_axioms:
                 solver.add(axiom)
+                pattern_axioms.append(axiom)
+
+        # Phase 14b: Sequence push provenance axioms (with Seq encoding)
+        # For filter patterns that build lists via list-push, generate axioms
+        # connecting result elements to their source collection and predicate.
+        # This enables proving postconditions like (forall (t $result) (pred t)).
+        if fn_body is not None and translator.use_seq_encoding:
+            seq_push_axioms = self._extract_seq_push_axioms(
+                fn_body, postconditions, translator
+            )
+            for axiom in seq_push_axioms:
+                solver.add(axiom)
+                pattern_axioms.append(axiom)
+
+        # Phase 14c: Map pattern push axioms (with Seq encoding)
+        # For map/transform patterns that build lists via unconditional list-push
+        # of constructor expressions, generate axioms connecting result fields
+        # to source fields. This enables proving postconditions like:
+        #   (forall (t $result) (exists (dt source) (field-relationship t dt)))
+        if fn_body is not None and translator.use_seq_encoding:
+            map_push_axioms = self._extract_map_push_axioms(
+                fn_body, postconditions, translator
+            )
+            for axiom in map_push_axioms:
+                solver.add(axiom)
+                pattern_axioms.append(axiom)
 
         # Phase 15: Weakest Precondition Calculus
         # Use backward reasoning to generate stronger verification conditions.
@@ -7066,6 +8429,17 @@ class ContractVerifier:
                     # Add type constraints only (not preconditions)
                     for c in translator.constraints:
                         prop_solver.add(c)
+
+                    # Add pattern axioms (filter/map/fold axioms derived from loop analysis)
+                    # These are needed for properties that reason about collection contents
+                    for axiom in pattern_axioms:
+                        prop_solver.add(axiom)
+
+                    # Add axioms for imported equality functions
+                    # This allows Z3 to understand that e.g., term-eq(a,b) == (a == b)
+                    imported_eq_axioms = self._extract_imported_equality_axioms(translator)
+                    for axiom in imported_eq_axioms:
+                        prop_solver.add(axiom)
 
                     # Check if NOT property is satisfiable
                     prop_solver.add(z3.Not(prop_z3_expr))
@@ -7305,8 +8679,20 @@ class RangeVerifier:
 # ============================================================================
 
 def verify_source(source: str, filename: str = "<string>",
-                  mode: str = "error", timeout_ms: int = 5000) -> List[VerificationResult]:
-    """Verify SLOP source string"""
+                  mode: str = "error", timeout_ms: int = 5000,
+                  search_paths: Optional[List[Path]] = None) -> List[VerificationResult]:
+    """Verify SLOP source string.
+
+    Args:
+        source: SLOP source code as string
+        filename: Source filename (for error messages and import resolution)
+        mode: Failure mode ('error' or 'warn')
+        timeout_ms: Z3 solver timeout in milliseconds
+        search_paths: Paths to search for imported modules
+
+    Returns:
+        List of verification results
+    """
     if not Z3_AVAILABLE:
         return [VerificationResult(
             name="z3",
@@ -7337,6 +8723,16 @@ def verify_source(source: str, filename: str = "<string>",
     type_registry = build_type_registry_from_ast(ast)
     # Build invariant registry for type invariants
     invariant_registry = build_invariant_registry_from_ast(ast)
+
+    # Resolve imported definitions for verification
+    file_path = Path(filename)
+    imported_defs = resolve_imported_definitions(ast, file_path, search_paths)
+
+    # Merge imported types into type_registry for type lookups
+    for type_name, typ in imported_defs.types.items():
+        if type_name not in type_registry:
+            type_registry[type_name] = typ
+
     type_env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
 
     # Build function registry for inlining
@@ -7344,7 +8740,7 @@ def verify_source(source: str, filename: str = "<string>",
     function_registry.register_from_ast(ast)
 
     # Run contract verification
-    contract_verifier = ContractVerifier(type_env, filename, timeout_ms, function_registry)
+    contract_verifier = ContractVerifier(type_env, filename, timeout_ms, function_registry, imported_defs)
     results = contract_verifier.verify_all(ast)
 
     # Run range verification
