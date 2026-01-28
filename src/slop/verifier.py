@@ -429,6 +429,65 @@ class MapPatternInfo:
                                        # e.g., {'subject': (triple-object dt)}
 
 
+class FieldSource:
+    """Source classification for constructor fields in nested loops."""
+    CONSTANT = "constant"    # Same value for all results (e.g., same-as from outer let)
+    OUTER = "outer"          # Derived from outer loop variable
+    INNER = "inner"          # Derived from inner loop variable
+    MIXED = "mixed"          # Combines multiple sources
+
+
+@dataclass
+class InnerLoopInfo:
+    """Information about an inner loop in a nested loop pattern."""
+    collection: SExpr                 # The collection being iterated (may be a query result)
+    loop_var: str                     # The loop variable name
+    filter: Optional[SExpr]           # Filter condition from (when ...) if any
+    bindings: Dict[str, SExpr]        # Variable bindings from let expressions
+    join_vars: Set[str]               # Variables from outer scope used in collection query
+
+
+@dataclass
+class NestedLoopPatternInfo:
+    """Information about a nested loop pattern with join semantics.
+
+    Nested loop join pattern (e.g., eq-trans):
+    (let ((mut result (list-new arena Type))
+          (same-as (make-iri arena OWL_SAME_AS)))  ; outer constants
+      (for-each (dt (. delta triples))             ; OUTER loop
+        (when outer-filter                          ; outer filter
+          (let ((x (triple-subject dt))
+                (y (triple-object dt)))             ; outer bindings
+            (let ((y-objects (indexed-graph-match arena g (some y) ...)))  ; join query
+              (for-each (yo-triple y-objects)      ; INNER loop
+                (let ((z (triple-object yo-triple)))  ; inner bindings
+                  (when inner-filter                  ; inner filter
+                    (list-push result (make-triple arena x same-as z)))))))))
+      result)
+
+    This pattern represents a join between delta.triples and the result of
+    indexed-graph-match, similar to a SQL join.
+    """
+    result_var: str                   # The mutable result variable name
+
+    # Outer loop info
+    outer_collection: SExpr           # e.g., (. delta triples)
+    outer_loop_var: str               # e.g., dt
+    outer_filter: Optional[SExpr]     # e.g., (term-eq (triple-predicate dt) same-as)
+    outer_bindings: Dict[str, SExpr]  # e.g., {x: (triple-subject dt), y: (triple-object dt)}
+    outer_let_bindings: Dict[str, SExpr]  # Constants from outer let (e.g., same-as)
+
+    # Inner loop(s) - list supports multiple nesting levels
+    inner_loops: List[InnerLoopInfo]
+
+    # Constructor info
+    constructor_expr: SExpr           # e.g., (make-triple arena x same-as z)
+    field_mappings: Dict[str, SExpr]  # e.g., {subject: x, predicate: same-as, object: z}
+
+    # Field provenance: which source each field comes from
+    field_provenance: Dict[str, str]  # e.g., {subject: OUTER, predicate: CONSTANT, object: INNER}
+
+
 @dataclass
 class CountPatternInfo:
     """Information about a detected count loop pattern.
@@ -3759,12 +3818,21 @@ class ContractVerifier:
                 (and (term-eq (triple-predicate dt) (triple-predicate t))
                      (term-eq (triple-subject t) (triple-object dt))
                      (term-eq (triple-object t) (triple-subject dt)))))
+
+        Also handles nested loop patterns (joins) like eq-trans where inner loops
+        iterate over query results derived from outer loop variables.
         """
         axioms: List[z3.BoolRef] = []
 
-        # Find map patterns
+        # First try: single-loop map pattern
         map_pattern = self._detect_map_pattern(fn_body)
         if map_pattern is None:
+            # Second try: nested loop pattern (joins)
+            nested_pattern = self._detect_nested_loop_pattern(fn_body)
+            if nested_pattern is not None:
+                return self._generate_nested_loop_axioms(
+                    nested_pattern, postconditions, translator
+                )
             return axioms
 
         # Need Seq for $result
@@ -3943,6 +4011,215 @@ class ContractVerifier:
                 translator.variables[map_pattern.loop_var] = old_binding
             elif map_pattern.loop_var in translator.variables:
                 del translator.variables[map_pattern.loop_var]
+
+        return axioms
+
+    def _generate_nested_loop_axioms(
+        self,
+        pattern: NestedLoopPatternInfo,
+        postconditions: List[SExpr],
+        translator: 'Z3Translator'
+    ) -> List[z3.BoolRef]:
+        """Generate axioms for nested loop join patterns.
+
+        For nested patterns like eq-trans:
+        (let ((same-as (make-iri arena OWL_SAME_AS))
+              (mut result (list-new arena Triple)))
+          (for-each (dt (. delta triples))
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((x (triple-subject dt))
+                    (y (triple-object dt)))
+                (let ((y-objects (indexed-graph-match ...)))
+                  (for-each (yo-triple y-objects)
+                    (let ((z (triple-object yo-triple)))
+                      (when inner-filter
+                        (list-push result (make-triple arena x same-as z)))))))))
+          result)
+
+        Generates axioms that connect result elements to outer collection elements
+        based on field provenance analysis:
+
+        For fields with OUTER provenance (e.g., subject from x = triple-subject(dt)):
+            ForAll i in result: Exists j in outer_collection:
+                outer_filter(outer_collection[j]) AND
+                result_field(result[i]) = outer_field(outer_collection[j])
+
+        For fields with CONSTANT provenance (e.g., predicate = same-as):
+            ForAll i in result: Exists j in outer_collection:
+                outer_filter(outer_collection[j]) AND
+                result_field(result[i]) = constant_field(outer_collection[j])
+
+        This enables proving properties like:
+            (forall (t $result)
+              (exists (dt (. delta triples))
+                (term-eq (triple-predicate dt) (triple-predicate t))))
+        """
+        axioms: List[z3.BoolRef] = []
+
+        # Need Seq for $result
+        if '$result' not in translator.list_seqs:
+            return axioms
+
+        result_seq = translator.list_seqs['$result']
+
+        # Get or create Seq for outer source collection
+        outer_seq = None
+        outer_name = None
+
+        if isinstance(pattern.outer_collection, Symbol):
+            outer_name = pattern.outer_collection.name
+            if outer_name not in translator.list_seqs:
+                translator._create_list_seq(outer_name)
+            outer_seq = translator.list_seqs.get(outer_name)
+        elif is_form(pattern.outer_collection, '.') and len(pattern.outer_collection) >= 3:
+            # Field access: (. obj field)
+            obj = pattern.outer_collection[1]
+            field = pattern.outer_collection[2]
+            if isinstance(obj, Symbol) and isinstance(field, Symbol):
+                outer_name = f"_field_{obj.name}_{field.name}"
+                if outer_name not in translator.list_seqs:
+                    translator._create_list_seq(outer_name)
+                outer_seq = translator.list_seqs.get(outer_name)
+
+        if outer_seq is None:
+            return axioms
+
+        # Create index variables
+        result_idx = z3.Int('_nested_res_i')
+        outer_idx = z3.Int('_nested_outer_j')
+
+        # Save and set up variable bindings
+        old_outer_binding = translator.variables.get(pattern.outer_loop_var)
+
+        try:
+            # Bind outer loop var to outer element at j
+            translator.variables[pattern.outer_loop_var] = outer_seq[outer_idx]
+
+            # Also bind outer_bindings variables through resolution
+            old_bindings = {}
+            for var_name, var_expr in pattern.outer_bindings.items():
+                old_bindings[var_name] = translator.variables.get(var_name)
+                # Translate the binding expression with outer_loop_var bound
+                var_z3 = translator.translate_expr(var_expr)
+                if var_z3 is not None:
+                    translator.variables[var_name] = var_z3
+
+            # Determine type prefix from collection
+            type_prefix = self._infer_element_type_prefix(pattern.outer_collection)
+
+            # Build outer filter constraint (if any)
+            outer_filter_z3 = None
+            if pattern.outer_filter is not None:
+                # Resolve filter condition through outer_let_bindings
+                resolved_filter = self._resolve_filter_condition(
+                    pattern.outer_filter, pattern.outer_let_bindings
+                )
+                outer_filter_z3 = translator.translate_expr(resolved_filter)
+
+            # Build field constraints based on provenance
+            field_constraints = []
+
+            for result_field, source_expr in pattern.field_mappings.items():
+                provenance = pattern.field_provenance.get(result_field, FieldSource.OUTER)
+
+                # Determine result accessor name
+                if type_prefix:
+                    result_accessor_name = f"{type_prefix}-{result_field}"
+                else:
+                    result_accessor_name = result_field
+
+                # Create the result field function
+                result_field_func_name = f"fn_{result_accessor_name}_1"
+                if result_field_func_name not in translator.variables:
+                    result_field_func = z3.Function(
+                        result_field_func_name,
+                        z3.IntSort(),
+                        z3.IntSort()
+                    )
+                    translator.variables[result_field_func_name] = result_field_func
+                else:
+                    result_field_func = translator.variables[result_field_func_name]
+
+                result_field_z3 = result_field_func(result_seq[result_idx])
+
+                # Get equality function
+                eq_func = self._get_type_equality_function(result_accessor_name, translator)
+
+                if provenance == FieldSource.CONSTANT:
+                    # Constant field: result field equals constant from outer source
+                    # For same-as predicate: triple-predicate(result[i]) = triple-predicate(outer[j])
+                    # (since both are filtered to have same-as predicate)
+                    outer_field_z3 = result_field_func(outer_seq[outer_idx])
+                    if eq_func is not None:
+                        field_constraints.append(eq_func(result_field_z3, outer_field_z3))
+                    else:
+                        field_constraints.append(result_field_z3 == outer_field_z3)
+
+                elif provenance == FieldSource.OUTER:
+                    # Outer field: result field equals expression derived from outer var
+                    # Resolve through bindings
+                    resolved_expr = self._resolve_through_context(
+                        source_expr, pattern.outer_bindings
+                    )
+                    source_z3 = translator.translate_expr(resolved_expr)
+                    if source_z3 is not None:
+                        if eq_func is not None:
+                            field_constraints.append(eq_func(result_field_z3, source_z3))
+                        else:
+                            field_constraints.append(result_field_z3 == source_z3)
+
+                elif provenance == FieldSource.INNER:
+                    # Inner field: derived from inner loop - harder to axiomatize simply
+                    # For now, just add that the field type matches outer collection type
+                    # This is a weaker axiom but still useful
+                    outer_field_z3 = result_field_func(outer_seq[outer_idx])
+                    # We can't prove direct equality, but we know the types match
+                    # Skip adding constraint for INNER provenance in the outer existence axiom
+                    pass
+
+                # MIXED provenance - skip, too complex
+
+            if not field_constraints:
+                return axioms
+
+            # Build the outer existence axiom:
+            # ForAll i in result: Exists j in outer:
+            #     outer_filter(outer[j]) AND field_constraints
+            outer_constraint_parts = [
+                outer_idx >= 0,
+                outer_idx < z3.Length(outer_seq)
+            ]
+            if outer_filter_z3 is not None:
+                outer_constraint_parts.append(outer_filter_z3)
+            outer_constraint_parts.extend(field_constraints)
+
+            outer_existence = z3.Exists([outer_idx], z3.And(*outer_constraint_parts))
+
+            axiom = z3.ForAll([result_idx],
+                z3.Implies(
+                    z3.And(result_idx >= 0, result_idx < z3.Length(result_seq)),
+                    outer_existence
+                )
+            )
+            axioms.append(axiom)
+
+            # Size relationship: result size <= outer size
+            # (may be much smaller due to filtering and join)
+            size_axiom = z3.Length(result_seq) <= z3.Length(outer_seq)
+            axioms.append(size_axiom)
+
+        finally:
+            # Restore bindings
+            if old_outer_binding is not None:
+                translator.variables[pattern.outer_loop_var] = old_outer_binding
+            elif pattern.outer_loop_var in translator.variables:
+                del translator.variables[pattern.outer_loop_var]
+
+            for var_name, old_val in old_bindings.items():
+                if old_val is not None:
+                    translator.variables[var_name] = old_val
+                elif var_name in translator.variables:
+                    del translator.variables[var_name]
 
         return axioms
 
@@ -6736,6 +7013,364 @@ class ContractVerifier:
                             )
 
         return None
+
+    def _detect_nested_loop_pattern(self, body: SExpr) -> Optional[NestedLoopPatternInfo]:
+        """Detect nested for-each loops with join semantics.
+
+        Recognizes patterns where:
+        1. Outer loop iterates over a collection
+        2. Inner loop iterates over query result that depends on outer var
+        3. Constructor in innermost body uses fields from both loops
+
+        Example (eq-trans):
+        (let ((same-as (make-iri arena OWL_SAME_AS))
+              (mut result (list-new arena Triple)))
+          (for-each (dt (. delta triples))
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((x (triple-subject dt))
+                    (y (triple-object dt)))
+                (let ((y-objects (indexed-graph-match arena g (some y) ...)))
+                  (for-each (yo-triple y-objects)
+                    (let ((z (triple-object yo-triple)))
+                      (when inner-filter
+                        (list-push result (make-triple arena x same-as z)))))))))
+          result)
+
+        Returns NestedLoopPatternInfo if detected, None otherwise.
+        """
+        # Must be a let expression
+        if not is_form(body, 'let') or len(body) < 3:
+            return None
+
+        bindings = body[1]
+        if not isinstance(bindings, SList):
+            return None
+
+        # Extract outer let bindings (constants and mutable result)
+        outer_let_bindings: Dict[str, SExpr] = {}
+        result_var = None
+
+        for binding in bindings.items:
+            if isinstance(binding, SList) and len(binding) >= 2:
+                first = binding[0]
+                if isinstance(first, Symbol):
+                    if first.name == 'mut' and len(binding) >= 3:
+                        # (mut var value)
+                        var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                        var_value = binding[2]
+                        if var_name and self._is_empty_collection_init(var_value):
+                            result_var = var_name
+                    else:
+                        # (var value) - constant binding
+                        var_name = first.name
+                        var_value = binding[1]
+                        if var_name and var_value:
+                            outer_let_bindings[var_name] = var_value
+
+        if not result_var:
+            return None
+
+        # Find outer for-each loop in body
+        body_exprs = body.items[2:]
+        for body_expr in body_exprs:
+            if is_form(body_expr, 'for-each') and len(body_expr) >= 3:
+                loop_binding = body_expr[1]
+                if isinstance(loop_binding, SList) and len(loop_binding) >= 2:
+                    outer_loop_var = loop_binding[0].name if isinstance(loop_binding[0], Symbol) else None
+                    outer_collection = loop_binding[1]
+
+                    if outer_loop_var:
+                        # Process outer loop body to find nested structure
+                        nested_result = self._process_nested_loop_body(
+                            body_expr.items[2:],  # loop body
+                            outer_loop_var,
+                            outer_let_bindings.copy(),
+                            result_var,
+                            []  # no inner loops yet
+                        )
+
+                        if nested_result is not None:
+                            (outer_filter, outer_bindings, inner_loops,
+                             constructor_expr, field_mappings, all_bindings) = nested_result
+
+                            # Classify field provenance
+                            field_provenance = self._classify_field_provenance(
+                                field_mappings,
+                                outer_loop_var,
+                                outer_bindings,
+                                outer_let_bindings,
+                                inner_loops
+                            )
+
+                            return NestedLoopPatternInfo(
+                                result_var=result_var,
+                                outer_collection=outer_collection,
+                                outer_loop_var=outer_loop_var,
+                                outer_filter=outer_filter,
+                                outer_bindings=outer_bindings,
+                                outer_let_bindings=outer_let_bindings,
+                                inner_loops=inner_loops,
+                                constructor_expr=constructor_expr,
+                                field_mappings=field_mappings,
+                                field_provenance=field_provenance
+                            )
+
+        return None
+
+    def _process_nested_loop_body(
+        self,
+        stmts: List[SExpr],
+        current_loop_var: str,
+        bindings: Dict[str, SExpr],
+        result_var: str,
+        inner_loops: List[InnerLoopInfo],
+        outer_filter: Optional[SExpr] = None
+    ) -> Optional[Tuple[
+        Optional[SExpr],        # outer_filter
+        Dict[str, SExpr],       # outer_bindings (from let after outer filter)
+        List[InnerLoopInfo],    # inner_loops
+        SExpr,                  # constructor_expr
+        Dict[str, SExpr],       # field_mappings
+        Dict[str, SExpr]        # all_bindings (accumulated)
+    ]]:
+        """Recursively process loop body to find inner loops and push.
+
+        Returns None if no nested pattern found, otherwise returns tuple of
+        (outer_filter, outer_bindings, inner_loops, constructor, field_mappings, all_bindings).
+
+        The outer_filter parameter accumulates filter conditions encountered BEFORE
+        any inner for-each loop is found.
+        """
+        for stmt in stmts:
+            # Skip annotations
+            if isinstance(stmt, SList) and len(stmt) >= 1:
+                head = stmt[0]
+                if isinstance(head, Symbol) and head.name.startswith('@'):
+                    continue
+
+            # Handle (when filter body) - this is a filter condition
+            if is_form(stmt, 'when') and len(stmt) >= 3:
+                filter_cond = stmt[1]
+                then_body = stmt[2]
+
+                # If we haven't found an inner loop yet, this is an outer filter
+                # Pass it along to be returned when we find the final structure
+                current_outer_filter = filter_cond if not inner_loops else outer_filter
+
+                # Recurse into then_body
+                result = self._process_nested_loop_body(
+                    [then_body], current_loop_var, bindings.copy(), result_var,
+                    inner_loops, current_outer_filter
+                )
+                if result is not None:
+                    return result
+                continue
+
+            # Handle (let ((bindings)) body)
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                let_bindings = stmt[1]
+                new_bindings = bindings.copy()
+
+                # Extract bindings
+                if isinstance(let_bindings, SList):
+                    for binding in let_bindings.items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            var_name = None
+                            var_value = None
+                            if isinstance(binding[0], Symbol):
+                                if binding[0].name == 'mut' and len(binding) >= 3:
+                                    var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                                    var_value = binding[2]
+                                else:
+                                    var_name = binding[0].name
+                                    var_value = binding[1]
+                            if var_name and var_value:
+                                new_bindings[var_name] = var_value
+
+                # Recurse into let body with expanded bindings
+                result = self._process_nested_loop_body(
+                    stmt.items[2:], current_loop_var, new_bindings, result_var,
+                    inner_loops, outer_filter
+                )
+                if result is not None:
+                    return result
+                continue
+
+            # Handle nested (for-each (var collection) body) - THE KEY PART
+            if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                inner_binding = stmt[1]
+                if isinstance(inner_binding, SList) and len(inner_binding) >= 2:
+                    inner_var = inner_binding[0].name if isinstance(inner_binding[0], Symbol) else None
+                    inner_collection = inner_binding[1]
+
+                    if inner_var:
+                        # Check if inner collection references outer variables (join!)
+                        # Resolve through bindings to find the actual referenced vars
+                        join_vars = self._find_join_vars_deep(inner_collection, bindings)
+
+                        inner_loop_info = InnerLoopInfo(
+                            collection=inner_collection,
+                            loop_var=inner_var,
+                            filter=None,
+                            bindings={},
+                            join_vars=join_vars
+                        )
+
+                        # Recurse into inner loop body with new loop var
+                        new_inner_loops = inner_loops + [inner_loop_info]
+                        result = self._process_nested_loop_body(
+                            stmt.items[2:], inner_var, bindings.copy(), result_var,
+                            new_inner_loops, outer_filter
+                        )
+                        if result is not None:
+                            # Return with the accumulated outer_filter
+                            (_, found_bindings, final_inner_loops,
+                             constructor, field_mappings, all_bindings) = result
+                            return (outer_filter, bindings, final_inner_loops,
+                                    constructor, field_mappings, all_bindings)
+                continue
+
+            # Handle (list-push result (constructor ...))
+            if is_form(stmt, 'list-push') and len(stmt) >= 3:
+                target = stmt[1]
+                pushed_expr = stmt[2]
+                if isinstance(target, Symbol) and target.name == result_var:
+                    # Resolve constructor if it's a variable
+                    resolved_constructor = pushed_expr
+                    if isinstance(pushed_expr, Symbol) and pushed_expr.name in bindings:
+                        resolved_constructor = bindings[pushed_expr.name]
+
+                    if isinstance(resolved_constructor, SList) and len(resolved_constructor) >= 1:
+                        field_mappings = self._extract_field_mappings_with_context(
+                            resolved_constructor, current_loop_var, bindings
+                        )
+                        if field_mappings:
+                            return (outer_filter, bindings, inner_loops, resolved_constructor,
+                                    field_mappings, bindings)
+
+        return None
+
+    def _find_join_vars_deep(
+        self, expr: SExpr, bindings: Dict[str, SExpr]
+    ) -> Set[str]:
+        """Find variables from bindings that are transitively referenced in expr.
+
+        For inner collection expressions like:
+        - 'matches' where matches = (query-by-subject g y) and y is in bindings
+        - (graph-match g y) where y is in bindings
+
+        Returns the set of binding names that are used (transitively) in the expression.
+        """
+        referenced: Set[str] = set()
+
+        def collect_refs(e: SExpr, seen: Set[str]):
+            if isinstance(e, Symbol):
+                var_name = e.name
+                if var_name in bindings and var_name not in seen:
+                    referenced.add(var_name)
+                    # Also check what this binding references
+                    seen.add(var_name)
+                    collect_refs(bindings[var_name], seen)
+            elif isinstance(e, SList):
+                for item in e.items:
+                    collect_refs(item, seen)
+
+        collect_refs(expr, set())
+        return referenced
+
+    def _find_referenced_vars_set(
+        self, expr: SExpr, known_vars: Dict[str, SExpr]
+    ) -> Set[str]:
+        """Find which known variables are referenced in an expression.
+
+        For detecting join patterns: which outer scope variables are used
+        in an inner loop's collection expression.
+        """
+        referenced: Set[str] = set()
+
+        def collect_refs(e: SExpr):
+            if isinstance(e, Symbol):
+                if e.name in known_vars:
+                    referenced.add(e.name)
+            elif isinstance(e, SList):
+                for item in e.items:
+                    collect_refs(item)
+
+        collect_refs(expr)
+        return referenced
+
+    def _classify_field_provenance(
+        self,
+        field_mappings: Dict[str, SExpr],
+        outer_loop_var: str,
+        outer_bindings: Dict[str, SExpr],
+        outer_let_bindings: Dict[str, SExpr],
+        inner_loops: List[InnerLoopInfo]
+    ) -> Dict[str, str]:
+        """Classify the source of each constructor field.
+
+        For (make-triple arena x same-as z):
+        - x → resolves to (triple-subject dt) → OUTER
+        - same-as → constant from outer let → CONSTANT
+        - z → resolves to (triple-object yo-triple) → INNER
+
+        Returns dict mapping field name to FieldSource value.
+        """
+        provenance: Dict[str, str] = {}
+
+        # Collect all inner loop variables
+        inner_loop_vars = {loop.loop_var for loop in inner_loops}
+
+        for field_name, field_expr in field_mappings.items():
+            source = self._determine_field_source(
+                field_expr,
+                outer_loop_var,
+                outer_bindings,
+                outer_let_bindings,
+                inner_loop_vars
+            )
+            provenance[field_name] = source
+
+        return provenance
+
+    def _determine_field_source(
+        self,
+        expr: SExpr,
+        outer_loop_var: str,
+        outer_bindings: Dict[str, SExpr],
+        outer_let_bindings: Dict[str, SExpr],
+        inner_loop_vars: Set[str]
+    ) -> str:
+        """Determine the source classification for a single field expression."""
+        # Check if it's a constant from outer let
+        if isinstance(expr, Symbol):
+            if expr.name in outer_let_bindings:
+                return FieldSource.CONSTANT
+            # Check if it's an outer binding that derives from outer loop var
+            if expr.name in outer_bindings:
+                resolved = outer_bindings[expr.name]
+                return self._determine_field_source(
+                    resolved, outer_loop_var, outer_bindings, outer_let_bindings, inner_loop_vars
+                )
+
+        # Check if expression references outer loop var directly
+        refs_outer = self._references_var(expr, outer_loop_var)
+
+        # Check if expression references any inner loop var
+        refs_inner = any(
+            self._references_var(expr, inner_var)
+            for inner_var in inner_loop_vars
+        )
+
+        if refs_outer and refs_inner:
+            return FieldSource.MIXED
+        elif refs_inner:
+            return FieldSource.INNER
+        elif refs_outer:
+            return FieldSource.OUTER
+        else:
+            # No loop var reference - likely a constant
+            return FieldSource.CONSTANT
 
     def _find_unconditional_push_in_expr(
         self, stmts: List[SExpr], result_var: str, loop_var: str

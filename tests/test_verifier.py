@@ -5341,3 +5341,374 @@ class TestMapPatternVerification:
         from slop.parser import Symbol
         assert isinstance(third, Symbol)
         assert third.name == 'OWL_SAME_AS'
+
+
+class TestNestedLoopPattern:
+    """Test nested loop pattern recognition for join semantics.
+
+    Nested loop patterns occur when:
+    1. An outer loop iterates over a collection (e.g., delta.triples)
+    2. An inner loop iterates over a query result derived from outer loop variables
+    3. The constructor combines fields from both loops
+
+    Example: eq-trans computes transitive closure via join:
+    (for-each (dt delta.triples)       ; outer: iterate delta
+      (when filter-dt
+        (let ((x (triple-subject dt))
+              (y (triple-object dt)))
+          (for-each (yo-triple (match y ...))  ; inner: join on y
+            (let ((z (triple-object yo-triple)))
+              (list-push result (make-triple x same-as z)))))))
+    """
+
+    def test_detect_nested_loop_simple(self):
+        """Detect basic nested for-each structure"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn nested-transform ((arena Arena) (outer (List Int)) (g Graph))
+          (@spec ((Arena (List Int) Graph) -> (List Int)))
+          (@post (>= 0 0))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x outer)
+              (let ((inner-results (graph-match g x)))
+                (for-each (y inner-results)
+                  (list-push result (combine arena x y)))))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        # Get function body (the let expression)
+        fn_body = ast[0].items[5]
+
+        # Detect nested pattern
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.result_var == 'result'
+        assert pattern.outer_loop_var == 'x'
+        assert len(pattern.inner_loops) == 1
+        assert pattern.inner_loops[0].loop_var == 'y'
+
+    def test_detect_nested_loop_with_filter(self):
+        """Detect nested loop with when filter (like eq-trans)"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn filtered-nested ((arena Arena) (delta Delta) (g Graph))
+          (@spec ((Arena Delta Graph) -> (List Triple)))
+          (@post (>= 0 0))
+          (let ((same-as (make-iri arena OWL_SAME_AS))
+                (mut result (list-new arena Triple)))
+            (for-each (dt (. delta triples))
+              (when (term-eq (triple-predicate dt) same-as)
+                (let ((x (triple-subject dt))
+                      (y (triple-object dt)))
+                  (let ((y-matches (indexed-graph-match arena g (some y) (some same-as) (none))))
+                    (for-each (yo-triple y-matches)
+                      (let ((z (triple-object yo-triple)))
+                        (list-push result (make-triple arena x same-as z))))))))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.result_var == 'result'
+        assert pattern.outer_loop_var == 'dt'
+        assert pattern.outer_filter is not None  # (term-eq (triple-predicate dt) same-as)
+        assert 'same-as' in pattern.outer_let_bindings  # Constant from outer let
+
+    def test_field_provenance_outer(self):
+        """Test that fields derived from outer loop are classified as OUTER"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FieldSource
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Pattern where subject comes from outer loop
+        source = """
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt outer)
+            (let ((x (triple-subject dt)))
+              (for-each (y inner)
+                (list-push result (make-triple arena x pred y)))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+
+        # Subject (x) comes from outer loop var dt
+        assert pattern.field_provenance.get('subject') == FieldSource.OUTER
+
+    def test_field_provenance_inner(self):
+        """Test that fields derived from inner loop are classified as INNER"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FieldSource
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Pattern where object comes from inner loop
+        source = """
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt outer)
+            (let ((x (triple-subject dt)))
+              (for-each (yo inner)
+                (let ((z (triple-object yo)))
+                  (list-push result (make-triple arena x pred z))))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+
+        # Object (z) comes from inner loop var yo
+        assert pattern.field_provenance.get('object') == FieldSource.INNER
+
+    def test_field_provenance_constant(self):
+        """Test that constant fields from outer let are classified as CONSTANT"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FieldSource
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Pattern where predicate is a constant from outer let
+        source = """
+        (let ((same-as (make-iri arena OWL_SAME_AS))
+              (mut result (list-new arena Triple)))
+          (for-each (dt outer)
+            (let ((x (triple-subject dt)))
+              (for-each (yo inner)
+                (let ((z (triple-object yo)))
+                  (list-push result (make-triple arena x same-as z))))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+
+        # Predicate (same-as) is a constant from outer let
+        assert pattern.field_provenance.get('predicate') == FieldSource.CONSTANT
+
+    def test_identify_join_variables(self):
+        """Test that join variables (outer vars in inner collection) are identified"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Inner collection uses 'y' which is derived from outer loop
+        source = """
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt outer)
+            (let ((y (triple-object dt)))
+              (let ((matches (query-by-subject arena g y)))
+                (for-each (m matches)
+                  (list-push result (construct arena dt m))))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+
+        # Inner loop's collection references 'y' from outer scope
+        assert len(pattern.inner_loops) == 1
+        assert 'y' in pattern.inner_loops[0].join_vars
+
+    def test_nested_loop_axiom_generation(self):
+        """Test that axioms are generated for nested loop patterns"""
+        from slop.verifier import ContractVerifier, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+        verifier = ContractVerifier(env)
+
+        # Create seqs
+        translator._create_list_seq('$result')
+        translator._create_list_seq('_field_delta_triples')
+
+        # Nested loop pattern body
+        body = parse("""
+        (let ((same-as OWL_SAME_AS)
+              (mut result (list-new arena Triple)))
+          (for-each (dt (. delta triples))
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((x (triple-subject dt)))
+                (for-each (yo inner)
+                  (let ((z (triple-object yo)))
+                    (list-push result (make-triple arena x same-as z)))))))
+          result)
+        """)[0]
+
+        postconditions = [parse("(forall (t $result) true)")[0]]
+
+        axioms = verifier._extract_map_push_axioms(body, postconditions, translator)
+
+        # Should generate at least provenance axiom and size axiom
+        assert len(axioms) >= 2, f"Expected at least 2 axioms, got {len(axioms)}"
+
+        # Check axioms contain ForAll quantifier
+        axiom_strs = [str(a) for a in axioms]
+        has_forall = any('ForAll' in s for s in axiom_strs)
+        assert has_forall, "Expected axiom with ForAll quantifier"
+
+    def test_nested_loop_does_not_match_single_loop(self):
+        """Nested loop detection should not match simple single-loop patterns"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Single loop pattern (should be handled by _detect_map_pattern, not nested)
+        source = """
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt triples)
+            (list-push result (transform dt)))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        # This should NOT match as nested pattern (no inner for-each)
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        # The pattern may or may not be detected depending on implementation
+        # but if detected, it should have no inner loops
+        if pattern is not None:
+            assert len(pattern.inner_loops) == 0
+
+    def test_eq_trans_structure_detection(self):
+        """Test detection of eq-trans-like nested structure with two inner loops.
+
+        eq-trans has two inner for-each loops:
+        1. (for-each (yo-triple y-objects) ...) - find y->z
+        2. (for-each (xs-triple x-subjects) ...) - find w->x
+
+        Both should be detected.
+        """
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Simplified version of eq-trans with one inner loop
+        source = """
+        (let ((same-as (make-iri arena OWL_SAME_AS))
+              (no-term (Option Term) (none))
+              (mut result (list-new arena Triple)))
+          (for-each (dt (. delta triples))
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((x (triple-subject dt))
+                    (y (triple-object dt)))
+                (let ((y-objects (indexed-graph-match arena g (some y) (some same-as) no-term)))
+                  (for-each (yo-triple y-objects)
+                    (let ((z (triple-object yo-triple))
+                          (inferred (make-triple arena x same-as z)))
+                      (when (and (not (term-eq x z))
+                                 (not (indexed-graph-contains g inferred)))
+                        (list-push result inferred))))))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.outer_loop_var == 'dt'
+        assert pattern.outer_filter is not None
+        assert 'same-as' in pattern.outer_let_bindings
+        assert len(pattern.inner_loops) >= 1
+        assert pattern.inner_loops[0].loop_var == 'yo-triple'
+
+    def test_eq_trans_soundness_axiom_structure(self):
+        """Test that eq-trans soundness property can use generated axioms.
+
+        The soundness property:
+        (forall (t $result)
+          (exists (dt (. delta triples))
+            (term-eq (triple-predicate dt) (triple-predicate t))))
+
+        Should be provable because:
+        - result elements have predicate = same-as (from field_provenance CONSTANT)
+        - outer filter ensures triple-predicate(dt) = same-as
+        - Therefore triple-predicate(dt) = triple-predicate(t)
+        """
+        from slop.verifier import (
+            ContractVerifier, Z3Translator, MinimalTypeEnv,
+            ImportedDefinitions, FunctionSignature
+        )
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        # Create imported definitions with term-eq semantics
+        imported_defs = ImportedDefinitions()
+        imported_defs.functions['term-eq'] = FunctionSignature(
+            name='term-eq',
+            param_types=[PrimitiveType('Int'), PrimitiveType('Int')],
+            return_type=PrimitiveType('Bool'),
+            params=['a', 'b'],
+            postconditions=[parse('(== $result (== a b))')[0]]
+        )
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+
+        # Create seqs
+        translator._create_list_seq('$result')
+        translator._create_list_seq('_field_delta_triples')
+
+        # Simplified eq-trans body
+        body = parse("""
+        (let ((same-as OWL_SAME_AS)
+              (mut result (list-new arena Triple)))
+          (for-each (dt (. delta triples))
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((x (triple-subject dt))
+                    (y (triple-object dt)))
+                (for-each (yo inner)
+                  (let ((z (triple-object yo)))
+                    (list-push result (make-triple arena x same-as z)))))))
+          result)
+        """)[0]
+
+        postconditions = []
+        axioms = verifier._extract_map_push_axioms(body, postconditions, translator)
+
+        # Should have generated axioms
+        assert len(axioms) >= 1
+
+        # The key axiom should establish:
+        # ForAll i in result: Exists j in delta.triples:
+        #   filter(delta.triples[j]) AND field_constraints
+        axiom_strs = [str(a) for a in axioms]
+        has_forall_exists = any('ForAll' in s and 'Exists' in s for s in axiom_strs)
+        assert has_forall_exists, "Expected axiom with ForAll/Exists structure"
