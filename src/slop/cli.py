@@ -583,6 +583,9 @@ def cmd_transpile(args):
 
             order = resolver.topological_sort(graph)
 
+            # Type check modules on the shared ASTs so resolved_type annotations flow to transpiler
+            check_modules(graph.modules, order)
+
             # Check if output is a directory (ends with /)
             if args.output and args.output.endswith('/'):
                 # Multi-file output: separate .h/.c per module
@@ -604,8 +607,11 @@ def cmd_transpile(args):
                 # Single combined file output
                 c_code = transpile_multi(graph.modules, order)
         else:
-            # Single-file path (backward compatible)
-            c_code = transpile(source)
+            # Single-file path - type check on shared AST, then transpile
+            from slop.type_checker import check_source_ast
+            check_source_ast(ast, str(input_path))
+            from slop.transpiler import Transpiler
+            c_code = Transpiler().transpile(ast)
 
         if args.output:
             with open(args.output, 'w') as f:
