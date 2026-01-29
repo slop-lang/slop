@@ -31,7 +31,7 @@
                    TypeEntry FuncEntry FuncParamType VarEntry
                    to-c-type-prefixed extract-fn-c-name ctx-fail
                    ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
+  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-int-type))
   (import stmt (transpile-stmt))
   (import expr (transpile-expr))
   (import strlib (starts-with ends-with substring replace))
@@ -232,19 +232,6 @@
     (match (deref type-expr)
       ((sym sym) (. sym name))
       (else "")))
-
-  (fn is-int-type ((type-name String))
-    (@intent "Check if type name is an integer type")
-    (@spec ((String) -> Bool))
-    (or (string-eq type-name "Int")
-        (string-eq type-name "I8")
-        (string-eq type-name "I16")
-        (string-eq type-name "I32")
-        (string-eq type-name "I64")
-        (string-eq type-name "U8")
-        (string-eq type-name "U16")
-        (string-eq type-name "U32")
-        (string-eq type-name "U64")))
 
   (fn eval-const-value ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
     (@intent "Evaluate constant expression to C code")

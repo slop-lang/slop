@@ -11,6 +11,8 @@
     to-c-type to-c-name type-to-identifier sexpr-to-type-string
     ;; Builtin type lookup
     builtin-type-c is-builtin-type is-builtin-c-type
+    ;; Type category predicates
+    is-int-type is-float-type is-bool-type is-numeric-type
     ;; Range type handling
     range-type-to-c-type
     ;; C keyword check
@@ -115,6 +117,47 @@
         (string-eq c-name "slop_bytes")
         (string-eq c-name "slop_arena")
         (string-eq c-name "slop_arena*")))
+
+  ;; ============================================================
+  ;; Type Category Predicates
+  ;; ============================================================
+
+  (fn is-int-type ((name String))
+    (@intent "Check if SLOP or C type name is an integer type")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Int")
+        (string-eq name "I8")  (string-eq name "I16")
+        (string-eq name "I32") (string-eq name "I64")
+        (string-eq name "U8")  (string-eq name "U16")
+        (string-eq name "U32") (string-eq name "U64")
+        (string-eq name "int64_t")  (string-eq name "int32_t")
+        (string-eq name "int16_t")  (string-eq name "int8_t")
+        (string-eq name "uint64_t") (string-eq name "uint32_t")
+        (string-eq name "uint16_t") (string-eq name "uint8_t")))
+
+  (fn is-float-type ((name String))
+    (@intent "Check if SLOP or C type name is a floating point type")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Float") (string-eq name "F32")
+        (string-eq name "double") (string-eq name "float")))
+
+  (fn is-bool-type ((name String))
+    (@intent "Check if SLOP or C type name is a boolean type")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Bool") (string-eq name "bool")))
+
+  (fn is-numeric-type ((name String))
+    (@intent "Check if type is any numeric type (int or float)")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (is-int-type name) (is-float-type name)))
+
+  ;; ============================================================
+  ;; Builtin Type to C Mapping
+  ;; ============================================================
 
   (fn builtin-type-c ((arena Arena) (name String))
     (@intent "Get C type for a builtin SLOP type")

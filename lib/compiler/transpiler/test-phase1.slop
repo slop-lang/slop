@@ -8,9 +8,8 @@
 
   (import types (SExpr SExprSymbol))
   (import context (TranspileContext context-new ctx-emit ctx-str ctx-get-output))
-  (import ctype (to-c-type to-c-name builtin-type-c))
+  (import ctype (to-c-type to-c-name builtin-type-c is-int-type is-float-type))
   (import emit (emit-standard-includes emit-block-open emit-block-close))
-  (import infer (is-int-type is-float-type))
   (import expr (transpile-expr is-binop is-comparison-op))
   (import stmt (transpile-stmt is-stmt-form))
   (import defn (transpile-type transpile-function))
