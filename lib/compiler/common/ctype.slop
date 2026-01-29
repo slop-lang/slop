@@ -181,9 +181,23 @@
       (when (starts-with result "slop_")
         (let ((len-minus-5 (cast (Int 0 ..) (- (string-len result) 5))))
           (set! result (substring arena result 5 len-minus-5))))
-      ;; Normalize int64_t to int for runtime compatibility
+      ;; Normalize C type names to short identifiers for runtime compatibility
       (when (string-eq result "int64_t")
         (set! result "int"))
+      (when (string-eq result "uint8_t")
+        (set! result "u8"))
+      (when (string-eq result "int8_t")
+        (set! result "i8"))
+      (when (string-eq result "uint16_t")
+        (set! result "u16"))
+      (when (string-eq result "int16_t")
+        (set! result "i16"))
+      (when (string-eq result "uint32_t")
+        (set! result "u32"))
+      (when (string-eq result "int32_t")
+        (set! result "i32"))
+      (when (string-eq result "uint64_t")
+        (set! result "u64"))
       result))
 
   ;; ============================================================

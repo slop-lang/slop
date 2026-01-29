@@ -341,6 +341,30 @@
       (set! (deref ctx) last-lambda-is-closure false)
       (set! (deref ctx) last-lambda-env-type "")
       (set! (deref ctx) last-lambda-name "")
+      ;; NOTE: String and Bytes have special constructor handling in
+      ;; get-builtin-type-c-name / transpile-builtin-constructor (expr.slop)
+      ;; for correct field ordering. If adding a new primitive type that needs
+      ;; non-positional field init, add it there too.
+      ;; Register primitive types so lookup functions don't need hardcoded mappings
+      (ctx-register-type ctx (TypeEntry "Int" "int64_t" "int64_t" false false false))
+      (ctx-register-type ctx (TypeEntry "I8" "int8_t" "int8_t" false false false))
+      (ctx-register-type ctx (TypeEntry "I16" "int16_t" "int16_t" false false false))
+      (ctx-register-type ctx (TypeEntry "I32" "int32_t" "int32_t" false false false))
+      (ctx-register-type ctx (TypeEntry "I64" "int64_t" "int64_t" false false false))
+      (ctx-register-type ctx (TypeEntry "U8" "uint8_t" "uint8_t" false false false))
+      (ctx-register-type ctx (TypeEntry "U16" "uint16_t" "uint16_t" false false false))
+      (ctx-register-type ctx (TypeEntry "U32" "uint32_t" "uint32_t" false false false))
+      (ctx-register-type ctx (TypeEntry "U64" "uint64_t" "uint64_t" false false false))
+      (ctx-register-type ctx (TypeEntry "Char" "char" "char" false false false))
+      (ctx-register-type ctx (TypeEntry "Float" "double" "double" false false false))
+      (ctx-register-type ctx (TypeEntry "F32" "float" "float" false false false))
+      (ctx-register-type ctx (TypeEntry "Bool" "uint8_t" "uint8_t" false false false))
+      (ctx-register-type ctx (TypeEntry "String" "slop_string" "slop_string" false false false))
+      (ctx-register-type ctx (TypeEntry "Bytes" "slop_bytes" "slop_bytes" false false false))
+      (ctx-register-type ctx (TypeEntry "Unit" "void" "void" false false false))
+      (ctx-register-type ctx (TypeEntry "Void" "void" "void" false false false))
+      (ctx-register-type ctx (TypeEntry "Arena" "slop_arena*" "slop_arena*" false false false))
+      (ctx-register-type ctx (TypeEntry "Milliseconds" "int64_t" "int64_t" false false false))
       ctx))
 
   (fn ctx-reset-for-new-module ((ctx (Ptr TranspileContext)) (mod-name String))
