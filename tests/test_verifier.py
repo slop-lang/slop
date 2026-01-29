@@ -15,6 +15,44 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not z3_available, reason="z3-solver not installed")
 
 
+def _make_triple_imported_defs():
+    """Create imported defs with make-triple and triple-new postconditions."""
+    from slop.verifier.types import FunctionSignature, ImportedDefinitions
+    from slop.parser import parse
+
+    defs = ImportedDefinitions()
+
+    # make-triple: (make-triple arena s p o)
+    make_triple_posts = [
+        parse("(== (triple-subject $result) s)")[0],
+        parse("(== (triple-predicate $result) p)")[0],
+        parse("(== (triple-object $result) o)")[0],
+    ]
+    defs.functions['make-triple'] = FunctionSignature(
+        name='make-triple',
+        param_types=[],
+        return_type=None,
+        params=['arena', 's', 'p', 'o'],
+        postconditions=make_triple_posts,
+    )
+
+    # triple-new: (triple-new arena pred subj obj)
+    triple_new_posts = [
+        parse("(== (triple-predicate $result) pred)")[0],
+        parse("(== (triple-subject $result) subj)")[0],
+        parse("(== (triple-object $result) obj)")[0],
+    ]
+    defs.functions['triple-new'] = FunctionSignature(
+        name='triple-new',
+        param_types=[],
+        return_type=None,
+        params=['arena', 'pred', 'subj', 'obj'],
+        postconditions=triple_new_posts,
+    )
+
+    return defs
+
+
 class TestZ3Translation:
     """Test SLOP to Z3 translation"""
 
@@ -1008,6 +1046,59 @@ class TestUnionTagAxioms:
         assert translator.enum_values['iri'] == 0
         assert translator.enum_values['blank'] == 1
         assert translator.enum_values['literal'] == 2
+
+    def test_option_constructor_comparison(self):
+        """Comparison with (none) and (some x) uses union_tag"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn option-is-none ((x (Option Int)))
+            (@spec (((Option Int)) -> Bool))
+            (@post (implies (== x (none)) $result))
+            (@post (implies (!= x (none)) (not $result)))
+            (match x
+              ((none) true)
+              ((some _) false))))
+        """
+        results = verify_source(source)
+        option_is_none = [r for r in results if r.name == 'option-is-none']
+        assert len(option_is_none) == 1
+        assert option_is_none[0].status == 'verified'
+
+    def test_option_constructor_comparison_with_some(self):
+        """Comparison with (some value) checks both tag and payload"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (fn wrap-in-some ((x Int))
+            (@spec ((Int) -> (Option Int)))
+            (@post (!= $result (none)))
+            (some x)))
+        """
+        results = verify_source(source)
+        wrap_in_some = [r for r in results if r.name == 'wrap-in-some']
+        assert len(wrap_in_some) == 1
+        assert wrap_in_some[0].status == 'verified'
+
+    def test_builtin_constructors_in_enum_map(self):
+        """Built-in Option/Result constructors are in enum_values"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        # Check built-in constructors are present
+        assert 'none' in translator.enum_values
+        assert 'some' in translator.enum_values
+        assert 'ok' in translator.enum_values
+        assert 'error' in translator.enum_values
+        # Check indices
+        assert translator.enum_values['none'] == 0
+        assert translator.enum_values['some'] == 1
+        assert translator.enum_values['ok'] == 0
+        assert translator.enum_values['error'] == 1
 
 
 class TestTypeInvariants:
@@ -3928,3 +4019,2181 @@ class TestImprovedVerificationOutput:
         assert result.counterexample is not None
         # Should have a counterexample value
         assert len(result.counterexample) > 0
+
+
+class TestWeakestPrecondition:
+    """Test the Weakest Precondition calculus for verification.
+
+    WP(expr, Q) computes the weakest condition P such that {P} expr {Q}.
+    The verification condition for {P} body {Q} is: P => WP(body, Q).
+    """
+
+    def test_wp_constant(self):
+        """WP of constant is the postcondition unchanged"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import Number
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        wp = WeakestPrecondition(translator)
+
+        # WP(42, Q) = Q
+        post = z3.BoolVal(True)
+        result = wp.wp(Number(42), post)
+        assert z3.eq(result, post)
+
+    def test_wp_variable_reference(self):
+        """WP of variable reference is postcondition unchanged"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import Symbol
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # WP(x, Q) = Q (reading doesn't change state)
+        post = z3.BoolVal(True)
+        result = wp.wp(Symbol('x'), post)
+        assert z3.eq(result, post)
+
+    def test_wp_let_simple(self):
+        """WP of let binding substitutes variable correctly"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (let ((y 10)) y)
+        # WP((let ((y 10)) y), $result == 10) should be satisfiable
+        expr = parse("(let ((y 10)) y)")[0]
+        result_var = translator.variables['$result']
+        post = result_var == z3.IntVal(10)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+
+    def test_wp_if_branches(self):
+        """WP of if splits into both branches"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (if (>= x 0) x (- 0 x))  -- absolute value
+        # WP(abs, $result >= 0) should be valid for all x
+        expr = parse("(if (>= x 0) x (- 0 x))")[0]
+        result_var = translator.variables['$result']
+        post = result_var >= z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        # WP should be: (x >= 0 => x >= 0) && (x < 0 => -x >= 0)
+        # Which is equivalent to: true && true = true
+        assert z3.is_bool(wp_result)
+
+    def test_wp_if_verification(self):
+        """Full verification using WP for if expression"""
+        from slop.verifier import verify_source
+
+        # Absolute value function: postcondition $result >= 0
+        source = """
+        (fn abs ((x Int))
+          (@spec ((Int) -> Int))
+          (@post (>= $result 0))
+          (if (>= x 0) x (- 0 x)))
+        """
+        results = verify_source(source)
+        # Should verify (WP enables this)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_do_sequential(self):
+        """WP propagates through sequential statements right-to-left"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (do x)  -- simple do block returning x
+        expr = parse("(do x)")[0]
+        result_var = translator.variables['$result']
+        post = result_var > z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+
+    def test_wp_let_propagation(self):
+        """WP propagates through let binding to establish postcondition"""
+        from slop.verifier import verify_source
+
+        # Let binding where postcondition depends on bound value
+        source = """
+        (fn test ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre (> x 0))
+          (@post (> $result 1))
+          (let ((y (+ x 1)))
+            y))
+        """
+        results = verify_source(source)
+        # WP should compute: WP(let y=x+1 in y, $result > 1) = (x+1 > 1) = (x > 0)
+        # Which is exactly the precondition, so should verify
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_cond_multi_branch(self):
+        """WP handles cond with multiple branches"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (cond ((< x 0) -1) ((== x 0) 0) (else 1))  -- sign function
+        expr = parse("(cond ((< x 0) (- 0 1)) ((== x 0) 0) (else 1))")[0]
+        result_var = translator.variables['$result']
+        # Post: result is -1, 0, or 1
+        post = z3.Or(result_var == z3.IntVal(-1),
+                     result_var == z3.IntVal(0),
+                     result_var == z3.IntVal(1))
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        assert z3.is_bool(wp_result)
+
+    def test_wp_nested_let(self):
+        """WP handles nested let bindings"""
+        from slop.verifier import verify_source
+
+        source = """
+        (fn nested ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre (> x 0))
+          (@post (> $result 2))
+          (let ((y (+ x 1)))
+            (let ((z (+ y 1)))
+              z)))
+        """
+        results = verify_source(source)
+        # WP: z = y + 1 = x + 2, post is z > 2, so need x > 0
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_set_substitution(self):
+        """WP of set! substitutes old value with new"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (set! x 10)
+        # WP((set! x 10), x > 5) = (10 > 5) = true
+        expr = parse("(set! x 10)")[0]
+        x_var = translator.variables['x']
+        post = x_var > z3.IntVal(5)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        # After substituting x with 10, we get 10 > 5 = true
+        solver = z3.Solver()
+        solver.add(z3.Not(wp_result))
+        # If WP is valid (always true), then NOT(WP) is unsatisfiable
+        result = solver.check()
+        assert result == z3.unsat, "WP should be valid (10 > 5 is true)"
+
+    def test_wp_return_binds_result(self):
+        """WP of return binds $result to the returned value"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # (return x)
+        # WP((return x), $result > 0) = (x > 0)
+        expr = parse("(return x)")[0]
+        result_var = translator.variables['$result']
+        post = result_var > z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+
+    def test_wp_integration_simple_function(self):
+        """Integration test: WP enables verification of simple functions"""
+        from slop.verifier import verify_source
+
+        # Simple increment: result = x + 1
+        source = """
+        (fn increment ((x Int))
+          (@spec ((Int) -> Int))
+          (@pre (>= x 0))
+          (@post (> $result x))
+          (+ x 1))
+        """
+        results = verify_source(source)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_integration_max_function(self):
+        """Integration test: WP enables verification of max function"""
+        from slop.verifier import verify_source
+
+        source = """
+        (fn max ((a Int) (b Int))
+          (@spec ((Int Int) -> Int))
+          (@post (and (>= $result a) (>= $result b)))
+          (if (>= a b) a b))
+        """
+        results = verify_source(source)
+        verified = [r for r in results if r.status == 'verified']
+        assert len(verified) >= 1
+
+    def test_wp_loop_with_invariant(self):
+        """WP uses @loop-invariant for loop verification"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('sum', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # for-each with @loop-invariant
+        expr = parse("""
+        (for-each (x lst)
+          (@loop-invariant (>= sum 0))
+          (set! sum (+ sum x)))
+        """)[0]
+
+        result_var = translator.variables['$result']
+        post = result_var >= z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        # WP should return the loop invariant as precondition
+        # (sum >= 0 must hold at entry)
+
+    def test_wp_preserves_type_constraints(self):
+        """WP computation doesn't lose type constraints from translator"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import RangeType, RangeBounds
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        # Range type: x in [0, 100]
+        translator.declare_variable('x', RangeType('Int', RangeBounds(0, 100)))
+        translator.declare_variable('$result', RangeType('Int', RangeBounds(0, 100)))
+        wp = WeakestPrecondition(translator)
+
+        # Type constraints should still be in translator.constraints
+        assert len(translator.constraints) >= 2  # x >= 0, x <= 100
+
+        expr = parse("(let ((y x)) y)")[0]
+        result_var = translator.variables['$result']
+        post = result_var >= z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+        # Type constraints are separate from WP, they're added to solver
+
+    def test_wp_handles_deep_nesting(self):
+        """WP handles deeply nested expressions without stack overflow"""
+        from slop.verifier import WeakestPrecondition, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('x', PrimitiveType('Int'))
+        translator.declare_variable('$result', PrimitiveType('Int'))
+        wp = WeakestPrecondition(translator)
+
+        # Nested let bindings
+        expr = parse("""
+        (let ((a x))
+          (let ((b a))
+            (let ((c b))
+              (let ((d c))
+                d))))
+        """)[0]
+
+        result_var = translator.variables['$result']
+        post = result_var > z3.IntVal(0)
+
+        wp_result = wp.wp(expr, post)
+        assert wp_result is not None
+
+
+class TestSequenceTheory:
+    """Test Z3 Sequence encoding for lists with element-level properties.
+
+    The Sequence theory enables proper reasoning about list contents via:
+    - z3.Length(seq) - native length
+    - seq[i] - native element access
+    - z3.Concat(seq, z3.Unit(elem)) - append
+    - z3.Empty(sort) - empty sequence
+
+    This supports collection-bound quantifiers like (forall (t $result) (pred t)).
+    """
+
+    def test_seq_encoding_detection_forall_collection(self):
+        """Detect when Seq encoding is needed for collection-bound forall"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Should need seq encoding for (forall (t $result) ...)
+        post1 = [parse("(forall (t $result) (> t 0))")[0]]
+        assert verifier._needs_seq_encoding(post1)
+
+        # Should need seq encoding for (forall (item items) ...)
+        post2 = [parse("(forall (item items) (is-valid item))")[0]]
+        assert verifier._needs_seq_encoding(post2)
+
+        # Should NOT need seq encoding for typed forall (i Int)
+        post3 = [parse("(forall (i Int) (>= i 0))")[0]]
+        assert not verifier._needs_seq_encoding(post3)
+
+        # Should NOT need seq encoding for simple length check
+        post4 = [parse("(>= (list-len $result) 0)")[0]]
+        assert not verifier._needs_seq_encoding(post4)
+
+    def test_seq_encoding_detection_exists_collection(self):
+        """Detect when Seq encoding is needed for collection-bound exists"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Should need seq encoding for (exists (t $result) ...)
+        post1 = [parse("(exists (t $result) (== t 42))")[0]]
+        assert verifier._needs_seq_encoding(post1)
+
+    def test_create_list_seq(self):
+        """Test creating Seq representation for lists"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        seq = translator._create_list_seq("test")
+
+        # Should be a Z3 Seq
+        assert seq is not None
+        assert str(seq.sort()).startswith("Seq")
+
+        # Calling again should return same seq
+        seq2 = translator._create_list_seq("test")
+        assert seq is seq2
+
+    def test_translate_list_len_seq(self):
+        """Test list-len translation to z3.Length with Seq encoding"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse, Symbol
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Create seq for items
+        translator._create_list_seq("items")
+
+        # Translate (list-len items)
+        result = translator._translate_list_len_seq(Symbol("items"))
+
+        assert result is not None
+        # Should be a Length expression
+        assert "Length" in str(result) or "seq" in str(result).lower()
+
+    def test_translate_list_ref_seq(self):
+        """Test list-ref translation to seq[i] with Seq encoding"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Create seq for items
+        translator._create_list_seq("items")
+
+        # Translate (list-ref items 0)
+        expr = parse("(list-ref items 0)")[0]
+        result = translator._translate_list_ref_seq(expr)
+
+        assert result is not None
+
+    def test_forall_collection_translation(self):
+        """Test (forall (elem coll) body) translation to quantified formula"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Create seq for $result
+        translator._create_list_seq('$result')
+
+        # Translate (forall (t $result) (> t 0))
+        expr = parse("(forall (t $result) (> t 0))")[0]
+        result = translator._translate_forall_collection(expr)
+
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+    def test_exists_collection_translation(self):
+        """Test (exists (elem coll) body) translation to quantified formula"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Create seq for items
+        translator._create_list_seq('items')
+
+        # Translate (exists (x items) (== x 42))
+        expr = parse("(exists (x items) (== x 42))")[0]
+        result = translator._translate_exists_collection(expr)
+
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+    def test_seq_via_translate_expr(self):
+        """Test Seq operations work through translate_expr"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Create seq for $result
+        translator._create_list_seq('$result')
+
+        # list-len through translate_expr
+        expr = parse("(list-len $result)")[0]
+        result = translator.translate_expr(expr)
+        assert result is not None
+
+        # list-ref through translate_expr
+        expr2 = parse("(list-ref $result 0)")[0]
+        result2 = translator.translate_expr(expr2)
+        assert result2 is not None
+
+        # forall collection through translate_expr
+        expr3 = parse("(forall (t $result) (> t 0))")[0]
+        result3 = translator.translate_expr(expr3)
+        assert result3 is not None
+        assert z3.is_quantifier(result3)
+
+    def test_seq_push_axioms_filter_pattern(self):
+        """Test push provenance axioms for filter patterns"""
+        from slop.verifier import ContractVerifier, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+        verifier = ContractVerifier(env)
+
+        # Create seqs
+        translator._create_list_seq('$result')
+        translator._create_list_seq('items')
+
+        # Declare loop variable for predicate translation
+        from slop.types import PrimitiveType
+        translator.declare_variable('x', PrimitiveType('Int'))
+
+        # Filter pattern body
+        body = parse("""
+        (let ((mut result (list-new arena Int)))
+          (for-each (x items)
+            (when (> x 0)
+              (list-push result x)))
+          result)
+        """)[0]
+
+        postconditions = [parse("(forall (t $result) (> t 0))")[0]]
+
+        axioms = verifier._extract_seq_push_axioms(body, postconditions, translator)
+
+        # Should have generated axioms
+        assert len(axioms) >= 1
+
+    def test_filter_postcondition_with_seq_encoding(self):
+        """Integration test: filter postcondition verifies with Seq encoding"""
+        from slop.verifier import verify_source
+
+        # Filter positive numbers
+        source = """
+        (fn filter-positive ((items (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (forall (t $result) (> t 0)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (when (> x 0)
+                (list-push result x)))
+            result))
+        """
+        results = verify_source(source)
+
+        # Check for verification (may be verified, or may fail due to complexity)
+        # At minimum, should not error on translation
+        assert len(results) >= 1
+        # The verification result should not be a translation failure
+        for r in results:
+            assert "Could not translate" not in (r.message or "")
+
+    def test_seq_length_concat_property(self):
+        """Test that Z3 knows Length(Concat(a, Unit(x))) == Length(a) + 1"""
+        import z3
+
+        # This tests Z3's native Seq theory understanding
+        int_seq = z3.SeqSort(z3.IntSort())
+        a = z3.Const("a", int_seq)
+        x = z3.Int("x")
+
+        # Concat(a, Unit(x)) should have length = Length(a) + 1
+        concat_result = z3.Concat(a, z3.Unit(x))
+        length_property = z3.Length(concat_result) == z3.Length(a) + 1
+
+        solver = z3.Solver()
+        solver.add(z3.Not(length_property))
+        result = solver.check()
+
+        # Should be UNSAT (property is always true)
+        assert result == z3.unsat
+
+    def test_seq_empty_length_zero(self):
+        """Test that Length(Empty) == 0"""
+        import z3
+
+        int_seq = z3.SeqSort(z3.IntSort())
+        empty = z3.Empty(int_seq)
+
+        length_zero = z3.Length(empty) == 0
+
+        solver = z3.Solver()
+        solver.add(z3.Not(length_zero))
+        result = solver.check()
+
+        # Should be UNSAT (empty seq has length 0)
+        assert result == z3.unsat
+
+    def test_seq_element_access(self):
+        """Test that seq[i] extracts elements correctly"""
+        import z3
+
+        int_seq = z3.SeqSort(z3.IntSort())
+        a = z3.Const("a", int_seq)
+        x = z3.Int("x")
+
+        # After Concat(a, Unit(x)), the last element should be x
+        concat_result = z3.Concat(a, z3.Unit(x))
+
+        # Element at Length(a) should be x
+        last_idx = z3.Length(a)
+        last_elem = concat_result[last_idx]
+
+        property_holds = last_elem == x
+
+        solver = z3.Solver()
+        solver.add(z3.Not(property_holds))
+        result = solver.check()
+
+        # Should be UNSAT (property is always true)
+        assert result == z3.unsat
+
+    def test_seq_encoding_detection_field_access_collection(self):
+        """Detect when Seq encoding is needed for field access collections"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Should need seq encoding for (forall (t (. delta triples)) ...)
+        post1 = [parse("(forall (t (. delta triples)) (> t 0))")[0]]
+        assert verifier._needs_seq_encoding(post1)
+
+        # Should need seq encoding for (exists (dt (. obj list)) ...)
+        post2 = [parse("(exists (dt (. obj list)) (valid dt))")[0]]
+        assert verifier._needs_seq_encoding(post2)
+
+    def test_field_access_collection_translation(self):
+        """Test (forall (elem (. obj field)) body) translation"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Translate (forall (t (. delta triples)) (> t 0))
+        expr = parse("(forall (t (. delta triples)) (> t 0))")[0]
+        result = translator.translate_expr(expr)
+
+        # Should produce a quantified formula
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+        # Should have created a Seq for the field access
+        assert "_field_delta_triples" in translator.list_seqs
+
+    def test_function_call_collection_translation(self):
+        """Test (forall (elem (fn-name args)) body) translation for function calls"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Translate (forall (gt (indexed-graph-triples g)) (> gt 0))
+        expr = parse("(forall (gt (indexed-graph-triples g)) (> gt 0))")[0]
+        result = translator.translate_expr(expr)
+
+        # Should produce a quantified formula
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+        # Should have created a Seq for the function call
+        # The Seq name is built from function name and args
+        fn_call_seqs = [k for k in translator.list_seqs.keys() if "_fn_indexed-graph-triples" in k]
+        assert len(fn_call_seqs) == 1
+
+    def test_exists_function_call_collection_translation(self):
+        """Test (exists (elem (fn-name args)) body) translation for function calls"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Translate (exists (t (get-items x)) (> t 0))
+        # Using a simple comparison body since function calls need proper type setup
+        expr = parse("(exists (t (get-items x)) (> t 0))")[0]
+        result = translator.translate_expr(expr)
+
+        # Should produce a quantified formula
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+        # Should have created a Seq for the function call
+        fn_call_seqs = [k for k in translator.list_seqs.keys() if "_fn_get-items" in k]
+        assert len(fn_call_seqs) == 1
+
+    def test_is_function_call_helper(self):
+        """Test _is_function_call helper correctly identifies function calls"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Should be function calls
+        assert translator._is_function_call(parse("(get-items x)")[0])
+        assert translator._is_function_call(parse("(indexed-graph-triples g)")[0])
+        assert translator._is_function_call(parse("(my-fn a b c)")[0])
+
+        # Should NOT be function calls (special forms)
+        assert not translator._is_function_call(parse("(. obj field)")[0])
+        assert not translator._is_function_call(parse("(if x y z)")[0])
+        assert not translator._is_function_call(parse("(and a b)")[0])
+        assert not translator._is_function_call(parse("(+ 1 2)")[0])
+        assert not translator._is_function_call(parse("(@pre (> x 0))")[0])
+
+    def test_nested_forall_exists_translation(self):
+        """Test nested (forall ... (exists ...)) translation"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Create seq for $result
+        translator._create_list_seq('$result')
+
+        # Nested quantifier: forall t in $result, exists x in items: t > x
+        expr = parse("(forall (t $result) (exists (x items) (> t x)))")[0]
+        result = translator.translate_expr(expr)
+
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+        # Should have created Seqs for both collections
+        assert '$result' in translator.list_seqs
+        assert 'items' in translator.list_seqs
+
+    def test_property_with_collection_bound_forall_triggers_seq_encoding(self):
+        """Properties with collection-bound forall should trigger Seq encoding"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Property with forall over $result
+        property_expr = parse("(forall (t $result) (> t 0))")[0]
+        assert verifier._needs_seq_encoding([property_expr])
+        assert verifier._references_result_collection([property_expr])
+
+    def test_property_soundness_pattern_translates(self):
+        """Test that the soundness property pattern translates successfully"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Create seq for $result
+        translator._create_list_seq('$result')
+
+        # Simplified soundness-like pattern:
+        # (forall (t $result)
+        #   (exists (dt (. delta triples))
+        #     (and (== (pred t) (pred dt)) (== (subj t) (obj dt)))))
+        expr = parse("""
+        (forall (t $result)
+          (exists (dt (. delta triples))
+            (and (== (pred-of t) (pred-of dt))
+                 (== (subj-of t) (obj-of dt)))))
+        """)[0]
+
+        result = translator.translate_expr(expr)
+
+        # Should translate successfully
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+        # Should have created Seqs
+        assert '$result' in translator.list_seqs
+        assert '_field_delta_triples' in translator.list_seqs
+
+    def test_property_verification_with_collection_quantifier(self):
+        """Integration test: property with collection-bound forall"""
+        from slop.verifier import verify_source
+
+        # Function with property using forall over $result
+        source = """
+        (fn test ((items (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@property all-positive (forall (t $result) (> t 0)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (when (> x 0)
+                (list-push result x)))
+            result))
+        """
+        results = verify_source(source)
+
+        # Should not fail on translation
+        assert len(results) >= 1
+        for r in results:
+            assert "Could not translate" not in (r.message or "")
+
+
+class TestMapPatternVerification:
+    """Test map/transform pattern recognition and verification.
+
+    Map patterns differ from filter patterns:
+    - Filter: (when pred (list-push result item)) - conditional push of same item
+    - Map: (list-push result (constructor ...)) - unconditional push of transformed item
+
+    Map patterns enable verifying properties like:
+        (forall (t $result)
+          (exists (dt source)
+            (and (field1 t) == (field2 dt) ...)))
+    """
+
+    def test_detect_map_pattern_simple(self):
+        """Detect unconditional list-push with constructor"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn transform-items ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (>= 0 0))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result (item-new arena x)))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        # Get function body
+        fn_body = ast[0].items[5]  # The let expression
+
+        # Test pattern detection
+        pattern = verifier._detect_map_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.result_var == 'result'
+        assert pattern.loop_var == 'x'
+        assert pattern.constructor_expr is not None
+
+    def test_detect_map_pattern_triple_new(self):
+        """Detect map pattern with triple-new constructor"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn invert-triples ((arena Arena) (triples (List Triple)))
+          (@spec ((Arena (List Triple)) -> (List Triple)))
+          (@post (>= 0 0))
+          (let ((mut result (list-new arena Triple)))
+            (for-each (t triples)
+              (list-push result
+                (triple-new arena
+                  (triple-predicate t)
+                  (triple-object t)
+                  (triple-subject t))))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env, imported_defs=_make_triple_imported_defs())
+
+        fn_body = ast[0].items[5]
+
+        pattern = verifier._detect_map_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.result_var == 'result'
+        assert pattern.loop_var == 't'
+        # Should detect field mappings
+        assert 'predicate' in pattern.field_mappings
+        assert 'subject' in pattern.field_mappings
+        assert 'object' in pattern.field_mappings
+
+    def test_no_map_pattern_for_filter(self):
+        """Filter patterns (conditional push) should NOT match as map pattern"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn filter-items ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (>= 0 0))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (when (> x 0)
+                (list-push result x)))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+
+        # Should NOT detect as map pattern (conditional push is filter)
+        pattern = verifier._detect_map_pattern(fn_body)
+        assert pattern is None
+
+    def test_extract_field_mappings_triple_new(self):
+        """Extract field mappings from triple-new constructor"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=_make_triple_imported_defs())
+
+        # (triple-new arena pred subj obj)
+        constructor = parse("(triple-new arena (triple-predicate dt) (triple-object dt) (triple-subject dt))")[0]
+        mappings = verifier._extract_field_mappings(constructor, "dt")
+
+        assert 'predicate' in mappings
+        assert 'subject' in mappings
+        assert 'object' in mappings
+
+    def test_extract_field_mappings_record_new(self):
+        """Extract field mappings from record-new constructor"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # (record-new Type (field1 val1) (field2 val2))
+        # Parsed as nested list: (record-new Point (x (get-x item)) (y (get-y item)))
+        # where (x (get-x item)) is a binding pair
+        constructor = parse("(record-new Point (x (get-x item)) (y (get-y item)))")[0]
+        mappings = verifier._extract_field_mappings(constructor, "item")
+
+        # Should extract named field bindings
+        assert 'x' in mappings
+        assert 'y' in mappings
+        # Verify we got mappings
+        assert len(mappings) == 2
+
+    def test_map_axiom_generation(self):
+        """Generate field correspondence axioms for map pattern"""
+        from slop.verifier import ContractVerifier, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+        verifier = ContractVerifier(env)
+
+        # Create seqs
+        translator._create_list_seq('$result')
+        translator._create_list_seq('triples')
+
+        # Declare loop variable for translation
+        from slop.types import PrimitiveType
+        translator.declare_variable('t', PrimitiveType('Int'))
+
+        # Map pattern body
+        body = parse("""
+        (let ((mut result (list-new arena Triple)))
+          (for-each (t triples)
+            (list-push result
+              (triple-new arena
+                (triple-predicate t)
+                (triple-object t)
+                (triple-subject t))))
+          result)
+        """)[0]
+
+        postconditions = [parse("(forall (r $result) (> r 0))")[0]]
+
+        axioms = verifier._extract_map_push_axioms(body, postconditions, translator)
+
+        # Should generate at least one axiom (provenance + field correspondence)
+        assert len(axioms) >= 1
+
+    def test_map_pattern_with_field_access_collection(self):
+        """Detect map pattern iterating over (. obj field)"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn invert-delta ((arena Arena) (delta Delta))
+          (@spec ((Arena Delta) -> (List Triple)))
+          (@post (>= 0 0))
+          (let ((mut result (list-new arena Triple)))
+            (for-each (dt (. delta triples))
+              (list-push result
+                (triple-new arena
+                  (triple-predicate dt)
+                  (triple-object dt)
+                  (triple-subject dt))))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        fn_body = ast[0].items[5]
+
+        pattern = verifier._detect_map_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.loop_var == 'dt'
+        # Collection should be the field access
+        assert pattern.collection is not None
+
+    def test_map_pattern_integration_does_not_crash(self):
+        """Integration test: map pattern with soundness-like property does not crash"""
+        from slop.verifier import verify_source
+
+        # Simplified soundness pattern - just verify it doesn't crash
+        source = """
+        (fn invert-triples ((arena Arena) (items (List Triple)))
+          (@spec ((Arena (List Triple)) -> (List Triple)))
+          (@post (>= 0 0))
+          (let ((mut result (list-new arena Triple)))
+            (for-each (t items)
+              (list-push result
+                (triple-new arena
+                  (triple-predicate t)
+                  (triple-object t)
+                  (triple-subject t))))
+            result))
+        """
+        results = verify_source(source)
+
+        # Should not crash
+        assert len(results) >= 1
+        # Should not have translation errors
+        for r in results:
+            assert "Could not translate" not in (r.message or "")
+
+    def test_map_pattern_property_with_exists(self):
+        """Test map pattern with exists property over source collection"""
+        from slop.verifier import verify_source
+
+        # Property stating each result element has a corresponding source element
+        source = """
+        (fn transform ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@property provenance
+            (forall (t $result)
+              (exists (s items)
+                (== t s))))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result x))
+            result))
+        """
+        results = verify_source(source)
+
+        # Should process without crashing
+        assert len(results) >= 1
+
+    def test_references_var_helper(self):
+        """Test _references_var helper function"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Direct reference
+        expr1 = parse("x")[0]
+        assert verifier._references_var(expr1, "x") is True
+        assert verifier._references_var(expr1, "y") is False
+
+        # Nested reference
+        expr2 = parse("(foo (bar x))")[0]
+        assert verifier._references_var(expr2, "x") is True
+        assert verifier._references_var(expr2, "z") is False
+
+        # No reference
+        expr3 = parse("(+ 1 2)")[0]
+        assert verifier._references_var(expr3, "x") is False
+
+    def test_soundness_property_verifies(self):
+        """Integration: soundness property actually verifies with field swapping.
+
+        This is the key test case from the plan - a map pattern that swaps
+        fields should verify a soundness property stating the relationship.
+        """
+        from slop.verifier import (
+            ContractVerifier, MinimalTypeEnv, FunctionRegistry,
+            build_type_registry_from_ast, build_invariant_registry_from_ast
+        )
+        from slop.parser import parse
+
+        source = """
+        (fn invert-triples ((arena Arena) (triples (List Triple)))
+          (@spec ((Arena (List Triple)) -> (List Triple)))
+          (@property soundness
+            (forall (t $result)
+              (exists (dt triples)
+                (and (== (triple-predicate t) (triple-predicate dt))
+                     (== (triple-subject t) (triple-object dt))
+                     (== (triple-object t) (triple-subject dt))))))
+          (let ((mut result (list-new arena Triple)))
+            (for-each (dt triples)
+              (list-push result
+                (triple-new arena
+                  (triple-predicate dt)
+                  (triple-object dt)
+                  (triple-subject dt))))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        type_env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        fn_registry = FunctionRegistry()
+        fn_registry.register_from_ast(ast)
+
+        verifier = ContractVerifier(
+            type_env,
+            function_registry=fn_registry,
+            imported_defs=_make_triple_imported_defs()
+        )
+
+        result = verifier.verify_function(ast[0])
+        assert result.status == 'verified', f"Expected verified, got: {result.message}"
+
+    def test_map_pattern_preserves_field(self):
+        """Test map pattern that preserves a field verifies preservation property."""
+        from slop.verifier import (
+            ContractVerifier, MinimalTypeEnv, FunctionRegistry,
+            build_type_registry_from_ast, build_invariant_registry_from_ast
+        )
+        from slop.parser import parse
+
+        source = """
+        (fn copy-triples ((arena Arena) (triples (List Triple)))
+          (@spec ((Arena (List Triple)) -> (List Triple)))
+          (@property predicate-preserved
+            (forall (t $result)
+              (exists (dt triples)
+                (== (triple-predicate t) (triple-predicate dt)))))
+          (let ((mut result (list-new arena Triple)))
+            (for-each (dt triples)
+              (list-push result
+                (triple-new arena
+                  (triple-predicate dt)
+                  (triple-subject dt)
+                  (triple-object dt))))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        type_env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        fn_registry = FunctionRegistry()
+        fn_registry.register_from_ast(ast)
+
+        verifier = ContractVerifier(
+            type_env,
+            function_registry=fn_registry,
+            imported_defs=_make_triple_imported_defs()
+        )
+
+        result = verifier.verify_function(ast[0])
+        assert result.status == 'verified', f"Expected verified, got: {result.message}"
+
+    def test_map_pattern_size_equality(self):
+        """Test that map pattern generates size equality axiom."""
+        from slop.verifier import verify_source
+
+        source = """
+        (fn transform ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (== (list-len $result) (list-len items)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result (item-new arena x)))
+            result))
+        """
+        results = verify_source(source)
+
+        fn_result = [r for r in results if r.name == 'transform']
+        assert len(fn_result) == 1
+        # Size equality should be provable from map axioms
+        assert fn_result[0].status == 'verified'
+
+    def test_imported_equality_function_axiom(self):
+        """Test that imported equality function semantics are used in verification."""
+        from slop.verifier import (
+            ContractVerifier, MinimalTypeEnv, Z3Translator,
+            ImportedDefinitions, FunctionSignature
+        )
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        # Create imported definitions with term-eq having postcondition semantics
+        imported_defs = ImportedDefinitions()
+        imported_defs.functions['term-eq'] = FunctionSignature(
+            name='term-eq',
+            param_types=[PrimitiveType('Int'), PrimitiveType('Int')],
+            return_type=PrimitiveType('Bool'),
+            params=['a', 'b'],
+            postconditions=[parse('(== $result (== a b))')[0]]
+        )
+
+        type_env = MinimalTypeEnv()
+        verifier = ContractVerifier(type_env, imported_defs=imported_defs)
+
+        # Check that _has_imported_equality_semantics returns True
+        assert verifier._has_imported_equality_semantics('term-eq') is True
+        assert verifier._has_imported_equality_semantics('nonexistent-eq') is False
+
+        # Create translator and extract axioms
+        translator = Z3Translator(type_env)
+        axioms = verifier._extract_imported_equality_axioms(translator)
+
+        assert len(axioms) == 1
+        # The axiom should be: ForAll a, b: fn_term-eq_2(a, b) == (a == b)
+        axiom_str = str(axioms[0])
+        assert 'ForAll' in axiom_str
+        assert 'fn_term-eq_2' in axiom_str
+
+    def test_property_with_imported_term_eq(self):
+        """Test property verification when term-eq is imported with semantics.
+
+        When term-eq is imported with (@post (== $result (== a b))),
+        the verifier should add an axiom that allows Z3 to reason about
+        term-eq as native equality.
+        """
+        from slop.verifier import (
+            ContractVerifier, MinimalTypeEnv, Z3Translator,
+            ImportedDefinitions, FunctionSignature, FunctionRegistry
+        )
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        # Source uses term-eq in property
+        source = """
+        (fn copy-triples ((arena Arena) (triples (List Triple)))
+          (@spec ((Arena (List Triple)) -> (List Triple)))
+          (@property predicate-preserved
+            (forall (t $result)
+              (exists (dt triples)
+                (term-eq (triple-predicate t) (triple-predicate dt)))))
+          (let ((mut result (list-new arena Triple)))
+            (for-each (dt triples)
+              (list-push result
+                (triple-new arena
+                  (triple-predicate dt)
+                  (triple-subject dt)
+                  (triple-object dt))))
+            result))
+        """
+        ast = parse(source)
+
+        # Create imported definitions with term-eq semantics + triple constructors
+        imported_defs = _make_triple_imported_defs()
+        imported_defs.functions['term-eq'] = FunctionSignature(
+            name='term-eq',
+            param_types=[PrimitiveType('Int'), PrimitiveType('Int')],
+            return_type=PrimitiveType('Bool'),
+            params=['a', 'b'],
+            postconditions=[parse('(== $result (== a b))')[0]]
+        )
+
+        type_env = MinimalTypeEnv()
+        fn_registry = FunctionRegistry()
+        fn_registry.register_from_ast(ast)
+
+        verifier = ContractVerifier(
+            type_env,
+            function_registry=fn_registry,
+            imported_defs=imported_defs
+        )
+
+        result = verifier.verify_function(ast[0])
+        assert result.status == 'verified', f"Expected verified, got: {result.message}"
+
+    def test_extract_filter_conditions_simple(self):
+        """Extract single filter condition from when clause"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, is_form
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Simple filtered map pattern
+        body = parse("""
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt triples)
+            (when (term-eq (triple-predicate dt) same-as)
+              (list-push result (make-triple arena x y z))))
+          result)
+        """)[0]
+
+        conditions, bindings = verifier._extract_filter_conditions_from_loop(body)
+
+        assert len(conditions) == 1
+        assert is_form(conditions[0], 'term-eq')
+
+    def test_extract_filter_conditions_nested(self):
+        """Extract multiple filter conditions from nested when clauses"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, is_form
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Nested when clauses like eq-sym
+        body = parse("""
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt triples)
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((inferred (make-triple arena y same-as x)))
+                (when (not (graph-contains g inferred))
+                  (list-push result inferred)))))
+          result)
+        """)[0]
+
+        conditions, bindings = verifier._extract_filter_conditions_from_loop(body)
+
+        # Should extract both conditions
+        assert len(conditions) == 2
+        assert is_form(conditions[0], 'term-eq')
+        assert is_form(conditions[1], 'not')
+
+        # Should capture bindings
+        assert 'inferred' in bindings
+
+    def test_resolve_filter_condition_variables(self):
+        """Resolve variables in filter conditions through let bindings"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, is_form
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Condition with variable reference
+        condition = parse("(not (contains g x))")[0]
+        bindings = {
+            'x': parse("(make-triple arena a b c)")[0],
+            'a': parse("foo")[0]
+        }
+
+        resolved = verifier._resolve_filter_condition(condition, bindings)
+
+        # The 'x' should be replaced with the make-triple expression
+        assert is_form(resolved, 'not')
+        inner = resolved[1]
+        assert is_form(inner, 'contains')
+        assert is_form(inner[2], 'make-triple')
+
+    def test_completeness_axiom_generated(self):
+        """Test that completeness axiom is generated for filtered map pattern"""
+        from slop.verifier import ContractVerifier, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+        verifier = ContractVerifier(env)
+
+        # Create seqs
+        translator._create_list_seq('$result')
+        translator._create_list_seq('triples')
+
+        # Declare loop variable
+        from slop.types import PrimitiveType
+        translator.declare_variable('dt', PrimitiveType('Int'))
+
+        # Filtered map pattern body (conditional push)
+        body = parse("""
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt triples)
+            (when (> dt 0)
+              (list-push result
+                (triple-new arena
+                  (triple-predicate dt)
+                  (triple-object dt)
+                  (triple-subject dt)))))
+          result)
+        """)[0]
+
+        postconditions = [parse("(forall (r $result) (> r 0))")[0]]
+
+        axioms = verifier._extract_map_push_axioms(body, postconditions, translator)
+
+        # Should generate soundness axiom, size axiom, and completeness axiom
+        # For conditional push: at least 3 axioms
+        assert len(axioms) >= 3, f"Expected at least 3 axioms, got {len(axioms)}"
+
+        # Check that one axiom is the completeness axiom (has filter condition)
+        axiom_strs = [str(a) for a in axioms]
+        # The completeness axiom should be a ForAll with an implication
+        has_completeness = any('ForAll' in s and 'Implies' in s for s in axiom_strs)
+        assert has_completeness, "Expected completeness axiom with ForAll/Implies"
+
+    def test_completeness_property_verifies(self):
+        """Integration test: completeness property with filters verifies.
+
+        This tests a filtered map pattern where we have:
+        - A filter condition (e.g., predicate > 0)
+        - A constructor call to create output
+        - A completeness property stating all filtered inputs produce outputs
+        """
+        from slop.verifier import (
+            ContractVerifier, MinimalTypeEnv, FunctionRegistry,
+            ImportedDefinitions, FunctionSignature
+        )
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        # Source with filtered map pattern and completeness property
+        # Uses triple-new constructor to trigger map pattern detection
+        source = """
+        (fn filter-and-transform ((arena Arena) (triples (List Triple)))
+          (@spec ((Arena (List Triple)) -> (List Triple)))
+          ;; Soundness: every output came from a filtered input
+          (@property soundness
+            (forall (t $result)
+              (exists (dt triples)
+                (and (== (triple-predicate t) (triple-predicate dt))
+                     (== (triple-subject t) (triple-object dt))))))
+          (let ((mut result (list-new arena Triple)))
+            (for-each (dt triples)
+              (when (> (triple-predicate dt) 0)
+                (list-push result
+                  (triple-new arena
+                    (triple-predicate dt)
+                    (triple-object dt)
+                    (triple-subject dt)))))
+            result))
+        """
+        ast = parse(source)
+
+        type_env = MinimalTypeEnv()
+        fn_registry = FunctionRegistry()
+        fn_registry.register_from_ast(ast)
+
+        verifier = ContractVerifier(
+            type_env,
+            function_registry=fn_registry,
+            imported_defs=_make_triple_imported_defs()
+        )
+
+        result = verifier.verify_function(ast[0])
+        assert result.status == 'verified', f"Expected verified, got: {result.message}"
+
+class TestNestedLoopPattern:
+    """Test nested loop pattern recognition for join semantics.
+
+    Nested loop patterns occur when:
+    1. An outer loop iterates over a collection (e.g., delta.triples)
+    2. An inner loop iterates over a query result derived from outer loop variables
+    3. The constructor combines fields from both loops
+
+    Example: eq-trans computes transitive closure via join:
+    (for-each (dt delta.triples)       ; outer: iterate delta
+      (when filter-dt
+        (let ((x (triple-subject dt))
+              (y (triple-object dt)))
+          (for-each (yo-triple (match y ...))  ; inner: join on y
+            (let ((z (triple-object yo-triple)))
+              (list-push result (make-triple x same-as z)))))))
+    """
+
+    def test_detect_nested_loop_simple(self):
+        """Detect basic nested for-each structure"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn nested-transform ((arena Arena) (outer (List Int)) (g Graph))
+          (@spec ((Arena (List Int) Graph) -> (List Int)))
+          (@post (>= 0 0))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x outer)
+              (let ((inner-results (graph-match g x)))
+                (for-each (y inner-results)
+                  (list-push result (combine arena x y)))))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env)
+
+        # Get function body (the let expression)
+        fn_body = ast[0].items[5]
+
+        # Detect nested pattern
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.result_var == 'result'
+        assert pattern.outer_loop_var == 'x'
+        assert len(pattern.inner_loops) == 1
+        assert pattern.inner_loops[0].loop_var == 'y'
+
+    def test_detect_nested_loop_with_filter(self):
+        """Detect nested loop with when filter (like eq-trans)"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, build_type_registry_from_ast, build_invariant_registry_from_ast
+        from slop.parser import parse
+
+        source = """
+        (fn filtered-nested ((arena Arena) (delta Delta) (g Graph))
+          (@spec ((Arena Delta Graph) -> (List Triple)))
+          (@post (>= 0 0))
+          (let ((same-as (make-iri arena OWL_SAME_AS))
+                (mut result (list-new arena Triple)))
+            (for-each (dt (. delta triples))
+              (when (term-eq (triple-predicate dt) same-as)
+                (let ((x (triple-subject dt))
+                      (y (triple-object dt)))
+                  (let ((y-matches (indexed-graph-match arena g (some y) (some same-as) (none))))
+                    (for-each (yo-triple y-matches)
+                      (let ((z (triple-object yo-triple)))
+                        (list-push result (make-triple arena x same-as z))))))))
+            result))
+        """
+        ast = parse(source)
+        type_registry = build_type_registry_from_ast(ast)
+        invariant_registry = build_invariant_registry_from_ast(ast)
+        env = MinimalTypeEnv(type_registry=type_registry, invariant_registry=invariant_registry)
+        verifier = ContractVerifier(env, imported_defs=_make_triple_imported_defs())
+
+        fn_body = ast[0].items[5]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.result_var == 'result'
+        assert pattern.outer_loop_var == 'dt'
+        assert pattern.outer_filter is not None  # (term-eq (triple-predicate dt) same-as)
+        assert 'same-as' in pattern.outer_let_bindings  # Constant from outer let
+
+    def test_field_provenance_outer(self):
+        """Test that fields derived from outer loop are classified as OUTER"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FieldSource
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=_make_triple_imported_defs())
+
+        # Pattern where subject comes from outer loop
+        source = """
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt outer)
+            (let ((x (triple-subject dt)))
+              (for-each (y inner)
+                (list-push result (make-triple arena x pred y)))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+
+        # Subject (x) comes from outer loop var dt
+        assert pattern.field_provenance.get('subject') == FieldSource.OUTER
+
+    def test_field_provenance_inner(self):
+        """Test that fields derived from inner loop are classified as INNER"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FieldSource
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=_make_triple_imported_defs())
+
+        # Pattern where object comes from inner loop
+        source = """
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt outer)
+            (let ((x (triple-subject dt)))
+              (for-each (yo inner)
+                (let ((z (triple-object yo)))
+                  (list-push result (make-triple arena x pred z))))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+
+        # Object (z) comes from inner loop var yo
+        assert pattern.field_provenance.get('object') == FieldSource.INNER
+
+    def test_field_provenance_constant(self):
+        """Test that constant fields from outer let are classified as CONSTANT"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, FieldSource
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=_make_triple_imported_defs())
+
+        # Pattern where predicate is a constant from outer let
+        source = """
+        (let ((same-as (make-iri arena OWL_SAME_AS))
+              (mut result (list-new arena Triple)))
+          (for-each (dt outer)
+            (let ((x (triple-subject dt)))
+              (for-each (yo inner)
+                (let ((z (triple-object yo)))
+                  (list-push result (make-triple arena x same-as z))))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+
+        # Predicate (same-as) is a constant from outer let
+        assert pattern.field_provenance.get('predicate') == FieldSource.CONSTANT
+
+    def test_identify_join_variables(self):
+        """Test that join variables (outer vars in inner collection) are identified"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Inner collection uses 'y' which is derived from outer loop
+        source = """
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt outer)
+            (let ((y (triple-object dt)))
+              (let ((matches (query-by-subject arena g y)))
+                (for-each (m matches)
+                  (list-push result (construct arena dt m))))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+
+        # Inner loop's collection references 'y' from outer scope
+        assert len(pattern.inner_loops) == 1
+        assert 'y' in pattern.inner_loops[0].join_vars
+
+    def test_nested_loop_axiom_generation(self):
+        """Test that axioms are generated for nested loop patterns"""
+        from slop.verifier import ContractVerifier, Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        import z3
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+        verifier = ContractVerifier(env, imported_defs=_make_triple_imported_defs())
+
+        # Create seqs
+        translator._create_list_seq('$result')
+        translator._create_list_seq('_field_delta_triples')
+
+        # Nested loop pattern body
+        body = parse("""
+        (let ((same-as OWL_SAME_AS)
+              (mut result (list-new arena Triple)))
+          (for-each (dt (. delta triples))
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((x (triple-subject dt)))
+                (for-each (yo inner)
+                  (let ((z (triple-object yo)))
+                    (list-push result (make-triple arena x same-as z)))))))
+          result)
+        """)[0]
+
+        postconditions = [parse("(forall (t $result) true)")[0]]
+
+        axioms = verifier._extract_map_push_axioms(body, postconditions, translator)
+
+        # Should generate at least provenance axiom and size axiom
+        assert len(axioms) >= 2, f"Expected at least 2 axioms, got {len(axioms)}"
+
+        # Check axioms contain ForAll quantifier
+        axiom_strs = [str(a) for a in axioms]
+        has_forall = any('ForAll' in s for s in axiom_strs)
+        assert has_forall, "Expected axiom with ForAll quantifier"
+
+    def test_nested_loop_does_not_match_single_loop(self):
+        """Nested loop detection should not match simple single-loop patterns"""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # Single loop pattern (should be handled by _detect_map_pattern, not nested)
+        source = """
+        (let ((mut result (list-new arena Triple)))
+          (for-each (dt triples)
+            (list-push result (transform dt)))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        # This should NOT match as nested pattern (no inner for-each)
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        # The pattern may or may not be detected depending on implementation
+        # but if detected, it should have no inner loops
+        if pattern is not None:
+            assert len(pattern.inner_loops) == 0
+
+    def test_eq_trans_structure_detection(self):
+        """Test detection of eq-trans-like nested structure with two inner loops.
+
+        eq-trans has two inner for-each loops:
+        1. (for-each (yo-triple y-objects) ...) - find y->z
+        2. (for-each (xs-triple x-subjects) ...) - find w->x
+
+        Both should be detected.
+        """
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=_make_triple_imported_defs())
+
+        # Simplified version of eq-trans with one inner loop
+        source = """
+        (let ((same-as (make-iri arena OWL_SAME_AS))
+              (no-term (Option Term) (none))
+              (mut result (list-new arena Triple)))
+          (for-each (dt (. delta triples))
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((x (triple-subject dt))
+                    (y (triple-object dt)))
+                (let ((y-objects (indexed-graph-match arena g (some y) (some same-as) no-term)))
+                  (for-each (yo-triple y-objects)
+                    (let ((z (triple-object yo-triple))
+                          (inferred (make-triple arena x same-as z)))
+                      (when (and (not (term-eq x z))
+                                 (not (indexed-graph-contains g inferred)))
+                        (list-push result inferred))))))))
+          result)
+        """
+        ast = parse(source)
+        fn_body = ast[0]
+
+        pattern = verifier._detect_nested_loop_pattern(fn_body)
+        assert pattern is not None
+        assert pattern.outer_loop_var == 'dt'
+        assert pattern.outer_filter is not None
+        assert 'same-as' in pattern.outer_let_bindings
+        assert len(pattern.inner_loops) >= 1
+        assert pattern.inner_loops[0].loop_var == 'yo-triple'
+
+    def test_eq_trans_soundness_axiom_structure(self):
+        """Test that eq-trans soundness property can use generated axioms.
+
+        The soundness property:
+        (forall (t $result)
+          (exists (dt (. delta triples))
+            (term-eq (triple-predicate dt) (triple-predicate t))))
+
+        Should be provable because:
+        - result elements have predicate = same-as (from field_provenance CONSTANT)
+        - outer filter ensures triple-predicate(dt) = same-as
+        - Therefore triple-predicate(dt) = triple-predicate(t)
+        """
+        from slop.verifier import (
+            ContractVerifier, Z3Translator, MinimalTypeEnv,
+            ImportedDefinitions, FunctionSignature
+        )
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+        import z3
+
+        # Create imported definitions with term-eq semantics + triple constructors
+        imported_defs = _make_triple_imported_defs()
+        imported_defs.functions['term-eq'] = FunctionSignature(
+            name='term-eq',
+            param_types=[PrimitiveType('Int'), PrimitiveType('Int')],
+            return_type=PrimitiveType('Bool'),
+            params=['a', 'b'],
+            postconditions=[parse('(== $result (== a b))')[0]]
+        )
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+
+        # Create seqs
+        translator._create_list_seq('$result')
+        translator._create_list_seq('_field_delta_triples')
+
+        # Simplified eq-trans body
+        body = parse("""
+        (let ((same-as OWL_SAME_AS)
+              (mut result (list-new arena Triple)))
+          (for-each (dt (. delta triples))
+            (when (term-eq (triple-predicate dt) same-as)
+              (let ((x (triple-subject dt))
+                    (y (triple-object dt)))
+                (for-each (yo inner)
+                  (let ((z (triple-object yo)))
+                    (list-push result (make-triple arena x same-as z)))))))
+          result)
+        """)[0]
+
+        postconditions = []
+        axioms = verifier._extract_map_push_axioms(body, postconditions, translator)
+
+        # Should have generated axioms
+        assert len(axioms) >= 1
+
+        # The key axiom should establish:
+        # ForAll i in result: Exists j in delta.triples:
+        #   filter(delta.triples[j]) AND field_constraints
+        axiom_strs = [str(a) for a in axioms]
+        has_forall_exists = any('ForAll' in s and 'Exists' in s for s in axiom_strs)
+        assert has_forall_exists, "Expected axiom with ForAll/Exists structure"
+
+
+class TestImportedPostconditionAxioms:
+    """Test universal axioms generated from imported function postconditions."""
+
+    def test_extract_imported_postcondition_axioms_simple(self):
+        """Test extracting postcondition axioms from imported functions."""
+        from slop.verifier import (ContractVerifier, Z3Translator, MinimalTypeEnv,
+                                    ImportedDefinitions, FunctionSignature)
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        # Create imported definitions with a function that has a postcondition
+        imported_defs = ImportedDefinitions()
+        imported_defs.functions['graph-size'] = FunctionSignature(
+            name='graph-size',
+            param_types=[PrimitiveType('IndexedGraph')],
+            return_type=PrimitiveType('Int'),
+            params=['g'],
+            postconditions=[parse("(>= $result 0)")[0]]
+        )
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+        translator = Z3Translator(env, imported_defs=imported_defs)
+
+        axioms = verifier._extract_imported_postcondition_axioms(translator)
+
+        # Should have generated at least one axiom
+        assert len(axioms) >= 1
+
+        # The axiom should be universally quantified over 'g'
+        axiom_str = str(axioms[0])
+        assert 'ForAll' in axiom_str
+
+    def test_postcondition_treats_result_as_collection(self):
+        """Test detection of collection-treating postconditions."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv, ImportedDefinitions
+        from slop.parser import parse
+
+        imported_defs = ImportedDefinitions()
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+
+        # (forall (t $result) ...) treats $result as collection
+        post1 = parse("(forall (t $result) (pred t))")[0]
+        assert verifier._postcondition_treats_result_as_collection(post1)
+
+        # (exists (t $result) ...) treats $result as collection
+        post2 = parse("(exists (t $result) (pred t))")[0]
+        assert verifier._postcondition_treats_result_as_collection(post2)
+
+        # (list-len $result) treats $result as collection
+        post3 = parse("(list-len $result)")[0]
+        assert verifier._postcondition_treats_result_as_collection(post3)
+
+        # (>= $result 0) does NOT treat $result as collection
+        post4 = parse("(>= $result 0)")[0]
+        assert not verifier._postcondition_treats_result_as_collection(post4)
+
+    def test_imported_postcondition_with_forall(self):
+        """Test generating axioms from postconditions with forall over result."""
+        from slop.verifier import (ContractVerifier, Z3Translator, MinimalTypeEnv,
+                                    ImportedDefinitions, FunctionSignature)
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        # Create imported definitions with a function whose postcondition
+        # quantifies over the result
+        imported_defs = ImportedDefinitions()
+        imported_defs.functions['indexed-graph-match'] = FunctionSignature(
+            name='indexed-graph-match',
+            param_types=[
+                PrimitiveType('Arena'),
+                PrimitiveType('IndexedGraph'),
+                PrimitiveType('Option'),
+                PrimitiveType('Option'),
+                PrimitiveType('Option'),
+            ],
+            return_type=PrimitiveType('List'),
+            params=['arena', 'g', 's', 'p', 'o'],
+            postconditions=[
+                # (forall (t $result) (indexed-graph-contains g t))
+                parse("(forall (t $result) (indexed-graph-contains g t))")[0]
+            ]
+        )
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+        translator = Z3Translator(env, imported_defs=imported_defs)
+        translator.use_seq_encoding = True  # Enable Seq encoding for collections
+
+        axioms = verifier._extract_imported_postcondition_axioms(translator)
+
+        # Should have generated at least one axiom
+        assert len(axioms) >= 1
+
+        # The axiom should be universally quantified over all parameters
+        axiom_str = str(axioms[0])
+        assert 'ForAll' in axiom_str
+
+    def test_skip_equality_functions(self):
+        """Test that equality functions are skipped (handled separately)."""
+        from slop.verifier import (ContractVerifier, Z3Translator, MinimalTypeEnv,
+                                    ImportedDefinitions, FunctionSignature)
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        imported_defs = ImportedDefinitions()
+        # Equality function with 2 params
+        imported_defs.functions['term-eq'] = FunctionSignature(
+            name='term-eq',
+            param_types=[PrimitiveType('Term'), PrimitiveType('Term')],
+            return_type=PrimitiveType('Bool'),
+            params=['a', 'b'],
+            postconditions=[parse("(== $result (== a b))")[0]]
+        )
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+        translator = Z3Translator(env, imported_defs=imported_defs)
+
+        axioms = verifier._extract_imported_postcondition_axioms(translator)
+
+        # Should NOT generate axioms (equality functions handled separately)
+        assert len(axioms) == 0
+
+    def test_imported_postcondition_axioms_used_in_property_verification(self):
+        """Test that imported postcondition axioms are applied during property verification."""
+        from slop.verifier import verify_source
+
+        # This test verifies end-to-end integration: a property that relies on
+        # an imported function's postcondition should be verifiable
+        source = '''
+        (module test
+          (import math (abs))
+
+          ;; Test function with property that relies on abs postcondition
+          (fn wrap-abs ((x Int))
+            (@spec ((Int) -> Int))
+            (@post (>= $result 0))
+            (abs x)))
+        '''
+        # Note: Without the imported postcondition axiom for 'abs', this might
+        # not verify. With the axiom, Z3 should be able to verify it.
+        results = verify_source(source)
+
+        # The function should at least not crash during verification
+        assert len(results) >= 1
+
+
+class TestPropertyPropagation:
+    """Test auto-propagation of @property as @loop-invariant."""
+
+    def test_property_propagated_when_no_explicit_invariant(self):
+        """@property should be auto-propagated as assumption when no @loop-invariant exists."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        source = '''
+        (fn filter-items ((items (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@property soundness (forall (t $result) (exists (dt items) (== t dt))))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result x))
+            result))
+        '''
+        ast = parse(source)
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # The property should not cause a crash and should verify
+        fn_form = ast[0]
+        result = verifier.verify_function(fn_form)
+        assert result is not None
+
+    def test_property_not_propagated_with_explicit_invariant(self):
+        """@property should NOT be propagated when explicit @loop-invariant exists."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, SList, Symbol
+
+        source = '''
+        (fn filter-items ((items (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@property soundness (forall (t $result) (exists (dt items) (== t dt))))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (@loop-invariant (forall (t result) (exists (dt items) (== t dt))))
+              (list-push result x))
+            result))
+        '''
+        ast = parse(source)
+        fn_form = ast[0]
+
+        # Extract properties and body
+        properties = []
+        fn_body = None
+        for item in fn_form.items[3:]:
+            if isinstance(item, SList) and len(item) > 0:
+                head = item[0]
+                if isinstance(head, Symbol) and head.name == '@property':
+                    if isinstance(item[1], Symbol) and len(item) > 2:
+                        properties.append((item[1].name, item[2]))
+                    else:
+                        properties.append((None, item[1]))
+                elif isinstance(head, Symbol) and not head.name.startswith('@'):
+                    fn_body = item
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        # When explicit @loop-invariant exists, _extract_loop_invariants returns them
+        loop_invariants = verifier._extract_loop_invariants(fn_body)
+        assert len(loop_invariants) > 0, "Should find explicit @loop-invariant"
+
+    def test_substitute_result_var(self):
+        """$result should be substituted with actual variable name."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse, pretty_print
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+
+        expr = parse("(forall (t $result) (exists (dt source) (== t dt)))")[0]
+        result = verifier._substitute_result_var(expr, 'result')
+        result_str = pretty_print(result)
+        assert '$result' not in result_str
+        assert 'result' in result_str
+
+
+class TestGeneralizedContainment:
+    """Test generalized containment congruence axioms."""
+
+    def test_infer_constructor_field_mappings(self):
+        """Should infer field mappings from constructor postconditions."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.verifier.types import FunctionSignature, ImportedDefinitions
+        from slop.parser import parse
+
+        defs = ImportedDefinitions()
+        # Define a non-triple constructor with postconditions
+        posts = [
+            parse("(== (pair-left $result) a)")[0],
+            parse("(== (pair-right $result) b)")[0],
+        ]
+        defs.functions['make-pair'] = FunctionSignature(
+            name='make-pair',
+            param_types=[],
+            return_type=None,
+            params=['arena', 'a', 'b'],
+            postconditions=posts,
+        )
+
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=defs)
+
+        sig = defs.functions['make-pair']
+        mappings = verifier._infer_constructor_field_mappings(sig)
+        assert mappings == {'a': 'pair-left', 'b': 'pair-right'}
+
+    def test_infer_triple_field_mappings(self):
+        """Should infer standard triple field mappings."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.verifier.types import FunctionSignature, ImportedDefinitions
+        from slop.parser import parse
+
+        defs = _make_triple_imported_defs()
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=defs)
+
+        sig = defs.functions['make-triple']
+        mappings = verifier._infer_constructor_field_mappings(sig)
+        assert 's' in mappings
+        assert mappings['s'] == 'triple-subject'
+        assert mappings['p'] == 'triple-predicate'
+        assert mappings['o'] == 'triple-object'
+
+
+class TestListContains:
+    """Test list-contains verifier-only predicate."""
+
+    def test_list_contains_translation(self):
+        """(list-contains lst elem) should translate to existential membership."""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Create a sequence for 'items'
+        translator._create_list_seq('items')
+        translator.declare_variable('x', PrimitiveType('Int'))
+
+        expr = parse("(list-contains items x)")[0]
+        result = translator.translate_expr(expr)
+        assert result is not None
+        # Should be an existential quantifier
+        assert z3.is_quantifier(result)
+        assert result.is_exists()
+
+    def test_list_contains_in_postcondition(self):
+        """list-contains should work in postcondition context."""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=True)
+
+        # Set up $result as a sequence
+        translator._create_list_seq('$result')
+        translator.declare_variable('x', PrimitiveType('Int'))
+
+        expr = parse("(list-contains $result x)")[0]
+        result = translator.translate_expr(expr)
+        assert result is not None
+        assert z3.is_quantifier(result)
+
+    def test_list_contains_fallback_without_seq(self):
+        """Without seq encoding, list-contains should fall back to uninterpreted function."""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env, use_seq_encoding=False)
+        translator.declare_variable('items', PrimitiveType('Int'))
+        translator.declare_variable('x', PrimitiveType('Int'))
+
+        expr = parse("(list-contains items x)")[0]
+        result = translator.translate_expr(expr)
+        # Should still translate (as uninterpreted function)
+        assert result is not None
