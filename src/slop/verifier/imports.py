@@ -106,8 +106,9 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
             if type_expr:
                 param_types.append(_parse_type_expr_simple(type_expr, registry))
 
-    # Look for @spec to get return type and @post for postconditions
+    # Look for @spec to get return type, @post for postconditions, @assume for assumptions
     postconditions: List['SExpr'] = []
+    assumptions: List['SExpr'] = []
     for item in fn_form.items[3:]:
         if is_form(item, '@spec') and len(item) > 1:
             spec = item[1]
@@ -121,8 +122,10 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
                         break
         elif is_form(item, '@post') and len(item) > 1:
             postconditions.append(item[1])
+        elif is_form(item, '@assume') and len(item) > 1:
+            assumptions.append(item[1])
 
-    return FunctionSignature(name, param_types, return_type, param_names, postconditions)
+    return FunctionSignature(name, param_types, return_type, param_names, postconditions, assumptions)
 
 
 def _extract_const_value(expr: 'SExpr') -> Any:

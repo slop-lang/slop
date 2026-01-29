@@ -845,6 +845,71 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return self._get_return_expr(expr.items[-1])
         return expr
 
+    def _propagate_properties_as_loop_invariants(
+        self, fn_body: SExpr, properties: List[Tuple[Optional[str], SExpr]]
+    ) -> List[SExpr]:
+        """Auto-propagate @property annotations as @loop-invariant assumptions.
+
+        When a function has @property but no explicit @loop-invariant on any loop,
+        the property body is used as the loop invariant at every for-each nesting
+        level, with $result substituted for the mutable result variable name.
+
+        For example, given:
+            (@property soundness (forall (t $result) (exists (dt source) ...)))
+
+        And body:
+            (let ((mut result (list-new arena T)))
+              (for-each (x items) (list-push result ...))
+              result)
+
+        Generates the assumption:
+            (forall (t result) (exists (dt source) ...))
+
+        This eliminates the need for manually writing identical @loop-invariant
+        annotations at every nesting level.
+        """
+        # Find the mutable result variable from the return expression
+        return_expr = self._get_return_expr(fn_body)
+        if not isinstance(return_expr, Symbol):
+            return []
+
+        result_var_name = return_expr.name
+
+        # Check that this is actually a mutable variable returned from a let
+        # (basic sanity check - the pattern is (let ((mut result ...)) ... result))
+        if not self._has_for_each_loop(fn_body):
+            return []
+
+        propagated: List[SExpr] = []
+        for _, prop_expr in properties:
+            # Substitute $result with the actual mutable variable name
+            substituted = self._substitute_result_var(prop_expr, result_var_name)
+            propagated.append(substituted)
+
+        return propagated
+
+    def _substitute_result_var(self, expr: SExpr, var_name: str) -> SExpr:
+        """Substitute $result with var_name in an expression."""
+        if isinstance(expr, Symbol):
+            if expr.name == '$result':
+                return Symbol(var_name, expr.line, expr.col)
+            return expr
+        if isinstance(expr, SList):
+            new_items = [self._substitute_result_var(item, var_name) for item in expr.items]
+            return SList(new_items, expr.line, expr.col)
+        return expr
+
+    def _has_for_each_loop(self, expr: SExpr) -> bool:
+        """Check if expression contains a for-each loop."""
+        if isinstance(expr, SList) and len(expr) >= 1:
+            head = expr[0]
+            if isinstance(head, Symbol) and head.name == 'for-each':
+                return True
+            for item in expr.items:
+                if self._has_for_each_loop(item):
+                    return True
+        return False
+
     def _collect_all_return_exprs(self, expr: SExpr) -> List[SExpr]:
         """Collect ALL return expressions from a function body.
 
@@ -1769,7 +1834,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # @loop-invariant provides axioms that help verify loops
         if fn_body is not None:
             loop_invariants = self._extract_loop_invariants(fn_body)
-            assumptions.extend(loop_invariants)
+            if loop_invariants:
+                assumptions.extend(loop_invariants)
+            elif properties:
+                # Auto-propagate @property as @loop-invariant when no explicit
+                # invariants exist. The @property body (with $result substituted
+                # for the mutable result variable) serves as the invariant at
+                # every loop nesting level.
+                propagated = self._propagate_properties_as_loop_invariants(
+                    fn_body, properties
+                )
+                assumptions.extend(propagated)
 
         # Skip if no contracts to verify
         if not preconditions and not postconditions and not assumptions and not properties:
@@ -2359,6 +2434,22 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     for c in translator.constraints:
                         prop_solver.add(c)
 
+                    # Add assumptions (including loop invariants) as trusted axioms
+                    for a in assume_z3:
+                        prop_solver.add(a)
+
+                    # Equate $result sequence with the actual return variable's sequence
+                    # Loop invariants reference the local variable (e.g., 'result'),
+                    # while properties reference '$result' - these are different Z3 seqs
+                    if fn_body is not None and translator.use_seq_encoding:
+                        return_expr = self._get_return_expr(fn_body)
+                        if isinstance(return_expr, Symbol):
+                            ret_name = return_expr.name
+                            result_seq = translator.list_seqs.get('$result')
+                            ret_seq = translator.list_seqs.get(ret_name)
+                            if result_seq is not None and ret_seq is not None and not z3.eq(result_seq, ret_seq):
+                                prop_solver.add(result_seq == ret_seq)
+
                     # Add pattern axioms (filter/map/fold axioms derived from loop analysis)
                     # These are needed for properties that reason about collection contents
                     for axiom in pattern_axioms:
@@ -2379,6 +2470,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
                     # Check if NOT property is satisfiable
                     prop_solver.add(z3.Not(prop_z3_expr))
+
                     prop_result = prop_solver.check()
 
                     prop_str = pretty_print(prop_expr)

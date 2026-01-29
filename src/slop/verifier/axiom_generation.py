@@ -172,11 +172,13 @@ class AxiomGenerationMixin:
         map_pattern = self._detect_map_pattern(fn_body)
         if map_pattern is None:
             # Second try: nested loop pattern (joins)
-            nested_pattern = self._detect_nested_loop_pattern(fn_body)
-            if nested_pattern is not None:
-                return self._generate_nested_loop_axioms(
-                    nested_pattern, postconditions, translator
-                )
+            nested_patterns = self._detect_all_nested_loop_patterns(fn_body)
+            if nested_patterns:
+                for nested_pattern in nested_patterns:
+                    axioms.extend(self._generate_nested_loop_axioms(
+                        nested_pattern, postconditions, translator
+                    ))
+                return axioms
             return axioms
 
         # Need Seq for $result
@@ -513,13 +515,50 @@ class AxiomGenerationMixin:
                             field_constraints.append(result_field_z3 == source_z3)
 
                 elif provenance == FieldSource.INNER:
-                    # Inner field: derived from inner loop - harder to axiomatize simply
-                    # For now, just add that the field type matches outer collection type
-                    # This is a weaker axiom but still useful
-                    outer_field_z3 = result_field_func(outer_seq[outer_idx])
-                    # We can't prove direct equality, but we know the types match
-                    # Skip adding constraint for INNER provenance in the outer existence axiom
-                    pass
+                    # Inner field: derived from inner loop variable
+                    # Find which inner loop this field comes from by resolving through bindings
+                    inner_loop = self._find_inner_loop_for_field(
+                        source_expr, pattern.inner_loops, pattern.outer_bindings
+                    )
+                    if inner_loop is not None:
+                        # Create a Seq for the inner collection
+                        # Resolve collection expression through outer bindings
+                        resolved_coll = self._resolve_through_context(
+                            inner_loop.collection, pattern.outer_bindings
+                        )
+                        inner_seq = translator._get_or_create_collection_seq(resolved_coll)
+                        if inner_seq is not None:
+                            inner_idx = z3.Int(f'_nested_inner_k_{result_field}')
+                            # Resolve the source expression through inner bindings
+                            # to find which field of the inner element maps to the result field
+                            inner_field_expr = self._resolve_inner_field_accessor(
+                                source_expr, inner_loop
+                            )
+                            if inner_field_expr is not None:
+                                inner_field_func_name = f"fn_{inner_field_expr}_1"
+                                if inner_field_func_name not in translator.variables:
+                                    inner_field_func = z3.Function(
+                                        inner_field_func_name,
+                                        z3.IntSort(), z3.IntSort()
+                                    )
+                                    translator.variables[inner_field_func_name] = inner_field_func
+                                else:
+                                    inner_field_func = translator.variables[inner_field_func_name]
+
+                                # Build inner existential constraints
+                                inner_parts = [
+                                    inner_idx >= 0,
+                                    inner_idx < z3.Length(inner_seq),
+                                    eq_func(result_field_z3, inner_field_func(inner_seq[inner_idx]))
+                                    if eq_func is not None
+                                    else result_field_z3 == inner_field_func(inner_seq[inner_idx])
+                                ]
+
+                                inner_constraint = z3.Exists(
+                                    [inner_idx],
+                                    z3.And(*inner_parts)
+                                )
+                                field_constraints.append(inner_constraint)
 
                 # MIXED provenance - skip, too complex
 
@@ -552,6 +591,18 @@ class AxiomGenerationMixin:
             size_axiom = z3.Length(result_seq) <= z3.Length(outer_seq)
             axioms.append(size_axiom)
 
+            # Generate instantiated axioms from imported postconditions for inner loops
+            for inner_loop in pattern.inner_loops:
+                resolved_coll = self._resolve_through_context(
+                    inner_loop.collection, pattern.outer_bindings
+                )
+                inst_inner_seq = translator._get_or_create_collection_seq(resolved_coll)
+                if inst_inner_seq is not None:
+                    inst_axioms = self._generate_instantiated_inner_axioms(
+                        inner_loop, inst_inner_seq, pattern.outer_bindings, translator
+                    )
+                    axioms.extend(inst_axioms)
+
         finally:
             # Restore bindings
             if old_outer_binding is not None:
@@ -566,6 +617,490 @@ class AxiomGenerationMixin:
                     del translator.variables[var_name]
 
         return axioms
+
+    def _generate_instantiated_inner_axioms(
+        self,
+        inner_loop: 'InnerLoopInfo',
+        inner_seq: z3.SeqRef,
+        outer_bindings: Dict[str, SExpr],
+        translator: 'Z3Translator'
+    ) -> List[z3.BoolRef]:
+        """Generate instantiated axioms from imported function postconditions.
+
+        Instead of universally quantifying over ALL function parameters (which Z3
+        can't instantiate efficiently), binds parameters to their actual argument
+        values from the call site and quantifies only over the loop index variable.
+
+        For inner_loop.collection = (indexed-graph-match arena g (some y) (some same-as) no-term)
+        with @assume (forall (t $result) (indexed-graph-contains g t)):
+
+        Generates:
+            ForAll idx: 0 <= idx < Length(inner_seq) =>
+                fn_indexed-graph-contains_2(g, inner_seq[idx])
+        """
+        axioms: List[z3.BoolRef] = []
+
+        # Resolve collection through outer bindings
+        resolved_coll = self._resolve_through_context(
+            inner_loop.collection, outer_bindings
+        )
+
+        # Extract function name from the resolved collection (head symbol)
+        if not isinstance(resolved_coll, SList) or len(resolved_coll) < 1:
+            return axioms
+        head = resolved_coll[0]
+        if not isinstance(head, Symbol):
+            return axioms
+        fn_name = head.name
+
+        # Look up function signature
+        sig = self.imported_defs.functions.get(fn_name)
+        if sig is None:
+            return axioms
+
+        # Collect all postconditions and assumptions
+        annotations = list(sig.postconditions) + list(sig.assumptions)
+        if not annotations:
+            return axioms
+
+        # Build param-name -> call-arg mapping
+        call_args = resolved_coll.items[1:]  # arguments after function name
+        if len(call_args) != len(sig.params):
+            return axioms
+
+        for post in annotations:
+            try:
+                inst_axiom = self._instantiate_postcondition_for_inner_loop(
+                    fn_name, sig.params, call_args, post, inner_seq, translator
+                )
+                if inst_axiom is not None:
+                    axioms.append(inst_axiom)
+            except Exception:
+                continue
+
+        # Generate containment congruence axioms:
+        # If an element is contained in a graph, then a make-triple with the same
+        # fields is also contained. This bridges indexed-graph-contains(g, elem)
+        # to indexed-graph-contains(g, make-triple(arena, s, p, o)) when elem has
+        # those fields.
+        axioms.extend(self._generate_containment_congruence_axioms(
+            sig, call_args, inner_seq, translator
+        ))
+
+        return axioms
+
+    def _generate_containment_congruence_axioms(
+        self,
+        sig: 'FunctionSignature',
+        call_args: List[SExpr],
+        inner_seq: z3.SeqRef,
+        translator: 'Z3Translator'
+    ) -> List[z3.BoolRef]:
+        """Generate axioms bridging element containment to constructed element containment.
+
+        When an inner loop iterates over query results contained in a container g,
+        and the property checks contains(g, constructor(arena, fields...)),
+        Z3 needs to know that containment depends on field values, not object identity.
+
+        This works with any record type that has:
+        1. A constructor function with @post mapping params to fields
+        2. A contains predicate (e.g., *-contains)
+
+        For each element elem in inner_seq that is known to be in g:
+            contains(g, constructor(arena, field1(elem), field2(elem), ...))
+
+        This is sound because containment checks by field equality.
+        """
+        axioms: List[z3.BoolRef] = []
+
+        # Check if there's a containment axiom (forall (t $result) (contains g t))
+        # and a container parameter we can identify
+        contains_func_name = None
+        graph_arg_z3 = None
+
+        for post in list(sig.postconditions) + list(sig.assumptions):
+            if not isinstance(post, SList) or len(post) < 3:
+                continue
+            head = post[0]
+            if not (isinstance(head, Symbol) and head.name == 'forall'):
+                continue
+            binding = post[1]
+            if not (isinstance(binding, SList) and len(binding) == 2):
+                continue
+            bind_coll = binding[1]
+            if not (isinstance(bind_coll, Symbol) and bind_coll.name == '$result'):
+                continue
+            body = post[2]
+            # Check for (fn-contains g t) pattern
+            if isinstance(body, SList) and len(body) >= 3:
+                fn_head = body[0]
+                if isinstance(fn_head, Symbol) and 'contains' in fn_head.name:
+                    contains_func_name = fn_head.name
+                    # The container arg is body[1], resolve through params
+                    graph_ref = body[1]
+                    if isinstance(graph_ref, Symbol):
+                        # Find this param in the call args
+                        for i, pname in enumerate(sig.params):
+                            if pname == graph_ref.name and i < len(call_args):
+                                graph_arg_z3 = translator.translate_expr(call_args[i])
+                                break
+                    break
+
+        if contains_func_name is None or graph_arg_z3 is None:
+            return axioms
+
+        # Find a constructor function with postconditions that define field mappings.
+        # Search all imported functions for constructors (functions with @post mapping
+        # params to fields via accessor postconditions like (== (accessor $result) param)).
+        constructor_name = None
+        constructor_sig = None
+
+        for fn_name, fn_sig in self.imported_defs.functions.items():
+            if not fn_sig.postconditions:
+                continue
+            # A constructor typically has postconditions mapping params to fields
+            field_mappings = self._infer_constructor_field_mappings(fn_sig)
+            if field_mappings and len(field_mappings) >= 2:
+                # Found a constructor with field mappings
+                constructor_name = fn_name
+                constructor_sig = fn_sig
+                break
+
+        if constructor_name is None or constructor_sig is None:
+            return axioms
+
+        # Get field mappings: param_name -> (accessor_name, field_name)
+        field_mappings = self._infer_constructor_field_mappings(constructor_sig)
+
+        # Get or create the contains function
+        contains_key = f"fn_{contains_func_name}_2"
+        if contains_key not in translator.variables:
+            contains_func = z3.Function(
+                contains_key, z3.IntSort(), z3.IntSort(), z3.BoolSort()
+            )
+            translator.variables[contains_key] = contains_func
+        else:
+            contains_func = translator.variables[contains_key]
+
+        # Get or create constructor function
+        constructor_key = f"fn_{constructor_name}_{len(constructor_sig.params)}"
+        if constructor_key not in translator.variables:
+            arg_sorts = [z3.IntSort()] * len(constructor_sig.params)
+            constructor_func = z3.Function(constructor_key, *arg_sorts, z3.IntSort())
+            translator.variables[constructor_key] = constructor_func
+        else:
+            constructor_func = translator.variables[constructor_key]
+
+        # Get or create field accessor functions and build constructor args
+        idx = z3.Int('_congr_idx')
+        elem = inner_seq[idx]
+
+        # Get arena (first call arg, typically)
+        arena_z3 = translator.variables.get('arena')
+        if arena_z3 is None:
+            arena_z3 = translator.translate_expr(call_args[0]) if call_args else None
+        if arena_z3 is None:
+            return axioms
+
+        # Build constructor arguments in parameter order
+        constructor_args = []
+        for param_name in constructor_sig.params:
+            if param_name == 'arena':
+                constructor_args.append(arena_z3)
+            elif param_name in field_mappings:
+                accessor_name = field_mappings[param_name]
+                acc_key = f"fn_{accessor_name}_1"
+                if acc_key not in translator.variables:
+                    acc_func = z3.Function(acc_key, z3.IntSort(), z3.IntSort())
+                    translator.variables[acc_key] = acc_func
+                else:
+                    acc_func = translator.variables[acc_key]
+                constructor_args.append(acc_func(elem))
+            else:
+                # Unknown param - can't build complete constructor call
+                return axioms
+
+        constructed = constructor_func(*constructor_args)
+
+        axiom = z3.ForAll([idx],
+            z3.Implies(
+                z3.And(idx >= 0, idx < z3.Length(inner_seq)),
+                z3.Implies(
+                    contains_func(graph_arg_z3, elem),
+                    contains_func(graph_arg_z3, constructed)
+                )
+            )
+        )
+        axioms.append(axiom)
+
+        return axioms
+
+    def _infer_constructor_field_mappings(
+        self, sig: 'FunctionSignature'
+    ) -> Dict[str, str]:
+        """Infer param_name -> accessor_name mappings from constructor postconditions.
+
+        For postconditions like:
+            (== (triple-subject $result) s)
+            (== (triple-predicate $result) p)
+            (== (triple-object $result) o)
+
+        Returns: {'s': 'triple-subject', 'p': 'triple-predicate', 'o': 'triple-object'}
+        """
+        mappings: Dict[str, str] = {}
+
+        for post in sig.postconditions:
+            if not isinstance(post, SList) or len(post) != 3:
+                continue
+            head = post[0]
+            if not isinstance(head, Symbol) or head.name not in ('==', 'term-eq'):
+                continue
+
+            lhs, rhs = post[1], post[2]
+
+            # Try both orientations: (== (accessor $result) param) and (== param (accessor $result))
+            for accessor_side, param_side in [(lhs, rhs), (rhs, lhs)]:
+                if (isinstance(accessor_side, SList) and len(accessor_side) == 2 and
+                    isinstance(accessor_side[0], Symbol) and
+                    isinstance(accessor_side[1], Symbol) and
+                    accessor_side[1].name == '$result' and
+                    isinstance(param_side, Symbol) and
+                    param_side.name in sig.params):
+                    mappings[param_side.name] = accessor_side[0].name
+                    break
+
+        return mappings
+
+    def _instantiate_postcondition_for_inner_loop(
+        self,
+        fn_name: str,
+        param_names: List[str],
+        call_args: List[SExpr],
+        post: SExpr,
+        inner_seq: z3.SeqRef,
+        translator: 'Z3Translator'
+    ) -> Optional[z3.BoolRef]:
+        """Instantiate a single postcondition for a concrete inner loop call.
+
+        Binds function parameters to their actual argument values, then:
+        - If postcondition is (forall (t $result) body): quantify over index into inner_seq
+        - Otherwise: translate directly with bound params
+        """
+        # Save translator state
+        saved_vars: Dict[str, object] = {}
+        for pname in param_names:
+            saved_vars[pname] = translator.variables.get(pname)
+        saved_result = translator.variables.get('$result')
+        saved_result_seq = translator.list_seqs.get('$result')
+
+        try:
+            # Bind each param to translated call arg
+            for pname, arg in zip(param_names, call_args):
+                arg_z3 = translator.translate_expr(arg)
+                if arg_z3 is not None:
+                    translator.variables[pname] = arg_z3
+
+            # Try to simplify (implies (!= param (none)) body) when param is (some x)
+            simplified = self._try_simplify_option_implies(
+                post, param_names, call_args, translator
+            )
+            if simplified is not None:
+                post = simplified
+
+            # Check if this is a (forall (t $result) body) pattern
+            if self._postcondition_treats_result_as_collection(post):
+                return self._instantiate_collection_postcondition(
+                    fn_name, post, inner_seq, translator
+                )
+            else:
+                # Simple postcondition - translate directly
+                translator.variables['$result'] = inner_seq
+                post_z3 = translator.translate_expr(post)
+                if post_z3 is not None and z3.is_bool(post_z3):
+                    return post_z3
+                return None
+
+        finally:
+            # Restore translator state
+            for pname, saved_val in saved_vars.items():
+                if saved_val is None:
+                    translator.variables.pop(pname, None)
+                else:
+                    translator.variables[pname] = saved_val
+            if saved_result is None:
+                translator.variables.pop('$result', None)
+            else:
+                translator.variables['$result'] = saved_result
+            if saved_result_seq is None:
+                translator.list_seqs.pop('$result', None)
+            else:
+                translator.list_seqs['$result'] = saved_result_seq
+
+    def _try_simplify_option_implies(
+        self,
+        post: SExpr,
+        param_names: List[str],
+        call_args: List[SExpr],
+        translator: 'Z3Translator'
+    ) -> Optional[SExpr]:
+        """Simplify (implies (!= param (none)) body) when param is known to be (some x).
+
+        When the actual call argument for a parameter is (some x), the condition
+        (!= param (none)) is trivially true. We can replace the implies with just
+        the body, substituting (unwrap param) with x directly.
+
+        This avoids Z3 needing to reason through union_tag/union_payload indirection.
+
+        Returns simplified postcondition or None if no simplification applies.
+        """
+        if not (isinstance(post, SList) and len(post) == 3):
+            return None
+        head = post[0]
+        if not (isinstance(head, Symbol) and head.name == 'implies'):
+            return None
+
+        cond = post[1]
+        body = post[2]
+
+        # Check for (!= param (none)) pattern
+        if not (isinstance(cond, SList) and len(cond) == 3):
+            return None
+        cond_head = cond[0]
+        if not (isinstance(cond_head, Symbol) and cond_head.name == '!='):
+            return None
+
+        # Find which side is (none) and which is the param
+        param_side = None
+        if isinstance(cond[2], SList) and len(cond[2]) == 1:
+            c2_head = cond[2][0]
+            if isinstance(c2_head, Symbol) and c2_head.name == 'none':
+                param_side = cond[1]
+        if param_side is None and isinstance(cond[1], SList) and len(cond[1]) == 1:
+            c1_head = cond[1][0]
+            if isinstance(c1_head, Symbol) and c1_head.name == 'none':
+                param_side = cond[2]
+        if param_side is None:
+            return None
+
+        if not isinstance(param_side, Symbol):
+            return None
+
+        # Find which param this is and what the actual call arg is
+        param_idx = None
+        for i, pname in enumerate(param_names):
+            if pname == param_side.name:
+                param_idx = i
+                break
+        if param_idx is None:
+            return None
+
+        call_arg = call_args[param_idx]
+
+        # Check if call arg is (some x)
+        if not (isinstance(call_arg, SList) and len(call_arg) == 2):
+            return None
+        arg_head = call_arg[0]
+        if not (isinstance(arg_head, Symbol) and arg_head.name == 'some'):
+            return None
+
+        # The condition is trivially true. Substitute (unwrap param) with x in body.
+        inner_value = call_arg[1]
+        simplified_body = self._substitute_unwrap(body, param_side.name, inner_value)
+
+        # Also bind the param directly to the unwrapped value in the translator
+        inner_z3 = translator.translate_expr(inner_value)
+        if inner_z3 is not None:
+            # Override the param binding to be the unwrapped value directly
+            # (instead of fn_some_1(x) which requires union_payload to extract)
+            translator.variables[param_side.name] = inner_z3
+
+        return simplified_body
+
+    def _substitute_unwrap(
+        self, expr: SExpr, param_name: str, replacement: SExpr
+    ) -> SExpr:
+        """Replace (unwrap param_name) with replacement in expr."""
+        if isinstance(expr, SList):
+            # Check for (unwrap param_name)
+            if (len(expr) == 2 and isinstance(expr[0], Symbol)
+                    and expr[0].name == 'unwrap'
+                    and isinstance(expr[1], Symbol)
+                    and expr[1].name == param_name):
+                return replacement
+            # Recurse
+            new_items = [self._substitute_unwrap(item, param_name, replacement)
+                         for item in expr.items]
+            return SList(new_items, expr.line, expr.col)
+        return expr
+
+    def _instantiate_collection_postcondition(
+        self,
+        fn_name: str,
+        post: SExpr,
+        inner_seq: z3.SeqRef,
+        translator: 'Z3Translator'
+    ) -> Optional[z3.BoolRef]:
+        """Handle (forall (t $result) body) by quantifying over inner_seq index.
+
+        Also handles (implies cond (forall (t $result) body)) by translating
+        the condition and wrapping the result in Implies.
+
+        Produces: ForAll idx: 0 <= idx < Length(inner_seq) => body[t/inner_seq[idx]]
+        """
+        if not (isinstance(post, SList) and len(post) >= 3):
+            return None
+        head = post[0]
+
+        # Handle (implies cond (forall ...))
+        if isinstance(head, Symbol) and head.name == 'implies' and len(post) == 3:
+            cond = post[1]
+            inner_post = post[2]
+            cond_z3 = translator.translate_expr(cond)
+            if cond_z3 is None:
+                return None
+            inner_result = self._instantiate_collection_postcondition(
+                fn_name, inner_post, inner_seq, translator
+            )
+            if inner_result is None:
+                return None
+            return z3.Implies(cond_z3, inner_result)
+
+        # Parse the (forall (binding_var $result) body) form
+        if not (isinstance(head, Symbol) and head.name == 'forall'):
+            return None
+        binding = post[1]
+        if not (isinstance(binding, SList) and len(binding) == 2):
+            return None
+        bind_var = binding[0]
+        bind_coll = binding[1]
+        if not (isinstance(bind_var, Symbol) and isinstance(bind_coll, Symbol)
+                and bind_coll.name == '$result'):
+            return None
+        body = post[2]
+        var_name = bind_var.name
+
+        # Create index variable
+        idx = z3.Int(f'_inst_{fn_name}_idx')
+
+        # Bind the iteration variable to inner_seq[idx]
+        saved_var = translator.variables.get(var_name)
+        try:
+            translator.variables[var_name] = inner_seq[idx]
+            body_z3 = translator.translate_expr(body)
+            if body_z3 is None or not z3.is_bool(body_z3):
+                return None
+
+            return z3.ForAll([idx],
+                z3.Implies(
+                    z3.And(idx >= 0, idx < z3.Length(inner_seq)),
+                    body_z3
+                )
+            )
+        finally:
+            if saved_var is None:
+                translator.variables.pop(var_name, None)
+            else:
+                translator.variables[var_name] = saved_var
 
     def _extract_filter_conditions_from_loop(
         self, fn_body: SExpr
@@ -720,36 +1255,17 @@ class AxiomGenerationMixin:
     ) -> SExpr:
         """Resolve variables in filter condition through let bindings.
 
-        For condition: (not (indexed-graph-contains g inferred))
-        With bindings: {'inferred': (make-triple arena y same-as x),
-                        'same-as': (make-iri arena OWL_SAME_AS)}
-
         Recursively substitutes variable references with their bound values.
-        Also simplifies constructor calls like (make-iri arena X) to X for
-        verification purposes, since these wrappers don't affect equality semantics.
 
         Returns fully resolved condition.
         """
         if isinstance(condition, Symbol):
             var_name = condition.name
             if var_name in bindings:
-                # Recursively resolve the bound value
                 return self._resolve_filter_condition(bindings[var_name], bindings)
             return condition
 
         if isinstance(condition, SList) and len(condition) >= 1:
-            head = condition[0]
-
-            # Simplify (make-iri arena X) -> X
-            # make-iri is a constructor that wraps a string to create an IRI Term
-            # For verification, we treat it as identity since term-eq on make-iri(X)
-            # is equivalent to checking the underlying value X
-            if isinstance(head, Symbol) and head.name == 'make-iri' and len(condition) >= 3:
-                # (make-iri arena value) -> value
-                value = condition[2]
-                return self._resolve_filter_condition(value, bindings)
-
-            # Recursively resolve each element
             resolved_items = [
                 self._resolve_filter_condition(item, bindings)
                 for item in condition.items
@@ -757,6 +1273,44 @@ class AxiomGenerationMixin:
             return SList(resolved_items, condition.line, condition.col)
 
         return condition
+
+    def _find_inner_loop_for_field(
+        self, source_expr: SExpr, inner_loops: List['InnerLoopInfo'],
+        outer_bindings: Dict[str, SExpr]
+    ) -> Optional['InnerLoopInfo']:
+        """Find which inner loop a field's source expression derives from.
+
+        For source_expr like (triple-object yo-triple), finds the inner loop
+        whose loop_var is 'yo-triple'.
+        """
+        # Check if source_expr is a function call on an inner loop var
+        if isinstance(source_expr, SList) and len(source_expr) >= 2:
+            arg = source_expr[-1]  # Last arg is typically the loop var
+            if isinstance(arg, Symbol):
+                for inner_loop in inner_loops:
+                    if arg.name == inner_loop.loop_var:
+                        return inner_loop
+
+        # Check if source_expr is a symbol that's an inner loop var directly
+        if isinstance(source_expr, Symbol):
+            for inner_loop in inner_loops:
+                if source_expr.name == inner_loop.loop_var:
+                    return inner_loop
+
+        return None
+
+    def _resolve_inner_field_accessor(
+        self, source_expr: SExpr, inner_loop: 'InnerLoopInfo'
+    ) -> Optional[str]:
+        """Get the field accessor name from a source expression involving an inner loop var.
+
+        For source_expr like (triple-object yo-triple), returns 'triple-object'.
+        """
+        if isinstance(source_expr, SList) and len(source_expr) >= 2:
+            head = source_expr[0]
+            if isinstance(head, Symbol):
+                return head.name
+        return None
 
     def _infer_element_type_prefix(self, collection: SExpr) -> Optional[str]:
         """Infer the element type prefix from a collection expression.
@@ -790,8 +1344,8 @@ class AxiomGenerationMixin:
     ) -> Optional[z3.FuncDeclRef]:
         """Get the appropriate equality function for a field type.
 
-        For field accessors like triple-predicate, triple-subject, triple-object,
-        the field type is Term, so we check for imported term-eq function.
+        Infers the equality function from the accessor name pattern:
+        {type}-{field} -> {type}-eq. For example, triple-predicate -> triple-eq.
 
         IMPORTANT: Only returns an equality function if:
         1. The function is imported with a postcondition defining its semantics, OR
@@ -802,27 +1356,7 @@ class AxiomGenerationMixin:
 
         Returns Z3 function or None if no specific equality function found.
         """
-        # Known mappings: accessor pattern -> equality function name
-        # Triple fields (predicate, subject, object) are Term type
-        triple_field_accessors = {'triple-predicate', 'triple-subject', 'triple-object'}
-
-        if accessor_name in triple_field_accessors:
-            eq_func_name = "fn_term-eq_2"
-            # Only use if already exists (imported and set up)
-            if eq_func_name in translator.variables:
-                return translator.variables[eq_func_name]
-            # Check if term-eq is imported with semantics
-            if self._has_imported_equality_semantics('term-eq'):
-                eq_func = z3.Function(
-                    eq_func_name,
-                    z3.IntSort(), z3.IntSort(), z3.BoolSort()
-                )
-                translator.variables[eq_func_name] = eq_func
-                return eq_func
-            # No imported term-eq with semantics - use native ==
-            return None
-
-        # Try to infer from accessor pattern: {type}-{field} -> {type}-eq
+        # Infer from accessor pattern: {type}-{field} -> {type}-eq
         if '-' in accessor_name:
             type_prefix = accessor_name.rsplit('-', 1)[0]
             eq_func_name = f"fn_{type_prefix}-eq_2"
@@ -976,9 +1510,6 @@ class AxiomGenerationMixin:
         axioms: List[z3.BoolRef] = []
 
         for fn_name, sig in self.imported_defs.functions.items():
-            if not sig.postconditions:
-                continue
-
             # Skip equality functions - handled by _extract_imported_equality_axioms
             if fn_name.endswith('-eq') and len(sig.params) == 2:
                 continue
@@ -986,6 +1517,14 @@ class AxiomGenerationMixin:
             for post in sig.postconditions:
                 axiom = self._translate_postcondition_as_universal_axiom(
                     fn_name, sig, post, translator
+                )
+                if axiom is not None:
+                    axioms.append(axiom)
+
+            # Also generate axioms from @assume annotations
+            for assume in sig.assumptions:
+                axiom = self._translate_postcondition_as_universal_axiom(
+                    fn_name, sig, assume, translator
                 )
                 if axiom is not None:
                     axioms.append(axiom)

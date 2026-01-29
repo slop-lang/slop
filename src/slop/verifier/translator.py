@@ -272,6 +272,48 @@ class Z3Translator:
 
         return None
 
+    def _translate_list_contains(self, expr: SList) -> Optional[z3.BoolRef]:
+        """Translate (list-contains lst elem) to existential membership check.
+
+        This is a verifier-only predicate (not available at runtime).
+        Translates to: Exists idx: 0 <= idx < Length(seq) && seq[idx] == elem
+
+        Usable in @post, @property, @loop-invariant, @assume annotations.
+        """
+        lst_expr = expr[1]
+        elem_expr = expr[2]
+
+        # Get the sequence for the list
+        seq = None
+        if isinstance(lst_expr, Symbol):
+            lst_name = lst_expr.name
+            if lst_name in self.list_seqs:
+                seq = self.list_seqs[lst_name]
+            elif lst_name == '$result' and '$result' in self.list_seqs:
+                seq = self.list_seqs['$result']
+        if seq is None:
+            seq = self._get_or_create_collection_seq(lst_expr)
+        if seq is None:
+            # Fall back to uninterpreted function
+            return self._translate_function_call(expr)
+
+        # Translate the element
+        elem_z3 = self.translate_expr(elem_expr)
+        if elem_z3 is None:
+            return None
+
+        # Build: Exists idx: 0 <= idx < Length(seq) && seq[idx] == elem
+        idx = z3.Int(f'_lc_idx_{self._seq_counter}')
+        self._seq_counter += 1
+
+        return z3.Exists([idx],
+            z3.And(
+                idx >= 0,
+                idx < z3.Length(seq),
+                seq[idx] == elem_z3
+            )
+        )
+
     def _seq_push(self, seq: z3.SeqRef, elem: z3.ExprRef) -> z3.SeqRef:
         """Model list-push as sequence concatenation.
 
@@ -465,29 +507,170 @@ class Z3Translator:
             if body_z3 is None or not z3.is_bool(body_z3):
                 return None
 
+            # Flatten nested collection-bound foralls into a single multi-variable ForAll.
+            # Z3 handles flat multi-variable quantifiers much better than nested ones.
+            inner_vars, inner_constraints, inner_body, inner_elems = \
+                self._decompose_collection_forall(body_z3)
+            all_idx_vars = [idx_var] + inner_vars
+            all_constraints = [z3.And(idx_var >= 0, idx_var < z3.Length(seq))] + inner_constraints
+            all_elems = [elem_at_idx] + inner_elems
+            actual_body = inner_body
+
             # Extract trigger patterns from the body
             # Patterns help Z3 know when to instantiate the quantifier
-            patterns = self._extract_patterns(body_z3, [elem_at_idx])
+            patterns = self._extract_patterns(actual_body, all_elems)
 
-            # Build the implication: 0 <= i < Length(seq) => body
+            # Build the implication
             implication = z3.Implies(
-                z3.And(idx_var >= 0, idx_var < z3.Length(seq)),
-                body_z3
+                z3.And(*all_constraints) if len(all_constraints) > 1 else all_constraints[0],
+                actual_body
             )
 
-            # Pattern extraction infrastructure is in place but disabled
-            # TODO: Patterns with sequence indexing need more research
-            # - seq[idx] as bound var doesn't match pattern expectations
-            # - Need to experiment with patterns containing idx_var directly
-            # if len(patterns) == 1:
-            #     return z3.ForAll([idx_var], implication, patterns=patterns)
-            return z3.ForAll([idx_var], implication)
+            # For flattened multi-variable foralls, build a multi-pattern
+            # covering all bound variables
+            if inner_vars and len(patterns) > 1:
+                multi_pat = self._build_multi_pattern(patterns, all_elems)
+                if multi_pat is not None:
+                    return z3.ForAll(all_idx_vars, implication, patterns=[multi_pat])
+
+            # Use patterns when we found exactly one trigger
+            if len(patterns) == 1:
+                return z3.ForAll(all_idx_vars, implication, patterns=patterns)
+            return z3.ForAll(all_idx_vars, implication)
         finally:
             # Restore old binding
             if old_binding is not None:
                 self.variables[elem_var] = old_binding
             elif elem_var in self.variables:
                 del self.variables[elem_var]
+
+    def _decompose_collection_forall(self, expr):
+        """Decompose a collection-bound ForAll into its components for flattening.
+
+        If expr is a ForAll of the form produced by _translate_forall_collection,
+        recursively decompose it and return all bound variables, constraints,
+        the innermost body, and element-at-index expressions.
+
+        Returns:
+            (idx_vars, constraints, body, elem_exprs) where idx_vars and constraints
+            are lists that may be empty if expr is not a collection-bound ForAll.
+        """
+        if not (z3.is_quantifier(expr) and expr.is_forall() and expr.num_vars() >= 1):
+            return [], [], expr, []
+
+        qbody = expr.body()
+
+        # Check body is Implies(And(idx >= 0, idx < Length(seq)), inner)
+        if not (z3.is_app(qbody) and qbody.decl().kind() == z3.Z3_OP_IMPLIES):
+            return [], [], expr, []
+
+        antecedent = qbody.arg(0)
+        consequent = qbody.arg(1)
+
+        # Re-extract the bound variables as Z3 de-Bruijn indexed vars
+        # and rebuild the constraint/elem info from the quantifier
+        num_vars = expr.num_vars()
+        bound_vars = []
+        for i in range(num_vars):
+            name = expr.var_name(i)
+            sort = expr.var_sort(i)
+            bound_vars.append(z3.Const(name, sort))
+
+        # Substitute de-Bruijn indices with actual constants
+        subst_list = list(reversed(bound_vars))
+        antecedent_sub = z3.substitute_vars(antecedent, *subst_list)
+        consequent_sub = z3.substitute_vars(consequent, *subst_list)
+
+        # Collect element-at-index expressions (Nth(seq, idx)) from the antecedent
+        # by looking for idx < Length(seq) patterns
+        elem_exprs = []
+        for var in bound_vars:
+            elem_exprs.append(self._find_elem_at_idx(antecedent_sub, consequent_sub, var))
+
+        # Filter out None entries
+        elem_exprs = [e for e in elem_exprs if e is not None]
+
+        # Recursively check if the consequent is also a collection-bound forall
+        inner_vars, inner_constraints, inner_body, inner_elems = \
+            self._decompose_collection_forall(consequent_sub)
+
+        all_vars = bound_vars + inner_vars
+        all_constraints = [antecedent_sub] + inner_constraints
+        all_elems = elem_exprs + inner_elems
+
+        return all_vars, all_constraints, inner_body, all_elems
+
+    def _find_elem_at_idx(self, antecedent, body, idx_var):
+        """Try to find a seq[idx_var] expression referenced in body.
+
+        Scans the antecedent for idx_var < Length(seq) to identify the sequence,
+        then returns seq[idx_var].
+        """
+        # Walk the antecedent looking for idx < Length(seq)
+        def find_seq_in_expr(e):
+            if not z3.is_app(e):
+                return None
+            # Check for pattern: idx < Length(seq) or Length(seq) > idx
+            kind = e.decl().kind()
+            if kind in (z3.Z3_OP_LT, z3.Z3_OP_LE):
+                lhs, rhs = e.arg(0), e.arg(1)
+                if lhs.eq(idx_var) and z3.is_app(rhs) and rhs.decl().name() == 'seq.len':
+                    return rhs.arg(0)
+            if kind in (z3.Z3_OP_GT, z3.Z3_OP_GE):
+                lhs, rhs = e.arg(0), e.arg(1)
+                if rhs.eq(idx_var) and z3.is_app(lhs) and lhs.decl().name() == 'seq.len':
+                    return lhs.arg(0)
+            # Recurse into children
+            for i in range(e.num_args()):
+                result = find_seq_in_expr(e.arg(i))
+                if result is not None:
+                    return result
+            return None
+
+        seq = find_seq_in_expr(antecedent)
+        if seq is not None:
+            return seq[idx_var]
+        return None
+
+    def _build_multi_pattern(self, patterns, elem_exprs):
+        """Build a z3.MultiPattern covering all bound variables.
+
+        For a flattened multi-variable ForAll, we need a pattern that references
+        all bound variables. Select one pattern per element expression (bound var)
+        and combine into a MultiPattern.
+
+        Args:
+            patterns: All candidate patterns found in the body
+            elem_exprs: The element-at-index expressions (one per bound variable)
+
+        Returns:
+            z3.MultiPattern or None if we can't cover all variables
+        """
+        def references_elem(pattern, elem):
+            """Check if pattern contains elem as a subexpression."""
+            if pattern.eq(elem):
+                return True
+            if z3.is_app(pattern):
+                for i in range(pattern.num_args()):
+                    if references_elem(pattern.arg(i), elem):
+                        return True
+            return False
+
+        # For each elem, find the first pattern that references it
+        selected = []
+        selected_ids = set()
+        for elem in elem_exprs:
+            for pat in patterns:
+                pid = pat.get_id()
+                if pid not in selected_ids and references_elem(pat, elem):
+                    selected.append(pat)
+                    selected_ids.add(pid)
+                    break
+
+        # Only build multi-pattern if we cover all elements
+        if len(selected) == len(elem_exprs) and len(selected) > 1:
+            return z3.MultiPattern(*selected)
+        return None
 
     def _translate_exists_collection(self, expr: SList) -> Optional[z3.BoolRef]:
         """Translate (exists (elem coll) body) to existential quantifier.
@@ -542,9 +725,6 @@ class Z3Translator:
             if body_z3 is None or not z3.is_bool(body_z3):
                 return None
 
-            # Extract trigger patterns from the body
-            patterns = self._extract_patterns(body_z3, [elem_at_idx])
-
             # Build the conjunction: 0 <= i < Length(seq) && body
             conjunction = z3.And(
                 idx_var >= 0,
@@ -552,9 +732,9 @@ class Z3Translator:
                 body_z3
             )
 
-            # Pattern extraction disabled pending more research
-            # if len(patterns) == 1:
-            #     return z3.Exists([idx_var], conjunction, patterns=patterns)
+            # Note: No trigger patterns for Exists - patterns restrict instantiation,
+            # which is helpful for ForAll (prevents unbounded instantiation) but harmful
+            # for Exists (Z3 needs to freely search for a witness).
             return z3.Exists([idx_var], conjunction)
         finally:
             if old_binding is not None:
@@ -963,6 +1143,24 @@ class Z3Translator:
                 if op == 'implies':
                     return self._translate_implies(expr)
 
+                # Option unwrap: (unwrap opt) → union_payload_some(opt)
+                if op == 'unwrap' and len(expr) == 2:
+                    inner = self.translate_expr(expr[1])
+                    if inner is None:
+                        return None
+                    payload_func_name = "union_payload_some"
+                    if payload_func_name not in self.variables:
+                        payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
+                        self.variables[payload_func_name] = payload_func
+                    else:
+                        payload_func = self.variables[payload_func_name]
+                    return payload_func(inner)
+
+                # list-contains: verifier-only predicate
+                # (list-contains lst elem) => Exists idx: 0 <= idx < Length(seq) && seq[idx] == elem
+                if op == 'list-contains' and len(expr) == 3:
+                    return self._translate_list_contains(expr)
+
                 # all-triples-have-predicate expansion
                 if op == 'all-triples-have-predicate':
                     if self.use_array_encoding:
@@ -1062,6 +1260,44 @@ class Z3Translator:
                 # let binding - declare variables and translate body
                 if op == 'let' and len(expr) >= 3:
                     return self._translate_let(expr)
+
+                # Option constructors with semantic axioms
+                if op == 'some' and len(expr) == 2:
+                    inner = self.translate_expr(expr[1])
+                    if inner is None:
+                        return None
+                    result = self._translate_function_call(expr)
+                    if result is not None:
+                        # Add constructor axioms so Z3 knows:
+                        # union_tag(some(x)) == 1 and union_payload_some(some(x)) == x
+                        tag_func_name = "union_tag"
+                        if tag_func_name not in self.variables:
+                            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+                            self.variables[tag_func_name] = tag_func
+                        else:
+                            tag_func = self.variables[tag_func_name]
+                        self.constraints.append(tag_func(result) == z3.IntVal(1))
+
+                        payload_func_name = "union_payload_some"
+                        if payload_func_name not in self.variables:
+                            payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
+                            self.variables[payload_func_name] = payload_func
+                        else:
+                            payload_func = self.variables[payload_func_name]
+                        self.constraints.append(payload_func(result) == inner)
+                    return result
+
+                if op == 'none' and len(expr) == 1:
+                    result = self._translate_function_call(expr)
+                    if result is not None:
+                        tag_func_name = "union_tag"
+                        if tag_func_name not in self.variables:
+                            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+                            self.variables[tag_func_name] = tag_func
+                        else:
+                            tag_func = self.variables[tag_func_name]
+                        self.constraints.append(tag_func(result) == z3.IntVal(0))
+                    return result
 
                 # Handle potential user-defined function calls
                 # This is a fallback for functions not handled above

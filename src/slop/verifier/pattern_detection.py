@@ -293,6 +293,166 @@ class PatternDetectionMixin:
 
         return None
 
+    def _detect_all_nested_loop_patterns(self, body: SExpr) -> List[NestedLoopPatternInfo]:
+        """Detect all nested loop patterns, including sibling inner loops.
+
+        For functions like eq-trans that have multiple inner for-each loops
+        at the same level (e.g., forward and backward pattern), this returns
+        a NestedLoopPatternInfo for each push site.
+        """
+        patterns = []
+        first = self._detect_nested_loop_pattern(body)
+        if first is not None:
+            patterns.append(first)
+
+            # Try to detect additional sibling patterns by looking for
+            # additional for-each + list-push in the outer loop body
+            additional = self._detect_sibling_nested_patterns(body, first)
+            patterns.extend(additional)
+
+        return patterns
+
+    def _detect_sibling_nested_patterns(
+        self, body: SExpr, first_pattern: NestedLoopPatternInfo
+    ) -> List[NestedLoopPatternInfo]:
+        """Find additional nested loop patterns that are siblings of the first.
+
+        Looks for for-each loops at the same level as the first pattern's inner loop
+        but with different loop variables and collections.
+        """
+        if not is_form(body, 'let') or len(body) < 3:
+            return []
+
+        results: List[NestedLoopPatternInfo] = []
+
+        # Walk to find the outer for-each, then look for sibling inner for-each loops
+        body_exprs = body.items[2:]
+        for body_expr in body_exprs:
+            if is_form(body_expr, 'for-each') and len(body_expr) >= 3:
+                # This is the outer loop - search its body for all inner for-each
+                siblings = self._find_sibling_inner_loops(
+                    body_expr.items[2:], first_pattern, body
+                )
+                results.extend(siblings)
+        return results
+
+    def _find_sibling_inner_loops(
+        self, stmts: list, first_pattern: NestedLoopPatternInfo, body: SExpr,
+        bindings: Optional[Dict[str, SExpr]] = None
+    ) -> List[NestedLoopPatternInfo]:
+        """Recursively find sibling for-each + list-push patterns not covered by first_pattern."""
+        results: List[NestedLoopPatternInfo] = []
+
+        # Accumulate bindings as we traverse
+        if bindings is None:
+            bindings = dict(first_pattern.outer_bindings) if first_pattern.outer_bindings else {}
+            bindings.update(first_pattern.outer_let_bindings or {})
+
+        # Collect the loop vars already covered
+        covered_loop_vars = {il.loop_var for il in first_pattern.inner_loops}
+
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+
+            # Recurse into when/if
+            if is_form(stmt, 'when') and len(stmt) >= 3:
+                results.extend(self._find_sibling_inner_loops(
+                    stmt.items[2:], first_pattern, body, bindings.copy()
+                ))
+            elif is_form(stmt, 'let') and len(stmt) >= 3:
+                # Extract bindings and recurse into body
+                let_bindings = stmt[1]
+                new_bindings = bindings.copy()
+                if isinstance(let_bindings, SList):
+                    for binding in let_bindings.items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            if isinstance(binding[0], Symbol):
+                                if binding[0].name == 'mut' and len(binding) >= 3:
+                                    pass
+                                else:
+                                    new_bindings[binding[0].name] = binding[1]
+
+                results.extend(self._find_sibling_inner_loops(
+                    stmt.items[2:], first_pattern, body, new_bindings
+                ))
+            elif is_form(stmt, 'for-each') and len(stmt) >= 3:
+                inner_binding = stmt[1]
+                if isinstance(inner_binding, SList) and len(inner_binding) >= 2:
+                    inner_var = inner_binding[0].name if isinstance(inner_binding[0], Symbol) else None
+                    inner_collection = inner_binding[1]
+
+                    if inner_var and inner_var not in covered_loop_vars:
+                        # This is a sibling inner loop - try to extract its pattern
+                        sibling = self._extract_sibling_pattern(
+                            stmt, inner_var, inner_collection, first_pattern, body,
+                            bindings
+                        )
+                        if sibling is not None:
+                            results.append(sibling)
+
+        return results
+
+    def _extract_sibling_pattern(
+        self, for_each_stmt: SList, inner_var: str, inner_collection: 'SExpr',
+        first_pattern: NestedLoopPatternInfo, body: SExpr,
+        accumulated_bindings: Optional[Dict[str, SExpr]] = None
+    ) -> Optional[NestedLoopPatternInfo]:
+        """Extract a NestedLoopPatternInfo for a sibling inner for-each."""
+        # Use accumulated bindings for resolution
+        all_bindings = dict(accumulated_bindings) if accumulated_bindings else {}
+        if not accumulated_bindings:
+            all_bindings.update(first_pattern.outer_bindings or {})
+            all_bindings.update(first_pattern.outer_let_bindings or {})
+
+        # Use the same outer info as first_pattern, but with this inner loop
+        join_vars = self._find_join_vars_deep(inner_collection, all_bindings)
+
+        inner_loop_info = InnerLoopInfo(
+            collection=inner_collection,
+            loop_var=inner_var,
+            filter=None,
+            bindings={},
+            join_vars=join_vars
+        )
+
+        result = self._process_nested_loop_body(
+            for_each_stmt.items[2:],
+            inner_var,
+            all_bindings.copy(),
+            first_pattern.result_var,
+            [inner_loop_info],
+            first_pattern.outer_filter
+        )
+
+        if result is None:
+            return None
+
+        (outer_filter, found_bindings, inner_loops,
+         constructor_expr, field_mappings, all_found_bindings) = result
+
+        # Classify field provenance using accumulated bindings
+        field_provenance = self._classify_field_provenance(
+            field_mappings,
+            first_pattern.outer_loop_var,
+            all_bindings,
+            first_pattern.outer_let_bindings,
+            inner_loops
+        )
+
+        return NestedLoopPatternInfo(
+            result_var=first_pattern.result_var,
+            outer_collection=first_pattern.outer_collection,
+            outer_loop_var=first_pattern.outer_loop_var,
+            outer_filter=first_pattern.outer_filter,
+            outer_bindings=all_bindings,
+            outer_let_bindings=first_pattern.outer_let_bindings,
+            inner_loops=inner_loops,
+            constructor_expr=constructor_expr,
+            field_mappings=field_mappings,
+            field_provenance=field_provenance
+        )
+
     def _detect_nested_loop_pattern(self, body: SExpr) -> Optional[NestedLoopPatternInfo]:
         """Detect nested for-each loops with join semantics.
 
@@ -826,18 +986,10 @@ class PatternDetectionMixin:
     ) -> Dict[str, SExpr]:
         """Extract field mappings from constructor, resolving variables through context.
 
-        For (make-triple arena y same-as x) where:
-            x = (triple-subject dt)
-            y = (triple-object dt)
-            same-as = (make-iri arena OWL_SAME_AS)
+        First tries to infer field names from imported function @post annotations.
+        Falls back to positional/generic extraction.
 
-        Returns: {
-            'subject': (triple-object dt),   # resolved from y
-            'predicate': same-as (or resolved expr),
-            'object': (triple-subject dt)    # resolved from x
-        }
-
-        Note: make-triple uses RDF order (arena, subject, predicate, object)
+        Returns dict mapping field names to resolved source expressions.
         """
         if not isinstance(constructor, SList) or len(constructor) < 1:
             return {}
@@ -847,24 +999,146 @@ class PatternDetectionMixin:
             return {}
 
         head_name = head.name
-        mappings: Dict[str, SExpr] = {}
 
-        # Handle make-triple: (make-triple arena subj pred obj)
-        # Note: Different from triple-new! Uses RDF order.
-        if head_name == 'make-triple' and len(constructor) >= 5:
-            # Args: arena, subject, predicate, object
-            subj_arg = constructor[2]
-            pred_arg = constructor[3]
-            obj_arg = constructor[4]
-
-            # Resolve through bindings context
-            mappings['subject'] = self._resolve_through_context(subj_arg, bindings_context)
-            mappings['predicate'] = self._resolve_through_context(pred_arg, bindings_context)
-            mappings['object'] = self._resolve_through_context(obj_arg, bindings_context)
+        # Try to infer field mappings from imported postconditions
+        mappings = self._infer_field_mappings_from_postconditions(
+            head_name, constructor, bindings_context
+        )
+        if mappings:
             return mappings
 
-        # Fall back to regular extraction if not make-triple
+        # Fall back to regular extraction
         return self._extract_field_mappings(constructor, loop_var)
+
+    def _infer_field_mappings_from_postconditions(
+        self, fn_name: str, constructor: SExpr,
+        bindings_context: Dict[str, SExpr]
+    ) -> Dict[str, SExpr]:
+        """Infer field mappings from imported function @post annotations.
+
+        For a constructor like (make-triple arena x y z) with postconditions:
+            (@post (== (triple-subject $result) s))
+            (@post (== (triple-predicate $result) p))
+            (@post (== (triple-object $result) o))
+
+        Maps parameter positions to field names based on the postconditions,
+        then maps those to the actual constructor arguments (resolved through context).
+        """
+        if not hasattr(self, 'imported_defs'):
+            return {}
+
+        sig = self.imported_defs.functions.get(fn_name)
+        if sig is None or not sig.postconditions:
+            return {}
+
+        # Build param name -> arg position mapping
+        # Constructor args: (fn_name arg0 arg1 arg2 ...)
+        # Sig params: [param0, param1, param2, ...]
+        if len(sig.params) + 1 > len(constructor):
+            return {}
+
+        # Parse postconditions to find field mappings:
+        # Pattern: (== (accessor $result) param_name) or (== param_name (accessor $result))
+        # Also handles (and (eq1) (eq2) ...) and term-eq as equality
+        param_to_field: Dict[str, str] = {}  # param_name -> field_name
+        for post in sig.postconditions:
+            field_infos = self._parse_field_postconditions(post, sig.params)
+            for param_name, field_name in field_infos:
+                param_to_field[param_name] = field_name
+
+        if not param_to_field:
+            return {}
+
+        # Map fields to constructor arguments
+        mappings: Dict[str, SExpr] = {}
+        for i, param_name in enumerate(sig.params):
+            if param_name in param_to_field:
+                arg_idx = i + 1  # skip constructor name
+                if arg_idx < len(constructor):
+                    arg = constructor[arg_idx]
+                    resolved = self._resolve_through_context(arg, bindings_context)
+                    mappings[param_to_field[param_name]] = resolved
+
+        return mappings
+
+    def _parse_field_postconditions(
+        self, post: 'SExpr', params: List[str]
+    ) -> List[Tuple[str, str]]:
+        """Parse postcondition(s) to extract field mappings.
+
+        Handles:
+        - (== (accessor $result) param)
+        - (term-eq (accessor $result) param)
+        - (and (eq1) (eq2) ...) - recurses into conjuncts
+
+        Returns list of (param_name, field_name) tuples.
+        """
+        from slop.parser import SList, Symbol, is_form
+
+        results = []
+
+        # Handle (and ...) by recursing into each conjunct
+        if is_form(post, 'and') and len(post) >= 2:
+            for item in post.items[1:]:
+                results.extend(self._parse_field_postconditions(item, params))
+            return results
+
+        # Handle (== ...) or (term-eq ...)
+        if isinstance(post, SList) and len(post) == 3:
+            head = post[0]
+            if isinstance(head, Symbol) and head.name in ('==', 'term-eq'):
+                lhs, rhs = post[1], post[2]
+
+                result = self._try_parse_accessor_eq(lhs, rhs, params)
+                if result:
+                    return [result]
+
+                result = self._try_parse_accessor_eq(rhs, lhs, params)
+                if result:
+                    return [result]
+
+        return results
+
+    def _parse_field_postcondition(
+        self, post: 'SExpr', params: List[str]
+    ) -> Optional[Tuple[str, str]]:
+        """Parse a postcondition like (== (accessor $result) param) to extract field mapping.
+
+        Returns (param_name, field_name) or None.
+        """
+        results = self._parse_field_postconditions(post, params)
+        return results[0] if results else None
+
+    def _try_parse_accessor_eq(
+        self, accessor_side: 'SExpr', value_side: 'SExpr', params: List[str]
+    ) -> Optional[Tuple[str, str]]:
+        """Check if accessor_side is (accessor $result) and value_side is a param."""
+        from slop.parser import SList, Symbol
+
+        if not isinstance(accessor_side, SList) or len(accessor_side) != 2:
+            return None
+
+        accessor = accessor_side[0]
+        target = accessor_side[1]
+
+        if not isinstance(accessor, Symbol) or not isinstance(target, Symbol):
+            return None
+        if target.name != '$result':
+            return None
+
+        if not isinstance(value_side, Symbol):
+            return None
+        if value_side.name not in params:
+            return None
+
+        # Extract field name from accessor: e.g., "triple-subject" -> "subject"
+        accessor_name = accessor.name
+        if '-' in accessor_name:
+            field_name = accessor_name.rsplit('-', 1)[1]
+        else:
+            field_name = accessor_name
+
+        return (value_side.name, field_name)
 
     def _resolve_through_context(
         self, expr: SExpr, bindings_context: Dict[str, SExpr]
@@ -883,15 +1157,12 @@ class PatternDetectionMixin:
     ) -> Dict[str, SExpr]:
         """Extract field -> source_expr mappings from a constructor call.
 
-        For (triple-new arena (triple-predicate dt) (triple-object dt) (triple-subject dt)):
-        Returns: {
-            'predicate': (triple-predicate dt),
-            'subject': (triple-object dt),   # Note: swapped positions
-            'object': (triple-subject dt)    # Note: swapped positions
-        }
-
         For (record-new Type (field1 expr1) (field2 expr2) ...):
         Returns: {'field1': expr1, 'field2': expr2, ...}
+
+        For positional constructors like (Type-new arena arg1 arg2 ...):
+        Tries to infer field names from imported @post annotations,
+        otherwise uses positional field_N names.
 
         Returns empty dict if pattern is not recognized.
         """
@@ -905,24 +1176,12 @@ class PatternDetectionMixin:
         head_name = head.name
         mappings: Dict[str, SExpr] = {}
 
-        # Handle triple-new: (triple-new arena pred subj obj)
-        # Known positional constructor for Triple type
-        if head_name == 'triple-new' and len(constructor) >= 5:
-            # Args: arena, predicate, subject, object
-            mappings['predicate'] = constructor[2]
-            mappings['subject'] = constructor[3]
-            mappings['object'] = constructor[4]
-            return mappings
-
-        # Handle make-triple: (make-triple arena subj pred obj)
-        # Note: Different argument order from triple-new!
-        # make-triple follows RDF convention: (subject, predicate, object)
-        if head_name == 'make-triple' and len(constructor) >= 5:
-            # Args: arena, subject, predicate, object
-            mappings['subject'] = constructor[2]
-            mappings['predicate'] = constructor[3]
-            mappings['object'] = constructor[4]
-            return mappings
+        # Try to infer field mappings from imported postconditions (general mechanism)
+        inferred = self._infer_field_mappings_from_postconditions(
+            head_name, constructor, {}
+        )
+        if inferred:
+            return inferred
 
         # Handle record-new: (record-new Type (field1 val1) (field2 val2) ...)
         # Must be checked BEFORE generic -new suffix to avoid matching positional pattern

@@ -69,6 +69,7 @@ class FunctionSignature:
     return_type: 'Type'  # Return type (may include range bounds)
     params: List[str] = field(default_factory=list)  # Parameter names for postcondition substitution
     postconditions: List['SExpr'] = field(default_factory=list)  # @post annotations
+    assumptions: List['SExpr'] = field(default_factory=list)  # @assume annotations
 
 
 @dataclass
