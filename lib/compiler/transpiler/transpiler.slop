@@ -827,8 +827,15 @@
                                                           ((none) "")))
                                               (slop-ret (match existing-func
                                                           ((some entry) (. entry slop-return-type))
-                                                          ((none) ""))))
-                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret false false param-types))))))
+                                                          ((none) "")))
+                                              ;; Copy returns-pointer and returns-string from existing entry
+                                              (ret-ptr (match existing-func
+                                                         ((some entry) (. entry returns-pointer))
+                                                         ((none) false)))
+                                              (ret-str (match existing-func
+                                                         ((some entry) (. entry returns-string))
+                                                         ((none) false))))
+                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret ret-ptr ret-str param-types))))))
                                   (else (do))))
                               ((none) (do)))
                             (set! j (+ j 1)))))
