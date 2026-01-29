@@ -1913,6 +1913,8 @@ def cmd_check(args):
                 cmd = [str(checker_bin)]
                 if getattr(args, 'json', False):
                     cmd.append('--json')
+                if getattr(args, 'emit_types', False):
+                    cmd.append('--emit-types')
 
                 # Resolve multi-module dependencies
                 source_files = _resolve_check_files(args.input, getattr(args, 'include', []))
@@ -4536,6 +4538,8 @@ def main():
                    help='Use Python toolchain instead of native')
     p.add_argument('--json', action='store_true',
                    help='Output diagnostics as JSON')
+    p.add_argument('--emit-types', action='store_true',
+                   help='Include type/function/constant metadata in JSON output')
     p.add_argument('-I', '--include', action='append', default=[],
                    help='Add search path for imports (can be repeated)')
 

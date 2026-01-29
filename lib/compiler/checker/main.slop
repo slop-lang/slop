@@ -18,12 +18,16 @@
                   sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name
                   sexpr-line sexpr-col))
   (import types (TypeError TypeErrorKind type-error-new
-                 Diagnostic DiagnosticLevel ResolvedType ResolvedTypeKind))
+                 Diagnostic DiagnosticLevel ResolvedType ResolvedTypeKind
+                 ResolvedVariant ResolvedField RangeBounds FnSignature ParamInfo
+                 resolved-type-to-slop-string))
   (import env (TypeEnv env-new env-get-diagnostics env-clear-diagnostics
                env-arena env-push-scope env-pop-scope env-bind-var
                env-lookup-type env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
-               env-set-module env-add-error env-clear-imports))
+               env-set-module env-add-error env-clear-imports
+               env-get-types env-get-functions env-get-constants
+               ConstBinding))
   (import collect (collect-module))
   (import resolve (resolve-imports))
   (import infer (infer-fn-body infer-expr resolve-complex-type-expr resolve-simple-type))
@@ -336,28 +340,369 @@
     (putchar 125)  ;; }
     (do))
 
-  (fn output-module-json ((arena Arena) (mod-name String) (diagnostics (List Diagnostic)) (first Bool))
-    (@intent "Output JSON for a single module's diagnostics")
-    (@spec ((Arena String (List Diagnostic) Bool) -> Unit))
+  (fn output-module-json ((arena Arena) (env (Ptr TypeEnv)) (mod-name String) (diagnostics (List Diagnostic)) (first Bool) (emit-types Bool))
+    (@intent "Output JSON for a single module's diagnostics and optionally type info")
+    (@spec ((Arena (Ptr TypeEnv) String (List Diagnostic) Bool Bool) -> Unit))
     ;; Add comma if not first
     (when (not first)
       (putchar 44))  ;; ,
-    ;; Output: "mod-name": {"diagnostics": [...]}
+    ;; Output: "mod-name": {"diagnostics": [...], "types": [...], ...}
     (print-json-string arena mod-name)
     (putchar 58)   ;; :
     (putchar 123)  ;; {
     (print-str (cast (Ptr U8) "\"diagnostics\":"))
     (output-diagnostics-json arena diagnostics)
+    (when emit-types
+      (putchar 44)  ;; ,
+      (output-types-json arena mod-name (env-get-types env))
+      (putchar 44)  ;; ,
+      (output-functions-json arena mod-name (env-get-functions env))
+      (putchar 44)  ;; ,
+      (output-constants-json arena mod-name (env-get-constants env)))
     (putchar 125)  ;; }
+    (do))
+
+  ;; ============================================================
+  ;; Type Info JSON Serialization (--emit-types)
+  ;; ============================================================
+
+  ;; Helper: check if a type belongs to a module
+  (fn type-belongs-to-module ((t (Ptr ResolvedType)) (mod-name String))
+    (@intent "Check if a resolved type belongs to the given module")
+    (@spec (((Ptr ResolvedType) String) -> Bool))
+    (@pure)
+    (@pre (!= t nil))
+    (match (. (deref t) module-name)
+      ((some m) (string-eq m mod-name))
+      ((none) false)))
+
+  ;; Helper: check if a function belongs to a module
+  (fn fn-belongs-to-module ((sig (Ptr FnSignature)) (mod-name String))
+    (@intent "Check if a function signature belongs to the given module")
+    (@spec (((Ptr FnSignature) String) -> Bool))
+    (@pure)
+    (@pre (!= sig nil))
+    (match (. (deref sig) module-name)
+      ((some m) (string-eq m mod-name))
+      ((none) false)))
+
+  ;; Helper: check if a constant belongs to a module
+  (fn const-belongs-to-module ((binding ConstBinding) (mod-name String))
+    (@intent "Check if a constant binding belongs to the given module")
+    (@spec ((ConstBinding String) -> Bool))
+    (@pure)
+    (match (. binding module-name)
+      ((some m) (string-eq m mod-name))
+      ((none) false)))
+
+  ;; Helper: convert ResolvedTypeKind to JSON string
+  (fn resolved-kind-to-json-string ((kind ResolvedTypeKind))
+    (@intent "Convert a ResolvedTypeKind to its JSON string value")
+    (@spec ((ResolvedTypeKind) -> (Ptr U8)))
+    (@pure)
+    (match kind
+      ('rk-primitive (cast (Ptr U8) "\"primitive\""))
+      ('rk-range (cast (Ptr U8) "\"range\""))
+      ('rk-record (cast (Ptr U8) "\"record\""))
+      ('rk-union (cast (Ptr U8) "\"union\""))
+      ('rk-enum (cast (Ptr U8) "\"enum\""))
+      ('rk-list (cast (Ptr U8) "\"list\""))
+      ('rk-ptr (cast (Ptr U8) "\"ptr\""))
+      ('rk-option (cast (Ptr U8) "\"option\""))
+      ('rk-result (cast (Ptr U8) "\"result\""))
+      ('rk-function (cast (Ptr U8) "\"function\""))
+      ('rk-array (cast (Ptr U8) "\"array\""))
+      ('rk-map (cast (Ptr U8) "\"map\""))
+      (else (cast (Ptr U8) "\"unknown\""))))
+
+  ;; Output "types": [...] for types belonging to the current module
+  (fn output-types-json ((arena Arena) (mod-name String) (types (List (Ptr ResolvedType))))
+    (@intent "Output types array as JSON for a module")
+    (@spec ((Arena String (List (Ptr ResolvedType))) -> Unit))
+    (print-str (cast (Ptr U8) "\"types\":"))
+    (putchar 91)  ;; [
+    (let ((len (list-len types))
+          (mut first true))
+      (for (i 0 len)
+        (match (list-get types i)
+          ((some t)
+            (when (type-belongs-to-module t mod-name)
+              (when (not first)
+                (putchar 44))  ;; ,
+              (output-type-json arena t)
+              (set! first false)))
+          ((none) (do)))))
+    (putchar 93)  ;; ]
+    (do))
+
+  ;; Output a single type as JSON object
+  (fn output-type-json ((arena Arena) (t (Ptr ResolvedType)))
+    (@intent "Output a single resolved type as JSON")
+    (@spec ((Arena (Ptr ResolvedType)) -> Unit))
+    (@pre (!= t nil))
+    (let ((kind (. (deref t) kind))
+          (name (. (deref t) name)))
+      (putchar 123)  ;; {
+      ;; "name": "..."
+      (print-str (cast (Ptr U8) "\"name\":"))
+      (print-json-string arena name)
+      (putchar 44)  ;; ,
+      ;; "kind": "..."
+      (print-str (cast (Ptr U8) "\"kind\":"))
+      (print-str (resolved-kind-to-json-string kind))
+      ;; Kind-specific fields
+      (match kind
+        ('rk-enum
+          (putchar 44)  ;; ,
+          (output-enum-variants-json arena (. (deref t) variants)))
+        ('rk-record
+          (putchar 44)  ;; ,
+          (output-record-fields-json arena (. (deref t) fields)))
+        ('rk-union
+          (putchar 44)  ;; ,
+          (output-union-variants-json arena (. (deref t) variants)))
+        ('rk-range
+          (match (. (deref t) range)
+            ((some bounds)
+              (do
+                (putchar 44)  ;; ,
+                (print-str (cast (Ptr U8) "\"min\":"))
+                (print-string (int-to-string arena (cast Int (. bounds min-val))))
+                (putchar 44)  ;; ,
+                (print-str (cast (Ptr U8) "\"max\":"))
+                (print-string (int-to-string arena (cast Int (. bounds max-val))))))
+            ((none) (do))))
+        ('rk-ptr
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (do
+                (putchar 44)  ;; ,
+                (print-str (cast (Ptr U8) "\"target\":"))
+                (print-json-string arena (resolved-type-to-slop-string arena inner))))
+            ((none) (do))))
+        ('rk-option
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (do
+                (putchar 44)  ;; ,
+                (print-str (cast (Ptr U8) "\"inner\":"))
+                (print-json-string arena (resolved-type-to-slop-string arena inner))))
+            ((none) (do))))
+        ('rk-list
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (do
+                (putchar 44)  ;; ,
+                (print-str (cast (Ptr U8) "\"inner\":"))
+                (print-json-string arena (resolved-type-to-slop-string arena inner))))
+            ((none) (do))))
+        ('rk-result
+          (do
+            (match (. (deref t) inner-type)
+              ((some ok-type)
+                (do
+                  (putchar 44)  ;; ,
+                  (print-str (cast (Ptr U8) "\"ok-type\":"))
+                  (print-json-string arena (resolved-type-to-slop-string arena ok-type))))
+              ((none) (do)))
+            (match (. (deref t) inner-type2)
+              ((some err-type)
+                (do
+                  (putchar 44)  ;; ,
+                  (print-str (cast (Ptr U8) "\"err-type\":"))
+                  (print-json-string arena (resolved-type-to-slop-string arena err-type))))
+              ((none) (do)))))
+        (else (do)))
+      (putchar 125)  ;; }
+      (do)))
+
+  ;; Output enum variants as "variants": ["v1", "v2", ...]
+  (fn output-enum-variants-json ((arena Arena) (variants (List ResolvedVariant)))
+    (@intent "Output enum variants as JSON array of strings")
+    (@spec ((Arena (List ResolvedVariant)) -> Unit))
+    (print-str (cast (Ptr U8) "\"variants\":"))
+    (putchar 91)  ;; [
+    (let ((len (list-len variants))
+          (mut first true))
+      (for (i 0 len)
+        (match (list-get variants i)
+          ((some v)
+            (when (not first)
+              (putchar 44))  ;; ,
+            (print-json-string arena (. v name))
+            (set! first false))
+          ((none) (do)))))
+    (putchar 93)  ;; ]
+    (do))
+
+  ;; Output record fields as "fields": [{"name":"...", "type":"...", "is-pointer": true/false}, ...]
+  (fn output-record-fields-json ((arena Arena) (fields (List ResolvedField)))
+    (@intent "Output record fields as JSON array")
+    (@spec ((Arena (List ResolvedField)) -> Unit))
+    (print-str (cast (Ptr U8) "\"fields\":"))
+    (putchar 91)  ;; [
+    (let ((len (list-len fields))
+          (mut first true))
+      (for (i 0 len)
+        (match (list-get fields i)
+          ((some f)
+            (when (not first)
+              (putchar 44))  ;; ,
+            (putchar 123)  ;; {
+            (print-str (cast (Ptr U8) "\"name\":"))
+            (print-json-string arena (. f name))
+            (putchar 44)  ;; ,
+            (print-str (cast (Ptr U8) "\"type\":"))
+            (print-json-string arena (resolved-type-to-slop-string arena (. f field-type)))
+            (putchar 44)  ;; ,
+            (print-str (cast (Ptr U8) "\"is-pointer\":"))
+            (if (== (. (deref (. f field-type)) kind) 'rk-ptr)
+              (print-str (cast (Ptr U8) "true"))
+              (print-str (cast (Ptr U8) "false")))
+            (putchar 125)  ;; }
+            (set! first false))
+          ((none) (do)))))
+    (putchar 93)  ;; ]
+    (do))
+
+  ;; Output union variants as "variants": [{"name":"...", "type":"..."}, ...]
+  (fn output-union-variants-json ((arena Arena) (variants (List ResolvedVariant)))
+    (@intent "Output union variants as JSON array of objects with name and type")
+    (@spec ((Arena (List ResolvedVariant)) -> Unit))
+    (print-str (cast (Ptr U8) "\"variants\":"))
+    (putchar 91)  ;; [
+    (let ((len (list-len variants))
+          (mut first true))
+      (for (i 0 len)
+        (match (list-get variants i)
+          ((some v)
+            (when (not first)
+              (putchar 44))  ;; ,
+            (putchar 123)  ;; {
+            (print-str (cast (Ptr U8) "\"name\":"))
+            (print-json-string arena (. v name))
+            (match (. v payload-type)
+              ((some pt)
+                (do
+                  (putchar 44)  ;; ,
+                  (print-str (cast (Ptr U8) "\"type\":"))
+                  (print-json-string arena (resolved-type-to-slop-string arena pt))))
+              ((none) (do)))
+            (putchar 125)  ;; }
+            (set! first false))
+          ((none) (do)))))
+    (putchar 93)  ;; ]
+    (do))
+
+  ;; Output "functions": [...] for functions belonging to the current module
+  (fn output-functions-json ((arena Arena) (mod-name String) (functions (List (Ptr FnSignature))))
+    (@intent "Output functions array as JSON for a module")
+    (@spec ((Arena String (List (Ptr FnSignature))) -> Unit))
+    (print-str (cast (Ptr U8) "\"functions\":"))
+    (putchar 91)  ;; [
+    (let ((len (list-len functions))
+          (mut first true))
+      (for (i 0 len)
+        (match (list-get functions i)
+          ((some sig)
+            (when (fn-belongs-to-module sig mod-name)
+              (when (not first)
+                (putchar 44))  ;; ,
+              (output-fn-json arena sig)
+              (set! first false)))
+          ((none) (do)))))
+    (putchar 93)  ;; ]
+    (do))
+
+  ;; Output a single function signature as JSON
+  (fn output-fn-json ((arena Arena) (sig (Ptr FnSignature)))
+    (@intent "Output a single function signature as JSON")
+    (@spec ((Arena (Ptr FnSignature)) -> Unit))
+    (@pre (!= sig nil))
+    (putchar 123)  ;; {
+    ;; "name": "..."
+    (print-str (cast (Ptr U8) "\"name\":"))
+    (print-json-string arena (. (deref sig) name))
+    (putchar 44)  ;; ,
+    ;; "params": [...]
+    (print-str (cast (Ptr U8) "\"params\":"))
+    (output-fn-params-json arena (. (deref sig) params))
+    (putchar 44)  ;; ,
+    ;; "return-type": "..."
+    (print-str (cast (Ptr U8) "\"return-type\":"))
+    (print-json-string arena (resolved-type-to-slop-string arena (. (deref sig) return-type)))
+    (putchar 44)  ;; ,
+    ;; "returns-pointer": true/false
+    (print-str (cast (Ptr U8) "\"returns-pointer\":"))
+    (if (== (. (deref (. (deref sig) return-type)) kind) 'rk-ptr)
+      (print-str (cast (Ptr U8) "true"))
+      (print-str (cast (Ptr U8) "false")))
+    (putchar 44)  ;; ,
+    ;; "returns-string": true/false
+    (print-str (cast (Ptr U8) "\"returns-string\":"))
+    (if (string-eq (. (deref (. (deref sig) return-type)) name) "String")
+      (print-str (cast (Ptr U8) "true"))
+      (print-str (cast (Ptr U8) "false")))
+    (putchar 125)  ;; }
+    (do))
+
+  ;; Output function params as JSON array
+  (fn output-fn-params-json ((arena Arena) (params (List ParamInfo)))
+    (@intent "Output function parameters as JSON array")
+    (@spec ((Arena (List ParamInfo)) -> Unit))
+    (putchar 91)  ;; [
+    (let ((len (list-len params))
+          (mut first true))
+      (for (i 0 len)
+        (match (list-get params i)
+          ((some p)
+            (when (not first)
+              (putchar 44))  ;; ,
+            (putchar 123)  ;; {
+            (print-str (cast (Ptr U8) "\"name\":"))
+            (print-json-string arena (. p name))
+            (putchar 44)  ;; ,
+            (print-str (cast (Ptr U8) "\"type\":"))
+            (print-json-string arena (resolved-type-to-slop-string arena (. p param-type)))
+            (putchar 125)  ;; }
+            (set! first false))
+          ((none) (do)))))
+    (putchar 93)  ;; ]
+    (do))
+
+  ;; Output "constants": [...] for constants belonging to the current module
+  (fn output-constants-json ((arena Arena) (mod-name String) (constants (List ConstBinding)))
+    (@intent "Output constants array as JSON for a module")
+    (@spec ((Arena String (List ConstBinding)) -> Unit))
+    (print-str (cast (Ptr U8) "\"constants\":"))
+    (putchar 91)  ;; [
+    (let ((len (list-len constants))
+          (mut first true))
+      (for (i 0 len)
+        (match (list-get constants i)
+          ((some binding)
+            (when (const-belongs-to-module binding mod-name)
+              (when (not first)
+                (putchar 44))  ;; ,
+              (putchar 123)  ;; {
+              (print-str (cast (Ptr U8) "\"name\":"))
+              (print-json-string arena (. binding name))
+              (putchar 44)  ;; ,
+              (print-str (cast (Ptr U8) "\"type\":"))
+              (print-json-string arena (resolved-type-to-slop-string arena (. binding const-type)))
+              (putchar 125)  ;; }
+              (set! first false)))
+          ((none) (do)))))
+    (putchar 93)  ;; ]
     (do))
 
   ;; ============================================================
   ;; Single File Processing
   ;; ============================================================
 
-  (fn check-single-file ((env (Ptr TypeEnv)) (arena Arena) (filename (Ptr U8)) (format OutputFormat) (first Bool))
+  (fn check-single-file ((env (Ptr TypeEnv)) (arena Arena) (filename (Ptr U8)) (format OutputFormat) (first Bool) (emit-types Bool))
     (@intent "Type check a single file using shared environment")
-    (@spec (((Ptr TypeEnv) Arena (Ptr U8) OutputFormat Bool) -> Int))
+    (@spec (((Ptr TypeEnv) Arena (Ptr U8) OutputFormat Bool Bool) -> Int))
     (@pre (!= env nil))
     (@pre (!= filename nil))
     (let ((filename-str (cstring-to-string filename)))
@@ -390,7 +735,7 @@
                       (let ((diagnostics (env-get-diagnostics env)))
                         ;; Output based on format
                         (when (== format 'fmt-json)
-                          (output-module-json arena mod-name diagnostics first))
+                          (output-module-json arena env mod-name diagnostics first emit-types))
                         (when (== format 'fmt-text)
                           (output-diagnostics-text arena filename-str diagnostics))
                         ;; Return error count
@@ -722,11 +1067,16 @@
           (let ((env (env-new arena))
                 (mut total-errors 0)
                 (mut format 'fmt-text)
+                (mut emit-types false)
                 (mut file-start 1))
             ;; Check for --json flag
             (when (string-eq (argv-to-string argv 1) "--json")
               (set! format 'fmt-json)
               (set! file-start 2))
+            ;; Check for --emit-types flag
+            (when (and (< file-start argc) (string-eq (argv-to-string argv file-start) "--emit-types"))
+              (set! emit-types true)
+              (set! file-start (+ file-start 1)))
             ;; JSON opening brace if needed
             (when (== format 'fmt-json)
               (putchar 123))  ;; {
@@ -735,7 +1085,7 @@
                   (mut first true))
               (while (< i argc)
                 (let ((filename (@ argv i))
-                      (errors (check-single-file env arena filename format first)))
+                      (errors (check-single-file env arena filename format first emit-types)))
                   (set! total-errors (+ total-errors errors))
                   (set! first false))
                 (set! i (+ i 1))))
