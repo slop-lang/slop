@@ -1907,7 +1907,11 @@ def cmd_check(args):
                 cmd = [str(checker_bin)]
                 if getattr(args, 'json', False):
                     cmd.append('--json')
-                cmd.append(args.input)
+
+                # Resolve multi-module dependencies
+                source_files = _resolve_check_files(args.input, getattr(args, 'include', []))
+                cmd.extend(source_files)
+
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -2047,6 +2051,34 @@ def _has_imports(ast) -> bool:
         elif is_form(form, 'import'):
             return True
     return False
+
+
+def _resolve_check_files(input_path_str: str, include_paths: list) -> list:
+    """Resolve module dependencies for type checking.
+    Returns list of file paths in topological order."""
+    input_path = Path(input_path_str).resolve()
+
+    try:
+        with open(input_path) as f:
+            source = f.read()
+        ast = parse(source)
+    except Exception:
+        return [str(input_path)]
+
+    if not _has_imports(ast):
+        return [str(input_path)]
+
+    search_paths = [Path(p) for p in include_paths]
+    search_paths.extend(paths.get_stdlib_include_paths())
+    search_paths.append(input_path.parent)
+
+    resolver = ModuleResolver(search_paths)
+    try:
+        graph = resolver.build_dependency_graph(input_path)
+        order = resolver.topological_sort(graph)
+        return [str(graph.modules[name].path) for name in order]
+    except Exception:
+        return [str(input_path)]
 
 
 def _has_exports(ast) -> bool:
@@ -4498,6 +4530,8 @@ def main():
                    help='Use Python toolchain instead of native')
     p.add_argument('--json', action='store_true',
                    help='Output diagnostics as JSON')
+    p.add_argument('-I', '--include', action='append', default=[],
+                   help='Add search path for imports (can be repeated)')
 
     # check-hole
     p = subparsers.add_parser('check-hole', help='Validate expression against expected type')

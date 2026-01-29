@@ -120,10 +120,18 @@
                                     (elem-type (get-field-type env arena (get-type-arg type-expr 1))))
                                 (resolved-type-set-inner resolved elem-type)
                                 (env-register-type env resolved)))
-                            ;; Other - use placeholder
+                            ;; Other - check for simple type alias like (type Count Int)
                             (else
-                              (let ((resolved (resolved-type-new arena 'rk-primitive type-name mod-name type-name)))
-                                (env-register-type env resolved)))))
+                              (let ((alias-name (sexpr-get-symbol-name type-expr)))
+                                (if (not (string-eq alias-name ""))
+                                  ;; Simple type alias - store with inner-type pointing to aliased type
+                                  (let ((base-type (get-field-type env arena type-expr))
+                                        (resolved (resolved-type-new arena 'rk-primitive type-name mod-name type-name)))
+                                    (resolved-type-set-inner resolved base-type)
+                                    (env-register-type env resolved))
+                                  ;; Complex expression we don't recognize
+                                  (let ((resolved (resolved-type-new arena 'rk-primitive type-name mod-name type-name)))
+                                    (env-register-type env resolved)))))))
                         ((none)
                           ;; No type expr - use placeholder
                           (let ((resolved (resolved-type-new arena 'rk-primitive type-name mod-name type-name)))

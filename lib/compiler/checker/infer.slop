@@ -7,7 +7,8 @@
 
 (module infer
   (export
-    infer-expr infer-fn-body check-match-patterns)
+    infer-expr infer-fn-body check-match-patterns
+    resolve-complex-type-expr resolve-simple-type)
 
   (import parser (SExpr SExprList SExprSymbol is-form
                   sexpr-line sexpr-col
@@ -189,11 +190,30 @@
                         (match (env-lookup-function env name)
                           ((some sig) (env-make-fn-type env sig))
                           ((none)
-                            ;; Undefined variable - emit error
-                            (let ((arena (env-arena env))
-                                  (msg (string-concat arena "Undefined variable: " name)))
-                              (env-add-error env msg line col)
-                              (env-get-int-type env))))))))))))
+                            ;; Check for dot notation: var.field or Type.variant
+                            (if (string-contains-char name 46)
+                              (let ((dot-pos (string-index-of name 46))
+                                    (arena (env-arena env))
+                                    (base-name (string-substring arena name 0 dot-pos))
+                                    (field-name (string-substring arena name (+ dot-pos 1) (cast Int (. name len)))))
+                                ;; Try as variable field access
+                                (match (env-lookup-var env base-name)
+                                  ((some obj-type)
+                                    (check-field-exists env obj-type field-name line col))
+                                  ((none)
+                                    ;; Try as enum Type.variant
+                                    (match (env-lookup-type env base-name)
+                                      ((some type-info)
+                                        type-info)
+                                      ((none)
+                                        (let ((msg (string-concat arena "Undefined variable: " name)))
+                                          (env-add-error env msg line col)
+                                          (env-get-int-type env)))))))
+                              ;; No dot - undefined
+                              (let ((arena (env-arena env))
+                                    (msg (string-concat arena "Undefined variable: " name)))
+                                (env-add-error env msg line col)
+                                (env-get-int-type env)))))))))))))
         ((num num)
           (env-get-int-type env))
         ((str str)
@@ -602,9 +622,27 @@
                     ;; IO builtins
                     ((string-eq op "print") (env-get-unit-type env))
                     ((string-eq op "println") (env-get-unit-type env))
-                    ;; Result constructors - return generic Result type
-                    ((string-eq op "ok") (env-make-result-type env))
-                    ((string-eq op "error") (env-make-result-type env))
+                    ;; Result constructors - infer inner types
+                    ((string-eq op "ok")
+                      (let ((arena (env-arena env))
+                            (result-type (resolved-type-new arena 'rk-result "Result" (none) "Result")))
+                        (when (>= len 2)
+                          (match (list-get items 1)
+                            ((some val-expr)
+                              (let ((val-type (infer-expr env val-expr)))
+                                (resolved-type-set-inner result-type val-type)))
+                            ((none) (do))))
+                        result-type))
+                    ((string-eq op "error")
+                      (let ((arena (env-arena env))
+                            (result-type (resolved-type-new arena 'rk-result "Result" (none) "Result")))
+                        (when (>= len 2)
+                          (match (list-get items 1)
+                            ((some val-expr)
+                              (let ((val-type (infer-expr env val-expr)))
+                                (resolved-type-set-inner2 result-type val-type)))
+                            ((none) (do))))
+                        result-type))
                     ;; Array indexing builtin: (@ ptr index) returns element type
                     ((string-eq op "@")
                       (if (>= len 2)
@@ -622,6 +660,8 @@
                         (env-get-int-type env)))
                     ;; Option constructor
                     ((string-eq op "some") (env-make-option-type env nil))
+                    ;; c-inline - returns generic type (unknown C code)
+                    ((string-eq op "c-inline") (env-get-generic-type env))
                     ;; Map builtins
                     ;; map-new expects 3 args: arena, KeyType, ValueType - returns Map with tracked types
                     ((string-eq op "map-new")
@@ -1402,6 +1442,35 @@
             ((string-eq head-name "Chan")
               (let ((inner-type (resolve-ptr-inner-type env type-expr)))
                 (env-make-ptr-type env inner-type)))
+            ;; Result type: (Result OkType ErrType)
+            ((string-eq head-name "Result")
+              (let ((arena (env-arena env))
+                    (result-type (resolved-type-new arena 'rk-result "Result" (none) "Result")))
+                ;; Set ok type from position 1
+                (when (>= (sexpr-list-len type-expr) 2)
+                  (match (sexpr-list-get type-expr 1)
+                    ((some ok-expr)
+                      (let ((ok-name (sexpr-get-symbol-name ok-expr)))
+                        (let ((ok-type (if (string-eq ok-name "")
+                                         (if (sexpr-is-list ok-expr)
+                                           (resolve-complex-type-expr env ok-expr)
+                                           (env-get-unknown-type env))
+                                         (resolve-type-lenient env ok-name))))
+                          (resolved-type-set-inner result-type ok-type))))
+                    ((none) (do))))
+                ;; Set error type from position 2
+                (when (>= (sexpr-list-len type-expr) 3)
+                  (match (sexpr-list-get type-expr 2)
+                    ((some err-expr)
+                      (let ((err-name (sexpr-get-symbol-name err-expr)))
+                        (let ((err-type (if (string-eq err-name "")
+                                          (if (sexpr-is-list err-expr)
+                                            (resolve-complex-type-expr env err-expr)
+                                            (env-get-unknown-type env))
+                                          (resolve-type-lenient env err-name))))
+                          (resolved-type-set-inner2 result-type err-type))))
+                    ((none) (do))))
+                result-type))
             ;; User-defined generic types - look up the base type
             (else
               (match (env-lookup-type env head-name)
@@ -1439,6 +1508,23 @@
                 (env-get-unknown-type env))
               (resolve-simple-type env inner-name))))
         ((none) (env-get-unit-type env)))))
+
+  (fn resolve-type-lenient ((env (Ptr TypeEnv)) (type-name String))
+    (@intent "Resolve a type by name without erroring on unknowns")
+    (@spec (((Ptr TypeEnv) String) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (match (env-lookup-type env type-name)
+      ((some t) t)
+      ((none)
+        (let ((arena (env-arena env)))
+          (cond
+            ((string-eq type-name "Int") (env-get-int-type env))
+            ((string-eq type-name "Bool") (env-get-bool-type env))
+            ((string-eq type-name "String") (env-get-string-type env))
+            ((string-eq type-name "Unit") (env-get-unit-type env))
+            ((string-eq type-name "Arena") (env-get-arena-type env))
+            ;; Unknown type - create a named primitive without error
+            (else (resolved-type-new arena 'rk-primitive type-name (none) type-name)))))))
 
   (fn resolve-simple-type ((env (Ptr TypeEnv)) (type-name String))
     (@intent "Resolve a simple type by name")

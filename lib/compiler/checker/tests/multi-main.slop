@@ -1,4 +1,4 @@
-;; Test: Main module that imports from multi_lib - should pass
+;; Test: Main module that imports from multi-lib - should pass
 
 (module multi-main
   (import multi-lib (Status User get-status validate-user))

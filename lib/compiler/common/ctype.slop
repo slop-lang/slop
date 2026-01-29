@@ -11,6 +11,8 @@
     to-c-type to-c-name type-to-identifier sexpr-to-type-string
     ;; Builtin type lookup
     builtin-type-c is-builtin-type is-builtin-c-type
+    ;; Range type handling
+    range-type-to-c-type
     ;; C keyword check
     is-c-keyword)
 
@@ -336,6 +338,10 @@
                                     args-str)))
                               ((none) (string-concat arena ret-type "(*)(void)")))))))
 
+                    ;; (Int min .. max) range types -> smallest C type
+                    ((string-eq head "Int")
+                      (range-type-to-c-type arena items len))
+
                     ;; Default: treat as type name
                     (else
                       (match (builtin-type-c arena head)
@@ -400,5 +406,47 @@
           (string-concat arena result ")")))
       ;; Other forms - return empty
       (_ "")))
+
+  ;; ============================================================
+  ;; Range Type Handling
+  ;; ============================================================
+
+  (fn range-type-to-c-type ((arena Arena) (items (List (Ptr SExpr))) (len Int))
+    (@intent "Convert (Int min .. max) range type to smallest C type")
+    (@spec ((Arena (List (Ptr SExpr)) Int) -> String))
+    ;; Expected form: (Int min .. max) where items = [Int, min, .., max]
+    ;; Parse min and max values from the list
+    (if (< len 4)
+      "int64_t"
+      (let ((mut min-val (cast I64 0))
+            (mut max-val (cast I64 0))
+            (mut has-min false)
+            (mut has-max false))
+        ;; item 1 = min, item 2 = .., item 3 = max
+        (match (list-get items 1)
+          ((some min-expr)
+            (match (deref min-expr)
+              ((num n)
+                (set! has-min true)
+                (set! min-val (cast I64 (. n int-value))))
+              (_ (do))))
+          ((none) (do)))
+        (match (list-get items 3)
+          ((some max-expr)
+            (match (deref max-expr)
+              ((num n)
+                (set! has-max true)
+                (set! max-val (cast I64 (. n int-value))))
+              (_ (do))))
+          ((none) (do)))
+        (cond
+          ((and has-min has-max)
+            (cond
+              ((and (>= min-val 0) (<= max-val 255)) "uint8_t")
+              ((and (>= min-val 0) (<= max-val 65535)) "uint16_t")
+              ((and (>= min-val (- 0 128)) (<= max-val 127)) "int8_t")
+              ((and (>= min-val (- 0 32768)) (<= max-val 32767)) "int16_t")
+              (else "int64_t")))
+          (else "int64_t")))))
 
 ) ;; end module

@@ -2282,6 +2282,9 @@
         ;; printf: FFI call to C's printf - string literals become raw C strings
         ((string-eq fn-name "printf")
           (transpile-printf-call ctx items))
+        ;; string-new: (string-new arena "literal") - string literal arg must be raw C string
+        ((string-eq fn-name "string-new")
+          (transpile-raw-string-fn-call ctx fn-name items))
         ;; min: (min a b) -> ((a) < (b) ? (a) : (b))
         ((string-eq fn-name "min")
           (if (< len 3)
@@ -2600,6 +2603,30 @@
           ((none) (do)))
         (set! i (+ i 1)))
       (ctx-str3 ctx "printf(" args ")")))
+
+  (fn transpile-raw-string-fn-call ((ctx (Ptr TranspileContext)) (fn-name String) (items (List (Ptr SExpr))))
+    (@intent "Transpile function call where string literal args should be raw C strings (not SLOP_STR)")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          (mut args "")
+          (mut i 1))
+      (while (< i len)
+        (match (list-get items i)
+          ((some arg)
+            (let ((arg-c (match (deref arg)
+                           ;; String literal - use raw C string, not SLOP_STR
+                           ((str s)
+                             (ctx-str3 ctx "\"" (escape-c-string ctx (. s value)) "\""))
+                           ;; Other expressions - transpile normally
+                           (_ (transpile-expr ctx arg)))))
+              (if (string-eq args "")
+                (set! args arg-c)
+                (set! args (ctx-str3 ctx args ", " arg-c)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (transpile-call ctx fn-name args)))
 
   (fn string-contains ((s String) (substr String))
     (@intent "Check if string contains substring")

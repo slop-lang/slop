@@ -83,7 +83,7 @@
     sexpr-line sexpr-col list-first-line list-first-col)
 
   (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
+  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type))
   (import strlib (index-of substring))
 
   ;; FFI for error handling
@@ -1659,6 +1659,10 @@
                                 (let ((args-str (build-fn-args-str-prefixed ctx args-expr)))
                                   (set! result (ctx-str ctx (ctx-str ctx ret-type "(*)") args-str))))
                               ((none) (set! result (ctx-str ctx ret-type "(*)(void)"))))))))
+
+                    ;; (Int min .. max) range types -> smallest C type
+                    ((string-eq head "Int")
+                      (set! result (range-type-to-c-type arena items len)))
 
                     ;; Default: treat as type name
                     (else
