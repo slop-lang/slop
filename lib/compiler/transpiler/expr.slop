@@ -649,6 +649,36 @@
         ;; Other custom types: build slop_option_<typename>
         (else (ctx-str3 ctx "slop_option_" c-type "")))))
 
+  (fn infer-field-c-type-from-items ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Infer C type for a field access expression (. obj field) from items list")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items)))
+      (if (< len 3)
+        "/* TRANSPILER ERROR: malformed field access */"
+        (match (list-get items 1)
+          ((some obj-expr)
+            (match (list-get items 2)
+              ((some field-expr)
+                (match (deref field-expr)
+                  ((sym field-sym)
+                    (let ((field-name (. field-sym name))
+                          (obj-c-type (infer-expr-c-type ctx obj-expr)))
+                      (match (ctx-lookup-field-type ctx obj-c-type field-name)
+                        ((some c-type) c-type)
+                        ((none)
+                          ;; Try with SLOP type name
+                          (match (ctx-lookup-var ctx (get-var-name-from-expr obj-expr))
+                            ((some var-entry)
+                              (let ((obj-slop-type (. var-entry slop-type)))
+                                (match (ctx-lookup-field-type ctx obj-slop-type field-name)
+                                  ((some c-type2) c-type2)
+                                  ((none) "/* TRANSPILER ERROR: unknown field type */"))))
+                            ((none) "/* TRANSPILER ERROR: unknown object type */"))))))
+                  (else "/* TRANSPILER ERROR: field name must be symbol */")))
+              ((none) "/* TRANSPILER ERROR: missing field expression */")))
+          ((none) "/* TRANSPILER ERROR: missing object expression */")))))
+
   (fn infer-list-expr-option-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Infer Option type for a list expression (field access, function call, etc.)")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
@@ -667,38 +697,48 @@
               ((sym sym)
                 (let ((op (. sym name)))
                   (cond
-                    ;; Field access: (. obj field) - try to infer field type
+                    ;; Field access: (. obj field) - try registry lookup, then hardcoded fallback
                     ((string-eq op ".")
                       (if (< len 3)
                         (do
                           (ctx-add-error-at ctx "Incomplete field access for option type inference" line col)
                           "__type_error__")
-                        (match (list-get items 2)
-                          ((some field-expr)
-                            (match (deref field-expr)
-                              ((sym field-sym)
-                                (let ((field-name (. field-sym name)))
-                                  ;; Known string fields from common types
-                                  (cond
-                                    ((string-eq field-name "name") "slop_option_string")
-                                    ((string-eq field-name "value") "slop_option_string")
-                                    ((string-eq field-name "message") "slop_option_string")
-                                    ((string-eq field-name "c-name") "slop_option_string")
-                                    ((string-eq field-name "c-type") "slop_option_string")
-                                    ((string-eq field-name "slop-name") "slop_option_string")
-                                    ;; Unknown field - emit error
-                                    (else
-                                      (do
-                                        (ctx-add-error-at ctx (ctx-str3 ctx "Unknown field '" field-name "' for option type inference") (sexpr-line field-expr) (sexpr-col field-expr))
-                                        "__type_error__")))))
-                              (else
+                        ;; Try registry-based field type lookup first
+                        (let ((field-c-type (infer-field-c-type-from-items ctx items)))
+                          (if (not (starts-with field-c-type "/*"))
+                            (c-type-to-option-type-name ctx field-c-type)
+                            ;; Fallback: hardcoded known fields (for match-bound vars with __auto_type)
+                            (match (list-get items 2)
+                              ((some field-expr)
+                                (match (deref field-expr)
+                                  ((sym field-sym)
+                                    (let ((field-name (. field-sym name)))
+                                      (cond
+                                        ((string-eq field-name "name") "slop_option_string")
+                                        ((string-eq field-name "value") "slop_option_string")
+                                        ((string-eq field-name "message") "slop_option_string")
+                                        ((string-eq field-name "c-name") "slop_option_string")
+                                        ((string-eq field-name "c-type") "slop_option_string")
+                                        ((string-eq field-name "slop-name") "slop_option_string")
+                                        ((string-eq field-name "slop-type") "slop_option_string")
+                                        ((string-eq field-name "return-type") "slop_option_string")
+                                        ((string-eq field-name "slop-return-type") "slop_option_string")
+                                        ((string-eq field-name "enum-name") "slop_option_string")
+                                        ((string-eq field-name "variant-name") "slop_option_string")
+                                        ((string-eq field-name "const-type") "slop_option_types_ResolvedType_ptr")
+                                        ;; Unknown field - emit error
+                                        (else
+                                          (do
+                                            (ctx-add-error-at ctx (ctx-str3 ctx "Unknown field '" field-name "' for option type inference") (sexpr-line field-expr) (sexpr-col field-expr))
+                                            "__type_error__")))))
+                                  (else
+                                    (do
+                                      (ctx-add-error-at ctx "Non-symbol field for option type inference" (sexpr-line field-expr) (sexpr-col field-expr))
+                                      "__type_error__"))))
+                              ((none)
                                 (do
-                                  (ctx-add-error-at ctx "Non-symbol field for option type inference" (sexpr-line field-expr) (sexpr-col field-expr))
-                                  "__type_error__"))))
-                          ((none)
-                            (do
-                              (ctx-add-error-at ctx "Missing field for option type inference" line col)
-                              "__type_error__")))))
+                                  (ctx-add-error-at ctx "Missing field for option type inference" line col)
+                                  "__type_error__")))))))
                     ;; String functions that return strings
                     ((or (string-eq op "string-concat")
                          (or (string-eq op "string-copy")
