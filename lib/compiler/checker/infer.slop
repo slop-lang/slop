@@ -10,15 +10,15 @@
     infer-expr infer-fn-body check-match-patterns
     resolve-complex-type-expr resolve-simple-type)
 
-  (import parser (SExpr SExprList SExprSymbol is-form
-                  sexpr-line sexpr-col
-                  sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name))
-  (import types (ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
+  (import types (SExpr SExprList SExprSymbol
+                 ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
                  FnSignature ParamInfo
                  resolved-type-new resolved-type-set-inner resolved-type-set-inner2
                  resolved-type-is-pointer resolved-type-is-union
                  resolved-type-get-variant-index resolved-type-get-variant-payload
                  resolved-type-is-record resolved-type-has-field resolved-type-get-field-type))
+  (import ast (is-form sexpr-line sexpr-col
+               sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name))
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
                env-bind-var env-lookup-var env-lookup-type
                env-lookup-function env-lookup-variant env-lookup-constant

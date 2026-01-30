@@ -13,10 +13,14 @@
     emit-all-types emit-all-functions
     ;; Output generation
     generate-c-output
+    ;; Type environment integration
+    populate-context-from-env
     ;; Result type helpers (for defn.slop)
     build-result-type-name)
 
-  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
+  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
+                 ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
+                 FnSignature ParamInfo))
   (import context (TranspileContext context-new ctx-emit ctx-emit-header ctx-get-output ctx-get-header
                    ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
@@ -41,7 +45,7 @@
                    ctx-register-struct-key-type ctx-get-struct-key-types
                    ctx-get-deferred-lambdas ctx-clear-deferred-lambdas
                    ctx-start-function-buffer ctx-stop-function-buffer ctx-flush-function-buffer))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
+  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type builtin-type-c))
   (import emit (emit-standard-includes emit-include))
   (import defn (transpile-type transpile-function transpile-const is-const-form emit-forward-declaration
                 is-ffi-form is-ffi-struct-form transpile-ffi transpile-ffi-struct
@@ -50,7 +54,117 @@
   (import expr (transpile-expr))
   (import match (transpile-match))
   (import strlib (starts-with substring char-at))
-  (import parser (pretty-print))
+  (import ast (pretty-print))
+  (import env (TypeEnv env-get-types env-get-functions env-get-constants ConstBinding))
+
+  ;; ============================================================
+  ;; Populate Context from Type Environment
+  ;; ============================================================
+
+  (fn populate-context-from-env ((ctx (Ptr TranspileContext)) (env (Ptr TypeEnv)) (type-offset Int) (fn-offset Int))
+    (@intent "Populate transpiler context with type info from checker's TypeEnv, starting from offsets")
+    (@spec (((Ptr TranspileContext) (Ptr TypeEnv) Int Int) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {env != nil})
+    (let ((arena (. (deref ctx) arena)))
+      ;; Register types starting from offset (only new types from current module)
+      (let ((all-types (env-get-types env))
+            (type-count (list-len all-types))
+            (mut ti type-offset))
+        (while (< ti type-count)
+          (match (list-get all-types ti)
+            ((some resolved-ptr)
+              (let ((resolved (deref resolved-ptr))
+                    (kind (. resolved kind))
+                    (type-name (. resolved name))
+                    (base-c-name (to-c-name arena type-name))
+                    (c-name (ctx-prefix-type ctx base-c-name))
+                    (is-enum (== kind 'rk-enum))
+                    (is-record (== kind 'rk-record))
+                    (is-union (== kind 'rk-union)))
+                ;; Register the type entry only - prescan handles variants, fields, and container types
+                (ctx-register-type ctx (TypeEntry type-name c-name c-name is-enum is-record is-union))))
+            ((none) (do)))
+          (set! ti (+ ti 1))))
+      ;; Register functions starting from offset (only new functions from current module)
+      (let ((all-fns (env-get-functions env))
+            (fn-count (list-len all-fns))
+            (mut fi fn-offset))
+        (while (< fi fn-count)
+          (match (list-get all-fns fi)
+            ((some sig-ptr)
+              (let ((sig (deref sig-ptr))
+                    (fn-name (. sig name))
+                    (base-name (to-c-name arena fn-name))
+                    ;; Don't prefix main
+                    (c-name (if (string-eq base-name "main")
+                              base-name
+                              (ctx-prefix-type ctx base-name)))
+                    ;; Get return type info
+                    (ret-type (deref (. sig return-type)))
+                    (ret-c (resolve-field-c-type ctx (. ret-type kind) (. ret-type name)))
+                    (ret-slop (. ret-type name))
+                    (returns-str (string-eq (. ret-type name) "String"))
+                    ;; Build parameter type list
+                    (params (. sig params))
+                    (param-count (list-len params))
+                    (param-types (list-new arena (Ptr FuncParamType)))
+                    (mut pi 0))
+                (while (< pi param-count)
+                  (match (list-get params pi)
+                    ((some p)
+                      (let ((pt (deref (. p param-type)))
+                            (pt-c (resolve-field-c-type ctx (. pt kind) (. pt name)))
+                            (fpt (cast (Ptr FuncParamType) (arena-alloc arena 16))))
+                        (set! (deref fpt) (FuncParamType pt-c))
+                        (list-push param-types fpt)))
+                    ((none) (do)))
+                  (set! pi (+ pi 1)))
+                (ctx-register-func ctx (FuncEntry fn-name c-name ret-c ret-slop false returns-str param-types))))
+            ((none) (do)))
+          (set! fi (+ fi 1))))))
+
+  (fn resolve-field-c-type ((ctx (Ptr TranspileContext)) (kind ResolvedTypeKind) (name String))
+    (@intent "Convert a resolved type kind and name to a C type string")
+    (@spec (((Ptr TranspileContext) ResolvedTypeKind String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (cond
+        ;; Primitive types - use builtin mapping
+        ((== kind 'rk-primitive)
+          (match (builtin-type-c arena name)
+            ((some builtin) builtin)
+            ((none) (ctx-prefix-type ctx (to-c-name arena name)))))
+        ;; Pointer types
+        ((== kind 'rk-ptr)
+          (ctx-str ctx (to-c-name arena name) "*"))
+        ;; String is slop_string
+        ((string-eq name "String") "slop_string")
+        ((string-eq name "Bool") "bool")
+        ((string-eq name "Int") "int64_t")
+        ((string-eq name "U8") "uint8_t")
+        ((string-eq name "U16") "uint16_t")
+        ((string-eq name "U32") "uint32_t")
+        ((string-eq name "U64") "uint64_t")
+        ((string-eq name "I8") "int8_t")
+        ((string-eq name "I16") "int16_t")
+        ((string-eq name "I32") "int32_t")
+        ((string-eq name "I64") "int64_t")
+        ((string-eq name "F32") "float")
+        ((string-eq name "F64") "double")
+        ((string-eq name "Unit") "void")
+        ((string-eq name "Arena") "slop_arena*")
+        ;; List type
+        ((== kind 'rk-list)
+          "slop_list_t*")
+        ;; Option/Result use generated names
+        ((== kind 'rk-option)
+          (to-c-name arena name))
+        ((== kind 'rk-result)
+          (to-c-name arena name))
+        ;; User-defined types - prefix
+        (else
+          (ctx-prefix-type ctx (to-c-name arena name))))))
 
   ;; ============================================================
   ;; Module Prescan

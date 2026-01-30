@@ -25,7 +25,7 @@
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias
-                   ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col
+                   ctx-add-error-at ctx-sexpr-line ctx-sexpr-col list-first-line list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info))
   (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string))
@@ -603,7 +603,7 @@
                         (c-type-to-option-type-name ctx derived-c-type))
                       ;; No slop-type available - emit error
                       (do
-                        (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for variable '" name "' - type is 'auto' with no SLOP type") (sexpr-line val-expr) (sexpr-col val-expr))
+                        (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for variable '" name "' - type is 'auto' with no SLOP type") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
                         "__type_error__")))
                   ((string-eq c-type "int64_t") "slop_option_int")
                   ((string-eq c-type "double") "slop_option_double")
@@ -619,7 +619,7 @@
             ;; Unknown variable - emit error
             ((none)
               (do
-                (ctx-add-error-at ctx (ctx-str3 ctx "Unknown variable '" name "' for Option type inference") (sexpr-line val-expr) (sexpr-col val-expr))
+                (ctx-add-error-at ctx (ctx-str3 ctx "Unknown variable '" name "' for Option type inference") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
                 "__type_error__")))))
       ;; For complex expressions, try to infer type from the structure
       ((lst lst)
@@ -718,11 +718,11 @@
                                         ;; Unknown field - emit error
                                         (else
                                           (do
-                                            (ctx-add-error-at ctx (ctx-str3 ctx "Unknown field '" field-name "' for option type inference") (sexpr-line field-expr) (sexpr-col field-expr))
+                                            (ctx-add-error-at ctx (ctx-str3 ctx "Unknown field '" field-name "' for option type inference") (ctx-sexpr-line field-expr) (ctx-sexpr-col field-expr))
                                             "__type_error__")))))
                                   (else
                                     (do
-                                      (ctx-add-error-at ctx "Non-symbol field for option type inference" (sexpr-line field-expr) (sexpr-col field-expr))
+                                      (ctx-add-error-at ctx "Non-symbol field for option type inference" (ctx-sexpr-line field-expr) (ctx-sexpr-col field-expr))
                                       "__type_error__"))))
                               ((none)
                                 (do
@@ -767,7 +767,7 @@
                             "__type_error__")))))))
               (else
                 (do
-                  (ctx-add-error-at ctx "Non-symbol head in option type inference" (sexpr-line head-expr) (sexpr-col head-expr))
+                  (ctx-add-error-at ctx "Non-symbol head in option type inference" (ctx-sexpr-line head-expr) (ctx-sexpr-col head-expr))
                   "__type_error__"))))
           ((none)
             (do
@@ -1862,7 +1862,7 @@
                                                ;; Check for type inference error marker
                                                ((string-eq val-type "__type_error__")
                                                  (do
-                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (sexpr-line val-expr) (sexpr-col val-expr))
+                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
                                                    "__type_error__"))
                                                ((string-eq val-type "slop_string") "slop_option_string")
                                                ((string-eq val-type "int64_t") "slop_option_int")
@@ -1870,7 +1870,7 @@
                                                ;; For auto/unknown type, emit error - don't guess
                                                ((string-eq val-type "auto")
                                                  (do
-                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "' - type is 'auto'") (sexpr-line val-expr) (sexpr-col val-expr))
+                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "' - type is 'auto'") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
                                                    "__type_error__"))
                                                (else (infer-option-type ctx val-expr)))))
                             ;; Check if option-type is an error
@@ -1878,7 +1878,7 @@
                               ;; Error in type inference - return placeholder
                               (do
                                 (when (starts-with option-type "/*")
-                                  (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (sexpr-line val-expr) (sexpr-col val-expr)))
+                                  (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr)))
                                 "(slop_option_int){.has_value = 0}")
                               ;; Typed option construction
                               (ctx-str5 ctx "(" option-type "){.has_value = 1, .value = " val-c "}"))))

@@ -18,7 +18,8 @@
     extract-module-name)
 
   (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
-  (import parser (parse ParseResult is-form sexpr-is-symbol sexpr-list-len sexpr-list-get sexpr-get-symbol-name))
+  (import parser (parse ParseResult))
+  (import ast (is-form sexpr-is-symbol sexpr-list-len sexpr-list-get sexpr-get-symbol-name))
   (import extract (TestCase extract-examples-from-ast))
   (import emit (emit-test-harness emit-test-harness-typed))
   (import type-extract (TypeRegistry TypeEntry TypeEntryKind

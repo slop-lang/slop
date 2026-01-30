@@ -9,9 +9,8 @@
   (export
     resolve-imports resolve-import-stmt resolve-module-file)
 
-  (import parser (SExpr SExprList SExprSymbol is-form
-                  sexpr-is-list sexpr-list-len sexpr-list-get))
-  (import types (ResolvedType))
+  (import types (SExpr SExprList SExprSymbol ResolvedType))
+  (import ast (is-form sexpr-is-list sexpr-list-len sexpr-list-get))
   (import env (TypeEnv env-arena env-add-import env-resolve-import
                env-lookup-type env-lookup-type-direct env-set-module env-get-current-file))
   (import path (path-dirname path-join))

@@ -8,5 +8,5 @@ entry = "main.slop"
 
 [build]
 output = "slop-transpiler"
-include = ["../common", "../parser", "../../std", "../../std/strlib", "../../std/io", "../../std/os"]
+include = ["../common", "../parser", "../checker", "../../std", "../../std/strlib", "../../std/io"]
 type = "executable"

@@ -12,7 +12,8 @@
                 file-open file-close file-read-all))
   (import types (SExpr))
   (import parser (ParseResult ParseError
-                  parse pretty-print json-print))
+                  parse json-print))
+  (import ast (pretty-print))
 
   ;; FFI for strlen
   (ffi "string.h"

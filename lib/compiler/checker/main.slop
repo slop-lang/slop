@@ -14,10 +14,10 @@
   (export
     type-check type-check-with-env TypeCheckResult (main 2))
 
-  (import parser (SExpr parse is-form
-                  sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name
-                  sexpr-line sexpr-col))
-  (import types (TypeError TypeErrorKind type-error-new
+  (import parser (parse))
+  (import ast (is-form sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name
+               sexpr-line sexpr-col))
+  (import types (SExpr TypeError TypeErrorKind type-error-new
                  Diagnostic DiagnosticLevel ResolvedType ResolvedTypeKind
                  ResolvedVariant ResolvedField RangeBounds FnSignature ParamInfo
                  resolved-type-to-slop-string))

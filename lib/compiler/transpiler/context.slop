@@ -80,7 +80,7 @@
     ;; Error collection
     ctx-set-file ctx-add-error ctx-add-error-at ctx-has-errors ctx-get-errors ctx-report-errors
     ;; Position extraction helpers
-    sexpr-line sexpr-col list-first-line list-first-col)
+    ctx-sexpr-line ctx-sexpr-col list-first-line list-first-col)
 
   (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type))
@@ -566,7 +566,7 @@
   ;; SExpr Position Extraction
   ;; ============================================================
 
-  (fn sexpr-line ((expr (Ptr SExpr)))
+  (fn ctx-sexpr-line ((expr (Ptr SExpr)))
     (@intent "Extract line number from an SExpr")
     (@spec (((Ptr SExpr)) -> Int))
     (if (== expr nil)
@@ -577,7 +577,7 @@
         ((num n) (cast Int (. n line)))
         ((lst l) (cast Int (. l line))))))
 
-  (fn sexpr-col ((expr (Ptr SExpr)))
+  (fn ctx-sexpr-col ((expr (Ptr SExpr)))
     (@intent "Extract column number from an SExpr")
     (@spec (((Ptr SExpr)) -> Int))
     (if (== expr nil)
@@ -592,14 +592,14 @@
     (@intent "Extract line number from the first element of an SExpr list")
     (@spec (((List (Ptr SExpr))) -> Int))
     (match (list-get items 0)
-      ((some first-expr) (sexpr-line first-expr))
+      ((some first-expr) (ctx-sexpr-line first-expr))
       ((none) 0)))
 
   (fn list-first-col ((items (List (Ptr SExpr))))
     (@intent "Extract column number from the first element of an SExpr list")
     (@spec (((List (Ptr SExpr))) -> Int))
     (match (list-get items 0)
-      ((some first-expr) (sexpr-col first-expr))
+      ((some first-expr) (ctx-sexpr-col first-expr))
       ((none) 0)))
 
   ;; ============================================================

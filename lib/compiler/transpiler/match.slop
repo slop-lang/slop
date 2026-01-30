@@ -18,7 +18,7 @@
                    ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
                    ctx-lookup-enum-variant ctx-get-current-return-type ctx-gensym
                    to-c-type-prefixed
-                   ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col))
+                   ctx-add-error-at ctx-sexpr-line ctx-sexpr-col list-first-line list-first-col))
   (import strlib (starts-with ends-with char-at))
   (import ctype (to-c-name to-c-type sexpr-to-type-string))
   (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-option-inner-slop-type infer-result-ok-slop-type infer-result-err-slop-type))
@@ -181,7 +181,7 @@
           (let ((items (. lst items))
                 (len (list-len items)))
             (if (< len 3)
-              (ctx-add-error-at ctx "invalid match: need value and at least one branch" (sexpr-line expr) (sexpr-col expr))
+              (ctx-add-error-at ctx "invalid match: need value and at least one branch" (ctx-sexpr-line expr) (ctx-sexpr-col expr))
               (do
                 ;; Get the scrutinee (value being matched)
                 (match (list-get items 1)
@@ -206,8 +206,8 @@
                           (transpile-union-match ctx scrutinee-var patterns items is-return))
                         (else
                           (transpile-generic-match ctx scrutinee-var items is-return)))))
-                  ((none) (ctx-add-error-at ctx "missing match scrutinee" (sexpr-line expr) (sexpr-col expr))))))))
-        (else (ctx-add-error-at ctx "invalid match" (sexpr-line expr) (sexpr-col expr))))))
+                  ((none) (ctx-add-error-at ctx "missing match scrutinee" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))))
+        (else (ctx-add-error-at ctx "invalid match" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))
 
   (fn collect-patterns ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Collect pattern expressions from match branches (skip head and scrutinee)")
@@ -785,7 +785,7 @@
             (let ((has-mut (binding-starts-with-mut items))
                   (start-idx (if (binding-starts-with-mut items) 1 0)))
               (if (< (- len start-idx) 2)
-                (ctx-add-error-at ctx "invalid binding" (sexpr-line binding) (sexpr-col binding))
+                (ctx-add-error-at ctx "invalid binding" (ctx-sexpr-line binding) (ctx-sexpr-col binding))
                 (match (list-get items start-idx)
                   ((some name-expr)
                     (match (deref name-expr)
@@ -826,7 +826,7 @@
                                                 (slop-type-str (sexpr-to-type-string arena type-expr)))
                                             (ctx-emit ctx (ctx-str5 ctx c-type " " c-name " = " (ctx-str ctx final-init ";")))
                                             (ctx-bind-var ctx (VarEntry raw-name c-name c-type slop-type-str is-ptr has-mut false "" "")))))
-                                      ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))
+                                      ((none) (ctx-add-error-at ctx "missing value" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))
                                     ;; Not typed - middle is actually value - infer type
                                     (match (list-get items type-idx)
                                       ((some val-expr)
@@ -846,8 +846,8 @@
                                                     (is-ptr (ends-with inferred-type "*")))
                                                 (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
                                                 (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "")))))))
-                                      ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))))
-                                ((none) (ctx-add-error-at ctx "missing type/value" (sexpr-line binding) (sexpr-col binding)))))
+                                      ((none) (ctx-add-error-at ctx "missing value" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))
+                                ((none) (ctx-add-error-at ctx "missing type/value" (ctx-sexpr-line binding) (ctx-sexpr-col binding)))))
                             ;; Simple: (name init)
                             (let ((val-idx (+ start-idx 1)))
                               (match (list-get items val-idx)
@@ -868,10 +868,10 @@
                                               (is-ptr (ends-with inferred-type "*")))
                                           (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
                                           (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "")))))))
-                                ((none) (ctx-add-error-at ctx "missing value" (sexpr-line binding) (sexpr-col binding))))))))
-                      (else (ctx-add-error-at ctx "binding name must be symbol" (sexpr-line name-expr) (sexpr-col name-expr)))))
-                  ((none) (ctx-add-error-at ctx "missing binding name" (sexpr-line binding) (sexpr-col binding))))))))
-        (else (ctx-add-error-at ctx "binding must be list" (sexpr-line binding) (sexpr-col binding))))))
+                                ((none) (ctx-add-error-at ctx "missing value" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))))
+                      (else (ctx-add-error-at ctx "binding name must be symbol" (ctx-sexpr-line name-expr) (ctx-sexpr-col name-expr)))))
+                  ((none) (ctx-add-error-at ctx "missing binding name" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))))
+        (else (ctx-add-error-at ctx "binding must be list" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))
 
   (fn binding-starts-with-mut ((items (List (Ptr SExpr))))
     (@intent "Check if binding starts with 'mut'")
@@ -1304,7 +1304,7 @@
                 (let ((clause-items (. clause-lst items))
                       (clause-len (list-len clause-items)))
                   (if (< clause-len 1)
-                    (ctx-add-error-at ctx "invalid cond clause" (sexpr-line clause-expr) (sexpr-col clause-expr))
+                    (ctx-add-error-at ctx "invalid cond clause" (ctx-sexpr-line clause-expr) (ctx-sexpr-col clause-expr))
                     (match (list-get clause-items 0)
                       ((some test-expr)
                         (match (deref test-expr)
@@ -1339,8 +1339,8 @@
                               (ctx-indent ctx)
                               (emit-inline-cond-body ctx clause-items 1 is-return is-last)
                               (ctx-dedent ctx)))))
-                      ((none) (ctx-add-error-at ctx "missing test" (sexpr-line clause-expr) (sexpr-col clause-expr)))))))
-              (else (ctx-add-error-at ctx "cond clause must be list" (sexpr-line clause-expr) (sexpr-col clause-expr)))))
+                      ((none) (ctx-add-error-at ctx "missing test" (ctx-sexpr-line clause-expr) (ctx-sexpr-col clause-expr)))))))
+              (else (ctx-add-error-at ctx "cond clause must be list" (ctx-sexpr-line clause-expr) (ctx-sexpr-col clause-expr)))))
           ((none) (do)))
         (set! i (+ i 1)))
       ;; Close final brace

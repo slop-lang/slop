@@ -19,9 +19,9 @@
     sexpr-to-c-typed)
 
   (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
-  (import parser (is-form sexpr-is-symbol sexpr-is-number sexpr-is-string
-                  sexpr-list-len sexpr-list-get sexpr-get-symbol-name
-                  sexpr-number-string sexpr-string-value pretty-print))
+  (import ast (is-form sexpr-is-symbol sexpr-is-number sexpr-is-string
+               sexpr-list-len sexpr-list-get sexpr-get-symbol-name
+               sexpr-number-string sexpr-string-value pretty-print))
   (import extract (TestCase))
   (import strlib (contains to-lower string-build starts-with substring))
   (import type-extract (TypeRegistry TypeEntry TypeEntryKind FieldEntry VariantEntry ImportEntry

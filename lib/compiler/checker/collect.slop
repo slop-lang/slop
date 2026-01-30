@@ -10,15 +10,15 @@
     ;; Main collection functions
     collect-types collect-functions collect-constants collect-module)
 
-  (import parser (SExpr SExprList SExprSymbol is-form
-                  sexpr-line sexpr-col
-                  sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name))
-  (import types (ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
+  (import types (SExpr SExprList SExprSymbol
+                 ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
                  FnSignature ParamInfo
                  resolved-type-new resolved-variant-new resolved-field-new
                  resolved-type-set-inner resolved-type-set-inner2
                  resolved-type-is-pointer
                  fn-signature-new param-info-new))
+  (import ast (is-form sexpr-line sexpr-col
+               sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name))
   (import env (TypeEnv env-arena env-register-type env-lookup-type env-lookup-type-direct
                env-register-function env-register-constant env-set-module env-get-module
                env-get-int-type env-get-bool-type env-get-string-type
@@ -136,9 +136,9 @@
                           ;; No type expr - use placeholder
                           (let ((resolved (resolved-type-new arena 'rk-primitive type-name mod-name type-name)))
                             (env-register-type env resolved))))))
-                  (_ (do))))
+                  (else (do))))
               ((none) (do)))))
-        (_ (do)))))
+        (else (do)))))
 
   (fn collect-record-fields ((env (Ptr TypeEnv)) (arena Arena) (resolved (Ptr ResolvedType)) (record-expr (Ptr SExpr)))
     (@intent "Extract field definitions from a record and add them to the resolved type")
@@ -172,11 +172,11 @@
                                     ;; Push directly to resolved's fields list
                                     (do (list-push (. (deref resolved) fields) (deref field)))))
                                 ((none) (do))))
-                            (_ (do))))
+                            (else (do))))
                         ((none) (do)))))
-                  (_ (do))))
+                  (else (do))))
               ((none) (do))))))
-      (_ (do))))
+      (else (do))))
 
   (fn get-type-arg ((type-expr (Ptr SExpr)) (idx Int))
     (@intent "Get type argument at given index from a type expression like (Map K V)")
@@ -187,7 +187,7 @@
         (match (list-get (. lst items) idx)
           ((some arg) arg)
           ((none) type-expr)))  ;; Fallback to expr itself
-      (_ type-expr)))
+      (else type-expr)))
 
   (fn get-field-type ((env (Ptr TypeEnv)) (arena Arena) (type-expr (Ptr SExpr)))
     (@intent "Get resolved type for a field type expression")
@@ -278,7 +278,7 @@
                   (else (resolved-type-new arena 'rk-primitive head-name (none) head-name)))))
             ((none) (env-get-unit-type env)))))
       ;; Other expression types
-      (_ (env-get-unit-type env))))
+      (else (env-get-unit-type env))))
 
   (fn collect-module-types ((env (Ptr TypeEnv)) (module-form (Ptr SExpr)))
     (@intent "Collect type definitions from inside a module")
@@ -359,7 +359,7 @@
     (@pure)
     (match (deref expr)
       ((sym sym) (. sym name))
-      (_ "")))
+      (else "")))
 
   ;; ============================================================
   ;; Reserved Variant Names Check
@@ -408,7 +408,7 @@
           (lookup-payload-type env (sexpr-get-symbol-name type-expr)))
         ((none) (none)))))
 
-  (fn get-variant-name ((variant-form (Ptr SExpr)))
+  (fn collect-get-variant-name ((variant-form (Ptr SExpr)))
     (@intent "Get the variant name from a variant form")
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
@@ -421,13 +421,13 @@
           ((none) "")))
       (match (deref variant-form)
         ((sym sym) (. sym name))
-        (_ ""))))
+        (else ""))))
 
   (fn collect-single-union-variant ((env (Ptr TypeEnv)) (arena Arena) (resolved (Ptr ResolvedType))
                                      (variant-form (Ptr SExpr)) (variant-idx Int))
     (@intent "Process a single union variant")
     (@spec (((Ptr TypeEnv) Arena (Ptr ResolvedType) (Ptr SExpr) Int) -> Unit))
-    (let ((variant-name (get-variant-name variant-form))
+    (let ((variant-name (collect-get-variant-name variant-form))
           (type-name (. (deref resolved) name))
           (arena (env-arena env)))
       (when (not (string-eq variant-name ""))
@@ -465,9 +465,9 @@
                             (variant (resolved-variant-new arena vname (- i 1) vname (none))))
                         (list-push (. (deref resolved) variants) (deref variant))
                         (env-register-variant env vname enum-name)))
-                    (_ (do))))
+                    (else (do))))
                 ((none) (do))))))
-        (_ (do)))))
+        (else (do)))))
 
   ;; ============================================================
   ;; Constant Collection
@@ -546,7 +546,7 @@
                 ;; Unknown type - create placeholder
                 (else (resolved-type-new arena 'rk-primitive type-name (none) type-name)))))))
       ;; Complex type or other - use Int as default
-      (_ (env-get-int-type env))))
+      (else (env-get-int-type env))))
 
   ;; ============================================================
   ;; Function Collection
@@ -847,12 +847,12 @@
           ((some item)
             (when (is-form item "@spec")
               (when (not found)
-                (set! found-type (extract-spec-return-type env item))
+                (set! found-type (collect-extract-spec-return-type env item))
                 (set! found true))))
           ((none) (do))))
       found-type))
 
-  (fn extract-spec-return-type ((env (Ptr TypeEnv)) (spec-form (Ptr SExpr)))
+  (fn collect-extract-spec-return-type ((env (Ptr TypeEnv)) (spec-form (Ptr SExpr)))
     (@intent "Extract return type from @spec form")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))

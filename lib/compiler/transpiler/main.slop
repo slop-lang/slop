@@ -9,7 +9,9 @@
   (import types (SExpr SExprList SExprSymbol))
   (import parser (parse ParseResult))
   (import context (TranspileContext context-new ctx-reset-for-new-module ctx-get-output ctx-get-header ctx-set-prefixing ctx-set-module ctx-set-file ctx-has-errors ctx-report-errors))
-  (import transpiler (transpile-file generate-c-output))
+  (import transpiler (transpile-file generate-c-output populate-context-from-env))
+  (import env (TypeEnv env-new env-clear-diagnostics env-set-current-file))
+  (import collect (collect-module))
   (import strlib (replace-all))
 
   ;; FFI for file I/O and command-line arguments
@@ -200,7 +202,8 @@
       (with-arena 16777216  ;; 16MB arena for large multi-file builds
         ;; Create a single shared context for all modules
         ;; This preserves type registrations, enum variants, etc. across modules
-        (let ((ctx (context-new arena)))
+        (let ((ctx (context-new arena))
+              (type-env (env-new arena)))
           (ctx-set-prefixing ctx true)
           ;; Output JSON object opening
           (putchar 123)  ;; {
@@ -213,9 +216,10 @@
                     (filename-str (String filename-ptr (strlen filename-ptr))))
                 ;; Set current file for error messages
                 (ctx-set-file ctx filename-str)
+                (env-set-current-file type-env (some filename-str))
                 (match (read-file arena filename)
                   ((some source)
-                    (let ((result (transpile-single-file-with-ctx ctx source first)))
+                    (let ((result (transpile-single-file-with-ctx ctx type-env source first)))
                       (set! first false)))
                   ((none)
                     (print-str (cast (Ptr Char) "Error: Could not read file\n")))))
@@ -225,10 +229,11 @@
           (putchar 10)   ;; newline
           0))))
 
-  (fn transpile-single-file-with-ctx ((ctx (Ptr TranspileContext)) (source String) (first Bool))
-    (@intent "Parse and transpile a single source file using shared context, output JSON")
-    (@spec (((Ptr TranspileContext) String Bool) -> Int))
+  (fn transpile-single-file-with-ctx ((ctx (Ptr TranspileContext)) (type-env (Ptr TypeEnv)) (source String) (first Bool))
+    (@intent "Parse, type-check, and transpile a single source file using shared context")
+    (@spec (((Ptr TranspileContext) (Ptr TypeEnv) String Bool) -> Int))
     (@pre {ctx != nil})
+    (@pre {type-env != nil})
     ;; Parse the source
     (let ((arena (. (deref ctx) arena))
           (parse-result (parse arena source)))
@@ -238,9 +243,15 @@
           (let ((mod-name (extract-module-name exprs)))
             ;; Reset context for this module while preserving cross-module state
             (ctx-reset-for-new-module ctx mod-name)
+            ;; Run checker to populate type env, then register only new types/fns
+            (let ((type-offset (list-len (env-get-types type-env)))
+                  (fn-offset (list-len (env-get-functions type-env))))
+              (collect-module type-env exprs)
+              (populate-context-from-env ctx type-env type-offset fn-offset)
+              (env-clear-diagnostics type-env))
             ;; Transpile
             (transpile-file ctx exprs)
-            ;; Check for errors
+            ;; Check for transpiler errors
             (when (ctx-has-errors ctx)
               (ctx-report-errors ctx)
               (exit 1))

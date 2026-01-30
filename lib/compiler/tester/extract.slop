@@ -15,10 +15,10 @@
     extract-fn-examples)
 
   (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
-  (import parser (is-form sexpr-is-symbol sexpr-is-number sexpr-is-string
-                  sexpr-list-len sexpr-list-get sexpr-get-symbol-name
-                  sexpr-symbol-name sexpr-number-string sexpr-string-value
-                  pretty-print))
+  (import ast (is-form sexpr-is-symbol sexpr-is-number sexpr-is-string
+               sexpr-list-len sexpr-list-get sexpr-get-symbol-name
+               sexpr-symbol-name sexpr-number-string sexpr-string-value
+               pretty-print))
 
   ;; ============================================================
   ;; Test Case Type

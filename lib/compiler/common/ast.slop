@@ -1,0 +1,262 @@
+;; ============================================================
+;; AST Utilities - S-expression accessor and predicate functions
+;;
+;; Extracted from parser.slop so that checker, transpiler, and
+;; other tools can use AST utilities without depending on the
+;; parser module.
+;; ============================================================
+
+(module ast
+  (export
+    ;; Form checking
+    is-form
+    ;; Position accessors
+    sexpr-line sexpr-col
+    ;; List accessors
+    sexpr-list-len sexpr-list-get
+    ;; Type predicates
+    sexpr-is-list sexpr-is-symbol sexpr-is-number sexpr-is-string
+    ;; Value accessors
+    sexpr-get-symbol-name sexpr-symbol-name sexpr-number-string sexpr-string-value
+    ;; String utility
+    string-copy
+    ;; Pretty printing
+    pretty-print)
+
+  ;; Import S-expression types from common types module
+  (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
+
+  ;; ============================================================
+  ;; Position Accessors
+  ;; ============================================================
+
+  (fn sexpr-line ((expr (Ptr SExpr)))
+    (@intent "Get line number of S-expression")
+    (@spec (((Ptr SExpr)) -> (Int 0 ..)))
+    (@pure)
+    (match (deref expr)
+      ((sym s) (. s line))
+      ((str s) (. s line))
+      ((num n) (. n line))
+      ((lst l) (. l line))))
+
+  (fn sexpr-col ((expr (Ptr SExpr)))
+    (@intent "Get column number of S-expression")
+    (@spec (((Ptr SExpr)) -> (Int 0 ..)))
+    (@pure)
+    (match (deref expr)
+      ((sym s) (. s col))
+      ((str s) (. s col))
+      ((num n) (. n col))
+      ((lst l) (. l col))))
+
+  ;; ============================================================
+  ;; Type Predicates
+  ;; ============================================================
+
+  (fn sexpr-is-symbol-with-name ((expr (Ptr SExpr)) (name String))
+    (@intent "Check if expression is a symbol with given name")
+    (@spec (((Ptr SExpr) String) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((sym sym) (string-eq (. sym name) name))
+      (else false)))
+
+  (fn is-form ((expr (Ptr SExpr)) (keyword String))
+    (@intent "Check if expression is a list starting with given keyword")
+    (@spec (((Ptr SExpr) String) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((lst l)
+        (if (== (list-len (. l items)) 0)
+          false
+          (match (list-get (. l items) 0)
+            ((some first) (sexpr-is-symbol-with-name first keyword))
+            ((none) false))))
+      (else false)))
+
+  (fn sexpr-is-list ((expr (Ptr SExpr)))
+    (@intent "Check if expression is a list")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((lst l) true)
+      (else false)))
+
+  (fn sexpr-is-symbol ((expr (Ptr SExpr)))
+    (@intent "Check if expression is a symbol")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((sym s) true)
+      (else false)))
+
+  (fn sexpr-is-number ((expr (Ptr SExpr)))
+    (@intent "Check if expression is a number")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((num n) true)
+      (else false)))
+
+  (fn sexpr-is-string ((expr (Ptr SExpr)))
+    (@intent "Check if expression is a string")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((str s) true)
+      (else false)))
+
+  ;; ============================================================
+  ;; List Accessors
+  ;; ============================================================
+
+  (fn sexpr-list-len ((expr (Ptr SExpr)))
+    (@intent "Get number of items if expression is a list, else 0")
+    (@spec (((Ptr SExpr)) -> Int))
+    (@pure)
+    (match (deref expr)
+      ((lst l) (list-len (. l items)))
+      (else 0)))
+
+  (fn sexpr-list-get ((expr (Ptr SExpr)) (index Int))
+    (@intent "Get item at index if expression is a list")
+    (@spec (((Ptr SExpr) Int) -> (Option (Ptr SExpr))))
+    (@pure)
+    (match (deref expr)
+      ((lst l) (list-get (. l items) index))
+      (else (none))))
+
+  ;; ============================================================
+  ;; Value Accessors
+  ;; ============================================================
+
+  (fn sexpr-get-symbol-name ((expr (Ptr SExpr)))
+    (@intent "Get name if expression is a symbol, else empty string")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (match (deref expr)
+      ((sym sym) (. sym name))
+      (else "")))
+
+  ;; Alias for compatibility
+  (fn sexpr-symbol-name ((expr (Ptr SExpr)))
+    (@intent "Get name if expression is a symbol, else empty string")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (sexpr-get-symbol-name expr))
+
+  (fn sexpr-number-string ((expr (Ptr SExpr)))
+    (@intent "Get string representation of number, or empty string")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (match (deref expr)
+      ((num n) (. n raw))
+      (else "")))
+
+  (fn sexpr-string-value ((expr (Ptr SExpr)))
+    (@intent "Get string value, or empty string if not a string")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (match (deref expr)
+      ((str s) (. s value))
+      (else "")))
+
+  ;; ============================================================
+  ;; String Utility
+  ;; ============================================================
+
+  (fn string-copy ((arena Arena) (s String))
+    (@intent "Copy string into arena-allocated buffer")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (let ((buf (cast (Ptr U8) (arena-alloc arena (+ (. s len) 1))))
+          (mut i 0)
+          (slen (cast Int (. s len))))
+      (while (< i slen)
+        (do
+          (set! (@ buf i) (@ (. s data) i))
+          (set! i (+ i 1))))
+      (set! (@ buf slen) 0)  ;; null terminate
+      (String buf (. s len))))
+
+  ;; ============================================================
+  ;; Pretty Printing
+  ;; ============================================================
+
+  (fn pretty-print ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Pretty-print S-expression as string")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@alloc arena)
+    (match (deref expr)
+      ;; Symbol: return the name
+      ((sym sym)
+        (string-copy arena (. sym name)))
+
+      ;; String: return quoted with escapes
+      ((str str)
+        (let ((val (. str value))
+              (slen (cast Int (. val len)))
+              ;; Allocate extra space for quotes and potential escapes
+              (buf (cast (Ptr U8) (arena-alloc arena (+ (* slen 2) 3))))
+              (mut i 0)
+              (mut out 1))
+          (set! (@ buf 0) 34)  ;; opening quote
+          (while (< i slen)
+            (let ((c (@ (. val data) i)))
+              (cond
+                ((== c 10)  ;; newline
+                  (do
+                    (set! (@ buf out) 92)       ;; backslash
+                    (set! (@ buf (+ out 1)) 110) ;; 'n'
+                    (set! out (+ out 2))))
+                ((== c 9)   ;; tab
+                  (do
+                    (set! (@ buf out) 92)
+                    (set! (@ buf (+ out 1)) 116) ;; 't'
+                    (set! out (+ out 2))))
+                ((== c 34)  ;; quote
+                  (do
+                    (set! (@ buf out) 92)
+                    (set! (@ buf (+ out 1)) 34)
+                    (set! out (+ out 2))))
+                ((== c 92)  ;; backslash
+                  (do
+                    (set! (@ buf out) 92)
+                    (set! (@ buf (+ out 1)) 92)
+                    (set! out (+ out 2))))
+                (else
+                  (do
+                    (set! (@ buf out) c)
+                    (set! out (+ out 1))))))
+            (set! i (+ i 1)))
+          (set! (@ buf out) 34)  ;; closing quote
+          (set! (@ buf (+ out 1)) 0)  ;; null terminate
+          (String buf (cast U64 (+ out 1)))))
+
+      ;; Number: convert to string
+      ((num num)
+        (if (. num is-float)
+          ;; For floats, just return a placeholder (float-to-string is complex)
+          (string-copy arena "<float>")
+          (int-to-string arena (. num int-value))))
+
+      ;; List: ( children... )
+      ((lst lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (== len 0)
+            (string-copy arena "()")
+            (let ((mut result (string-copy arena "("))
+                  (mut i 0))
+              (while (< i len)
+                (match (list-get items i)
+                  ((some child)
+                    (let ((child-str (pretty-print arena child)))
+                      (when (> i 0)
+                        (set! result (string-concat arena result " ")))
+                      (set! result (string-concat arena result child-str))))
+                  ((none) (do)))
+                (set! i (+ i 1)))
+              (string-concat arena result ")")))))))
+)
