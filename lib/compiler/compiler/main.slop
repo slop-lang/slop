@@ -20,7 +20,8 @@
   ;; --- Type system imports ---
   (import types (TypeError TypeErrorKind type-error-new
                  Diagnostic DiagnosticLevel ResolvedType ResolvedTypeKind
-                 SExprList SExprSymbol))
+                 SExprList SExprSymbol
+                 resolved-type-to-slop-string))
   ;; --- Checker imports ---
   (import env (TypeEnv env-new env-get-diagnostics env-clear-diagnostics
                env-arena env-push-scope env-pop-scope env-bind-var
@@ -30,6 +31,8 @@
   (import collect (collect-module))
   (import resolve (resolve-imports))
   (import infer (infer-fn-body infer-expr resolve-complex-type-expr resolve-simple-type))
+  ;; --- C type bridge imports ---
+  (import ctype (get-node-resolved-type))
   ;; --- Transpiler imports ---
   (import context (TranspileContext context-new ctx-reset-for-new-module
                    ctx-get-output ctx-get-header ctx-set-prefixing
@@ -54,7 +57,7 @@
   ;; Subcommand Enum
   ;; ============================================================
 
-  (type Subcommand (enum cmd-check cmd-transpile cmd-help))
+  (type Subcommand (enum cmd-check cmd-transpile cmd-typed-ast cmd-help))
 
   ;; ============================================================
   ;; Output Format (for check mode)
@@ -717,6 +720,163 @@
     (do))
 
   ;; ============================================================
+  ;; Typed-AST Emission
+  ;; ============================================================
+
+  (fn emit-typed-sexpr ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Emit S-expression with type annotations from checker")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@pre (!= expr nil))
+    (let ((type-opt (get-node-resolved-type expr))
+          (inner (match (deref expr)
+                   ((sym sym)
+                     (. sym name))
+                   ((str str)
+                     (string-concat arena "\""
+                       (string-concat arena (. str value) "\"")))
+                   ((num num)
+                     (. num raw))
+                   ((lst lst)
+                     (emit-typed-list arena (. lst items))))))
+      (match type-opt
+        ((some rt)
+          (let ((type-str (resolved-type-to-slop-string arena rt)))
+            (string-concat arena "(typed "
+              (string-concat arena type-str
+                (string-concat arena " " (string-concat arena inner ")"))))))
+        ((none) inner))))
+
+  (fn emit-typed-list ((arena Arena) (items (List (Ptr SExpr))))
+    (@intent "Emit list items with type annotations, joined with spaces")
+    (@spec ((Arena (List (Ptr SExpr))) -> String))
+    (let ((len (list-len items))
+          (mut result "(")
+          (mut i 0))
+      (while (< i len)
+        (match (list-get items i)
+          ((some item)
+            (let ((child-str (emit-typed-sexpr arena item)))
+              (if (> i 0)
+                (set! result (string-concat arena result (string-concat arena " " child-str)))
+                (set! result (string-concat arena result child-str)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (string-concat arena result ")")))
+
+  (fn emit-typed-toplevel ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Emit top-level form with type annotations on function bodies")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@pre (!= expr nil))
+    (cond
+      ((is-form expr "fn")
+        ;; For fn forms, recursively emit with types
+        (emit-typed-sexpr arena expr))
+      ((is-form expr "module")
+        ;; For modules, recurse into body forms
+        (emit-typed-module arena expr))
+      (else
+        ;; Other forms (type, const, ffi, import, export) pass through
+        (emit-typed-sexpr arena expr))))
+
+  (fn emit-typed-module ((arena Arena) (module-form (Ptr SExpr)))
+    (@intent "Emit module with typed function bodies")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@pre (!= module-form nil))
+    (if (sexpr-is-list module-form)
+      (let ((len (sexpr-list-len module-form))
+            (mut result "(")
+            (mut i 0))
+        (while (< i len)
+          (match (sexpr-list-get module-form i)
+            ((some item)
+              (let ((child-str (if (is-form item "fn")
+                                 (emit-typed-sexpr arena item)
+                                 (emit-typed-sexpr arena item))))
+                (if (> i 0)
+                  (set! result (string-concat arena result (string-concat arena " " child-str)))
+                  (set! result (string-concat arena result child-str)))))
+            ((none) (do)))
+          (set! i (+ i 1)))
+        (string-concat arena result ")"))
+      (emit-typed-sexpr arena module-form)))
+
+  (fn emit-typed-ast ((arena Arena) (ast (List (Ptr SExpr))))
+    (@intent "Emit full typed AST as S-expression string")
+    (@spec ((Arena (List (Ptr SExpr))) -> String))
+    (let ((len (list-len ast))
+          (mut result "")
+          (mut i 0))
+      (while (< i len)
+        (match (list-get ast i)
+          ((some expr)
+            (let ((form-str (emit-typed-toplevel arena expr)))
+              (if (> i 0)
+                (set! result (string-concat arena result (string-concat arena "\n" form-str)))
+                (set! result form-str))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  (fn typed-ast-single-file ((env (Ptr TypeEnv)) (arena Arena) (filename (Ptr U8)) (format OutputFormat) (first Bool))
+    (@intent "Parse, type check, and emit typed AST for a single file")
+    (@spec (((Ptr TypeEnv) Arena (Ptr U8) OutputFormat Bool) -> Int))
+    (@pre (!= env nil))
+    (@pre (!= filename nil))
+    (let ((filename-str (cstring-to-string filename)))
+      (match (file-open filename-str 'read)
+        ((error e)
+          (do
+            (print "Error: Could not open file: ")
+            (println filename-str)
+            1))
+        ((ok f)
+          (match (file-read-all arena (addr f))
+            ((error e)
+              (do
+                (file-close (addr f))
+                (print "Error: Could not read file: ")
+                (println filename-str)
+                1))
+            ((ok source)
+              (do
+                (file-close (addr f))
+                (match (parse arena source)
+                  ((ok ast)
+                    (let ((mod-name (extract-module-name ast)))
+                      ;; Type check to annotate AST nodes
+                      (env-clear-imports env)
+                      (env-clear-diagnostics env)
+                      (type-check-with-env env ast)
+                      ;; Emit typed AST
+                      (let ((typed-str (emit-typed-ast arena ast)))
+                        (if (== format 'fmt-json)
+                          (do
+                            (when (not first)
+                              (putchar 44))
+                            (print-json-string arena mod-name)
+                            (putchar 58)
+                            (putchar 123)
+                            (print-str (cast (Ptr U8) "\"typed-ast\":"))
+                            (print-json-string arena typed-str)
+                            (putchar 125)
+                            0)
+                          (do
+                            (when (not first)
+                              (putchar 10))
+                            (print-string typed-str)
+                            0)))))
+                  ((error parse-err)
+                    (do
+                      (print filename-str)
+                      (print ":")
+                      (print (. parse-err line))
+                      (print ":")
+                      (print (. parse-err col))
+                      (print ": error: ")
+                      (println (. parse-err message))
+                      1))))))))))
+
+  ;; ============================================================
   ;; Main - CLI Entry Point
   ;; ============================================================
 
@@ -729,6 +889,7 @@
         (println "")
         (println "Commands:")
         (println "  check [--json] [--expr EXPR --type TYPE] <files...>")
+        (println "  typed-ast [--json] <files...>")
         (println "  transpile <files...>")
         1)
       (let ((cmd (argv-to-string argv 1)))
@@ -819,11 +980,40 @@
                   (putchar 10)
                   0))))
 
+          ;; ---- TYPED-AST MODE ----
+          ((string-eq cmd "typed-ast")
+            (if (< argc 3)
+              (do
+                (println "Usage: slop-compiler typed-ast [--json] <file.slop> [file2.slop ...]")
+                1)
+              (with-arena 4194304
+                (let ((env (env-new arena))
+                      (mut format 'fmt-text)
+                      (mut file-start 2)
+                      (mut total-errors 0))
+                  (when (string-eq (argv-to-string argv 2) "--json")
+                    (set! format 'fmt-json)
+                    (set! file-start 3))
+                  (when (== format 'fmt-json)
+                    (putchar 123))
+                  (let ((mut i file-start)
+                        (mut first true))
+                    (while (< i argc)
+                      (let ((filename (@ argv i))
+                            (errors (typed-ast-single-file env arena filename format first)))
+                        (set! total-errors (+ total-errors errors))
+                        (set! first false))
+                      (set! i (+ i 1))))
+                  (when (== format 'fmt-json)
+                    (putchar 125)
+                    (putchar 10))
+                  (if (> total-errors 0) 1 0)))))
+
           ;; ---- UNKNOWN COMMAND ----
           (else
             (do
               (print "Unknown command: ")
               (println cmd)
-              (println "Usage: slop-compiler <check|transpile> [options] <files...>")
+              (println "Usage: slop-compiler <check|typed-ast|transpile> [options] <files...>")
               1))))))
 )
