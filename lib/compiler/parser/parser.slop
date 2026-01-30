@@ -510,7 +510,8 @@
                           true
                           (. tok value)  ;; raw
                           (. tok line)
-                          (. tok col))))
+                          (. tok col)
+                          (none))))
                 (set! (deref node)
                       (union-new SExpr num
                         (SExprNumber
@@ -519,7 +520,8 @@
                           false
                           (. tok value)  ;; raw
                           (. tok line)
-                          (. tok col)))))
+                          (. tok col)
+                          (none)))))
               (ok node))))
 
         ;; String literal
@@ -529,7 +531,7 @@
             (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
               (set! (deref node)
                     (union-new SExpr str
-                      (SExprString (. tok value) (. tok line) (. tok col))))
+                      (SExprString (. tok value) (. tok line) (. tok col) (none))))
               (ok node))))
 
         ;; Quote: 'expr -> (quote expr)
@@ -544,12 +546,12 @@
                   ;; Create quote symbol
                   (set! (deref quote-sym)
                         (union-new SExpr sym
-                          (SExprSymbol "quote" (. tok line) (. tok col))))
+                          (SExprSymbol "quote" (. tok line) (. tok col) (none))))
                   (list-push items quote-sym)
                   (list-push items quoted-expr)
                   (set! (deref node)
                         (union-new SExpr lst
-                          (SExprList items (. tok line) (. tok col))))
+                          (SExprList items (. tok line) (. tok col) (none))))
                   (ok node)))
               ((error e) (error e)))))
 
@@ -560,7 +562,7 @@
             (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
               (set! (deref node)
                     (union-new SExpr sym
-                      (SExprSymbol (. tok value) (. tok line) (. tok col))))
+                      (SExprSymbol (. tok value) (. tok line) (. tok col) (none))))
               (ok node))))
 
         ;; Operator (treated as symbol in AST)
@@ -570,7 +572,7 @@
             (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
               (set! (deref node)
                     (union-new SExpr sym
-                      (SExprSymbol (. tok value) (. tok line) (. tok col))))
+                      (SExprSymbol (. tok value) (. tok line) (. tok col) (none))))
               (ok node))))
 
         ;; Keyword: :name -> keyword symbol
@@ -597,7 +599,8 @@
                               (SExprSymbol
                                 (String kw-buf (cast U64 (+ slen 1)))
                                 (. tok line)
-                                (. tok col))))
+                                (. tok col)
+                                (none))))
                       (ok node))))
                 (error (ParseError "Expected symbol after :" (. tok line) (. tok col)))))))
 
@@ -608,7 +611,7 @@
             (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
               (set! (deref node)
                     (union-new SExpr sym
-                      (SExprSymbol ".." (. tok line) (. tok col))))
+                      (SExprSymbol ".." (. tok line) (. tok col) (none))))
               (ok node))))
 
         ;; Unexpected token
@@ -655,7 +658,8 @@
                   (union-new SExpr lst
                     (SExprList items
                                (. start-tok line)
-                               (. start-tok col))))
+                               (. start-tok col)
+                               (none))))
             (ok node))))))
 
   ;; ============================================================
@@ -710,14 +714,16 @@
                                      (strtod (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0))
                                      true
                                      (. tok value)
-                                     (. tok line) (. tok col))))
+                                     (. tok line) (. tok col)
+                                     (none))))
                 (set! (deref node)
                       (union-new SExpr num
                         (SExprNumber (strtoll (cast (Ptr Char) (. (. tok value) data)) (cast (Ptr (Ptr Char)) 0) 10)
                                      0.0
                                      false
                                      (. tok value)
-                                     (. tok line) (. tok col)))))
+                                     (. tok line) (. tok col)
+                                     (none)))))
               (ok node))))
 
         ;; Symbol - handle unary 'not' specially
@@ -734,12 +740,12 @@
                         (items (list-new arena (Ptr SExpr))))
                     (set! (deref not-sym)
                           (union-new SExpr sym
-                            (SExprSymbol "not" (. tok line) (. tok col))))
+                            (SExprSymbol "not" (. tok line) (. tok col) (none))))
                     (list-push items not-sym)
                     (list-push items operand)
                     (set! (deref node)
                           (union-new SExpr lst
-                            (SExprList items (. tok line) (. tok col))))
+                            (SExprList items (. tok line) (. tok col) (none))))
                     (ok node)))))
             ;; Regular symbol
             (do
@@ -747,7 +753,7 @@
               (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
                 (set! (deref node)
                       (union-new SExpr sym
-                        (SExprSymbol (. tok value) (. tok line) (. tok col))))
+                        (SExprSymbol (. tok value) (. tok line) (. tok col) (none))))
                 (ok node)))))
 
         ;; Unary minus: build (- 0 operand)
@@ -764,16 +770,16 @@
                       (items (list-new arena (Ptr SExpr))))
                   (set! (deref minus-sym)
                         (union-new SExpr sym
-                          (SExprSymbol "-" (. tok line) (. tok col))))
+                          (SExprSymbol "-" (. tok line) (. tok col) (none))))
                   (set! (deref zero-node)
                         (union-new SExpr num
-                          (SExprNumber 0 0.0 false "0" (. tok line) (. tok col))))
+                          (SExprNumber 0 0.0 false "0" (. tok line) (. tok col) (none))))
                   (list-push items minus-sym)
                   (list-push items zero-node)
                   (list-push items operand)
                   (set! (deref node)
                         (union-new SExpr lst
-                          (SExprList items (. tok line) (. tok col))))
+                          (SExprList items (. tok line) (. tok col) (none))))
                   (ok node))))))
 
         ;; Other operators: error (should be binary, not primary)
@@ -796,12 +802,12 @@
                       (items (list-new arena (Ptr SExpr))))
                   (set! (deref quote-sym)
                         (union-new SExpr sym
-                          (SExprSymbol "quote" (. tok line) (. tok col))))
+                          (SExprSymbol "quote" (. tok line) (. tok col) (none))))
                   (list-push items quote-sym)
                   (list-push items quoted-expr)
                   (set! (deref node)
                         (union-new SExpr lst
-                          (SExprList items (. tok line) (. tok col))))
+                          (SExprList items (. tok line) (. tok col) (none))))
                   (ok node))))))
 
         (else
@@ -851,13 +857,13 @@
                               ;; Create operator symbol
                               (set! (deref op-sym)
                                     (union-new SExpr sym
-                                      (SExprSymbol (. op-tok value) (. op-tok line) (. op-tok col))))
+                                      (SExprSymbol (. op-tok value) (. op-tok line) (. op-tok col) (none))))
                               (list-push items op-sym)
                               (list-push items result)
                               (list-push items right)
                               (set! (deref node)
                                     (union-new SExpr lst
-                                      (SExprList items (. op-tok line) (. op-tok col))))
+                                      (SExprList items (. op-tok line) (. op-tok col) (none))))
                               (set! result node))))))))
                 ;; Not an operator, stop
                 (set! done true))))

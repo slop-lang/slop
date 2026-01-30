@@ -25,10 +25,11 @@
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias
-                   ctx-add-error-at sexpr-line sexpr-col list-first-line list-first-col
+                   ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info))
-  (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string))
+  (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string
+                 get-node-resolved-type resolved-type-to-c))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
 
   ;; ============================================================
@@ -304,7 +305,7 @@
           (len (cast Int (list-len items))))
       (if (<= len (+ start-idx 1))
         (do
-          (ctx-add-error-at ctx "not enough operands" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "not enough operands" (ctx-list-first-line items) (ctx-list-first-col items))
           "0")
         (let ((mut result "("))
           ;; Process first operand
@@ -603,7 +604,7 @@
                         (c-type-to-option-type-name ctx derived-c-type))
                       ;; No slop-type available - emit error
                       (do
-                        (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for variable '" name "' - type is 'auto' with no SLOP type") (sexpr-line val-expr) (sexpr-col val-expr))
+                        (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for variable '" name "' - type is 'auto' with no SLOP type") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
                         "__type_error__")))
                   ((string-eq c-type "int64_t") "slop_option_int")
                   ((string-eq c-type "double") "slop_option_double")
@@ -619,7 +620,7 @@
             ;; Unknown variable - emit error
             ((none)
               (do
-                (ctx-add-error-at ctx (ctx-str3 ctx "Unknown variable '" name "' for Option type inference") (sexpr-line val-expr) (sexpr-col val-expr))
+                (ctx-add-error-at ctx (ctx-str3 ctx "Unknown variable '" name "' for Option type inference") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
                 "__type_error__")))))
       ;; For complex expressions, try to infer type from the structure
       ((lst lst)
@@ -674,8 +675,8 @@
     (@pre {ctx != nil})
     (let ((len (list-len items))
           (arena (. (deref ctx) arena))
-          (line (list-first-line items))
-          (col (list-first-col items)))
+          (line (ctx-list-first-line items))
+          (col (ctx-list-first-col items)))
       (if (< len 1)
         (do
           (ctx-add-error-at ctx "Empty list in option type inference" line col)
@@ -718,11 +719,11 @@
                                         ;; Unknown field - emit error
                                         (else
                                           (do
-                                            (ctx-add-error-at ctx (ctx-str3 ctx "Unknown field '" field-name "' for option type inference") (sexpr-line field-expr) (sexpr-col field-expr))
+                                            (ctx-add-error-at ctx (ctx-str3 ctx "Unknown field '" field-name "' for option type inference") (ctx-sexpr-line field-expr) (ctx-sexpr-col field-expr))
                                             "__type_error__")))))
                                   (else
                                     (do
-                                      (ctx-add-error-at ctx "Non-symbol field for option type inference" (sexpr-line field-expr) (sexpr-col field-expr))
+                                      (ctx-add-error-at ctx "Non-symbol field for option type inference" (ctx-sexpr-line field-expr) (ctx-sexpr-col field-expr))
                                       "__type_error__"))))
                               ((none)
                                 (do
@@ -767,7 +768,7 @@
                             "__type_error__")))))))
               (else
                 (do
-                  (ctx-add-error-at ctx "Non-symbol head in option type inference" (sexpr-line head-expr) (sexpr-col head-expr))
+                  (ctx-add-error-at ctx "Non-symbol head in option type inference" (ctx-sexpr-line head-expr) (ctx-sexpr-col head-expr))
                   "__type_error__"))))
           ((none)
             (do
@@ -800,33 +801,54 @@
     (@pre {list-expr != nil})
     ;; Return empty string to indicate "use anonymous struct fallback"
     (let ((arena (. (deref ctx) arena)))
-      (match (deref list-expr)
-        ;; Simple variable name
-        ((sym sym)
-          (let ((name (. sym name)))
-            (match (ctx-lookup-var ctx name)
-              ((some var-entry)
-                (list-type-to-option-type ctx (. var-entry c-type)))
-              ((none) ""))))  ;; fallback
-        ;; Field access: (. var field) - check for known fields
-        ((lst lst)
-          (let ((items (. lst items)))
-            (if (< (list-len items) 3)
-              ""
-              (match (list-get items 0)
-                ((some head)
-                  (match (deref head)
-                    ((sym head-sym)
-                      (if (string-eq (. head-sym name) ".")
-                        ;; This is a field access (. obj field)
-                        (match (list-get items 2)
-                          ((some field-expr)
-                            (infer-field-access-list-type ctx field-expr))
-                          ((none) ""))
-                        ""))
-                    (_ "")))
-                ((none) "")))))
-        (_ ""))))
+      ;; Strategy 1: If the list expression has a resolved type from the checker, use it
+      (match (get-node-resolved-type list-expr)
+        ((some rt)
+          (match (. (deref rt) inner-type)
+            ((some elem-type)
+              (let ((elem-c (resolved-type-to-c arena elem-type)))
+                (string-concat arena "slop_option_" (type-to-identifier arena elem-c))))
+            ((none) (infer-list-element-option-type-fallback ctx list-expr))))
+        ((none)
+          (infer-list-element-option-type-fallback ctx list-expr)))))
+
+  (fn infer-list-element-option-type-fallback ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)))
+    (@intent "Fallback: infer option type using infer-expr-c-type or string-based methods")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {list-expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (list-c-type (infer-expr-c-type ctx list-expr)))
+      ;; If infer-expr-c-type returns a list type, extract element and build option
+      (if (starts-with list-c-type "slop_list_")
+        (let ((elem-id (substring-after-prefix arena list-c-type "slop_list_"))
+              (prefixed-elem (prefix-list-element-type ctx elem-id)))
+          (string-concat arena "slop_option_" prefixed-elem))
+        ;; Final fallback: old string-based path
+        (match (deref list-expr)
+          ((sym sym)
+            (let ((name (. sym name)))
+              (match (ctx-lookup-var ctx name)
+                ((some var-entry)
+                  (list-type-to-option-type ctx (. var-entry c-type)))
+                ((none) ""))))
+          ((lst lst)
+            (let ((items (. lst items)))
+              (if (< (list-len items) 3)
+                ""
+                (match (list-get items 0)
+                  ((some head)
+                    (match (deref head)
+                      ((sym head-sym)
+                        (if (string-eq (. head-sym name) ".")
+                          (match (list-get items 2)
+                            ((some field-expr)
+                              (infer-field-access-list-type ctx field-expr))
+                            ((none) ""))
+                          ""))
+                      (_ "")))
+                  ((none) "")))))
+          (_ "")))))
 
   (fn infer-field-access-list-type ((ctx (Ptr TranspileContext)) (field-expr (Ptr SExpr)))
     (@intent "Infer option type for list field access")
@@ -865,8 +887,29 @@
         ;; For other list types, extract element and build option type
         ((starts-with c-type "slop_list_")
           (let ((elem-type (substring-after-prefix arena c-type "slop_list_")))
-            (ctx-str3 ctx "slop_option_" elem-type "")))
+            ;; Check if elem-type needs module prefix
+            ;; e.g. "SExpr_ptr" -> look up "SExpr" -> get "types_SExpr" -> "types_SExpr_ptr"
+            (let ((prefixed-elem (prefix-list-element-type ctx elem-type)))
+              (ctx-str3 ctx "slop_option_" prefixed-elem ""))))
         (else ""))))
+
+  (fn prefix-list-element-type ((ctx (Ptr TranspileContext)) (elem-type String))
+    (@intent "Add module prefix to list element type if needed")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (if (ends-with elem-type "_ptr")
+        ;; Pointer element: strip _ptr, look up base, rebuild
+        (let ((base (substring arena elem-type 0 (max 0 (- (cast Int (string-len elem-type)) 4)))))
+          (match (ctx-lookup-type ctx base)
+            ((some entry)
+              (string-concat arena (. entry c-name) "_ptr"))
+            ((none) elem-type)))
+        ;; Non-pointer element: look up directly
+        (match (ctx-lookup-type ctx elem-type)
+          ((some entry)
+            (. entry c-name))
+          ((none) elem-type)))))
 
   (fn substring-after-prefix ((arena Arena) (s String) (prefix String))
     (@intent "Extract substring after a prefix")
@@ -1654,7 +1697,7 @@
           (arena (. (deref ctx) arena)))
       (if (< len 1)
         (do
-          (ctx-add-error-at ctx "empty list" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "empty list" (ctx-list-first-line items) (ctx-list-first-col items))
           "0")
         (match (list-get items 0)
           ((some head-expr)
@@ -1666,7 +1709,7 @@
                     ;; Binary operators with insufficient operands
                     ((and (is-binop op) (< len 3))
                       (do
-                        (ctx-add-error-at ctx "binary operator needs at least 2 operands" (list-first-line items) (list-first-col items))
+                        (ctx-add-error-at ctx "binary operator needs at least 2 operands" (ctx-list-first-line items) (ctx-list-first-col items))
                         "0"))
                     ;; Binary operators (all are variadic - can chain: (- a b c) = a - b - c)
                     ((and (is-binop op) (>= len 3))
@@ -1684,16 +1727,16 @@
                                   (transpile-binop ctx op left-c right-c)))
                               ((none)
                                 (do
-                                  (ctx-add-error-at ctx "missing right operand" (list-first-line items) (list-first-col items))
+                                  (ctx-add-error-at ctx "missing right operand" (ctx-list-first-line items) (ctx-list-first-col items))
                                   "0"))))
                           ((none)
                             (do
-                              (ctx-add-error-at ctx "missing left operand" (list-first-line items) (list-first-col items))
+                              (ctx-add-error-at ctx "missing left operand" (ctx-list-first-line items) (ctx-list-first-col items))
                               "0")))))
                     ;; Comparison operators with insufficient operands
                     ((and (is-comparison-op op) (< len 3))
                       (do
-                        (ctx-add-error-at ctx "comparison operator needs 2 operands" (list-first-line items) (list-first-col items))
+                        (ctx-add-error-at ctx "comparison operator needs 2 operands" (ctx-list-first-line items) (ctx-list-first-col items))
                         "0"))
                     ;; Comparison operators
                     ((and (is-comparison-op op) (>= len 3))
@@ -1706,16 +1749,16 @@
                                 (transpile-binop ctx op left-c right-c)))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing right operand" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing right operand" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing left operand" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing left operand" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; not with no argument
                     ((and (string-eq op "not") (< len 2))
                       (do
-                        (ctx-add-error-at ctx "not needs an argument" (list-first-line items) (list-first-col items))
+                        (ctx-add-error-at ctx "not needs an argument" (ctx-list-first-line items) (ctx-list-first-col items))
                         "0"))
                     ;; not (unary)
                     ((and (string-eq op "not") (>= len 2))
@@ -1724,12 +1767,12 @@
                           (ctx-str3 ctx "!(" (transpile-expr ctx arg) ")"))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; if expression with insufficient branches
                     ((and (string-eq op "if") (< len 4))
                       (do
-                        (ctx-add-error-at ctx "if expression needs condition, then, and else branches" (list-first-line items) (list-first-col items))
+                        (ctx-add-error-at ctx "if expression needs condition, then, and else branches" (ctx-list-first-line items) (ctx-list-first-col items))
                         "0"))
                     ;; if expression: (if cond then else) -> (cond) ? then : else
                     ((and (string-eq op "if") (>= len 4))
@@ -1748,15 +1791,15 @@
                                       (ctx-str5 ctx "((" cond-c ") ? " (ctx-str3 ctx final-then " : " final-else) ")"))))
                                 ((none)
                                   (do
-                                    (ctx-add-error-at ctx "missing else" (list-first-line items) (list-first-col items))
+                                    (ctx-add-error-at ctx "missing else" (ctx-list-first-line items) (ctx-list-first-col items))
                                     "0"))))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing then" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing then" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing condition" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing condition" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; let/let* as expression: use GCC statement expression
                     ((and (or (string-eq op "let") (string-eq op "let*")) (>= len 3))
@@ -1787,7 +1830,7 @@
                           (ctx-str3 ctx "(*" (transpile-expr ctx arg) ")"))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; Field access: (. obj field)
                     ((and (string-eq op ".") (>= len 3))
@@ -1805,15 +1848,15 @@
                                       (ctx-str3 ctx obj-c "." field-c))))
                                 (_
                                   (do
-                                    (ctx-add-error-at ctx "invalid field" (list-first-line items) (list-first-col items))
+                                    (ctx-add-error-at ctx "invalid field" (ctx-list-first-line items) (ctx-list-first-col items))
                                     "0"))))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing field" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing field" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing object" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing object" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; cast: (cast Type expr)
                     ((and (string-eq op "cast") (>= len 3))
@@ -1831,11 +1874,11 @@
                                   (ctx-str5 ctx "((" c-type ")(" val-c "))"))))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing cast value" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing cast value" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing cast type" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing cast type" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; c-inline: (c-inline "raw C code") -> raw C code
                     ((and (string-eq op "c-inline") (>= len 2))
@@ -1845,11 +1888,11 @@
                             ((str str) (. str value))
                             (else
                               (do
-                                (ctx-add-error-at ctx "c-inline requires string" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "c-inline requires string" (ctx-list-first-line items) (ctx-list-first-col items))
                                 ""))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing c-inline string" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing c-inline string" (ctx-list-first-line items) (ctx-list-first-col items))
                             ""))))
                     ;; some: (some value) for Option
                     ((and (string-eq op "some") (>= len 2))
@@ -1862,7 +1905,7 @@
                                                ;; Check for type inference error marker
                                                ((string-eq val-type "__type_error__")
                                                  (do
-                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (sexpr-line val-expr) (sexpr-col val-expr))
+                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
                                                    "__type_error__"))
                                                ((string-eq val-type "slop_string") "slop_option_string")
                                                ((string-eq val-type "int64_t") "slop_option_int")
@@ -1870,7 +1913,7 @@
                                                ;; For auto/unknown type, emit error - don't guess
                                                ((string-eq val-type "auto")
                                                  (do
-                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "' - type is 'auto'") (sexpr-line val-expr) (sexpr-col val-expr))
+                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "' - type is 'auto'") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
                                                    "__type_error__"))
                                                (else (infer-option-type ctx val-expr)))))
                             ;; Check if option-type is an error
@@ -1878,13 +1921,13 @@
                               ;; Error in type inference - return placeholder
                               (do
                                 (when (starts-with option-type "/*")
-                                  (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (sexpr-line val-expr) (sexpr-col val-expr)))
+                                  (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr)))
                                 "(slop_option_int){.has_value = 0}")
                               ;; Typed option construction
                               (ctx-str5 ctx "(" option-type "){.has_value = 1, .value = " val-c "}"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing some value" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing some value" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; sizeof: (sizeof Type) -> sizeof(c_type)
                     ((and (string-eq op "sizeof") (>= len 2))
@@ -1894,7 +1937,7 @@
                             (ctx-str3 ctx "sizeof(" c-type ")")))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing sizeof type" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing sizeof type" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; addr: (addr x) -> (&x)
                     ((and (string-eq op "addr") (>= len 2))
@@ -1903,7 +1946,7 @@
                           (ctx-str3 ctx "(&" (transpile-expr ctx arg) ")"))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing addr argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing addr argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; @ array indexing: (@ arr i) -> arr[i]
                     ((and (string-eq op "@") (>= len 3))
@@ -1917,11 +1960,11 @@
                                 (transpile-array-index ctx arr-expr arr-c idx-c)))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing index" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing index" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing array" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing array" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; arena-alloc: (arena-alloc arena size) -> (Type*)slop_arena_alloc(arena, size)
                     ;; Special case: (arena-alloc arena TypeName) -> (Type*)slop_arena_alloc(arena, sizeof(Type))
@@ -1953,11 +1996,11 @@
                                       (ctx-str5 ctx "(" cast-type "*)slop_arena_alloc(" (ctx-str3 ctx arena-c ", " size-c) ")"))))))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing arena-alloc size" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing arena-alloc size" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "NULL"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing arena argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing arena argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "NULL"))))
                     ;; quote: (quote variant) -> EnumType_variant
                     ((and (string-eq op "quote") (>= len 2))
@@ -1970,11 +2013,11 @@
                                 (transpile-enum-variant ctx variant-name)))
                             (else
                               (do
-                                (ctx-add-error-at ctx "quote requires symbol" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "quote requires symbol" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing quote argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing quote argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; record-new: (record-new Type (field1 val1) (field2 val2) ...) -> ((Type){.f1 = v1, ...})
                     ((and (string-eq op "record-new") (>= len 2))
@@ -2044,25 +2087,25 @@
                                                 (ctx-str3 ctx "((" type-name (ctx-str3 ctx "){ .tag = " tag-const (ctx-str5 ctx ", .data." tag-name " = " val-c " })")))))
                                             ((none)
                                               (do
-                                                (ctx-add-error-at ctx "missing union value" (list-first-line items) (list-first-col items))
+                                                (ctx-add-error-at ctx "missing union value" (ctx-list-first-line items) (ctx-list-first-col items))
                                                 "0")))
                                           ;; No value - just tag: ((Type){ .tag = Type_tag })
                                           (ctx-str3 ctx "((" type-name (ctx-str3 ctx "){ .tag = " tag-const " })")))))
                                     ((none)
                                       (do
-                                        (ctx-add-error-at ctx "union-new tag must be symbol" (list-first-line items) (list-first-col items))
+                                        (ctx-add-error-at ctx "union-new tag must be symbol" (ctx-list-first-line items) (ctx-list-first-col items))
                                         "0"))))
                                 (_
                                   (do
-                                    (ctx-add-error-at ctx "union-new type must be symbol" (list-first-line items) (list-first-col items))
+                                    (ctx-add-error-at ctx "union-new type must be symbol" (ctx-list-first-line items) (ctx-list-first-col items))
                                     "0"))))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing union tag" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing union tag" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing union type" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing union type" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; ok: (ok value) -> (ResultType){.tag = SLOP_OK, .ok = value}
                     ((and (string-eq op "ok") (>= len 2))
@@ -2072,7 +2115,7 @@
                             (transpile-ok ctx val-c)))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing ok value" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing ok value" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; error: (error value) -> (ResultType){.tag = SLOP_ERR, .err = value}
                     ((and (string-eq op "error") (>= len 2))
@@ -2082,7 +2125,7 @@
                             (transpile-error ctx val-c)))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing error value" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing error value" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; ?: (? result-expr) -> propagation (returns early on error)
                     ((and (string-eq op "?") (>= len 2))
@@ -2099,7 +2142,7 @@
                                 (ctx-str3 ctx "({ __auto_type _tmp = " result-c "; if (!_tmp.is_ok) return _tmp; _tmp.data.ok; })")))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing ? argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing ? argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; list-len: (list-len list) -> ((int64_t)(list.len))
                     ((and (string-eq op "list-len") (>= len 2))
@@ -2109,7 +2152,7 @@
                             (ctx-str3 ctx "((int64_t)((" list-c ").len))")))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing list-len argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing list-len argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; list-get: (list-get list idx) -> inline option expression
                     ((and (string-eq op "list-get") (>= len 3))
@@ -2134,11 +2177,11 @@
                                       "; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; })")))))))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing list-get index" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing list-get index" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing list-get list argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing list-get list argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; list-pop: (list-pop list) -> Option<T> (removes and returns last element)
                     ((and (string-eq op "list-pop") (>= len 2))
@@ -2158,7 +2201,7 @@
                                 "); struct { bool has_value; __typeof__(_lst_p->data[0]) value; } _r = {0}; if (_lst_p->len > 0) { _lst_p->len--; _r.has_value = true; _r.value = _lst_p->data[_lst_p->len]; } _r; })")))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing list-pop list argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing list-pop list argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; list-new: (list-new arena Type) -> compound literal
                     ((and (string-eq op "list-new") (>= len 3))
@@ -2181,11 +2224,11 @@
                                               (ctx-str ctx elem-c-type ")), .len = 0, .cap = 16 })"))))))))))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing list-new type argument" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing list-new type argument" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing list-new arena argument" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing list-new arena argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; list-push: (list-push list item) -> inline push
                     ((and (string-eq op "list-push") (>= len 3))
@@ -2210,11 +2253,11 @@
                                   s6)))
                             ((none)
                               (do
-                                (ctx-add-error-at ctx "missing list-push item" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "missing list-push item" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0"))))
                         ((none)
                           (do
-                            (ctx-add-error-at ctx "missing list-push list" (list-first-line items) (list-first-col items))
+                            (ctx-add-error-at ctx "missing list-push list" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; none constructor: (none) -> typed none if return type is known
                     ((and (string-eq op "none") (= len 1))
@@ -2259,7 +2302,7 @@
                   (ctx-str5 ctx head-c "(" args ")" "")))))
           ((none)
             (do
-              (ctx-add-error-at ctx "empty list" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "empty list" (ctx-list-first-line items) (ctx-list-first-col items))
               "0"))))))
 
   (fn transpile-fn-call ((ctx (Ptr TranspileContext)) (fn-name String) (items (List (Ptr SExpr))))
@@ -2280,14 +2323,14 @@
         ((string-eq fn-name "print")
           (if (< len 2)
             (do
-              (ctx-add-error-at ctx "print: missing argument" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "print: missing argument" (ctx-list-first-line items) (ctx-list-first-col items))
               "0")
             (match (list-get items 1)
               ((some arg)
                 (transpile-print ctx arg false))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "print: missing argument" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "print: missing argument" (ctx-list-first-line items) (ctx-list-first-col items))
                   "0")))))
         ;; printf: FFI call to C's printf - string literals become raw C strings
         ((string-eq fn-name "printf")
@@ -2299,7 +2342,7 @@
         ((string-eq fn-name "min")
           (if (< len 3)
             (do
-              (ctx-add-error-at ctx "min: need 2 arguments" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "min: need 2 arguments" (ctx-list-first-line items) (ctx-list-first-col items))
               "0")
             (match (list-get items 1)
               ((some a-expr)
@@ -2318,17 +2361,17 @@
                       s8))
                   ((none)
                     (do
-                      (ctx-add-error-at ctx "min: missing second argument" (list-first-line items) (list-first-col items))
+                      (ctx-add-error-at ctx "min: missing second argument" (ctx-list-first-line items) (ctx-list-first-col items))
                       "0"))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "min: missing first argument" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "min: missing first argument" (ctx-list-first-line items) (ctx-list-first-col items))
                   "0")))))
         ;; max: (max a b) -> ((a) > (b) ? (a) : (b))
         ((string-eq fn-name "max")
           (if (< len 3)
             (do
-              (ctx-add-error-at ctx "max: need 2 arguments" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "max: need 2 arguments" (ctx-list-first-line items) (ctx-list-first-col items))
               "0")
             (match (list-get items 1)
               ((some a-expr)
@@ -2347,18 +2390,18 @@
                       s8))
                   ((none)
                     (do
-                      (ctx-add-error-at ctx "max: missing second argument" (list-first-line items) (list-first-col items))
+                      (ctx-add-error-at ctx "max: missing second argument" (ctx-list-first-line items) (ctx-list-first-col items))
                       "0"))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "max: missing first argument" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "max: missing first argument" (ctx-list-first-line items) (ctx-list-first-col items))
                   "0")))))
         ;; spawn: special handling for closures
         ;; (spawn arena closure) -> inline thread creation with env
         ((string-eq fn-name "spawn")
           (if (< len 3)
             (do
-              (ctx-add-error-at ctx "spawn: need arena and function arguments" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "spawn: need arena and function arguments" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL")
             (match (list-get items 2)
               ((some fn-expr)
@@ -2369,14 +2412,14 @@
                   (transpile-regular-fn-call ctx fn-name items)))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "spawn: missing function argument" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "spawn: missing function argument" (ctx-list-first-line items) (ctx-list-first-col items))
                   "NULL")))))
         ;; send: type-specific channel send
         ;; (send chan value) -> thread_send_<chan_type>(chan, value)
         ((string-eq fn-name "send")
           (if (< len 3)
             (do
-              (ctx-add-error-at ctx "send: need channel and value arguments" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "send: need channel and value arguments" (ctx-list-first-line items) (ctx-list-first-col items))
               "0")
             (match (list-get items 1)
               ((some chan-expr)
@@ -2398,18 +2441,18 @@
                           (ctx-str5 ctx "thread_send(" chan-c ", " value-c ")")))))
                   ((none)
                     (do
-                      (ctx-add-error-at ctx "send: missing value argument" (list-first-line items) (list-first-col items))
+                      (ctx-add-error-at ctx "send: missing value argument" (ctx-list-first-line items) (ctx-list-first-col items))
                       "0"))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "send: missing channel argument" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "send: missing channel argument" (ctx-list-first-line items) (ctx-list-first-col items))
                   "0")))))
         ;; recv: type-specific channel receive
         ;; (recv chan) -> thread_recv(chan) which returns Result directly
         ((string-eq fn-name "recv")
           (if (< len 2)
             (do
-              (ctx-add-error-at ctx "recv: need channel argument" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "recv: need channel argument" (ctx-list-first-line items) (ctx-list-first-col items))
               "0")
             (match (list-get items 1)
               ((some chan-expr)
@@ -2428,7 +2471,7 @@
                       (ctx-str3 ctx "thread_recv(" chan-c ")")))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "recv: missing channel argument" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "recv: missing channel argument" (ctx-list-first-line items) (ctx-list-first-col items))
                   "0")))))
         (else
       ;; Check for built-in type constructors first (String, Bytes need special field ordering)
@@ -2503,7 +2546,7 @@
                             (do
                               (ctx-add-error-at ctx
                                 (ctx-str3 ctx "undefined function '" fn-name "' - check imports")
-                                (list-first-line items) (list-first-col items))
+                                (ctx-list-first-line items) (ctx-list-first-col items))
                               "0")
                             ;; Runtime built-in - proceed without type info
                             (do
@@ -2826,7 +2869,7 @@
           (len (list-len items)))
       (if (< len 3)
         (do
-          (ctx-add-error-at ctx "invalid match expr" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "invalid match expr" (ctx-list-first-line items) (ctx-list-first-col items))
           "0")
         (match (list-get items 1)
           ((some scrutinee)
@@ -2843,7 +2886,7 @@
                   (build-ternary-match-expr ctx scrutinee-c items)))))
           ((none)
             (do
-              (ctx-add-error-at ctx "missing match scrutinee" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "missing match scrutinee" (ctx-list-first-line items) (ctx-list-first-col items))
               "0"))))))
 
   (fn collect-match-patterns ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
@@ -3181,6 +3224,11 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
     (@pre {ctx != nil})
     (@pre {expr != nil})
+    ;; If the checker has annotated this node with a resolved type, use it
+    (match (get-node-resolved-type expr)
+      ((some rt)
+        (resolved-type-to-c (. (deref ctx) arena) rt))
+      ((none)
     (match (deref expr)
       ;; String literal -> slop_string
       ((str _) "slop_string")
@@ -3340,7 +3388,7 @@
                                 ((none) "__type_error__"))))))))
                   (else "__type_error__")))
               ((none) "__type_error__")))))
-      (else "__type_error__")))
+      (else "__type_error__")))))
 
   (fn build-result-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build Result match as GCC statement expression")
@@ -4000,7 +4048,7 @@
           (len (list-len items)))
       (if (< len 2)
         (do
-          (ctx-add-error-at ctx "record-new: missing type" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "record-new: missing type" (ctx-list-first-line items) (ctx-list-first-col items))
           "0")
         (match (list-get items 1)
           ((some type-expr)
@@ -4017,7 +4065,7 @@
                 (let ((type-items (. type-lst items)))
                   (if (< (list-len type-items) 1)
                     (do
-                      (ctx-add-error-at ctx "record-new: invalid inline type" (list-first-line items) (list-first-col items))
+                      (ctx-add-error-at ctx "record-new: invalid inline type" (ctx-list-first-line items) (ctx-list-first-col items))
                       "0")
                     (match (list-get type-items 0)
                       ((some head)
@@ -4028,23 +4076,23 @@
                               (let ((type-name (to-c-type-prefixed ctx type-expr)))
                                 (transpile-record-fields ctx type-name items 2))
                               (do
-                                (ctx-add-error-at ctx "record-new: expected record keyword" (list-first-line items) (list-first-col items))
+                                (ctx-add-error-at ctx "record-new: expected record keyword" (ctx-list-first-line items) (ctx-list-first-col items))
                                 "0")))
                           (else
                             (do
-                              (ctx-add-error-at ctx "record-new: invalid type head" (list-first-line items) (list-first-col items))
+                              (ctx-add-error-at ctx "record-new: invalid type head" (ctx-list-first-line items) (ctx-list-first-col items))
                               "0"))))
                       ((none)
                         (do
-                          (ctx-add-error-at ctx "record-new: empty type" (list-first-line items) (list-first-col items))
+                          (ctx-add-error-at ctx "record-new: empty type" (ctx-list-first-line items) (ctx-list-first-col items))
                           "0"))))))
               (else
                 (do
-                  (ctx-add-error-at ctx "record-new: invalid type" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "record-new: invalid type" (ctx-list-first-line items) (ctx-list-first-col items))
                   "0"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "record-new: missing type" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "record-new: missing type" (ctx-list-first-line items) (ctx-list-first-col items))
               "0"))))))
 
   (fn transpile-record-fields ((ctx (Ptr TranspileContext)) (type-name String) (items (List (Ptr SExpr))) (start-idx Int))
@@ -4163,7 +4211,7 @@
           (len (list-len items)))
       (if (< len 2)
         (do
-          (ctx-add-error-at ctx "list: missing type" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "list: missing type" (ctx-list-first-line items) (ctx-list-first-col items))
           "0")
         (match (list-get items 1)
           ((some type-expr)
@@ -4189,7 +4237,7 @@
                 (ctx-str ctx result (ctx-str ctx data-part "}})")))))
           ((none)
             (do
-              (ctx-add-error-at ctx "list: missing type" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "list: missing type" (ctx-list-first-line items) (ctx-list-first-col items))
               "0"))))))
 
   ;; ============================================================
@@ -4299,7 +4347,7 @@
         ;; Backward compat: if only arena, default to string keys
         (if (< len 2)
           (do
-            (ctx-add-error-at ctx "map-new: missing arena" (list-first-line items) (list-first-col items))
+            (ctx-add-error-at ctx "map-new: missing arena" (ctx-list-first-line items) (ctx-list-first-col items))
             "NULL")
           (match (list-get items 1)
             ((some arena-expr)
@@ -4308,7 +4356,7 @@
                 (ctx-str ctx "slop_map_new_ptr(" (ctx-str ctx arena-c ", 16, sizeof(slop_string), slop_hash_string, slop_eq_string)"))))
             ((none)
               (do
-                (ctx-add-error-at ctx "map-new: missing arena" (list-first-line items) (list-first-col items))
+                (ctx-add-error-at ctx "map-new: missing arena" (ctx-list-first-line items) (ctx-list-first-col items))
                 "NULL"))))
         ;; Full form: (map-new arena KeyType ValueType)
         (match (list-get items 1)
@@ -4325,11 +4373,11 @@
                         (ctx-str ctx key-info ")"))))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "map-new: missing KeyType" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "map-new: missing KeyType" (ctx-list-first-line items) (ctx-list-first-col items))
                   "NULL"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "map-new: missing arena" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "map-new: missing arena" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL"))))))
 
   ;; ============================================================
@@ -4395,7 +4443,7 @@
     (let ((len (list-len items)))
       (if (< len 4)
         (do
-          (ctx-add-error-at ctx "map-put: needs map, key, val" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "map-put: needs map, key, val" (ctx-list-first-line items) (ctx-list-first-col items))
           "0")
         (match (list-get items 1)
           ((some map-expr)
@@ -4431,15 +4479,15 @@
                           s6))))
                   ((none)
                     (do
-                      (ctx-add-error-at ctx "map-put: missing val" (list-first-line items) (list-first-col items))
+                      (ctx-add-error-at ctx "map-put: missing val" (ctx-list-first-line items) (ctx-list-first-col items))
                       "0"))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "map-put: missing key" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "map-put: missing key" (ctx-list-first-line items) (ctx-list-first-col items))
                   "0"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "map-put: missing map" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "map-put: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
               "0"))))))
 
   (fn transpile-map-get ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
@@ -4450,7 +4498,7 @@
           (arena (. (deref ctx) arena)))
       (if (< len 3)
         (do
-          (ctx-add-error-at ctx "map-get: needs map, key" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "map-get: needs map, key" (ctx-list-first-line items) (ctx-list-first-col items))
           "NULL")
         (match (list-get items 1)
           ((some map-expr)
@@ -4488,11 +4536,11 @@
                             "); struct { bool has_value; void* value; } _r; if (_ptr) { _r.has_value = true; _r.value = _ptr; } else { _r.has_value = false; } _r; })")))))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "map-get: missing key" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "map-get: missing key" (ctx-list-first-line items) (ctx-list-first-col items))
                   "NULL"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "map-get: missing map" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "map-get: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL"))))))
 
   (fn transpile-map-has ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
@@ -4502,7 +4550,7 @@
     (let ((len (list-len items)))
       (if (< len 3)
         (do
-          (ctx-add-error-at ctx "map-has: needs map, key" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "map-has: needs map, key" (ctx-list-first-line items) (ctx-list-first-col items))
           "false")
         (match (list-get items 1)
           ((some map-expr)
@@ -4516,11 +4564,11 @@
                   (ctx-str ctx "(slop_map_get(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-ptr ") != NULL)"))))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "map-has: missing key" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "map-has: missing key" (ctx-list-first-line items) (ctx-list-first-col items))
                   "false"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "map-has: missing map" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "map-has: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
               "false"))))))
 
   (fn transpile-map-keys ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
@@ -4531,7 +4579,7 @@
           (arena (. (deref ctx) arena)))
       (if (< len 2)
         (do
-          (ctx-add-error-at ctx "map-keys: needs map" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "map-keys: needs map" (ctx-list-first-line items) (ctx-list-first-col items))
           "NULL")
         (match (list-get items 1)
           ((some map-expr)
@@ -4559,7 +4607,7 @@
                               (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))
           ((none)
             (do
-              (ctx-add-error-at ctx "map-keys: missing map" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "map-keys: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL"))))))
 
   ;; ============================================================
@@ -4573,7 +4621,7 @@
     (let ((len (list-len items)))
       (if (< len 3)
         (do
-          (ctx-add-error-at ctx "set-new: needs arena and ElementType" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "set-new: needs arena and ElementType" (ctx-list-first-line items) (ctx-list-first-col items))
           "NULL")
         (match (list-get items 1)
           ((some arena-expr)
@@ -4588,11 +4636,11 @@
                         (ctx-str ctx elem-info ")"))))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "set-new: missing ElementType" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "set-new: missing ElementType" (ctx-list-first-line items) (ctx-list-first-col items))
                   "NULL"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "set-new: missing arena" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "set-new: missing arena" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL"))))))
 
   (fn transpile-set-put ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
@@ -4602,7 +4650,7 @@
     (let ((len (list-len items)))
       (if (< len 3)
         (do
-          (ctx-add-error-at ctx "set-put: needs set, element" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "set-put: needs set, element" (ctx-list-first-line items) (ctx-list-first-col items))
           "0")
         (match (list-get items 1)
           ((some set-expr)
@@ -4618,11 +4666,11 @@
                         (ctx-str ctx elem-ptr ", &_dummy); })"))))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "set-put: missing element" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "set-put: missing element" (ctx-list-first-line items) (ctx-list-first-col items))
                   "0"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "set-put: missing set" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "set-put: missing set" (ctx-list-first-line items) (ctx-list-first-col items))
               "0"))))))
 
   (fn transpile-set-has ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
@@ -4632,7 +4680,7 @@
     (let ((len (list-len items)))
       (if (< len 3)
         (do
-          (ctx-add-error-at ctx "set-has: needs set, element" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "set-has: needs set, element" (ctx-list-first-line items) (ctx-list-first-col items))
           "false")
         (match (list-get items 1)
           ((some set-expr)
@@ -4644,11 +4692,11 @@
                   (ctx-str ctx "(slop_map_get(" (ctx-str ctx set-c (ctx-str ctx ", " (ctx-str ctx elem-ptr ") != NULL)"))))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "set-has: missing element" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "set-has: missing element" (ctx-list-first-line items) (ctx-list-first-col items))
                   "false"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "set-has: missing set" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "set-has: missing set" (ctx-list-first-line items) (ctx-list-first-col items))
               "false"))))))
 
   (fn transpile-set-remove ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
@@ -4658,7 +4706,7 @@
     (let ((len (list-len items)))
       (if (< len 3)
         (do
-          (ctx-add-error-at ctx "set-remove: needs set, element" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "set-remove: needs set, element" (ctx-list-first-line items) (ctx-list-first-col items))
           "0")
         (match (list-get items 1)
           ((some set-expr)
@@ -4670,11 +4718,11 @@
                   (ctx-str ctx "slop_map_remove(" (ctx-str ctx set-c (ctx-str ctx ", " (ctx-str ctx elem-ptr ")"))))))
               ((none)
                 (do
-                  (ctx-add-error-at ctx "set-remove: missing element" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "set-remove: missing element" (ctx-list-first-line items) (ctx-list-first-col items))
                   "0"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "set-remove: missing set" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "set-remove: missing set" (ctx-list-first-line items) (ctx-list-first-col items))
               "0"))))))
 
   (fn transpile-set-elements ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
@@ -4684,7 +4732,7 @@
     (let ((len (list-len items)))
       (if (< len 2)
         (do
-          (ctx-add-error-at ctx "set-elements: needs set" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "set-elements: needs set" (ctx-list-first-line items) (ctx-list-first-col items))
           "NULL")
         (match (list-get items 1)
           ((some set-expr)
@@ -4707,7 +4755,7 @@
                               (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))
           ((none)
             (do
-              (ctx-add-error-at ctx "set-elements: missing set" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "set-elements: missing set" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL"))))))
 
   (fn transpile-set-literal ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
@@ -4718,7 +4766,7 @@
           (len (list-len items)))
       (if (< len 2)
         (do
-          (ctx-add-error-at ctx "set: needs at least Type" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "set: needs at least Type" (ctx-list-first-line items) (ctx-list-first-col items))
           "NULL")
         (match (list-get items 1)
           ((some type-expr)
@@ -4746,7 +4794,7 @@
               (ctx-str ctx result "_s; })")))
           ((none)
             (do
-              (ctx-add-error-at ctx "set: missing type" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "set: missing type" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL"))))))
 
   ;; ============================================================
@@ -4876,7 +4924,7 @@
           (len (list-len items)))
       (if (< len 2)
         (do
-          (ctx-add-error-at ctx "lambda needs params" (list-first-line items) (list-first-col items))
+          (ctx-add-error-at ctx "lambda needs params" (ctx-list-first-line items) (ctx-list-first-col items))
           "NULL")
         ;; Check if items[1] is a list (lambda) or symbol (named fn - error in expr context)
         (match (list-get items 1)
@@ -4888,15 +4936,15 @@
               ;; Named function definition in expression context - error
               ((sym _)
                 (do
-                  (ctx-add-error-at ctx "named function not allowed in expression context" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "named function not allowed in expression context" (ctx-list-first-line items) (ctx-list-first-col items))
                   "NULL"))
               (else
                 (do
-                  (ctx-add-error-at ctx "invalid lambda form" (list-first-line items) (list-first-col items))
+                  (ctx-add-error-at ctx "invalid lambda form" (ctx-list-first-line items) (ctx-list-first-col items))
                   "NULL"))))
           ((none)
             (do
-              (ctx-add-error-at ctx "lambda missing params" (list-first-line items) (list-first-col items))
+              (ctx-add-error-at ctx "lambda missing params" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL"))))))
 
   (fn transpile-lambda-with-params ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (params (List (Ptr SExpr))))
@@ -5306,7 +5354,7 @@
               (transpile-regular-fn-call ctx "spawn" items))))
         ((none)
           (do
-            (ctx-add-error-at ctx "spawn: missing arena argument" (list-first-line items) (list-first-col items))
+            (ctx-add-error-at ctx "spawn: missing arena argument" (ctx-list-first-line items) (ctx-list-first-col items))
             "NULL")))))
 
   (fn lambda-has-captures ((ctx (Ptr TranspileContext)) (fn-expr (Ptr SExpr)))

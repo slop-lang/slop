@@ -40,13 +40,15 @@
   (type SExprSymbol (record
     (name String)
     (line (Int 0 ..))
-    (col (Int 0 ..))))
+    (col (Int 0 ..))
+    (resolved-type (Option (Ptr ResolvedType)))))
 
   ;; AST node for string literals
   (type SExprString (record
     (value String)
     (line (Int 0 ..))
-    (col (Int 0 ..))))
+    (col (Int 0 ..))
+    (resolved-type (Option (Ptr ResolvedType)))))
 
   ;; AST node for numeric literals
   (type SExprNumber (record
@@ -55,13 +57,15 @@
     (is-float Bool)
     (raw String)              ;; Original text representation
     (line (Int 0 ..))
-    (col (Int 0 ..))))
+    (col (Int 0 ..))
+    (resolved-type (Option (Ptr ResolvedType)))))
 
   ;; AST node for lists (parenthesized expressions)
   (type SExprList (record
     (items (List (Ptr SExpr)))
     (line (Int 0 ..))
-    (col (Int 0 ..))))
+    (col (Int 0 ..))
+    (resolved-type (Option (Ptr ResolvedType)))))
 
   ;; Main S-expression type - discriminated union of all node types
   ;; NOTE: Variant names use short forms (sym, str, num, lst) to avoid

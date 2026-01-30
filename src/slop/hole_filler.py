@@ -1231,15 +1231,19 @@ def _try_native_checker(
     import json
     import subprocess
 
-    # Check if native checker is available using paths module
-    checker_path = paths.find_native_binary('checker')
+    # Prefer merged slop-compiler binary, fall back to standalone slop-checker
+    compiler_path = paths.find_native_binary('compiler')
+    checker_path = compiler_path or paths.find_native_binary('checker')
     if not checker_path:
         logger.error("Native checker binary not found. Build native tools with ./build_native.sh")
         return None
 
     try:
         # Build command
-        cmd = [str(checker_path), '--expr', expr_str, '--type', expected_type]
+        cmd = [str(checker_path)]
+        if compiler_path:
+            cmd.append('check')
+        cmd.extend(['--expr', expr_str, '--type', expected_type])
         if context_file:
             cmd.extend(['--context', context_file])
         if params:

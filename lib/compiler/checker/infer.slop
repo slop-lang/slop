@@ -10,7 +10,7 @@
     infer-expr infer-fn-body check-match-patterns
     resolve-complex-type-expr resolve-simple-type)
 
-  (import parser (SExpr SExprList SExprSymbol is-form
+  (import parser (SExpr SExprList SExprSymbol SExprString SExprNumber is-form
                   sexpr-line sexpr-col
                   sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name))
   (import types (ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
@@ -154,11 +154,43 @@
         a)))
 
   ;; ============================================================
+  ;; AST Type Annotation
+  ;; ============================================================
+
+  (fn sexpr-set-resolved-type ((expr (Ptr SExpr)) (t (Ptr ResolvedType)))
+    (@intent "Set the resolved type annotation on an AST node")
+    (@spec (((Ptr SExpr) (Ptr ResolvedType)) -> Unit))
+    (@pre (!= expr nil))
+    (match (deref expr)
+      ((sym sym)
+        (set! (deref expr) (union-new SExpr sym
+          (SExprSymbol (. sym name) (. sym line) (. sym col) (some t)))))
+      ((str str)
+        (set! (deref expr) (union-new SExpr str
+          (SExprString (. str value) (. str line) (. str col) (some t)))))
+      ((num num)
+        (set! (deref expr) (union-new SExpr num
+          (SExprNumber (. num int-value) (. num float-value) (. num is-float) (. num raw) (. num line) (. num col) (some t)))))
+      ((lst lst)
+        (set! (deref expr) (union-new SExpr lst
+          (SExprList (. lst items) (. lst line) (. lst col) (some t)))))))
+
+  ;; ============================================================
   ;; Expression Type Inference
   ;; ============================================================
 
   (fn infer-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
-    (@intent "Infer the type of an expression")
+    (@intent "Infer the type of an expression and annotate the AST node")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= expr nil))
+    (let ((result (infer-expr-inner env expr)))
+      ;; Annotate the AST node with the inferred type
+      (sexpr-set-resolved-type expr result)
+      result))
+
+  (fn infer-expr-inner ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
+    (@intent "Infer the type of an expression (internal, without annotation)")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (@pre (!= expr nil))
@@ -558,7 +590,19 @@
                     ;; list-get returns Option_T (generic Option) - expects 2 args: list, index
                     ((string-eq op "list-get")
                       (do (check-builtin-args env "list-get" 2 (- len 1) line col)
-                          (env-make-option-type env nil)))
+                          (infer-builtin-args env expr)
+                          ;; Extract element type from list arg to make Option type more precise
+                          (let ((mut elem-type (Ptr ResolvedType) nil))
+                            (when (>= len 2)
+                              (match (list-get items 1)
+                                ((some list-arg)
+                                  (let ((list-type (infer-expr env list-arg)))
+                                    (when (== (. (deref list-type) kind) 'rk-list)
+                                      (match (. (deref list-type) inner-type)
+                                        ((some inner) (set! elem-type inner))
+                                        ((none) (do))))))
+                                ((none) (do))))
+                            (env-make-option-type env elem-type))))
                     ;; list-len returns Int - expects 1 arg: list
                     ((string-eq op "list-len")
                       (do (check-builtin-args env "list-len" 1 (- len 1) line col)
@@ -609,8 +653,22 @@
                     ;; list-new expects 2 args: arena, Type - returns List
                     ((string-eq op "list-new")
                       (do (check-builtin-args env "list-new" 2 (- len 1) line col)
-                          (let ((arena (env-arena env)))
-                            (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*"))))
+                          (let ((arena (env-arena env))
+                                (list-type (resolved-type-new arena 'rk-list "List" (none) "slop_list_t*")))
+                            ;; Extract element type from third argument (index 2): (list-new arena ElemType)
+                            (when (>= len 3)
+                              (match (list-get items 2)
+                                ((some type-expr)
+                                  (let ((elem-type (if (sexpr-is-list type-expr)
+                                                     (resolve-complex-type-expr env type-expr)
+                                                     (let ((tname (sexpr-get-symbol-name type-expr)))
+                                                       (if (string-eq tname "")
+                                                         nil
+                                                         (resolve-simple-type env tname))))))
+                                    (when (!= elem-type nil)
+                                      (resolved-type-set-inner list-type elem-type))))
+                                ((none) (do))))
+                            list-type)))
                     ;; SExpr helpers
                     ((string-eq op "sexpr-is-list") (env-get-bool-type env))
                     ((string-eq op "sexpr-is-symbol") (env-get-bool-type env))
@@ -1269,7 +1327,7 @@
             ((none) (do)))))
       (_ (do))))
 
-  (fn is-primitive-type ((name String))
+  (fn checker-is-primitive-type ((name String))
     (@intent "Check if type name is a known primitive")
     (@spec ((String) -> Bool))
     (@pure)
@@ -1318,8 +1376,8 @@
           ;; Only check if types differ AND both are primitives
           ;; Custom types (enums, records) need proper variant tracking
           (when (and (not (string-eq declared-name inferred-name))
-                     (and (is-primitive-type declared-name)
-                          (is-primitive-type inferred-name)))
+                     (and (checker-is-primitive-type declared-name)
+                          (checker-is-primitive-type inferred-name)))
             (let ((arena (env-arena env))
                   (msg (string-concat arena "return value of '"
                          (string-concat arena fn-name

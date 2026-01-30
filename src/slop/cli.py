@@ -221,7 +221,9 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
     import subprocess
     import json
 
-    transpiler_bin = find_native_component('transpiler')
+    # Prefer merged slop-compiler binary, fall back to standalone slop-transpiler
+    compiler_bin = find_native_component('compiler')
+    transpiler_bin = compiler_bin or find_native_component('transpiler')
     if not transpiler_bin:
         return None, False
 
@@ -231,8 +233,11 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
         all_files = dep_files + [input_file]
 
     try:
+        cmd_prefix = [str(transpiler_bin)]
+        if compiler_bin:
+            cmd_prefix.append('transpile')
         result = subprocess.run(
-            [str(transpiler_bin)] + all_files,
+            cmd_prefix + all_files,
             capture_output=True,
             text=True
         )
@@ -277,13 +282,19 @@ def transpile_native_split(input_file: str):
     import subprocess
     import json
 
-    transpiler_bin = find_native_component('transpiler')
+    # Prefer merged slop-compiler binary, fall back to standalone slop-transpiler
+    compiler_bin = find_native_component('compiler')
+    transpiler_bin = compiler_bin or find_native_component('transpiler')
     if not transpiler_bin:
         return {}, False
 
     try:
+        cmd = [str(transpiler_bin)]
+        if compiler_bin:
+            cmd.append('transpile')
+        cmd.append(input_file)
         result = subprocess.run(
-            [str(transpiler_bin), input_file],
+            cmd,
             capture_output=True,
             text=True
         )
@@ -1907,10 +1918,14 @@ def cmd_check(args):
 
         # Try native checker by default
         if use_native:
-            checker_bin = find_native_component('checker')
+            # Prefer merged slop-compiler binary, fall back to standalone slop-checker
+            compiler_bin = find_native_component('compiler')
+            checker_bin = compiler_bin or find_native_component('checker')
             if checker_bin:
                 import subprocess
                 cmd = [str(checker_bin)]
+                if compiler_bin:
+                    cmd.append('check')
                 if getattr(args, 'json', False):
                     cmd.append('--json')
 
@@ -2424,6 +2439,7 @@ def cmd_build(args):
         use_native = not getattr(args, 'python', False)
         native_transpiler_bin = None
         native_checker_bin = None
+        native_compiler_bin = None
         if use_native:
             # Report which native components are available
             parser_bin = find_native_component('parser')
@@ -2438,12 +2454,18 @@ def cmd_build(args):
             else:
                 print("  Native type checker not found, falling back to Python")
                 print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
-            native_transpiler_bin = find_native_component('transpiler')
-            if native_transpiler_bin:
-                print(f"  Using native transpiler: {native_transpiler_bin}")
-            else:
-                print("  Native transpiler not found, falling back to Python")
-                print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+            # Prefer merged slop-compiler (runs checker+transpiler with AST annotations)
+            native_compiler_bin = find_native_component('compiler')
+            if native_compiler_bin:
+                native_transpiler_bin = native_compiler_bin
+                print(f"  Using merged compiler: {native_compiler_bin}")
+            if not native_transpiler_bin:
+                native_transpiler_bin = find_native_component('transpiler')
+                if native_transpiler_bin:
+                    print(f"  Using native transpiler: {native_transpiler_bin}")
+                else:
+                    print("  Native transpiler not found, falling back to Python")
+                    print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         # Create output directory if needed
         output_dir = Path(output).parent
@@ -2503,11 +2525,13 @@ def cmd_build(args):
                 print(f"  Warning: {total_holes} unfilled holes")
 
             # Type check all modules
-            print("  Type checking...")
             total_errors = 0
             total_warnings = 0
 
-            if native_checker_bin:
+            if native_compiler_bin:
+                # Merged compiler integrates checking into transpile step
+                print("  Type checking (integrated into transpile step)")
+            elif native_checker_bin:
                 # Use native type checker - pass files in dependency order
                 import subprocess
                 import json
@@ -2570,7 +2594,10 @@ def cmd_build(args):
             if native_transpiler_bin:
                 # Use native transpiler - it outputs JSON with per-module header/impl
                 source_files = [str(graph.modules[name].path) for name in order]
-                cmd = [native_transpiler_bin] + source_files
+                cmd = [str(native_transpiler_bin)]
+                if native_compiler_bin:
+                    cmd.append('transpile')
+                cmd += source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     print(f"Native transpiler failed:\n{result.stderr}")

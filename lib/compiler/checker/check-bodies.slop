@@ -1,0 +1,55 @@
+;; ============================================================
+;; Function Body Type Checking
+;;
+;; Runs type inference on all function bodies in an AST.
+;; Used by both the checker and transpiler to populate
+;; expression type annotations.
+;; ============================================================
+
+(module check-bodies
+  (export check-all-fn-bodies)
+
+  (import types (SExpr))
+  (import ast (is-form sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name))
+  (import env (TypeEnv env-set-module))
+  (import infer (infer-fn-body))
+
+  (fn check-all-fn-bodies ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
+    (@intent "Run type inference on all function bodies to populate expr annotations")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr))) -> Unit))
+    (@pre (!= env nil))
+    (let ((len (list-len ast)))
+      (for (i 0 len)
+        (match (list-get ast i)
+          ((some expr)
+            (cond
+              ((is-form expr "fn")
+                (let ((_ (infer-fn-body env expr)))
+                  (do)))
+              ((is-form expr "module")
+                (check-module-fn-bodies env expr))
+              (else (do))))
+          ((none) (do))))))
+
+  (fn check-module-fn-bodies ((env (Ptr TypeEnv)) (module-form (Ptr SExpr)))
+    (@intent "Run type inference on function bodies inside a module")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= module-form nil))
+    (when (sexpr-is-list module-form)
+      ;; Set module name
+      (match (sexpr-list-get module-form 1)
+        ((some name-expr)
+          (let ((mod-name (sexpr-get-symbol-name name-expr)))
+            (when (> (string-len mod-name) 0)
+              (env-set-module env (some mod-name)))))
+        ((none) (do)))
+      (let ((len (sexpr-list-len module-form)))
+        (for (i 2 len)
+          (match (sexpr-list-get module-form i)
+            ((some item)
+              (when (is-form item "fn")
+                (let ((_ (infer-fn-body env item)))
+                  (do))))
+            ((none) (do)))))))
+)

@@ -16,9 +16,12 @@
     ;; Range type handling
     range-type-to-c-type
     ;; C keyword check
-    is-c-keyword)
+    is-c-keyword
+    ;; Resolved type bridge (checker → transpiler)
+    get-node-resolved-type resolved-type-to-c)
 
-  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
+  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
+                 ResolvedType ResolvedTypeKind))
   (import strlib (replace replace-all starts-with substring))
 
   ;; ============================================================
@@ -505,5 +508,87 @@
               ((and (>= min-val (- 0 32768)) (<= max-val 32767)) "int16_t")
               (else "int64_t")))
           (else "int64_t")))))
+
+  ;; ============================================================
+  ;; Resolved Type Bridge (Checker → Transpiler)
+  ;; ============================================================
+
+  (fn get-node-resolved-type ((expr (Ptr SExpr)))
+    (@intent "Get the resolved type annotation from an AST node, if present")
+    (@spec (((Ptr SExpr)) -> (Option (Ptr ResolvedType))))
+    (@pre (!= expr nil))
+    (match (deref expr)
+      ((sym sym) (. sym resolved-type))
+      ((str str) (. str resolved-type))
+      ((num num) (. num resolved-type))
+      ((lst lst) (. lst resolved-type))))
+
+  (fn resolved-type-to-c ((arena Arena) (rt (Ptr ResolvedType)))
+    (@intent "Convert a checker ResolvedType to a C type string using transpiler conventions")
+    (@spec ((Arena (Ptr ResolvedType)) -> String))
+    (@pre (!= rt nil))
+    (let ((kind (. (deref rt) kind))
+          (name (. (deref rt) name)))
+      (cond
+        ;; Primitives: use builtin-type-c for correct transpiler names
+        ((== kind 'rk-primitive)
+          (match (builtin-type-c arena name)
+            ((some c) c)
+            ((none) (to-c-name arena name))))
+        ;; Range types: use the c-name which should be correct (uint8_t etc.)
+        ((== kind 'rk-range)
+          (. (deref rt) c-name))
+        ;; Records, unions, enums: apply module prefix to c-name
+        ((or (== kind 'rk-record) (or (== kind 'rk-union) (== kind 'rk-enum)))
+          (let ((c-name (to-c-name arena name)))
+            (match (. (deref rt) module-name)
+              ((some mod-name)
+                (string-concat arena (string-concat arena (to-c-name arena mod-name) "_") c-name))
+              ((none) c-name))))
+        ;; Ptr T -> inner_c*
+        ((== kind 'rk-ptr)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (string-concat arena (resolved-type-to-c arena inner) "*"))
+            ((none) "void*")))
+        ;; Option T -> slop_option_<id>
+        ((== kind 'rk-option)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (let ((inner-c (resolved-type-to-c arena inner)))
+                (string-concat arena "slop_option_" (type-to-identifier arena inner-c))))
+            ((none) "slop_option_void")))
+        ;; List T -> slop_list_<id>
+        ((== kind 'rk-list)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (let ((inner-c (resolved-type-to-c arena inner)))
+                (string-concat arena "slop_list_" (type-to-identifier arena inner-c))))
+            ((none) "slop_list_void")))
+        ;; Result T E -> slop_result_<ok_id>_<err_id>
+        ((== kind 'rk-result)
+          (let ((ok-id (match (. (deref rt) inner-type)
+                         ((some ok-t)
+                           (type-to-identifier arena (resolved-type-to-c arena ok-t)))
+                         ((none) "void")))
+                (err-id (match (. (deref rt) inner-type2)
+                          ((some err-t)
+                            (type-to-identifier arena (resolved-type-to-c arena err-t)))
+                          ((none) "slop_error"))))
+            (string-concat arena
+              (string-concat arena "slop_result_" ok-id)
+              (string-concat arena "_" err-id))))
+        ;; Map K V -> slop_map*
+        ((== kind 'rk-map) "slop_map*")
+        ;; Function type -> void* (function pointers are complex)
+        ((== kind 'rk-function) "void*")
+        ;; Array -> inner*
+        ((== kind 'rk-array)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (string-concat arena (resolved-type-to-c arena inner) "*"))
+            ((none) "void*")))
+        ;; Fallback
+        (else (. (deref rt) c-name)))))
 
 ) ;; end module
