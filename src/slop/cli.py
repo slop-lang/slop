@@ -2140,6 +2140,7 @@ def _build_library_from_sources(
     import json
 
     search_paths = [Path(p) for p in include_paths]
+    search_paths.extend(paths.get_stdlib_include_paths())
 
     # Build dependency graph from all source files
     print("  Resolving modules...")
@@ -2247,7 +2248,11 @@ def _build_library_from_sources(
     if native_transpiler_bin:
         # Use native transpiler - it outputs JSON with per-module header/impl
         source_files_ordered = [str(all_modules[name].path) for name in order]
-        cmd = [native_transpiler_bin] + source_files_ordered
+        cmd = [str(native_transpiler_bin)]
+        # Merged compiler binary needs 'transpile' subcommand; standalone transpiler does not
+        if 'compiler' in os.path.basename(str(native_transpiler_bin)):
+            cmd.append('transpile')
+        cmd += source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"Native transpiler failed:\n{result.stderr}")
