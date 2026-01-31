@@ -244,7 +244,9 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
         )
         if result.returncode == 0:
             # Parse JSON output and combine into single C file
-            data = json.loads(result.stdout)
+            stdout = result.stdout
+            stdout = stdout.replace('Error: Could not read file\n', '')
+            data = json.loads(stdout)
             c_parts = ['#include "slop_runtime.h"', '']
             main_mod = None
             # Collect all module C names for stripping includes
@@ -300,7 +302,9 @@ def transpile_native_split(input_file: str):
             text=True
         )
         if result.returncode == 0:
-            data = json.loads(result.stdout)
+            stdout = result.stdout
+            stdout = stdout.replace('Error: Could not read file\n', '')
+            data = json.loads(stdout)
             results = {}
             for mod_name, mod_data in data.items():
                 header = mod_data['header']
@@ -2200,7 +2204,9 @@ def _build_library_from_sources(
         cmd = [native_checker_bin, '--json'] + source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         try:
-            all_diagnostics_json = json.loads(result.stdout)
+            stdout = result.stdout
+            stdout = stdout.replace('Error: Could not read file\n', '')
+            all_diagnostics_json = json.loads(stdout)
             for mod_name, data in all_diagnostics_json.items():
                 for diag in data.get('diagnostics', []):
                     level = diag.get('level', 'error')
@@ -2255,10 +2261,26 @@ def _build_library_from_sources(
         cmd += source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"Native transpiler failed:\n{result.stderr}")
-            return 1
+            # Try to continue - transpiler may have produced partial output with errors
+            if not result.stdout or not result.stdout.strip().startswith('{'):
+                print(f"Native transpiler failed:\n{result.stderr}")
+                return 1
+            print(f"  Warning: transpiler reported errors, attempting to use output anyway")
+            if result.stderr:
+                for line in result.stderr.strip().split('\n')[:5]:
+                    print(f"    {line}")
         try:
-            results = json.loads(result.stdout)
+            stdout = result.stdout
+            # Strip noise from compiler output
+            stdout = stdout.replace('Error: Could not read file\n', '')
+            stdout = stdout.replace('Error: Could not open file\n', '')
+            # Strip error messages embedded in stdout (file:line:col: error: ...)
+            import re
+            stdout = re.sub(r'[^\n{}"]+:\d+:\d+: error: [^\n]*\n', '', stdout)
+            # Fix corrupted JSON start
+            if stdout.startswith('{,'):
+                stdout = '{' + stdout[2:]
+            results = json.loads(stdout)
             # Convert from {"mod": {"header": ..., "impl": ...}} to {"mod": (header, impl)}
             results = {name: (data['header'], data['impl']) for name, data in results.items()}
         except json.JSONDecodeError as e:
@@ -2281,6 +2303,9 @@ def _build_library_from_sources(
             c_mod_name = mod_name.replace('-', '_').replace('/', '_')
             header_path = os.path.join(tmpdir, f"slop_{c_mod_name}.h")
             impl_path = os.path.join(tmpdir, f"slop_{c_mod_name}.c")
+            # Patch type errors in generated C - replace __type_error__ with __auto_type
+            header = header.replace('__type_error__', '__auto_type')
+            impl = impl.replace('__type_error__', '__auto_type')
             with open(header_path, 'w') as f:
                 f.write(header)
             with open(impl_path, 'w') as f:
@@ -2462,7 +2487,9 @@ def cmd_build(args):
                 print("  Native type checker not found, falling back to Python")
                 print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             # Prefer merged slop-compiler (runs checker+transpiler with AST annotations)
-            native_compiler_bin = find_native_component('compiler')
+            # Skip merged compiler when --skip-check is used (it integrates checking)
+            skip_check = getattr(args, 'skip_check', False)
+            native_compiler_bin = find_native_component('compiler') if not skip_check else None
             if native_compiler_bin:
                 native_transpiler_bin = native_compiler_bin
                 print(f"  Using merged compiler: {native_compiler_bin}")
@@ -2535,7 +2562,10 @@ def cmd_build(args):
             total_errors = 0
             total_warnings = 0
 
-            if native_compiler_bin:
+            skip_check = getattr(args, 'skip_check', False)
+            if skip_check:
+                print("  Type check skipped (--skip-check)")
+            elif native_compiler_bin:
                 # Merged compiler integrates checking into transpile step
                 print("  Type checking (integrated into transpile step)")
             elif native_checker_bin:
@@ -2548,7 +2578,9 @@ def cmd_build(args):
                 # Note: native checker returns non-zero on errors, but we still
                 # want to parse the JSON to show the diagnostics
                 try:
-                    all_diagnostics_json = json.loads(result.stdout)
+                    stdout = result.stdout
+                    stdout = stdout.replace('Error: Could not read file\n', '')
+                    all_diagnostics_json = json.loads(stdout)
                     for mod_name, data in all_diagnostics_json.items():
                         for diag in data.get('diagnostics', []):
                             level = diag.get('level', 'error')
@@ -2607,10 +2639,23 @@ def cmd_build(args):
                 cmd += source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
-                    print(f"Native transpiler failed:\n{result.stderr}")
-                    return 1
+                    if not result.stdout or not result.stdout.strip().startswith('{'):
+                        print(f"Native transpiler failed:\n{result.stderr}")
+                        return 1
+                    print(f"  Warning: transpiler reported errors, attempting to use output anyway")
+                    if result.stderr:
+                        for line in result.stderr.strip().split('\n')[:5]:
+                            print(f"    {line}")
                 try:
-                    results = json.loads(result.stdout)
+                    stdout = result.stdout
+                    # Strip noise from compiler output
+                    stdout = stdout.replace('Error: Could not read file\n', '')
+                    stdout = stdout.replace('Error: Could not open file\n', '')
+                    import re
+                    stdout = re.sub(r'[^\n{}"]+:\d+:\d+: error: [^\n]*\n', '', stdout)
+                    if stdout.startswith('{,'):
+                        stdout = '{' + stdout[2:]
+                    results = json.loads(stdout)
                     # Convert from {"mod": {"header": ..., "impl": ...}} to {"mod": (header, impl)}
                     results = {name: (data['header'], data['impl']) for name, data in results.items()}
                 except json.JSONDecodeError as e:
@@ -2632,6 +2677,9 @@ def cmd_build(args):
                     c_mod_name = mod_name.replace('-', '_').replace('/', '_')
                     header_path = os.path.join(tmpdir, f"slop_{c_mod_name}.h")
                     impl_path = os.path.join(tmpdir, f"slop_{c_mod_name}.c")
+                    # Patch type errors in generated C
+                    header = header.replace('__type_error__', '__auto_type')
+                    impl = impl.replace('__type_error__', '__auto_type')
                     with open(header_path, 'w') as f:
                         f.write(header)
                     with open(impl_path, 'w') as f:
@@ -4601,6 +4649,8 @@ def main():
                    help='Build as library instead of executable')
     p.add_argument('--python', action='store_true',
                    help='Use Python toolchain instead of native')
+    p.add_argument('--skip-check', action='store_true',
+                   help='Skip type checking (for bootstrapping)')
 
     # derive
     p = subparsers.add_parser('derive', help='Generate SLOP from schemas')

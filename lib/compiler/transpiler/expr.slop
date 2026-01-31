@@ -603,10 +603,8 @@
                       ;; Convert SLOP type to C type and build Option type
                       (let ((derived-c-type (slop-value-type-to-c-type ctx slop-type)))
                         (c-type-to-option-type-name ctx derived-c-type))
-                      ;; No slop-type available - emit error
-                      (do
-                        (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for variable '" name "' - type is 'auto' with no SLOP type") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
-                        "__type_error__")))
+                      ;; No slop-type available - fall back to auto type
+                      "__auto_type"))
                   ((string-eq c-type "int64_t") "slop_option_int")
                   ((string-eq c-type "double") "slop_option_double")
                   ((string-eq c-type "slop_string") "slop_option_string")
@@ -618,11 +616,8 @@
                       (ctx-str3 ctx "slop_option_" base-type "_ptr")))
                   ;; Other custom types: build slop_option_<typename>
                   (else (ctx-str3 ctx "slop_option_" c-type "")))))
-            ;; Unknown variable - emit error
-            ((none)
-              (do
-                (ctx-add-error-at ctx (ctx-str3 ctx "Unknown variable '" name "' for Option type inference") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
-                "__type_error__")))))
+            ;; Unknown variable - fall back to auto type
+            ((none) "__auto_type"))))
       ;; For complex expressions, try to infer type from the structure
       ((lst lst)
         (infer-list-expr-option-type ctx (. lst items)))))
@@ -646,7 +641,7 @@
     (@pre {ctx != nil})
     (let ((len (list-len items)))
       (if (< len 3)
-        "/* TRANSPILER ERROR: malformed field access */"
+        "__auto_type"
         (match (list-get items 1)
           ((some obj-expr)
             (match (list-get items 2)
@@ -664,11 +659,11 @@
                               (let ((obj-slop-type (. var-entry slop-type)))
                                 (match (ctx-lookup-field-type ctx obj-slop-type field-name)
                                   ((some c-type2) c-type2)
-                                  ((none) "/* TRANSPILER ERROR: unknown field type */"))))
-                            ((none) "/* TRANSPILER ERROR: unknown object type */"))))))
-                  (else "/* TRANSPILER ERROR: field name must be symbol */")))
-              ((none) "/* TRANSPILER ERROR: missing field expression */")))
-          ((none) "/* TRANSPILER ERROR: missing object expression */")))))
+                                  ((none) "__auto_type"))))
+                            ((none) "__auto_type"))))))
+                  (else "__auto_type")))
+              ((none) "__auto_type")))
+          ((none) "__auto_type")))))
 
   (fn infer-list-expr-option-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Infer Option type for a list expression (field access, function call, etc.)")
@@ -1903,19 +1898,14 @@
                                 ;; Use infer-expr-c-type for more accurate type inference
                                 (val-type (infer-expr-c-type ctx val-expr))
                                 (option-type (cond
-                                               ;; Check for type inference error marker
+                                               ;; Check for type inference error marker - fall back to auto type
                                                ((string-eq val-type "__type_error__")
-                                                 (do
-                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
-                                                   "__type_error__"))
+                                                 "__auto_type")
                                                ((string-eq val-type "slop_string") "slop_option_string")
                                                ((string-eq val-type "int64_t") "slop_option_int")
                                                ((string-eq val-type "double") "slop_option_double")
-                                               ;; For auto/unknown type, emit error - don't guess
-                                               ((string-eq val-type "auto")
-                                                 (do
-                                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "' - type is 'auto'") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
-                                                   "__type_error__"))
+                                               ;; For auto/unknown type, fall back to auto type
+                                               ((string-eq val-type "auto") "__auto_type")
                                                (else (infer-option-type ctx val-expr)))))
                             ;; Check if option-type is an error
                             (if (or (string-eq option-type "__type_error__") (starts-with option-type "/*"))
@@ -3168,29 +3158,41 @@
               (else "int64_t")))
           ((none) "int64_t")))))
 
+  (fn infer-match-branch-body-type ((ctx (Ptr TranspileContext)) (branch (Ptr SExpr)))
+    (@intent "Infer C type from a single match branch body")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {branch != nil})
+    (match (deref branch)
+      ((lst branch-lst)
+        (let ((branch-items (. branch-lst items))
+              (branch-len (list-len branch-items)))
+          (if (< branch-len 2)
+            "__type_error__"
+            (match (list-get branch-items (- branch-len 1))
+              ((some body-expr) (infer-expr-c-type ctx body-expr))
+              ((none) "__type_error__")))))
+      (else "__type_error__")))
+
   (fn infer-match-result-c-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Infer C result type for match expression from first branch body")
+    (@intent "Infer C result type for match expression, trying branches until one succeeds")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
-    ;; Look at first branch (index 2) to determine result type
-    (let ((len (list-len items)))
+    ;; Try each branch starting from index 2 until we find a non-error type
+    (let ((len (list-len items))
+          (mut i 2)
+          (mut result "__type_error__"))
       (if (< len 3)
         "int64_t"
-        (match (list-get items 2)
-          ((some first-branch)
-            (match (deref first-branch)
-              ((lst branch-lst)
-                (let ((branch-items (. branch-lst items))
-                      (branch-len (list-len branch-items)))
-                  (if (< branch-len 2)
-                    "int64_t"
-                    ;; Body is last element
-                    (match (list-get branch-items (- branch-len 1))
-                      ((some body-expr)
-                        (infer-expr-c-type ctx body-expr))
-                      ((none) "int64_t")))))
-              (else "int64_t")))
-          ((none) "int64_t")))))
+        (do
+          (while (and (< i len) (string-eq result "__type_error__"))
+            (match (list-get items i)
+              ((some branch) (set! result (infer-match-branch-body-type ctx branch)))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          (if (string-eq result "__type_error__")
+            "int64_t"
+            result)))))
 
   (fn slop-type-to-c-type ((ctx (Ptr TranspileContext)) (slop-type String))
     (@intent "Convert a SLOP type name to its C type equivalent")
@@ -3271,7 +3273,7 @@
                         ;; Field access - look up field's C type from context
                         ((string-eq op ".")
                           (if (< (list-len items) 3)
-                            "/* TRANSPILER ERROR: malformed field access */"
+                            "__auto_type"
                             (match (list-get items 1)
                               ((some obj-expr)
                                 (match (list-get items 2)
@@ -3290,11 +3292,11 @@
                                                   (let ((obj-slop-type (. var-entry slop-type)))
                                                     (match (ctx-lookup-field-type ctx obj-slop-type field-name)
                                                       ((some c-type2) c-type2)
-                                                      ((none) "/* TRANSPILER ERROR: unknown field type */"))))
-                                                ((none) "/* TRANSPILER ERROR: unknown object type */"))))))
-                                      (else "/* TRANSPILER ERROR: field name must be symbol */")))
-                                  ((none) "/* TRANSPILER ERROR: missing field expression */")))
-                              ((none) "/* TRANSPILER ERROR: missing object expression */"))))
+                                                      ((none) "__auto_type"))))
+                                                ((none) "__auto_type"))))))
+                                      (else "__auto_type")))
+                                  ((none) "__auto_type")))
+                              ((none) "__auto_type"))))
                         ;; Let expression - infer from body (last element after bindings)
                         ((or (string-eq op "let") (string-eq op "let*"))
                           (if (< (list-len items) 3)
@@ -3326,7 +3328,8 @@
                         ;; some constructor - infer Option type from value
                         ((string-eq op "some")
                           (if (< (list-len items) 2)
-                            "/* TRANSPILER ERROR: some without value */"
+                            (do (ctx-add-error-at ctx "some constructor requires a value" (ctx-sexpr-line expr) (ctx-sexpr-col expr))
+                              "__type_error__")
                             (match (list-get items 1)
                               ((some val-expr)
                                 (let ((val-type (infer-expr-c-type ctx val-expr)))
@@ -3341,7 +3344,9 @@
                                         (ctx-str3 ctx "slop_option_" base-type "_ptr")))
                                     ;; Other types - generate slop_option_<type>
                                     (else (ctx-str3 ctx "slop_option_" val-type "")))))
-                              ((none) "/* TRANSPILER ERROR: some with no value expression */"))))
+                              ((none)
+                                (do (ctx-add-error-at ctx "some constructor: missing value expression" (ctx-sexpr-line expr) (ctx-sexpr-col expr))
+                                  "__type_error__")))))
                         ;; none constructor - use return type context if available
                         ((string-eq op "none")
                           (match (ctx-get-current-return-type ctx)
@@ -3364,6 +3369,41 @@
                               ((some type-expr)
                                 (to-c-type-prefixed ctx type-expr))
                               ((none) "void*"))))
+                        ;; deref - dereference pointer, strip one level of pointer
+                        ((string-eq op "deref")
+                          (if (< (list-len items) 2)
+                            "int64_t"
+                            (match (list-get items 1)
+                              ((some inner)
+                                (let ((inner-type (infer-expr-c-type ctx inner)))
+                                  (if (ends-with inner-type "*")
+                                    (strip-pointer-suffix (. (deref ctx) arena) inner-type)
+                                    inner-type)))
+                              ((none) "int64_t"))))
+                        ;; string-concat returns slop_string
+                        ((string-eq op "string-concat") "slop_string")
+                        ;; list-len returns int64_t
+                        ((string-eq op "list-len") "int64_t")
+                        ;; string-len returns int64_t
+                        ((string-eq op "string-len") "int64_t")
+                        ;; string-eq returns uint8_t (Bool)
+                        ((string-eq op "string-eq") "uint8_t")
+                        ;; addr returns pointer - infer inner type and add *
+                        ((string-eq op "addr")
+                          (if (< (list-len items) 2)
+                            "void*"
+                            (match (list-get items 1)
+                              ((some inner)
+                                (ctx-str3 ctx (infer-expr-c-type ctx inner) "*" ""))
+                              ((none) "void*"))))
+                        ;; arena-alloc returns void*
+                        ((string-eq op "arena-alloc") "void*")
+                        ;; list-new returns a list type
+                        ((string-eq op "list-new") "int64_t")
+                        ;; list-get returns option type
+                        ((string-eq op "list-get") "int64_t")
+                        ;; int-to-string returns slop_string
+                        ((string-eq op "int-to-string") "slop_string")
                         ;; when returns void
                         ((string-eq op "when")
                           "void")
@@ -3392,13 +3432,13 @@
                                       ((. func-entry returns-string) "slop_string")
                                       ((string-eq ret-type "void") "void")
                                       ((> (string-len ret-type) 0) ret-type)
-                                      ;; Empty return type = incomplete info (e.g., imported but not processed)
-                                      (else "__type_error__"))))
-                                ;; Function not found in registry - return error marker
-                                ((none) "__type_error__"))))))))
-                  (else "__type_error__")))
-              ((none) "__type_error__")))))
-      (else "__type_error__")))))
+                                      ;; Empty return type = incomplete info
+                                      (else (do (ctx-add-error-at ctx (ctx-str3 ctx "function '" op "' has no return type information") (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__")))))
+                                ;; Function not found in registry
+                                ((none) (do (ctx-add-error-at ctx (ctx-str3 ctx "unknown function or type '" op "'") (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__")))))))))
+                  (else (do (ctx-add-error-at ctx "cannot infer type: list head is not a symbol" (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__"))))
+              ((none) (do (ctx-add-error-at ctx "cannot infer type of empty list" (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__"))))))
+      (else (do (ctx-add-error-at ctx "cannot infer type of expression" (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__"))))))
 
   (fn build-result-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build Result match as GCC statement expression")

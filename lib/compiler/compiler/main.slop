@@ -723,21 +723,24 @@
   ;; Typed-AST Emission
   ;; ============================================================
 
+  (fn emit-sexpr-inner ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Emit inner representation of an S-expression without type wrapper")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((sym sym) (. sym name))
+      ((str str)
+        (string-concat arena "\""
+          (string-concat arena (. str value) "\"")))
+      ((num num) (. num raw))
+      ((lst lst) (emit-typed-list arena (. lst items)))))
+
   (fn emit-typed-sexpr ((arena Arena) (expr (Ptr SExpr)))
     (@intent "Emit S-expression with type annotations from checker")
     (@spec ((Arena (Ptr SExpr)) -> String))
     (@pre (!= expr nil))
     (let ((type-opt (get-node-resolved-type expr))
-          (inner (match (deref expr)
-                   ((sym sym)
-                     (. sym name))
-                   ((str str)
-                     (string-concat arena "\""
-                       (string-concat arena (. str value) "\"")))
-                   ((num num)
-                     (. num raw))
-                   ((lst lst)
-                     (emit-typed-list arena (. lst items))))))
+          (inner (emit-sexpr-inner arena expr)))
       (match type-opt
         ((some rt)
           (let ((type-str (resolved-type-to-slop-string arena rt)))

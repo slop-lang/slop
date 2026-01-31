@@ -919,9 +919,15 @@
                             ;; Look for :c-name keyword and extract actual C name
                             (c-name (extract-ffi-c-name ctx items fn-name))
                             ;; Extract param types from FFI declaration for typed none handling
-                            (param-types (extract-ffi-param-types ctx items)))
-                        ;; Register as external function with param types (FFI has no SLOP return type)
-                        (ctx-register-func ctx (FuncEntry fn-name c-name "" "" true false param-types))))
+                            (param-types (extract-ffi-param-types ctx items))
+                            ;; Extract return type from FFI declaration (items[2])
+                            (ret-type (if (>= len 3)
+                                       (match (list-get items 2)
+                                         ((some ret-expr) (to-c-type-prefixed ctx ret-expr))
+                                         ((none) ""))
+                                       ""))
+                            (ret-is-string (string-eq ret-type "slop_string")))
+                        (ctx-register-func ctx (FuncEntry fn-name c-name ret-type "" true ret-is-string param-types))))
                     (else (do))))
                 ((none) (do))))))
         (else (do)))))

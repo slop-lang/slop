@@ -10,10 +10,12 @@
     resolve-imports resolve-import-stmt resolve-module-file)
 
   (import parser (SExpr SExprList SExprSymbol is-form
-                  sexpr-is-list sexpr-list-len sexpr-list-get))
+                  sexpr-is-list sexpr-list-len sexpr-list-get
+                  sexpr-line sexpr-col))
   (import types (ResolvedType))
   (import env (TypeEnv env-arena env-add-import env-resolve-import
-               env-lookup-type env-lookup-type-direct env-set-module env-get-current-file))
+               env-lookup-type env-lookup-type-direct env-set-module env-get-current-file
+               env-add-error env-lookup-function-direct))
   (import path (path-dirname path-join))
   (import file (file-exists))
 
@@ -91,7 +93,21 @@
                                                                ((none) (. mod-sym name))))
                                               (qualified-name (string-concat arena actual-module
                                                                 (string-concat arena ":" local-name))))
-                                          (do (env-add-import env local-name qualified-name))))
+                                          ;; Validate that the symbol exists in the target module
+                                          (when (and (not (contains-slash (. mod-sym name)))
+                                                     (match (env-lookup-type-direct env qualified-name)
+                                                       ((some _) false)
+                                                       ((none) true))
+                                                     (match (env-lookup-function-direct env qualified-name)
+                                                       ((some _) false)
+                                                       ((none) true)))
+                                            (env-add-error env
+                                              (string-concat arena "module '"
+                                                (string-concat arena (. mod-sym name)
+                                                  (string-concat arena "' does not export '"
+                                                    (string-concat arena local-name "'"))))
+                                              (sexpr-line name-expr) (sexpr-col name-expr)))
+                                          (env-add-import env local-name qualified-name)))
                                       (_ (do))))
                                   ((none) (do))))))
                           (_ (do))))
