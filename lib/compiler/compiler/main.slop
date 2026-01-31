@@ -727,6 +727,7 @@
     (@intent "Emit inner representation of an S-expression without type wrapper")
     (@spec ((Arena (Ptr SExpr)) -> String))
     (@pre {expr != nil})
+    (@pure)
     (match (deref expr)
       ((sym sym) (. sym name))
       ((str str)
