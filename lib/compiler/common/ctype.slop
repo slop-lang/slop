@@ -305,13 +305,13 @@
                     ;; (Option T) -> slop_option_<inner>
                     ((string-eq head "Option")
                       (if (< len 2)
-                        "slop_option_void"
+                        "/* TRANSPILER_ERROR: Option requires inner type */"
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type arena inner))
                                   (inner-id (type-to-identifier arena inner-c)))
                               (string-concat arena "slop_option_" inner-id)))
-                          ((none) "slop_option_void"))))
+                          ((none) "/* TRANSPILER_ERROR: Option requires inner type */"))))
 
                     ;; (Result T E) -> slop_result_<ok>_<err>
                     ((string-eq head "Result")
@@ -557,7 +557,7 @@
             ((some inner)
               (let ((inner-c (resolved-type-to-c arena inner)))
                 (string-concat arena "slop_option_" (type-to-identifier arena inner-c))))
-            ((none) "slop_option_void")))
+            ((none) "/* TRANSPILER_ERROR: Option requires inner type */")))
         ;; List T -> slop_list_<id>
         ((== kind 'rk-list)
           (match (. (deref rt) inner-type)

@@ -235,6 +235,7 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
     try:
         cmd_prefix = [str(transpiler_bin)]
         if compiler_bin:
+            print(f"  Using merged compiler: {compiler_bin}")
             cmd_prefix.append('transpile')
         result = subprocess.run(
             cmd_prefix + all_files,
@@ -1925,6 +1926,7 @@ def cmd_check(args):
                 import subprocess
                 cmd = [str(checker_bin)]
                 if compiler_bin:
+                    print(f"  Using merged compiler: {compiler_bin}")
                     cmd.append('check')
                 if getattr(args, 'json', False):
                     cmd.append('--json')

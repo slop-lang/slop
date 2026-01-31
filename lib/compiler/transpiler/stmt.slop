@@ -24,7 +24,7 @@
                    to-c-type-prefixed ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    LastLambdaInfo ctx-get-last-lambda-info ctx-clear-last-lambda-info))
   (import ctype (to-c-type to-c-name))
-  (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-collection-element-slop-type))
+  (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-collection-element-slop-type c-type-to-option-type-name))
   (import strlib (starts-with ends-with))
   (import match (transpile-match))
 
@@ -316,6 +316,7 @@
   (fn get-some-value ((expr (Ptr SExpr)))
     (@intent "If expr is (some value), return the value expression")
     (@spec (((Ptr SExpr)) -> (Option (Ptr SExpr))))
+    (@pre {expr != nil})
     (let ((mut result (Option (Ptr SExpr)) none))
       (match (deref expr)
         ((lst lst)
@@ -512,10 +513,31 @@
                                 ;; Not Option type - regular assignment
                                 (let ((value-c (transpile-expr ctx value-expr)))
                                   (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))
-                            ;; Couldn't get target type - regular assignment
+                            ;; Couldn't get target type - try to infer from value
                             ((none)
-                              (let ((value-c (transpile-expr ctx value-expr)))
-                                (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))))
+                              (let ((some-val-opt (get-some-value value-expr)))
+                                (match some-val-opt
+                                  ((some inner-expr)
+                                    ;; Value is (some x) - infer Option type from inner value
+                                    (let ((inner-c (transpile-expr ctx inner-expr))
+                                          (inner-type (infer-expr-c-type ctx inner-expr))
+                                          (option-type (c-type-to-option-type-name ctx inner-type)))
+                                      (ctx-emit ctx (ctx-str ctx target-c (ctx-str5 ctx " = (" option-type "){.has_value = 1, .value = " inner-c "};")))))
+                                  ((none)
+                                    ;; Check for (none) with return type context
+                                    (if (is-none-form value-expr)
+                                      (match (ctx-get-current-return-type ctx)
+                                        ((some ret-type)
+                                          (if (starts-with ret-type "slop_option_")
+                                            (ctx-emit ctx (ctx-str ctx target-c (ctx-str3 ctx " = (" ret-type "){.has_value = false};")))
+                                            (let ((value-c (transpile-expr ctx value-expr)))
+                                              (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))
+                                        ((none)
+                                          (let ((value-c (transpile-expr ctx value-expr)))
+                                            (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))
+                                      ;; Regular expression
+                                      (let ((value-c (transpile-expr ctx value-expr)))
+                                        (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))))))))
                       ((none) (ctx-add-error-at ctx "missing set! value" (ctx-sexpr-line expr) (ctx-sexpr-col expr)))))
                   ((none) (ctx-add-error-at ctx "missing set! target" (ctx-sexpr-line expr) (ctx-sexpr-col expr)))))
               (else (ctx-add-error-at ctx "invalid set!: need target and value" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))

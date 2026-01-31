@@ -16,7 +16,8 @@
     ;; Type inference
     infer-expr-c-type infer-option-inner-slop-type infer-expr-slop-type
     ;; Collection/Result type inference helpers
-    infer-collection-element-slop-type infer-result-ok-slop-type infer-result-err-slop-type)
+    infer-collection-element-slop-type infer-result-ok-slop-type infer-result-err-slop-type
+    c-type-to-option-type-name)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
@@ -3366,6 +3367,15 @@
                         ;; when returns void
                         ((string-eq op "when")
                           "void")
+                        ;; Arithmetic operators return int64_t
+                        ((or (string-eq op "+") (or (string-eq op "-") (or (string-eq op "*") (or (string-eq op "/") (string-eq op "%")))))
+                          "int64_t")
+                        ;; Comparison operators return uint8_t (Bool)
+                        ((or (string-eq op ">") (or (string-eq op "<") (or (string-eq op ">=") (or (string-eq op "<=") (or (string-eq op "==") (string-eq op "!="))))))
+                          "uint8_t")
+                        ;; Logical operators return uint8_t (Bool)
+                        ((or (string-eq op "and") (or (string-eq op "or") (string-eq op "not")))
+                          "uint8_t")
                         ;; Function call or struct constructor - check type registry first
                         (else
                           ;; First check if it's a struct/union constructor

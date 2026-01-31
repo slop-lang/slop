@@ -1555,7 +1555,7 @@
 
                     ;; (Option T) -> slop_option_<inner>
                     ((string-eq head "Option")
-                      (set! result "slop_option_void")
+                      (set! result "__option_type_error__")
                       (when (>= len 2)
                         (match (list-get items 1)
                           ((some inner)
