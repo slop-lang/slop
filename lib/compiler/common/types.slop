@@ -121,7 +121,8 @@
     rk-array          ;; (Array T N)
     rk-map            ;; (Map K V)
     rk-chan            ;; (Chan T)
-    rk-thread))       ;; (Thread T)
+    rk-thread         ;; (Thread T)
+    rk-typevar))      ;; Type variable (T, U, etc.)
 
   ;; A fully-resolved variant in a union type
   (type ResolvedVariant (record
@@ -167,7 +168,8 @@
     (return-type (Ptr ResolvedType))   ;; Return type
     (is-pure Bool)             ;; Has @pure annotation
     (allocates Bool)           ;; Has @alloc annotation
-    (module-name (Option String))))    ;; Module that defines this
+    (module-name (Option String))      ;; Module that defines this
+    (type-params (List String))))      ;; Generic type parameter names (e.g., ("T"))
 
   ;; ============================================================
   ;; Type Errors
@@ -350,8 +352,8 @@
     (@alloc arena)
     (@pre (!= return-type nil))
     ;; Example: (fn-signature-new arena "add" "add" params int-type)
-    (let ((sig (cast (Ptr FnSignature) (arena-alloc arena 96))))
-      (set! (deref sig) (FnSignature name c-name params return-type false false (none)))
+    (let ((sig (cast (Ptr FnSignature) (arena-alloc arena 112))))
+      (set! (deref sig) (FnSignature name c-name params return-type false false (none) (list-new arena String)))
       sig))
 
   (fn type-error-new ((kind TypeErrorKind) (message String) (line Int) (col Int))
@@ -592,5 +594,6 @@
                 (string-concat arena "(Array "
                   (string-concat arena (resolved-type-to-slop-string arena inner) ")")))
               ((none) "Array")))
+          ('rk-typevar name)
           (else name)))))
 )

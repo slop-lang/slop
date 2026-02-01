@@ -156,6 +156,241 @@
                 (env-make-ptr-type env (env-get-generic-type env)))))))
 
   ;; ============================================================
+  ;; Generic Type Parameter Support
+  ;; ============================================================
+
+  ;; TypeBinding: maps a type variable name to a concrete type
+  ;; Stored as parallel lists for simplicity (no separate record needed)
+
+  (fn has-type-params ((sig (Ptr FnSignature)))
+    (@intent "Check if a function signature has generic type parameters")
+    (@spec (((Ptr FnSignature)) -> Bool))
+    (@pure)
+    (@pre (!= sig nil))
+    (> (list-len (. (deref sig) type-params)) 0))
+
+  (fn find-binding ((bind-names (List String)) (bind-types (List (Ptr ResolvedType))) (name String))
+    (@intent "Look up a type variable binding by name")
+    (@spec (((List String) (List (Ptr ResolvedType)) String) -> (Option (Ptr ResolvedType))))
+    (@pure)
+    (let ((len (list-len bind-names))
+          (mut found (Option (Ptr ResolvedType)) (none)))
+      (for (i 0 len)
+        (match (list-get bind-names i)
+          ((some bn)
+            (when (string-eq bn name)
+              (match (list-get bind-types i)
+                ((some bt) (set! found (some bt)))
+                ((none) (do)))))
+          ((none) (do))))
+      found))
+
+  (fn unify-types ((arena Arena) (formal (Ptr ResolvedType)) (actual (Ptr ResolvedType))
+                    (bind-names (List String)) (bind-types (List (Ptr ResolvedType))))
+    (@intent "Unify a formal type with an actual type, binding type variables")
+    (@spec ((Arena (Ptr ResolvedType) (Ptr ResolvedType) (List String) (List (Ptr ResolvedType))) -> Unit))
+    (@pre (!= formal nil))
+    (@pre (!= actual nil))
+    (let ((f-kind (. (deref formal) kind)))
+      (cond
+        ;; Type variable — bind it
+        ((== f-kind 'rk-typevar)
+          (let ((tv-name (. (deref formal) name)))
+            ;; Only bind if not already bound
+            (match (find-binding bind-names bind-types tv-name)
+              ((some existing) (do))  ;; Already bound, skip (could check consistency)
+              ((none)
+                (do (list-push bind-names tv-name)
+                    (list-push bind-types actual))))))
+        ;; Ptr: recurse into inner type
+        ((== f-kind 'rk-ptr)
+          (when (== (. (deref actual) kind) 'rk-ptr)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Chan: recurse into inner type
+        ((== f-kind 'rk-chan)
+          (when (== (. (deref actual) kind) 'rk-chan)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Thread: recurse into inner type
+        ((== f-kind 'rk-thread)
+          (when (== (. (deref actual) kind) 'rk-thread)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; List: recurse into inner type
+        ((== f-kind 'rk-list)
+          (when (== (. (deref actual) kind) 'rk-list)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Option: recurse into inner type
+        ((== f-kind 'rk-option)
+          (when (== (. (deref actual) kind) 'rk-option)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Result: recurse into both inner types
+        ((== f-kind 'rk-result)
+          (when (== (. (deref actual) kind) 'rk-result)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))
+            (match (. (deref formal) inner-type2)
+              ((some f-inner2)
+                (match (. (deref actual) inner-type2)
+                  ((some a-inner2) (unify-types arena f-inner2 a-inner2 bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Concrete types — no unification needed
+        (else (do)))))
+
+  (fn substitute-type-vars ((arena Arena) (t (Ptr ResolvedType))
+                             (bind-names (List String)) (bind-types (List (Ptr ResolvedType))))
+    (@intent "Replace type variables with their bound concrete types")
+    (@spec ((Arena (Ptr ResolvedType) (List String) (List (Ptr ResolvedType))) -> (Ptr ResolvedType)))
+    (@pre (!= t nil))
+    (let ((kind (. (deref t) kind)))
+      (cond
+        ;; Type variable — look up binding
+        ((== kind 'rk-typevar)
+          (let ((tv-name (. (deref t) name)))
+            (match (find-binding bind-names bind-types tv-name)
+              ((some bound) bound)
+              ((none) t))))  ;; Unbound typevar stays as-is
+        ;; Ptr: substitute inner
+        ((== kind 'rk-ptr)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (inner-name (. (deref new-inner) name))
+                    (ptr-name (string-concat arena "Ptr_" inner-name))
+                    (new-ptr (resolved-type-new arena 'rk-ptr ptr-name (none) "void*")))
+                (resolved-type-set-inner new-ptr new-inner)
+                new-ptr))
+            ((none) t)))
+        ;; Chan: substitute inner
+        ((== kind 'rk-chan)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (new-chan (resolved-type-new arena 'rk-chan "Chan" (none) "slop_chan_int*")))
+                (resolved-type-set-inner new-chan new-inner)
+                new-chan))
+            ((none) t)))
+        ;; Thread: substitute inner
+        ((== kind 'rk-thread)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (new-thread (resolved-type-new arena 'rk-thread "Thread" (none) "slop_thread_int*")))
+                (resolved-type-set-inner new-thread new-inner)
+                new-thread))
+            ((none) t)))
+        ;; List: substitute inner
+        ((== kind 'rk-list)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (new-list (resolved-type-new arena 'rk-list "List" (none) "slop_list_t*")))
+                (resolved-type-set-inner new-list new-inner)
+                new-list))
+            ((none) t)))
+        ;; Option: substitute inner
+        ((== kind 'rk-option)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (inner-name (. (deref new-inner) name))
+                    (opt-name (string-concat arena "Option_" inner-name))
+                    (new-opt (resolved-type-new arena 'rk-option opt-name (none) "slop_option")))
+                (resolved-type-set-inner new-opt new-inner)
+                new-opt))
+            ((none) t)))
+        ;; Result: substitute both inner types
+        ((== kind 'rk-result)
+          (let ((new-ok (match (. (deref t) inner-type)
+                          ((some ok) (substitute-type-vars arena ok bind-names bind-types))
+                          ((none) nil)))
+                (new-err (match (. (deref t) inner-type2)
+                           ((some err) (substitute-type-vars arena err bind-names bind-types))
+                           ((none) nil))))
+            (if (== new-ok nil)
+              t
+              (let ((ok-name (. (deref new-ok) name))
+                    (err-name (if (!= new-err nil) (. (deref new-err) name) "Error"))
+                    (result-name (string-concat arena "Result_"
+                                   (string-concat arena ok-name
+                                     (string-concat arena "_" err-name))))
+                    (new-result (resolved-type-new arena 'rk-result result-name (none) "Result")))
+                (resolved-type-set-inner new-result new-ok)
+                (when (!= new-err nil)
+                  (resolved-type-set-inner2 new-result new-err))
+                new-result))))
+        ;; Other types — return as-is
+        (else t))))
+
+  (fn infer-generic-call ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
+                            (line Int) (col Int))
+    (@intent "Infer return type for a generic function call by unifying type params")
+    (@spec (((Ptr TypeEnv) (Ptr FnSignature) (Ptr SExpr) Int Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= sig nil))
+    (@pre (!= expr nil))
+    (let ((arena (env-arena env))
+          (params (. (deref sig) params))
+          (num-params (list-len params))
+          (bind-names (list-new arena String))
+          (bind-types (list-new arena (Ptr ResolvedType))))
+      ;; Infer argument types and unify with formal params
+      (when (sexpr-is-list expr)
+        (let ((num-args (- (sexpr-list-len expr) 1)))
+          ;; Check arity
+          (when (!= num-args num-params)
+            (let ((msg (string-concat arena "'"
+                         (string-concat arena (. (deref sig) name)
+                           (string-concat arena "' expects "
+                             (string-concat arena (int-to-string arena num-params)
+                               (string-concat arena " argument(s), got "
+                                 (int-to-string arena num-args))))))))
+              (env-add-error env msg line col)))
+          ;; Unify each arg with its formal param
+          (let ((limit (if (< num-args num-params) num-args num-params)))
+            (for (i 0 limit)
+              (match (sexpr-list-get expr (+ i 1))
+                ((some arg-expr)
+                  (let ((actual-type (infer-expr env arg-expr)))
+                    (match (list-get params i)
+                      ((some param-info)
+                        (let ((formal-type (. param-info param-type)))
+                          (unify-types arena formal-type actual-type bind-names bind-types)))
+                      ((none) (do)))))
+                ((none) (do)))))))
+      ;; Substitute type variables in return type
+      (let ((ret-type (. (deref sig) return-type)))
+        (substitute-type-vars arena ret-type bind-names bind-types))))
+
+  ;; ============================================================
   ;; Type Comparison
   ;; ============================================================
 
@@ -173,7 +408,10 @@
         ;; Same name - definitely equal
         ((string-eq a-name b-name) true)
 
-        ;; Generic type variable "T" matches anything
+        ;; Type variables match anything
+        ((or (== a-kind 'rk-typevar) (== b-kind 'rk-typevar)) true)
+
+        ;; Generic type variable "T" matches anything (legacy)
         ((or (string-eq a-name "T") (string-eq b-name "T")) true)
 
         ;; Both Option types - check if one is generic (Option_T)
@@ -716,21 +954,13 @@
             (env-add-error env hole-msg line col)
             hole-type))
 
-        ;; Qualified threading builtins - intercept before env lookup (polymorphic)
-        ((is-qualified-threading-builtin op)
-          (infer-threading-builtin env op expr items len line col))
-
         ;; Function call - look up return type and check arguments
         (else
           (match (env-lookup-function env op)
             ((some sig)
-              ;; If bare threading builtin resolved to a threading module,
-              ;; use polymorphic path instead of the concrete signature
-              (if (and (is-bare-threading-builtin op)
-                       (match (. (deref sig) module-name)
-                         ((some mod) (is-threading-module mod))
-                         ((none) false)))
-                (infer-threading-builtin env op expr items len line col)
+              ;; Generic functions: unify type params from arguments
+              (if (has-type-params sig)
+                (infer-generic-call env sig expr line col)
                 (do (check-fn-call-args env sig expr line col)
                     (. (deref sig) return-type))))
             ;; Not a function - check if it's a type constructor or builtin
@@ -1008,9 +1238,6 @@
                               (when (!= elem-type nil)
                                 (resolved-type-set-inner list-type elem-type))
                               list-type))))
-                    ;; Bare threading builtins - fallback when no function found in env
-                    ((is-bare-threading-builtin op)
-                      (infer-threading-builtin env op expr items len line col))
                     ;; Verification-only forms - skip type checking
                     ((or (string-eq op "exists")
                          (or (string-eq op "forall")
