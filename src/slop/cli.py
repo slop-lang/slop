@@ -2481,11 +2481,6 @@ def cmd_build(args):
                 print("  Native parser not found, falling back to Python")
                 print("  Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             native_checker_bin = find_native_component('checker')
-            if native_checker_bin:
-                print(f"  Using native type checker: {native_checker_bin}")
-            else:
-                print("  Native type checker not found, falling back to Python")
-                print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             # Prefer merged slop-compiler (runs checker+transpiler with AST annotations)
             # Skip merged compiler when --skip-check is used (it integrates checking)
             skip_check = getattr(args, 'skip_check', False)
@@ -2493,6 +2488,11 @@ def cmd_build(args):
             if native_compiler_bin:
                 native_transpiler_bin = native_compiler_bin
                 print(f"  Using merged compiler: {native_compiler_bin}")
+            elif native_checker_bin:
+                print(f"  Using native type checker: {native_checker_bin}")
+            else:
+                print("  Native type checker not found, falling back to Python")
+                print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             if not native_transpiler_bin:
                 native_transpiler_bin = find_native_component('transpiler')
                 if native_transpiler_bin:
