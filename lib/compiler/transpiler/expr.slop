@@ -28,7 +28,8 @@
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
-                   LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info))
+                   LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
+                   ctx-warn-fallback))
   (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string
                  get-node-resolved-type resolved-type-to-c))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
@@ -814,7 +815,8 @@
                 (string-concat arena "slop_option_" (type-to-identifier arena elem-c))))
             ((none) (infer-list-element-option-type-fallback ctx list-expr))))
         ((none)
-          (infer-list-element-option-type-fallback ctx list-expr)))))
+          (do (ctx-warn-fallback ctx list-expr "infer-list-element-option-type")
+              (infer-list-element-option-type-fallback ctx list-expr))))))
 
   (fn infer-list-element-option-type-fallback ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)))
     (@intent "Fallback: infer option type using infer-expr-c-type or string-based methods")
@@ -3245,6 +3247,7 @@
       ((some rt)
         (resolved-type-to-c (. (deref ctx) arena) rt))
       ((none)
+    (do (ctx-warn-fallback ctx expr "infer-expr-c-type")
     (match (deref expr)
       ;; String literal -> slop_string
       ((str _) "slop_string")
@@ -3456,7 +3459,7 @@
                                 ((none) (do (ctx-add-error-at ctx (ctx-str3 ctx "unknown function or type '" op "'") (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__")))))))))
                   (else (do (ctx-add-error-at ctx "cannot infer type: list head is not a symbol" (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__"))))
               ((none) (do (ctx-add-error-at ctx "cannot infer type of empty list" (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__"))))))
-      (else (do (ctx-add-error-at ctx "cannot infer type of expression" (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__"))))))
+      (else (do (ctx-add-error-at ctx "cannot infer type of expression" (ctx-sexpr-line expr) (ctx-sexpr-col expr)) "__type_error__")))))))
 
   (fn build-result-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build Result match as GCC statement expression")

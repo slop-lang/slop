@@ -77,6 +77,8 @@
     TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias
     ;; Error handling
     ctx-fail
+    ;; Fallback warnings
+    ctx-warn-fallback
     ;; Error collection
     ctx-set-file ctx-add-error ctx-add-error-at ctx-has-errors ctx-get-errors ctx-report-errors
     ;; Position extraction helpers
@@ -475,6 +477,21 @@
       (print-string-stderr message)
       (slop-eputc 10)
       (exit 1)))
+
+  (fn ctx-warn-fallback ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (desc String))
+    (@intent "Print a warning to stderr when transpiler falls back to its own type inference")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String) -> Unit))
+    (let ((arena (. (deref ctx) arena))
+          (line (ctx-sexpr-line expr))
+          (col (ctx-sexpr-col expr)))
+      (do
+        (slop-eprint (cast (Ptr Char) "warning: type inference fallback at "))
+        (print-string-stderr (int-to-string arena line))
+        (slop-eputc 58)
+        (print-string-stderr (int-to-string arena col))
+        (slop-eprint (cast (Ptr Char) " for "))
+        (print-string-stderr desc)
+        (slop-eputc 10))))
 
   (fn print-string-stdout ((s String))
     (@intent "Print a String to stdout character by character")
