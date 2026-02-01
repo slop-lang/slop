@@ -683,16 +683,6 @@
                           ((none) (env-get-int-type env)))))
                     ;; cast returns Int (approximation)
                     ((string-eq op "cast") (env-get-int-type env))
-                    ;; String builtins
-                    ((string-eq op "string-eq") (env-get-bool-type env))
-                    ((string-eq op "string-concat") (env-get-string-type env))
-                    ((string-eq op "string-len") (env-get-int-type env))
-                    ((string-eq op "string-copy") (env-get-string-type env))
-                    ((string-eq op "string-new") (env-get-string-type env))
-                    ((string-eq op "string-slice") (env-get-string-type env))
-                    ((string-eq op "int-to-string") (env-get-string-type env))
-                    ((string-eq op "char-at") (env-get-int-type env))
-                    ((string-eq op "string-push-char") (env-get-string-type env))
                     ;; List operations
                     ;; list-push expects 2 args: list, item
                     ((string-eq op "list-push")
