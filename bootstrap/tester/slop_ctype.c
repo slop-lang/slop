@@ -4,13 +4,21 @@
 uint8_t ctype_is_c_keyword(slop_string name);
 uint8_t ctype_is_builtin_type(slop_string name);
 uint8_t ctype_is_builtin_c_type(slop_string c_name);
+uint8_t ctype_is_int_type(slop_string name);
+uint8_t ctype_is_float_type(slop_string name);
+uint8_t ctype_is_bool_type(slop_string name);
+uint8_t ctype_is_numeric_type(slop_string name);
 slop_option_string ctype_builtin_type_c(slop_arena* arena, slop_string name);
 slop_string ctype_to_c_name(slop_arena* arena, slop_string name);
 slop_string ctype_type_to_identifier(slop_arena* arena, slop_string c_type);
+uint8_t ctype_is_type_variable(slop_string name);
 slop_string ctype_to_c_type(slop_arena* arena, types_SExpr* expr);
 slop_string ctype_to_c_type_compound(slop_arena* arena, slop_list_types_SExpr_ptr items);
 slop_string ctype_build_fn_args_str(slop_arena* arena, types_SExpr* args_expr);
 slop_string ctype_sexpr_to_type_string(slop_arena* arena, types_SExpr* expr);
+slop_string ctype_range_type_to_c_type(slop_arena* arena, slop_list_types_SExpr_ptr items, int64_t len);
+slop_option_types_ResolvedType_ptr ctype_get_node_resolved_type(types_SExpr* expr);
+slop_string ctype_resolved_type_to_c(slop_arena* arena, types_ResolvedType* rt);
 
 uint8_t ctype_is_c_keyword(slop_string name) {
     return ((string_eq(name, SLOP_STR("auto"))) || (string_eq(name, SLOP_STR("break"))) || (string_eq(name, SLOP_STR("case"))) || (string_eq(name, SLOP_STR("char"))) || (string_eq(name, SLOP_STR("const"))) || (string_eq(name, SLOP_STR("continue"))) || (string_eq(name, SLOP_STR("default"))) || (string_eq(name, SLOP_STR("do"))) || (string_eq(name, SLOP_STR("double"))) || (string_eq(name, SLOP_STR("else"))) || (string_eq(name, SLOP_STR("enum"))) || (string_eq(name, SLOP_STR("extern"))) || (string_eq(name, SLOP_STR("float"))) || (string_eq(name, SLOP_STR("for"))) || (string_eq(name, SLOP_STR("goto"))) || (string_eq(name, SLOP_STR("if"))) || (string_eq(name, SLOP_STR("int"))) || (string_eq(name, SLOP_STR("long"))) || (string_eq(name, SLOP_STR("register"))) || (string_eq(name, SLOP_STR("return"))) || (string_eq(name, SLOP_STR("short"))) || (string_eq(name, SLOP_STR("signed"))) || (string_eq(name, SLOP_STR("sizeof"))) || (string_eq(name, SLOP_STR("static"))) || (string_eq(name, SLOP_STR("struct"))) || (string_eq(name, SLOP_STR("switch"))) || (string_eq(name, SLOP_STR("typedef"))) || (string_eq(name, SLOP_STR("union"))) || (string_eq(name, SLOP_STR("unsigned"))) || (string_eq(name, SLOP_STR("void"))) || (string_eq(name, SLOP_STR("volatile"))) || (string_eq(name, SLOP_STR("while"))) || (string_eq(name, SLOP_STR("inline"))) || (string_eq(name, SLOP_STR("restrict"))));
@@ -22,6 +30,22 @@ uint8_t ctype_is_builtin_type(slop_string name) {
 
 uint8_t ctype_is_builtin_c_type(slop_string c_name) {
     return ((string_eq(c_name, SLOP_STR("int64_t"))) || (string_eq(c_name, SLOP_STR("int32_t"))) || (string_eq(c_name, SLOP_STR("int16_t"))) || (string_eq(c_name, SLOP_STR("int8_t"))) || (string_eq(c_name, SLOP_STR("uint64_t"))) || (string_eq(c_name, SLOP_STR("uint32_t"))) || (string_eq(c_name, SLOP_STR("uint16_t"))) || (string_eq(c_name, SLOP_STR("uint8_t"))) || (string_eq(c_name, SLOP_STR("double"))) || (string_eq(c_name, SLOP_STR("float"))) || (string_eq(c_name, SLOP_STR("bool"))) || (string_eq(c_name, SLOP_STR("char"))) || (string_eq(c_name, SLOP_STR("void"))) || (string_eq(c_name, SLOP_STR("slop_string"))) || (string_eq(c_name, SLOP_STR("slop_bytes"))) || (string_eq(c_name, SLOP_STR("slop_arena"))) || (string_eq(c_name, SLOP_STR("slop_arena*"))));
+}
+
+uint8_t ctype_is_int_type(slop_string name) {
+    return ((string_eq(name, SLOP_STR("Int"))) || (string_eq(name, SLOP_STR("I8"))) || (string_eq(name, SLOP_STR("I16"))) || (string_eq(name, SLOP_STR("I32"))) || (string_eq(name, SLOP_STR("I64"))) || (string_eq(name, SLOP_STR("U8"))) || (string_eq(name, SLOP_STR("U16"))) || (string_eq(name, SLOP_STR("U32"))) || (string_eq(name, SLOP_STR("U64"))) || (string_eq(name, SLOP_STR("int64_t"))) || (string_eq(name, SLOP_STR("int32_t"))) || (string_eq(name, SLOP_STR("int16_t"))) || (string_eq(name, SLOP_STR("int8_t"))) || (string_eq(name, SLOP_STR("uint64_t"))) || (string_eq(name, SLOP_STR("uint32_t"))) || (string_eq(name, SLOP_STR("uint16_t"))) || (string_eq(name, SLOP_STR("uint8_t"))));
+}
+
+uint8_t ctype_is_float_type(slop_string name) {
+    return ((string_eq(name, SLOP_STR("Float"))) || (string_eq(name, SLOP_STR("F32"))) || (string_eq(name, SLOP_STR("double"))) || (string_eq(name, SLOP_STR("float"))));
+}
+
+uint8_t ctype_is_bool_type(slop_string name) {
+    return (string_eq(name, SLOP_STR("Bool")) || string_eq(name, SLOP_STR("bool")));
+}
+
+uint8_t ctype_is_numeric_type(slop_string name) {
+    return (ctype_is_int_type(name) || ctype_is_float_type(name));
 }
 
 slop_option_string ctype_builtin_type_c(slop_arena* arena, slop_string name) {
@@ -96,7 +120,39 @@ slop_string ctype_type_to_identifier(slop_arena* arena, slop_string c_type) {
         if (string_eq(result, SLOP_STR("int64_t"))) {
             result = SLOP_STR("int");
         }
+        if (string_eq(result, SLOP_STR("uint8_t"))) {
+            result = SLOP_STR("u8");
+        }
+        if (string_eq(result, SLOP_STR("int8_t"))) {
+            result = SLOP_STR("i8");
+        }
+        if (string_eq(result, SLOP_STR("uint16_t"))) {
+            result = SLOP_STR("u16");
+        }
+        if (string_eq(result, SLOP_STR("int16_t"))) {
+            result = SLOP_STR("i16");
+        }
+        if (string_eq(result, SLOP_STR("uint32_t"))) {
+            result = SLOP_STR("u32");
+        }
+        if (string_eq(result, SLOP_STR("int32_t"))) {
+            result = SLOP_STR("i32");
+        }
+        if (string_eq(result, SLOP_STR("uint64_t"))) {
+            result = SLOP_STR("u64");
+        }
         return result;
+    }
+}
+
+uint8_t ctype_is_type_variable(slop_string name) {
+    if ((((int64_t)(name.len)) == 1)) {
+        {
+            __auto_type ch = strlib_char_at(name, 0);
+            return ((ch >= 65) && (ch <= 90));
+        }
+    } else {
+        return 0;
     }
 }
 
@@ -114,7 +170,11 @@ slop_string ctype_to_c_type(slop_arena* arena, types_SExpr* expr) {
                     __auto_type c_type = _mv_52.value;
                     return c_type;
                 } else if (!_mv_52.has_value) {
-                    return ctype_to_c_name(arena, name);
+                    if (ctype_is_type_variable(name)) {
+                        return SLOP_STR("int64_t");
+                    } else {
+                        return ctype_to_c_name(arena, name);
+                    }
                 }
             }
         }
@@ -178,7 +238,7 @@ slop_string ctype_to_c_type_compound(slop_arena* arena, slop_list_types_SExpr_pt
                                 }
                             } else if (string_eq(head, SLOP_STR("Option"))) {
                                 if ((len < 2)) {
-                                    return SLOP_STR("slop_option_void");
+                                    return SLOP_STR("/* TRANSPILER_ERROR: Option requires inner type */");
                                 } else {
                                     __auto_type _mv_57 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                     if (_mv_57.has_value) {
@@ -189,7 +249,7 @@ slop_string ctype_to_c_type_compound(slop_arena* arena, slop_list_types_SExpr_pt
                                             return string_concat(arena, SLOP_STR("slop_option_"), inner_id);
                                         }
                                     } else if (!_mv_57.has_value) {
-                                        return SLOP_STR("slop_option_void");
+                                        return SLOP_STR("/* TRANSPILER_ERROR: Option requires inner type */");
                                     }
                                 }
                             } else if (string_eq(head, SLOP_STR("Result"))) {
@@ -282,6 +342,8 @@ slop_string ctype_to_c_type_compound(slop_arena* arena, slop_list_types_SExpr_pt
                                         }
                                     }
                                 }
+                            } else if (string_eq(head, SLOP_STR("Int"))) {
+                                return ctype_range_type_to_c_type(arena, items, len);
                             } else {
                                 __auto_type _mv_63 = ctype_builtin_type_c(arena, head);
                                 if (_mv_63.has_value) {
@@ -320,7 +382,7 @@ slop_string ctype_build_fn_args_str(slop_arena* arena, types_SExpr* args_expr) {
                         __auto_type result = SLOP_STR("(");
                         __auto_type i = 0;
                         while ((i < arg_count)) {
-                            __auto_type _mv_65 = ({ __auto_type _lst = arg_items; size_t _idx = (size_t)i; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                            __auto_type _mv_65 = ({ __auto_type _lst = arg_items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_65.has_value) {
                                 __auto_type arg_expr = _mv_65.value;
                                 {
@@ -365,7 +427,7 @@ slop_string ctype_sexpr_to_type_string(slop_arena* arena, types_SExpr* expr) {
                 __auto_type result = SLOP_STR("(");
                 __auto_type i = 0;
                 while ((i < len)) {
-                    __auto_type _mv_67 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_67 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_67.has_value) {
                         __auto_type item_expr = _mv_67.value;
                         {
@@ -385,6 +447,210 @@ slop_string ctype_sexpr_to_type_string(slop_arena* arena, types_SExpr* expr) {
         }
         default: {
             return SLOP_STR("");
+        }
+    }
+}
+
+slop_string ctype_range_type_to_c_type(slop_arena* arena, slop_list_types_SExpr_ptr items, int64_t len) {
+    if ((len < 4)) {
+        return SLOP_STR("int64_t");
+    } else {
+        {
+            __auto_type min_val = ((int64_t)(0));
+            __auto_type max_val = ((int64_t)(0));
+            __auto_type has_min = 0;
+            __auto_type has_max = 0;
+            __auto_type _mv_68 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_68.has_value) {
+                __auto_type min_expr = _mv_68.value;
+                __auto_type _mv_69 = (*min_expr);
+                switch (_mv_69.tag) {
+                    case types_SExpr_num:
+                    {
+                        __auto_type n = _mv_69.data.num;
+                        has_min = 1;
+                        min_val = ((int64_t)(n.int_value));
+                        break;
+                    }
+                    default: {
+                        break;
+                    }
+                }
+            } else if (!_mv_68.has_value) {
+            }
+            __auto_type _mv_70 = ({ __auto_type _lst = items; size_t _idx = (size_t)3; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_70.has_value) {
+                __auto_type max_expr = _mv_70.value;
+                __auto_type _mv_71 = (*max_expr);
+                switch (_mv_71.tag) {
+                    case types_SExpr_num:
+                    {
+                        __auto_type n = _mv_71.data.num;
+                        has_max = 1;
+                        max_val = ((int64_t)(n.int_value));
+                        break;
+                    }
+                    default: {
+                        break;
+                    }
+                }
+            } else if (!_mv_70.has_value) {
+            }
+            if ((has_min && has_max)) {
+                if (((min_val >= 0) && (max_val <= 255))) {
+                    return SLOP_STR("uint8_t");
+                } else if (((min_val >= 0) && (max_val <= 65535))) {
+                    return SLOP_STR("uint16_t");
+                } else if (((min_val >= (0 - 128)) && (max_val <= 127))) {
+                    return SLOP_STR("int8_t");
+                } else if (((min_val >= (0 - 32768)) && (max_val <= 32767))) {
+                    return SLOP_STR("int16_t");
+                } else {
+                    return SLOP_STR("int64_t");
+                }
+            } else {
+                return SLOP_STR("int64_t");
+            }
+        }
+    }
+}
+
+slop_option_types_ResolvedType_ptr ctype_get_node_resolved_type(types_SExpr* expr) {
+    SLOP_PRE(((expr != NULL)), "(!= expr nil)");
+    __auto_type _mv_72 = (*expr);
+    switch (_mv_72.tag) {
+        case types_SExpr_sym:
+        {
+            __auto_type sym = _mv_72.data.sym;
+            return sym.resolved_type;
+        }
+        case types_SExpr_str:
+        {
+            __auto_type str = _mv_72.data.str;
+            return str.resolved_type;
+        }
+        case types_SExpr_num:
+        {
+            __auto_type num = _mv_72.data.num;
+            return num.resolved_type;
+        }
+        case types_SExpr_lst:
+        {
+            __auto_type lst = _mv_72.data.lst;
+            return lst.resolved_type;
+        }
+    }
+}
+
+slop_string ctype_resolved_type_to_c(slop_arena* arena, types_ResolvedType* rt) {
+    SLOP_PRE(((rt != NULL)), "(!= rt nil)");
+    {
+        __auto_type kind = (*rt).kind;
+        __auto_type name = (*rt).name;
+        if ((kind == types_ResolvedTypeKind_rk_primitive)) {
+            __auto_type _mv_73 = ctype_builtin_type_c(arena, name);
+            if (_mv_73.has_value) {
+                __auto_type c = _mv_73.value;
+                return c;
+            } else if (!_mv_73.has_value) {
+                return ctype_to_c_name(arena, name);
+            }
+        } else if ((kind == types_ResolvedTypeKind_rk_range)) {
+            return (*rt).c_name;
+        } else if (((kind == types_ResolvedTypeKind_rk_record) || ((kind == types_ResolvedTypeKind_rk_union) || (kind == types_ResolvedTypeKind_rk_enum)))) {
+            {
+                __auto_type c_name = ctype_to_c_name(arena, name);
+                __auto_type _mv_74 = (*rt).module_name;
+                if (_mv_74.has_value) {
+                    __auto_type mod_name = _mv_74.value;
+                    return string_concat(arena, string_concat(arena, ctype_to_c_name(arena, mod_name), SLOP_STR("_")), c_name);
+                } else if (!_mv_74.has_value) {
+                    return c_name;
+                }
+            }
+        } else if ((kind == types_ResolvedTypeKind_rk_ptr)) {
+            __auto_type _mv_75 = (*rt).inner_type;
+            if (_mv_75.has_value) {
+                __auto_type inner = _mv_75.value;
+                {
+                    __auto_type inner_kind = (*inner).kind;
+                    if (((inner_kind == types_ResolvedTypeKind_rk_chan) || (inner_kind == types_ResolvedTypeKind_rk_thread))) {
+                        return ctype_resolved_type_to_c(arena, inner);
+                    } else {
+                        return string_concat(arena, ctype_resolved_type_to_c(arena, inner), SLOP_STR("*"));
+                    }
+                }
+            } else if (!_mv_75.has_value) {
+                return SLOP_STR("void*");
+            }
+        } else if ((kind == types_ResolvedTypeKind_rk_option)) {
+            __auto_type _mv_76 = (*rt).inner_type;
+            if (_mv_76.has_value) {
+                __auto_type inner = _mv_76.value;
+                {
+                    __auto_type inner_c = ctype_resolved_type_to_c(arena, inner);
+                    return string_concat(arena, SLOP_STR("slop_option_"), ctype_type_to_identifier(arena, inner_c));
+                }
+            } else if (!_mv_76.has_value) {
+                return SLOP_STR("/* TRANSPILER_ERROR: Option requires inner type */");
+            }
+        } else if ((kind == types_ResolvedTypeKind_rk_list)) {
+            __auto_type _mv_77 = (*rt).inner_type;
+            if (_mv_77.has_value) {
+                __auto_type inner = _mv_77.value;
+                {
+                    __auto_type inner_c = ctype_resolved_type_to_c(arena, inner);
+                    return string_concat(arena, SLOP_STR("slop_list_"), ctype_type_to_identifier(arena, inner_c));
+                }
+            } else if (!_mv_77.has_value) {
+                return SLOP_STR("slop_list_void");
+            }
+        } else if ((kind == types_ResolvedTypeKind_rk_result)) {
+            {
+                __auto_type ok_id = ({ __auto_type _mv = (*rt).inner_type; _mv.has_value ? ({ __auto_type ok_t = _mv.value; ctype_type_to_identifier(arena, ctype_resolved_type_to_c(arena, ok_t)); }) : (SLOP_STR("void")); });
+                __auto_type err_id = ({ __auto_type _mv = (*rt).inner_type2; _mv.has_value ? ({ __auto_type err_t = _mv.value; ctype_type_to_identifier(arena, ctype_resolved_type_to_c(arena, err_t)); }) : (SLOP_STR("slop_error")); });
+                return string_concat(arena, string_concat(arena, SLOP_STR("slop_result_"), ok_id), string_concat(arena, SLOP_STR("_"), err_id));
+            }
+        } else if ((kind == types_ResolvedTypeKind_rk_map)) {
+            return SLOP_STR("slop_map*");
+        } else if ((kind == types_ResolvedTypeKind_rk_function)) {
+            return SLOP_STR("void*");
+        } else if ((kind == types_ResolvedTypeKind_rk_array)) {
+            __auto_type _mv_78 = (*rt).inner_type;
+            if (_mv_78.has_value) {
+                __auto_type inner = _mv_78.value;
+                return string_concat(arena, ctype_resolved_type_to_c(arena, inner), SLOP_STR("*"));
+            } else if (!_mv_78.has_value) {
+                return SLOP_STR("void*");
+            }
+        } else if ((kind == types_ResolvedTypeKind_rk_chan)) {
+            __auto_type _mv_79 = (*rt).inner_type;
+            if (_mv_79.has_value) {
+                __auto_type inner = _mv_79.value;
+                {
+                    __auto_type inner_c = ctype_resolved_type_to_c(arena, inner);
+                    __auto_type inner_id = ctype_type_to_identifier(arena, inner_c);
+                    return string_concat(arena, string_concat(arena, SLOP_STR("slop_chan_"), inner_id), SLOP_STR("*"));
+                }
+            } else if (!_mv_79.has_value) {
+                return SLOP_STR("slop_chan_int*");
+            }
+        } else if ((kind == types_ResolvedTypeKind_rk_thread)) {
+            __auto_type _mv_80 = (*rt).inner_type;
+            if (_mv_80.has_value) {
+                __auto_type inner = _mv_80.value;
+                {
+                    __auto_type inner_c = ctype_resolved_type_to_c(arena, inner);
+                    __auto_type inner_id = ctype_type_to_identifier(arena, inner_c);
+                    return string_concat(arena, string_concat(arena, SLOP_STR("slop_thread_"), inner_id), SLOP_STR("*"));
+                }
+            } else if (!_mv_80.has_value) {
+                return SLOP_STR("slop_thread_int*");
+            }
+        } else if ((kind == types_ResolvedTypeKind_rk_typevar)) {
+            return SLOP_STR("/* TRANSPILER_ERROR: unresolved type variable */");
+        } else {
+            return (*rt).c_name;
         }
     }
 }

@@ -10,6 +10,7 @@
 typedef struct type_extract_FieldEntry type_extract_FieldEntry;
 typedef struct type_extract_VariantEntry type_extract_VariantEntry;
 typedef struct type_extract_EnumValueEntry type_extract_EnumValueEntry;
+typedef struct type_extract_ImportEntry type_extract_ImportEntry;
 typedef struct type_extract_TypeEntry type_extract_TypeEntry;
 typedef struct type_extract_TypeRegistry type_extract_TypeRegistry;
 
@@ -95,6 +96,22 @@ SLOP_OPTION_DEFINE(type_extract_EnumValueEntry, slop_option_type_extract_EnumVal
 SLOP_LIST_DEFINE(type_extract_EnumValueEntry, slop_list_type_extract_EnumValueEntry)
 #endif
 
+struct type_extract_ImportEntry {
+    slop_string module_name;
+    slop_list_string symbols;
+};
+typedef struct type_extract_ImportEntry type_extract_ImportEntry;
+
+#ifndef SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntry)
+#endif
+
+#ifndef SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
+#endif
+
 struct type_extract_TypeEntry {
     slop_string name;
     slop_string c_name;
@@ -114,6 +131,7 @@ SLOP_OPTION_DEFINE(type_extract_TypeEntry, slop_option_type_extract_TypeEntry)
 struct type_extract_TypeRegistry {
     slop_list_type_extract_TypeEntry_ptr types;
     slop_string module_prefix;
+    slop_list_type_extract_ImportEntry import_entries;
 };
 typedef struct type_extract_TypeRegistry type_extract_TypeRegistry;
 
@@ -123,11 +141,14 @@ SLOP_OPTION_DEFINE(type_extract_TypeRegistry, slop_option_type_extract_TypeRegis
 #endif
 
 type_extract_TypeRegistry type_extract_make_type_registry(slop_arena* arena, slop_string prefix);
+type_extract_TypeRegistry type_extract_make_type_registry_with_imports(slop_arena* arena, slop_string prefix, slop_list_type_extract_ImportEntry imports);
+void type_extract_registry_add_type(slop_arena* arena, type_extract_TypeRegistry* reg, type_extract_TypeEntry* entry);
 type_extract_TypeEntry* type_extract_type_entry_new(slop_arena* arena, slop_string name, slop_string c_name, type_extract_TypeEntryKind kind);
 type_extract_FieldEntry type_extract_field_entry_new(slop_string name, slop_string type_name);
 type_extract_VariantEntry type_extract_variant_entry_new(slop_string name, int64_t index, slop_string payload_type);
 type_extract_EnumValueEntry type_extract_enum_value_entry_new(slop_string name, int64_t index);
 type_extract_TypeRegistry* type_extract_extract_types_from_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix);
+type_extract_TypeRegistry* type_extract_extract_types_from_ast_with_imports(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix, slop_list_type_extract_ImportEntry imports);
 void type_extract_extract_types_from_module(slop_arena* arena, types_SExpr* module_form, type_extract_TypeRegistry* reg_ptr, slop_string prefix);
 void type_extract_extract_type_def(slop_arena* arena, types_SExpr* type_form, type_extract_TypeRegistry* reg_ptr, slop_string prefix);
 type_extract_TypeEntry* type_extract_extract_record_type(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
@@ -136,6 +157,7 @@ type_extract_TypeEntry* type_extract_extract_enum_type(slop_arena* arena, slop_s
 slop_option_type_extract_TypeEntry_ptr type_extract_registry_lookup(type_extract_TypeRegistry reg, slop_string name);
 slop_option_type_extract_TypeEntry_ptr type_extract_registry_lookup_variant(type_extract_TypeRegistry reg, slop_string variant_name);
 slop_option_type_extract_TypeEntry_ptr type_extract_registry_lookup_enum_value(type_extract_TypeRegistry reg, slop_string value_name);
+slop_option_string type_extract_registry_lookup_import(type_extract_TypeRegistry reg, slop_string symbol_name);
 uint8_t type_extract_registry_is_union(type_extract_TypeRegistry reg, slop_string name);
 uint8_t type_extract_registry_is_record(type_extract_TypeRegistry reg, slop_string name);
 uint8_t type_extract_registry_is_enum(type_extract_TypeRegistry reg, slop_string name);
@@ -157,6 +179,11 @@ SLOP_OPTION_DEFINE(type_extract_VariantEntry, slop_option_type_extract_VariantEn
 #ifndef SLOP_OPTION_TYPE_EXTRACT_ENUMVALUEENTRY_DEFINED
 #define SLOP_OPTION_TYPE_EXTRACT_ENUMVALUEENTRY_DEFINED
 SLOP_OPTION_DEFINE(type_extract_EnumValueEntry, slop_option_type_extract_EnumValueEntry)
+#endif
+
+#ifndef SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntry)
 #endif
 
 #ifndef SLOP_OPTION_TYPE_EXTRACT_TYPEENTRY_DEFINED

@@ -221,10 +221,8 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
     import subprocess
     import json
 
-    # Prefer merged slop-compiler binary, fall back to standalone slop-transpiler
     compiler_bin = find_native_component('compiler')
-    transpiler_bin = compiler_bin or find_native_component('transpiler')
-    if not transpiler_bin:
+    if not compiler_bin:
         return None, False
 
     # Build file list: dependencies first, then main file
@@ -233,10 +231,7 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
         all_files = dep_files + [input_file]
 
     try:
-        cmd_prefix = [str(transpiler_bin)]
-        if compiler_bin:
-            print(f"  Using merged compiler: {compiler_bin}")
-            cmd_prefix.append('transpile')
+        cmd_prefix = [str(compiler_bin), 'transpile']
         result = subprocess.run(
             cmd_prefix + all_files,
             capture_output=True,
@@ -285,16 +280,12 @@ def transpile_native_split(input_file: str):
     import subprocess
     import json
 
-    # Prefer merged slop-compiler binary, fall back to standalone slop-transpiler
     compiler_bin = find_native_component('compiler')
-    transpiler_bin = compiler_bin or find_native_component('transpiler')
-    if not transpiler_bin:
+    if not compiler_bin:
         return {}, False
 
     try:
-        cmd = [str(transpiler_bin)]
-        if compiler_bin:
-            cmd.append('transpile')
+        cmd = [str(compiler_bin), 'transpile']
         cmd.append(input_file)
         result = subprocess.run(
             cmd,
@@ -2128,7 +2119,7 @@ def _build_library_from_sources(
     link_libraries: list,
     link_paths: list,
     use_native: bool,
-    native_transpiler_bin,
+    native_compiler_bin,
     native_checker_bin,
 ) -> int:
     """Build a library from multiple source files.
@@ -2251,14 +2242,10 @@ def _build_library_from_sources(
     # Transpile all modules to separate files
     print("  Transpiling to C...")
     results = {}
-    if native_transpiler_bin:
-        # Use native transpiler - it outputs JSON with per-module header/impl
+    if native_compiler_bin:
+        # Use native compiler - it outputs JSON with per-module header/impl
         source_files_ordered = [str(all_modules[name].path) for name in order]
-        cmd = [str(native_transpiler_bin)]
-        # Merged compiler binary needs 'transpile' subcommand; standalone transpiler does not
-        if 'compiler' in os.path.basename(str(native_transpiler_bin)):
-            cmd.append('transpile')
-        cmd += source_files_ordered
+        cmd = [str(native_compiler_bin), 'transpile'] + source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             # Try to continue - transpiler may have produced partial output with errors
@@ -2309,7 +2296,7 @@ def _build_library_from_sources(
             with open(header_path, 'w') as f:
                 f.write(header)
             with open(impl_path, 'w') as f:
-                if native_transpiler_bin:
+                if native_compiler_bin:
                     f.write('#include "slop_runtime.h"\n')
                     f.write(f'#include "slop_{c_mod_name}.h"\n\n')
                 f.write(impl)
@@ -2469,7 +2456,6 @@ def cmd_build(args):
 
         # Use native by default unless --python flag is set
         use_native = not getattr(args, 'python', False)
-        native_transpiler_bin = None
         native_checker_bin = None
         native_compiler_bin = None
         if use_native:
@@ -2486,20 +2472,15 @@ def cmd_build(args):
             skip_check = getattr(args, 'skip_check', False)
             native_compiler_bin = find_native_component('compiler') if not skip_check else None
             if native_compiler_bin:
-                native_transpiler_bin = native_compiler_bin
-                print(f"  Using merged compiler: {native_compiler_bin}")
+                print(f"  Using native compiler: {native_compiler_bin}")
             elif native_checker_bin:
                 print(f"  Using native type checker: {native_checker_bin}")
             else:
                 print("  Native type checker not found, falling back to Python")
                 print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
-            if not native_transpiler_bin:
-                native_transpiler_bin = find_native_component('transpiler')
-                if native_transpiler_bin:
-                    print(f"  Using native transpiler: {native_transpiler_bin}")
-                else:
-                    print("  Native transpiler not found, falling back to Python")
-                    print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
+            if not native_compiler_bin:
+                print("  Native compiler not found, falling back to Python")
+                print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         # Create output directory if needed
         output_dir = Path(output).parent
@@ -2517,7 +2498,7 @@ def cmd_build(args):
                 link_libraries=link_libraries,
                 link_paths=link_paths,
                 use_native=use_native,
-                native_transpiler_bin=native_transpiler_bin if use_native else None,
+                native_compiler_bin=native_compiler_bin if use_native else None,
                 native_checker_bin=native_checker_bin if use_native else None,
             )
 
@@ -2630,13 +2611,10 @@ def cmd_build(args):
             import json
 
             results = {}
-            if native_transpiler_bin:
-                # Use native transpiler - it outputs JSON with per-module header/impl
+            if native_compiler_bin:
+                # Use native compiler - it outputs JSON with per-module header/impl
                 source_files = [str(graph.modules[name].path) for name in order]
-                cmd = [str(native_transpiler_bin)]
-                if native_compiler_bin:
-                    cmd.append('transpile')
-                cmd += source_files
+                cmd = [str(native_compiler_bin), 'transpile'] + source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     if not result.stdout or not result.stdout.strip().startswith('{'):
@@ -2684,7 +2662,7 @@ def cmd_build(args):
                         f.write(header)
                     with open(impl_path, 'w') as f:
                         # Native transpiler impl doesn't include headers, add them
-                        if native_transpiler_bin:
+                        if native_compiler_bin:
                             f.write('#include "slop_runtime.h"\n')
                             f.write(f'#include "slop_{c_mod_name}.h"\n\n')
                         f.write(impl)
@@ -2804,7 +2782,7 @@ def cmd_build(args):
             module_name = input_path.stem
             c_mod_name = module_name.replace('-', '_').replace('/', '_')
 
-            if library_mode and native_transpiler_bin:
+            if library_mode and native_compiler_bin:
                 # For library builds with native transpiler, use split output to get separate header
                 split_results, success = transpile_native_split(str(input_path))
                 if success and module_name in split_results:
@@ -2819,7 +2797,7 @@ def cmd_build(args):
                     from slop.transpiler import Transpiler
                     transpiler = Transpiler()
                     c_code = transpiler.transpile(ast)
-            elif native_transpiler_bin:
+            elif native_compiler_bin:
                 c_code, success = transpile_native(str(input_path))
                 if not success:
                     print(f"  Native transpiler failed: {c_code}")
@@ -3633,23 +3611,23 @@ def cmd_test(args):
 
         # Try native transpiler by default
         if use_native:
-            native_transpiler_bin = find_native_component('transpiler')
-            if native_transpiler_bin:
-                print(f"  Using native transpiler: {native_transpiler_bin}")
-                # Collect dependency file paths for native transpiler
+            native_compiler_bin = find_native_component('compiler')
+            if native_compiler_bin:
+                print(f"  Using native compiler: {native_compiler_bin}")
+                # Collect dependency file paths for native compiler
                 dep_files = [str(graph.modules[mod_name].path)
                              for mod_name in build_order
                              if graph.modules[mod_name].path != input_path.resolve()]
                 c_code, success = transpile_native(str(input_path), dep_files=dep_files)
                 if not success:
-                    print("  Native transpiler failed, falling back to Python")
+                    print("  Native compiler failed, falling back to Python")
                     if c_code:  # c_code contains error message on failure
                         print(f"    Error: {c_code}")
                     c_code = None
                 else:
-                    used_native_transpiler = True  # Native transpiler always uses module prefixes
+                    used_native_transpiler = True  # Native compiler always uses module prefixes
             else:
-                print("  Native transpiler not found, falling back to Python")
+                print("  Native compiler not found, falling back to Python")
 
         if c_code is None:
             if is_multi_module:

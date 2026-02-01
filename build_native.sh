@@ -12,11 +12,6 @@ cd ../checker
 slop build
 mv ./slop-checker ../../../bin
 
-## Build the transpiler
-cd ../transpiler
-slop build
-mv ./slop-transpiler ../../../bin
-
 ## Build the tester
 cd ../tester
 slop build

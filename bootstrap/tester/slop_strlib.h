@@ -66,7 +66,7 @@ slop_string strlib_to_title(slop_arena* arena, slop_string s);
 slop_string strlib_capitalize(slop_arena* arena, slop_string s);
 slop_result_int_strlib_ParseError strlib_parse_int(slop_string s);
 slop_result_double_strlib_ParseError strlib_parse_float(slop_string s);
-slop_string strlib_float_to_string(slop_arena* arena, double f, int64_t precision);
+slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precision);
 slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string separator);
 slop_string strlib_string_build(slop_arena* arena, slop_list_string strings);
 slop_string strlib_replace(slop_arena* arena, slop_string s, slop_string old, slop_string new);

@@ -10,10 +10,11 @@
 #     parser/      - All parser .h and .c files
 #     checker/     - All checker .h and .c files
 #     transpiler/  - All transpiler .h and .c files
+#     compiler/    - All compiler .h and .c files (merged checker + transpiler)
 #     tester/      - All tester .h and .c files
 #
 # Prerequisites:
-#   - Working native SLOP toolchain (bin/slop-transpiler)
+#   - Working native SLOP toolchain (bin/slop-compiler)
 #   - Python 3 with slop package available
 
 set -e
@@ -21,9 +22,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Check that transpiler exists
-if [ ! -x "$PROJECT_ROOT/bin/slop-transpiler" ]; then
-    echo "Error: Native transpiler not found at $PROJECT_ROOT/bin/slop-transpiler"
+# Check that compiler exists
+if [ ! -x "$PROJECT_ROOT/bin/slop-compiler" ]; then
+    echo "Error: Native compiler not found at $PROJECT_ROOT/bin/slop-compiler"
     echo "Build the native toolchain first with: ./build_native.sh"
     exit 1
 fi
@@ -33,6 +34,7 @@ mkdir -p "$SCRIPT_DIR/runtime"
 mkdir -p "$SCRIPT_DIR/parser"
 mkdir -p "$SCRIPT_DIR/checker"
 mkdir -p "$SCRIPT_DIR/transpiler"
+mkdir -p "$SCRIPT_DIR/compiler"
 mkdir -p "$SCRIPT_DIR/tester"
 
 echo "Updating bootstrap C files..."
@@ -47,6 +49,9 @@ uv run python "$SCRIPT_DIR/generate_c.py" "$PROJECT_ROOT/lib/compiler/checker" "
 
 echo "Transpiling transpiler..."
 uv run python "$SCRIPT_DIR/generate_c.py" "$PROJECT_ROOT/lib/compiler/transpiler" "$SCRIPT_DIR/transpiler"
+
+echo "Transpiling compiler..."
+uv run python "$SCRIPT_DIR/generate_c.py" "$PROJECT_ROOT/lib/compiler/compiler" "$SCRIPT_DIR/compiler"
 
 echo "Transpiling tester..."
 uv run python "$SCRIPT_DIR/generate_c.py" "$PROJECT_ROOT/lib/compiler/tester" "$SCRIPT_DIR/tester"
