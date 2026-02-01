@@ -545,11 +545,14 @@
               ((some mod-name)
                 (string-concat arena (string-concat arena (to-c-name arena mod-name) "_") c-name))
               ((none) c-name))))
-        ;; Ptr T -> inner_c*
+        ;; Ptr T -> inner_c* (but Chan/Thread already include *)
         ((== kind 'rk-ptr)
           (match (. (deref rt) inner-type)
             ((some inner)
-              (string-concat arena (resolved-type-to-c arena inner) "*"))
+              (let ((inner-kind (. (deref inner) kind)))
+                (if (or (== inner-kind 'rk-chan) (== inner-kind 'rk-thread))
+                  (resolved-type-to-c arena inner)
+                  (string-concat arena (resolved-type-to-c arena inner) "*"))))
             ((none) "void*")))
         ;; Option T -> slop_option_<id>
         ((== kind 'rk-option)
@@ -588,6 +591,22 @@
             ((some inner)
               (string-concat arena (resolved-type-to-c arena inner) "*"))
             ((none) "void*")))
+        ;; Chan T -> slop_chan_<inner_id>*
+        ((== kind 'rk-chan)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (let ((inner-c (resolved-type-to-c arena inner))
+                    (inner-id (type-to-identifier arena inner-c)))
+                (string-concat arena (string-concat arena "slop_chan_" inner-id) "*")))
+            ((none) "slop_chan_int*")))
+        ;; Thread T -> slop_thread_<inner_id>*
+        ((== kind 'rk-thread)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (let ((inner-c (resolved-type-to-c arena inner))
+                    (inner-id (type-to-identifier arena inner-c)))
+                (string-concat arena (string-concat arena "slop_thread_" inner-id) "*")))
+            ((none) "slop_thread_int*")))
         ;; Fallback
         (else (. (deref rt) c-name)))))
 

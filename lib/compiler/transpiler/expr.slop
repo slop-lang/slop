@@ -3388,6 +3388,31 @@
                               ((some inner)
                                 (ctx-str3 ctx (infer-expr-c-type ctx inner) "*" ""))
                               ((none) "void*"))))
+                        ;; send returns Result(Void, ChanError)
+                        ((or (string-eq op "send") (ends-with op ":send"))
+                          "slop_result_void_thread_ChanError")
+                        ;; recv returns Result(<inner>, ChanError) - infer inner from channel type
+                        ((or (string-eq op "recv") (ends-with op ":recv"))
+                          (if (< (list-len items) 2)
+                            "slop_result_int64_t_thread_ChanError"
+                            (match (list-get items 1)
+                              ((some chan-arg)
+                                (let ((chan-c-type (infer-expr-c-type ctx chan-arg))
+                                      (chan-type (strip-pointer-suffix (. (deref ctx) arena) chan-c-type)))
+                                  (if (starts-with chan-type "slop_chan_")
+                                    (let ((inner-id (substring-after-prefix (. (deref ctx) arena) chan-type "slop_chan_")))
+                                      (ctx-str3 ctx "slop_result_" inner-id "_thread_ChanError"))
+                                    "slop_result_int64_t_thread_ChanError")))
+                              ((none) "slop_result_int64_t_thread_ChanError"))))
+                        ;; join returns the thread's result type
+                        ((or (string-eq op "join") (ends-with op ":join"))
+                          "int64_t")
+                        ;; spawn returns a thread pointer
+                        ((or (string-eq op "spawn") (ends-with op ":spawn"))
+                          "slop_thread*")
+                        ;; chan-buffered returns a channel pointer
+                        ((or (string-eq op "chan-buffered") (ends-with op ":chan-buffered"))
+                          "slop_chan_int*")
                         ;; arena-alloc returns void*
                         ((string-eq op "arena-alloc") "void*")
                         ;; list-new returns a list struct - need element type from 2nd arg

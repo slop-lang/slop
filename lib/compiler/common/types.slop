@@ -119,7 +119,9 @@
     rk-result         ;; (Result T E)
     rk-function       ;; Function type
     rk-array          ;; (Array T N)
-    rk-map))          ;; (Map K V)
+    rk-map            ;; (Map K V)
+    rk-chan            ;; (Chan T)
+    rk-thread))       ;; (Thread T)
 
   ;; A fully-resolved variant in a union type
   (type ResolvedVariant (record

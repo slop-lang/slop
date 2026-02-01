@@ -27,7 +27,7 @@
                env-get-unknown-type
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
                env-add-warning env-add-error))
-  (import strlib (starts-with string-build))
+  (import strlib (starts-with ends-with string-build))
 
   ;; ============================================================
   ;; String Utilities
@@ -190,8 +190,9 @@
     (@pre (!= env nil))
     (@pre (!= expr nil))
     (let ((result (infer-expr-inner env expr)))
-      ;; Annotate the AST node with the inferred type
-      (sexpr-set-resolved-type expr result)
+      ;; Annotate the AST node with the inferred type (skip if nil - polymorphic builtins)
+      (when (!= result nil)
+        (sexpr-set-resolved-type expr result))
       result))
 
   (fn infer-expr-inner ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
@@ -246,11 +247,15 @@
                                         (let ((msg (string-concat arena "Undefined variable: " name)))
                                           (env-add-error env msg line col)
                                           (env-get-int-type env)))))))
-                              ;; No dot - undefined
-                              (let ((arena (env-arena env))
-                                    (msg (string-concat arena "Undefined variable: " name)))
-                                (env-add-error env msg line col)
-                                (env-get-int-type env)))))))))))))
+                              ;; No dot - check if it's a type name used as a value
+                              (match (env-lookup-type env name)
+                                ((some type-info)
+                                  type-info)
+                                ((none)
+                                  (let ((arena (env-arena env))
+                                        (msg (string-concat arena "Undefined variable: " name)))
+                                    (env-add-error env msg line col)
+                                    (env-get-int-type env)))))))))))))))
         ((num num)
           (env-get-int-type env))
         ((str str)
@@ -911,6 +916,26 @@
                               (when (!= elem-type nil)
                                 (resolved-type-set-inner list-type elem-type))
                               list-type))))
+                    ;; Threading builtins - polymorphic, skip strict arg checking
+                    ((cond
+                       ((string-eq op "send") 1)
+                       ((string-eq op "recv") 1)
+                       ((string-eq op "spawn") 1)
+                       ((string-eq op "chan-buffered") 1)
+                       ((string-eq op "join") 1)
+                       ((ends-with op ":send") 1)
+                       ((ends-with op ":recv") 1)
+                       ((ends-with op ":spawn") 1)
+                       ((ends-with op ":chan-buffered") 1)
+                       ((ends-with op ":join") 1)
+                       (else 0))
+                      (infer-builtin-args env expr)
+                      (env-get-unit-type env))
+                    ;; Verification-only forms - skip type checking
+                    ((or (string-eq op "exists")
+                         (or (string-eq op "forall")
+                             (string-eq op "implies")))
+                      (env-get-unit-type env))
                     ;; Unknown function/form - check if it's a variant being misused
                     (else
                       (let ((arena (env-arena env)))
@@ -1558,15 +1583,20 @@
                     (set-type (resolved-type-new arena 'rk-primitive "Set" (none) "slop_map*")))
                 (resolved-type-set-inner set-type inner-type)
                 set-type))
-            ;; Thread type: (Thread T) - built-in parameterized type, treat as record
+            ;; Thread type: (Thread T) - built-in parameterized type
             ((string-eq head-name "Thread")
-              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
-                ;; Thread is a record with id, done, result fields - use ptr to inner type as approximation
-                (env-make-ptr-type env inner-type)))
-            ;; Chan type: (Chan T) - built-in parameterized type, treat as record
+              (let ((inner-type (resolve-ptr-inner-type env type-expr))
+                    (arena (env-arena env))
+                    (t (resolved-type-new arena 'rk-thread "Thread" (none) "slop_thread_int*")))
+                (resolved-type-set-inner t inner-type)
+                t))
+            ;; Chan type: (Chan T) - built-in parameterized type
             ((string-eq head-name "Chan")
-              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
-                (env-make-ptr-type env inner-type)))
+              (let ((inner-type (resolve-ptr-inner-type env type-expr))
+                    (arena (env-arena env))
+                    (t (resolved-type-new arena 'rk-chan "Chan" (none) "slop_chan_int*")))
+                (resolved-type-set-inner t inner-type)
+                t))
             ;; Result type: (Result OkType ErrType)
             ((string-eq head-name "Result")
               (let ((arena (env-arena env))
@@ -1957,7 +1987,8 @@
                                (for (bi 3 (+ last-body-idx 1))
                                  (match (list-get items bi)
                                    ((some body-expr)
-                                     (when (not (is-annotation-expr body-expr))
+                                     (when (and (not (is-annotation-expr body-expr))
+                                                (not (is-c-name-related items bi)))
                                        (set! body-type (infer-expr env body-expr))))
                                    ((none) (do))))
                                body-type))
