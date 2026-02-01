@@ -100,6 +100,11 @@
           (or (string-eq a-name "Option_T")
               (string-eq b-name "Option_T")))
 
+        ;; Both Result types - generic "Result" matches any Result_X_Y
+        ((and (== a-kind 'rk-result) (== b-kind 'rk-result))
+          (or (string-eq a-name "Result")
+              (string-eq b-name "Result")))
+
         ;; Range type vs its base type (e.g., AsciiChar vs Int)
         ((or (== a-kind 'rk-range) (== b-kind 'rk-range))
           (types-compatible-with-range a b))
