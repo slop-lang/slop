@@ -91,21 +91,22 @@
       (else 0)))
 
   (fn is-bare-threading-builtin ((op String))
-    (@intent "Check if op is a bare (unqualified) threading builtin that should be intercepted before env lookup")
+    (@intent "Check if op is a bare (unqualified) threading builtin name")
     (@spec ((String) -> Bool))
     (@pure)
     (cond
       ((string-eq op "send") 1)
       ((string-eq op "recv") 1)
       ((string-eq op "spawn") 1)
+      ((string-eq op "join") 1)
       ((string-eq op "chan-buffered") 1)
       (else 0)))
 
-  (fn is-bare-threading-fallback ((op String))
-    (@intent "Check if op is a bare threading builtin only caught when no function found - join is here to avoid intercepting strlib join")
+  (fn is-threading-module ((mod-name String))
+    (@intent "Check if a module name is a threading module")
     (@spec ((String) -> Bool))
     (@pure)
-    (string-eq op "join"))
+    (string-eq mod-name "thread"))
 
   (fn is-send-op ((op String))
     (@intent "Check if op is send or qualified send")
@@ -715,16 +716,23 @@
             (env-add-error env hole-msg line col)
             hole-type))
 
-        ;; Threading builtins - intercept before env lookup (polymorphic)
-        ((or (is-qualified-threading-builtin op) (is-bare-threading-builtin op))
+        ;; Qualified threading builtins - intercept before env lookup (polymorphic)
+        ((is-qualified-threading-builtin op)
           (infer-threading-builtin env op expr items len line col))
 
         ;; Function call - look up return type and check arguments
         (else
           (match (env-lookup-function env op)
             ((some sig)
-              (do (check-fn-call-args env sig expr line col)
-                  (. (deref sig) return-type)))
+              ;; If bare threading builtin resolved to a threading module,
+              ;; use polymorphic path instead of the concrete signature
+              (if (and (is-bare-threading-builtin op)
+                       (match (. (deref sig) module-name)
+                         ((some mod) (is-threading-module mod))
+                         ((none) false)))
+                (infer-threading-builtin env op expr items len line col)
+                (do (check-fn-call-args env sig expr line col)
+                    (. (deref sig) return-type))))
             ;; Not a function - check if it's a type constructor or builtin
             ((none)
               (match (env-lookup-type env op)
@@ -1000,8 +1008,8 @@
                               (when (!= elem-type nil)
                                 (resolved-type-set-inner list-type elem-type))
                               list-type))))
-                    ;; Bare 'join' - only when no function found in env (avoids intercepting strlib join)
-                    ((is-bare-threading-fallback op)
+                    ;; Bare threading builtins - fallback when no function found in env
+                    ((is-bare-threading-builtin op)
                       (infer-threading-builtin env op expr items len line col))
                     ;; Verification-only forms - skip type checking
                     ((or (string-eq op "exists")
