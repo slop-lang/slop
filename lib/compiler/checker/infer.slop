@@ -304,13 +304,14 @@
         ((string-eq op "match")
           (infer-match-expr env expr lst))
 
-        ;; (do exprs...) - type is last expr
+        ;; (do exprs...) - visit all, type is last expr
         ((string-eq op "do")
-          (if (> len 1)
-            (match (list-get items (- len 1))
-              ((some last) (infer-expr env last))
-              ((none) (env-get-unit-type env)))
-            (env-get-unit-type env)))
+          (do (infer-body-exprs env expr 1)
+              (if (> len 1)
+                (match (list-get items (- len 1))
+                  ((some last) (infer-expr env last))
+                  ((none) (env-get-unit-type env)))
+                (env-get-unit-type env))))
 
         ;; (let ((bindings)) body...) - bind variables and infer body type
         ((string-eq op "let")
@@ -321,9 +322,39 @@
           (do (infer-body-exprs env expr 1)
               (env-get-unit-type env)))
 
-        ;; (for (i start end) body...) - just return Unit for now (proper implementation later)
+        ;; (for (i start end) body...) - bind loop var as Int, infer body exprs
         ((string-eq op "for")
-          (env-get-unit-type env))
+          (if (>= len 2)
+            (do
+              ;; Bind loop variable and infer start/end expressions
+              (match (list-get items 1)
+                ((some binding-form)
+                  (when (sexpr-is-list binding-form)
+                    (let ((bind-len (sexpr-list-len binding-form)))
+                      (when (>= bind-len 3)
+                        (match (sexpr-list-get binding-form 0)
+                          ((some var-expr)
+                            (let ((var-name (sexpr-get-symbol-name var-expr)))
+                              (when (not (string-eq var-name ""))
+                                (env-push-scope env)
+                                (env-bind-var env var-name (env-get-int-type env))
+                                ;; Infer start and end expressions
+                                (match (sexpr-list-get binding-form 1)
+                                  ((some start-expr) (let ((_ (infer-expr env start-expr))) (do)))
+                                  ((none) (do)))
+                                (match (sexpr-list-get binding-form 2)
+                                  ((some end-expr) (let ((_ (infer-expr env end-expr))) (do)))
+                                  ((none) (do)))
+                                ;; Infer all body expressions
+                                (for (body-idx 2 len)
+                                  (match (list-get items body-idx)
+                                    ((some body-expr) (let ((_ (infer-expr env body-expr))) (do)))
+                                    ((none) (do))))
+                                (env-pop-scope env))))
+                          ((none) (do)))))))
+                ((none) (do)))
+              (env-get-unit-type env))
+            (env-get-unit-type env)))
 
         ;; (for-each (item collection) body...) - bind item to element type
         ((string-eq op "for-each")
@@ -896,13 +927,17 @@
                                   ;; Check if it looks like a SLOP function (contains hyphen)
                                   ;; If so, emit error - likely missing import
                                   (if (string-contains-char op 45)  ;; 45 = '-'
-                                    (let ((msg (string-concat arena "Unknown function: '"
-                                                 (string-concat arena op
-                                                   "' - did you forget to import it?"))))
-                                      (env-add-error env msg line col)
+                                    (do
+                                      (let ((msg (string-concat arena "Unknown function: '"
+                                                   (string-concat arena op
+                                                     "' - did you forget to import it?"))))
+                                        (env-add-error env msg line col))
+                                      ;; Still infer argument types for annotation coverage
+                                      (infer-builtin-args env expr)
                                       (env-get-unknown-type env))
-                                    ;; May be an FFI function - pass through with no error
-                                    (env-get-unknown-type env))))))))))))))))))
+                                    ;; May be an FFI function - infer args for annotation coverage
+                                    (do (infer-builtin-args env expr)
+                                        (env-get-unknown-type env)))))))))))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
                            (line Int) (col Int))
@@ -1255,7 +1290,13 @@
                     (match (list-get clause-items 0)
                       ((some pattern) (bind-match-pattern env scrutinee-type pattern))
                       ((none) (do)))
-                    ;; Infer body type
+                    ;; Infer ALL body expressions (index 1 to clause-len-1)
+                    ;; Visit non-last body exprs for annotation coverage
+                    (for (bi 1 (- clause-len 1))
+                      (match (list-get clause-items bi)
+                        ((some body-expr) (let ((_ (infer-expr env body-expr))) (do)))
+                        ((none) (do))))
+                    ;; Infer last body expression for the branch type
                     (match (list-get clause-items (- clause-len 1))
                       ((some body)
                         (let ((body-type (infer-expr env body)))
@@ -1840,6 +1881,19 @@
           (else false)))
       ((none) false)))
 
+  (fn is-annotation-expr ((expr (Ptr SExpr)))
+    (@intent "Check if expression is an annotation form (starts with @ symbol)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre (!= expr nil))
+    (if (sexpr-is-list expr)
+      (match (sexpr-list-get expr 0)
+        ((some head)
+          (match (deref head)
+            ((sym sym) (starts-with (. sym name) "@"))
+            (_ false)))
+        ((none) false))
+      false))
+
   (fn infer-fn-body ((env (Ptr TypeEnv)) (fn-form (Ptr SExpr)))
     (@intent "Type check a function body, binding parameters and inferring body type")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
@@ -1866,15 +1920,22 @@
                           (bind-param-from-form env param-form))
                         ((none) (do)))))))
               ((none) (do))))))
-      ;; Infer body type (last non-c-name element)
+      ;; Infer body type - visit ALL body expressions, not just the last
+      ;; Body starts at index 3 (after fn, name, params)
       (let ((result-type (match (deref fn-form)
                            ((lst fn-lst)
                              (let ((items (. fn-lst items))
                                    (item-len (list-len items))
-                                   (last-body-idx (find-last-body-idx items)))
-                               (match (list-get items last-body-idx)
-                                 ((some body) (infer-expr env body))
-                                 ((none) (env-get-unit-type env)))))
+                                   (last-body-idx (find-last-body-idx items))
+                                   (mut body-type (env-get-unit-type env)))
+                               ;; Visit all body expressions from index 3, skipping annotations
+                               (for (bi 3 (+ last-body-idx 1))
+                                 (match (list-get items bi)
+                                   ((some body-expr)
+                                     (when (not (is-annotation-expr body-expr))
+                                       (set! body-type (infer-expr env body-expr))))
+                                   ((none) (do))))
+                               body-type))
                            (_ (env-get-unit-type env)))))
         ;; Check return type matches declared spec
         (check-return-type env fn-form fn-name result-type fn-line fn-col)
