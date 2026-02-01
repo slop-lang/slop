@@ -285,6 +285,11 @@
         ;; (if cond then else) - check branch types
         ((string-eq op "if")
           (if (>= len 4)
+            (do
+            ;; Visit condition at index 1
+            (match (list-get items 1)
+              ((some cond-expr) (let ((_ (infer-expr env cond-expr))) (do)))
+              ((none) (do)))
             (match (list-get items 2)
               ((some then-expr)
                 (let ((then-type (infer-expr env then-expr)))
@@ -293,7 +298,7 @@
                       (let ((else-type (infer-expr env else-expr)))
                         (unify-branch-types env then-type else-type line col)))
                     ((none) then-type))))
-              ((none) (env-get-unit-type env)))
+              ((none) (env-get-unit-type env))))
             (env-get-unit-type env)))
 
         ;; (cond (test1 body1) (test2 body2) ... (else bodyN))
@@ -568,6 +573,16 @@
 
         ;; (record-new TypeName (field1 val1) ...) - create record instance
         ((string-eq op "record-new")
+          (do
+          ;; Visit field value expressions at indices 2+ ; each is (field val)
+          (for (fi 2 len)
+            (match (list-get items fi)
+              ((some field-pair)
+                (when (and (sexpr-is-list field-pair) (>= (sexpr-list-len field-pair) 2))
+                  (match (sexpr-list-get field-pair 1)
+                    ((some val-expr) (let ((_ (infer-expr env val-expr))) (do)))
+                    ((none) (do)))))
+              ((none) (do))))
           (if (>= len 2)
             (match (list-get items 1)
               ((some type-expr)
@@ -578,10 +593,16 @@
                       ((some t) t)
                       ((none) (env-get-unit-type env))))))
               ((none) (env-get-unit-type env)))
-            (env-get-unit-type env)))
+            (env-get-unit-type env))))
 
         ;; (union-new TypeName variant value) - create union instance
         ((string-eq op "union-new")
+          (do
+          ;; Visit value expression at index 3 (skip type name and variant name)
+          (when (>= len 4)
+            (match (list-get items 3)
+              ((some val-expr) (let ((_ (infer-expr env val-expr))) (do)))
+              ((none) (do))))
           (if (>= len 2)
             (match (list-get items 1)
               ((some type-expr)
@@ -592,7 +613,7 @@
                       ((some t) t)
                       ((none) (env-get-unit-type env))))))
               ((none) (env-get-unit-type env)))
-            (env-get-unit-type env)))
+            (env-get-unit-type env))))
 
         ;; (hole Type "prompt" [:context ...]) - unfilled hole
         ((string-eq op "hole")
@@ -1186,6 +1207,15 @@
                 (let ((clause-items (. clause-lst items))
                       (clause-len (list-len clause-items)))
                   (when (> clause-len 1)
+                    ;; Visit condition elements (all but last), skipping 'else' keyword
+                    (for (ci 0 (- clause-len 1))
+                      (match (list-get clause-items ci)
+                        ((some clause-elem)
+                          (let ((elem-name (sexpr-get-symbol-name clause-elem)))
+                            (when (not (string-eq elem-name "else"))
+                              (let ((_ (infer-expr env clause-elem))) (do)))))
+                        ((none) (do))))
+                    ;; Infer and unify the body (last element) type
                     (match (list-get clause-items (- clause-len 1))
                       ((some body)
                         (let ((body-type (infer-expr env body)))
