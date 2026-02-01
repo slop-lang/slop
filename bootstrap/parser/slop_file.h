@@ -45,9 +45,9 @@ SLOP_OPTION_DEFINE(file_File, slop_option_file_File)
 typedef struct { bool is_ok; union { file_File ok; file_FileError err; } data; } slop_result_file_File_file_FileError;
 #endif
 
-#ifndef SLOP_RESULT_UINT8_T_FILE_FILEERROR_DEFINED
-#define SLOP_RESULT_UINT8_T_FILE_FILEERROR_DEFINED
-typedef struct { bool is_ok; union { uint8_t ok; file_FileError err; } data; } slop_result_uint8_t_file_FileError;
+#ifndef SLOP_RESULT_U8_FILE_FILEERROR_DEFINED
+#define SLOP_RESULT_U8_FILE_FILEERROR_DEFINED
+typedef struct { bool is_ok; union { uint8_t ok; file_FileError err; } data; } slop_result_u8_file_FileError;
 #endif
 
 #ifndef SLOP_RESULT_BYTES_FILE_FILEERROR_DEFINED
@@ -66,14 +66,14 @@ typedef struct { bool is_ok; union { int64_t ok; file_FileError err; } data; } s
 #endif
 
 slop_result_file_File_file_FileError file_file_open(slop_string path, file_FileMode mode);
-slop_result_uint8_t_file_FileError file_file_close(file_File* f);
+slop_result_u8_file_FileError file_file_close(file_File* f);
 slop_result_bytes_file_FileError file_file_read(slop_arena* arena, file_File* f, int64_t max_bytes);
 slop_result_string_file_FileError file_file_read_line(slop_arena* arena, file_File* f, int64_t max_len);
 slop_result_string_file_FileError file_file_read_all(slop_arena* arena, file_File* f);
 slop_result_int_file_FileError file_file_write(file_File* f, slop_bytes data);
 slop_result_int_file_FileError file_file_write_line(file_File* f, slop_string line);
-slop_result_uint8_t_file_FileError file_file_flush(file_File* f);
-slop_result_uint8_t_file_FileError file_file_seek(file_File* f, int64_t offset, int64_t whence);
+slop_result_u8_file_FileError file_file_flush(file_File* f);
+slop_result_u8_file_FileError file_file_seek(file_File* f, int64_t offset, int64_t whence);
 slop_result_int_file_FileError file_file_tell(file_File* f);
 uint8_t file_file_exists(slop_string path);
 slop_result_int_file_FileError file_file_size(slop_string path);

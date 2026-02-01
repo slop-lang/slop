@@ -423,6 +423,7 @@ Language primitives that are always available without imports.
 (string-eq a b) -> Bool
 (string-slice s start end) -> (Slice U8)
 (string-split arena s delim) -> (List String)
+(string-push-char arena s c) -> String             ; append a U8 char to a string
 (int-to-string arena n) -> String
 
 ### Lists

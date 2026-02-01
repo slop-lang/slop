@@ -172,6 +172,152 @@ class Transpiler:
             return True
         return False
 
+    def _resolved_type_to_c_type(self, typ) -> Optional[str]:
+        """Convert a type checker Type object to a C type string.
+
+        This is the bridge between the type checker's type system and the
+        transpiler's C code generation. Returns None for types it can't convert.
+        """
+        from slop.types import (
+            PrimitiveType, RangeType, RecordType, EnumType, UnionType,
+            OptionType, ResultType, ListType, ArrayType, MapType,
+            PtrType, ChanType, ThreadType, FnType, TypeVar, UnknownType
+        )
+
+        # Resolve TypeVar chains
+        if isinstance(typ, TypeVar):
+            resolved = typ.resolve()
+            if isinstance(resolved, TypeVar):
+                return None  # Unresolved type variable
+            return self._resolved_type_to_c_type(resolved)
+
+        if isinstance(typ, UnknownType):
+            return None
+
+        if isinstance(typ, PrimitiveType):
+            return self.builtin_types.get(typ.name, typ.name)
+
+        if isinstance(typ, RangeType):
+            # For anonymous ranges, use the base type mapping
+            return self.builtin_types.get(typ.base, 'int64_t')
+
+        if isinstance(typ, RecordType):
+            # Check if it's a known builtin like String
+            if typ.name in self.builtin_types:
+                return self.builtin_types[typ.name]
+            # Check registered types
+            if typ.name in self.types:
+                return self.types[typ.name].c_type
+            # Check FFI structs
+            if typ.name in self.ffi_structs:
+                return self.ffi_structs[typ.name]['c_name']
+            # Check import map
+            if typ.name in self.import_map:
+                return self.import_map[typ.name]
+            # Module-prefixed name
+            if self.enable_prefixing and self.current_module:
+                return f"{self.to_c_name(self.current_module)}_{self.to_c_name(typ.name)}"
+            return typ.name
+
+        if isinstance(typ, EnumType):
+            if typ.name in self.types:
+                return self.types[typ.name].c_type
+            return typ.name
+
+        if isinstance(typ, UnionType):
+            if typ.name in self.types:
+                return self.types[typ.name].c_type
+            return typ.name
+
+        if isinstance(typ, PtrType):
+            inner = self._resolved_type_to_c_type(typ.pointee)
+            if inner:
+                return f"{inner}*"
+            return None
+
+        if isinstance(typ, OptionType):
+            inner = self._resolved_type_to_c_type(typ.inner)
+            if inner:
+                inner_id = self._type_to_identifier(inner)
+                type_name = f"slop_option_{inner_id}"
+                self.generated_option_types.add((type_name, inner))
+                return type_name
+            return None
+
+        if isinstance(typ, ResultType):
+            ok_c = self._resolved_type_to_c_type(typ.ok_type)
+            err_c = self._resolved_type_to_c_type(typ.err_type)
+            if ok_c and err_c:
+                ok_id = self._type_to_identifier(ok_c)
+                err_id = self._type_to_identifier(err_c)
+                type_name = f"slop_result_{ok_id}_{err_id}"
+                self.generated_result_types.add((type_name, ok_c, err_c))
+                return type_name
+            return None
+
+        if isinstance(typ, ListType):
+            inner = self._resolved_type_to_c_type(typ.element_type)
+            if inner:
+                inner_id = self._type_to_identifier(inner)
+                type_name = f"slop_list_{inner_id}"
+                self.generated_list_types.add((type_name, inner))
+                return type_name
+            return None
+
+        if isinstance(typ, ArrayType):
+            inner = self._resolved_type_to_c_type(typ.element_type)
+            if inner:
+                return f"{inner}*"
+            return None
+
+        if isinstance(typ, MapType):
+            key_c = self._resolved_type_to_c_type(typ.key_type)
+            value_c = self._resolved_type_to_c_type(typ.value_type)
+            if key_c and value_c:
+                # String-keyed maps with predefined value types get typed wrappers
+                if key_c == 'slop_string':
+                    value_id = self._type_to_identifier(value_c)
+                    if value_id in ('string', 'int'):
+                        key_id = self._type_to_identifier(key_c)
+                        type_name = f"slop_map_{key_id}_{value_id}"
+                        self.generated_map_types.add((type_name, key_c, value_c))
+                        return type_name
+                return "slop_map*"
+            return "slop_map*"
+
+        if isinstance(typ, ChanType):
+            self.uses_concurrency = True
+            inner = self._resolved_type_to_c_type(typ.element_type)
+            if inner:
+                inner_id = self._type_to_identifier(inner)
+                type_name = f"slop_chan_{inner_id}"
+                self.generated_chan_types.add((type_name, inner))
+                return type_name
+            return None
+
+        if isinstance(typ, ThreadType):
+            self.uses_concurrency = True
+            inner = self._resolved_type_to_c_type(typ.result_type)
+            if inner:
+                inner_id = self._type_to_identifier(inner)
+                type_name = f"slop_thread_{inner_id}"
+                self.generated_thread_types.add((type_name, inner))
+                return type_name
+            return None
+
+        if isinstance(typ, FnType):
+            # Function types are typically used as function pointers
+            ret_c = self._resolved_type_to_c_type(typ.return_type)
+            if ret_c:
+                param_types = []
+                for p in typ.param_types:
+                    pc = self._resolved_type_to_c_type(p)
+                    param_types.append(pc if pc else 'void*')
+                return f"{ret_c}(*)({', '.join(param_types)})"
+            return None
+
+        return None
+
     def _type_to_print_category(self, typ) -> str:
         """Convert a resolved Type to print category: 'String', 'Bool', 'Float', or 'Int'."""
         from slop.types import PrimitiveType, RangeType, RecordType
@@ -1250,6 +1396,13 @@ class Transpiler:
 
     def _infer_type(self, expr: SExpr) -> Optional[str]:
         """Infer the type name of an expression for type flow analysis"""
+        # Check resolved_type from type checker first
+        resolved = self._get_resolved_type(expr)
+        if resolved is not None:
+            c_type = self._resolved_type_to_c_type(resolved)
+            if c_type is not None:
+                return c_type
+
         if isinstance(expr, Symbol):
             name = expr.name
             # Check for boolean literals
@@ -1561,6 +1714,13 @@ class Transpiler:
 
         Returns the C type name (e.g., 'double', 'int64_t') or None if unknown.
         """
+        # Check resolved_type from type checker first
+        resolved = self._get_resolved_type(expr)
+        if resolved is not None:
+            c_type = self._resolved_type_to_c_type(resolved)
+            if c_type is not None:
+                return c_type
+
         # Number literals
         if isinstance(expr, Number):
             if isinstance(expr.value, float):
@@ -6075,7 +6235,10 @@ class Transpiler:
 
 def transpile(source: str) -> str:
     """Transpile SLOP source to C"""
+    from slop.type_checker import check_source_ast
     ast = parse(source)
+    # Run type checker on the same AST so resolved_type annotations flow to transpiler
+    check_source_ast(ast)
     return Transpiler().transpile(ast)
 
 

@@ -51,7 +51,10 @@ typedef enum {
     types_ResolvedTypeKind_rk_result,
     types_ResolvedTypeKind_rk_function,
     types_ResolvedTypeKind_rk_array,
-    types_ResolvedTypeKind_rk_map
+    types_ResolvedTypeKind_rk_map,
+    types_ResolvedTypeKind_rk_chan,
+    types_ResolvedTypeKind_rk_thread,
+    types_ResolvedTypeKind_rk_typevar
 } types_ResolvedTypeKind;
 
 typedef enum {
@@ -79,14 +82,14 @@ typedef enum {
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
-#ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
-#define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
-SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
-#endif
-
 #ifndef SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
 #define SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
 SLOP_OPTION_DEFINE(types_ResolvedType*, slop_option_types_ResolvedType_ptr)
+#endif
+
+#ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
+SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #endif
 
 #ifndef SLOP_OPTION_LIST_STRING_DEFINED
@@ -98,6 +101,7 @@ struct types_SExprSymbol {
     slop_string name;
     int64_t line;
     int64_t col;
+    slop_option_types_ResolvedType_ptr resolved_type;
 };
 typedef struct types_SExprSymbol types_SExprSymbol;
 
@@ -110,6 +114,7 @@ struct types_SExprString {
     slop_string value;
     int64_t line;
     int64_t col;
+    slop_option_types_ResolvedType_ptr resolved_type;
 };
 typedef struct types_SExprString types_SExprString;
 
@@ -125,6 +130,7 @@ struct types_SExprNumber {
     slop_string raw;
     int64_t line;
     int64_t col;
+    slop_option_types_ResolvedType_ptr resolved_type;
 };
 typedef struct types_SExprNumber types_SExprNumber;
 
@@ -137,6 +143,7 @@ struct types_SExprList {
     slop_list_types_SExpr_ptr items;
     int64_t line;
     int64_t col;
+    slop_option_types_ResolvedType_ptr resolved_type;
 };
 typedef struct types_SExprList types_SExprList;
 
@@ -318,6 +325,7 @@ struct types_FnSignature {
     uint8_t is_pure;
     uint8_t allocates;
     slop_option_string module_name;
+    slop_list_string type_params;
 };
 typedef struct types_FnSignature types_FnSignature;
 
@@ -379,6 +387,11 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_variant_payload(types
 uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name);
 slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_ResolvedType* t, slop_string name);
 slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_ResolvedType* t);
+
+#ifndef SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
+#define SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
+SLOP_OPTION_DEFINE(types_ResolvedType*, slop_option_types_ResolvedType_ptr)
+#endif
 
 #ifndef SLOP_OPTION_TYPES_SEXPRSYMBOL_DEFINED
 #define SLOP_OPTION_TYPES_SEXPRSYMBOL_DEFINED
@@ -443,11 +456,6 @@ SLOP_OPTION_DEFINE(slop_list_string, slop_option_list_string)
 #ifndef SLOP_OPTION_TYPES_TYPEDEF_DEFINED
 #define SLOP_OPTION_TYPES_TYPEDEF_DEFINED
 SLOP_OPTION_DEFINE(types_TypeDef, slop_option_types_TypeDef)
-#endif
-
-#ifndef SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
-#define SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
-SLOP_OPTION_DEFINE(types_ResolvedType*, slop_option_types_ResolvedType_ptr)
 #endif
 
 #ifndef SLOP_OPTION_TYPES_RESOLVEDVARIANT_DEFINED

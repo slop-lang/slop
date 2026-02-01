@@ -39,7 +39,7 @@ SLOP makes the spec the source of truth:
 
 ## Status
 
-The SLOP toolchain is **self-hosting**: the parser, type checker, and transpiler are all written in SLOP and compile themselves. Native tools are used by default; the Python bootstrap implementations in `src/slop/` remain available as fallbacks via the `--python` flag.
+The SLOP toolchain is **self-hosting**: the parser, type checker, and transpiler are all written in SLOP and compile themselves. The merged `slop-compiler` binary runs type checking and transpilation in a single pass and is the primary build tool. Native tools are used by default; the Python implementations in `src/slop/` remain available as fallbacks via the `--python` flag.
 
 ## Philosophy
 
@@ -59,8 +59,9 @@ SLOP inverts the traditional programming model:
 - **Range types**: `(Int 0 .. 100)` catches bounds errors at compile time (I also like Ada)
 - **Mandatory contracts**: `@intent`, `@spec`, `@pre`, `@post` define correctness
 - **Infix in contracts**: `{x > 0 and x < 100}` — readable math notation in `@pre`/`@post`
+- **Generics**: `(@generic (T))` enables polymorphic functions with type-safe unification
 - **Typed holes**: Explicit markers for LLM generation with complexity tiers
-- **Transpiles to C**: Maximum performance, universal FFI, minimal runtime 
+- **Transpiles to C**: Maximum performance, universal FFI, minimal runtime
 
 ## Quick Example
 
@@ -104,12 +105,15 @@ slop/
 ├── bin/                     Native compiler binaries (build artifacts)
 │   ├── slop-parser          Native S-expression parser
 │   ├── slop-checker         Native type checker
-│   └── slop-transpiler      Native SLOP-to-C transpiler
+│   ├── slop-compiler        Native compiler (type check + transpile)
+│   └── slop-tester          Native test runner
 ├── lib/
 │   ├── compiler/            Self-hosted compiler (written in SLOP)
+│   │   ├── compiler/        Merged compiler (checker + transpiler)
 │   │   ├── parser/          Native parser source
 │   │   ├── checker/         Native type checker source
-│   │   ├── transpiler/      Native transpiler source
+│   │   ├── transpiler/      Native transpiler modules
+│   │   ├── tester/          Native test runner source
 │   │   └── common/          Shared compiler utilities
 │   └── std/                 Standard library modules
 │       ├── io/              File I/O
@@ -206,15 +210,17 @@ slop check examples/rate-limiter.slop --python
 slop build examples/rate-limiter.slop --python
 
 # Build the native toolchain from source
-./build_native_py.sh
+./build_native.sh
 ```
 
 Native component sources are in `lib/compiler/`:
 - `lib/compiler/parser/` - Native S-expression parser
 - `lib/compiler/checker/` - Native type checker
-- `lib/compiler/transpiler/` - Native SLOP-to-C transpiler
+- `lib/compiler/transpiler/` - Transpiler modules (used by compiler)
+- `lib/compiler/compiler/` - Merged compiler (type check + transpile in one pass)
+- `lib/compiler/tester/` - Native test runner
 
-Pre-built binaries are installed to `bin/` at the project root. If a native component isn't found, the CLI automatically falls back to the Python implementation.
+The merged `slop-compiler` binary is the primary build tool — it runs the type checker and transpiler together. Pre-built binaries are installed to `bin/` at the project root. If a native component isn't found, the CLI automatically falls back to the Python implementation.
 
 ### SLOP_HOME Environment Variable
 
@@ -376,6 +382,27 @@ Running `slop fill` replaces the hole with a valid implementation:
     (union-new Result error "Age must be between 18 and 120"))
 ```
 
+## Generics
+
+Functions can be parameterized over types using `@generic`:
+
+```lisp
+(fn send ((ch (Ptr (Chan Int))) (value Int))
+  (@intent "Send value to channel, blocking if full/unbuffered")
+  (@generic (T))
+  (@spec (((Ptr (Chan T)) T) -> (Result Unit ChanError)))
+  (@pre {ch != nil})
+  ...)
+```
+
+The type parameter `T` is declared in `@generic` and used in `@spec`. At call sites, the type checker unifies argument types to bind `T` and compute the return type. Multiple type parameters are supported: `(@generic (T U V))`.
+
+**Current limitations:**
+
+- **Functions only** — `@generic` annotates functions, not type definitions. Generic types like `Option`, `List`, `Result`, `Chan`, etc. are built-in.
+- **No monomorphization** — Type parameters compile to `int64_t` in C. One C function is generated per generic function, not one per type instantiation.
+- **Concrete types in function bodies** — The `fn` parameters and body must use concrete types; type variables only appear in `@spec`. The generics are a type-checking feature, not a code generation feature.
+
 ## Model Tiering
 
 Holes are routed to appropriately-sized models:
@@ -515,8 +542,10 @@ Arena allocation handles 90% of cases:
 - ✓ S-expression parser with pretty-printing
 - ✓ SLOP → C transpiler with type flow analysis
 - ✓ Type checker with range inference and path-sensitive analysis
-- ✓ Self-hosting compiler (parser, checker, transpiler written in SLOP)
+- ✓ Self-hosting compiler (parser, checker, transpiler, merged compiler — all written in SLOP)
+- ✓ Generics (`@generic` with type parameter unification)
 - ✓ Standard library (`lib/std/`: strlib, io, math, os, thread)
+- ✓ Bootstrap build system (build from pre-generated C — no SLOP installation required)
 - ✓ Concurrency primitives (channels, spawn/join via `lib/std/thread`)
 - ✓ Runtime contract assertions (`SLOP_PRE`/`SLOP_POST` macros)
 - ✓ FFI struct mapping (`ffi-struct` for C struct layouts)
@@ -526,12 +555,12 @@ Arena allocation handles 90% of cases:
 - ✓ Hole filler with quality scoring and pattern library
 - ✓ CLI tooling (`slop` command)
 - ✓ Runtime header with arena allocation
-- ✓ Contract verification via Z3 (`slop verify`)
+- ✓ Contract verification via Z3 (`slop verify`) — path-sensitive body analysis, loop invariants, pattern detection
 - ✓ Test suite
 
 **Not Yet Implemented:**
+- Full generics (monomorphization, generic type definitions, type variable substitution in codegen)
 - Property-based testing generation
-- Contract verification with body analysis (verifies contract consistency, not implementation)
 
 ## License
 

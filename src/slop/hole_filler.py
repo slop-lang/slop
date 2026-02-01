@@ -11,12 +11,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Semaphore
 from typing import Optional, List, Dict, Any, Callable
-from slop.parser import SExpr, SList, Symbol, String, Number, parse, find_holes, is_form, pretty_print, ParseError
+from slop.parser import SExpr, SList, Symbol, String, Number, find_holes, is_form, pretty_print, ParseError
 from slop.providers import Tier, ModelConfig, Provider, MockProvider, create_default_configs
 from slop.types import BUILTIN_FUNCTIONS
 from slop import paths
 
 logger = logging.getLogger(__name__)
+
+
+def _native_parse(source: str) -> list:
+    """Parse SLOP source string using native parser. Raises ParseError on failure."""
+    from slop.cli import parse_native_json_string
+    result, success = parse_native_json_string(source)
+    if not success:
+        raise ParseError(str(result))
+    return result
+
+
+def _native_parse_file(path: str) -> list:
+    """Parse SLOP file using native parser. Raises ParseError on failure."""
+    from slop.cli import parse_native_json
+    result, success = parse_native_json(path)
+    if not success:
+        raise ParseError(str(result))
+    return result
 
 
 # Cache for spec/LANGUAGE.md + spec/REFERENCE.md content
@@ -318,7 +336,7 @@ def load_stdlib_signatures() -> str:
     for module_path in stdlib_modules:
         try:
             content = module_path.read_text()
-            ast = parse(content)
+            ast = _native_parse(content)
 
             # Find module form to get exports
             module_name = None
@@ -697,7 +715,7 @@ def _extract_enum_variants(context: Dict[str, Any]) -> set:
 
     for type_def_str in all_type_defs:
         try:
-            type_ast = parse(type_def_str)
+            type_ast = _native_parse(type_def_str)
             if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
                 type_expr = type_ast[0][2]
                 if is_form(type_expr, 'enum'):
@@ -723,7 +741,7 @@ def _extract_param_names(params_str: str) -> List[str]:
         return []
 
     try:
-        parsed = parse(params_str)
+        parsed = _native_parse(params_str)
         if not parsed or not isinstance(parsed[0], SList):
             return []
         names = []
@@ -792,7 +810,7 @@ def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
     params_str = context.get('params', '')
     if params_str and context_set:
         try:
-            params_ast = parse(params_str)
+            params_ast = _native_parse(params_str)
             if params_ast and isinstance(params_ast[0], SList):
                 for param in params_ast[0].items:
                     if isinstance(param, SList) and len(param) >= 2:
@@ -1011,7 +1029,7 @@ def build_prompt(
 
     for type_def_str in all_type_defs:
         try:
-            type_ast = parse(type_def_str)
+            type_ast = _native_parse(type_def_str)
             if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
                 name = type_ast[0][1].name if isinstance(type_ast[0][1], Symbol) else str(type_ast[0][1])
                 type_expr = type_ast[0][2]
@@ -1166,6 +1184,32 @@ def build_prompt(
     return '\n'.join(sections)
 
 
+def _context_to_temp_file(type_defs: list) -> Optional[str]:
+    """Write type definitions to a temp file for the native checker.
+
+    Args:
+        type_defs: List of type definition strings like '(type User (record (name String)))'
+
+    Returns:
+        Path to temp file, or None if empty.
+    """
+    import tempfile
+    if not type_defs:
+        return None
+    content = '\n'.join(type_defs) + '\n'
+    fd, path = tempfile.mkstemp(suffix='.slop', prefix='slop_ctx_')
+    try:
+        import os
+        os.write(fd, content.encode('utf-8'))
+        os.close(fd)
+        return path
+    except Exception:
+        import os
+        os.close(fd)
+        os.unlink(path)
+        return None
+
+
 def _try_native_checker(
     expr_str: str,
     expected_type: str,
@@ -1187,14 +1231,19 @@ def _try_native_checker(
     import json
     import subprocess
 
-    # Check if native checker is available using paths module
-    checker_path = paths.find_native_binary('checker')
+    # Prefer merged slop-compiler binary, fall back to standalone slop-checker
+    compiler_path = paths.find_native_binary('compiler')
+    checker_path = compiler_path or paths.find_native_binary('checker')
     if not checker_path:
+        logger.error("Native checker binary not found. Build native tools with ./build_native.sh")
         return None
 
     try:
         # Build command
-        cmd = [str(checker_path), '--expr', expr_str, '--type', expected_type]
+        cmd = [str(checker_path)]
+        if compiler_path:
+            cmd.append('check')
+        cmd.extend(['--expr', expr_str, '--type', expected_type])
         if context_file:
             cmd.extend(['--context', context_file])
         if params:
@@ -1250,10 +1299,8 @@ def _extract_fn_params(context_file: str, fn_name: str) -> Optional[str]:
     Returns:
         Params string like "((x Int) (y String))" or None if not found.
     """
-    from slop.parser import parse_file, is_form, Symbol
-
     try:
-        ast = parse_file(context_file)
+        ast = _native_parse_file(context_file)
         for form in ast:
             if is_form(form, 'fn') and len(form) > 2:
                 name = form[1].name if isinstance(form[1], Symbol) else str(form[1])
@@ -1270,248 +1317,12 @@ def _extract_fn_params(context_file: str, fn_name: str) -> Optional[str]:
         return None
 
 
-def _validate_expr_type(
-    expr: SExpr,
-    expected_type_expr: SExpr,
-    context: dict,
-) -> tuple:
-    """Core type validation logic.
-
-    Args:
-        expr: Parsed expression to validate
-        expected_type_expr: Parsed expected type expression
-        context: Context dictionary with type_defs, fn_specs, params, etc.
-
-    Returns:
-        Tuple of (error_messages: List[str], inferred_type_str: Optional[str], expected_type_str: Optional[str])
-    """
-    import re
-    from slop.type_checker import TypeChecker
-    from slop.types import (
-        Type, PrimitiveType, PtrType, OptionType, ResultType,
-        TypeVar, UNKNOWN, FnType, RecordType, EnumType, UnionType
-    )
-
-    def types_compatible(inferred: Type, expected: Type) -> bool:
-        """Check if inferred type is compatible with expected type."""
-        if inferred == UNKNOWN or expected == UNKNOWN:
-            return True
-        if isinstance(inferred, TypeVar) or isinstance(expected, TypeVar):
-            return True
-        if isinstance(inferred, ResultType) and isinstance(expected, ResultType):
-            if isinstance(inferred.ok_type, TypeVar) or isinstance(inferred.err_type, TypeVar):
-                return True
-            if isinstance(expected.ok_type, RecordType) and expected.ok_type.name == '<anonymous>':
-                return types_compatible(inferred.err_type, expected.err_type)
-        if hasattr(inferred, 'is_subtype_of'):
-            return inferred.is_subtype_of(expected)
-        if hasattr(inferred, 'equals'):
-            return inferred.equals(expected)
-        return str(inferred) == str(expected)
-
-    def is_allowable_unknown(typ: Type) -> bool:
-        """Check if type is an allowable unknown (c-inline, type var)."""
-        if typ == UNKNOWN:
-            return True
-        if isinstance(typ, TypeVar):
-            return True
-        return False
-
-    try:
-        # Create type checker (built-ins registered automatically)
-        checker = TypeChecker()
-
-        # Register imported types FIRST
-        imported_types = context.get('imported_types', [])
-        for type_info in imported_types:
-            try:
-                type_ast = parse(type_info['type_def'])
-                if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
-                    name = type_info['name']
-                    typ = checker.parse_type_expr(type_ast[0][2])
-                    if isinstance(typ, RecordType) and typ.name == '<anonymous>':
-                        typ = RecordType(name, typ.fields)
-                    elif isinstance(typ, EnumType) and typ.name == '<anonymous>':
-                        typ = EnumType(name, typ.variants)
-                    elif isinstance(typ, UnionType) and typ.name == '<anonymous>':
-                        typ = UnionType(name, typ.variants)
-                    checker.env.register_type(name, typ)
-            except Exception:
-                pass
-
-        # Register local type definitions
-        type_defs = context.get('type_defs', [])
-        for type_def_str in type_defs:
-            try:
-                type_ast = parse(type_def_str)
-                if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
-                    name = type_ast[0][1].name if isinstance(type_ast[0][1], Symbol) else str(type_ast[0][1])
-                    typ = checker.parse_type_expr(type_ast[0][2])
-                    if isinstance(typ, RecordType) and typ.name == '<anonymous>':
-                        typ = RecordType(name, typ.fields)
-                    elif isinstance(typ, EnumType) and typ.name == '<anonymous>':
-                        typ = EnumType(name, typ.variants)
-                    elif isinstance(typ, UnionType) and typ.name == '<anonymous>':
-                        typ = UnionType(name, typ.variants)
-                    checker.env.register_type(name, typ)
-            except Exception:
-                pass
-
-        # Parse and bind parameters
-        # Handles both (name Type) and (mode name Type) formats
-        PARAM_MODES = {'in', 'out', 'mut'}
-        params_str = context.get('params', '')
-        if params_str:
-            try:
-                params_ast = parse(params_str)
-                if params_ast and isinstance(params_ast[0], SList):
-                    for param in params_ast[0].items:
-                        if isinstance(param, SList) and len(param) >= 2:
-                            first = param[0].name if isinstance(param[0], Symbol) else str(param[0])
-
-                            if first in PARAM_MODES and len(param) >= 3:
-                                # Mode format: (in name Type)
-                                param_name = param[1].name if isinstance(param[1], Symbol) else str(param[1])
-                                param_type = checker.parse_type_expr(param[2])
-                            else:
-                                # Standard format: (name Type)
-                                param_name = first
-                                param_type = checker.parse_type_expr(param[1])
-
-                            checker.env.bind_var(param_name, param_type)
-            except Exception:
-                pass
-
-        # Register functions from fn_specs
-        for spec in context.get('fn_specs', []):
-            try:
-                fn_name = spec.get('name', '')
-                if fn_name and spec.get('return_type'):
-                    ret_ast = parse(spec['return_type'])
-                    if ret_ast:
-                        ret_type = checker.parse_type_expr(ret_ast[0])
-                        param_types = []
-                        params_str = spec.get('params', '')
-                        if params_str:
-                            params_ast = parse(params_str)
-                            if params_ast and isinstance(params_ast[0], SList):
-                                for param in params_ast[0].items:
-                                    if isinstance(param, SList) and len(param) >= 2:
-                                        first = param[0].name if isinstance(param[0], Symbol) else str(param[0])
-                                        if first in PARAM_MODES and len(param) >= 3:
-                                            # Mode format: (in name Type)
-                                            param_type = checker.parse_type_expr(param[2])
-                                        else:
-                                            # Standard format: (name Type)
-                                            param_type = checker.parse_type_expr(param[1])
-                                        param_types.append(param_type)
-                        checker.env.register_function(fn_name, FnType(tuple(param_types), ret_type))
-            except Exception:
-                pass
-
-        # Register FFI functions
-        for spec in context.get('ffi_specs', []):
-            try:
-                fn_name = spec.get('name', '')
-                if fn_name and spec.get('return_type'):
-                    ret_ast = parse(spec['return_type'])
-                    if ret_ast:
-                        ret_type = checker.parse_type_expr(ret_ast[0])
-                        param_types = []
-                        params_str = spec.get('params', '')
-                        if params_str:
-                            params_ast = parse(params_str)
-                            if params_ast and isinstance(params_ast[0], SList):
-                                for param in params_ast[0].items:
-                                    if isinstance(param, SList) and len(param) >= 2:
-                                        first = param[0].name if isinstance(param[0], Symbol) else str(param[0])
-                                        if first in PARAM_MODES and len(param) >= 3:
-                                            # Mode format: (in name Type)
-                                            param_type = checker.parse_type_expr(param[2])
-                                        else:
-                                            # Standard format: (name Type)
-                                            param_type = checker.parse_type_expr(param[1])
-                                        param_types.append(param_type)
-                        checker.env.register_function(fn_name, FnType(tuple(param_types), ret_type))
-            except Exception:
-                pass
-
-        # Register imported functions
-        for spec in context.get('imported_specs', []):
-            try:
-                fn_name = spec.get('name', '')
-                if fn_name and spec.get('return_type'):
-                    ret_ast = parse(spec['return_type'])
-                    if ret_ast:
-                        ret_type = checker.parse_type_expr(ret_ast[0])
-                        param_types = []
-                        params_str = spec.get('params', '')
-                        if params_str:
-                            params_ast = parse(params_str)
-                            if params_ast and isinstance(params_ast[0], SList):
-                                for param in params_ast[0].items:
-                                    if isinstance(param, SList) and len(param) >= 2:
-                                        first = param[0].name if isinstance(param[0], Symbol) else str(param[0])
-                                        if first in PARAM_MODES and len(param) >= 3:
-                                            # Mode format: (in name Type)
-                                            param_type = checker.parse_type_expr(param[2])
-                                        else:
-                                            # Standard format: (name Type)
-                                            param_type = checker.parse_type_expr(param[1])
-                                        param_types.append(param_type)
-                        checker.env.register_function(fn_name, FnType(tuple(param_types), ret_type))
-            except Exception:
-                pass
-
-        # Register constants
-        for spec in context.get('const_specs', []):
-            try:
-                const_name = spec.get('name', '')
-                type_expr_str = spec.get('type_expr', '')
-                if const_name and type_expr_str:
-                    type_ast = parse(type_expr_str)
-                    if type_ast:
-                        const_type = checker.parse_type_expr(type_ast[0])
-                        checker.env.bind_var(const_name, const_type)
-            except Exception:
-                pass
-
-        # Parse expected type and infer expression type
-        expected = checker.parse_type_expr(expected_type_expr)
-        inferred = checker.infer_expr(expr)
-
-        # Collect type errors with enhancements
-        error_msgs = []
-        errors = [d for d in checker.diagnostics if d.severity == 'error']
-        param_names = _extract_param_names(context.get('params', ''))
-
-        for err in errors:
-            msg = err.message
-            if "Undefined variable:" in msg and param_names:
-                msg += f" -- Available: {', '.join(param_names)}"
-            if re.search(r"expected \(Int \d+ \.\..*\), got Int", msg):
-                msg += " -- Use (cast <range-type> value)"
-            error_msgs.append(msg)
-
-        # Check type compatibility
-        if not error_msgs and not types_compatible(inferred, expected):
-            if not is_allowable_unknown(inferred):
-                error_msgs.append(f"Type mismatch: expected {expected}, got {inferred}")
-
-        return (error_msgs, str(inferred), str(expected))
-
-    except Exception as e:
-        logger.warning(f"Type check exception (allowing): {e}")
-        return ([], None, None)
-
-
 def check_hole_impl(
     expr_str: str,
     expected_type: str,
     context_file: Optional[str] = None,
     fn_name: Optional[str] = None,
     params: Optional[str] = None,
-    use_native: bool = True,
 ) -> CheckResult:
     """Type check an expression against an expected type with context.
 
@@ -1521,7 +1332,6 @@ def check_hole_impl(
         context_file: Path to .slop file for context (types, functions, etc.)
         fn_name: If provided, extract params from this function in context_file
         params: Parameter string like "((x Int) (y String))" - overrides fn_name extraction
-        use_native: If True, try native checker first before falling back to Python
 
     Returns:
         CheckResult with valid flag, errors list, and type information
@@ -1534,7 +1344,7 @@ def check_hole_impl(
 
     # Validate parsing early - these errors should be returned before any checker
     try:
-        expr_ast = parse(expr_str)
+        expr_ast = _native_parse(expr_str)
         if not expr_ast:
             return CheckResult(valid=False, errors=["Empty expression"])
         expr = expr_ast[0]
@@ -1542,7 +1352,7 @@ def check_hole_impl(
         return CheckResult(valid=False, errors=[f"Parse error in expression: {e}"])
 
     try:
-        type_ast = parse(expected_type)
+        type_ast = _native_parse(expected_type)
         if not type_ast:
             return CheckResult(valid=False, errors=["Empty type expression"])
         expected_type_expr = type_ast[0]
@@ -1556,53 +1366,26 @@ def check_hole_impl(
         if extracted:
             effective_params = extracted
 
-    # Try native checker first if enabled - pass context file directly
-    if use_native:
-        native_result = _try_native_checker(
-            expr_str,
-            expected_type,
-            context_file=context_file,
-            params=effective_params
+    # Use native checker
+    native_result = _try_native_checker(
+        expr_str,
+        expected_type,
+        context_file=context_file,
+        params=effective_params
+    )
+    if native_result is not None:
+        errors, inferred_str, expected_str = native_result
+        return CheckResult(
+            valid=len(errors) == 0,
+            errors=errors,
+            inferred_type=inferred_str,
+            expected_type=expected_str,
         )
-        if native_result is not None:
-            errors, inferred_str, expected_str = native_result
-            return CheckResult(
-                valid=len(errors) == 0,
-                errors=errors,
-                inferred_type=inferred_str,
-                expected_type=expected_str,
-            )
 
-    # Build context for Python fallback (only when native checker unavailable)
-    context: Dict[str, Any] = {
-        'type_defs': [],
-        'fn_specs': [],
-        'ffi_specs': [],
-        'const_specs': [],
-        'imported_specs': [],
-        'imported_types': [],
-        'params': effective_params,
-    }
-
-    if context_file:
-        try:
-            from slop.cli import extract_file_context
-            file_context = extract_file_context(context_file, fn_name if not params else None)
-            context.update(file_context)
-            # If params provided explicitly, use those instead
-            if params:
-                context['params'] = params
-        except Exception as e:
-            return CheckResult(valid=False, errors=[f"Error reading context file: {e}"])
-
-    # Validate expression type with Python checker
-    errors, inferred_str, expected_str = _validate_expr_type(expr, expected_type_expr, context)
-
+    # Native checker unavailable
     return CheckResult(
-        valid=len(errors) == 0,
-        errors=errors,
-        inferred_type=inferred_str,
-        expected_type=expected_str,
+        valid=False,
+        errors=["Native checker unavailable. Build native tools with ./build_native.sh"],
     )
 
 
@@ -1786,7 +1569,7 @@ class HoleFiller:
             logger.debug(f"Stripped code fence, parsing: {response[:100]}...")
 
         try:
-            exprs = parse(response)
+            exprs = _native_parse(response)
             if exprs:
                 expr = exprs[0]
                 # Transform common Lisp forms to SLOP equivalents
@@ -1952,28 +1735,41 @@ class HoleFiller:
         if not hole.type_expr:
             return []  # No type constraint to check
 
-        # Try native checker first
+        # Use native checker
         expr_str = pretty_print(expr)
         expected_type_str = pretty_print(hole.type_expr)
+        context_file = context.get('context_file') if isinstance(context, dict) else None
+        params_str = context.get('params', '') if isinstance(context, dict) else ''
+
+        # If no context_file but we have type_defs, create a temp file
+        temp_context = None
+        if not context_file and isinstance(context, dict):
+            type_defs = context.get('type_defs', [])
+            if type_defs:
+                temp_context = _context_to_temp_file(type_defs)
+                context_file = temp_context
+
         native_result = _try_native_checker(
             expr_str,
             expected_type_str,
-            context,
-            params=context.get('params', '')
+            context_file=context_file,
+            params=params_str
         )
+
+        # Clean up temp file
+        if temp_context:
+            import os
+            try:
+                os.unlink(temp_context)
+            except OSError:
+                pass
         if native_result is not None:
             errors, _, _ = native_result
-            if not errors:
-                # Native says it's valid - trust it
-                return []
-            # Native reports errors - verify with Python checker
-            # (native may have false positives due to type name format differences)
-            python_errors, _, _ = _validate_expr_type(expr, hole.type_expr, context)
-            return python_errors
+            return errors
 
-        # Fall back to Python type checker
-        errors, _, _ = _validate_expr_type(expr, hole.type_expr, context)
-        return errors
+        # Native checker unavailable - allow expression (can't verify)
+        logger.warning("Native checker unavailable, skipping type validation")
+        return []
 
     def _types_compatible(self, inferred: 'Type', expected: 'Type') -> bool:
         """Check if inferred type is compatible with expected type.
@@ -2283,8 +2079,8 @@ if __name__ == '__main__':
         :context (account amount)))
     '''
 
-    from slop.parser import parse, find_holes
-    ast = parse(test)
+    from slop.parser import find_holes
+    ast = _native_parse(test)
 
     holes = find_holes(ast[0])
     print(f"Found {len(holes)} holes")

@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TRANSPILER="$REPO_ROOT/lib/compiler/transpiler/slop-transpiler"
+TRANSPILER="$REPO_ROOT/bin/slop-compiler"
 RUNTIME_DIR="$REPO_ROOT/src/slop/runtime"
 
 # Colors for output
@@ -20,7 +20,7 @@ echo ""
 # Test 1: Import resolution test
 echo "Test 1: Import resolution"
 OUTPUT=$(mktemp)
-"$TRANSPILER" "$SCRIPT_DIR/import_a.slop" "$SCRIPT_DIR/import_b.slop" "$SCRIPT_DIR/import_main.slop" -o "$OUTPUT"
+"$TRANSPILER" transpile "$SCRIPT_DIR/import_a.slop" "$SCRIPT_DIR/import_b.slop" "$SCRIPT_DIR/import_main.slop" -o "$OUTPUT"
 
 # Verify: my_foo field should use import_a_Foo, not import_b_Foo
 if grep -q "import_b_Foo my_foo" "$OUTPUT"; then
@@ -64,7 +64,7 @@ rm -f "$OUTPUT"
 echo ""
 echo "Test 3: Type alias ordering"
 OUTPUT=$(mktemp)
-"$TRANSPILER" "$SCRIPT_DIR/alias_a.slop" "$SCRIPT_DIR/alias_main.slop" -o "$OUTPUT"
+"$TRANSPILER" transpile "$SCRIPT_DIR/alias_a.slop" "$SCRIPT_DIR/alias_main.slop" -o "$OUTPUT"
 
 # Verify: MyResult should use alias_a_MyError, not alias_main_MyError
 if grep -q "alias_main_MyError" "$OUTPUT"; then
@@ -92,7 +92,7 @@ rm -f "$OUTPUT"
 echo ""
 echo "Test 5: Result type alias ordering"
 OUTPUT=$(mktemp)
-"$TRANSPILER" "$SCRIPT_DIR/result_alias.slop" "$SCRIPT_DIR/result_alias_main.slop" -o "$OUTPUT"
+"$TRANSPILER" transpile "$SCRIPT_DIR/result_alias.slop" "$SCRIPT_DIR/result_alias_main.slop" -o "$OUTPUT"
 
 # Verify: The typedef for MyResult should come AFTER the slop_result_... definition
 # Check that it compiles (ordering error would prevent compilation)

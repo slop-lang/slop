@@ -10,6 +10,7 @@ void tester_main_print_string(slop_string s);
 void tester_main_print_json_string(slop_string s);
 slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string lines);
 void tester_main_print_int(int64_t n);
+slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, uint8_t** argv);
 int tester_main_main(int64_t argc, uint8_t** argv);
 
 slop_option_string tester_main_read_file(slop_arena* arena, char* filename) {
@@ -100,11 +101,11 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                 __auto_type total = 0;
                 __auto_type i = 0;
                 while ((i < len)) {
-                    __auto_type _mv_204 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_204.has_value) {
-                        __auto_type line = _mv_204.value;
+                    __auto_type _mv_249 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_249.has_value) {
+                        __auto_type line = _mv_249.value;
                         total = (total + (((int64_t)(line.len)) + 1));
-                    } else if (!_mv_204.has_value) {
+                    } else if (!_mv_249.has_value) {
                     }
                     i = (i + 1);
                 }
@@ -113,9 +114,9 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                     __auto_type pos = 0;
                     __auto_type j = 0;
                     while ((j < len)) {
-                        __auto_type _mv_205 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                        if (_mv_205.has_value) {
-                            __auto_type line = _mv_205.value;
+                        __auto_type _mv_250 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        if (_mv_250.has_value) {
+                            __auto_type line = _mv_250.value;
                             {
                                 __auto_type line_len = ((int64_t)(line.len));
                                 __auto_type line_data = line.data;
@@ -128,7 +129,7 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                                 buf[pos] = 10;
                                 pos = (pos + 1);
                             }
-                        } else if (!_mv_205.has_value) {
+                        } else if (!_mv_250.has_value) {
                         }
                         j = (j + 1);
                     }
@@ -154,9 +155,29 @@ void tester_main_print_int(int64_t n) {
     }
 }
 
+slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, uint8_t** argv) {
+    {
+        __auto_type sources = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        __auto_type i = 2;
+        while ((i < argc)) {
+            {
+                __auto_type path_ptr = ((char*)(argv[i]));
+                __auto_type _mv_251 = tester_main_read_file(arena, path_ptr);
+                if (_mv_251.has_value) {
+                    __auto_type source = _mv_251.value;
+                    ({ __auto_type _lst_p = &(sources); __auto_type _item = (source); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                } else if (!_mv_251.has_value) {
+                }
+            }
+            i = (i + 1);
+        }
+        return sources;
+    }
+}
+
 int main(int64_t argc, uint8_t** argv) {
     if ((argc < 2)) {
-        tester_main_print_str(((char*)(SLOP_STR("Usage: slop-tester <input.slop>\n").data)));
+        tester_main_print_str(((char*)(SLOP_STR("Usage: slop-tester <input.slop> [import-files...]\n").data)));
         return 1;
     } else {
         {
@@ -168,11 +189,12 @@ int main(int64_t argc, uint8_t** argv) {
             SLOP_PRE(_arena.base != NULL, "arena allocation failed");
             #endif
             slop_arena* arena = &_arena;
-            __auto_type _mv_206 = tester_main_read_file(arena, ((char*)(argv[1])));
-            if (_mv_206.has_value) {
-                __auto_type source = _mv_206.value;
+            __auto_type _mv_252 = tester_main_read_file(arena, ((char*)(argv[1])));
+            if (_mv_252.has_value) {
+                __auto_type source = _mv_252.value;
                 {
-                    __auto_type result = tester_generate_tests(arena, source);
+                    __auto_type import_sources = tester_main_read_import_files(arena, argc, argv);
+                    __auto_type result = tester_generate_tests_with_imports(arena, source, import_sources);
                     if (result.success) {
                         putchar(123);
                         tester_main_print_str(((char*)(SLOP_STR("\"test_harness\":").data)));
@@ -196,7 +218,7 @@ int main(int64_t argc, uint8_t** argv) {
                         return 1;
                     }
                 }
-            } else if (!_mv_206.has_value) {
+            } else if (!_mv_252.has_value) {
                 tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"Could not read file\"}\n").data)));
                 return 1;
             }

@@ -37,6 +37,7 @@ struct extract_TestCase {
     slop_option_string return_type;
     uint8_t needs_arena;
     int64_t arena_position;
+    slop_option_string eq_fn;
 };
 typedef struct extract_TestCase extract_TestCase;
 
@@ -45,8 +46,9 @@ typedef struct extract_TestCase extract_TestCase;
 SLOP_OPTION_DEFINE(extract_TestCase, slop_option_extract_TestCase)
 #endif
 
-extract_TestCase* extract_test_case_new(slop_arena* arena, slop_string fn_name, slop_option_string module_name, slop_list_types_SExpr_ptr args, types_SExpr* expected, slop_option_string return_type, uint8_t needs_arena, int64_t arena_position);
+extract_TestCase* extract_test_case_new(slop_arena* arena, slop_string fn_name, slop_option_string module_name, slop_list_types_SExpr_ptr args, types_SExpr* expected, slop_option_string return_type, uint8_t needs_arena, int64_t arena_position, slop_option_string eq_fn);
 int64_t extract_find_arrow_separator(slop_list_types_SExpr_ptr items);
+int64_t extract_find_arrow_separator_from(slop_list_types_SExpr_ptr items, int64_t start);
 int64_t extract_detect_arena_param(types_SExpr* params);
 slop_option_string extract_extract_return_type(slop_arena* arena, types_SExpr* spec_form);
 slop_list_extract_TestCase_ptr extract_extract_fn_examples(slop_arena* arena, types_SExpr* fn_form, slop_option_string module_name);

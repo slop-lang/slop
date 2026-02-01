@@ -7,9 +7,10 @@
 
 (module infer
   (export
-    infer-expr infer-fn-body check-match-patterns)
+    infer-expr infer-fn-body check-match-patterns
+    resolve-complex-type-expr resolve-simple-type)
 
-  (import parser (SExpr SExprList SExprSymbol is-form
+  (import parser (SExpr SExprList SExprSymbol SExprString SExprNumber is-form
                   sexpr-line sexpr-col
                   sexpr-list-len sexpr-list-get sexpr-is-list sexpr-get-symbol-name))
   (import types (ResolvedType ResolvedTypeKind ResolvedVariant ResolvedField
@@ -26,7 +27,7 @@
                env-get-unknown-type
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
                env-add-warning env-add-error))
-  (import strlib (starts-with string-build))
+  (import strlib (starts-with ends-with string-build))
 
   ;; ============================================================
   ;; String Utilities
@@ -74,6 +75,322 @@
           (String buf new-len)))))
 
   ;; ============================================================
+  ;; Threading Builtins (Polymorphic)
+  ;; ============================================================
+
+  (fn is-qualified-threading-builtin ((op String))
+    (@intent "Check if op is a qualified (module:name) threading builtin")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (cond
+      ((ends-with op ":send") 1)
+      ((ends-with op ":recv") 1)
+      ((ends-with op ":spawn") 1)
+      ((ends-with op ":join") 1)
+      ((ends-with op ":chan-buffered") 1)
+      (else 0)))
+
+  (fn is-bare-threading-builtin ((op String))
+    (@intent "Check if op is a bare (unqualified) threading builtin name")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (cond
+      ((string-eq op "send") 1)
+      ((string-eq op "recv") 1)
+      ((string-eq op "spawn") 1)
+      ((string-eq op "join") 1)
+      ((string-eq op "chan-buffered") 1)
+      (else 0)))
+
+  (fn is-threading-module ((mod-name String))
+    (@intent "Check if a module name is a threading module")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (string-eq mod-name "thread"))
+
+  (fn is-send-op ((op String))
+    (@intent "Check if op is send or qualified send")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "send") (ends-with op ":send")))
+
+  (fn is-recv-op ((op String))
+    (@intent "Check if op is recv or qualified recv")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "recv") (ends-with op ":recv")))
+
+  (fn is-spawn-op ((op String))
+    (@intent "Check if op is spawn or qualified spawn")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "spawn") (ends-with op ":spawn")))
+
+  (fn is-join-op ((op String))
+    (@intent "Check if op is join or qualified join")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "join") (ends-with op ":join")))
+
+  (fn infer-threading-builtin ((env (Ptr TypeEnv)) (op String) (expr (Ptr SExpr))
+                                (items (List (Ptr SExpr))) (len Int) (line Int) (col Int))
+    (@intent "Infer return type for polymorphic threading builtins")
+    (@spec (((Ptr TypeEnv) String (Ptr SExpr) (List (Ptr SExpr)) Int Int Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (do (infer-builtin-args env expr)
+        (cond
+          ((is-send-op op)
+            (do (check-builtin-args env "send" 2 (- len 1) line col)
+                (env-make-result-type env)))
+          ((is-recv-op op)
+            (do (check-builtin-args env "recv" 1 (- len 1) line col)
+                (env-make-result-type env)))
+          ((is-spawn-op op)
+            (do (check-builtin-args env "spawn" 2 (- len 1) line col)
+                (env-make-ptr-type env (env-get-generic-type env))))
+          ((is-join-op op)
+            (do (check-builtin-args env "join" 1 (- len 1) line col)
+                (env-get-generic-type env)))
+          (else
+            (do (check-builtin-args env "chan-buffered" 2 (- len 1) line col)
+                (env-make-ptr-type env (env-get-generic-type env)))))))
+
+  ;; ============================================================
+  ;; Generic Type Parameter Support
+  ;; ============================================================
+
+  ;; TypeBinding: maps a type variable name to a concrete type
+  ;; Stored as parallel lists for simplicity (no separate record needed)
+
+  (fn has-type-params ((sig (Ptr FnSignature)))
+    (@intent "Check if a function signature has generic type parameters")
+    (@spec (((Ptr FnSignature)) -> Bool))
+    (@pure)
+    (@pre (!= sig nil))
+    (> (list-len (. (deref sig) type-params)) 0))
+
+  (fn find-binding ((bind-names (List String)) (bind-types (List (Ptr ResolvedType))) (name String))
+    (@intent "Look up a type variable binding by name")
+    (@spec (((List String) (List (Ptr ResolvedType)) String) -> (Option (Ptr ResolvedType))))
+    (@pure)
+    (let ((len (list-len bind-names))
+          (mut found (Option (Ptr ResolvedType)) (none)))
+      (for (i 0 len)
+        (match (list-get bind-names i)
+          ((some bn)
+            (when (string-eq bn name)
+              (match (list-get bind-types i)
+                ((some bt) (set! found (some bt)))
+                ((none) (do)))))
+          ((none) (do))))
+      found))
+
+  (fn unify-types ((arena Arena) (formal (Ptr ResolvedType)) (actual (Ptr ResolvedType))
+                    (bind-names (List String)) (bind-types (List (Ptr ResolvedType))))
+    (@intent "Unify a formal type with an actual type, binding type variables")
+    (@spec ((Arena (Ptr ResolvedType) (Ptr ResolvedType) (List String) (List (Ptr ResolvedType))) -> Unit))
+    (@pre (!= formal nil))
+    (@pre (!= actual nil))
+    (let ((f-kind (. (deref formal) kind)))
+      (cond
+        ;; Type variable — bind it
+        ((== f-kind 'rk-typevar)
+          (let ((tv-name (. (deref formal) name)))
+            ;; Only bind if not already bound
+            (match (find-binding bind-names bind-types tv-name)
+              ((some existing) (do))  ;; Already bound, skip (could check consistency)
+              ((none)
+                (do (list-push bind-names tv-name)
+                    (list-push bind-types actual))))))
+        ;; Ptr: recurse into inner type
+        ((== f-kind 'rk-ptr)
+          (when (== (. (deref actual) kind) 'rk-ptr)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Chan: recurse into inner type
+        ((== f-kind 'rk-chan)
+          (when (== (. (deref actual) kind) 'rk-chan)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Thread: recurse into inner type
+        ((== f-kind 'rk-thread)
+          (when (== (. (deref actual) kind) 'rk-thread)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; List: recurse into inner type
+        ((== f-kind 'rk-list)
+          (when (== (. (deref actual) kind) 'rk-list)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Option: recurse into inner type
+        ((== f-kind 'rk-option)
+          (when (== (. (deref actual) kind) 'rk-option)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Result: recurse into both inner types
+        ((== f-kind 'rk-result)
+          (when (== (. (deref actual) kind) 'rk-result)
+            (match (. (deref formal) inner-type)
+              ((some f-inner)
+                (match (. (deref actual) inner-type)
+                  ((some a-inner) (unify-types arena f-inner a-inner bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))
+            (match (. (deref formal) inner-type2)
+              ((some f-inner2)
+                (match (. (deref actual) inner-type2)
+                  ((some a-inner2) (unify-types arena f-inner2 a-inner2 bind-names bind-types))
+                  ((none) (do))))
+              ((none) (do)))))
+        ;; Concrete types — no unification needed
+        (else (do)))))
+
+  (fn substitute-type-vars ((arena Arena) (t (Ptr ResolvedType))
+                             (bind-names (List String)) (bind-types (List (Ptr ResolvedType))))
+    (@intent "Replace type variables with their bound concrete types")
+    (@spec ((Arena (Ptr ResolvedType) (List String) (List (Ptr ResolvedType))) -> (Ptr ResolvedType)))
+    (@pre (!= t nil))
+    (let ((kind (. (deref t) kind)))
+      (cond
+        ;; Type variable — look up binding
+        ((== kind 'rk-typevar)
+          (let ((tv-name (. (deref t) name)))
+            (match (find-binding bind-names bind-types tv-name)
+              ((some bound) bound)
+              ((none) t))))  ;; Unbound typevar stays as-is
+        ;; Ptr: substitute inner
+        ((== kind 'rk-ptr)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (inner-name (. (deref new-inner) name))
+                    (ptr-name (string-concat arena "Ptr_" inner-name))
+                    (new-ptr (resolved-type-new arena 'rk-ptr ptr-name (none) "void*")))
+                (resolved-type-set-inner new-ptr new-inner)
+                new-ptr))
+            ((none) t)))
+        ;; Chan: substitute inner
+        ((== kind 'rk-chan)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (new-chan (resolved-type-new arena 'rk-chan "Chan" (none) "slop_chan_int*")))
+                (resolved-type-set-inner new-chan new-inner)
+                new-chan))
+            ((none) t)))
+        ;; Thread: substitute inner
+        ((== kind 'rk-thread)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (new-thread (resolved-type-new arena 'rk-thread "Thread" (none) "slop_thread_int*")))
+                (resolved-type-set-inner new-thread new-inner)
+                new-thread))
+            ((none) t)))
+        ;; List: substitute inner
+        ((== kind 'rk-list)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (new-list (resolved-type-new arena 'rk-list "List" (none) "slop_list_t*")))
+                (resolved-type-set-inner new-list new-inner)
+                new-list))
+            ((none) t)))
+        ;; Option: substitute inner
+        ((== kind 'rk-option)
+          (match (. (deref t) inner-type)
+            ((some inner)
+              (let ((new-inner (substitute-type-vars arena inner bind-names bind-types))
+                    (inner-name (. (deref new-inner) name))
+                    (opt-name (string-concat arena "Option_" inner-name))
+                    (new-opt (resolved-type-new arena 'rk-option opt-name (none) "slop_option")))
+                (resolved-type-set-inner new-opt new-inner)
+                new-opt))
+            ((none) t)))
+        ;; Result: substitute both inner types
+        ((== kind 'rk-result)
+          (let ((new-ok (match (. (deref t) inner-type)
+                          ((some ok) (substitute-type-vars arena ok bind-names bind-types))
+                          ((none) nil)))
+                (new-err (match (. (deref t) inner-type2)
+                           ((some err) (substitute-type-vars arena err bind-names bind-types))
+                           ((none) nil))))
+            (if (== new-ok nil)
+              t
+              (let ((ok-name (. (deref new-ok) name))
+                    (err-name (if (!= new-err nil) (. (deref new-err) name) "Error"))
+                    (result-name (string-concat arena "Result_"
+                                   (string-concat arena ok-name
+                                     (string-concat arena "_" err-name))))
+                    (new-result (resolved-type-new arena 'rk-result result-name (none) "Result")))
+                (resolved-type-set-inner new-result new-ok)
+                (when (!= new-err nil)
+                  (resolved-type-set-inner2 new-result new-err))
+                new-result))))
+        ;; Other types — return as-is
+        (else t))))
+
+  (fn infer-generic-call ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
+                            (line Int) (col Int))
+    (@intent "Infer return type for a generic function call by unifying type params")
+    (@spec (((Ptr TypeEnv) (Ptr FnSignature) (Ptr SExpr) Int Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= sig nil))
+    (@pre (!= expr nil))
+    (let ((arena (env-arena env))
+          (params (. (deref sig) params))
+          (num-params (list-len params))
+          (bind-names (list-new arena String))
+          (bind-types (list-new arena (Ptr ResolvedType))))
+      ;; Infer argument types and unify with formal params
+      (when (sexpr-is-list expr)
+        (let ((num-args (- (sexpr-list-len expr) 1)))
+          ;; Check arity
+          (when (!= num-args num-params)
+            (let ((msg (string-concat arena "'"
+                         (string-concat arena (. (deref sig) name)
+                           (string-concat arena "' expects "
+                             (string-concat arena (int-to-string arena num-params)
+                               (string-concat arena " argument(s), got "
+                                 (int-to-string arena num-args))))))))
+              (env-add-error env msg line col)))
+          ;; Unify each arg with its formal param
+          (let ((limit (if (< num-args num-params) num-args num-params)))
+            (for (i 0 limit)
+              (match (sexpr-list-get expr (+ i 1))
+                ((some arg-expr)
+                  (let ((actual-type (infer-expr env arg-expr)))
+                    (match (list-get params i)
+                      ((some param-info)
+                        (let ((formal-type (. param-info param-type)))
+                          (unify-types arena formal-type actual-type bind-names bind-types)))
+                      ((none) (do)))))
+                ((none) (do)))))))
+      ;; Substitute type variables in return type
+      (let ((ret-type (. (deref sig) return-type)))
+        (substitute-type-vars arena ret-type bind-names bind-types))))
+
+  ;; ============================================================
   ;; Type Comparison
   ;; ============================================================
 
@@ -91,13 +408,21 @@
         ;; Same name - definitely equal
         ((string-eq a-name b-name) true)
 
-        ;; Generic type variable "T" matches anything
+        ;; Type variables match anything
+        ((or (== a-kind 'rk-typevar) (== b-kind 'rk-typevar)) true)
+
+        ;; Generic type variable "T" matches anything (legacy)
         ((or (string-eq a-name "T") (string-eq b-name "T")) true)
 
         ;; Both Option types - check if one is generic (Option_T)
         ((and (== a-kind 'rk-option) (== b-kind 'rk-option))
           (or (string-eq a-name "Option_T")
               (string-eq b-name "Option_T")))
+
+        ;; Both Result types - generic "Result" matches any Result_X_Y
+        ((and (== a-kind 'rk-result) (== b-kind 'rk-result))
+          (or (string-eq a-name "Result")
+              (string-eq b-name "Result")))
 
         ;; Range type vs its base type (e.g., AsciiChar vs Int)
         ((or (== a-kind 'rk-range) (== b-kind 'rk-range))
@@ -153,11 +478,44 @@
         a)))
 
   ;; ============================================================
+  ;; AST Type Annotation
+  ;; ============================================================
+
+  (fn sexpr-set-resolved-type ((expr (Ptr SExpr)) (t (Ptr ResolvedType)))
+    (@intent "Set the resolved type annotation on an AST node")
+    (@spec (((Ptr SExpr) (Ptr ResolvedType)) -> Unit))
+    (@pre (!= expr nil))
+    (match (deref expr)
+      ((sym sym)
+        (set! (deref expr) (union-new SExpr sym
+          (SExprSymbol (. sym name) (. sym line) (. sym col) (some t)))))
+      ((str str)
+        (set! (deref expr) (union-new SExpr str
+          (SExprString (. str value) (. str line) (. str col) (some t)))))
+      ((num num)
+        (set! (deref expr) (union-new SExpr num
+          (SExprNumber (. num int-value) (. num float-value) (. num is-float) (. num raw) (. num line) (. num col) (some t)))))
+      ((lst lst)
+        (set! (deref expr) (union-new SExpr lst
+          (SExprList (. lst items) (. lst line) (. lst col) (some t)))))))
+
+  ;; ============================================================
   ;; Expression Type Inference
   ;; ============================================================
 
   (fn infer-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
-    (@intent "Infer the type of an expression")
+    (@intent "Infer the type of an expression and annotate the AST node")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= expr nil))
+    (let ((result (infer-expr-inner env expr)))
+      ;; Annotate the AST node with the inferred type (skip if nil - polymorphic builtins)
+      (when (!= result nil)
+        (sexpr-set-resolved-type expr result))
+      result))
+
+  (fn infer-expr-inner ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
+    (@intent "Infer the type of an expression (internal, without annotation)")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (@pre (!= expr nil))
@@ -189,11 +547,34 @@
                         (match (env-lookup-function env name)
                           ((some sig) (env-make-fn-type env sig))
                           ((none)
-                            ;; Undefined variable - emit error
-                            (let ((arena (env-arena env))
-                                  (msg (string-concat arena "Undefined variable: " name)))
-                              (env-add-error env msg line col)
-                              (env-get-int-type env))))))))))))
+                            ;; Check for dot notation: var.field or Type.variant
+                            (if (string-contains-char name 46)
+                              (let ((dot-pos (string-index-of name 46))
+                                    (arena (env-arena env))
+                                    (base-name (string-substring arena name 0 dot-pos))
+                                    (field-name (string-substring arena name (+ dot-pos 1) (cast Int (. name len)))))
+                                ;; Try as variable field access
+                                (match (env-lookup-var env base-name)
+                                  ((some obj-type)
+                                    (check-field-exists env obj-type field-name line col))
+                                  ((none)
+                                    ;; Try as enum Type.variant
+                                    (match (env-lookup-type env base-name)
+                                      ((some type-info)
+                                        type-info)
+                                      ((none)
+                                        (let ((msg (string-concat arena "Undefined variable: " name)))
+                                          (env-add-error env msg line col)
+                                          (env-get-int-type env)))))))
+                              ;; No dot - check if it's a type name used as a value
+                              (match (env-lookup-type env name)
+                                ((some type-info)
+                                  type-info)
+                                ((none)
+                                  (let ((arena (env-arena env))
+                                        (msg (string-concat arena "Undefined variable: " name)))
+                                    (env-add-error env msg line col)
+                                    (env-get-int-type env)))))))))))))))
         ((num num)
           (env-get-int-type env))
         ((str str)
@@ -233,6 +614,11 @@
         ;; (if cond then else) - check branch types
         ((string-eq op "if")
           (if (>= len 4)
+            (do
+            ;; Visit condition at index 1
+            (match (list-get items 1)
+              ((some cond-expr) (let ((_ (infer-expr env cond-expr))) (do)))
+              ((none) (do)))
             (match (list-get items 2)
               ((some then-expr)
                 (let ((then-type (infer-expr env then-expr)))
@@ -241,7 +627,7 @@
                       (let ((else-type (infer-expr env else-expr)))
                         (unify-branch-types env then-type else-type line col)))
                     ((none) then-type))))
-              ((none) (env-get-unit-type env)))
+              ((none) (env-get-unit-type env))))
             (env-get-unit-type env)))
 
         ;; (cond (test1 body1) (test2 body2) ... (else bodyN))
@@ -252,13 +638,14 @@
         ((string-eq op "match")
           (infer-match-expr env expr lst))
 
-        ;; (do exprs...) - type is last expr
+        ;; (do exprs...) - visit all, type is last expr
         ((string-eq op "do")
-          (if (> len 1)
-            (match (list-get items (- len 1))
-              ((some last) (infer-expr env last))
-              ((none) (env-get-unit-type env)))
-            (env-get-unit-type env)))
+          (do (infer-body-exprs env expr 1)
+              (if (> len 1)
+                (match (list-get items (- len 1))
+                  ((some last) (infer-expr env last))
+                  ((none) (env-get-unit-type env)))
+                (env-get-unit-type env))))
 
         ;; (let ((bindings)) body...) - bind variables and infer body type
         ((string-eq op "let")
@@ -269,9 +656,39 @@
           (do (infer-body-exprs env expr 1)
               (env-get-unit-type env)))
 
-        ;; (for (i start end) body...) - just return Unit for now (proper implementation later)
+        ;; (for (i start end) body...) - bind loop var as Int, infer body exprs
         ((string-eq op "for")
-          (env-get-unit-type env))
+          (if (>= len 2)
+            (do
+              ;; Bind loop variable and infer start/end expressions
+              (match (list-get items 1)
+                ((some binding-form)
+                  (when (sexpr-is-list binding-form)
+                    (let ((bind-len (sexpr-list-len binding-form)))
+                      (when (>= bind-len 3)
+                        (match (sexpr-list-get binding-form 0)
+                          ((some var-expr)
+                            (let ((var-name (sexpr-get-symbol-name var-expr)))
+                              (when (not (string-eq var-name ""))
+                                (env-push-scope env)
+                                (env-bind-var env var-name (env-get-int-type env))
+                                ;; Infer start and end expressions
+                                (match (sexpr-list-get binding-form 1)
+                                  ((some start-expr) (let ((_ (infer-expr env start-expr))) (do)))
+                                  ((none) (do)))
+                                (match (sexpr-list-get binding-form 2)
+                                  ((some end-expr) (let ((_ (infer-expr env end-expr))) (do)))
+                                  ((none) (do)))
+                                ;; Infer all body expressions
+                                (for (body-idx 2 len)
+                                  (match (list-get items body-idx)
+                                    ((some body-expr) (let ((_ (infer-expr env body-expr))) (do)))
+                                    ((none) (do))))
+                                (env-pop-scope env))))
+                          ((none) (do)))))))
+                ((none) (do)))
+              (env-get-unit-type env))
+            (env-get-unit-type env)))
 
         ;; (for-each (item collection) body...) - bind item to element type
         ((string-eq op "for-each")
@@ -485,6 +902,16 @@
 
         ;; (record-new TypeName (field1 val1) ...) - create record instance
         ((string-eq op "record-new")
+          (do
+          ;; Visit field value expressions at indices 2+ ; each is (field val)
+          (for (fi 2 len)
+            (match (list-get items fi)
+              ((some field-pair)
+                (when (and (sexpr-is-list field-pair) (>= (sexpr-list-len field-pair) 2))
+                  (match (sexpr-list-get field-pair 1)
+                    ((some val-expr) (let ((_ (infer-expr env val-expr))) (do)))
+                    ((none) (do)))))
+              ((none) (do))))
           (if (>= len 2)
             (match (list-get items 1)
               ((some type-expr)
@@ -495,10 +922,16 @@
                       ((some t) t)
                       ((none) (env-get-unit-type env))))))
               ((none) (env-get-unit-type env)))
-            (env-get-unit-type env)))
+            (env-get-unit-type env))))
 
         ;; (union-new TypeName variant value) - create union instance
         ((string-eq op "union-new")
+          (do
+          ;; Visit value expression at index 3 (skip type name and variant name)
+          (when (>= len 4)
+            (match (list-get items 3)
+              ((some val-expr) (let ((_ (infer-expr env val-expr))) (do)))
+              ((none) (do))))
           (if (>= len 2)
             (match (list-get items 1)
               ((some type-expr)
@@ -509,7 +942,7 @@
                       ((some t) t)
                       ((none) (env-get-unit-type env))))))
               ((none) (env-get-unit-type env)))
-            (env-get-unit-type env)))
+            (env-get-unit-type env))))
 
         ;; (hole Type "prompt" [:context ...]) - unfilled hole
         ((string-eq op "hole")
@@ -525,8 +958,11 @@
         (else
           (match (env-lookup-function env op)
             ((some sig)
-              (do (check-fn-call-args env sig expr line col)
-                  (. (deref sig) return-type)))
+              ;; Generic functions: unify type params from arguments
+              (if (has-type-params sig)
+                (infer-generic-call env sig expr line col)
+                (do (check-fn-call-args env sig expr line col)
+                    (. (deref sig) return-type))))
             ;; Not a function - check if it's a type constructor or builtin
             ((none)
               (match (env-lookup-type env op)
@@ -538,7 +974,19 @@
                     ;; list-get returns Option_T (generic Option) - expects 2 args: list, index
                     ((string-eq op "list-get")
                       (do (check-builtin-args env "list-get" 2 (- len 1) line col)
-                          (env-make-option-type env nil)))
+                          (infer-builtin-args env expr)
+                          ;; Extract element type from list arg to make Option type more precise
+                          (let ((mut elem-type (Ptr ResolvedType) nil))
+                            (when (>= len 2)
+                              (match (list-get items 1)
+                                ((some list-arg)
+                                  (let ((list-type (infer-expr env list-arg)))
+                                    (when (== (. (deref list-type) kind) 'rk-list)
+                                      (match (. (deref list-type) inner-type)
+                                        ((some inner) (set! elem-type inner))
+                                        ((none) (do))))))
+                                ((none) (do))))
+                            (env-make-option-type env elem-type))))
                     ;; list-len returns Int - expects 1 arg: list
                     ((string-eq op "list-len")
                       (do (check-builtin-args env "list-len" 1 (- len 1) line col)
@@ -567,15 +1015,6 @@
                           ((none) (env-get-int-type env)))))
                     ;; cast returns Int (approximation)
                     ((string-eq op "cast") (env-get-int-type env))
-                    ;; String builtins
-                    ((string-eq op "string-eq") (env-get-bool-type env))
-                    ((string-eq op "string-concat") (env-get-string-type env))
-                    ((string-eq op "string-len") (env-get-int-type env))
-                    ((string-eq op "string-copy") (env-get-string-type env))
-                    ((string-eq op "string-new") (env-get-string-type env))
-                    ((string-eq op "string-slice") (env-get-string-type env))
-                    ((string-eq op "int-to-string") (env-get-string-type env))
-                    ((string-eq op "char-at") (env-get-int-type env))
                     ;; List operations
                     ;; list-push expects 2 args: list, item
                     ((string-eq op "list-push")
@@ -589,8 +1028,22 @@
                     ;; list-new expects 2 args: arena, Type - returns List
                     ((string-eq op "list-new")
                       (do (check-builtin-args env "list-new" 2 (- len 1) line col)
-                          (let ((arena (env-arena env)))
-                            (resolved-type-new arena 'rk-primitive "List" (none) "slop_list_t*"))))
+                          (let ((arena (env-arena env))
+                                (list-type (resolved-type-new arena 'rk-list "List" (none) "slop_list_t*")))
+                            ;; Extract element type from third argument (index 2): (list-new arena ElemType)
+                            (when (>= len 3)
+                              (match (list-get items 2)
+                                ((some type-expr)
+                                  (let ((elem-type (if (sexpr-is-list type-expr)
+                                                     (resolve-complex-type-expr env type-expr)
+                                                     (let ((tname (sexpr-get-symbol-name type-expr)))
+                                                       (if (string-eq tname "")
+                                                         nil
+                                                         (resolve-simple-type env tname))))))
+                                    (when (!= elem-type nil)
+                                      (resolved-type-set-inner list-type elem-type))))
+                                ((none) (do))))
+                            list-type)))
                     ;; SExpr helpers
                     ((string-eq op "sexpr-is-list") (env-get-bool-type env))
                     ((string-eq op "sexpr-is-symbol") (env-get-bool-type env))
@@ -602,9 +1055,27 @@
                     ;; IO builtins
                     ((string-eq op "print") (env-get-unit-type env))
                     ((string-eq op "println") (env-get-unit-type env))
-                    ;; Result constructors - return generic Result type
-                    ((string-eq op "ok") (env-make-result-type env))
-                    ((string-eq op "error") (env-make-result-type env))
+                    ;; Result constructors - infer inner types
+                    ((string-eq op "ok")
+                      (let ((arena (env-arena env))
+                            (result-type (resolved-type-new arena 'rk-result "Result" (none) "Result")))
+                        (when (>= len 2)
+                          (match (list-get items 1)
+                            ((some val-expr)
+                              (let ((val-type (infer-expr env val-expr)))
+                                (resolved-type-set-inner result-type val-type)))
+                            ((none) (do))))
+                        result-type))
+                    ((string-eq op "error")
+                      (let ((arena (env-arena env))
+                            (result-type (resolved-type-new arena 'rk-result "Result" (none) "Result")))
+                        (when (>= len 2)
+                          (match (list-get items 1)
+                            ((some val-expr)
+                              (let ((val-type (infer-expr env val-expr)))
+                                (resolved-type-set-inner2 result-type val-type)))
+                            ((none) (do))))
+                        result-type))
                     ;; Array indexing builtin: (@ ptr index) returns element type
                     ((string-eq op "@")
                       (if (>= len 2)
@@ -622,6 +1093,8 @@
                         (env-get-int-type env)))
                     ;; Option constructor
                     ((string-eq op "some") (env-make-option-type env nil))
+                    ;; c-inline - returns generic type (unknown C code)
+                    ((string-eq op "c-inline") (env-get-generic-type env))
                     ;; Map builtins
                     ;; map-new expects 3 args: arena, KeyType, ValueType - returns Map with tracked types
                     ((string-eq op "map-new")
@@ -765,6 +1238,11 @@
                               (when (!= elem-type nil)
                                 (resolved-type-set-inner list-type elem-type))
                               list-type))))
+                    ;; Verification-only forms - skip type checking
+                    ((or (string-eq op "exists")
+                         (or (string-eq op "forall")
+                             (string-eq op "implies")))
+                      (env-get-unit-type env))
                     ;; Unknown function/form - check if it's a variant being misused
                     (else
                       (let ((arena (env-arena env)))
@@ -797,13 +1275,17 @@
                                   ;; Check if it looks like a SLOP function (contains hyphen)
                                   ;; If so, emit error - likely missing import
                                   (if (string-contains-char op 45)  ;; 45 = '-'
-                                    (let ((msg (string-concat arena "Unknown function: '"
-                                                 (string-concat arena op
-                                                   "' - did you forget to import it?"))))
-                                      (env-add-error env msg line col)
+                                    (do
+                                      (let ((msg (string-concat arena "Unknown function: '"
+                                                   (string-concat arena op
+                                                     "' - did you forget to import it?"))))
+                                        (env-add-error env msg line col))
+                                      ;; Still infer argument types for annotation coverage
+                                      (infer-builtin-args env expr)
                                       (env-get-unknown-type env))
-                                    ;; May be an FFI function - pass through with no error
-                                    (env-get-unknown-type env))))))))))))))))))
+                                    ;; May be an FFI function - infer args for annotation coverage
+                                    (do (infer-builtin-args env expr)
+                                        (env-get-unknown-type env)))))))))))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
                            (line Int) (col Int))
@@ -1052,6 +1534,15 @@
                 (let ((clause-items (. clause-lst items))
                       (clause-len (list-len clause-items)))
                   (when (> clause-len 1)
+                    ;; Visit condition elements (all but last), skipping 'else' keyword
+                    (for (ci 0 (- clause-len 1))
+                      (match (list-get clause-items ci)
+                        ((some clause-elem)
+                          (let ((elem-name (sexpr-get-symbol-name clause-elem)))
+                            (when (not (string-eq elem-name "else"))
+                              (let ((_ (infer-expr env clause-elem))) (do)))))
+                        ((none) (do))))
+                    ;; Infer and unify the body (last element) type
                     (match (list-get clause-items (- clause-len 1))
                       ((some body)
                         (let ((body-type (infer-expr env body)))
@@ -1156,7 +1647,13 @@
                     (match (list-get clause-items 0)
                       ((some pattern) (bind-match-pattern env scrutinee-type pattern))
                       ((none) (do)))
-                    ;; Infer body type
+                    ;; Infer ALL body expressions (index 1 to clause-len-1)
+                    ;; Visit non-last body exprs for annotation coverage
+                    (for (bi 1 (- clause-len 1))
+                      (match (list-get clause-items bi)
+                        ((some body-expr) (let ((_ (infer-expr env body-expr))) (do)))
+                        ((none) (do))))
+                    ;; Infer last body expression for the branch type
                     (match (list-get clause-items (- clause-len 1))
                       ((some body)
                         (let ((body-type (infer-expr env body)))
@@ -1229,7 +1726,7 @@
             ((none) (do)))))
       (_ (do))))
 
-  (fn is-primitive-type ((name String))
+  (fn checker-is-primitive-type ((name String))
     (@intent "Check if type name is a known primitive")
     (@spec ((String) -> Bool))
     (@pure)
@@ -1278,8 +1775,8 @@
           ;; Only check if types differ AND both are primitives
           ;; Custom types (enums, records) need proper variant tracking
           (when (and (not (string-eq declared-name inferred-name))
-                     (and (is-primitive-type declared-name)
-                          (is-primitive-type inferred-name)))
+                     (and (checker-is-primitive-type declared-name)
+                          (checker-is-primitive-type inferred-name)))
             (let ((arena (env-arena env))
                   (msg (string-concat arena "return value of '"
                          (string-concat arena fn-name
@@ -1393,15 +1890,49 @@
                     (set-type (resolved-type-new arena 'rk-primitive "Set" (none) "slop_map*")))
                 (resolved-type-set-inner set-type inner-type)
                 set-type))
-            ;; Thread type: (Thread T) - built-in parameterized type, treat as record
+            ;; Thread type: (Thread T) - built-in parameterized type
             ((string-eq head-name "Thread")
-              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
-                ;; Thread is a record with id, done, result fields - use ptr to inner type as approximation
-                (env-make-ptr-type env inner-type)))
-            ;; Chan type: (Chan T) - built-in parameterized type, treat as record
+              (let ((inner-type (resolve-ptr-inner-type env type-expr))
+                    (arena (env-arena env))
+                    (t (resolved-type-new arena 'rk-thread "Thread" (none) "slop_thread_int*")))
+                (resolved-type-set-inner t inner-type)
+                t))
+            ;; Chan type: (Chan T) - built-in parameterized type
             ((string-eq head-name "Chan")
-              (let ((inner-type (resolve-ptr-inner-type env type-expr)))
-                (env-make-ptr-type env inner-type)))
+              (let ((inner-type (resolve-ptr-inner-type env type-expr))
+                    (arena (env-arena env))
+                    (t (resolved-type-new arena 'rk-chan "Chan" (none) "slop_chan_int*")))
+                (resolved-type-set-inner t inner-type)
+                t))
+            ;; Result type: (Result OkType ErrType)
+            ((string-eq head-name "Result")
+              (let ((arena (env-arena env))
+                    (result-type (resolved-type-new arena 'rk-result "Result" (none) "Result")))
+                ;; Set ok type from position 1
+                (when (>= (sexpr-list-len type-expr) 2)
+                  (match (sexpr-list-get type-expr 1)
+                    ((some ok-expr)
+                      (let ((ok-name (sexpr-get-symbol-name ok-expr)))
+                        (let ((ok-type (if (string-eq ok-name "")
+                                         (if (sexpr-is-list ok-expr)
+                                           (resolve-complex-type-expr env ok-expr)
+                                           (env-get-unknown-type env))
+                                         (resolve-type-lenient env ok-name))))
+                          (resolved-type-set-inner result-type ok-type))))
+                    ((none) (do))))
+                ;; Set error type from position 2
+                (when (>= (sexpr-list-len type-expr) 3)
+                  (match (sexpr-list-get type-expr 2)
+                    ((some err-expr)
+                      (let ((err-name (sexpr-get-symbol-name err-expr)))
+                        (let ((err-type (if (string-eq err-name "")
+                                          (if (sexpr-is-list err-expr)
+                                            (resolve-complex-type-expr env err-expr)
+                                            (env-get-unknown-type env))
+                                          (resolve-type-lenient env err-name))))
+                          (resolved-type-set-inner2 result-type err-type))))
+                    ((none) (do))))
+                result-type))
             ;; User-defined generic types - look up the base type
             (else
               (match (env-lookup-type env head-name)
@@ -1439,6 +1970,23 @@
                 (env-get-unknown-type env))
               (resolve-simple-type env inner-name))))
         ((none) (env-get-unit-type env)))))
+
+  (fn resolve-type-lenient ((env (Ptr TypeEnv)) (type-name String))
+    (@intent "Resolve a type by name without erroring on unknowns")
+    (@spec (((Ptr TypeEnv) String) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (match (env-lookup-type env type-name)
+      ((some t) t)
+      ((none)
+        (let ((arena (env-arena env)))
+          (cond
+            ((string-eq type-name "Int") (env-get-int-type env))
+            ((string-eq type-name "Bool") (env-get-bool-type env))
+            ((string-eq type-name "String") (env-get-string-type env))
+            ((string-eq type-name "Unit") (env-get-unit-type env))
+            ((string-eq type-name "Arena") (env-get-arena-type env))
+            ;; Unknown type - create a named primitive without error
+            (else (resolved-type-new arena 'rk-primitive type-name (none) type-name)))))))
 
   (fn resolve-simple-type ((env (Ptr TypeEnv)) (type-name String))
     (@intent "Resolve a simple type by name")
@@ -1695,6 +2243,19 @@
           (else false)))
       ((none) false)))
 
+  (fn is-annotation-expr ((expr (Ptr SExpr)))
+    (@intent "Check if expression is an annotation form (starts with @ symbol)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre (!= expr nil))
+    (if (sexpr-is-list expr)
+      (match (sexpr-list-get expr 0)
+        ((some head)
+          (match (deref head)
+            ((sym sym) (starts-with (. sym name) "@"))
+            (_ false)))
+        ((none) false))
+      false))
+
   (fn infer-fn-body ((env (Ptr TypeEnv)) (fn-form (Ptr SExpr)))
     (@intent "Type check a function body, binding parameters and inferring body type")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
@@ -1721,15 +2282,23 @@
                           (bind-param-from-form env param-form))
                         ((none) (do)))))))
               ((none) (do))))))
-      ;; Infer body type (last non-c-name element)
+      ;; Infer body type - visit ALL body expressions, not just the last
+      ;; Body starts at index 3 (after fn, name, params)
       (let ((result-type (match (deref fn-form)
                            ((lst fn-lst)
                              (let ((items (. fn-lst items))
                                    (item-len (list-len items))
-                                   (last-body-idx (find-last-body-idx items)))
-                               (match (list-get items last-body-idx)
-                                 ((some body) (infer-expr env body))
-                                 ((none) (env-get-unit-type env)))))
+                                   (last-body-idx (find-last-body-idx items))
+                                   (mut body-type (env-get-unit-type env)))
+                               ;; Visit all body expressions from index 3, skipping annotations
+                               (for (bi 3 (+ last-body-idx 1))
+                                 (match (list-get items bi)
+                                   ((some body-expr)
+                                     (when (and (not (is-annotation-expr body-expr))
+                                                (not (is-c-name-related items bi)))
+                                       (set! body-type (infer-expr env body-expr))))
+                                   ((none) (do))))
+                               body-type))
                            (_ (env-get-unit-type env)))))
         ;; Check return type matches declared spec
         (check-return-type env fn-form fn-name result-type fn-line fn-col)

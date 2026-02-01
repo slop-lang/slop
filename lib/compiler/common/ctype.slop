@@ -11,10 +11,19 @@
     to-c-type to-c-name type-to-identifier sexpr-to-type-string
     ;; Builtin type lookup
     builtin-type-c is-builtin-type is-builtin-c-type
+    ;; Type category predicates
+    is-int-type is-float-type is-bool-type is-numeric-type
+    ;; Range type handling
+    range-type-to-c-type
     ;; C keyword check
-    is-c-keyword)
+    is-c-keyword
+    ;; Type variable detection
+    is-type-variable
+    ;; Resolved type bridge (checker → transpiler)
+    get-node-resolved-type resolved-type-to-c)
 
-  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
+  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
+                 ResolvedType ResolvedTypeKind))
   (import strlib (replace replace-all starts-with substring))
 
   ;; ============================================================
@@ -114,6 +123,47 @@
         (string-eq c-name "slop_arena")
         (string-eq c-name "slop_arena*")))
 
+  ;; ============================================================
+  ;; Type Category Predicates
+  ;; ============================================================
+
+  (fn is-int-type ((name String))
+    (@intent "Check if SLOP or C type name is an integer type")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Int")
+        (string-eq name "I8")  (string-eq name "I16")
+        (string-eq name "I32") (string-eq name "I64")
+        (string-eq name "U8")  (string-eq name "U16")
+        (string-eq name "U32") (string-eq name "U64")
+        (string-eq name "int64_t")  (string-eq name "int32_t")
+        (string-eq name "int16_t")  (string-eq name "int8_t")
+        (string-eq name "uint64_t") (string-eq name "uint32_t")
+        (string-eq name "uint16_t") (string-eq name "uint8_t")))
+
+  (fn is-float-type ((name String))
+    (@intent "Check if SLOP or C type name is a floating point type")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Float") (string-eq name "F32")
+        (string-eq name "double") (string-eq name "float")))
+
+  (fn is-bool-type ((name String))
+    (@intent "Check if SLOP or C type name is a boolean type")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Bool") (string-eq name "bool")))
+
+  (fn is-numeric-type ((name String))
+    (@intent "Check if type is any numeric type (int or float)")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (is-int-type name) (is-float-type name)))
+
+  ;; ============================================================
+  ;; Builtin Type to C Mapping
+  ;; ============================================================
+
   (fn builtin-type-c ((arena Arena) (name String))
     (@intent "Get C type for a builtin SLOP type")
     (@spec ((Arena String) -> (Option String)))
@@ -179,10 +229,36 @@
       (when (starts-with result "slop_")
         (let ((len-minus-5 (cast (Int 0 ..) (- (string-len result) 5))))
           (set! result (substring arena result 5 len-minus-5))))
-      ;; Normalize int64_t to int for runtime compatibility
+      ;; Normalize C type names to short identifiers for runtime compatibility
       (when (string-eq result "int64_t")
         (set! result "int"))
+      (when (string-eq result "uint8_t")
+        (set! result "u8"))
+      (when (string-eq result "int8_t")
+        (set! result "i8"))
+      (when (string-eq result "uint16_t")
+        (set! result "u16"))
+      (when (string-eq result "int16_t")
+        (set! result "i16"))
+      (when (string-eq result "uint32_t")
+        (set! result "u32"))
+      (when (string-eq result "int32_t")
+        (set! result "i32"))
+      (when (string-eq result "uint64_t")
+        (set! result "u64"))
       result))
+
+  ;; ============================================================
+  ;; Type Variable Detection
+  ;; ============================================================
+
+  (fn is-type-variable ((name String))
+    (@intent "Check if name is a generic type variable (single uppercase letter)")
+    (@spec ((String) -> Bool))
+    (if (= (cast Int (. name len)) 1)
+      (let ((ch (char-at name 0)))
+        (and (>= ch 65) (<= ch 90)))
+      false))
 
   ;; ============================================================
   ;; Type Conversion (SExpr -> C type string)
@@ -201,8 +277,11 @@
         (let ((name (. sym name)))
           (match (builtin-type-c arena name)
             ((some c-type) c-type)
-            ;; Not a builtin - return as-is (user type)
-            ((none) (to-c-name arena name)))))
+            ;; Not a builtin - check for type variable (single uppercase letter)
+            ((none)
+              (if (is-type-variable name)
+                "int64_t"  ;; Generic type var defaults to int64_t for C codegen
+                (to-c-name arena name))))))
       ;; List: compound type like (Ptr T), (Option T), etc.
       ((lst lst)
         (to-c-type-compound arena (. lst items)))
@@ -243,13 +322,13 @@
                     ;; (Option T) -> slop_option_<inner>
                     ((string-eq head "Option")
                       (if (< len 2)
-                        "slop_option_void"
+                        "/* TRANSPILER_ERROR: Option requires inner type */"
                         (match (list-get items 1)
                           ((some inner)
                             (let ((inner-c (to-c-type arena inner))
                                   (inner-id (type-to-identifier arena inner-c)))
                               (string-concat arena "slop_option_" inner-id)))
-                          ((none) "slop_option_void"))))
+                          ((none) "/* TRANSPILER_ERROR: Option requires inner type */"))))
 
                     ;; (Result T E) -> slop_result_<ok>_<err>
                     ((string-eq head "Result")
@@ -336,6 +415,10 @@
                                     args-str)))
                               ((none) (string-concat arena ret-type "(*)(void)")))))))
 
+                    ;; (Int min .. max) range types -> smallest C type
+                    ((string-eq head "Int")
+                      (range-type-to-c-type arena items len))
+
                     ;; Default: treat as type name
                     (else
                       (match (builtin-type-c arena head)
@@ -400,5 +483,151 @@
           (string-concat arena result ")")))
       ;; Other forms - return empty
       (_ "")))
+
+  ;; ============================================================
+  ;; Range Type Handling
+  ;; ============================================================
+
+  (fn range-type-to-c-type ((arena Arena) (items (List (Ptr SExpr))) (len Int))
+    (@intent "Convert (Int min .. max) range type to smallest C type")
+    (@spec ((Arena (List (Ptr SExpr)) Int) -> String))
+    ;; Expected form: (Int min .. max) where items = [Int, min, .., max]
+    ;; Parse min and max values from the list
+    (if (< len 4)
+      "int64_t"
+      (let ((mut min-val (cast I64 0))
+            (mut max-val (cast I64 0))
+            (mut has-min false)
+            (mut has-max false))
+        ;; item 1 = min, item 2 = .., item 3 = max
+        (match (list-get items 1)
+          ((some min-expr)
+            (match (deref min-expr)
+              ((num n)
+                (set! has-min true)
+                (set! min-val (cast I64 (. n int-value))))
+              (_ (do))))
+          ((none) (do)))
+        (match (list-get items 3)
+          ((some max-expr)
+            (match (deref max-expr)
+              ((num n)
+                (set! has-max true)
+                (set! max-val (cast I64 (. n int-value))))
+              (_ (do))))
+          ((none) (do)))
+        (cond
+          ((and has-min has-max)
+            (cond
+              ((and (>= min-val 0) (<= max-val 255)) "uint8_t")
+              ((and (>= min-val 0) (<= max-val 65535)) "uint16_t")
+              ((and (>= min-val (- 0 128)) (<= max-val 127)) "int8_t")
+              ((and (>= min-val (- 0 32768)) (<= max-val 32767)) "int16_t")
+              (else "int64_t")))
+          (else "int64_t")))))
+
+  ;; ============================================================
+  ;; Resolved Type Bridge (Checker → Transpiler)
+  ;; ============================================================
+
+  (fn get-node-resolved-type ((expr (Ptr SExpr)))
+    (@intent "Get the resolved type annotation from an AST node, if present")
+    (@spec (((Ptr SExpr)) -> (Option (Ptr ResolvedType))))
+    (@pre (!= expr nil))
+    (match (deref expr)
+      ((sym sym) (. sym resolved-type))
+      ((str str) (. str resolved-type))
+      ((num num) (. num resolved-type))
+      ((lst lst) (. lst resolved-type))))
+
+  (fn resolved-type-to-c ((arena Arena) (rt (Ptr ResolvedType)))
+    (@intent "Convert a checker ResolvedType to a C type string using transpiler conventions")
+    (@spec ((Arena (Ptr ResolvedType)) -> String))
+    (@pre (!= rt nil))
+    (let ((kind (. (deref rt) kind))
+          (name (. (deref rt) name)))
+      (cond
+        ;; Primitives: use builtin-type-c for correct transpiler names
+        ((== kind 'rk-primitive)
+          (match (builtin-type-c arena name)
+            ((some c) c)
+            ((none) (to-c-name arena name))))
+        ;; Range types: use the c-name which should be correct (uint8_t etc.)
+        ((== kind 'rk-range)
+          (. (deref rt) c-name))
+        ;; Records, unions, enums: apply module prefix to c-name
+        ((or (== kind 'rk-record) (or (== kind 'rk-union) (== kind 'rk-enum)))
+          (let ((c-name (to-c-name arena name)))
+            (match (. (deref rt) module-name)
+              ((some mod-name)
+                (string-concat arena (string-concat arena (to-c-name arena mod-name) "_") c-name))
+              ((none) c-name))))
+        ;; Ptr T -> inner_c* (but Chan/Thread already include *)
+        ((== kind 'rk-ptr)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (let ((inner-kind (. (deref inner) kind)))
+                (if (or (== inner-kind 'rk-chan) (== inner-kind 'rk-thread))
+                  (resolved-type-to-c arena inner)
+                  (string-concat arena (resolved-type-to-c arena inner) "*"))))
+            ((none) "void*")))
+        ;; Option T -> slop_option_<id>
+        ((== kind 'rk-option)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (let ((inner-c (resolved-type-to-c arena inner)))
+                (string-concat arena "slop_option_" (type-to-identifier arena inner-c))))
+            ((none) "/* TRANSPILER_ERROR: Option requires inner type */")))
+        ;; List T -> slop_list_<id>
+        ((== kind 'rk-list)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (let ((inner-c (resolved-type-to-c arena inner)))
+                (string-concat arena "slop_list_" (type-to-identifier arena inner-c))))
+            ((none) "slop_list_void")))
+        ;; Result T E -> slop_result_<ok_id>_<err_id>
+        ((== kind 'rk-result)
+          (let ((ok-id (match (. (deref rt) inner-type)
+                         ((some ok-t)
+                           (type-to-identifier arena (resolved-type-to-c arena ok-t)))
+                         ((none) "void")))
+                (err-id (match (. (deref rt) inner-type2)
+                          ((some err-t)
+                            (type-to-identifier arena (resolved-type-to-c arena err-t)))
+                          ((none) "slop_error"))))
+            (string-concat arena
+              (string-concat arena "slop_result_" ok-id)
+              (string-concat arena "_" err-id))))
+        ;; Map K V -> slop_map*
+        ((== kind 'rk-map) "slop_map*")
+        ;; Function type -> void* (function pointers are complex)
+        ((== kind 'rk-function) "void*")
+        ;; Array -> inner*
+        ((== kind 'rk-array)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (string-concat arena (resolved-type-to-c arena inner) "*"))
+            ((none) "void*")))
+        ;; Chan T -> slop_chan_<inner_id>*
+        ((== kind 'rk-chan)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (let ((inner-c (resolved-type-to-c arena inner))
+                    (inner-id (type-to-identifier arena inner-c)))
+                (string-concat arena (string-concat arena "slop_chan_" inner-id) "*")))
+            ((none) "slop_chan_int*")))
+        ;; Thread T -> slop_thread_<inner_id>*
+        ((== kind 'rk-thread)
+          (match (. (deref rt) inner-type)
+            ((some inner)
+              (let ((inner-c (resolved-type-to-c arena inner))
+                    (inner-id (type-to-identifier arena inner-c)))
+                (string-concat arena (string-concat arena "slop_thread_" inner-id) "*")))
+            ((none) "slop_thread_int*")))
+        ;; Type variable - should have been substituted before reaching transpiler
+        ((== kind 'rk-typevar)
+          "/* TRANSPILER_ERROR: unresolved type variable */")
+        ;; Fallback
+        (else (. (deref rt) c-name)))))
 
 ) ;; end module

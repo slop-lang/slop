@@ -18,7 +18,7 @@
                   sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name
                   sexpr-line sexpr-col))
   (import types (TypeError TypeErrorKind type-error-new
-                 Diagnostic DiagnosticLevel ResolvedType))
+                 Diagnostic DiagnosticLevel ResolvedType ResolvedTypeKind))
   (import env (TypeEnv env-new env-get-diagnostics env-clear-diagnostics
                env-arena env-push-scope env-pop-scope env-bind-var
                env-lookup-type env-get-int-type env-get-bool-type
@@ -26,7 +26,7 @@
                env-set-module env-add-error env-clear-imports))
   (import collect (collect-module))
   (import resolve (resolve-imports))
-  (import infer (infer-fn-body infer-expr))
+  (import infer (infer-fn-body infer-expr resolve-complex-type-expr resolve-simple-type))
   (import file (FileMode FileError File
                 file-open file-close file-read-all))
   (import strlib (cstring-to-string))
@@ -436,21 +436,24 @@
   ;; Expression Mode Support
   ;; ============================================================
 
-  (fn resolve-type-name ((env (Ptr TypeEnv)) (type-name String))
-    (@intent "Resolve a simple type name to a ResolvedType")
-    (@spec (((Ptr TypeEnv) String) -> (Ptr ResolvedType)))
+  (fn resolve-type-string ((env (Ptr TypeEnv)) (arena Arena) (type-str String))
+    (@intent "Parse a type string and resolve it to a ResolvedType")
+    (@spec (((Ptr TypeEnv) Arena String) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
-    (match (env-lookup-type env type-name)
-      ((some t) t)
-      ((none)
-        (cond
-          ((string-eq type-name "Int") (env-get-int-type env))
-          ((string-eq type-name "Bool") (env-get-bool-type env))
-          ((string-eq type-name "String") (env-get-string-type env))
-          ((string-eq type-name "Unit") (env-get-unit-type env))
-          ((string-eq type-name "Arena") (env-get-arena-type env))
-          ;; Fallback to Int for unknown types
-          (else (env-get-int-type env))))))
+    (match (parse arena type-str)
+      ((ok type-ast)
+        (if (== (list-len type-ast) 0)
+          (env-get-int-type env)
+          (match (list-get type-ast 0)
+            ((some type-expr)
+              (if (sexpr-is-list type-expr)
+                (resolve-complex-type-expr env type-expr)
+                (let ((name (sexpr-get-symbol-name type-expr)))
+                  (if (string-eq name "")
+                    (env-get-int-type env)
+                    (resolve-simple-type env name)))))
+            ((none) (env-get-int-type env)))))
+      ((error _) (env-get-int-type env))))
 
   (fn parse-and-bind-params ((env (Ptr TypeEnv)) (arena Arena) (params-str String))
     (@intent "Parse a params string like '((a Int) (b String))' and bind to env")
@@ -483,9 +486,12 @@
                                               ((some type-expr)
                                                 (match (deref type-expr)
                                                   ((sym type-sym)
-                                                    (let ((param-type (resolve-type-name env (. type-sym name))))
+                                                    (let ((param-type (resolve-type-string env arena (. type-sym name))))
                                                       (env-bind-var env param-name param-type)))
-                                                  ;; Complex type - use Int for now
+                                                  ;; Complex type like (Ptr User), (Option Int)
+                                                  ((lst _)
+                                                    (let ((param-type (resolve-complex-type-expr env type-expr)))
+                                                      (env-bind-var env param-name param-type)))
                                                   (_ (env-bind-var env param-name (env-get-int-type env)))))
                                               ((none) (do)))))
                                         (_ (do))))
@@ -497,18 +503,80 @@
       ((error _) (do))))
 
   (fn types-names-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
-    (@intent "Check if two types have equal names (simple comparison)")
+    (@intent "Check if two types are structurally equal")
     (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
     (@pure)
     (@pre (!= a nil))
     (@pre (!= b nil))
     (let ((a-name (. (deref a) name))
-          (b-name (. (deref b) name)))
+          (b-name (. (deref b) name))
+          (a-kind (. (deref a) kind))
+          (b-kind (. (deref b) kind)))
       (cond
         ;; Same name - equal
         ((string-eq a-name b-name) true)
         ;; Generic type "T" matches anything
         ((or (string-eq a-name "T") (string-eq b-name "T")) true)
+        ;; Unknown matches anything
+        ((or (string-eq a-name "Unknown") (string-eq b-name "Unknown")) true)
+        ;; Both Option - compare inner types
+        ((and (== a-kind 'rk-option) (== b-kind 'rk-option))
+          (match (. (deref a) inner-type)
+            ((some a-inner)
+              (match (. (deref b) inner-type)
+                ((some b-inner) (types-names-equal a-inner b-inner))
+                ((none) true)))
+            ((none) true)))
+        ;; Both Result - compare inner types
+        ((and (== a-kind 'rk-result) (== b-kind 'rk-result))
+          (let ((ok-match (match (. (deref a) inner-type)
+                            ((some a-inner)
+                              (match (. (deref b) inner-type)
+                                ((some b-inner) (types-names-equal a-inner b-inner))
+                                ((none) true)))
+                            ((none) true)))
+                (err-match (match (. (deref a) inner-type2)
+                             ((some a-inner2)
+                               (match (. (deref b) inner-type2)
+                                 ((some b-inner2) (types-names-equal a-inner2 b-inner2))
+                                 ((none) true)))
+                             ((none) true))))
+            (and ok-match err-match)))
+        ;; Both Ptr - compare inner types
+        ((and (== a-kind 'rk-ptr) (== b-kind 'rk-ptr))
+          (match (. (deref a) inner-type)
+            ((some a-inner)
+              (match (. (deref b) inner-type)
+                ((some b-inner) (types-names-equal a-inner b-inner))
+                ((none) true)))
+            ((none) true)))
+        ;; Range type vs base type (e.g., Count vs Int)
+        ((== a-kind 'rk-range)
+          (match (. (deref a) inner-type)
+            ((some base) (types-names-equal base b))
+            ((none) false)))
+        ((== b-kind 'rk-range)
+          (match (. (deref b) inner-type)
+            ((some base) (types-names-equal a base))
+            ((none) false)))
+        ;; Type alias: primitive with inner-type is an alias
+        ((and (== a-kind 'rk-primitive) (== b-kind 'rk-primitive))
+          (let ((a-match (match (. (deref a) inner-type)
+                           ((some a-base) (types-names-equal a-base b))
+                           ((none) false)))
+                (b-match (match (. (deref b) inner-type)
+                           ((some b-base) (types-names-equal a b-base))
+                           ((none) false))))
+            (or a-match b-match)))
+        ;; One is a primitive alias, the other is something else
+        ((== a-kind 'rk-primitive)
+          (match (. (deref a) inner-type)
+            ((some a-base) (types-names-equal a-base b))
+            ((none) false)))
+        ((== b-kind 'rk-primitive)
+          (match (. (deref b) inner-type)
+            ((some b-base) (types-names-equal a b-base))
+            ((none) false)))
         ;; Different names - not equal
         (else false))))
 
@@ -566,7 +634,7 @@
                               ;; 4. Infer expression type
                               (let ((inferred-type (infer-expr env expr)))
                                 ;; 5. Parse expected type
-                                (let ((expected-type (resolve-type-name env type-str))
+                                (let ((expected-type (resolve-type-string env arena type-str))
                                       (diagnostics (env-get-diagnostics env))
                                       (num-errors (count-errors diagnostics)))
                                   ;; 6. Check type match and output result

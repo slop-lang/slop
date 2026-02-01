@@ -1,0 +1,12 @@
+# SLOP Compiler - Merged checker + transpiler
+# Build with: slop build (from this directory)
+
+[project]
+name = "slop-compiler"
+version = "0.1.0"
+entry = "main.slop"
+
+[build]
+output = "slop-compiler"
+include = ["../common", "../parser", "../checker", "../transpiler", "../../std", "../../std/strlib", "../../std/io", "../../std/os"]
+type = "executable"

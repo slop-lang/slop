@@ -71,7 +71,7 @@ void checker_output_module_json(slop_arena* arena, slop_string mod_name, slop_li
 int64_t checker_check_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t* filename, checker_OutputFormat format, uint8_t first);
 int64_t checker_count_errors(slop_list_types_Diagnostic diagnostics);
 slop_string checker_argv_to_string(uint8_t** argv, int64_t index);
-types_ResolvedType* checker_resolve_type_name(env_TypeEnv* env, slop_string type_name);
+types_ResolvedType* checker_resolve_type_string(env_TypeEnv* env, slop_arena* arena, slop_string type_str);
 void checker_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_string params_str);
 uint8_t checker_types_names_equal(types_ResolvedType* a, types_ResolvedType* b);
 int64_t checker_check_expr_mode(slop_arena* arena, env_TypeEnv* env, slop_string expr_str, slop_string type_str, slop_string context_file, slop_string params_str);

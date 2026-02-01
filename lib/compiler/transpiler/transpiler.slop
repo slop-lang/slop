@@ -487,16 +487,19 @@
     (@intent "Prescan function for Result type in @spec and register if found")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
     (@pre {ctx != nil})
-    (let ((arena (. (deref ctx) arena))
-          (len (list-len items))
-          (mut i 3))  ;; Start after name and params
-      (while (< i len)
-        (match (list-get items i)
-          ((some item)
-            (when (is-spec-annotation item)
-              (extract-result-type ctx item)))
-          ((none) (do)))
-        (set! i (+ i 1)))))
+    ;; Scan @spec for result/option/chan/thread types to register
+    ;; Type variables (T, U, etc.) map to int64_t via to-c-type
+    (do
+      (let ((arena (. (deref ctx) arena))
+            (len (list-len items))
+            (mut i 3))  ;; Start after name and params
+        (while (< i len)
+          (match (list-get items i)
+            ((some item)
+              (when (is-spec-annotation item)
+                (extract-result-type ctx item)))
+            ((none) (do)))
+          (set! i (+ i 1))))))
 
   (fn is-spec-annotation ((expr (Ptr SExpr)))
     (@intent "Check if expression is an @spec annotation")
@@ -827,8 +830,15 @@
                                                           ((none) "")))
                                               (slop-ret (match existing-func
                                                           ((some entry) (. entry slop-return-type))
-                                                          ((none) ""))))
-                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret false false param-types))))))
+                                                          ((none) "")))
+                                              ;; Copy returns-pointer and returns-string from existing entry
+                                              (ret-ptr (match existing-func
+                                                         ((some entry) (. entry returns-pointer))
+                                                         ((none) false)))
+                                              (ret-str (match existing-func
+                                                         ((some entry) (. entry returns-string))
+                                                         ((none) false))))
+                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret ret-ptr ret-str param-types))))))
                                   (else (do))))
                               ((none) (do)))
                             (set! j (+ j 1)))))
@@ -912,9 +922,15 @@
                             ;; Look for :c-name keyword and extract actual C name
                             (c-name (extract-ffi-c-name ctx items fn-name))
                             ;; Extract param types from FFI declaration for typed none handling
-                            (param-types (extract-ffi-param-types ctx items)))
-                        ;; Register as external function with param types (FFI has no SLOP return type)
-                        (ctx-register-func ctx (FuncEntry fn-name c-name "" "" true false param-types))))
+                            (param-types (extract-ffi-param-types ctx items))
+                            ;; Extract return type from FFI declaration (items[2])
+                            (ret-type (if (>= len 3)
+                                       (match (list-get items 2)
+                                         ((some ret-expr) (to-c-type-prefixed ctx ret-expr))
+                                         ((none) ""))
+                                       ""))
+                            (ret-is-string (string-eq ret-type "slop_string")))
+                        (ctx-register-func ctx (FuncEntry fn-name c-name ret-type "" true ret-is-string param-types))))
                     (else (do))))
                 ((none) (do))))))
         (else (do)))))
@@ -3509,6 +3525,59 @@
           ((none) (do)))
         (set! i (+ i 1)))))
 
+  (fn emit-pending-container-deps ((ctx (Ptr TranspileContext)) (type-def (Ptr SExpr)))
+    (@intent "Emit any Option/List types needed by this struct's fields that haven't been emitted yet")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {type-def != nil})
+    (let ((field-types (get-type-field-types ctx type-def))
+          (len (list-len field-types))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get field-types i)
+          ((some field-type)
+            ;; If this is an un-emitted slop_option_* or slop_list_* whose inner type is available, emit it now
+            (when (and (not (ctx-is-type-emitted ctx field-type))
+                       (is-emittable-container-type ctx field-type))
+              ;; Try to emit as option type
+              (when (starts-with field-type "slop_option_")
+                (emit-option-by-c-name ctx field-type))
+              ;; Try to emit as list type
+              (when (starts-with field-type "slop_list_")
+                (emit-list-by-c-name ctx field-type))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn emit-option-by-c-name ((ctx (Ptr TranspileContext)) (c-name String))
+    (@intent "Find and emit an Option type by its C name")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (let ((option-types (ctx-get-option-types ctx))
+          (len (list-len option-types))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get option-types i)
+          ((some ot)
+            (when (string-eq (. ot c-name) c-name)
+              (emit-single-option-type-header ctx ot)))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn emit-list-by-c-name ((ctx (Ptr TranspileContext)) (c-name String))
+    (@intent "Find and emit a List type by its C name")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (let ((list-types (ctx-get-list-types ctx))
+          (len (list-len list-types))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get list-types i)
+          ((some lt)
+            (when (string-eq (. lt c-name) c-name)
+              (emit-single-list-type-header ctx lt)))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
   (fn emit-struct-union-types-sorted ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start Int))
     (@intent "Emit all struct/union types in dependency order via topological sort")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> Unit))
@@ -3533,6 +3602,8 @@
                   (when (and (is-type-def item) (is-struct-type-def item))
                     ;; Check if all dependencies are met
                     (when (type-deps-satisfied ctx item)
+                      ;; Emit any needed Option/List deps before this struct
+                      (emit-pending-container-deps ctx item)
                       ;; Emit the type
                       (emit-type-to-header ctx item)
                       ;; Mark as emitted
@@ -3586,6 +3657,7 @@
     ;; 4. It's a runtime Option/List type (from slop_runtime.h)
     ;; 5. It's been emitted (in emitted-types list)
     ;; 6. It's an imported type (from another module)
+    ;; 7. It's a slop_option_*/slop_list_* whose inner type is already available
     (or (is-primitive-type type-name)
         (starts-with type-name "Ptr ")
         (starts-with type-name "(Ptr")
@@ -3593,7 +3665,28 @@
         (is-runtime-option-type type-name)
         (is-runtime-list-type type-name)
         (is-type-emitted-or-primitive ctx type-name)
-        (is-imported-type ctx type-name)))
+        (is-imported-type ctx type-name)
+        (is-emittable-container-type ctx type-name)))
+
+  (fn is-emittable-container-type ((ctx (Ptr TranspileContext)) (type-name String))
+    (@intent "Check if slop_option_*/slop_list_* type whose inner type is already available")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (cond
+        ((starts-with type-name "slop_option_")
+          ;; Extract inner type name after "slop_option_" (12 chars)
+          (let ((inner (substring arena type-name 12 (- (cast Int (. type-name len)) 12))))
+            (or (is-primitive-type inner)
+                (is-type-emitted-or-primitive ctx inner)
+                (is-imported-type ctx inner))))
+        ((starts-with type-name "slop_list_")
+          ;; Extract inner type name after "slop_list_" (10 chars)
+          (let ((inner (substring arena type-name 10 (- (cast Int (. type-name len)) 10))))
+            (or (is-primitive-type inner)
+                (is-type-emitted-or-primitive ctx inner)
+                (is-imported-type ctx inner))))
+        (else false))))
 
   (fn is-slop-runtime-type ((type-name String))
     (@intent "Check if type is a slop runtime type (not generated list/option)")

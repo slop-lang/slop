@@ -11,56 +11,13 @@
     is-pointer-expr is-string-expr
     ;; Basic type inference
     infer-literal-type
-    ;; Type predicates
+    ;; Type predicates (re-exported from ctype)
     is-int-type is-float-type is-bool-type)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-is-pointer-var ctx-lookup-var ctx-lookup-func VarEntry FuncEntry))
   (import strlib (starts-with ends-with))
-
-  ;; ============================================================
-  ;; Type Predicates
-  ;; ============================================================
-
-  (fn is-int-type ((type-name String))
-    (@intent "Check if type name is an integer type")
-    (@spec ((String) -> Bool))
-    (@example ("Int") -> true)
-    (@example ("int64_t") -> true)
-    (@example ("String") -> false)
-    (or (string-eq type-name "Int")
-        (string-eq type-name "I8")
-        (string-eq type-name "I16")
-        (string-eq type-name "I32")
-        (string-eq type-name "I64")
-        (string-eq type-name "U8")
-        (string-eq type-name "U16")
-        (string-eq type-name "U32")
-        (string-eq type-name "U64")
-        (string-eq type-name "int64_t")
-        (string-eq type-name "int32_t")
-        (string-eq type-name "int16_t")
-        (string-eq type-name "int8_t")
-        (string-eq type-name "uint64_t")
-        (string-eq type-name "uint32_t")
-        (string-eq type-name "uint16_t")
-        (string-eq type-name "uint8_t")))
-
-  (fn is-float-type ((type-name String))
-    (@intent "Check if type name is a floating point type")
-    (@spec ((String) -> Bool))
-    (@example ("Float") -> true)
-    (@example ("double") -> true)
-    (or (string-eq type-name "Float")
-        (string-eq type-name "F32")
-        (string-eq type-name "double")
-        (string-eq type-name "float")))
-
-  (fn is-bool-type ((type-name String))
-    (@intent "Check if type name is a boolean type")
-    (@spec ((String) -> Bool))
-    (or (string-eq type-name "Bool")
-        (string-eq type-name "uint8_t")))
+  (import ctype (is-int-type is-float-type is-bool-type))
 
   ;; ============================================================
   ;; Pointer Detection

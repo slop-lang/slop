@@ -77,13 +77,15 @@
     TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias
     ;; Error handling
     ctx-fail
+    ;; Fallback warnings
+    ctx-warn-fallback
     ;; Error collection
     ctx-set-file ctx-add-error ctx-add-error-at ctx-has-errors ctx-get-errors ctx-report-errors
     ;; Position extraction helpers
-    sexpr-line sexpr-col list-first-line list-first-col)
+    ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col)
 
   (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type))
+  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type))
   (import strlib (index-of substring))
 
   ;; FFI for error handling
@@ -341,6 +343,30 @@
       (set! (deref ctx) last-lambda-is-closure false)
       (set! (deref ctx) last-lambda-env-type "")
       (set! (deref ctx) last-lambda-name "")
+      ;; NOTE: String and Bytes have special constructor handling in
+      ;; get-builtin-type-c-name / transpile-builtin-constructor (expr.slop)
+      ;; for correct field ordering. If adding a new primitive type that needs
+      ;; non-positional field init, add it there too.
+      ;; Register primitive types so lookup functions don't need hardcoded mappings
+      (ctx-register-type ctx (TypeEntry "Int" "int64_t" "int64_t" false false false))
+      (ctx-register-type ctx (TypeEntry "I8" "int8_t" "int8_t" false false false))
+      (ctx-register-type ctx (TypeEntry "I16" "int16_t" "int16_t" false false false))
+      (ctx-register-type ctx (TypeEntry "I32" "int32_t" "int32_t" false false false))
+      (ctx-register-type ctx (TypeEntry "I64" "int64_t" "int64_t" false false false))
+      (ctx-register-type ctx (TypeEntry "U8" "uint8_t" "uint8_t" false false false))
+      (ctx-register-type ctx (TypeEntry "U16" "uint16_t" "uint16_t" false false false))
+      (ctx-register-type ctx (TypeEntry "U32" "uint32_t" "uint32_t" false false false))
+      (ctx-register-type ctx (TypeEntry "U64" "uint64_t" "uint64_t" false false false))
+      (ctx-register-type ctx (TypeEntry "Char" "char" "char" false false false))
+      (ctx-register-type ctx (TypeEntry "Float" "double" "double" false false false))
+      (ctx-register-type ctx (TypeEntry "F32" "float" "float" false false false))
+      (ctx-register-type ctx (TypeEntry "Bool" "uint8_t" "uint8_t" false false false))
+      (ctx-register-type ctx (TypeEntry "String" "slop_string" "slop_string" false false false))
+      (ctx-register-type ctx (TypeEntry "Bytes" "slop_bytes" "slop_bytes" false false false))
+      (ctx-register-type ctx (TypeEntry "Unit" "void" "void" false false false))
+      (ctx-register-type ctx (TypeEntry "Void" "void" "void" false false false))
+      (ctx-register-type ctx (TypeEntry "Arena" "slop_arena*" "slop_arena*" false false false))
+      (ctx-register-type ctx (TypeEntry "Milliseconds" "int64_t" "int64_t" false false false))
       ctx))
 
   (fn ctx-reset-for-new-module ((ctx (Ptr TranspileContext)) (mod-name String))
@@ -452,6 +478,43 @@
       (slop-eputc 10)
       (exit 1)))
 
+  (fn ctx-warn-fallback ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (desc String))
+    (@intent "Print a warning to stderr when transpiler falls back to its own type inference")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String) -> Unit))
+    (let ((arena (. (deref ctx) arena))
+          (line (ctx-sexpr-line expr))
+          (col (ctx-sexpr-col expr))
+          (mod-name (ctx-get-module ctx))
+          (expr-head (if (== expr nil)
+                       "<?>"
+                       (match (deref expr)
+                         ((sym s) (. s name))
+                         ((str s) "<literal>")
+                         ((num n) "<literal>")
+                         ((lst l) (let ((items (. l items)))
+                                    (match (list-get items 0)
+                                      ((some first)
+                                       (match (deref first)
+                                         ((sym s) (. s name))
+                                         ((str s) "<str>")
+                                         ((num n) "<num>")
+                                         ((lst l2) "<list>")))
+                                      ((none) "<empty-list>"))))))))
+      (do
+        (slop-eprint (cast (Ptr Char) "warning: type inference fallback in "))
+        (match mod-name
+          ((some m) (print-string-stderr m))
+          ((none) (slop-eprint (cast (Ptr Char) "<unknown>"))))
+        (slop-eprint (cast (Ptr Char) " at "))
+        (print-string-stderr (int-to-string arena line))
+        (slop-eputc 58)
+        (print-string-stderr (int-to-string arena col))
+        (slop-eprint (cast (Ptr Char) " ("))
+        (print-string-stderr expr-head)
+        (slop-eprint (cast (Ptr Char) ") for "))
+        (print-string-stderr desc)
+        (slop-eputc 10))))
+
   (fn print-string-stdout ((s String))
     (@intent "Print a String to stdout character by character")
     (@spec ((String) -> Unit))
@@ -542,7 +605,7 @@
   ;; SExpr Position Extraction
   ;; ============================================================
 
-  (fn sexpr-line ((expr (Ptr SExpr)))
+  (fn ctx-sexpr-line ((expr (Ptr SExpr)))
     (@intent "Extract line number from an SExpr")
     (@spec (((Ptr SExpr)) -> Int))
     (if (== expr nil)
@@ -553,7 +616,7 @@
         ((num n) (cast Int (. n line)))
         ((lst l) (cast Int (. l line))))))
 
-  (fn sexpr-col ((expr (Ptr SExpr)))
+  (fn ctx-sexpr-col ((expr (Ptr SExpr)))
     (@intent "Extract column number from an SExpr")
     (@spec (((Ptr SExpr)) -> Int))
     (if (== expr nil)
@@ -564,18 +627,18 @@
         ((num n) (cast Int (. n col)))
         ((lst l) (cast Int (. l col))))))
 
-  (fn list-first-line ((items (List (Ptr SExpr))))
+  (fn ctx-list-first-line ((items (List (Ptr SExpr))))
     (@intent "Extract line number from the first element of an SExpr list")
     (@spec (((List (Ptr SExpr))) -> Int))
     (match (list-get items 0)
-      ((some first-expr) (sexpr-line first-expr))
+      ((some first-expr) (ctx-sexpr-line first-expr))
       ((none) 0)))
 
-  (fn list-first-col ((items (List (Ptr SExpr))))
+  (fn ctx-list-first-col ((items (List (Ptr SExpr))))
     (@intent "Extract column number from the first element of an SExpr list")
     (@spec (((List (Ptr SExpr))) -> Int))
     (match (list-get items 0)
-      ((some first-expr) (sexpr-col first-expr))
+      ((some first-expr) (ctx-sexpr-col first-expr))
       ((none) 0)))
 
   ;; ============================================================
@@ -1531,7 +1594,7 @@
 
                     ;; (Option T) -> slop_option_<inner>
                     ((string-eq head "Option")
-                      (set! result "slop_option_void")
+                      (set! result "__option_type_error__")
                       (when (>= len 2)
                         (match (list-get items 1)
                           ((some inner)
@@ -1659,6 +1722,10 @@
                                 (let ((args-str (build-fn-args-str-prefixed ctx args-expr)))
                                   (set! result (ctx-str ctx (ctx-str ctx ret-type "(*)") args-str))))
                               ((none) (set! result (ctx-str ctx ret-type "(*)(void)"))))))))
+
+                    ;; (Int min .. max) range types -> smallest C type
+                    ((string-eq head "Int")
+                      (set! result (range-type-to-c-type arena items len)))
 
                     ;; Default: treat as type name
                     (else

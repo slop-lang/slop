@@ -214,6 +214,13 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 (@alloc none)                    ; Function does not allocate
 (@pure)                          ; No side effects, deterministic
 
+; Generic type parameters
+(@generic (T))                   ; Declare type parameter for polymorphic function
+(@generic (T U))                 ; Multiple type parameters
+; Type variables appear in @spec param/return types. At call sites, the checker
+; unifies argument types to bind type variables and substitutes into the return type.
+; The fn form params use concrete types for C codegen.
+
 ; Hybrid generation annotations
 (@generation-mode deterministic)
 (@generation-mode template name)
@@ -629,6 +636,7 @@ Minimal runtime (~500 lines of C):
 (string-eq a b) -> Bool
 (string-slice s start end) -> (Slice U8)
 (string-split arena s delimiter) -> (List String)  ; delimiter must be single char
+(string-push-char arena s c) -> String             ; append a U8 char to a string
 (int-to-string arena n) -> String                  ; Convert integer to string
 
 ; Lists (homogeneous, type-safe)

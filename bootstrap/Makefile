@@ -7,7 +7,8 @@
 #   runtime/     - Shared runtime header
 #   parser/      - All parser .h and .c files
 #   checker/     - All checker .h and .c files
-#   transpiler/  - All transpiler .h and .c files
+#   transpiler/  - Transpiler module .h and .c files (used by compiler)
+#   compiler/    - All compiler .h and .c files (merged checker + transpiler)
 #   tester/      - All tester .h and .c files
 #
 # Usage:
@@ -50,12 +51,13 @@ endif
 PARSER_SRCS := $(wildcard parser/*.c)
 CHECKER_SRCS := $(wildcard checker/*.c)
 TRANSPILER_SRCS := $(wildcard transpiler/*.c)
+COMPILER_SRCS := $(wildcard compiler/*.c)
 TESTER_SRCS := $(wildcard tester/*.c)
 
 # Targets
-.PHONY: all clean parser checker transpiler tester release info
+.PHONY: all clean parser checker compiler tester release info
 
-all: parser checker transpiler tester
+all: parser checker compiler tester
 
 info:
 	@echo "Platform: $(PLATFORM)-$(ARCH)"
@@ -65,6 +67,7 @@ info:
 	@echo "Parser sources: $(PARSER_SRCS)"
 	@echo "Checker sources: $(CHECKER_SRCS)"
 	@echo "Transpiler sources: $(TRANSPILER_SRCS)"
+	@echo "Compiler sources: $(COMPILER_SRCS)"
 	@echo "Tester sources: $(TESTER_SRCS)"
 
 $(BIN_DIR):
@@ -80,10 +83,10 @@ checker: $(BIN_DIR)
 	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) -Ichecker -o $(BIN_DIR)/slop-checker $(CHECKER_SRCS)
 	@echo "  -> $(BIN_DIR)/slop-checker"
 
-transpiler: $(BIN_DIR)
-	@echo "Building transpiler..."
-	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) -Itranspiler -o $(BIN_DIR)/slop-transpiler $(TRANSPILER_SRCS)
-	@echo "  -> $(BIN_DIR)/slop-transpiler"
+compiler: $(BIN_DIR)
+	@echo "Building compiler..."
+	$(CC) $(CFLAGS) -I$(RUNTIME_DIR) -Icompiler -o $(BIN_DIR)/slop-compiler $(COMPILER_SRCS)
+	@echo "  -> $(BIN_DIR)/slop-compiler"
 
 tester: $(BIN_DIR)
 	@echo "Building tester..."

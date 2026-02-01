@@ -209,6 +209,15 @@ static inline slop_string slop_string_concat(slop_arena* arena, slop_string a, s
     return (slop_string){len, data};
 }
 
+static inline slop_string slop_string_push_char(slop_arena* arena, slop_string s, uint8_t c) {
+    size_t len = s.len + 1;
+    char* data = (char*)slop_arena_alloc(arena, len + 1);
+    memcpy(data, s.data, s.len);
+    data[s.len] = (char)c;
+    data[len] = '\0';
+    return (slop_string){len, data};
+}
+
 static inline slop_string slop_string_slice(slop_string s, size_t start, size_t end) {
     SLOP_PRE(start <= end && end <= s.len, "valid slice bounds");
     return (slop_string){end - start, s.data + start};

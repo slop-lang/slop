@@ -25,8 +25,17 @@ def _run_native_checker(path: str, include_paths: Optional[List[Path]] = None) -
     Returns (True, []) if checker not available or succeeds.
     Returns (False, diagnostics) if type errors found.
     """
-    checker_bin = Path(__file__).parent.parent.parent.parent / 'bin' / 'slop-checker'
-    if not checker_bin.exists():
+    # Prefer merged slop-compiler binary, fall back to standalone slop-checker
+    bin_dir = Path(__file__).parent.parent.parent.parent / 'bin'
+    compiler_bin = bin_dir / 'slop-compiler'
+    checker_bin = bin_dir / 'slop-checker'
+    if compiler_bin.exists():
+        use_bin = compiler_bin
+        use_compiler = True
+    elif checker_bin.exists():
+        use_bin = checker_bin
+        use_compiler = False
+    else:
         return True, []  # Fall through if native checker not available
 
     try:
@@ -54,8 +63,11 @@ def _run_native_checker(path: str, include_paths: Optional[List[Path]] = None) -
         else:
             files_to_check = [path]
 
-        # Build command: slop-checker --json file1.slop file2.slop ...
-        cmd = [str(checker_bin), '--json'] + files_to_check
+        # Build command
+        cmd = [str(use_bin)]
+        if use_compiler:
+            cmd.append('check')
+        cmd.extend(['--json'] + files_to_check)
 
         result = subprocess.run(
             cmd,
@@ -109,8 +121,8 @@ def run_native_checker_diagnostics(path: str, include_paths: Optional[List[Path]
     Returns (diagnostics, native_available).
     If native not available, returns ([], False) so caller can fall back.
     """
-    checker_bin = Path(__file__).parent.parent.parent.parent / 'bin' / 'slop-checker'
-    if not checker_bin.exists():
+    bin_dir = Path(__file__).parent.parent.parent.parent / 'bin'
+    if not (bin_dir / 'slop-compiler').exists() and not (bin_dir / 'slop-checker').exists():
         return [], False  # Native checker not available
 
     success, raw_diagnostics = _run_native_checker(path, include_paths)

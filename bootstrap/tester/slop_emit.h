@@ -35,14 +35,29 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 SLOP_OPTION_DEFINE(extract_TestCase*, slop_option_extract_TestCase_ptr)
 #endif
 
+#ifndef SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
+#endif
+
 #ifndef SLOP_LIST_TYPE_EXTRACT_FIELDENTRY_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_FIELDENTRY_DEFINED
 SLOP_LIST_DEFINE(type_extract_FieldEntry, slop_list_type_extract_FieldEntry)
 #endif
 
+#ifndef SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntry)
+#endif
+
 #ifndef SLOP_OPTION_TYPE_EXTRACT_FIELDENTRY_DEFINED
 #define SLOP_OPTION_TYPE_EXTRACT_FIELDENTRY_DEFINED
 SLOP_OPTION_DEFINE(type_extract_FieldEntry, slop_option_type_extract_FieldEntry)
+#endif
+
+#ifndef SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
 #endif
 
 #ifndef SLOP_LIST_TYPE_EXTRACT_FIELDENTRY_DEFINED
@@ -77,6 +92,7 @@ typedef struct emit_CompareInfo emit_CompareInfo;
 SLOP_OPTION_DEFINE(emit_CompareInfo, slop_option_emit_CompareInfo)
 #endif
 
+slop_string emit_prefix_symbol(slop_arena* arena, slop_string name, slop_string prefix, type_extract_TypeRegistry types);
 emit_EmitContext* emit_emit_ctx_new(slop_arena* arena);
 emit_EmitContext* emit_emit_ctx_new_typed(slop_arena* arena, type_extract_TypeRegistry* types);
 void emit_emit(emit_EmitContext* ctx, slop_string line);
@@ -96,11 +112,8 @@ slop_string emit_emit_binary_op(slop_arena* arena, slop_list_types_SExpr_ptr ite
 slop_string emit_emit_function_call(slop_arena* arena, slop_list_types_SExpr_ptr items, slop_string prefix);
 slop_string emit_emit_args(slop_arena* arena, slop_list_types_SExpr_ptr items, int64_t start, slop_string prefix);
 slop_string emit_emit_type_constructor(slop_arena* arena, slop_list_types_SExpr_ptr items, slop_string prefix);
-slop_string emit_convert_symbol_to_c(slop_arena* arena, slop_string name);
 slop_string emit_escape_string(slop_arena* arena, slop_string s);
-uint8_t emit_string_starts_with(slop_string s, slop_string prefix);
-slop_string emit_emit_emit_string_slice(slop_arena* arena, slop_string s, int64_t start, int64_t end);
-slop_list_string emit_emit_test_harness_typed(slop_arena* arena, slop_list_extract_TestCase_ptr tests, slop_string module_prefix, type_extract_TypeRegistry* types, slop_list_string imports);
+slop_list_string emit_emit_test_harness_typed(slop_arena* arena, slop_list_extract_TestCase_ptr tests, slop_string module_prefix, type_extract_TypeRegistry* types, slop_list_type_extract_ImportEntry imports);
 slop_list_string emit_emit_test_harness(slop_arena* arena, slop_list_extract_TestCase_ptr tests, slop_string module_prefix);
 uint8_t emit_any_test_needs_arena(slop_list_extract_TestCase_ptr tests);
 void emit_emit_test_function_typed(emit_EmitContext* ctx, extract_TestCase tc, int64_t index, slop_string prefix, type_extract_TypeRegistry* types);
@@ -113,14 +126,19 @@ slop_string emit_build_call_args_typed(slop_arena* arena, slop_list_types_SExpr_
 slop_string emit_make_c_fn_name(slop_arena* arena, slop_string fn_name, slop_option_string module_name, slop_string prefix);
 slop_string emit_build_args_display(slop_arena* arena, slop_list_types_SExpr_ptr args);
 slop_string emit_build_call_args(slop_arena* arena, slop_list_types_SExpr_ptr args, uint8_t needs_arena, int64_t arena_pos, slop_string prefix);
-emit_CompareInfo emit_build_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_option_string return_type, slop_string prefix, type_extract_TypeRegistry types);
+emit_CompareInfo emit_build_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_option_string return_type, slop_string prefix, type_extract_TypeRegistry types, slop_option_string eq_fn);
 emit_CompareInfo emit_build_record_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_string prefix, type_extract_TypeRegistry types);
 slop_string emit_get_record_name_from_expr(types_SExpr* expr);
+slop_list_types_SExpr_ptr emit_get_record_field_values(slop_arena* arena, types_SExpr* expr);
+uint8_t emit_is_wildcard_expr(types_SExpr* expr);
+slop_string emit_build_record_field_comparisons_with_values(slop_arena* arena, slop_list_type_extract_FieldEntry fields, slop_list_types_SExpr_ptr field_values, slop_string result_accessor, slop_string expected_var);
+slop_string emit_build_single_field_comparison_with_accessor(slop_arena* arena, slop_string fname, slop_string ftype, slop_string result_accessor, slop_string expected_var);
 slop_string emit_build_record_field_comparisons(slop_arena* arena, slop_list_type_extract_FieldEntry fields, slop_string prefix, slop_string expected_var);
 slop_string emit_build_single_field_comparison(slop_arena* arena, slop_string fname, slop_string ftype, slop_string expected_var);
 emit_CompareInfo emit_build_union_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_string prefix, type_extract_TypeRegistry types, slop_string ret_type_str);
-slop_string emit_get_union_eq_fn_name(slop_arena* arena, types_SExpr* expr, slop_string prefix, type_extract_TypeRegistry types);
-slop_string emit_slop_name_to_c_lower(slop_arena* arena, slop_string name);
+slop_string emit_build_union_payload_comparison(slop_arena* arena, slop_string payload_type, slop_string c_variant, slop_string expected_var, type_extract_TypeRegistry types);
+slop_string emit_build_union_record_payload_comparison(slop_arena* arena, slop_list_type_extract_FieldEntry fields, slop_string c_variant, slop_string expected_var);
+slop_string emit_build_union_field_comparison(slop_arena* arena, slop_string fname, slop_string ftype, slop_string c_variant, slop_string expected_var);
 uint8_t emit_is_union_constructor_typed(types_SExpr* expr, type_extract_TypeRegistry types);
 slop_string emit_get_union_variant_name(types_SExpr* expr);
 uint8_t emit_is_enum_value_typed(types_SExpr* expr, type_extract_TypeRegistry types);
@@ -128,9 +146,12 @@ uint8_t emit_is_record_constructor_typed(types_SExpr* expr, type_extract_TypeReg
 slop_string emit_emit_string_slice(slop_string s, int64_t start);
 slop_string emit_get_some_inner_typed(slop_arena* arena, types_SExpr* expr, slop_string prefix, type_extract_TypeRegistry types);
 slop_string emit_get_ok_inner_typed(slop_arena* arena, types_SExpr* expr, slop_string prefix, type_extract_TypeRegistry types);
+types_SExpr* emit_get_some_inner_expr(types_SExpr* expected);
 slop_string emit_get_error_inner_typed(slop_arena* arena, types_SExpr* expr, slop_string prefix, type_extract_TypeRegistry types);
 types_SExpr* emit_get_ok_inner_expr(types_SExpr* expected);
-emit_CompareInfo emit_build_list_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_string prefix, type_extract_TypeRegistry types);
+slop_string emit_extract_list_element_type(slop_arena* arena, slop_string list_type_str);
+slop_string emit_build_eq_function_name(slop_arena* arena, slop_string type_name, slop_string prefix, type_extract_TypeRegistry types);
+emit_CompareInfo emit_build_list_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_string prefix, type_extract_TypeRegistry types, slop_string ret_type_str, slop_option_string eq_fn);
 uint8_t emit_is_none_value(types_SExpr* expr);
 uint8_t emit_is_some_value(types_SExpr* expr);
 uint8_t emit_is_ok_value(types_SExpr* expr);
@@ -161,6 +182,11 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #ifndef SLOP_OPTION_EXTRACT_TESTCASE_PTR_DEFINED
 #define SLOP_OPTION_EXTRACT_TESTCASE_PTR_DEFINED
 SLOP_OPTION_DEFINE(extract_TestCase*, slop_option_extract_TestCase_ptr)
+#endif
+
+#ifndef SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntry)
 #endif
 
 #ifndef SLOP_OPTION_TYPE_EXTRACT_FIELDENTRY_DEFINED

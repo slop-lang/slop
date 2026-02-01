@@ -12,12 +12,12 @@ cd ../checker
 slop build
 mv ./slop-checker ../../../bin
 
-## Build the transpiler
-cd ../transpiler
-slop build
-mv ./slop-transpiler ../../../bin
-
 ## Build the tester
 cd ../tester
 slop build
 mv ./slop-tester ../../../bin
+
+## Build the merged compiler (checker + transpiler)
+cd ../compiler
+slop build
+mv ./slop-compiler ../../../bin

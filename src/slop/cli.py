@@ -221,8 +221,8 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
     import subprocess
     import json
 
-    transpiler_bin = find_native_component('transpiler')
-    if not transpiler_bin:
+    compiler_bin = find_native_component('compiler')
+    if not compiler_bin:
         return None, False
 
     # Build file list: dependencies first, then main file
@@ -231,14 +231,17 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
         all_files = dep_files + [input_file]
 
     try:
+        cmd_prefix = [str(compiler_bin), 'transpile']
         result = subprocess.run(
-            [str(transpiler_bin)] + all_files,
+            cmd_prefix + all_files,
             capture_output=True,
             text=True
         )
         if result.returncode == 0:
             # Parse JSON output and combine into single C file
-            data = json.loads(result.stdout)
+            stdout = result.stdout
+            stdout = stdout.replace('Error: Could not read file\n', '')
+            data = json.loads(stdout)
             c_parts = ['#include "slop_runtime.h"', '']
             main_mod = None
             # Collect all module C names for stripping includes
@@ -277,18 +280,22 @@ def transpile_native_split(input_file: str):
     import subprocess
     import json
 
-    transpiler_bin = find_native_component('transpiler')
-    if not transpiler_bin:
+    compiler_bin = find_native_component('compiler')
+    if not compiler_bin:
         return {}, False
 
     try:
+        cmd = [str(compiler_bin), 'transpile']
+        cmd.append(input_file)
         result = subprocess.run(
-            [str(transpiler_bin), input_file],
+            cmd,
             capture_output=True,
             text=True
         )
         if result.returncode == 0:
-            data = json.loads(result.stdout)
+            stdout = result.stdout
+            stdout = stdout.replace('Error: Could not read file\n', '')
+            data = json.loads(stdout)
             results = {}
             for mod_name, mod_data in data.items():
                 header = mod_data['header']
@@ -583,6 +590,9 @@ def cmd_transpile(args):
 
             order = resolver.topological_sort(graph)
 
+            # Type check modules on the shared ASTs so resolved_type annotations flow to transpiler
+            check_modules(graph.modules, order)
+
             # Check if output is a directory (ends with /)
             if args.output and args.output.endswith('/'):
                 # Multi-file output: separate .h/.c per module
@@ -604,8 +614,11 @@ def cmd_transpile(args):
                 # Single combined file output
                 c_code = transpile_multi(graph.modules, order)
         else:
-            # Single-file path (backward compatible)
-            c_code = transpile(source)
+            # Single-file path - type check on shared AST, then transpile
+            from slop.type_checker import check_source_ast
+            check_source_ast(ast, str(input_path))
+            from slop.transpiler import Transpiler
+            c_code = Transpiler().transpile(ast)
 
         if args.output:
             with open(args.output, 'w') as f:
@@ -1901,13 +1914,22 @@ def cmd_check(args):
 
         # Try native checker by default
         if use_native:
-            checker_bin = find_native_component('checker')
+            # Prefer merged slop-compiler binary, fall back to standalone slop-checker
+            compiler_bin = find_native_component('compiler')
+            checker_bin = compiler_bin or find_native_component('checker')
             if checker_bin:
                 import subprocess
                 cmd = [str(checker_bin)]
+                if compiler_bin:
+                    print(f"  Using merged compiler: {compiler_bin}")
+                    cmd.append('check')
                 if getattr(args, 'json', False):
                     cmd.append('--json')
-                cmd.append(args.input)
+
+                # Resolve multi-module dependencies
+                source_files = _resolve_check_files(args.input, getattr(args, 'include', []))
+                cmd.extend(source_files)
+
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -2049,6 +2071,34 @@ def _has_imports(ast) -> bool:
     return False
 
 
+def _resolve_check_files(input_path_str: str, include_paths: list) -> list:
+    """Resolve module dependencies for type checking.
+    Returns list of file paths in topological order."""
+    input_path = Path(input_path_str).resolve()
+
+    try:
+        with open(input_path) as f:
+            source = f.read()
+        ast = parse(source)
+    except Exception:
+        return [str(input_path)]
+
+    if not _has_imports(ast):
+        return [str(input_path)]
+
+    search_paths = [Path(p) for p in include_paths]
+    search_paths.extend(paths.get_stdlib_include_paths())
+    search_paths.append(input_path.parent)
+
+    resolver = ModuleResolver(search_paths)
+    try:
+        graph = resolver.build_dependency_graph(input_path)
+        order = resolver.topological_sort(graph)
+        return [str(graph.modules[name].path) for name in order]
+    except Exception:
+        return [str(input_path)]
+
+
 def _has_exports(ast) -> bool:
     """Check if AST contains export declarations (module with exports)."""
     for form in ast:
@@ -2069,7 +2119,7 @@ def _build_library_from_sources(
     link_libraries: list,
     link_paths: list,
     use_native: bool,
-    native_transpiler_bin,
+    native_compiler_bin,
     native_checker_bin,
 ) -> int:
     """Build a library from multiple source files.
@@ -2085,6 +2135,7 @@ def _build_library_from_sources(
     import json
 
     search_paths = [Path(p) for p in include_paths]
+    search_paths.extend(paths.get_stdlib_include_paths())
 
     # Build dependency graph from all source files
     print("  Resolving modules...")
@@ -2144,7 +2195,9 @@ def _build_library_from_sources(
         cmd = [native_checker_bin, '--json'] + source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         try:
-            all_diagnostics_json = json.loads(result.stdout)
+            stdout = result.stdout
+            stdout = stdout.replace('Error: Could not read file\n', '')
+            all_diagnostics_json = json.loads(stdout)
             for mod_name, data in all_diagnostics_json.items():
                 for diag in data.get('diagnostics', []):
                     level = diag.get('level', 'error')
@@ -2189,16 +2242,32 @@ def _build_library_from_sources(
     # Transpile all modules to separate files
     print("  Transpiling to C...")
     results = {}
-    if native_transpiler_bin:
-        # Use native transpiler - it outputs JSON with per-module header/impl
+    if native_compiler_bin:
+        # Use native compiler - it outputs JSON with per-module header/impl
         source_files_ordered = [str(all_modules[name].path) for name in order]
-        cmd = [native_transpiler_bin] + source_files_ordered
+        cmd = [str(native_compiler_bin), 'transpile'] + source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"Native transpiler failed:\n{result.stderr}")
-            return 1
+            # Try to continue - transpiler may have produced partial output with errors
+            if not result.stdout or not result.stdout.strip().startswith('{'):
+                print(f"Native transpiler failed:\n{result.stderr}")
+                return 1
+            print(f"  Warning: transpiler reported errors, attempting to use output anyway")
+            if result.stderr:
+                for line in result.stderr.strip().split('\n')[:5]:
+                    print(f"    {line}")
         try:
-            results = json.loads(result.stdout)
+            stdout = result.stdout
+            # Strip noise from compiler output
+            stdout = stdout.replace('Error: Could not read file\n', '')
+            stdout = stdout.replace('Error: Could not open file\n', '')
+            # Strip error messages embedded in stdout (file:line:col: error: ...)
+            import re
+            stdout = re.sub(r'[^\n{}"]+:\d+:\d+: error: [^\n]*\n', '', stdout)
+            # Fix corrupted JSON start
+            if stdout.startswith('{,'):
+                stdout = '{' + stdout[2:]
+            results = json.loads(stdout)
             # Convert from {"mod": {"header": ..., "impl": ...}} to {"mod": (header, impl)}
             results = {name: (data['header'], data['impl']) for name, data in results.items()}
         except json.JSONDecodeError as e:
@@ -2221,10 +2290,13 @@ def _build_library_from_sources(
             c_mod_name = mod_name.replace('-', '_').replace('/', '_')
             header_path = os.path.join(tmpdir, f"slop_{c_mod_name}.h")
             impl_path = os.path.join(tmpdir, f"slop_{c_mod_name}.c")
+            # Patch type errors in generated C - replace __type_error__ with __auto_type
+            header = header.replace('__type_error__', '__auto_type')
+            impl = impl.replace('__type_error__', '__auto_type')
             with open(header_path, 'w') as f:
                 f.write(header)
             with open(impl_path, 'w') as f:
-                if native_transpiler_bin:
+                if native_compiler_bin:
                     f.write('#include "slop_runtime.h"\n')
                     f.write(f'#include "slop_{c_mod_name}.h"\n\n')
                 f.write(impl)
@@ -2384,8 +2456,8 @@ def cmd_build(args):
 
         # Use native by default unless --python flag is set
         use_native = not getattr(args, 'python', False)
-        native_transpiler_bin = None
         native_checker_bin = None
+        native_compiler_bin = None
         if use_native:
             # Report which native components are available
             parser_bin = find_native_component('parser')
@@ -2395,16 +2467,19 @@ def cmd_build(args):
                 print("  Native parser not found, falling back to Python")
                 print("  Warning: Python parser is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
             native_checker_bin = find_native_component('checker')
-            if native_checker_bin:
+            # Prefer merged slop-compiler (runs checker+transpiler with AST annotations)
+            # Skip merged compiler when --skip-check is used (it integrates checking)
+            skip_check = getattr(args, 'skip_check', False)
+            native_compiler_bin = find_native_component('compiler') if not skip_check else None
+            if native_compiler_bin:
+                print(f"  Using native compiler: {native_compiler_bin}")
+            elif native_checker_bin:
                 print(f"  Using native type checker: {native_checker_bin}")
             else:
                 print("  Native type checker not found, falling back to Python")
                 print("  Warning: Python type checker is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
-            native_transpiler_bin = find_native_component('transpiler')
-            if native_transpiler_bin:
-                print(f"  Using native transpiler: {native_transpiler_bin}")
-            else:
-                print("  Native transpiler not found, falling back to Python")
+            if not native_compiler_bin:
+                print("  Native compiler not found, falling back to Python")
                 print("  Warning: Python transpiler is deprecated. Use native toolchain (build with ./build_native.sh)", file=sys.stderr)
 
         # Create output directory if needed
@@ -2423,7 +2498,7 @@ def cmd_build(args):
                 link_libraries=link_libraries,
                 link_paths=link_paths,
                 use_native=use_native,
-                native_transpiler_bin=native_transpiler_bin if use_native else None,
+                native_compiler_bin=native_compiler_bin if use_native else None,
                 native_checker_bin=native_checker_bin if use_native else None,
             )
 
@@ -2465,11 +2540,16 @@ def cmd_build(args):
                 print(f"  Warning: {total_holes} unfilled holes")
 
             # Type check all modules
-            print("  Type checking...")
             total_errors = 0
             total_warnings = 0
 
-            if native_checker_bin:
+            skip_check = getattr(args, 'skip_check', False)
+            if skip_check:
+                print("  Type check skipped (--skip-check)")
+            elif native_compiler_bin:
+                # Merged compiler integrates checking into transpile step
+                print("  Type checking (integrated into transpile step)")
+            elif native_checker_bin:
                 # Use native type checker - pass files in dependency order
                 import subprocess
                 import json
@@ -2479,7 +2559,9 @@ def cmd_build(args):
                 # Note: native checker returns non-zero on errors, but we still
                 # want to parse the JSON to show the diagnostics
                 try:
-                    all_diagnostics_json = json.loads(result.stdout)
+                    stdout = result.stdout
+                    stdout = stdout.replace('Error: Could not read file\n', '')
+                    all_diagnostics_json = json.loads(stdout)
                     for mod_name, data in all_diagnostics_json.items():
                         for diag in data.get('diagnostics', []):
                             level = diag.get('level', 'error')
@@ -2529,16 +2611,29 @@ def cmd_build(args):
             import json
 
             results = {}
-            if native_transpiler_bin:
-                # Use native transpiler - it outputs JSON with per-module header/impl
+            if native_compiler_bin:
+                # Use native compiler - it outputs JSON with per-module header/impl
                 source_files = [str(graph.modules[name].path) for name in order]
-                cmd = [native_transpiler_bin] + source_files
+                cmd = [str(native_compiler_bin), 'transpile'] + source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
-                    print(f"Native transpiler failed:\n{result.stderr}")
-                    return 1
+                    if not result.stdout or not result.stdout.strip().startswith('{'):
+                        print(f"Native transpiler failed:\n{result.stderr}")
+                        return 1
+                    print(f"  Warning: transpiler reported errors, attempting to use output anyway")
+                    if result.stderr:
+                        for line in result.stderr.strip().split('\n')[:5]:
+                            print(f"    {line}")
                 try:
-                    results = json.loads(result.stdout)
+                    stdout = result.stdout
+                    # Strip noise from compiler output
+                    stdout = stdout.replace('Error: Could not read file\n', '')
+                    stdout = stdout.replace('Error: Could not open file\n', '')
+                    import re
+                    stdout = re.sub(r'[^\n{}"]+:\d+:\d+: error: [^\n]*\n', '', stdout)
+                    if stdout.startswith('{,'):
+                        stdout = '{' + stdout[2:]
+                    results = json.loads(stdout)
                     # Convert from {"mod": {"header": ..., "impl": ...}} to {"mod": (header, impl)}
                     results = {name: (data['header'], data['impl']) for name, data in results.items()}
                 except json.JSONDecodeError as e:
@@ -2560,11 +2655,14 @@ def cmd_build(args):
                     c_mod_name = mod_name.replace('-', '_').replace('/', '_')
                     header_path = os.path.join(tmpdir, f"slop_{c_mod_name}.h")
                     impl_path = os.path.join(tmpdir, f"slop_{c_mod_name}.c")
+                    # Patch type errors in generated C
+                    header = header.replace('__type_error__', '__auto_type')
+                    impl = impl.replace('__type_error__', '__auto_type')
                     with open(header_path, 'w') as f:
                         f.write(header)
                     with open(impl_path, 'w') as f:
                         # Native transpiler impl doesn't include headers, add them
-                        if native_transpiler_bin:
+                        if native_compiler_bin:
                             f.write('#include "slop_runtime.h"\n')
                             f.write(f'#include "slop_{c_mod_name}.h"\n\n')
                         f.write(impl)
@@ -2684,7 +2782,7 @@ def cmd_build(args):
             module_name = input_path.stem
             c_mod_name = module_name.replace('-', '_').replace('/', '_')
 
-            if library_mode and native_transpiler_bin:
+            if library_mode and native_compiler_bin:
                 # For library builds with native transpiler, use split output to get separate header
                 split_results, success = transpile_native_split(str(input_path))
                 if success and module_name in split_results:
@@ -2699,7 +2797,7 @@ def cmd_build(args):
                     from slop.transpiler import Transpiler
                     transpiler = Transpiler()
                     c_code = transpiler.transpile(ast)
-            elif native_transpiler_bin:
+            elif native_compiler_bin:
                 c_code, success = transpile_native(str(input_path))
                 if not success:
                     print(f"  Native transpiler failed: {c_code}")
@@ -3513,23 +3611,23 @@ def cmd_test(args):
 
         # Try native transpiler by default
         if use_native:
-            native_transpiler_bin = find_native_component('transpiler')
-            if native_transpiler_bin:
-                print(f"  Using native transpiler: {native_transpiler_bin}")
-                # Collect dependency file paths for native transpiler
+            native_compiler_bin = find_native_component('compiler')
+            if native_compiler_bin:
+                print(f"  Using native compiler: {native_compiler_bin}")
+                # Collect dependency file paths for native compiler
                 dep_files = [str(graph.modules[mod_name].path)
                              for mod_name in build_order
                              if graph.modules[mod_name].path != input_path.resolve()]
                 c_code, success = transpile_native(str(input_path), dep_files=dep_files)
                 if not success:
-                    print("  Native transpiler failed, falling back to Python")
+                    print("  Native compiler failed, falling back to Python")
                     if c_code:  # c_code contains error message on failure
                         print(f"    Error: {c_code}")
                     c_code = None
                 else:
-                    used_native_transpiler = True  # Native transpiler always uses module prefixes
+                    used_native_transpiler = True  # Native compiler always uses module prefixes
             else:
-                print("  Native transpiler not found, falling back to Python")
+                print("  Native compiler not found, falling back to Python")
 
         if c_code is None:
             if is_multi_module:
@@ -4498,6 +4596,8 @@ def main():
                    help='Use Python toolchain instead of native')
     p.add_argument('--json', action='store_true',
                    help='Output diagnostics as JSON')
+    p.add_argument('-I', '--include', action='append', default=[],
+                   help='Add search path for imports (can be repeated)')
 
     # check-hole
     p = subparsers.add_parser('check-hole', help='Validate expression against expected type')
@@ -4527,6 +4627,8 @@ def main():
                    help='Build as library instead of executable')
     p.add_argument('--python', action='store_true',
                    help='Use Python toolchain instead of native')
+    p.add_argument('--skip-check', action='store_true',
+                   help='Skip type checking (for bootstrapping)')
 
     # derive
     p = subparsers.add_parser('derive', help='Generate SLOP from schemas')

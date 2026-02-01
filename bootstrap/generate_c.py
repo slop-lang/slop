@@ -75,14 +75,14 @@ def main():
         # Get source files in order
         source_files = [str(graph.modules[name].path) for name in order]
 
-        # Find native transpiler
-        transpiler_bin = project_root / "bin" / "slop-transpiler"
-        if not transpiler_bin.exists():
-            print(f"Error: Native transpiler not found at {transpiler_bin}")
+        # Find native compiler
+        compiler_bin = project_root / "bin" / "slop-compiler"
+        if not compiler_bin.exists():
+            print(f"Error: Native compiler not found at {compiler_bin}")
             sys.exit(1)
 
-        # Call native transpiler
-        cmd = [str(transpiler_bin)] + source_files
+        # Call native compiler
+        cmd = [str(compiler_bin), "transpile"] + source_files
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
