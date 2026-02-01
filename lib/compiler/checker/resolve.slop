@@ -14,8 +14,10 @@
                   sexpr-line sexpr-col))
   (import types (ResolvedType))
   (import env (TypeEnv env-arena env-add-import env-resolve-import
-               env-lookup-type env-lookup-type-direct env-set-module env-get-current-file
-               env-add-error env-lookup-function-direct))
+               env-lookup-type env-lookup-type-direct lookup-type-by-qualified-name
+               env-set-module env-get-current-file
+               env-add-error env-lookup-function-direct
+               env-lookup-constant-in-module))
   (import path (path-dirname path-join))
   (import file (file-exists))
 
@@ -95,12 +97,13 @@
                                                                 (string-concat arena ":" local-name))))
                                           ;; Validate that the symbol exists in the target module
                                           (when (and (not (contains-slash (. mod-sym name)))
-                                                     (match (env-lookup-type-direct env qualified-name)
+                                                     (match (lookup-type-by-qualified-name env qualified-name)
                                                        ((some _) false)
                                                        ((none) true))
                                                      (match (env-lookup-function-direct env qualified-name)
                                                        ((some _) false)
-                                                       ((none) true)))
+                                                       ((none) true))
+                                                     (not (env-lookup-constant-in-module env actual-module local-name)))
                                             (env-add-error env
                                               (string-concat arena "module '"
                                                 (string-concat arena (. mod-sym name)

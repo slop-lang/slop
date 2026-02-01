@@ -498,6 +498,7 @@
       ((string-eq fn-name "string-len") "string_len")
       ((string-eq fn-name "string-new") "string_new")
       ((string-eq fn-name "int-to-string") "int_to_string")
+      ((string-eq fn-name "string-push-char") "string_push_char")
       ((string-eq fn-name "float-to-string-short") "float_to_string_short")
       ;; Parsing operations (from strlib, but commonly used without explicit import)
       ((string-eq fn-name "parse-int") "strlib_parse_int")

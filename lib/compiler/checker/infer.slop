@@ -640,6 +640,7 @@
                     ((string-eq op "string-slice") (env-get-string-type env))
                     ((string-eq op "int-to-string") (env-get-string-type env))
                     ((string-eq op "char-at") (env-get-int-type env))
+                    ((string-eq op "string-push-char") (env-get-string-type env))
                     ;; List operations
                     ;; list-push expects 2 args: list, item
                     ((string-eq op "list-push")

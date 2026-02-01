@@ -629,6 +629,7 @@ Minimal runtime (~500 lines of C):
 (string-eq a b) -> Bool
 (string-slice s start end) -> (Slice U8)
 (string-split arena s delimiter) -> (List String)  ; delimiter must be single char
+(string-push-char arena s c) -> String             ; append a U8 char to a string
 (int-to-string arena n) -> String                  ; Convert integer to string
 
 ; Lists (homogeneous, type-safe)
