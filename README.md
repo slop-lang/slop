@@ -555,13 +555,12 @@ Arena allocation handles 90% of cases:
 - ✓ Hole filler with quality scoring and pattern library
 - ✓ CLI tooling (`slop` command)
 - ✓ Runtime header with arena allocation
-- ✓ Contract verification via Z3 (`slop verify`)
+- ✓ Contract verification via Z3 (`slop verify`) — path-sensitive body analysis, loop invariants, pattern detection
 - ✓ Test suite
 
 **Not Yet Implemented:**
 - Full generics (monomorphization, generic type definitions, type variable substitution in codegen)
 - Property-based testing generation
-- Contract verification with body analysis (verifies contract consistency, not implementation)
 
 ## License
 
