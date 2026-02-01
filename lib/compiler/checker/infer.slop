@@ -75,6 +75,74 @@
           (String buf new-len)))))
 
   ;; ============================================================
+  ;; Threading Builtins (Polymorphic)
+  ;; ============================================================
+
+  (fn is-threading-builtin ((op String))
+    (@intent "Check if op is a polymorphic threading builtin")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (cond
+      ((string-eq op "send") 1)
+      ((string-eq op "recv") 1)
+      ((string-eq op "spawn") 1)
+      ((string-eq op "join") 1)
+      ((string-eq op "chan-buffered") 1)
+      ((ends-with op ":send") 1)
+      ((ends-with op ":recv") 1)
+      ((ends-with op ":spawn") 1)
+      ((ends-with op ":join") 1)
+      ((ends-with op ":chan-buffered") 1)
+      (else 0)))
+
+  (fn is-send-op ((op String))
+    (@intent "Check if op is send or qualified send")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "send") (ends-with op ":send")))
+
+  (fn is-recv-op ((op String))
+    (@intent "Check if op is recv or qualified recv")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "recv") (ends-with op ":recv")))
+
+  (fn is-spawn-op ((op String))
+    (@intent "Check if op is spawn or qualified spawn")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "spawn") (ends-with op ":spawn")))
+
+  (fn is-join-op ((op String))
+    (@intent "Check if op is join or qualified join")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "join") (ends-with op ":join")))
+
+  (fn infer-threading-builtin ((env (Ptr TypeEnv)) (op String) (expr (Ptr SExpr))
+                                (items (List (Ptr SExpr))) (len Int) (line Int) (col Int))
+    (@intent "Infer return type for polymorphic threading builtins")
+    (@spec (((Ptr TypeEnv) String (Ptr SExpr) (List (Ptr SExpr)) Int Int Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (do (infer-builtin-args env expr)
+        (cond
+          ((is-send-op op)
+            (do (check-builtin-args env "send" 2 (- len 1) line col)
+                (env-make-result-type env)))
+          ((is-recv-op op)
+            (do (check-builtin-args env "recv" 1 (- len 1) line col)
+                (env-make-result-type env)))
+          ((is-spawn-op op)
+            (do (check-builtin-args env "spawn" 2 (- len 1) line col)
+                (env-make-ptr-type env (env-get-generic-type env))))
+          ((is-join-op op)
+            (do (check-builtin-args env "join" 1 (- len 1) line col)
+                (env-get-generic-type env)))
+          (else
+            (do (check-builtin-args env "chan-buffered" 2 (- len 1) line col)
+                (env-make-ptr-type env (env-get-generic-type env)))))))
+
+  ;; ============================================================
   ;; Type Comparison
   ;; ============================================================
 
@@ -917,20 +985,8 @@
                                 (resolved-type-set-inner list-type elem-type))
                               list-type))))
                     ;; Threading builtins - polymorphic, skip strict arg checking
-                    ((cond
-                       ((string-eq op "send") 1)
-                       ((string-eq op "recv") 1)
-                       ((string-eq op "spawn") 1)
-                       ((string-eq op "chan-buffered") 1)
-                       ((string-eq op "join") 1)
-                       ((ends-with op ":send") 1)
-                       ((ends-with op ":recv") 1)
-                       ((ends-with op ":spawn") 1)
-                       ((ends-with op ":chan-buffered") 1)
-                       ((ends-with op ":join") 1)
-                       (else 0))
-                      (infer-builtin-args env expr)
-                      (env-get-unit-type env))
+                    ((is-threading-builtin op)
+                      (infer-threading-builtin env op expr items len line col))
                     ;; Verification-only forms - skip type checking
                     ((or (string-eq op "exists")
                          (or (string-eq op "forall")
