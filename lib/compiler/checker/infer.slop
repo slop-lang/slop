@@ -78,22 +78,34 @@
   ;; Threading Builtins (Polymorphic)
   ;; ============================================================
 
-  (fn is-threading-builtin ((op String))
-    (@intent "Check if op is a polymorphic threading builtin")
+  (fn is-qualified-threading-builtin ((op String))
+    (@intent "Check if op is a qualified (module:name) threading builtin")
     (@spec ((String) -> Bool))
     (@pure)
     (cond
-      ((string-eq op "send") 1)
-      ((string-eq op "recv") 1)
-      ((string-eq op "spawn") 1)
-      ((string-eq op "join") 1)
-      ((string-eq op "chan-buffered") 1)
       ((ends-with op ":send") 1)
       ((ends-with op ":recv") 1)
       ((ends-with op ":spawn") 1)
       ((ends-with op ":join") 1)
       ((ends-with op ":chan-buffered") 1)
       (else 0)))
+
+  (fn is-bare-threading-builtin ((op String))
+    (@intent "Check if op is a bare (unqualified) threading builtin that should be intercepted before env lookup")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (cond
+      ((string-eq op "send") 1)
+      ((string-eq op "recv") 1)
+      ((string-eq op "spawn") 1)
+      ((string-eq op "chan-buffered") 1)
+      (else 0)))
+
+  (fn is-bare-threading-fallback ((op String))
+    (@intent "Check if op is a bare threading builtin only caught when no function found - join is here to avoid intercepting strlib join")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (string-eq op "join"))
 
   (fn is-send-op ((op String))
     (@intent "Check if op is send or qualified send")
@@ -703,6 +715,10 @@
             (env-add-error env hole-msg line col)
             hole-type))
 
+        ;; Threading builtins - intercept before env lookup (polymorphic)
+        ((or (is-qualified-threading-builtin op) (is-bare-threading-builtin op))
+          (infer-threading-builtin env op expr items len line col))
+
         ;; Function call - look up return type and check arguments
         (else
           (match (env-lookup-function env op)
@@ -984,8 +1000,8 @@
                               (when (!= elem-type nil)
                                 (resolved-type-set-inner list-type elem-type))
                               list-type))))
-                    ;; Threading builtins - polymorphic, skip strict arg checking
-                    ((is-threading-builtin op)
+                    ;; Bare 'join' - only when no function found in env (avoids intercepting strlib join)
+                    ((is-bare-threading-fallback op)
                       (infer-threading-builtin env op expr items len line col))
                     ;; Verification-only forms - skip type checking
                     ((or (string-eq op "exists")
