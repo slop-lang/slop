@@ -783,12 +783,14 @@
              (string-eq op "<") (string-eq op "<=")
              (string-eq op ">") (string-eq op ">=")
              (string-eq op "and") (string-eq op "or") (string-eq op "not"))
-          (env-get-bool-type env))
+          (do (infer-body-exprs env expr 1)
+              (env-get-bool-type env)))
 
         ;; Arithmetic operators return Int
         ((or (string-eq op "+") (string-eq op "-")
              (string-eq op "*") (string-eq op "/") (string-eq op "%"))
-          (env-get-int-type env))
+          (do (infer-body-exprs env expr 1)
+              (env-get-int-type env)))
 
         ;; (deref ptr-expr) - dereference pointer, returns inner type
         ((string-eq op "deref")
