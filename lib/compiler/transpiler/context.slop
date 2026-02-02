@@ -295,8 +295,8 @@
     (@intent "Create a new transpiler context")
     (@spec ((Arena) -> (Ptr TranspileContext)))
     (@example (arena) -> ctx)
-    ;; TranspileContext is ~432 bytes with all fields, allocate 512 for safety
-    (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena 512)))
+    ;; TranspileContext is ~730 bytes with all fields, allocate 1024 for safety
+    (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena 1024)))
           (initial-scope (cast (Ptr Scope) (arena-alloc arena 64)))
           (no-parent (Option (Ptr Scope)) none)
           (no-module (Option String) none))

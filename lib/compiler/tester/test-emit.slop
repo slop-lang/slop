@@ -1,0 +1,1772 @@
+;; ============================================================
+;; SLOP Test Harness C Code Generation (Transpiler-Based)
+;;
+;; Uses transpile-expr from the transpiler to convert SLOP
+;; expressions to C, eliminating duplicated sexpr-to-c code.
+;; Keeps comparison logic (tester-specific) in this module.
+;; ============================================================
+
+(module test-emit
+  (export
+    ;; Main generation function
+    emit-test-harness-typed
+    init-transpile-context
+    init-transpile-context-for-imports
+    re-prescan-main-module)
+
+  (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
+  (import parser (is-form sexpr-is-symbol sexpr-is-number sexpr-is-string
+                  sexpr-list-len sexpr-list-get sexpr-get-symbol-name
+                  sexpr-number-string sexpr-string-value pretty-print))
+  (import extract (TestCase))
+  (import strlib (contains to-lower string-build starts-with substring))
+  (import type-extract (TypeRegistry TstTypeEntry TstTypeEntryKind TstFieldEntry VariantEntry ImportEntry
+                        registry-lookup registry-lookup-variant registry-lookup-enum-value
+                        registry-lookup-import
+                        registry-is-union registry-is-record registry-is-enum
+                        registry-get-variant-info registry-get-record-fields))
+  (import ctype (to-c-name))
+  (import context (TranspileContext context-new ctx-set-module ctx-get-module ctx-set-prefixing
+                   ctx-push-scope ctx-bind-var VarEntry ctx-register-field-type
+                   ctx-prefixing-enabled ctx-prefix-type to-c-type-prefixed))
+  (import expr (transpile-expr))
+  (import transpiler (prescan-module))
+
+  ;; ============================================================
+  ;; SExpr Construction Helpers
+  ;; ============================================================
+
+  (fn make-sexpr-sym ((arena Arena) (name String))
+    (@intent "Create an SExpr symbol node")
+    (@spec ((Arena String) -> (Ptr SExpr)))
+    (@alloc arena)
+    (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+      (set! (deref node) (union-new SExpr sym (SExprSymbol name 0 0 (none))))
+      node))
+
+  (fn make-sexpr-num ((arena Arena) (raw String))
+    (@intent "Create an SExpr number node")
+    (@spec ((Arena String) -> (Ptr SExpr)))
+    (@alloc arena)
+    (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+      (set! (deref node) (union-new SExpr num (SExprNumber 0 0 false raw 0 0 (none))))
+      node))
+
+  (fn make-sexpr-list ((arena Arena) (items (List (Ptr SExpr))))
+    (@intent "Create an SExpr list node")
+    (@spec ((Arena (List (Ptr SExpr))) -> (Ptr SExpr)))
+    (@alloc arena)
+    (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+      (set! (deref node) (union-new SExpr lst (SExprList items 0 0 (none))))
+      node))
+
+  ;; ============================================================
+  ;; Wildcard Handling
+  ;; ============================================================
+
+  (fn is-wildcard-like-symbol ((name String))
+    (@intent "Check if a bare symbol looks like a wildcard variable reference in @example")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (if (< (string-len name) 1)
+      false
+      (let ((first-char (char-at name 0)))
+        (if (not (and (>= first-char 97) (<= first-char 122)))
+          false
+          (cond
+            ((string-eq name "true") false)
+            ((string-eq name "false") false)
+            ((string-eq name "none") false)
+            ((string-eq name "some") false)
+            ((string-eq name "ok") false)
+            ((string-eq name "error") false)
+            ((string-eq name "list") false)
+            ((string-eq name "arena") false)
+            ((string-eq name "record") false)
+            ((string-eq name "record-new") false)
+            ((string-eq name "union-new") false)
+            ((string-eq name "quote") false)
+            ((string-eq name "cast") false)
+            ((contains name "-") false)
+            (else true))))))
+
+  (fn has-ellipsis ((expr (Ptr SExpr)))
+    (@intent "Check if expression contains .. (parsed from ...) indicating a splat wildcard")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((sym s) (string-eq (. s name) ".."))
+      ((lst l)
+        (let ((items (. l items))
+              (len (list-len items))
+              (mut i 0)
+              (mut found false))
+          (while (and (< i len) (not found))
+            (match (list-get items i)
+              ((some item)
+                (when (has-ellipsis item)
+                  (set! found true)))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          found))
+      ((num _) false)
+      ((str _) false)))
+
+  (fn args-have-ellipsis ((args (List (Ptr SExpr))))
+    (@intent "Check if any argument contains a .. (ellipsis) wildcard")
+    (@spec (((List (Ptr SExpr))) -> Bool))
+    (@pure)
+    (let ((len (list-len args))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get args i)
+          ((some arg)
+            (when (has-ellipsis arg)
+              (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn is-type-constructor-name ((name String))
+    (@intent "Check if name starts with uppercase (type constructor)")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (if (< (string-len name) 1)
+      false
+      (let ((c (char-at name 0)))
+        (and (>= c 65) (<= c 90)))))
+
+  (fn contains-wildcard ((expr (Ptr SExpr)))
+    (@intent "Check if expression contains _ or ... wildcards")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((sym s) (or (string-eq (. s name) "_") (string-eq (. s name) "..") (string-eq (. s name) ".")
+                    (is-wildcard-like-symbol (. s name))))
+      ((lst l)
+        (let ((items (. l items))
+              (len (list-len items))
+              (mut i 0)
+              (mut found false))
+          (while (and (< i len) (not found))
+            (match (list-get items i)
+              ((some item)
+                (when (contains-wildcard item)
+                  (set! found true)))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          found))
+      ((num _) false)
+      ((str _) false)))
+
+  (fn replace-wildcards ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Recursively replace wildcards with __SLOP_WILDCARD__ for later string replacement")
+    (@spec ((Arena (Ptr SExpr)) -> (Ptr SExpr)))
+    (@alloc arena)
+    (match (deref expr)
+      ((sym s)
+        (if (or (string-eq (. s name) "_") (string-eq (. s name) "..") (string-eq (. s name) "."))
+          (make-sexpr-sym arena "__SLOP_WILDCARD__")
+          expr))
+      ((lst l)
+        (let ((items (. l items))
+              (len (list-len items))
+              (new-items (list-new arena (Ptr SExpr)))
+              (mut i 0)
+              (in-type-constructor (if (> len 0)
+                                    (match (list-get items 0)
+                                      ((some first)
+                                        (match (deref first)
+                                          ((sym s) (is-type-constructor-name (. s name)))
+                                          (_ false)))
+                                      ((none) false))
+                                    false)))
+          (while (< i len)
+            (match (list-get items i)
+              ((some item)
+                (if (and in-type-constructor (> i 0))
+                  (match (deref item)
+                    ((sym s)
+                      (cond
+                        ;; ".." followed by "." is a parsed "..." — skip the ".."
+                        ((and (string-eq (. s name) "..")
+                              (< (+ i 1) len)
+                              (match (list-get items (+ i 1))
+                                ((some next-item)
+                                  (match (deref next-item)
+                                    ((sym ns) (string-eq (. ns name) "."))
+                                    (_ false)))
+                                ((none) false)))
+                          (do))
+                        ((or (string-eq (. s name) "_") (string-eq (. s name) "..") (string-eq (. s name) ".")
+                              (is-wildcard-like-symbol (. s name)))
+                          (list-push new-items (make-sexpr-sym arena "__SLOP_WILDCARD__")))
+                        (else
+                          (list-push new-items (replace-wildcards arena item)))))
+                    (_ (list-push new-items (replace-wildcards arena item))))
+                  (list-push new-items (replace-wildcards arena item))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          (make-sexpr-list arena new-items)))
+      ((num _) expr)
+      ((str _) expr)))
+
+  (fn replace-wildcard-tokens ((arena Arena) (s String))
+    (@intent "Replace __SLOP_WILDCARD__ tokens in C string with {0}")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (if (not (contains s "__SLOP_WILDCARD__"))
+      s
+      (let ((needle-len 17)
+            (src-len (cast Int (. s len)))
+            (buf (cast (Ptr U8) (arena-alloc arena (+ src-len 1))))
+            (mut src-pos 0)
+            (mut dst-pos 0))
+        (while (< src-pos src-len)
+          (if (and (<= (+ src-pos needle-len) src-len)
+                   (== (@ (. s data) src-pos) 95)
+                   (== (@ (. s data) (+ src-pos 1)) 95)
+                   (string-eq (substring arena s src-pos needle-len) "__SLOP_WILDCARD__"))
+            (do
+              (set! (@ buf dst-pos) 123)
+              (set! (@ buf (+ dst-pos 1)) 48)
+              (set! (@ buf (+ dst-pos 2)) 125)
+              (set! dst-pos (+ dst-pos 3))
+              (set! src-pos (+ src-pos needle-len)))
+            (do
+              (set! (@ buf dst-pos) (@ (. s data) src-pos))
+              (set! dst-pos (+ dst-pos 1))
+              (set! src-pos (+ src-pos 1)))))
+        (set! (@ buf dst-pos) 0)
+        (String buf (cast U64 dst-pos)))))
+
+  (fn transpile-expr-safe ((arena Arena) (tctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Transpile expression with wildcard replacement")
+    (@spec ((Arena (Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (replace-wildcard-tokens arena (transpile-expr tctx (replace-wildcards arena expr))))
+
+  ;; ============================================================
+  ;; Symbol Prefixing for Test Harness
+  ;; ============================================================
+
+  (fn prefix-symbol ((arena Arena) (name String) (prefix String) (types TypeRegistry))
+    (@intent "Prefix a symbol with appropriate module name for test harness")
+    (@spec ((Arena String String TypeRegistry) -> String))
+    (@alloc arena)
+    (if (string-eq name "arena")
+      "test_arena"
+      (match (registry-lookup-import types name)
+        ((some mod-name)
+          (string-concat arena (to-c-name arena mod-name)
+            (string-concat arena "_" (to-c-name arena name))))
+        ((none)
+          (if (> (cast Int (. prefix len)) 0)
+            (string-concat arena prefix
+              (string-concat arena "_" (to-c-name arena name)))
+            (to-c-name arena name))))))
+
+  ;; ============================================================
+  ;; Emit Context
+  ;; ============================================================
+
+  (type EmitContext (record
+    (lines (List String))
+    (arena Arena)
+    (types (Ptr TypeRegistry))
+    (tctx (Ptr TranspileContext))
+    (has-types Bool)))
+
+  (fn emit-ctx-new-typed ((arena Arena) (types (Ptr TypeRegistry)) (tctx (Ptr TranspileContext)))
+    (@intent "Create new emit context with type registry and transpile context")
+    (@spec ((Arena (Ptr TypeRegistry) (Ptr TranspileContext)) -> (Ptr EmitContext)))
+    (@alloc arena)
+    (let ((ctx (cast (Ptr EmitContext) (arena-alloc arena 128))))
+      (set! (deref ctx) (EmitContext
+                          (list-new arena String)
+                          arena
+                          types
+                          tctx
+                          true))
+      ctx))
+
+  (fn emit ((ctx (Ptr EmitContext)) (line String))
+    (@intent "Emit a line to the context")
+    (@spec (((Ptr EmitContext) String) -> Unit))
+    (list-push (. (deref ctx) lines) line)
+    (do))
+
+  (fn emit-ctx-get-lines ((ctx (Ptr EmitContext)))
+    (@intent "Get the accumulated lines")
+    (@spec (((Ptr EmitContext)) -> (List String)))
+    (. (deref ctx) lines))
+
+  ;; FFI for string length
+  (ffi "string.h"
+    (strlen ((s (Ptr Char))) U64))
+
+  ;; ============================================================
+  ;; Comparison Info Type
+  ;; ============================================================
+
+  (type CompareInfo (record
+    (compare-expr String)
+    (result-fmt String)
+    (result-args String)
+    (expected-fmt String)
+    (expected-args String)))
+
+  ;; ============================================================
+  ;; Build Call SExpr
+  ;; ============================================================
+
+  (fn build-call-sexpr ((arena Arena) (fn-name String) (args (List (Ptr SExpr)))
+                          (needs-arena Bool) (arena-pos Int))
+    (@intent "Build a function call S-expression with arena inserted at correct position")
+    (@spec ((Arena String (List (Ptr SExpr)) Bool Int) -> (Ptr SExpr)))
+    (@alloc arena)
+    (let ((call-items (list-new arena (Ptr SExpr)))
+          (len (list-len args))
+          (mut i 0)
+          (mut arg-idx 0))
+      (list-push call-items (make-sexpr-sym arena fn-name))
+      (while (< i len)
+        (when (and needs-arena (== arg-idx arena-pos))
+          (list-push call-items (make-sexpr-sym arena "arena"))
+          (set! arg-idx (+ arg-idx 1)))
+        (match (list-get args i)
+          ((some arg) (list-push call-items arg))
+          ((none) (do)))
+        (set! i (+ i 1))
+        (set! arg-idx (+ arg-idx 1)))
+      (when (and needs-arena (>= arena-pos len))
+        (list-push call-items (make-sexpr-sym arena "arena")))
+      (make-sexpr-list arena call-items)))
+
+  ;; ============================================================
+  ;; String Utility Functions
+  ;; ============================================================
+
+  (fn escape-string ((arena Arena) (s String))
+    (@intent "Escape string for C string literal")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (let ((len (cast Int (. s len)))
+          (buf (cast (Ptr U8) (arena-alloc arena (+ (* len 2) 1))))
+          (mut i 0)
+          (mut out 0))
+      (while (< i len)
+        (let ((c (@ (. s data) i)))
+          (cond
+            ((== c 10)
+              (do
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 110)
+                (set! out (+ out 2))))
+            ((== c 13)
+              (do
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 114)
+                (set! out (+ out 2))))
+            ((== c 9)
+              (do
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 116)
+                (set! out (+ out 2))))
+            ((== c 34)
+              (do
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 34)
+                (set! out (+ out 2))))
+            ((== c 92)
+              (do
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 92)
+                (set! out (+ out 2))))
+            (else
+              (do
+                (set! (@ buf out) c)
+                (set! out (+ out 1))))))
+        (set! i (+ i 1)))
+      (set! (@ buf out) 0)
+      (String buf (cast U64 out))))
+
+  ;; ============================================================
+  ;; Test Harness Generation
+  ;; ============================================================
+
+  (fn emit-test-harness-typed ((arena Arena) (tests (List (Ptr TestCase)))
+                                (module-prefix String) (types (Ptr TypeRegistry))
+                                (imports (List ImportEntry)) (tctx (Ptr TranspileContext)))
+    (@intent "Generate complete C test harness code with type awareness")
+    (@spec ((Arena (List (Ptr TestCase)) String (Ptr TypeRegistry) (List ImportEntry) (Ptr TranspileContext)) -> (List String)))
+    (@alloc arena)
+    (let ((ctx (emit-ctx-new-typed arena types tctx)))
+      (emit ctx "// ===== SLOP Test Harness (Native Generated - Type Aware) =====")
+      (let ((type-count (list-len (. (deref types) types))))
+        (emit ctx (string-concat arena "// DEBUG: TypeRegistry has "
+                    (string-concat arena (int-to-string arena type-count) " type(s)"))))
+      (emit ctx "")
+      (emit ctx "#include <stdio.h>")
+      (emit ctx "#include <string.h>")
+      (emit ctx "#include <math.h>")
+      (let ((import-count (list-len imports))
+            (mut j 0))
+        (while (< j import-count)
+          (match (list-get imports j)
+            ((some entry)
+              (let ((c-name (to-c-name arena (. entry module-name))))
+                (emit ctx (string-concat arena "#include \"slop_"
+                            (string-concat arena c-name ".h\"")))))
+            ((none) (do)))
+          (set! j (+ j 1))))
+      (emit ctx "")
+
+      (emit ctx "static int tests_passed = 0;")
+      (emit ctx "static int tests_failed = 0;")
+      (emit ctx "")
+
+      (let ((any-needs-arena (any-test-needs-arena tests)))
+        (when any-needs-arena
+          (emit ctx "// Global test arena for functions that need one")
+          (emit ctx "static slop_arena test_arena_storage;")
+          (emit ctx "static slop_arena* test_arena = NULL;")
+          (emit ctx ""))
+
+        (let ((test-count (list-len tests))
+              (mut i 0))
+          (while (< i test-count)
+            (match (list-get tests i)
+              ((some tc)
+                (emit-test-function-typed ctx (deref tc) i module-prefix types tctx))
+              ((none) (do)))
+            (set! i (+ i 1)))
+
+          (emit-main-function ctx test-count any-needs-arena)))
+
+      (emit-ctx-get-lines ctx)))
+
+  (fn any-test-needs-arena ((tests (List (Ptr TestCase))))
+    (@intent "Check if any test needs arena allocation")
+    (@spec (((List (Ptr TestCase))) -> Bool))
+    (@pure)
+    (let ((len (list-len tests))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get tests i)
+          ((some tc)
+            (when (. (deref tc) needs-arena)
+              (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  ;; ============================================================
+  ;; Individual Test Function Generation
+  ;; ============================================================
+
+  (fn emit-test-function-typed ((ctx (Ptr EmitContext)) (tc TestCase) (index Int)
+                                 (prefix String) (types (Ptr TypeRegistry))
+                                 (tctx (Ptr TranspileContext)))
+    (@intent "Generate a single test function with type awareness")
+    (@spec (((Ptr EmitContext) TestCase Int String (Ptr TypeRegistry) (Ptr TranspileContext)) -> Unit))
+    (let ((arena (. (deref ctx) arena))
+          (fn-name (. tc fn-name))
+          (c-fn-name (make-c-fn-name arena fn-name (. tc module-name) prefix))
+          (args-display (build-args-display-typed arena (. tc args) (deref types)))
+          (call-sexpr (build-call-sexpr arena fn-name (. tc args)
+                        (. tc needs-arena) (. tc arena-position)))
+          (call-expr (transpile-expr-safe arena tctx call-sexpr)))
+      ;; Function declaration
+      (emit ctx
+        (string-concat arena "void test_"
+          (string-concat arena (int-to-string arena index) "(void) {")))
+      ;; Print test name
+      (emit ctx
+        (string-concat arena "    printf(\"  "
+          (string-concat arena fn-name
+            (string-concat arena "("
+              (string-concat arena (escape-string arena args-display) ") -> \");")))))
+      ;; Check if call expression still has unresolved wildcards or args had ellipsis
+      (if (or (contains call-expr "__SLOP_WILDCARD__")
+              (args-have-ellipsis (. tc args)))
+        ;; Can't generate valid C — skip
+        (do
+          (emit ctx "    printf(\"SKIP (wildcard args)\\n\");")
+          (emit ctx "    tests_passed++;")
+          (emit ctx "}")
+          (emit ctx ""))
+        (do
+        ;; Declare result
+        (emit ctx
+          (string-concat arena "    typeof("
+            (string-concat arena call-expr
+              (string-concat arena ") result = "
+                (string-concat arena call-expr ";")))))
+        ;; Generate comparison
+        (let ((compare-info (build-comparison-typed arena (. tc expected)
+                             (. tc return-type) prefix (deref types) (. tc eq-fn) tctx)))
+          ;; If statement
+          (emit ctx
+            (string-concat arena "    if ("
+              (string-concat arena (. compare-info compare-expr) ") {")))
+          ;; Pass branch
+          (emit ctx "        printf(\"PASS\\n\");")
+          (emit ctx "        tests_passed++;")
+          (emit ctx "    } else {")
+          ;; Fail branch
+          (let ((fail-str (string-concat arena "        printf(\"FAIL (got "
+                            (string-concat arena (. compare-info result-fmt)
+                              (string-concat arena ", expected "
+                                (string-concat arena (. compare-info expected-fmt)
+                                  (string-concat arena ")\\n\", "
+                                    (string-concat arena (. compare-info result-args)
+                                      (string-concat arena ", "
+                                        (string-concat arena (. compare-info expected-args) ");"))))))))))
+            (emit ctx fail-str))
+          (emit ctx "        tests_failed++;")
+          (emit ctx "    }")
+          (emit ctx "}")
+          (emit ctx "")
+          (do))))))
+
+  ;; ============================================================
+  ;; Main Function Generation
+  ;; ============================================================
+
+  (fn emit-main-function ((ctx (Ptr EmitContext)) (test-count Int) (needs-arena Bool))
+    (@intent "Generate main() function that runs all tests")
+    (@spec (((Ptr EmitContext) Int Bool) -> Unit))
+    (let ((arena (. (deref ctx) arena)))
+      (emit ctx "int main(void) {")
+      (when needs-arena
+        (emit ctx "    // Create test arena (1MB)")
+        (emit ctx "    test_arena_storage = slop_arena_new(1024 * 1024);")
+        (emit ctx "    test_arena = &test_arena_storage;"))
+      (let ((count-str (int-to-string arena test-count))
+            (print-stmt (string-concat arena "    printf(\"Running "
+                          (string-concat arena count-str " test(s)...\\n\");"))))
+        (emit ctx print-stmt))
+      (let ((mut i 0))
+        (while (< i test-count)
+          (let ((call (string-concat arena "    test_"
+                        (string-concat arena (int-to-string arena i) "();"))))
+            (emit ctx call))
+          (set! i (+ i 1))))
+      (emit ctx "    printf(\"\\n%d passed, %d failed\\n\", tests_passed, tests_failed);")
+      (when needs-arena
+        (emit ctx "    slop_arena_free(test_arena);"))
+      (emit ctx "    return tests_failed > 0 ? 1 : 0;")
+      (emit ctx "}")
+      (do)))
+
+  ;; ============================================================
+  ;; Helper Functions for Test Generation
+  ;; ============================================================
+
+  (fn make-c-fn-name ((arena Arena) (fn-name String) (module-name (Option String)) (prefix String))
+    (@intent "Build C function name with module prefix if needed")
+    (@spec ((Arena String (Option String) String) -> String))
+    (@alloc arena)
+    (let ((c-name (to-c-name arena fn-name)))
+      (match module-name
+        ((some mod)
+          (string-concat arena (to-c-name arena mod)
+            (string-concat arena "_" c-name)))
+        ((none)
+          (if (> (cast Int (. prefix len)) 0)
+            (string-concat arena prefix (string-concat arena "_" c-name))
+            c-name)))))
+
+  (fn build-args-display-typed ((arena Arena) (args (List (Ptr SExpr))) (types TypeRegistry))
+    (@intent "Build display string for test arguments")
+    (@spec ((Arena (List (Ptr SExpr)) TypeRegistry) -> String))
+    (@alloc arena)
+    (let ((len (list-len args))
+          (mut result "")
+          (mut first true)
+          (mut i 0))
+      (while (< i len)
+        (match (list-get args i)
+          ((some arg)
+            (let ((arg-str (pretty-print arena arg)))
+              (if first
+                (do
+                  (set! result arg-str)
+                  (set! first false))
+                (set! result (string-concat arena result
+                               (string-concat arena ", " arg-str))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  ;; ============================================================
+  ;; Type-Aware Comparison Building
+  ;; ============================================================
+
+  (fn build-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (return-type (Option String))
+                               (prefix String) (types TypeRegistry) (eq-fn (Option String))
+                               (tctx (Ptr TranspileContext)))
+    (@intent "Build comparison info with type awareness")
+    (@spec ((Arena (Ptr SExpr) (Option String) String TypeRegistry (Option String) (Ptr TranspileContext)) -> CompareInfo))
+    (@alloc arena)
+    (let ((ret-type-str (match return-type ((some s) s) ((none) "Int"))))
+      ;; Check for user-defined union types first
+      (if (is-union-constructor-typed expected types)
+        (build-union-comparison-typed arena expected prefix types ret-type-str tctx)
+        ;; Check for Option type with none/some
+        (if (contains ret-type-str "Option")
+          (if (is-none-value expected)
+            (CompareInfo
+              "!result.has_value"
+              "%s"
+              "result.has_value ? \"some(...)\" : \"none\""
+              "%s"
+              "\"none\"")
+            (if (is-some-value expected)
+              (let ((inner-expected (get-some-inner-typed arena expected tctx))
+                    (inner-expr (get-some-inner-expr expected)))
+                (cond
+                  ((contains ret-type-str "String")
+                   (CompareInfo
+                     (string-concat arena "result.has_value && slop_string_eq(result.value, "
+                       (string-concat arena inner-expected ")"))
+                     "%s"
+                     "result.has_value ? \"some(...)\" : \"none\""
+                     "%s"
+                     "\"some(...)\""))
+                  ((is-record-constructor-typed inner-expr types)
+                   (let ((record-name (get-record-name-from-expr inner-expr))
+                         (field-values (get-record-field-values arena inner-expr)))
+                     (match (registry-get-record-fields types record-name)
+                       ((some fields)
+                        (let ((expected-var-name "expected_value")
+                              (compare-expr (build-record-field-comparisons-with-values
+                                              arena fields field-values "result.value" expected-var-name)))
+                          (CompareInfo
+                            (string-concat arena "({ typeof(result.value) "
+                              (string-concat arena expected-var-name
+                                (string-concat arena " = "
+                                  (string-concat arena inner-expected
+                                    (string-concat arena "; result.has_value && "
+                                      (string-concat arena compare-expr "; })"))))))
+                            "%s"
+                            "result.has_value ? \"some(...)\" : \"none\""
+                            "%s"
+                            "\"some(...)\"")))
+                       ((none)
+                        (CompareInfo
+                          (string-concat arena "({ typeof(result.value) expected_value = "
+                            (string-concat arena inner-expected
+                              "; result.has_value && memcmp(&result.value, &expected_value, sizeof(result.value)) == 0; })"))
+                          "%s"
+                          "result.has_value ? \"some(...)\" : \"none\""
+                          "%s"
+                          "\"some(...)\"")))))
+                  (else
+                   (CompareInfo
+                     (string-concat arena "result.has_value && result.value == " inner-expected)
+                     "%s"
+                     "result.has_value ? \"some(...)\" : \"none\""
+                     "%s"
+                     "\"some(...)\""))))
+              (let ((c-expected (transpile-expr-safe arena tctx expected)))
+                (CompareInfo
+                  (string-concat arena "result == " c-expected)
+                  "%lld"
+                  "(long long)result"
+                  "%lld"
+                  (string-concat arena "(long long)" c-expected)))))
+          ;; Check for Result type
+          (if (contains ret-type-str "Result")
+            (if (is-ok-value expected)
+              (let ((inner-expr (get-ok-inner-expr expected)))
+                ;; If inner value contains wildcards, just check is_ok
+                (if (contains-wildcard inner-expr)
+                  (CompareInfo
+                    "result.is_ok"
+                    "%s"
+                    "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                    "%s"
+                    "\"ok(...)\"")
+                (let ((inner-expected (get-ok-inner-typed arena expected tctx)))
+                  ;; Check if inner value is a union constructor
+                  (if (is-union-constructor-typed inner-expr types)
+                    (let ((expected-var "expected_ok")
+                          (variant-name (get-union-variant-name inner-expr))
+                          (c-variant (to-c-name arena variant-name))
+                          (is-string-variant (contains (to-lower arena variant-name) "string")))
+                      (CompareInfo
+                        (let ((parts (list-new arena String)))
+                          (list-push parts "({ typeof(result.data.ok) ")
+                          (list-push parts expected-var)
+                          (list-push parts " = ")
+                          (list-push parts inner-expected)
+                          (list-push parts "; result.is_ok && result.data.ok.tag == ")
+                          (list-push parts expected-var)
+                          (list-push parts ".tag && ")
+                          (if is-string-variant
+                            (do
+                              (list-push parts "slop_string_eq(result.data.ok.data.")
+                              (list-push parts c-variant)
+                              (list-push parts ", ")
+                              (list-push parts expected-var)
+                              (list-push parts ".data.")
+                              (list-push parts c-variant)
+                              (list-push parts ")"))
+                            (do
+                              (list-push parts "result.data.ok.data.")
+                              (list-push parts c-variant)
+                              (list-push parts " == ")
+                              (list-push parts expected-var)
+                              (list-push parts ".data.")
+                              (list-push parts c-variant)))
+                          (list-push parts "; })")
+                          (string-build arena parts))
+                        "%s"
+                        "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                        "%s"
+                        "\"ok(...)\""))
+                    ;; Check if inner value is a record constructor
+                    (if (is-record-constructor-typed inner-expr types)
+                      (let ((record-name (get-record-name-from-expr inner-expr))
+                            (field-values (get-record-field-values arena inner-expr)))
+                        (match (registry-get-record-fields types record-name)
+                          ((some fields)
+                            (let ((expected-var-name "expected_ok")
+                                  (compare-expr (build-record-field-comparisons-with-values
+                                                  arena fields field-values "result.data.ok" expected-var-name)))
+                              (CompareInfo
+                                (string-concat arena "({ typeof(result.data.ok) "
+                                  (string-concat arena expected-var-name
+                                    (string-concat arena " = "
+                                      (string-concat arena inner-expected
+                                        (string-concat arena "; result.is_ok && "
+                                          (string-concat arena compare-expr "; })"))))))
+                                "%s"
+                                "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                                "%s"
+                                "\"ok(...)\"" )))
+                          ((none)
+                            (CompareInfo
+                              (string-concat arena "({ typeof(result.data.ok) expected_ok = "
+                                (string-concat arena inner-expected
+                                  "; result.is_ok && memcmp(&result.data.ok, &expected_ok, sizeof(result.data.ok)) == 0; })"))
+                              "%s"
+                              "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                              "%s"
+                              "\"ok(...)\"" ))))
+                      ;; Check if it looks like a struct value
+                      (let ((first-name (get-first-symbol-name inner-expr)))
+                      (if (or (is-likely-struct-type first-name) (string-eq first-name "record"))
+                        ;; Struct: use memcmp
+                        (CompareInfo
+                          (string-concat arena "({ typeof(result.data.ok) expected_ok = "
+                            (string-concat arena inner-expected
+                              "; result.is_ok && memcmp(&result.data.ok, &expected_ok, sizeof(result.data.ok)) == 0; })"))
+                          "%s"
+                          "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                          "%s"
+                          "\"ok(...)\"")
+                        ;; Primitive: use direct comparison
+                        (CompareInfo
+                          (string-concat arena "result.is_ok && result.data.ok == " inner-expected)
+                          "%s"
+                          "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                          "%s"
+                          "\"ok(...)\"" ))))))))
+              (if (is-error-value expected)
+                (let ((inner-expected (get-error-inner-typed arena expected tctx))
+                      (inner-expr (get-ok-inner-expr expected)))
+                  ;; Check if inner value is a union constructor
+                  (if (is-union-constructor-typed inner-expr types)
+                    (let ((expected-var "expected_err")
+                          (variant-name (get-union-variant-name inner-expr))
+                          (c-variant (to-c-name arena variant-name))
+                          (is-string-variant (contains (to-lower arena variant-name) "string")))
+                      (CompareInfo
+                        (let ((parts (list-new arena String)))
+                          (list-push parts "({ typeof(result.data.err) ")
+                          (list-push parts expected-var)
+                          (list-push parts " = ")
+                          (list-push parts inner-expected)
+                          (list-push parts "; !result.is_ok && result.data.err.tag == ")
+                          (list-push parts expected-var)
+                          (list-push parts ".tag && ")
+                          (if is-string-variant
+                            (do
+                              (list-push parts "slop_string_eq(result.data.err.data.")
+                              (list-push parts c-variant)
+                              (list-push parts ", ")
+                              (list-push parts expected-var)
+                              (list-push parts ".data.")
+                              (list-push parts c-variant)
+                              (list-push parts ")"))
+                            (do
+                              (list-push parts "result.data.err.data.")
+                              (list-push parts c-variant)
+                              (list-push parts " == ")
+                              (list-push parts expected-var)
+                              (list-push parts ".data.")
+                              (list-push parts c-variant)))
+                          (list-push parts "; })")
+                          (string-build arena parts))
+                        "%s"
+                        "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                        "%s"
+                        "\"error(...)\""))
+                    ;; Non-union: use direct comparison
+                    (CompareInfo
+                      (string-concat arena "!result.is_ok && result.data.err == " inner-expected)
+                      "%s"
+                      "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                      "%s"
+                      "\"error(...)\"")))
+                (let ((c-expected (transpile-expr-safe arena tctx expected)))
+                  (CompareInfo
+                    (string-concat arena "result == " c-expected)
+                    "%lld"
+                    "(long long)result"
+                    "%lld"
+                    (string-concat arena "(long long)" c-expected)))))
+            ;; Check for String type
+            (if (contains ret-type-str "String")
+              (let ((c-expected (transpile-expr-safe arena tctx expected)))
+                (CompareInfo
+                  (string-concat arena "slop_string_eq(result, " (string-concat arena c-expected ")"))
+                  "\\\"%.*s\\\""
+                  "(int)result.len, result.data"
+                  "\\\"%.*s\\\""
+                  (let ((part1 (string-concat arena "(int)(" c-expected))
+                        (part2 (string-concat arena part1 ").len, ("))
+                        (part3 (string-concat arena part2 c-expected))
+                        (part4 (string-concat arena part3 ").data")))
+                    part4)))
+              ;; Check for List type
+              (if (contains ret-type-str "List")
+                (build-list-comparison-typed arena expected prefix types ret-type-str eq-fn tctx)
+                ;; Check for Bool type
+                (if (contains ret-type-str "Bool")
+                  (let ((c-expected (transpile-expr-safe arena tctx expected)))
+                    (CompareInfo
+                      (string-concat arena "result == " c-expected)
+                      "%s"
+                      "result ? \"true\" : \"false\""
+                      "%s"
+                      (string-concat arena c-expected " ? \"true\" : \"false\"")))
+                  ;; Check for Float type
+                  (if (contains ret-type-str "Float")
+                    (let ((c-expected (transpile-expr-safe arena tctx expected)))
+                      (let ((fabs1 (string-concat arena "fabs(result - " c-expected))
+                            (fabs2 (string-concat arena fabs1 ") < (fabs("))
+                            (fabs3 (string-concat arena fabs2 c-expected))
+                            (fabs4 (string-concat arena fabs3 ") * 1e-6 + 1e-9)")))
+                        (CompareInfo fabs4 "%g" "result" "%g" c-expected)))
+                    ;; Check for enum types
+                    (if (is-enum-value-typed expected types)
+                      (let ((c-expected (transpile-expr-safe arena tctx expected)))
+                        (CompareInfo
+                          (string-concat arena "result == " c-expected)
+                          "%d"
+                          "(int)result"
+                          "%d"
+                          (string-concat arena "(int)" c-expected)))
+                      ;; Check for record types (need field-by-field comparison)
+                      (if (is-record-constructor-typed expected types)
+                        (build-record-comparison-typed arena expected prefix types tctx)
+                        ;; Default: integer comparison
+                        (let ((c-expected (transpile-expr-safe arena tctx expected)))
+                          (CompareInfo
+                            (string-concat arena "result == " c-expected)
+                            "%lld"
+                            "(long long)result"
+                            "%lld"
+                            (string-concat arena "(long long)" c-expected))))))))))))))
+
+  ;; ============================================================
+  ;; Record Comparison Building
+  ;; ============================================================
+
+  (fn build-record-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (prefix String)
+                                      (types TypeRegistry) (tctx (Ptr TranspileContext)))
+    (@intent "Build field-by-field comparison for record types")
+    (@spec ((Arena (Ptr SExpr) String TypeRegistry (Ptr TranspileContext)) -> CompareInfo))
+    (@alloc arena)
+    (let ((record-name (get-record-name-from-expr expected))
+          (c-expected (transpile-expr-safe arena tctx expected))
+          (field-values (get-record-field-values arena expected))
+          (decl-type (get-record-decl-type arena types record-name)))
+      (build-record-comparison-inner arena types record-name field-values c-expected decl-type)))
+
+  (fn build-record-comparison-inner ((arena Arena) (types TypeRegistry) (record-name String)
+                                      (field-values (List (Ptr SExpr))) (c-expected String)
+                                      (decl-type String))
+    (@intent "Build record comparison with optional decl type")
+    (@spec ((Arena TypeRegistry String (List (Ptr SExpr)) String String) -> CompareInfo))
+    (@alloc arena)
+    (match (registry-get-record-fields types record-name)
+      ((some fields)
+        (let ((expected-var-name "expected_value")
+              (compare-expr (build-record-field-comparisons-with-values arena fields field-values "result" expected-var-name)))
+          (CompareInfo
+            (string-concat arena "({ typeof(result) "
+              (string-concat arena expected-var-name
+                (string-concat arena " = "
+                  (string-concat arena c-expected
+                    (string-concat arena "; "
+                      (string-concat arena compare-expr "; })"))))))
+            "%s"
+            "\"<record>\""
+            "%s"
+            "\"<expected>\"")))
+      ((none)
+        (let ((expected-var-name "expected_value"))
+          (CompareInfo
+            (string-concat arena "({ typeof(result) "
+              (string-concat arena expected-var-name
+                (string-concat arena " = "
+                  (string-concat arena c-expected
+                    (string-concat arena "; memcmp(&result, &"
+                      (string-concat arena expected-var-name
+                        ", sizeof(result)) == 0; })"))))))
+            "%s"
+            "\"<record>\""
+            "%s"
+            "\"<expected>\"")))))
+
+  (fn get-record-decl-type ((arena Arena) (types TypeRegistry) (record-name String))
+    (@intent "Get the C declaration type for a record")
+    (@spec ((Arena TypeRegistry String) -> String))
+    (@alloc arena)
+    (match (registry-lookup types record-name)
+      ((some entry) (. (deref entry) c-name))
+      ((none) "")))
+
+  (fn get-record-name-from-expr ((expr (Ptr SExpr)))
+    (@intent "Extract record type name from a record constructor expression")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 0)
+            ""
+            (match (list-get items 0)
+              ((some first)
+                (if (sexpr-is-symbol first)
+                  (sexpr-get-symbol-name first)
+                  ""))
+              ((none) "")))))
+      (_ "")))
+
+  (fn get-record-field-values ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "Extract field values from record constructor (RecordType val1 val2 ...)")
+    (@spec ((Arena (Ptr SExpr)) -> (List (Ptr SExpr))))
+    (@alloc arena)
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (< len 2)
+            items
+            (let ((result (list-new arena (Ptr SExpr)))
+                  (mut i 1))
+              (while (< i len)
+                (match (list-get items i)
+                  ((some val) (list-push result val))
+                  ((none) (do)))
+                (set! i (+ i 1)))
+              result))))
+      (_ (list-new arena (Ptr SExpr)))))
+
+  (fn is-wildcard-expr ((expr (Ptr SExpr)))
+    (@intent "Check if expression is the wildcard symbol _")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((sym sym) (string-eq (. sym name) "_"))
+      (_ false)))
+
+  (fn build-record-field-comparisons-with-values ((arena Arena) (fields (List TstFieldEntry))
+                                                   (field-values (List (Ptr SExpr)))
+                                                   (result-accessor String) (expected-var String))
+    (@intent "Build comparison expressions for record fields, skipping wildcards")
+    (@spec ((Arena (List TstFieldEntry) (List (Ptr SExpr)) String String) -> String))
+    (@alloc arena)
+    (let ((len (list-len fields))
+          (mut comp-result "1")
+          (mut i 0))
+      (while (< i len)
+        (match (list-get fields i)
+          ((some field)
+            (let ((is-wildcard (match (list-get field-values i)
+                                ((some val) (is-wildcard-expr val))
+                                ((none) false))))
+              (when (not is-wildcard)
+                (let ((fname (to-c-name arena (. field name)))
+                      (ftype (. field type-name))
+                      (field-cmp (build-single-field-comparison-with-accessor arena fname ftype result-accessor expected-var)))
+                  (set! comp-result (string-concat arena comp-result
+                                      (string-concat arena " && " field-cmp)))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      comp-result))
+
+  (fn build-single-field-comparison-with-accessor ((arena Arena) (fname String) (ftype String)
+                                                    (result-accessor String) (expected-var String))
+    (@intent "Build comparison for a single record field with custom result accessor")
+    (@spec ((Arena String String String String) -> String))
+    (@alloc arena)
+    (let ((r-field (string-concat arena result-accessor (string-concat arena "." fname)))
+          (e-field (string-concat arena expected-var (string-concat arena "." fname))))
+      (cond
+        ((contains ftype "List")
+          (string-concat arena r-field (string-concat arena ".len == " (string-concat arena e-field ".len"))))
+        ((or (starts-with ftype "Option") (starts-with ftype "(Option"))
+          (if (contains ftype "String")
+            (let ((parts (list-new arena String)))
+              (list-push parts "(")
+              (list-push parts r-field)
+              (list-push parts ".has_value == ")
+              (list-push parts e-field)
+              (list-push parts ".has_value && (!")
+              (list-push parts e-field)
+              (list-push parts ".has_value || slop_string_eq(")
+              (list-push parts r-field)
+              (list-push parts ".value, ")
+              (list-push parts e-field)
+              (list-push parts ".value)))")
+              (string-build arena parts))
+            (string-concat arena "memcmp(&" (string-concat arena r-field
+              (string-concat arena ", &" (string-concat arena e-field
+                (string-concat arena ", sizeof(" (string-concat arena r-field ")) == 0"))))))))
+        ((string-eq ftype "String")
+          (string-concat arena "slop_string_eq(" (string-concat arena r-field
+            (string-concat arena ", " (string-concat arena e-field ")")))))
+        ((is-likely-struct-type ftype)
+          (string-concat arena "memcmp(&" (string-concat arena r-field
+            (string-concat arena ", &" (string-concat arena e-field
+              (string-concat arena ", sizeof(" (string-concat arena r-field ")) == 0")))))))
+        (else
+          (string-concat arena r-field (string-concat arena " == " e-field))))))
+
+  (fn is-likely-struct-type ((type-name String))
+    (@intent "Check if a type name likely refers to a struct rather than a primitive")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (if (< (string-len type-name) 1)
+      false
+      (let ((first-char (char-at type-name 0)))
+        (if (not (and (>= first-char 65) (<= first-char 90)))
+          false
+          (cond
+            ((string-eq type-name "Int") false)
+            ((string-eq type-name "Bool") false)
+            ((string-eq type-name "Float") false)
+            ((string-eq type-name "F32") false)
+            ((string-eq type-name "U8") false)
+            ((string-eq type-name "U16") false)
+            ((string-eq type-name "U32") false)
+            ((string-eq type-name "U64") false)
+            ((string-eq type-name "Char") false)
+            ((string-eq type-name "String") false)
+            ((string-eq type-name "Unit") false)
+            ((string-eq type-name "Void") false)
+            (else true))))))
+
+  (fn get-first-symbol-name ((expr (Ptr SExpr)))
+    (@intent "Get the first symbol name from an expression (for type detection)")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (match (deref expr)
+      ((sym s) (. s name))
+      ((lst l)
+        (if (> (list-len (. l items)) 0)
+          (match (list-get (. l items) 0)
+            ((some first)
+              (match (deref first)
+                ((sym s) (. s name))
+                ((lst _) "")
+                ((num _) "")
+                ((str _) "")))
+            ((none) ""))
+          ""))
+      ((num _) "")
+      ((str _) "")))
+
+  ;; ============================================================
+  ;; Union Comparison Building
+  ;; ============================================================
+
+  (fn build-union-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (prefix String)
+                                    (types TypeRegistry) (ret-type-str String)
+                                    (tctx (Ptr TranspileContext)))
+    (@intent "Build comparison for union types with inline payload comparison")
+    (@spec ((Arena (Ptr SExpr) String TypeRegistry String (Ptr TranspileContext)) -> CompareInfo))
+    (@alloc arena)
+    (let ((c-expected (transpile-expr-safe arena tctx expected))
+          (expected-var-name "expected_value")
+          (variant-name (get-union-variant-name expected))
+          (c-variant (to-c-name arena variant-name)))
+      (let ((payload-cmp (match (registry-get-variant-info types variant-name)
+                           ((some ve)
+                             (let ((payload-type (. ve payload-type)))
+                               (build-union-payload-comparison arena payload-type c-variant expected-var-name types)))
+                           ((none)
+                             (string-concat arena "memcmp(&result.data, &"
+                               (string-concat arena expected-var-name ".data, sizeof(result.data)) == 0"))))))
+        (CompareInfo
+          (let ((parts (list-new arena String)))
+            (list-push parts "({ typeof(result) ")
+            (list-push parts expected-var-name)
+            (list-push parts " = ")
+            (list-push parts c-expected)
+            (list-push parts "; result.tag == ")
+            (list-push parts expected-var-name)
+            (list-push parts ".tag && ")
+            (list-push parts payload-cmp)
+            (list-push parts "; })")
+            (string-build arena parts))
+          "%s"
+          "\"<union>\""
+          "%s"
+          "\"<expected>\""))))
+
+  (fn build-union-payload-comparison ((arena Arena) (payload-type String) (c-variant String)
+                                       (expected-var String) (types TypeRegistry))
+    (@intent "Build comparison expression for union payload based on type")
+    (@spec ((Arena String String String TypeRegistry) -> String))
+    (@alloc arena)
+    (cond
+      ((string-eq payload-type "")
+        "1")
+      ((string-eq payload-type "String")
+        (string-concat arena "slop_string_eq(result.data."
+          (string-concat arena c-variant
+            (string-concat arena ", "
+              (string-concat arena expected-var
+                (string-concat arena ".data." (string-concat arena c-variant ")")))))))
+      (else
+        (match (registry-get-record-fields types payload-type)
+          ((some fields)
+            (build-union-record-payload-comparison arena fields c-variant expected-var))
+          ((none)
+            (string-concat arena "memcmp(&result.data."
+              (string-concat arena c-variant
+                (string-concat arena ", &"
+                  (string-concat arena expected-var
+                    (string-concat arena ".data."
+                      (string-concat arena c-variant
+                        (string-concat arena ", sizeof(result.data." (string-concat arena c-variant "))")))))))))))))
+
+  (fn build-union-record-payload-comparison ((arena Arena) (fields (List TstFieldEntry))
+                                              (c-variant String) (expected-var String))
+    (@intent "Build comparison for a record payload, comparing each field")
+    (@spec ((Arena (List TstFieldEntry) String String) -> String))
+    (@alloc arena)
+    (let ((len (list-len fields))
+          (mut result "1")
+          (mut i 0))
+      (while (< i len)
+        (match (list-get fields i)
+          ((some field)
+            (let ((fname (to-c-name arena (. field name)))
+                  (ftype (. field type-name))
+                  (field-cmp (build-union-field-comparison arena fname ftype c-variant expected-var)))
+              (set! result (string-concat arena result
+                             (string-concat arena " && " field-cmp)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  (fn build-union-field-comparison ((arena Arena) (fname String) (ftype String)
+                                     (c-variant String) (expected-var String))
+    (@intent "Build comparison for a single field within a union's record payload")
+    (@spec ((Arena String String String String) -> String))
+    (@alloc arena)
+    (let ((result-path (string-concat arena "result.data."
+                         (string-concat arena c-variant
+                           (string-concat arena "." fname))))
+          (expected-path (string-concat arena expected-var
+                           (string-concat arena ".data."
+                             (string-concat arena c-variant
+                               (string-concat arena "." fname))))))
+      (cond
+        ((string-eq ftype "String")
+          (string-concat arena "slop_string_eq("
+            (string-concat arena result-path
+              (string-concat arena ", " (string-concat arena expected-path ")")))))
+        ((or (string-eq ftype "(Option String)") (string-eq ftype "Option String"))
+          (let ((parts (list-new arena String)))
+            (list-push parts "(")
+            (list-push parts result-path)
+            (list-push parts ".has_value == ")
+            (list-push parts expected-path)
+            (list-push parts ".has_value && (!")
+            (list-push parts result-path)
+            (list-push parts ".has_value || slop_string_eq(")
+            (list-push parts result-path)
+            (list-push parts ".value, ")
+            (list-push parts expected-path)
+            (list-push parts ".value)))")
+            (string-build arena parts)))
+        ((contains ftype "List")
+          (string-concat arena result-path
+            (string-concat arena ".len == " (string-concat arena expected-path ".len"))))
+        (else
+          (string-concat arena result-path
+            (string-concat arena " == " expected-path))))))
+
+  ;; ============================================================
+  ;; Type Detection Helpers
+  ;; ============================================================
+
+  (fn is-union-constructor-typed ((expr (Ptr SExpr)) (types TypeRegistry))
+    (@intent "Check if expression is a union constructor using type registry")
+    (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 0)
+            false
+            (match (list-get items 0)
+              ((some first)
+                (if (sexpr-is-symbol first)
+                  (let ((name (sexpr-get-symbol-name first)))
+                    (if (string-eq name "union-new")
+                      (>= (list-len items) 3)
+                      (if (or (string-eq name "none")
+                              (string-eq name "some")
+                              (string-eq name "ok")
+                              (string-eq name "error"))
+                        false
+                        (match (registry-lookup-variant types name)
+                          ((some _) true)
+                          ((none) false)))))
+                  false))
+              ((none) false)))))
+      (_ false)))
+
+  (fn get-union-variant-name ((expr (Ptr SExpr)))
+    (@intent "Get the variant name from a union constructor expression")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 0)
+            ""
+            (match (list-get items 0)
+              ((some first)
+                (if (sexpr-is-symbol first)
+                  (let ((name (sexpr-get-symbol-name first)))
+                    (if (string-eq name "union-new")
+                      (match (list-get items 2)
+                        ((some variant-expr)
+                          (if (sexpr-is-symbol variant-expr)
+                            (sexpr-get-symbol-name variant-expr)
+                            ""))
+                        ((none) ""))
+                      name))
+                  ""))
+              ((none) "")))))
+      (_ "")))
+
+  (fn is-enum-value-typed ((expr (Ptr SExpr)) (types TypeRegistry))
+    (@intent "Check if expression is an enum value using type registry")
+    (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((sym sym)
+        (let ((name (. sym name)))
+          (if (starts-with name "'")
+            (let ((variant-name (emit-string-slice name 1)))
+              (match (registry-lookup-enum-value types variant-name)
+                ((some _) true)
+                ((none) false)))
+            false)))
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 2)
+            false
+            (match (list-get items 0)
+              ((some first)
+                (if (and (sexpr-is-symbol first)
+                         (string-eq (sexpr-get-symbol-name first) "quote"))
+                  (match (list-get items 1)
+                    ((some quoted)
+                      (if (sexpr-is-symbol quoted)
+                        (match (registry-lookup-enum-value types (sexpr-get-symbol-name quoted))
+                          ((some _) true)
+                          ((none) false))
+                        false))
+                    ((none) false))
+                  false))
+              ((none) false)))))
+      (_ false)))
+
+  (fn is-record-constructor-typed ((expr (Ptr SExpr)) (types TypeRegistry))
+    (@intent "Check if expression is a record constructor using type registry")
+    (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 0)
+            false
+            (match (list-get items 0)
+              ((some first)
+                (if (sexpr-is-symbol first)
+                  (let ((name (sexpr-get-symbol-name first)))
+                    (if (or (string-eq name "none")
+                            (or (string-eq name "some")
+                                (or (string-eq name "ok")
+                                    (or (string-eq name "error")
+                                        (string-eq name "list")))))
+                      false
+                      (match (registry-lookup types name)
+                        ((some entry)
+                          (registry-is-record types name))
+                        ((none) false))))
+                  false))
+              ((none) false)))))
+      (_ false)))
+
+  (fn emit-string-slice ((s String) (start Int))
+    (@intent "Get substring from start to end of string")
+    (@spec ((String Int) -> String))
+    (@pure)
+    (if (>= start (cast Int (. s len)))
+      ""
+      (String (cast (Ptr U8) (+ (cast Int (. s data)) start))
+              (cast U64 (- (. s len) (cast U64 start))))))
+
+  ;; ============================================================
+  ;; Value Extraction Helpers (using transpile-expr)
+  ;; ============================================================
+
+  (fn get-some-inner-typed ((arena Arena) (expr (Ptr SExpr)) (tctx (Ptr TranspileContext)))
+    (@intent "Get inner value from (some val) using transpiler")
+    (@spec ((Arena (Ptr SExpr) (Ptr TranspileContext)) -> String))
+    (@alloc arena)
+    (if (> (sexpr-list-len expr) 1)
+      (match (sexpr-list-get expr 1)
+        ((some inner) (transpile-expr-safe arena tctx inner))
+        ((none) "0"))
+      "0"))
+
+  (fn get-ok-inner-typed ((arena Arena) (expr (Ptr SExpr)) (tctx (Ptr TranspileContext)))
+    (@intent "Get inner value from (ok val) using transpiler")
+    (@spec ((Arena (Ptr SExpr) (Ptr TranspileContext)) -> String))
+    (@alloc arena)
+    (get-some-inner-typed arena expr tctx))
+
+  (fn get-error-inner-typed ((arena Arena) (expr (Ptr SExpr)) (tctx (Ptr TranspileContext)))
+    (@intent "Get inner value from (error val) using transpiler")
+    (@spec ((Arena (Ptr SExpr) (Ptr TranspileContext)) -> String))
+    (@alloc arena)
+    (get-some-inner-typed arena expr tctx))
+
+  (fn get-some-inner-expr ((expected (Ptr SExpr)))
+    (@intent "Get inner expression from (some val) for type checking")
+    (@spec (((Ptr SExpr)) -> (Ptr SExpr)))
+    (@pure)
+    (match (deref expected)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (> (list-len items) 1)
+            (match (list-get items 1)
+              ((some inner) inner)
+              ((none) expected))
+            expected)))
+      (_ expected)))
+
+  (fn get-ok-inner-expr ((expected (Ptr SExpr)))
+    (@intent "Get inner expression from (ok val) for type checking")
+    (@spec (((Ptr SExpr)) -> (Ptr SExpr)))
+    (@pure)
+    (match (deref expected)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (> (list-len items) 1)
+            (match (list-get items 1)
+              ((some inner) inner)
+              ((none) expected))
+            expected)))
+      (_ expected)))
+
+  ;; ============================================================
+  ;; Value Type Detection Helpers
+  ;; ============================================================
+
+  (fn is-none-value ((expr (Ptr SExpr)))
+    (@intent "Check if expression is (none) or bare none symbol")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (match (deref expr)
+      ((sym sym) (string-eq (. sym name) "none"))
+      ((lst lst)
+        (let ((items (. lst items)))
+          (and (== (list-len items) 1)
+               (match (list-get items 0)
+                 ((some first)
+                   (and (sexpr-is-symbol first)
+                        (string-eq (sexpr-get-symbol-name first) "none")))
+                 ((none) false)))))
+      (_ false)))
+
+  (fn is-some-value ((expr (Ptr SExpr)))
+    (@intent "Check if expression is (some ...)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (is-form expr "some"))
+
+  (fn is-ok-value ((expr (Ptr SExpr)))
+    (@intent "Check if expression is (ok ...)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (is-form expr "ok"))
+
+  (fn is-error-value ((expr (Ptr SExpr)))
+    (@intent "Check if expression is (error ...)")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (is-form expr "error"))
+
+  ;; ============================================================
+  ;; List Element Type and Eq Function Helpers
+  ;; ============================================================
+
+  (fn extract-list-element-type ((arena Arena) (list-type-str String))
+    (@intent "Extract element type from '(List ElementType)' string")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (@pure)
+    (let ((len (cast Int (. list-type-str len))))
+      (if (< len 7)
+        ""
+        (let ((start 6)
+              (end-offset 1))
+          (if (and (== (@ (. list-type-str data) 0) 40)
+                   (== (@ (. list-type-str data) 1) 76)
+                   (== (@ (. list-type-str data) 2) 105)
+                   (== (@ (. list-type-str data) 3) 115)
+                   (== (@ (. list-type-str data) 4) 116)
+                   (== (@ (. list-type-str data) 5) 32))
+            (let ((elem-len (- (- len start) end-offset))
+                  (buf (cast (Ptr U8) (arena-alloc arena (+ elem-len 1)))))
+              (let ((mut i 0))
+                (while (< i elem-len)
+                  (set! (@ buf i) (@ (. list-type-str data) (+ start i)))
+                  (set! i (+ i 1))))
+              (set! (@ buf elem-len) 0)
+              (String buf (cast U64 elem-len)))
+            "")))))
+
+  (fn build-eq-function-name ((arena Arena) (type-name String) (prefix String) (types TypeRegistry))
+    (@intent "Build eq function name: {module}_{lowercase_type}_eq")
+    (@spec ((Arena String String TypeRegistry) -> String))
+    (@alloc arena)
+    (let ((type-c (to-lower arena (to-c-name arena type-name))))
+      (match (registry-lookup-import types type-name)
+        ((some mod-name)
+          (let ((parts (list-new arena String)))
+            (list-push parts (to-c-name arena mod-name))
+            (list-push parts "_")
+            (list-push parts type-c)
+            (list-push parts "_eq")
+            (string-build arena parts)))
+        ((none)
+          (if (> (cast Int (. prefix len)) 0)
+            (let ((parts (list-new arena String)))
+              (list-push parts prefix)
+              (list-push parts "_")
+              (list-push parts type-c)
+              (list-push parts "_eq")
+              (string-build arena parts))
+            (let ((parts (list-new arena String)))
+              (list-push parts type-c)
+              (list-push parts "_eq")
+              (string-build arena parts)))))))
+
+  (fn build-list-comparison-typed ((arena Arena) (expected (Ptr SExpr)) (prefix String)
+                                    (types TypeRegistry) (ret-type-str String) (eq-fn (Option String))
+                                    (tctx (Ptr TranspileContext)))
+    (@intent "Build comparison info for List types with type awareness")
+    (@spec ((Arena (Ptr SExpr) String TypeRegistry String (Option String) (Ptr TranspileContext)) -> CompareInfo))
+    (@alloc arena)
+    (match (deref expected)
+      ((lst lst)
+        (let ((elements (. lst items))
+              (total-count (list-len elements)))
+          (let ((start-idx (if (and (> total-count 0)
+                                    (match (list-get elements 0)
+                                      ((some first-elem)
+                                        (and (sexpr-is-symbol first-elem)
+                                             (string-eq (sexpr-get-symbol-name first-elem) "list")))
+                                      ((none) false)))
+                             1
+                             0))
+                (elem-count (- total-count start-idx)))
+            (if (== elem-count 0)
+              (CompareInfo
+                "result.len == 0"
+                "len=%lld"
+                "(long long)result.len"
+                "len=%lld"
+                "0LL")
+              (let ((mut has-wildcard false)
+                    (mut j start-idx))
+                (while (< j total-count)
+                  (match (list-get elements j)
+                    ((some elem)
+                      (when (is-wildcard-expr elem)
+                        (set! has-wildcard true)))
+                    ((none) (do)))
+                  (set! j (+ j 1)))
+                (let ((len-str (int-to-string arena elem-count)))
+                  (if has-wildcard
+                    (CompareInfo
+                      (let ((parts (list-new arena String)))
+                        (list-push parts "result.len == ")
+                        (list-push parts len-str)
+                        (string-build arena parts))
+                      "len=%lld"
+                      "(long long)result.len"
+                      "len=%lld"
+                      (let ((parts (list-new arena String)))
+                        (list-push parts "(long long)")
+                        (list-push parts len-str)
+                        (string-build arena parts)))
+                    (let ((elem-type (extract-list-element-type arena ret-type-str))
+                          (is-complex (or (registry-is-record types elem-type)
+                                          (registry-is-union types elem-type))))
+                      (let ((mut arr-init "{")
+                            (mut i start-idx)
+                            (mut first true))
+                        (while (< i total-count)
+                          (match (list-get elements i)
+                            ((some elem)
+                              (let ((elem-c (transpile-expr-safe arena tctx elem)))
+                                (if first
+                                  (do
+                                    (set! arr-init (string-concat arena arr-init elem-c))
+                                    (set! first false))
+                                  (set! arr-init (string-concat arena arr-init
+                                                   (string-concat arena ", " elem-c))))))
+                            ((none) (do)))
+                          (set! i (+ i 1)))
+                        (set! arr-init (string-concat arena arr-init "}"))
+                        (if (not is-complex)
+                          (let ((cmp-parts (list-new arena String)))
+                            (list-push cmp-parts "(result.len == ")
+                            (list-push cmp-parts len-str)
+                            (list-push cmp-parts " && memcmp(result.data, (typeof(*result.data)[])")
+                            (list-push cmp-parts arr-init)
+                            (list-push cmp-parts ", sizeof(typeof(*result.data)) * ")
+                            (list-push cmp-parts len-str)
+                            (list-push cmp-parts ") == 0)")
+                            (CompareInfo
+                              (string-build arena cmp-parts)
+                              "len=%lld"
+                              "(long long)result.len"
+                              "len=%lld"
+                              (let ((parts (list-new arena String)))
+                                (list-push parts "(long long)")
+                                (list-push parts len-str)
+                                (string-build arena parts))))
+                          (let ((eq-fn-name (match eq-fn
+                                              ((some fn-name) (prefix-symbol arena fn-name prefix types))
+                                              ((none) (build-eq-function-name arena elem-type prefix types)))))
+                            (let ((cmp-parts (list-new arena String)))
+                              (list-push cmp-parts "({ typeof(*result.data) _expected[] = ")
+                              (list-push cmp-parts arr-init)
+                              (list-push cmp-parts "; result.len == ")
+                              (list-push cmp-parts len-str)
+                              (let ((mut k 0))
+                                (while (< k elem-count)
+                                  (list-push cmp-parts " && ")
+                                  (list-push cmp-parts eq-fn-name)
+                                  (list-push cmp-parts "(result.data[")
+                                  (list-push cmp-parts (int-to-string arena k))
+                                  (list-push cmp-parts "], _expected[")
+                                  (list-push cmp-parts (int-to-string arena k))
+                                  (list-push cmp-parts "])")
+                                  (set! k (+ k 1))))
+                              (list-push cmp-parts "; })")
+                              (CompareInfo
+                                (string-build arena cmp-parts)
+                                "len=%lld"
+                                "(long long)result.len"
+                                "len=%lld"
+                                (let ((parts (list-new arena String)))
+                                  (list-push parts "(long long)")
+                                  (list-push parts len-str)
+                                  (string-build arena parts)))))))))))))))
+      (_ (CompareInfo
+           "result.len == 0"
+           "len=%lld"
+           "(long long)result.len"
+           "len=%lld"
+           "0LL"))))
+
+  ;; ============================================================
+  ;; TranspileContext Initialization
+  ;; ============================================================
+
+  (fn init-transpile-context ((arena Arena) (ast (List (Ptr SExpr))) (module-name String))
+    (@intent "Create and initialize a TranspileContext from parsed module AST")
+    (@spec ((Arena (List (Ptr SExpr)) String) -> (Ptr TranspileContext)))
+    (@alloc arena)
+    (let ((tctx (context-new arena)))
+      (when (> (cast Int (. module-name len)) 0)
+        (ctx-set-module tctx (some module-name))
+        (ctx-set-prefixing tctx true))
+      (ctx-bind-var tctx (VarEntry "arena" "test_arena" "slop_arena*" "Arena" true false false "" ""))
+      (when (> (list-len ast) 0)
+        (match (list-get ast 0)
+          ((some first-expr)
+            (when (is-form first-expr "module")
+              (let ((mod-len (sexpr-list-len first-expr))
+                    (body-forms (list-new arena (Ptr SExpr)))
+                    (mut i 2))
+                (when (< i mod-len)
+                  (match (sexpr-list-get first-expr i)
+                    ((some maybe-export)
+                      (when (is-form maybe-export "export")
+                        (set! i (+ i 1))))
+                    ((none) (do))))
+                (while (< i mod-len)
+                  (match (sexpr-list-get first-expr i)
+                    ((some form)
+                      (when (not (or (is-form form "import") (is-form form "@doc")))
+                        (list-push body-forms form)))
+                    ((none) (do)))
+                  (set! i (+ i 1)))
+                (prescan-module tctx body-forms)
+                (register-all-field-types tctx body-forms))))
+          ((none) (do))))
+      tctx))
+
+  (fn init-transpile-context-for-imports ((arena Arena) (tctx (Ptr TranspileContext))
+                                            (import-ast (List (Ptr SExpr))) (import-mod-name String))
+    (@intent "Add types/functions from an import module to existing TranspileContext")
+    (@spec ((Arena (Ptr TranspileContext) (List (Ptr SExpr)) String) -> Unit))
+    (let ((saved-module (match (ctx-get-module tctx) ((some m) m) ((none) ""))))
+      (when (> (cast Int (. import-mod-name len)) 0)
+        (ctx-set-module tctx (some import-mod-name)))
+      (when (> (list-len import-ast) 0)
+        (match (list-get import-ast 0)
+          ((some first-expr)
+            (when (is-form first-expr "module")
+              (let ((mod-len (sexpr-list-len first-expr))
+                    (body-forms (list-new arena (Ptr SExpr)))
+                    (mut i 2))
+                (when (< i mod-len)
+                  (match (sexpr-list-get first-expr i)
+                    ((some maybe-export)
+                      (when (is-form maybe-export "export")
+                        (set! i (+ i 1))))
+                    ((none) (do))))
+                (while (< i mod-len)
+                  (match (sexpr-list-get first-expr i)
+                    ((some form)
+                      (list-push body-forms form))
+                    ((none) (do)))
+                  (set! i (+ i 1)))
+                (prescan-module tctx body-forms)
+                (register-all-field-types tctx body-forms))))
+          ((none) (do))))
+      (if (> (cast Int (. saved-module len)) 0)
+        (ctx-set-module tctx (some saved-module))
+        (ctx-set-module tctx (none)))
+      (do)))
+
+  (fn re-prescan-main-module ((arena Arena) (tctx (Ptr TranspileContext)) (ast (List (Ptr SExpr))))
+    (@intent "Re-prescan main module types to ensure they take priority over imports")
+    (@spec ((Arena (Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
+    (when (> (list-len ast) 0)
+      (match (list-get ast 0)
+        ((some first-expr)
+          (when (is-form first-expr "module")
+            (let ((mod-len (sexpr-list-len first-expr))
+                  (body-forms (list-new arena (Ptr SExpr)))
+                  (mut i 2))
+              (when (< i mod-len)
+                (match (sexpr-list-get first-expr i)
+                  ((some maybe-export)
+                    (when (is-form maybe-export "export")
+                      (set! i (+ i 1))))
+                  ((none) (do))))
+              (while (< i mod-len)
+                (match (sexpr-list-get first-expr i)
+                  ((some form)
+                    (when (not (or (is-form form "import") (is-form form "@doc")))
+                      (list-push body-forms form)))
+                  ((none) (do)))
+                (set! i (+ i 1)))
+              (prescan-module tctx body-forms)
+              (register-all-field-types tctx body-forms))))
+        ((none) (do))))
+    (do))
+
+  (fn register-all-field-types ((tctx (Ptr TranspileContext)) (body-forms (List (Ptr SExpr))))
+    (@intent "Register field types for all record/union types so transpile-expr can type none args")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
+    (let ((len (list-len body-forms))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get body-forms i)
+          ((some form)
+            (when (is-form form "type")
+              (register-type-fields tctx form)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (do)))
+
+  (fn register-type-fields ((tctx (Ptr TranspileContext)) (type-form (Ptr SExpr)))
+    (@intent "Register field types for a single type definition")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (when (>= (sexpr-list-len type-form) 3)
+      (match (sexpr-list-get type-form 1)
+        ((some name-expr)
+          (when (sexpr-is-symbol name-expr)
+            (let ((type-name (sexpr-get-symbol-name name-expr)))
+              (match (sexpr-list-get type-form 2)
+                ((some def-expr)
+                  (when (is-form def-expr "record")
+                    (let ((field-count (sexpr-list-len def-expr))
+                          (mut j 1))
+                      (while (< j field-count)
+                        (match (sexpr-list-get def-expr j)
+                          ((some field-def)
+                            (when (>= (sexpr-list-len field-def) 2)
+                              (match (sexpr-list-get field-def 0)
+                                ((some field-name-expr)
+                                  (when (sexpr-is-symbol field-name-expr)
+                                    (let ((field-name (sexpr-get-symbol-name field-name-expr)))
+                                      (match (sexpr-list-get field-def 1)
+                                        ((some field-type-expr)
+                                          (let ((arena (. (deref tctx) arena))
+                                                (c-type (to-c-type-prefixed tctx field-type-expr))
+                                                (slop-type (pretty-print arena field-type-expr))
+                                                (is-ptr (if (sexpr-is-symbol field-type-expr)
+                                                          (starts-with (sexpr-get-symbol-name field-type-expr) "Ptr")
+                                                          false)))
+                                            (ctx-register-field-type tctx type-name field-name
+                                              c-type slop-type is-ptr)
+                                            (let ((c-type-name (ctx-prefix-type tctx type-name)))
+                                              (when (not (string-eq c-type-name type-name))
+                                                (ctx-register-field-type tctx c-type-name field-name
+                                                  c-type slop-type is-ptr)))))
+                                        ((none) (do))))))
+                                ((none) (do)))))
+                          ((none) (do)))
+                        (set! j (+ j 1))))))
+                ((none) (do))))))
+        ((none) (do))))
+    (do))
+
+) ;; end module

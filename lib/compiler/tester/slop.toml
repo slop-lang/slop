@@ -8,5 +8,5 @@ entry = "main.slop"
 
 [build]
 output = "slop-tester"
-include = ["../common", "../parser", "../../std", "../../std/strlib", "../../std/io", "../../std/os"]
+include = ["../common", "../parser", "../transpiler", "../../std", "../../std/strlib", "../../std/io", "../../std/os"]
 type = "executable"
