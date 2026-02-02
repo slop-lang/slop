@@ -683,7 +683,7 @@
                       ;; Check for transpiler errors
                       (when (ctx-has-errors ctx)
                         (ctx-report-errors ctx)
-                        (exit 1))
+                        (return 1))
                       ;; Output JSON for this module
                       (output-transpile-module-json arena ctx mod-name first)
                       0))
@@ -974,15 +974,18 @@
                   (ctx-set-prefixing ctx true)
                   (putchar 123)
                   (let ((mut i 2)
-                        (mut first true))
+                        (mut first true)
+                        (mut had-error false))
                     (while (< i argc)
                       (let ((filename (@ argv i))
                             (result (transpile-single-file env ctx arena filename first)))
+                        (when (!= result 0)
+                          (set! had-error true))
                         (set! first false))
-                      (set! i (+ i 1))))
-                  (putchar 125)
-                  (putchar 10)
-                  0))))
+                      (set! i (+ i 1)))
+                    (putchar 125)
+                    (putchar 10)
+                    (if had-error 1 0))))))
 
           ;; ---- TYPED-AST MODE ----
           ((string-eq cmd "typed-ast")

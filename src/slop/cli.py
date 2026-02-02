@@ -2248,11 +2248,19 @@ def _build_library_from_sources(
         cmd = [str(native_compiler_bin), 'transpile'] + source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            # Try to continue - transpiler may have produced partial output with errors
-            if not result.stdout or not result.stdout.strip().startswith('{'):
-                print(f"Native transpiler failed:\n{result.stderr}")
+            # Check if stderr contains actual errors (not just warnings)
+            has_errors = False
+            if result.stderr:
+                for line in result.stderr.strip().split('\n'):
+                    if ': error:' in line:
+                        has_errors = True
+            if has_errors or not result.stdout or not result.stdout.strip().startswith('{'):
+                print(f"Native transpiler failed:")
+                if result.stderr:
+                    for line in result.stderr.strip().split('\n'):
+                        print(f"    {line}")
                 return 1
-            print(f"  Warning: transpiler reported errors, attempting to use output anyway")
+            print(f"  Warning: transpiler reported warnings, attempting to use output anyway")
             if result.stderr:
                 for line in result.stderr.strip().split('\n')[:5]:
                     print(f"    {line}")
@@ -2617,10 +2625,19 @@ def cmd_build(args):
                 cmd = [str(native_compiler_bin), 'transpile'] + source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
-                    if not result.stdout or not result.stdout.strip().startswith('{'):
-                        print(f"Native transpiler failed:\n{result.stderr}")
+                    # Check if stderr contains actual errors (not just warnings)
+                    has_errors = False
+                    if result.stderr:
+                        for line in result.stderr.strip().split('\n'):
+                            if ': error:' in line:
+                                has_errors = True
+                    if has_errors or not result.stdout or not result.stdout.strip().startswith('{'):
+                        print(f"Native transpiler failed:")
+                        if result.stderr:
+                            for line in result.stderr.strip().split('\n'):
+                                print(f"    {line}")
                         return 1
-                    print(f"  Warning: transpiler reported errors, attempting to use output anyway")
+                    print(f"  Warning: transpiler reported warnings, attempting to use output anyway")
                     if result.stderr:
                         for line in result.stderr.strip().split('\n')[:5]:
                             print(f"    {line}")

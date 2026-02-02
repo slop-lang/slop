@@ -573,7 +573,7 @@
                                     (let ((c-type (to-c-type-prefixed ctx type-expr)))
                                       ;; Use int for void (Unit) type since void can't be a struct field
                                       (let ((actual-type (if (string-eq c-type "void") "int" c-type)))
-                                        (ctx-emit ctx (ctx-str5 ctx "        " actual-type " " tag-name ";")))))
+                                        (ctx-emit ctx (ctx-str5 ctx "        " actual-type " " (to-c-name arena tag-name) ";")))))
                                   ((none) (do))))))
                           (else (do))))
                       ((none) (do))))))
@@ -601,7 +601,7 @@
                         (match (deref tag-expr)
                           ((sym tag-sym)
                             (let ((tag-name (. tag-sym name))
-                                  (define-name (ctx-str4 ctx type-name "_" tag-name "_TAG")))
+                                  (define-name (ctx-str4 ctx type-name "_" (to-c-name arena tag-name) "_TAG")))
                               ;; Emit #define TYPE_tag_TAG idx
                               (ctx-emit ctx (ctx-str4 ctx "#define " define-name " " (int-to-string arena tag-idx)))))
                           (else (do))))
