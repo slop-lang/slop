@@ -96,6 +96,33 @@ typedef struct slop_arena {
     struct slop_arena* next;  /* For overflow arenas */
 } slop_arena;
 
+/* ============================================================
+ * String Interning Pool
+ * ============================================================ */
+
+#ifndef SLOP_INTERN_BUCKET_COUNT
+#define SLOP_INTERN_BUCKET_COUNT 4096
+#endif
+
+/* Forward declare slop_string for intern pool */
+struct slop_string_fwd;
+
+typedef struct slop_intern_entry {
+    uint64_t hash;
+    size_t len;
+    const char* data;
+    struct slop_intern_entry* next;
+} slop_intern_entry;
+
+typedef struct {
+    slop_intern_entry** buckets;
+    size_t bucket_count;
+    size_t entry_count;
+    slop_arena* arena;  /* Pool owns its own arena */
+} slop_intern_pool;
+
+static slop_intern_pool* slop_global_intern_pool = NULL;
+
 static inline slop_arena slop_arena_new(size_t capacity) {
     /* Check global cap BEFORE allocating */
     if (slop_global_allocated + capacity > SLOP_ARENA_MAX_TOTAL_BYTES) {
@@ -225,11 +252,102 @@ typedef struct { bool is_ok; union { int64_t ok; int64_t err; } data; } _slop_re
 /* Closure type for lambda expressions with captured variables */
 typedef struct { void* fn; void* env; } slop_closure_t;
 
+/* ============================================================
+ * String Interning Functions
+ * ============================================================ */
+
+/* FNV-1a hash for raw string data (used by interning) */
+static inline uint64_t slop_hash_string_data(const char* str, size_t len) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= (uint8_t)str[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+/* Initialize the global intern pool (called lazily) */
+static inline void slop_intern_pool_init(void) {
+    if (slop_global_intern_pool) return;
+
+    slop_global_intern_pool = (slop_intern_pool*)malloc(sizeof(slop_intern_pool));
+    slop_global_intern_pool->bucket_count = SLOP_INTERN_BUCKET_COUNT;
+    slop_global_intern_pool->entry_count = 0;
+    slop_global_intern_pool->buckets = (slop_intern_entry**)calloc(
+        SLOP_INTERN_BUCKET_COUNT, sizeof(slop_intern_entry*));
+
+    /* Create dedicated arena for interned strings */
+    slop_global_intern_pool->arena = (slop_arena*)malloc(sizeof(slop_arena));
+    *slop_global_intern_pool->arena = slop_arena_new(1024 * 1024);  /* 1MB initial */
+}
+
+/* Intern a string - returns existing string if already interned, otherwise allocates new */
+static inline slop_string slop_intern_string(const char* str, size_t len) {
+    slop_intern_pool_init();
+
+    uint64_t hash = slop_hash_string_data(str, len);
+    size_t bucket = hash % slop_global_intern_pool->bucket_count;
+
+    /* Check existing entries */
+    slop_intern_entry* entry = slop_global_intern_pool->buckets[bucket];
+    while (entry) {
+        if (entry->hash == hash &&
+            entry->len == len &&
+            memcmp(entry->data, str, len) == 0) {
+            /* Found existing - return it */
+            return (slop_string){entry->len, entry->data};
+        }
+        entry = entry->next;
+    }
+
+    /* Allocate new interned string in pool's arena */
+    char* data = (char*)slop_arena_alloc(slop_global_intern_pool->arena, len + 1);
+    memcpy(data, str, len);
+    data[len] = '\0';
+
+    /* Add entry to pool */
+    slop_intern_entry* new_entry = (slop_intern_entry*)slop_arena_alloc(
+        slop_global_intern_pool->arena, sizeof(slop_intern_entry));
+    new_entry->hash = hash;
+    new_entry->len = len;
+    new_entry->data = data;
+    new_entry->next = slop_global_intern_pool->buckets[bucket];
+    slop_global_intern_pool->buckets[bucket] = new_entry;
+    slop_global_intern_pool->entry_count++;
+
+    return (slop_string){len, data};
+}
+
+/* Intern a null-terminated string */
+static inline slop_string slop_intern_cstring(const char* str) {
+    return slop_intern_string(str, strlen(str));
+}
+
+/* Interning version of string_new - use for strings that will be compared often */
+static inline slop_string slop_string_intern(slop_arena* arena, const char* cstr) {
+    (void)arena;  /* Interned strings use global pool, not passed arena */
+    return slop_intern_cstring(cstr);
+}
+
+/* ============================================================
+ * String Construction Functions
+ * ============================================================ */
+
+/* String interning mode - set to 1 to enable global interning for all strings */
+#ifndef SLOP_STRING_INTERN_ALL
+#define SLOP_STRING_INTERN_ALL 1
+#endif
+
 static inline slop_string slop_string_new(slop_arena* arena, const char* cstr) {
+#if SLOP_STRING_INTERN_ALL
+    (void)arena;  /* Interned strings use global pool */
+    return slop_intern_cstring(cstr);
+#else
     size_t len = strlen(cstr);
     char* data = (char*)slop_arena_alloc(arena, len + 1);
     memcpy(data, cstr, len + 1);
     return (slop_string){len, data};
+#endif
 }
 
 static inline slop_string string_new(slop_arena* arena, const char* cstr) {
@@ -237,10 +355,15 @@ static inline slop_string string_new(slop_arena* arena, const char* cstr) {
 }
 
 static inline slop_string slop_string_new_len(slop_arena* arena, const char* src, size_t len) {
+#if SLOP_STRING_INTERN_ALL
+    (void)arena;  /* Interned strings use global pool */
+    return slop_intern_string(src, len);
+#else
     char* data = (char*)slop_arena_alloc(arena, len + 1);
     memcpy(data, src, len);
     data[len] = '\0';
     return (slop_string){len, data};
+#endif
 }
 
 static inline bool slop_string_eq(slop_string a, slop_string b) {

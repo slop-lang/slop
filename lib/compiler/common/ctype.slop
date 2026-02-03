@@ -363,6 +363,10 @@
                     ((string-eq head "Map")
                       "slop_map*")
 
+                    ;; (Set T) -> slop_map* (sets are implemented as maps in runtime)
+                    ((string-eq head "Set")
+                      "slop_map*")
+
                     ;; (Array T size) -> T*
                     ((string-eq head "Array")
                       (if (< len 2)
@@ -600,6 +604,8 @@
               (string-concat arena "_" err-id))))
         ;; Map K V -> slop_map*
         ((== kind 'rk-map) "slop_map*")
+        ;; Set T -> slop_map* (sets are maps with dummy values)
+        ((== kind 'rk-set) "slop_map*")
         ;; Function type -> void* (function pointers are complex)
         ((== kind 'rk-function) "void*")
         ;; Array -> inner*
