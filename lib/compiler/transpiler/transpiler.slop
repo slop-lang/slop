@@ -155,14 +155,17 @@
                         ((some body-expr)
                           (do
                             (check-and-register-result-alias ctx type-name body-expr)
-                            ;; Register Map/Set type aliases during prescan and scan for generics
+                            ;; Register type aliases during prescan and scan for generics
                             (let ((slop-type-str (pretty-print arena body-expr)))
                               (when (or (starts-with slop-type-str "(Map ")
+                                        (or (starts-with slop-type-str "(Set ")
+                                            (or (starts-with slop-type-str "(Result ")
+                                                (starts-with slop-type-str "(Option "))))
+                                (ctx-register-type-alias ctx type-name slop-type-str))
+                              (when (or (starts-with slop-type-str "(Map ")
                                         (starts-with slop-type-str "(Set "))
-                                (do
-                                  (ctx-register-type-alias ctx type-name slop-type-str)
-                                  ;; Scan Map/Set body to register list types for key/element
-                                  (scan-type-for-generics ctx body-expr))))))
+                                ;; Scan Map/Set body to register list types for key/element
+                                (scan-type-for-generics ctx body-expr)))))
                         ((none) (do)))))))
               (else (do))))
           ((none) (do))))))
@@ -243,9 +246,12 @@
                                           (match (list-get vl-items 1)
                                             ((some type-expr)
                                               (let ((slop-type (pretty-print arena type-expr))
-                                                    (c-type (to-c-type-prefixed ctx type-expr)))
+                                                    (c-type (to-c-type-prefixed ctx type-expr))
+                                                    (is-ptr (is-pointer-type-expr-header type-expr)))
                                                 (ctx-register-union-variant ctx variant-name union-name
-                                                                            c-variant-name slop-type c-type)))
+                                                                            c-variant-name slop-type c-type)
+                                                ;; Register as field type for type inference
+                                                (ctx-register-field-type ctx union-name variant-name c-type slop-type is-ptr)))
                                             ((none)
                                               (ctx-register-union-variant ctx variant-name union-name
                                                                           c-variant-name "" "")))))

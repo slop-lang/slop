@@ -543,7 +543,9 @@
             (emit-tag-constants ctx qualified-name items 1)
             (ctx-emit ctx "")
             ;; Register type
-            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false false true))))
+            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false false true))
+            ;; Register field types for union variants (for type inference)
+            (register-union-variant-fields ctx raw-name qualified-name items 1)))
         (else (ctx-add-error-at ctx "invalid union form" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))
 
   (fn emit-union-variants ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start-idx Int))
@@ -611,6 +613,41 @@
           ((none) (do)))
         (set! i (+ i 1)))))
 
+  (fn register-union-variant-fields ((ctx (Ptr TranspileContext)) (raw-name String) (qualified-name String)
+                                     (items (List (Ptr SExpr))) (start-idx Int))
+    (@intent "Register field types for union variants so type inference can resolve payload types")
+    (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr)) Int) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          (mut i start-idx))
+      (while (< i len)
+        (match (list-get items i)
+          ((some variant-expr)
+            (match (deref variant-expr)
+              ((lst var-lst)
+                (let ((var-items (. var-lst items))
+                      (var-len (list-len var-items)))
+                  (when (>= var-len 2)
+                    (match (list-get var-items 0)
+                      ((some tag-expr)
+                        (match (deref tag-expr)
+                          ((sym tag-sym)
+                            (let ((tag-name (. tag-sym name)))
+                              (match (list-get var-items 1)
+                                ((some type-expr)
+                                  (let ((c-type (to-c-type-prefixed ctx type-expr))
+                                        (slop-type-str (pretty-print arena type-expr))
+                                        (is-ptr (is-pointer-type-expr type-expr)))
+                                    (ctx-register-field-type ctx raw-name tag-name c-type slop-type-str is-ptr)
+                                    (ctx-register-field-type ctx qualified-name tag-name c-type slop-type-str is-ptr)))
+                                ((none) (do)))))
+                          (else (do))))
+                      ((none) (do))))))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
   ;; ============================================================
   ;; Type Alias
   ;; ============================================================
@@ -636,9 +673,11 @@
             (ctx-emit ctx "")
             ;; Register type
             (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))
-            ;; Register type alias for Map/Set resolution (helps infer-map-key-c-type)
+            ;; Register type alias for Map/Set/Result/Option resolution
             (when (or (starts-with slop-type-str "(Map ")
-                      (starts-with slop-type-str "(Set "))
+                      (or (starts-with slop-type-str "(Set ")
+                          (or (starts-with slop-type-str "(Result ")
+                              (starts-with slop-type-str "(Option "))))
               (ctx-register-type-alias ctx raw-name slop-type-str)))))))
 
   (fn is-array-type ((type-expr (Ptr SExpr)))
