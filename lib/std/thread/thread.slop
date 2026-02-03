@@ -103,8 +103,7 @@
 
   (fn chan ((arena Arena))
     (@intent "Create an unbuffered channel - sends block until received")
-    (@generic (T))
-    (@spec ((Arena) -> (Ptr (Chan T))))
+    (@spec ((Arena) -> (Ptr (Chan Int))))
     (@alloc arena)
     (@post {$result != nil})
     (let ((ch (arena-alloc arena (sizeof (Chan Int)))))
@@ -123,8 +122,7 @@
 
   (fn chan-buffered ((arena Arena) (capacity (Int 1 ..)))
     (@intent "Create a buffered channel with given capacity")
-    (@generic (T))
-    (@spec ((Arena (Int 1 ..)) -> (Ptr (Chan T))))
+    (@spec ((Arena (Int 1 ..)) -> (Ptr (Chan Int))))
     (@alloc arena)
     (@pre {capacity >= 1})
     (@post {$result != nil})
@@ -158,7 +156,7 @@
   ;; Channel Operations
   ;; ============================================================
 
-  (fn send ((ch (Ptr (Chan Int))) (value Int))
+  (fn send ((ch (Ptr (Chan T))) (value T))
     (@intent "Send value to channel, blocking if full/unbuffered")
     (@generic (T))
     (@spec (((Ptr (Chan T)) T) -> (Result Unit ChanError)))
@@ -215,7 +213,7 @@
                     (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
                     (ok unit)))))))
 
-  (fn recv ((ch (Ptr (Chan Int))))
+  (fn recv ((ch (Ptr (Chan T))))
     (@intent "Receive from channel, blocking if empty")
     (@generic (T))
     (@spec (((Ptr (Chan T))) -> (Result T ChanError)))
@@ -250,7 +248,7 @@
               (pthread-mutex-unlock (cast (Ptr Void) (addr ch.mutex)))
               (ok value)))))
 
-  (fn try-recv ((ch (Ptr (Chan Int))))
+  (fn try-recv ((ch (Ptr (Chan T))))
     (@intent "Non-blocking receive - returns immediately")
     (@generic (T))
     (@spec (((Ptr (Chan T))) -> (Result T ChanError)))
@@ -286,7 +284,7 @@
   ;; Thread Operations
   ;; ============================================================
 
-  (fn spawn ((arena Arena) (func (Fn () Int)))
+  (fn spawn ((arena Arena) (func (Fn () T)))
     (@intent "Spawn a new thread running func()")
     (@generic (T))
     (@spec ((Arena (Fn () T)) -> (Ptr (Thread T))))
@@ -359,7 +357,7 @@
       (set! (. th done) true)
       nil))
 
-  (fn join ((thread (Ptr (Thread Int))))
+  (fn join ((thread (Ptr (Thread T))))
     (@intent "Wait for thread to complete and return its result")
     (@generic (T))
     (@spec (((Ptr (Thread T))) -> T))

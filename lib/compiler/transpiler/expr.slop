@@ -29,7 +29,8 @@
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
-                   ctx-warn-fallback))
+                   ctx-warn-fallback
+                   ctx-register-generic-instantiation ctx-has-generic-instantiation mangle-generic-fn-name))
   (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string
                  get-node-resolved-type resolved-type-to-c))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
@@ -5122,13 +5123,30 @@
         (set! i (+ i 1)))
       names))
 
+  (fn infer-lambda-return-type ((ctx (Ptr TranspileContext)) (body (Ptr SExpr)))
+    (@intent "Infer the C return type from a lambda body expression")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    ;; Get the C type from the body expression
+    ;; If body is nil or inference fails, fall back to int64_t
+    (if (== body nil)
+      "int64_t"
+      (let ((c-type (infer-expr-c-type ctx body)))
+        (if (string-eq c-type "")
+          "int64_t"
+          c-type))))
+
   (fn transpile-simple-lambda ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (params (List (Ptr SExpr))) (lambda-name String))
     (@intent "Transpile non-capturing lambda")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (List (Ptr SExpr)) String) -> String))
     (@pre {ctx != nil})
-    (let ((param-str (build-lambda-params ctx params))
-          ;; For now, default return type is int64_t
-          (return-type "int64_t"))
+    ;; Get body expression (last item after params) for type inference
+    (let ((body-expr (match (list-get items (- (list-len items) 1))
+                       ((some e) e)
+                       ((none) nil)))
+          (param-str (build-lambda-params ctx params))
+          ;; Infer return type from lambda body
+          (return-type (infer-lambda-return-type ctx body-expr)))
       ;; Push scope for lambda body
       (ctx-push-scope ctx)
       ;; Bind parameter names in scope
@@ -5149,6 +5167,10 @@
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (List (Ptr SExpr)) (List String) (List String) String) -> String))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
+          ;; Get body expression for type inference
+          (body-expr (match (list-get items (- (list-len items) 1))
+                       ((some e) e)
+                       ((none) nil)))
           ;; Generate closure struct name
           (env-name (ctx-str ctx lambda-name "_env"))
           (env-type (ctx-str ctx env-name "_t")))
@@ -5158,7 +5180,8 @@
         (ctx-add-deferred-lambda ctx struct-def)
         ;; Build lambda with env parameter
         (let ((param-str (build-closure-params ctx params))
-              (return-type "int64_t"))
+              ;; Infer return type from lambda body
+              (return-type (infer-lambda-return-type ctx body-expr)))
           ;; Push scope for lambda body
           (ctx-push-scope ctx)
           ;; Bind env-accessed variables (they come from _env)
@@ -5538,7 +5561,122 @@
               (set! param-idx (+ param-idx 1))))
           ((none) (do)))
         (set! i (+ i 1)))
+      ;; No name mangling for generic functions - type params are for checking only
       (transpile-call ctx fn-name args)))
+
+  (fn infer-generic-type-binding ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Infer type binding for generic function from first argument type")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; For thread functions: first arg is (Ptr (Chan T)) or value T
+    ;; Extract T from channel type or from value type
+    (let ((arena (. (deref ctx) arena)))
+      (if (< (list-len items) 2)
+        ""  ;; No arguments
+        (match (list-get items 1)
+          ((some first-arg)
+            ;; Get SLOP type of first argument
+            (let ((slop-type (infer-expr-slop-type ctx first-arg)))
+              (if (string-eq slop-type "")
+                ;; Try to infer C type and convert
+                (let ((c-type (infer-expr-c-type ctx first-arg)))
+                  (extract-type-binding-from-c-type arena c-type))
+                ;; Extract type binding from SLOP type
+                (extract-type-binding-from-slop-type arena slop-type))))
+          ((none) "")))))
+
+  (fn extract-type-binding-from-slop-type ((arena Arena) (slop-type String))
+    (@intent "Extract type binding T from SLOP type like (Ptr (Chan Int)) -> int")
+    (@spec ((Arena String) -> String))
+    ;; Look for patterns like (Ptr (Chan X)) or (Ptr (Thread X))
+    ;; Extract X and convert to C type identifier
+    (cond
+      ;; (Ptr (Chan X)) pattern - extract X
+      ((starts-with slop-type "(Ptr (Chan ")
+        (let ((inner-start 11)  ;; len("(Ptr (Chan ")
+              (inner-end (find-matching-paren slop-type inner-start)))
+          (if (> inner-end inner-start)
+            (let ((inner-type (substring arena slop-type (cast (Int 0 ..) inner-start)
+                                         (cast (Int 0 ..) (- inner-end inner-start)))))
+              (slop-type-to-c-identifier arena inner-type))
+            "int")))
+      ;; (Ptr (Thread X)) pattern
+      ((starts-with slop-type "(Ptr (Thread ")
+        (let ((inner-start 13)  ;; len("(Ptr (Thread ")
+              (inner-end (find-matching-paren slop-type inner-start)))
+          (if (> inner-end inner-start)
+            (let ((inner-type (substring arena slop-type (cast (Int 0 ..) inner-start)
+                                         (cast (Int 0 ..) (- inner-end inner-start)))))
+              (slop-type-to-c-identifier arena inner-type))
+            "int")))
+      ;; Simple type - convert directly
+      (else (slop-type-to-c-identifier arena slop-type))))
+
+  (fn extract-type-binding-from-c-type ((arena Arena) (c-type String))
+    (@intent "Extract type binding from C type like slop_chan_int* -> int")
+    (@spec ((Arena String) -> String))
+    ;; Look for patterns like slop_chan_X* or slop_thread_X*
+    (cond
+      ((starts-with c-type "slop_chan_")
+        ;; Extract X from slop_chan_X* (strip slop_chan_ prefix and * suffix)
+        (let ((start 10)  ;; len("slop_chan_")
+              (end-offset (if (ends-with c-type "*") 1 0))
+              (len (string-len c-type)))
+          (if (> len start)
+            (substring arena c-type (cast (Int 0 ..) start)
+                      (cast (Int 0 ..) (- (- (cast Int len) start) end-offset)))
+            "int")))
+      ((starts-with c-type "slop_thread_")
+        (let ((start 12)  ;; len("slop_thread_")
+              (end-offset (if (ends-with c-type "*") 1 0))
+              (len (string-len c-type)))
+          (if (> len start)
+            (substring arena c-type (cast (Int 0 ..) start)
+                      (cast (Int 0 ..) (- (- (cast Int len) start) end-offset)))
+            "int")))
+      ;; Default to int for unknown patterns
+      (else "int")))
+
+  (fn slop-type-to-c-identifier ((arena Arena) (slop-type String))
+    (@intent "Convert SLOP type name to C identifier for mangling")
+    (@spec ((Arena String) -> String))
+    ;; Map common SLOP types to C identifiers
+    (cond
+      ((string-eq slop-type "Int") "int")
+      ((string-eq slop-type "I64") "int")
+      ((string-eq slop-type "I32") "i32")
+      ((string-eq slop-type "I16") "i16")
+      ((string-eq slop-type "I8") "i8")
+      ((string-eq slop-type "U64") "u64")
+      ((string-eq slop-type "U32") "u32")
+      ((string-eq slop-type "U16") "u16")
+      ((string-eq slop-type "U8") "u8")
+      ((string-eq slop-type "String") "string")
+      ((string-eq slop-type "Bool") "bool")
+      ((string-eq slop-type "Float") "double")
+      ((string-eq slop-type "Unit") "unit")
+      ;; Default: convert to lowercase C name
+      (else (to-c-name arena slop-type))))
+
+  (fn find-matching-paren ((s String) (start Int))
+    (@intent "Find position of closing paren, accounting for nesting")
+    (@spec ((String Int) -> Int))
+    (let ((len (cast Int (string-len s)))
+          (mut depth 0)
+          (mut i start)
+          (mut found -1))
+      (while (and (< i len) (< found 0))
+        (let ((c (char-at s (cast (Int 0 ..) i))))
+          (cond
+            ((== c 40)  ;; '('
+              (set! depth (+ depth 1)))
+            ((== c 41)  ;; ')'
+              (if (== depth 0)
+                (set! found i)
+                (set! depth (- depth 1))))
+            (else (do))))
+        (set! i (+ i 1)))
+      (if (< found 0) len found)))
 
   ;; ============================================================
   ;; Free Variable Analysis for Closures

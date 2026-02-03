@@ -75,6 +75,9 @@
     ctx-register-struct-key-type ctx-has-struct-key-type ctx-get-struct-key-types
     ;; Type alias tracking for resolving Map/Set types
     TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias
+    ;; Generic function support
+    GenericFuncInstantiation ctx-register-generic-instantiation ctx-has-generic-instantiation
+    ctx-get-generic-instantiations mangle-generic-fn-name
     ;; Error handling
     ctx-fail
     ;; Fallback warnings
@@ -144,7 +147,11 @@
       (slop-return-type String)   ;; Original SLOP return type (e.g., "(List Term)")
       (returns-pointer Bool)
       (returns-string Bool)
-      (param-types (List (Ptr FuncParamType)))))  ;; Parameter types for none inference
+      (param-types (List (Ptr FuncParamType)))  ;; Parameter types for none inference
+      ;; Generic function support
+      (is-generic Bool)                         ;; Is this a @generic function?
+      (type-params (List String))               ;; Type parameter names (T, U, etc.)
+      (generic-source (Option (Ptr SExpr)))))   ;; AST for instantiation (if generic)
 
   ;; Field type info for record types
   (type FieldEntry
@@ -212,6 +219,13 @@
   (type InlineRecord (record
     (type-name String)    ;; Generated type name (e.g., "_anon_record_12345678")
     (field-body String))) ;; C struct body (e.g., "int64_t first; int64_t second; ")
+
+  ;; Generic function instantiation tracking
+  (type GenericFuncInstantiation (record
+    (fn-name String)              ;; Original SLOP function name (e.g., "send")
+    (type-bindings String)        ;; Mangled type binding string (e.g., "int")
+    (c-name String)               ;; Generated C name (e.g., "thread_send_int")
+    (module-name String)))        ;; Module containing the generic function
 
   ;; Main transpiler context
   (type TranspileContext
@@ -285,7 +299,9 @@
       ;; Last lambda info (for let binding to detect closures)
       (last-lambda-is-closure Bool)
       (last-lambda-env-type String)
-      (last-lambda-name String)))
+      (last-lambda-name String)
+      ;; Generic function instantiations to emit
+      (generic-func-instantiations (List GenericFuncInstantiation))))
 
   ;; ============================================================
   ;; Context Creation
@@ -343,6 +359,8 @@
       (set! (deref ctx) last-lambda-is-closure false)
       (set! (deref ctx) last-lambda-env-type "")
       (set! (deref ctx) last-lambda-name "")
+      ;; Initialize generic function tracking
+      (set! (deref ctx) generic-func-instantiations (list-new arena GenericFuncInstantiation))
       ;; NOTE: String and Bytes have special constructor handling in
       ;; get-builtin-type-c-name / transpile-builtin-constructor (expr.slop)
       ;; for correct field ordering. If adding a new primitive type that needs
@@ -406,6 +424,8 @@
       ;; Clear function output buffer for new module
       (set! (deref ctx) function-output (list-new arena String))
       (set! (deref ctx) emit-to-function-buffer false)
+      ;; Clear generic function instantiations for new module
+      (set! (deref ctx) generic-func-instantiations (list-new arena GenericFuncInstantiation))
       ;; Set new module name
       (set! (deref ctx) current-module (Option String) (some mod-name))
       ;; KEEP preserved: types, funcs, enum-variants, result-type-aliases, pointer-vars
@@ -1960,5 +1980,55 @@
       ;; Clear the function buffer
       (let ((arena (. (deref ctx) arena)))
         (set! (deref ctx) function-output (list-new arena String)))))
+
+  ;; ============================================================
+  ;; Generic Function Instantiation Tracking
+  ;; ============================================================
+
+  (fn ctx-register-generic-instantiation ((ctx (Ptr TranspileContext))
+                                          (fn-name String)
+                                          (type-bindings String)
+                                          (c-name String)
+                                          (module-name String))
+    (@intent "Register a generic function instantiation for later emission")
+    (@spec (((Ptr TranspileContext) String String String String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) generic-func-instantiations)
+               (GenericFuncInstantiation fn-name type-bindings c-name module-name)))
+
+  (fn ctx-has-generic-instantiation ((ctx (Ptr TranspileContext))
+                                     (fn-name String)
+                                     (type-bindings String))
+    (@intent "Check if a generic function instantiation already exists")
+    (@spec (((Ptr TranspileContext) String String) -> Bool))
+    (@pre {ctx != nil})
+    (let ((instances (. (deref ctx) generic-func-instantiations))
+          (len (list-len instances))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get instances i)
+          ((some inst)
+            (when (and (string-eq (. inst fn-name) fn-name)
+                       (string-eq (. inst type-bindings) type-bindings))
+              (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn ctx-get-generic-instantiations ((ctx (Ptr TranspileContext)))
+    (@intent "Get all registered generic function instantiations")
+    (@spec (((Ptr TranspileContext)) -> (List GenericFuncInstantiation)))
+    (@pre {ctx != nil})
+    (. (deref ctx) generic-func-instantiations))
+
+  (fn mangle-generic-fn-name ((ctx (Ptr TranspileContext))
+                              (base-c-name String)
+                              (type-binding String))
+    (@intent "Generate mangled function name for generic instantiation")
+    (@spec (((Ptr TranspileContext) String String) -> String))
+    (@pre {ctx != nil})
+    ;; e.g., "thread_send" + "int" -> "thread_send_int"
+    (ctx-str3 ctx base-c-name "_" type-binding))
 
 ) ;; end module

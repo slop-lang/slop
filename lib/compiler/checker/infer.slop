@@ -26,7 +26,9 @@
                env-get-string-type env-get-unit-type env-get-arena-type
                env-get-unknown-type
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
-               env-add-warning env-add-error))
+               env-add-warning env-add-error
+               env-set-fn-type-params env-clear-fn-type-params env-is-type-param))
+  (import collect (find-fn-type-params))
   (import strlib (starts-with ends-with string-build))
 
   ;; ============================================================
@@ -153,7 +155,11 @@
                 (env-get-generic-type env)))
           (else
             (do (check-builtin-args env "chan-buffered" 2 (- len 1) line col)
-                (env-make-ptr-type env (env-get-generic-type env)))))))
+                (let ((arena (env-arena env))
+                      (int-type (env-get-int-type env))
+                      (chan-type (resolved-type-new arena 'rk-chan "Chan" (none) "slop_chan_int*")))
+                  (resolved-type-set-inner chan-type int-type)
+                  (env-make-ptr-type env chan-type)))))))
 
   ;; ============================================================
   ;; Generic Type Parameter Support
@@ -1258,11 +1264,14 @@
                               (env-add-error env msg line col)
                               (env-get-unknown-type env)))
                           ((none)
-                            ;; Check if it looks like a builtin (set-, map-, list-, etc.)
-                            (if (or (starts-with op "set-")
-                                    (or (starts-with op "map-")
-                                        (or (starts-with op "list-")
-                                            (starts-with op "arena-"))))
+                            ;; Check for threading builtins first (chan-buffered, send, recv, etc.)
+                            (if (is-bare-threading-builtin op)
+                              (infer-threading-builtin env op expr items len line col)
+                              ;; Check if it looks like a builtin (set-, map-, list-, etc.)
+                              (if (or (starts-with op "set-")
+                                      (or (starts-with op "map-")
+                                          (or (starts-with op "list-")
+                                              (starts-with op "arena-"))))
                               (let ((msg (string-concat arena "Unknown builtin: '"
                                            (string-concat arena op "'"))))
                                 (env-add-error env msg line col)
@@ -1285,9 +1294,9 @@
                                       ;; Still infer argument types for annotation coverage
                                       (infer-builtin-args env expr)
                                       (env-get-unknown-type env))
-                                    ;; May be an FFI function - infer args for annotation coverage
-                                    (do (infer-builtin-args env expr)
-                                        (env-get-unknown-type env)))))))))))))))))))
+                                      ;; May be an FFI function - infer args for annotation coverage
+                                      (do (infer-builtin-args env expr)
+                                          (env-get-unknown-type env))))))))))))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))
                            (line Int) (col Int))
@@ -2021,12 +2030,14 @@
             ((string-eq type-name "Void") (resolved-type-new arena 'rk-primitive "Void" (none) "void"))
             ;; Bytes - for binary data buffers
             ((string-eq type-name "Bytes") (resolved-type-new arena 'rk-primitive "Bytes" (none) "slop_bytes"))
-          ;; Unknown type - emit error (may be missing import)
-          (else
-            (let ((arena (env-arena env))
-                  (msg (string-concat arena "Unknown type: " type-name)))
-              (env-add-error env msg 0 0)
-              (env-get-generic-type env))))))))
+            ;; Check if it's a type parameter (e.g., T from @generic)
+            ((env-is-type-param env type-name)
+              (resolved-type-new arena 'rk-typevar type-name (none) "int64_t"))
+            ;; Unknown type - emit error (may be missing import)
+            (else
+              (let ((msg (string-concat arena "Unknown type: " type-name)))
+                (env-add-error env msg 0 0)
+                (env-get-generic-type env))))))))
 
   ;; ============================================================
   ;; Let Binding Support
@@ -2283,7 +2294,10 @@
     (@pre (is-form fn-form "fn"))
     (let ((fn-name (get-fn-name fn-form))
           (fn-line (sexpr-line fn-form))
-          (fn-col (sexpr-col fn-form)))
+          (fn-col (sexpr-col fn-form))
+          ;; Extract @generic type params and store in env for type checking
+          (type-params (find-fn-type-params (env-arena env) fn-form)))
+      (env-set-fn-type-params env type-params)
       (env-push-scope env)
       ;; Extract and bind parameters using helper functions to avoid cross-module issues
       ;; fn-form is (fn name ((param Type) ...) ...)
@@ -2321,6 +2335,8 @@
                            (_ (env-get-unit-type env)))))
         ;; Check return type matches declared spec
         (check-return-type env fn-form fn-name result-type fn-line fn-col)
+        ;; Clear type params and pop scope
+        (env-clear-fn-type-params env)
         (env-pop-scope env)
         result-type)))
 

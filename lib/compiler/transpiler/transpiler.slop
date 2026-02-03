@@ -54,6 +54,67 @@
   (import parser (pretty-print))
 
   ;; ============================================================
+  ;; Generic Function Info
+  ;; ============================================================
+
+  ;; Helper record for extract-generic-info return
+  (type GenericInfo (record
+    (is-generic Bool)
+    (type-params (List String))))
+
+  (fn extract-generic-info ((arena Arena) (items (List (Ptr SExpr))))
+    (@intent "Extract @generic annotation info from function definition")
+    (@spec ((Arena (List (Ptr SExpr))) -> GenericInfo))
+    ;; Scan items looking for (@generic (T U ...))
+    (let ((len (list-len items))
+          (mut i 3)  ;; Start after fn, name, params
+          (result-is-generic false)
+          (result-type-params (list-new arena String)))
+      (while (< i len)
+        (match (list-get items i)
+          ((some item)
+            (match (deref item)
+              ((lst lst)
+                (let ((sub-items (. lst items)))
+                  (when (>= (list-len sub-items) 1)
+                    (match (list-get sub-items 0)
+                      ((some head)
+                        (match (deref head)
+                          ((sym sym)
+                            (when (string-eq (. sym name) "@generic")
+                              ;; Found @generic, extract type params from second element
+                              (when (>= (list-len sub-items) 2)
+                                (match (list-get sub-items 1)
+                                  ((some params-expr)
+                                    (match (deref params-expr)
+                                      ((lst params-lst)
+                                        ;; Extract each symbol from the params list
+                                        (let ((param-items (. params-lst items))
+                                              (param-len (list-len param-items))
+                                              (mut j 0))
+                                          (while (< j param-len)
+                                            (match (list-get param-items j)
+                                              ((some param)
+                                                (match (deref param)
+                                                  ((sym param-sym)
+                                                    (list-push result-type-params (. param-sym name)))
+                                                  (else (do))))
+                                              ((none) (do)))
+                                            (set! j (+ j 1)))))
+                                      ;; Single symbol like (@generic T) - unusual but handle it
+                                      ((sym single-sym)
+                                        (list-push result-type-params (. single-sym name)))
+                                      (else (do))))
+                                  ((none) (do))))))
+                          (else (do))))
+                      ((none) (do))))))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      ;; Return GenericInfo - is-generic is true if we found any type params
+      (GenericInfo (> (list-len result-type-params) 0) result-type-params)))
+
+  ;; ============================================================
   ;; Module Prescan
   ;; ============================================================
 
@@ -290,8 +351,13 @@
                   ;; If c-name differs from mangled-name, register alias
                   (when (not (string-eq c-name mangled-name))
                     (ctx-add-c-name-alias ctx (FuncCNameAlias fn-name mangled-name c-name)))
-                  ;; Register function with the clean name (c-name)
-                  (ctx-register-func ctx (FuncEntry fn-name c-name return-type slop-ret-type false returns-str param-types))
+                  ;; Check if function is generic and extract type params
+                  (let ((generic-info (extract-generic-info arena items))
+                        (is-generic (. generic-info is-generic))
+                        (type-params (. generic-info type-params))
+                        (no-source (Option (Ptr SExpr)) none))
+                    ;; Register function with the clean name (c-name)
+                    (ctx-register-func ctx (FuncEntry fn-name c-name return-type slop-ret-type false returns-str param-types is-generic type-params no-source)))
                   ;; Scan param types for List/Option generics
                   (prescan-fn-params ctx items)
                   ;; Check for Result type and other generics in @spec
@@ -845,8 +911,15 @@
                                                          ((none) false)))
                                               (ret-str (match existing-func
                                                          ((some entry) (. entry returns-string))
-                                                         ((none) false))))
-                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret ret-ptr ret-str param-types))))))
+                                                         ((none) false)))
+                                              (is-gen (match existing-func
+                                                        ((some entry) (. entry is-generic))
+                                                        ((none) false)))
+                                              (ty-params (match existing-func
+                                                           ((some entry) (. entry type-params))
+                                                           ((none) (list-new arena String))))
+                                              (no-source (Option (Ptr SExpr)) none))
+                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret ret-ptr ret-str param-types is-gen ty-params no-source))))))
                                   (else (do))))
                               ((none) (do)))
                             (set! j (+ j 1)))))
@@ -937,8 +1010,10 @@
                                          ((some ret-expr) (to-c-type-prefixed ctx ret-expr))
                                          ((none) ""))
                                        ""))
-                            (ret-is-string (string-eq ret-type "slop_string")))
-                        (ctx-register-func ctx (FuncEntry fn-name c-name ret-type "" true ret-is-string param-types))))
+                            (ret-is-string (string-eq ret-type "slop_string"))
+                            (empty-type-params (list-new arena String))
+                            (no-source (Option (Ptr SExpr)) none))
+                        (ctx-register-func ctx (FuncEntry fn-name c-name ret-type "" true ret-is-string param-types false empty-type-params no-source))))
                     (else (do))))
                 ((none) (do))))))
         (else (do)))))

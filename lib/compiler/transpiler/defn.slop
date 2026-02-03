@@ -127,6 +127,35 @@
               ((none) false)))))
       (else false)))
 
+  (fn has-generic-annotation ((items (List (Ptr SExpr))))
+    (@intent "Check if function definition has @generic annotation")
+    (@spec (((List (Ptr SExpr))) -> Bool))
+    ;; Scan items looking for (@generic ...)
+    (let ((len (list-len items))
+          (i 0)
+          (found false))
+      (while (and (< i len) (not found))
+        (match (list-get items i)
+          ((some item)
+            (match (deref item)
+              ((lst lst)
+                (let ((sub-items (. lst items)))
+                  (if (> (list-len sub-items) 0)
+                    (match (list-get sub-items 0)
+                      ((some head)
+                        (match (deref head)
+                          ((sym sym)
+                            (if (string-eq (. sym name) "@generic")
+                              (set! found true)
+                              unit))
+                          (else unit)))
+                      ((none) unit))
+                    unit)))
+              (else unit)))
+          ((none) unit))
+        (set! i (+ i 1)))
+      found))
+
   ;; ============================================================
   ;; Type Expression Helpers
   ;; ============================================================
@@ -927,9 +956,11 @@
                                             base-name
                                             (ctx-prefix-type ctx base-name)))
                             ;; Check for :c-name override
-                            (fn-name (extract-fn-c-name arena items mangled-name))
+                            (base-fn-name (extract-fn-c-name arena items mangled-name))
+                            ;; Generic functions keep base name - type params are for checking only
+                            (fn-name base-fn-name)
                             ;; Determine if this is a public API function (has :c-name override)
-                            (is-public-api (not (string-eq fn-name mangled-name))))
+                            (is-public-api (not (string-eq base-fn-name mangled-name))))
                         ;; Get params
                         (match (list-get items 2)
                           ((some params-expr)
@@ -1013,8 +1044,10 @@
         (ctx-emit ctx "")
         ;; Register function with parameter types for typed none handling
         (let ((param-types (collect-param-types ctx params-expr))
-              (slop-ret-type (get-slop-return-type ctx items)))
-          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return slop-ret-type false (string-eq actual-return "slop_string") param-types)))
+              (slop-ret-type (get-slop-return-type ctx items))
+              (empty-type-params (list-new arena String))
+              (no-source (Option (Ptr SExpr)) none))
+          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return slop-ret-type false (string-eq actual-return "slop_string") param-types false empty-type-params no-source)))
         ;; Clear current result type and return type
         (ctx-clear-current-result-type ctx)
         (ctx-clear-current-return-type ctx))))
