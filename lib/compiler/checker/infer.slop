@@ -760,6 +760,44 @@
         ((string-eq op "with-arena")
           (infer-with-arena-expr env expr))
 
+        ;; (fn ((param Type)...) body...) - lambda expression
+        ((string-eq op "fn")
+          ;; Push scope for lambda parameters
+          (env-push-scope env)
+          ;; Bind parameters - lambda params start at index 1
+          (when (>= len 2)
+            (match (list-get items 1)
+              ((some params-expr)
+                (when (sexpr-is-list params-expr)
+                  (let ((num-params (sexpr-list-len params-expr)))
+                    (for (k 0 num-params)
+                      (match (sexpr-list-get params-expr k)
+                        ((some param-form)
+                          (bind-param-from-form env param-form))
+                        ((none) (do)))))))
+              ((none) (do))))
+          ;; Infer body type - body starts at index 2
+          (let ((body-type (if (> len 2)
+                             (do
+                               ;; Infer all body expressions, last one is the return type
+                               (for (bi 2 (- len 1))
+                                 (match (list-get items bi)
+                                   ((some body-expr)
+                                     (when (not (is-annotation-expr body-expr))
+                                       (let ((_ (infer-expr env body-expr))) (do))))
+                                   ((none) (do))))
+                               (match (list-get items (- len 1))
+                                 ((some last-expr)
+                                   (if (is-annotation-expr last-expr)
+                                     (env-get-unit-type env)
+                                     (infer-expr env last-expr)))
+                                 ((none) (env-get-unit-type env))))
+                             (env-get-unit-type env))))
+            (env-pop-scope env)
+            ;; Return a function type for the lambda
+            (let ((arena (env-arena env)))
+              (resolved-type-new arena 'rk-function "Fn" (none) "void*"))))
+
         ;; (set! var expr) - infer expr for error checking, returns Unit
         ((string-eq op "set!")
           (do (cond
