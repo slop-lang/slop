@@ -2125,39 +2125,56 @@
       result-type))
 
   (fn infer-with-arena-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
-    (@intent "Infer type of with-arena expression, binding 'arena' variable")
+    (@intent "Infer type of with-arena expression, binding arena variable")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (@pre (!= expr nil))
-    ;; (with-arena size body...) - size at index 1, body starts at index 2
-    ;; Validate size argument
+    ;; (with-arena size body...) - unnamed, binds 'arena', size at 1, body at 2+
+    ;; (with-arena :as name size body...) - named, binds 'name', size at 3, body at 4+
     (let ((len (sexpr-list-len expr)))
       (if (< len 2)
         (do
           (env-add-error env "with-arena requires size argument" (sexpr-line expr) (sexpr-col expr))
           (env-get-unit-type env))
-        (do
-          ;; Check for negative literal
-          (match (sexpr-list-get expr 1)
-            ((some size-expr)
-              (match (deref size-expr)
-                ((num num)
-                  (if (<= (. num int-value) 0)
-                    (env-add-error env "with-arena size must be positive" (. num line) (. num col))
-                    (do)))
-                (else (do))))
-            ((none) (do)))
-          ;; Proceed with normal type inference
-          (env-push-scope env)
-          (env-bind-var env "arena" (env-get-arena-type env))
-          (let ((mut result-type (Ptr ResolvedType) (env-get-unit-type env)))
-            (for (i 2 len)
-              (match (sexpr-list-get expr i)
-                ((some body-expr)
-                  (set! result-type (infer-expr env body-expr)))
-                ((none) (do))))
-            (env-pop-scope env)
-            result-type)))))
+        ;; Detect :as form - check if items[1] is symbol ":as"
+        (let ((is-named (match (sexpr-list-get expr 1)
+                          ((some item1)
+                            (string-eq (sexpr-get-symbol-name item1) ":as"))
+                          ((none) false)))
+              (arena-name (if is-named
+                            (match (sexpr-list-get expr 2)
+                              ((some name-expr) (sexpr-get-symbol-name name-expr))
+                              ((none) "arena"))
+                            "arena"))
+              (size-idx (if is-named 3 1))
+              (body-start (if is-named 4 2)))
+          ;; Validate minimum length for named form
+          (if (and is-named (< len 4))
+            (do
+              (env-add-error env "with-arena :as requires name and size" (sexpr-line expr) (sexpr-col expr))
+              (env-get-unit-type env))
+            (do
+              ;; Check for negative literal at size-idx
+              (match (sexpr-list-get expr size-idx)
+                ((some size-expr)
+                  (match (deref size-expr)
+                    ((num num)
+                      (if (<= (. num int-value) 0)
+                        (env-add-error env "with-arena size must be positive" (. num line) (. num col))
+                        (do)))
+                    (else (do))))
+                ((none) (do)))
+              ;; Proceed with normal type inference
+              (env-push-scope env)
+              (env-bind-var env arena-name (env-get-arena-type env))
+              (let ((mut result-type (Ptr ResolvedType) (env-get-unit-type env)))
+                (for (i body-start len)
+                  (match (sexpr-list-get expr i)
+                    ((some body-expr)
+                      (set! result-type (infer-expr env body-expr)))
+                    ((none) (do))))
+                (env-pop-scope env)
+                result-type)))))))
 
   (fn get-fn-name ((fn-form (Ptr SExpr)))
     (@intent "Extract function name from fn form")

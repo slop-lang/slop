@@ -17,6 +17,7 @@
     is-stmt-form)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
+  (import parser (sexpr-get-symbol-name))
   (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
@@ -737,13 +738,14 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr) Bool) -> Unit))
     (@pre {ctx != nil})
     (@pre {expr != nil})
-    ;; (with-arena size body...)
+    ;; (with-arena size body...) - unnamed form, binds 'arena'
+    ;; (with-arena :as name size body...) - named form, binds 'name'
     ;; Generates:
     ;; {
-    ;;     slop_arena _arena = slop_arena_new(size);
-    ;;     slop_arena* arena = &_arena;
+    ;;     slop_arena _arena_<name> = slop_arena_new(size);
+    ;;     slop_arena* <name> = &_arena_<name>;
     ;;     <body statements>
-    ;;     slop_arena_free(arena);
+    ;;     slop_arena_free(<name>);
     ;; }
     (match (deref expr)
       ((lst lst)
@@ -751,44 +753,63 @@
               (len (list-len items)))
           (if (< len 2)
             (ctx-add-error-at ctx "invalid with-arena: need size" (ctx-sexpr-line expr) (ctx-sexpr-col expr))
-            (do
-              ;; Open block
-              (ctx-emit ctx "{")
-              (ctx-indent ctx)
-              (ctx-push-scope ctx)
-              ;; Get size expression
-              (match (list-get items 1)
-                ((some size-expr)
-                  (let ((size-c (transpile-expr ctx size-expr)))
-                    ;; Debug guard: check size > 0
-                    (ctx-emit ctx "#ifdef SLOP_DEBUG")
-                    (ctx-emit ctx (ctx-str3 ctx "SLOP_PRE((" size-c ") > 0, \"with-arena size must be positive\");"))
-                    (ctx-emit ctx "#endif")
-                    ;; Emit arena creation
-                    (ctx-emit ctx (ctx-str3 ctx "slop_arena _arena = slop_arena_new(" size-c ");"))
-                    ;; Debug guard: check allocation succeeded
-                    (ctx-emit ctx "#ifdef SLOP_DEBUG")
-                    (ctx-emit ctx "SLOP_PRE(_arena.base != NULL, \"arena allocation failed\");")
-                    (ctx-emit ctx "#endif")
-                    (ctx-emit ctx "slop_arena* arena = &_arena;")))
-                ((none) (ctx-add-error-at ctx "missing size" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))
-              ;; Bind arena variable in scope
-              (ctx-bind-var ctx (VarEntry "arena" "arena" "slop_arena*" "" true false false "" ""))
-              ;; Process body statements (items 2 onwards)
-              (let ((mut i 2))
-                (while (< i len)
-                  (match (list-get items i)
-                    ((some body-expr)
-                      (let ((is-last (== i (- len 1))))
-                        (transpile-stmt ctx body-expr (and is-return is-last))))
-                    ((none) (do)))
-                  (set! i (+ i 1))))
-              ;; Free arena
-              (ctx-emit ctx "slop_arena_free(arena);")
-              ;; Close scope
-              (ctx-pop-scope ctx)
-              (ctx-dedent ctx)
-              (ctx-emit ctx "}")))))
+            ;; Detect :as form - check if items[1] is symbol ":as"
+            (let ((is-named (match (list-get items 1)
+                              ((some item1)
+                                (string-eq (sexpr-get-symbol-name item1) ":as"))
+                              ((none) false)))
+                  (arena-name (if is-named
+                                (match (list-get items 2)
+                                  ((some name-expr) (sexpr-get-symbol-name name-expr))
+                                  ((none) "arena"))
+                                "arena"))
+                  (size-idx (if is-named 3 1))
+                  (body-start (if is-named 4 2))
+                  ;; C local var: _arena for unnamed (backward compat), _arena_<name> for named
+                  (c-local (if is-named
+                             (string-concat (. (deref ctx) arena) "_arena_" arena-name)
+                             "_arena")))
+              ;; Validate minimum length for named form
+              (if (and is-named (< len 4))
+                (ctx-add-error-at ctx "with-arena :as requires name and size" (ctx-sexpr-line expr) (ctx-sexpr-col expr))
+                (do
+                  ;; Open block
+                  (ctx-emit ctx "{")
+                  (ctx-indent ctx)
+                  (ctx-push-scope ctx)
+                  ;; Get size expression
+                  (match (list-get items size-idx)
+                    ((some size-expr)
+                      (let ((size-c (transpile-expr ctx size-expr)))
+                        ;; Debug guard: check size > 0
+                        (ctx-emit ctx "#ifdef SLOP_DEBUG")
+                        (ctx-emit ctx (ctx-str3 ctx "SLOP_PRE((" size-c ") > 0, \"with-arena size must be positive\");"))
+                        (ctx-emit ctx "#endif")
+                        ;; Emit arena creation
+                        (ctx-emit ctx (ctx-str5 ctx "slop_arena " c-local " = slop_arena_new(" size-c ");"))
+                        ;; Debug guard: check allocation succeeded
+                        (ctx-emit ctx "#ifdef SLOP_DEBUG")
+                        (ctx-emit ctx (ctx-str3 ctx "SLOP_PRE(" c-local ".base != NULL, \"arena allocation failed\");"))
+                        (ctx-emit ctx "#endif")
+                        (ctx-emit ctx (ctx-str5 ctx "slop_arena* " arena-name " = &" c-local ";"))))
+                    ((none) (ctx-add-error-at ctx "missing size" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))
+                  ;; Bind arena variable in scope
+                  (ctx-bind-var ctx (VarEntry arena-name arena-name "slop_arena*" "" true false false "" ""))
+                  ;; Process body statements
+                  (let ((mut i body-start))
+                    (while (< i len)
+                      (match (list-get items i)
+                        ((some body-expr)
+                          (let ((is-last (== i (- len 1))))
+                            (transpile-stmt ctx body-expr (and is-return is-last))))
+                        ((none) (do)))
+                      (set! i (+ i 1))))
+                  ;; Free arena
+                  (ctx-emit ctx (ctx-str3 ctx "slop_arena_free(" arena-name ");"))
+                  ;; Close scope
+                  (ctx-pop-scope ctx)
+                  (ctx-dedent ctx)
+                  (ctx-emit ctx "}")))))))
       (else (ctx-add-error-at ctx "invalid with-arena" (ctx-sexpr-line expr) (ctx-sexpr-col expr)))))
 
   ;; ============================================================

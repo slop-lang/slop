@@ -342,7 +342,16 @@ tier-4: 70B+ models   ; Complex algorithms, multi-step logic
 ### Scoped Arena
 (with-arena 4096
   (let ((x (arena-alloc arena size)))
-    ...))  ; Arena auto-freed at end
+    ...))  ; Arena auto-freed at end, binds 'arena'
+
+;; Named arena - binds custom name instead of 'arena'
+(with-arena :as scratch 4096
+  (arena-alloc scratch 256))
+
+;; Nested named arenas avoid shadowing
+(with-arena :as output 8192
+  (with-arena :as temp 4096
+    (build-result output (parse temp input))))
 
 ### Pointer Types
 (Ptr T)                          ; Borrowed, non-owning
@@ -414,7 +423,8 @@ Language primitives that are always available without imports.
 (arena-new size) -> Arena
 (arena-alloc arena size) -> (Ptr U8)
 (arena-free arena) -> Unit
-(with-arena size body) -> T              ; Scoped arena, auto-freed
+(with-arena size body) -> T              ; Scoped arena, binds 'arena'
+(with-arena :as name size body) -> T     ; Named arena, binds 'name'
 
 ### Strings
 (string-new arena cstr) -> String

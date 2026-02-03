@@ -271,6 +271,7 @@ class BuildConfig:
     library_paths: list = None
     test_cache: str = ".slop-test"  # Directory for test artifacts
     sources: list = None  # Source files/directories for library builds
+    arena_cap: int = 0  # Arena allocation cap in bytes (0 = use runtime default)
 
     def __post_init__(self):
         if self.include is None:
@@ -359,6 +360,7 @@ def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Opti
         library_paths=link_data.get('library_paths', []),
         test_cache=test_data.get('cache', '.slop-test'),
         sources=build_data.get('sources', []),
+        arena_cap=build_data.get('arena_cap', 0),
     ) if build_data else None
 
     # Extract test config

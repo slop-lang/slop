@@ -2429,6 +2429,7 @@ def cmd_build(args):
             output = args.output or build_cfg.output or default_output
             include_paths = (args.include or []) + build_cfg.include
             debug = args.debug or build_cfg.debug
+            arena_cap = getattr(args, 'arena_cap', 0) or build_cfg.arena_cap
             # Map build_type to library flag format
             if build_cfg.build_type == "static":
                 library_mode = getattr(args, 'library', None) or "static"
@@ -2442,6 +2443,7 @@ def cmd_build(args):
             output = args.output or (input_path.stem if input_path else "output")
             include_paths = args.include or []
             debug = args.debug
+            arena_cap = getattr(args, 'arena_cap', 0)
             library_mode = getattr(args, 'library', None)
             link_libraries = []
             link_paths = []
@@ -2453,7 +2455,7 @@ def cmd_build(args):
                 include_paths.append(str(stdlib_path))
 
         # For sources-based library build, force library mode if not set
-        if source_files and not library_mode:
+        if source_files and not library_mode and build_cfg.build_type != "executable":
             library_mode = "static"
             print(f"  Defaulting to static library for sources-based build")
 
@@ -2703,6 +2705,8 @@ def cmd_build(args):
                         if debug:
                             compile_cmd.insert(1, "-g")
                             compile_cmd.insert(2, "-DSLOP_DEBUG")
+                        if arena_cap:
+                            compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
                         result = subprocess.run(compile_cmd, capture_output=True, text=True)
                         if result.returncode != 0:
                             print(f"Compilation failed:\n{result.stderr}")
@@ -2725,6 +2729,8 @@ def cmd_build(args):
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    if arena_cap:
+                        compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
                     result = subprocess.run(compile_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
                         print(f"Compilation failed:\n{result.stderr}")
@@ -2737,6 +2743,8 @@ def cmd_build(args):
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    if arena_cap:
+                        compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
                     result = subprocess.run(compile_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
                         print(f"Compilation failed:\n{result.stderr}")
@@ -2866,6 +2874,8 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if arena_cap:
+                compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -2892,6 +2902,8 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if arena_cap:
+                compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -2913,6 +2925,8 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if arena_cap:
+                compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
 
@@ -4640,6 +4654,8 @@ def main():
     p.add_argument('-I', '--include', action='append',
                    help='Add search path for imports (can be repeated)')
     p.add_argument('--debug', action='store_true')
+    p.add_argument('--arena-cap', type=int, default=0,
+                   help='Arena allocation cap in bytes (default: 256MB)')
     p.add_argument('--library', choices=['static', 'shared'],
                    help='Build as library instead of executable')
     p.add_argument('--python', action='store_true',

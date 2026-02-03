@@ -31,6 +31,13 @@
 #define SLOP_MAP_INITIAL_CAPACITY 16
 #endif
 
+#ifndef SLOP_ARENA_MAX_TOTAL_BYTES
+#define SLOP_ARENA_MAX_TOTAL_BYTES (256UL * 1024UL * 1024UL)  /* 256 MB */
+#endif
+
+/* Global allocation tracking across all arenas */
+static size_t slop_global_allocated = 0;
+
 /* ============================================================
  * Contracts
  * ============================================================ */
@@ -85,15 +92,29 @@ typedef struct slop_arena {
     uint8_t* base;
     size_t offset;
     size_t capacity;
+    size_t total_allocated;   /* Total bytes across all arenas in chain */
     struct slop_arena* next;  /* For overflow arenas */
 } slop_arena;
 
 static inline slop_arena slop_arena_new(size_t capacity) {
+    /* Check global cap BEFORE allocating */
+    if (slop_global_allocated + capacity > SLOP_ARENA_MAX_TOTAL_BYTES) {
+        fprintf(stderr, "SLOP: arena allocation cap exceeded (%zu bytes). "
+                "Increase SLOP_ARENA_MAX_TOTAL_BYTES or reduce allocation.\n",
+                (size_t)SLOP_ARENA_MAX_TOTAL_BYTES);
+        abort();
+    }
+
     slop_arena arena;
     arena.base = (uint8_t*)malloc(capacity);
     arena.offset = 0;
     arena.capacity = (arena.base != NULL) ? capacity : 0;
+    arena.total_allocated = arena.capacity;  /* Keep for per-chain tracking */
     arena.next = NULL;
+
+    if (arena.base != NULL) {
+        slop_global_allocated += capacity;  /* Track globally */
+    }
     return arena;
 }
 
@@ -109,14 +130,32 @@ static inline void* slop_arena_alloc(slop_arena* arena, size_t size) {
         if (arena->next == NULL) {
             size_t new_cap = arena->capacity * 2;
             if (new_cap < size) new_cap = size * 2;
+
+            /* Check GLOBAL cap before allocating overflow */
+            if (slop_global_allocated + new_cap > SLOP_ARENA_MAX_TOTAL_BYTES) {
+                fprintf(stderr, "SLOP: arena allocation cap exceeded (%zu bytes). "
+                        "Increase SLOP_ARENA_MAX_TOTAL_BYTES or reduce allocation.\n",
+                        (size_t)SLOP_ARENA_MAX_TOTAL_BYTES);
+                abort();
+            }
+
             arena->next = (slop_arena*)malloc(sizeof(slop_arena));
-            if (arena->next == NULL) return NULL;  /* malloc failed */
+            if (arena->next == NULL) {
+                fprintf(stderr, "SLOP: arena overflow malloc failed (requested %zu bytes).\n", sizeof(slop_arena));
+                abort();
+            }
+
+            /* Create overflow arena (slop_arena_new will increment global counter) */
             *arena->next = slop_arena_new(new_cap);
-            if (arena->next->base == NULL) {       /* inner malloc failed */
+            if (arena->next->base == NULL) {
+                fprintf(stderr, "SLOP: arena block malloc failed (requested %zu bytes).\n", new_cap);
                 free(arena->next);
                 arena->next = NULL;
-                return NULL;
+                abort();
             }
+
+            /* Propagate per-chain total */
+            arena->next->total_allocated = arena->total_allocated + new_cap;
         }
         return slop_arena_alloc(arena->next, size);
     }
@@ -130,11 +169,19 @@ static inline void slop_arena_free(slop_arena* arena) {
     if (arena->next) {
         slop_arena_free(arena->next);
         free(arena->next);
+        arena->next = NULL;
     }
+
+    /* Decrement global counter */
+    if (arena->base != NULL && arena->capacity > 0) {
+        slop_global_allocated -= arena->capacity;
+    }
+
     free(arena->base);
     arena->base = NULL;
     arena->offset = 0;
     arena->capacity = 0;
+    arena->total_allocated = 0;
 }
 
 static inline void slop_arena_reset(slop_arena* arena) {
@@ -144,6 +191,7 @@ static inline void slop_arena_reset(slop_arena* arena) {
         free(arena->next);
         arena->next = NULL;
     }
+    arena->total_allocated = arena->capacity;
 }
 
 /* ============================================================
@@ -629,12 +677,20 @@ static inline slop_set_elements_result slop_set_elements_raw(slop_arena* arena, 
  * Used for SLOP Map types with integer keys (e.g., Map PetId Pet).
  * ============================================================ */
 
+/* Entry states for hash map with tombstone support */
+typedef enum {
+    SLOP_GMAP_EMPTY = 0,      /* Never used - stops probing */
+    SLOP_GMAP_OCCUPIED = 1,   /* Contains valid key/value */
+    SLOP_GMAP_TOMBSTONE = 2   /* Deleted - continue probing */
+} slop_gmap_state;
+
 /* Generic map entry with fixed-size value storage */
 typedef struct slop_gmap_entry_t {
     int64_t gmap_key;
+    uint64_t gmap_hash;           /* cached hash value for O(1) lookup */
     uint8_t gmap_value[256];
     size_t gmap_value_size;
-    bool gmap_occupied;
+    slop_gmap_state gmap_state;   /* EMPTY, OCCUPIED, or TOMBSTONE */
 } slop_gmap_entry_t;
 
 typedef struct slop_gmap_t {
@@ -642,6 +698,43 @@ typedef struct slop_gmap_t {
     size_t gmap_cap;
     slop_gmap_entry_t* gmap_entries;
 } slop_gmap_t;
+
+/* Hash function for integer keys - splitmix64 (same as slop_hash_int) */
+static inline uint64_t _slop_gmap_hash(int64_t key) {
+    uint64_t x = (uint64_t)key;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+/* Grow and rehash the map when load factor exceeds 75% */
+static inline void _slop_gmap_grow(slop_gmap_t* m) {
+    size_t old_cap = m->gmap_cap;
+    slop_gmap_entry_t* old_entries = m->gmap_entries;
+
+    size_t new_cap = old_cap * 2;
+    m->gmap_entries = (slop_gmap_entry_t*)calloc(new_cap, sizeof(slop_gmap_entry_t));
+    m->gmap_cap = new_cap;
+    m->gmap_len = 0;
+
+    /* Rehash only occupied entries (tombstones are discarded) */
+    for (size_t i = 0; i < old_cap; i++) {
+        if (old_entries[i].gmap_state == SLOP_GMAP_OCCUPIED) {
+            uint64_t hash = old_entries[i].gmap_hash;
+            size_t idx = hash % new_cap;
+
+            for (size_t j = 0; j < new_cap; j++) {
+                size_t probe = (idx + j) % new_cap;
+                if (m->gmap_entries[probe].gmap_state == SLOP_GMAP_EMPTY) {
+                    m->gmap_entries[probe] = old_entries[i];
+                    m->gmap_len++;
+                    break;
+                }
+            }
+        }
+    }
+    free(old_entries);
+}
 
 /* Create empty generic map */
 static inline void* map_empty(void) {
@@ -652,25 +745,52 @@ static inline void* map_empty(void) {
     return m;
 }
 
-/* Check if key exists - use unique param name to avoid shadowing */
+/* Check if key exists - O(1) average using hash + linear probing */
 static inline bool map_has(void* gmap_ptr, int64_t gmap_lookup_key) {
     slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
-    for (size_t idx = 0; idx < m->gmap_len; idx++) {
-        if (m->gmap_entries[idx].gmap_occupied && m->gmap_entries[idx].gmap_key == gmap_lookup_key) {
+    if (m->gmap_cap == 0) return false;
+
+    uint64_t hash = _slop_gmap_hash(gmap_lookup_key);
+    size_t idx = hash % m->gmap_cap;
+
+    for (size_t i = 0; i < m->gmap_cap; i++) {
+        size_t probe = (idx + i) % m->gmap_cap;
+        slop_gmap_state state = m->gmap_entries[probe].gmap_state;
+        if (state == SLOP_GMAP_EMPTY) {
+            return false;  /* Empty slot = not found */
+        }
+        if (state == SLOP_GMAP_OCCUPIED &&
+            m->gmap_entries[probe].gmap_hash == hash &&
+            m->gmap_entries[probe].gmap_key == gmap_lookup_key) {
             return true;
         }
+        /* TOMBSTONE: continue probing */
     }
     return false;
 }
 
-/* Remove key (returns map for functional style) */
+/* Remove key - O(1) average using hash + linear probing with tombstone */
 static inline void* map_remove(void* gmap_ptr, int64_t gmap_lookup_key) {
     slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
-    for (size_t idx = 0; idx < m->gmap_len; idx++) {
-        if (m->gmap_entries[idx].gmap_occupied && m->gmap_entries[idx].gmap_key == gmap_lookup_key) {
-            m->gmap_entries[idx].gmap_occupied = false;
+    if (m->gmap_cap == 0) return m;
+
+    uint64_t hash = _slop_gmap_hash(gmap_lookup_key);
+    size_t idx = hash % m->gmap_cap;
+
+    for (size_t i = 0; i < m->gmap_cap; i++) {
+        size_t probe = (idx + i) % m->gmap_cap;
+        slop_gmap_state state = m->gmap_entries[probe].gmap_state;
+        if (state == SLOP_GMAP_EMPTY) {
+            return m;  /* Not found */
+        }
+        if (state == SLOP_GMAP_OCCUPIED &&
+            m->gmap_entries[probe].gmap_hash == hash &&
+            m->gmap_entries[probe].gmap_key == gmap_lookup_key) {
+            m->gmap_entries[probe].gmap_state = SLOP_GMAP_TOMBSTONE;
+            m->gmap_len--;
             return m;
         }
+        /* TOMBSTONE: continue probing */
     }
     return m;
 }
@@ -683,29 +803,59 @@ static inline void* map_remove(void* gmap_ptr, int64_t gmap_lookup_key) {
 static inline void* _slop_map_put_impl(void* gmap_ptr, int64_t gmap_k, const void* gmap_v, size_t gmap_vsz) {
     slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
 
-    /* Check if key exists - update in place */
-    for (size_t idx = 0; idx < m->gmap_len; idx++) {
-        if (m->gmap_entries[idx].gmap_occupied && m->gmap_entries[idx].gmap_key == gmap_k) {
-            memcpy(m->gmap_entries[idx].gmap_value, gmap_v, gmap_vsz);
-            m->gmap_entries[idx].gmap_value_size = gmap_vsz;
+    /* Grow if load factor > 75% */
+    if (m->gmap_len * 4 >= m->gmap_cap * 3) {
+        _slop_gmap_grow(m);
+    }
+
+    uint64_t hash = _slop_gmap_hash(gmap_k);
+    size_t idx = hash % m->gmap_cap;
+    size_t first_tombstone = (size_t)-1;  /* Track first tombstone for reuse */
+
+    for (size_t i = 0; i < m->gmap_cap; i++) {
+        size_t probe = (idx + i) % m->gmap_cap;
+        slop_gmap_state state = m->gmap_entries[probe].gmap_state;
+
+        if (state == SLOP_GMAP_EMPTY) {
+            /* Use first tombstone if found, otherwise use this empty slot */
+            size_t insert_at = (first_tombstone != (size_t)-1) ? first_tombstone : probe;
+            m->gmap_entries[insert_at].gmap_key = gmap_k;
+            m->gmap_entries[insert_at].gmap_hash = hash;
+            memcpy(m->gmap_entries[insert_at].gmap_value, gmap_v, gmap_vsz);
+            m->gmap_entries[insert_at].gmap_value_size = gmap_vsz;
+            m->gmap_entries[insert_at].gmap_state = SLOP_GMAP_OCCUPIED;
+            m->gmap_len++;
+            return m;
+        }
+
+        if (state == SLOP_GMAP_TOMBSTONE) {
+            /* Remember first tombstone for potential reuse */
+            if (first_tombstone == (size_t)-1) {
+                first_tombstone = probe;
+            }
+            continue;  /* Keep probing to check for existing key */
+        }
+
+        /* state == SLOP_GMAP_OCCUPIED */
+        if (m->gmap_entries[probe].gmap_hash == hash &&
+            m->gmap_entries[probe].gmap_key == gmap_k) {
+            /* Update existing entry */
+            memcpy(m->gmap_entries[probe].gmap_value, gmap_v, gmap_vsz);
+            m->gmap_entries[probe].gmap_value_size = gmap_vsz;
             return m;
         }
     }
 
-    /* Add new entry */
-    if (m->gmap_len >= m->gmap_cap) {
-        size_t new_cap = m->gmap_cap * 2;
-        m->gmap_entries = (slop_gmap_entry_t*)realloc(m->gmap_entries, new_cap * sizeof(slop_gmap_entry_t));
-        memset(m->gmap_entries + m->gmap_cap, 0, (new_cap - m->gmap_cap) * sizeof(slop_gmap_entry_t));
-        m->gmap_cap = new_cap;
+    /* Table is full (shouldn't happen with proper load factor) */
+    /* Use first tombstone if available */
+    if (first_tombstone != (size_t)-1) {
+        m->gmap_entries[first_tombstone].gmap_key = gmap_k;
+        m->gmap_entries[first_tombstone].gmap_hash = hash;
+        memcpy(m->gmap_entries[first_tombstone].gmap_value, gmap_v, gmap_vsz);
+        m->gmap_entries[first_tombstone].gmap_value_size = gmap_vsz;
+        m->gmap_entries[first_tombstone].gmap_state = SLOP_GMAP_OCCUPIED;
+        m->gmap_len++;
     }
-
-    m->gmap_entries[m->gmap_len].gmap_key = gmap_k;
-    memcpy(m->gmap_entries[m->gmap_len].gmap_value, gmap_v, gmap_vsz);
-    m->gmap_entries[m->gmap_len].gmap_value_size = gmap_vsz;
-    m->gmap_entries[m->gmap_len].gmap_occupied = true;
-    m->gmap_len++;
-
     return m;
 }
 
@@ -721,13 +871,28 @@ typedef struct {
 static inline slop_gmap_option_raw _slop_map_get_raw(void* gmap_ptr, int64_t gmap_k) {
     slop_gmap_option_raw result = {1, {{0}}}; /* tag=1 means none */
     slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
+    if (m->gmap_cap == 0) return result;
 
-    for (size_t idx = 0; idx < m->gmap_len; idx++) {
-        if (m->gmap_entries[idx].gmap_occupied && m->gmap_entries[idx].gmap_key == gmap_k) {
-            result.tag = 0; /* tag=0 means some */
-            memcpy(result.data.some, m->gmap_entries[idx].gmap_value, m->gmap_entries[idx].gmap_value_size);
-            break;
+    uint64_t hash = _slop_gmap_hash(gmap_k);
+    size_t idx = hash % m->gmap_cap;
+
+    for (size_t i = 0; i < m->gmap_cap; i++) {
+        size_t probe = (idx + i) % m->gmap_cap;
+        slop_gmap_state state = m->gmap_entries[probe].gmap_state;
+
+        if (state == SLOP_GMAP_EMPTY) {
+            return result;  /* Not found */
         }
+
+        if (state == SLOP_GMAP_OCCUPIED &&
+            m->gmap_entries[probe].gmap_hash == hash &&
+            m->gmap_entries[probe].gmap_key == gmap_k) {
+            result.tag = 0; /* tag=0 means some */
+            memcpy(result.data.some, m->gmap_entries[probe].gmap_value,
+                   m->gmap_entries[probe].gmap_value_size);
+            return result;
+        }
+        /* TOMBSTONE: continue probing */
     }
     return result;
 }
@@ -739,43 +904,37 @@ typedef struct { uint8_t* data; size_t len; size_t cap; } slop_gmap_list;
 
 static inline slop_gmap_list _slop_map_values_raw(void* gmap_ptr, size_t value_size) {
     slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
-    size_t count = 0;
-    for (size_t idx = 0; idx < m->gmap_len; idx++) {
-        if (m->gmap_entries[idx].gmap_occupied) count++;
-    }
-    if (count == 0) {
+    if (m->gmap_len == 0) {
         return (slop_gmap_list){NULL, 0, 0};
     }
-    uint8_t* data = (uint8_t*)malloc(count * value_size);
+    uint8_t* data = (uint8_t*)malloc(m->gmap_len * value_size);
     size_t write_idx = 0;
-    for (size_t idx = 0; idx < m->gmap_len; idx++) {
-        if (m->gmap_entries[idx].gmap_occupied) {
+    /* Scan all slots since entries are scattered via hash */
+    for (size_t idx = 0; idx < m->gmap_cap; idx++) {
+        if (m->gmap_entries[idx].gmap_state == SLOP_GMAP_OCCUPIED) {
             memcpy(data + (write_idx * value_size),
                    m->gmap_entries[idx].gmap_value, value_size);
             write_idx++;
         }
     }
-    return (slop_gmap_list){data, count, count};
+    return (slop_gmap_list){data, m->gmap_len, m->gmap_len};
 }
 
 /* Map keys - returns list of all int64_t keys */
 static inline slop_list_int _slop_map_keys_raw(void* gmap_ptr) {
     slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
-    size_t count = 0;
-    for (size_t idx = 0; idx < m->gmap_len; idx++) {
-        if (m->gmap_entries[idx].gmap_occupied) count++;
-    }
-    if (count == 0) {
+    if (m->gmap_len == 0) {
         return (slop_list_int){0, 0, NULL};
     }
-    int64_t* data = (int64_t*)malloc(count * sizeof(int64_t));
+    int64_t* data = (int64_t*)malloc(m->gmap_len * sizeof(int64_t));
     size_t write_idx = 0;
-    for (size_t idx = 0; idx < m->gmap_len; idx++) {
-        if (m->gmap_entries[idx].gmap_occupied) {
+    /* Scan all slots since entries are scattered via hash */
+    for (size_t idx = 0; idx < m->gmap_cap; idx++) {
+        if (m->gmap_entries[idx].gmap_state == SLOP_GMAP_OCCUPIED) {
             data[write_idx++] = m->gmap_entries[idx].gmap_key;
         }
     }
-    return (slop_list_int){count, count, data};
+    return (slop_list_int){m->gmap_len, m->gmap_len, data};
 }
 
 static inline slop_list_int map_keys(void* m) {

@@ -1,0 +1,12 @@
+;; Test: Named arena with missing arguments - should produce error
+;; Expected error: with-arena :as requires at least 4 arguments (with-arena :as name size body)
+
+(module error-arena-named-missing-args
+  (export bad)
+
+  (fn bad ()
+    (@intent "with-arena :as with insufficient args")
+    (@spec (() -> Int))
+    (with-arena :as scratch
+      42))
+)

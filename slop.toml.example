@@ -21,6 +21,7 @@ output = "build/myapp"         # Output path (binary, .a, or .so/.dylib)
 include = ["src", "lib"]       # Search paths for module imports (-I)
 type = "executable"            # "executable" (default), "static", or "shared"
 debug = false                  # Include debug symbols and SLOP_DEBUG
+# arena_cap = 268435456        # Arena allocation cap in bytes (default: 256MB)
 
 [build.link]
 libraries = []                 # Libraries to link (-l flags)

@@ -242,6 +242,71 @@
       42))
 
   ;; ============================================================
+  ;; Test 21: Named arena with :as
+  ;; ============================================================
+  (fn test-named-arena ()
+    (@intent "Named arena using :as keyword")
+    (@spec (() -> Int))
+    (with-arena :as scratch 1024
+      (let ((buf (arena-alloc scratch 256)))
+        (if (!= buf nil) 1 0))))
+
+  ;; ============================================================
+  ;; Test 22: Nested named arenas with different names
+  ;; ============================================================
+  (fn test-nested-named-arenas ()
+    (@intent "Nested arenas with different names")
+    (@spec (() -> Int))
+    (with-arena :as outer 2048
+      (let ((buf1 (arena-alloc outer 100)))
+        (with-arena :as inner 1024
+          (let ((buf2 (arena-alloc inner 50)))
+            (if (and (!= buf1 nil) (!= buf2 nil))
+              1
+              0))))))
+
+  ;; ============================================================
+  ;; Test 23: Named arena passed to function
+  ;; ============================================================
+  (fn helper-alloc-named ((a Arena))
+    (@intent "Helper that takes arena parameter")
+    (@spec ((Arena) -> (Ptr U8)))
+    (arena-alloc a 100))
+
+  (fn test-named-arena-pass ()
+    (@intent "Pass named arena to another function")
+    (@spec (() -> Int))
+    (with-arena :as scratch 1024
+      (let ((buf (helper-alloc-named scratch)))
+        (if (!= buf nil) 1 0))))
+
+  ;; ============================================================
+  ;; Test 24: Mixed named and unnamed arenas
+  ;; ============================================================
+  (fn test-mixed-arenas ()
+    (@intent "Nested unnamed inside named arena")
+    (@spec (() -> Int))
+    (with-arena :as outer 2048
+      (let ((buf1 (arena-alloc outer 100)))
+        (with-arena 1024
+          (let ((buf2 (arena-alloc arena 50)))
+            (if (and (!= buf1 nil) (!= buf2 nil))
+              1
+              0))))))
+
+  ;; ============================================================
+  ;; Test 25: Same-name shadowing in nested arenas
+  ;; ============================================================
+  (fn test-arena-shadowing ()
+    (@intent "Inner arena shadows outer with same name")
+    (@spec (() -> Int))
+    (with-arena :as scratch 2048
+      (let ((outer-buf (arena-alloc scratch 100)))
+        (with-arena :as scratch 1024
+          (let ((inner-buf (arena-alloc scratch 50)))
+            (if (!= inner-buf nil) 1 0))))))
+
+  ;; ============================================================
   ;; Main test runner
   ;; ============================================================
   (fn main ()
@@ -348,6 +413,31 @@
       (if (== (test-arena-param-size 4) 42)
         (println "Test 20 (param size): PASS")
         (println "Test 20 (param size): FAIL"))
+
+      ;; Test named arena
+      (if (== (test-named-arena) 1)
+        (println "Test 21 (named arena): PASS")
+        (println "Test 21 (named arena): FAIL"))
+
+      ;; Test nested named arenas
+      (if (== (test-nested-named-arenas) 1)
+        (println "Test 22 (nested named): PASS")
+        (println "Test 22 (nested named): FAIL"))
+
+      ;; Test named arena pass
+      (if (== (test-named-arena-pass) 1)
+        (println "Test 23 (named pass): PASS")
+        (println "Test 23 (named pass): FAIL"))
+
+      ;; Test mixed arenas
+      (if (== (test-mixed-arenas) 1)
+        (println "Test 24 (mixed): PASS")
+        (println "Test 24 (mixed): FAIL"))
+
+      ;; Test arena shadowing
+      (if (== (test-arena-shadowing) 1)
+        (println "Test 25 (shadowing): PASS")
+        (println "Test 25 (shadowing): FAIL"))
 
       (println "All tests complete!")
       0))

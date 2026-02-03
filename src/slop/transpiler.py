@@ -3864,18 +3864,39 @@ class Transpiler:
         self.emit("}")
 
     def transpile_with_arena(self, expr: SList, is_return: bool):
-        """Transpile with-arena: (with-arena size body)"""
-        size = self.transpile_expr(expr[1])
+        """Transpile with-arena
+
+        Supports two forms:
+        - (with-arena size body...) - binds 'arena', uses _arena as C local
+        - (with-arena :as name size body...) - binds 'name', uses _arena_<name> as C local
+        """
+        # Detect :as form
+        is_named = (len(expr.items) >= 2 and
+                    isinstance(expr.items[1], Symbol) and
+                    expr.items[1].name == ':as')
+
+        if is_named:
+            arena_name = expr.items[2].name if isinstance(expr.items[2], Symbol) else 'arena'
+            size_idx = 3
+            body_start = 4
+            c_local = f"_arena_{arena_name}"
+        else:
+            arena_name = 'arena'
+            size_idx = 1
+            body_start = 2
+            c_local = "_arena"
+
+        size = self.transpile_expr(expr[size_idx])
         self.emit("{")
         self.indent += 1
-        self.emit(f"slop_arena _arena = slop_arena_new({size});")
-        self.emit(f"slop_arena* arena = &_arena;")
+        self.emit(f"slop_arena {c_local} = slop_arena_new({size});")
+        self.emit(f"slop_arena* {arena_name} = &{c_local};")
 
-        for j, item in enumerate(expr.items[2:]):
-            is_last = (j == len(expr.items) - 3)
+        for j, item in enumerate(expr.items[body_start:]):
+            is_last = (j == len(expr.items) - body_start - 1)
             self.transpile_statement(item, is_return and is_last)
 
-        self.emit("slop_arena_free(arena);")
+        self.emit(f"slop_arena_free({arena_name});")
         self.indent -= 1
         self.emit("}")
 
@@ -4056,10 +4077,24 @@ class Transpiler:
 
                 # With-arena as expression
                 if op == 'with-arena':
-                    size = self.transpile_expr(expr[1])
-                    body = expr[2] if len(expr) > 2 else Number(0)
+                    # Detect :as form
+                    is_named = (len(expr.items) >= 2 and
+                                isinstance(expr.items[1], Symbol) and
+                                expr.items[1].name == ':as')
+                    if is_named:
+                        arena_name = expr.items[2].name if isinstance(expr.items[2], Symbol) else 'arena'
+                        size_idx = 3
+                        body_idx = 4
+                        c_local = f"_arena_{arena_name}"
+                    else:
+                        arena_name = 'arena'
+                        size_idx = 1
+                        body_idx = 2
+                        c_local = "_arena"
+                    size = self.transpile_expr(expr[size_idx])
+                    body = expr[body_idx] if len(expr) > body_idx else Number(0)
                     body_code = self.transpile_expr(body)
-                    return f"({{ slop_arena _arena = slop_arena_new({size}); slop_arena* arena = &_arena; __auto_type _result = {body_code}; slop_arena_free(&_arena); _result; }})"
+                    return f"({{ slop_arena {c_local} = slop_arena_new({size}); slop_arena* {arena_name} = &{c_local}; __auto_type _result = {body_code}; slop_arena_free({arena_name}); _result; }})"
 
                 # Do as expression (sequence, returns last)
                 if op == 'do':
@@ -4160,21 +4195,27 @@ class Transpiler:
                                 return e[2][1]
                         return None
 
+                    def _wrap_alloc_checked(alloc_expr):
+                        return (f'({{ __auto_type _alloc = {alloc_expr};'
+                                f' if (_alloc == NULL) {{ fprintf(stderr,'
+                                f' "SLOP: arena alloc failed at %s:%d\\n",'
+                                f' __FILE__, __LINE__); abort(); }} _alloc; }})')
+
                     type_ref = extract_type_from_sizeof(size_expr)
                     if type_ref:
                         # Get the C type
                         c_type = self.to_c_type(type_ref)
                         size = self.transpile_expr(size_expr)
-                        return f"({c_type}*)slop_arena_alloc({arena}, {size})"
+                        return _wrap_alloc_checked(f"({c_type}*)slop_arena_alloc({arena}, {size})")
                     elif isinstance(size_expr, Symbol) and size_expr.name in self.types:
                         # Known type name: (arena-alloc arena TypeName) -> alloc sizeof(Type)
                         c_type = self.to_c_type(size_expr)
-                        return f"(({c_type}*)slop_arena_alloc({arena}, sizeof({c_type})))"
+                        return _wrap_alloc_checked(f"(({c_type}*)slop_arena_alloc({arena}, sizeof({c_type})))")
                     else:
                         # No type info available - default to uint8_t* for byte-level access
                         # This allows (@ buf i) to work without void* indexing errors
                         size = self.transpile_expr(size_expr)
-                        return f"(uint8_t*)slop_arena_alloc({arena}, {size})"
+                        return _wrap_alloc_checked(f"(uint8_t*)slop_arena_alloc({arena}, {size})")
 
                 if op == 'make-scoped':
                     # (make-scoped Type count) -> malloc allocation with auto-cleanup

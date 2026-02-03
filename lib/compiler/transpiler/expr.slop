@@ -85,6 +85,17 @@
         (String buf (cast U64 out-pos)))))
 
   ;; ============================================================
+  ;; Arena Alloc NULL Check Wrapper
+  ;; ============================================================
+
+  (fn wrap-arena-alloc-checked ((ctx (Ptr TranspileContext)) (alloc-expr String))
+    (@intent "Wrap arena alloc expression with NULL check and abort")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (let ((prefix (ctx-str ctx "({ __auto_type _alloc = " alloc-expr))
+          (suffix "; if (_alloc == NULL) { fprintf(stderr, \"SLOP: arena alloc failed at %s:%d\\n\", __FILE__, __LINE__); abort(); } _alloc; })"))
+      (ctx-str ctx prefix suffix)))
+
+  ;; ============================================================
   ;; Operator Classification
   ;; ============================================================
 
@@ -1977,17 +1988,17 @@
                                           ;; Known type - generate sizeof(prefixed_type)
                                           ;; Output: ((TYPE*)slop_arena_alloc(arena, sizeof(TYPE)))
                                           (let ((c-type (. entry c-name)))
-                                            (ctx-str ctx "((" (ctx-str ctx c-type (ctx-str ctx "*)slop_arena_alloc(" (ctx-str ctx arena-c (ctx-str ctx ", sizeof(" (ctx-str ctx c-type ")))"))))))))
+                                            (wrap-arena-alloc-checked ctx (ctx-str ctx "((" (ctx-str ctx c-type (ctx-str ctx "*)slop_arena_alloc(" (ctx-str ctx arena-c (ctx-str ctx ", sizeof(" (ctx-str ctx c-type ")))")))))))))
                                         ((none)
                                           ;; Not a registered type - use normal transpilation
                                           (let ((size-c (transpile-expr ctx size-expr))
                                                 (cast-type (extract-sizeof-type ctx size-expr)))
-                                            (ctx-str5 ctx "(" cast-type "*)slop_arena_alloc(" (ctx-str3 ctx arena-c ", " size-c) ")"))))))
+                                            (wrap-arena-alloc-checked ctx (ctx-str5 ctx "(" cast-type "*)slop_arena_alloc(" (ctx-str3 ctx arena-c ", " size-c) ")")))))))
                                   (else
                                     ;; Not a symbol - use normal transpilation
                                     (let ((size-c (transpile-expr ctx size-expr))
                                           (cast-type (extract-sizeof-type ctx size-expr)))
-                                      (ctx-str5 ctx "(" cast-type "*)slop_arena_alloc(" (ctx-str3 ctx arena-c ", " size-c) ")"))))))
+                                      (wrap-arena-alloc-checked ctx (ctx-str5 ctx "(" cast-type "*)slop_arena_alloc(" (ctx-str3 ctx arena-c ", " size-c) ")")))))))
                             ((none)
                               (do
                                 (ctx-add-error-at ctx "missing arena-alloc size" (ctx-list-first-line items) (ctx-list-first-col items))

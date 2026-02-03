@@ -325,7 +325,8 @@ identifier               ; Variable reference
 (arena-new size)                 ; Create arena
 (arena-alloc arena size)         ; Allocate in arena
 (arena-free arena)               ; Free entire arena
-(with-arena size body)           ; Scoped arena
+(with-arena size body)           ; Scoped arena (binds 'arena')
+(with-arena :as name size body)  ; Named scoped arena (binds 'name')
 
 ; Error handling
 (ok value)
@@ -495,6 +496,40 @@ Most allocations use arenas for simplicity and performance:
 ; Arena automatically freed at end of with-arena
 ```
 
+**Named arenas** use the `:as` keyword to bind a custom name instead of `arena`:
+
+```lisp
+;; Syntax: (with-arena :as <name> <size> <body...>)
+(with-arena :as scratch 4096
+  (arena-alloc scratch 256))  ; Uses 'scratch' instead of 'arena'
+```
+
+Named arenas are useful when:
+- **Nesting arenas**: Avoid shadowing the outer arena's binding
+- **Semantic clarity**: Name arenas by purpose (e.g., `scratch`, `output`, `parse-arena`)
+- **Multiple lifetimes**: Keep data in separate arenas with different lifetimes
+
+```lisp
+(fn process-with-scratch ((input String))
+  (@intent "Process with separate scratch and output arenas")
+  (with-arena :as output 8192
+    (with-arena :as scratch 4096
+      ;; scratch arena for temporary allocations
+      (let ((temp (parse scratch input)))
+        ;; output arena for result that outlives scratch
+        (build-result output temp)))))
+;; scratch freed first, then output
+```
+
+Named and unnamed arenas can be mixed:
+
+```lisp
+(with-arena :as main 8192
+  (with-arena 1024           ; Binds 'arena', shadows nothing
+    (arena-alloc arena 100)
+    (arena-alloc main 200))) ; Both accessible
+```
+
 ### 5.2 Ownership (When Needed)
 
 For data that outlives a request:
@@ -626,8 +661,10 @@ Minimal runtime (~500 lines of C):
 ```
 ; Memory
 (arena-new size) -> Arena
-(arena-alloc arena size) -> (Ptr U8)  
+(arena-alloc arena size) -> (Ptr U8)
 (arena-free arena) -> Unit
+(with-arena size body) -> T              ; Scoped arena, binds 'arena'
+(with-arena :as name size body) -> T     ; Named arena, binds 'name'
 
 ; Strings
 (string-new arena cstr) -> String
