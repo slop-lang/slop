@@ -16,7 +16,8 @@
     ;; FFI definitions
     transpile-ffi transpile-ffi-struct is-ffi-form is-ffi-struct-form
     ;; Helpers
-    is-type-form is-function-form get-return-type get-slop-return-type get-result-type-name build-param-str get-type-name-str)
+    is-type-form is-function-form get-return-type get-slop-return-type get-result-type-name build-param-str get-type-name-str
+    is-generic-type-alias)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds))
   (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
@@ -618,6 +619,7 @@
     (@intent "Register field types for union variants so type inference can resolve payload types")
     (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr)) Int) -> Unit))
     (@pre {ctx != nil})
+    (@post "Registers field types for each union variant with payload in the context")
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut i start-idx))
@@ -674,11 +676,16 @@
             ;; Register type
             (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))
             ;; Register type alias for Map/Set/Result/Option resolution
-            (when (or (starts-with slop-type-str "(Map ")
-                      (or (starts-with slop-type-str "(Set ")
-                          (or (starts-with slop-type-str "(Result ")
-                              (starts-with slop-type-str "(Option "))))
+            (when (is-generic-type-alias slop-type-str)
               (ctx-register-type-alias ctx raw-name slop-type-str)))))))
+
+  (fn is-generic-type-alias ((s String))
+    (@intent "Check if type string is a generic type that needs alias registration")
+    (@spec ((String) -> Bool))
+    (or (starts-with s "(Map ")
+        (or (starts-with s "(Set ")
+            (or (starts-with s "(Result ")
+                (starts-with s "(Option ")))))
 
   (fn is-array-type ((type-expr (Ptr SExpr)))
     (@intent "Check if type expression is an Array type")

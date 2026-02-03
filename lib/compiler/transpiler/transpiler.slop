@@ -45,7 +45,8 @@
   (import emit (emit-standard-includes emit-include))
   (import defn (transpile-type transpile-function transpile-const is-const-form emit-forward-declaration
                 is-ffi-form is-ffi-struct-form transpile-ffi transpile-ffi-struct
-                get-return-type get-slop-return-type get-result-type-name build-param-str eval-const-value get-type-name-str))
+                get-return-type get-slop-return-type get-result-type-name build-param-str eval-const-value get-type-name-str
+                is-generic-type-alias))
   (import stmt (transpile-stmt))
   (import expr (transpile-expr))
   (import match (transpile-match))
@@ -157,10 +158,7 @@
                             (check-and-register-result-alias ctx type-name body-expr)
                             ;; Register type aliases during prescan and scan for generics
                             (let ((slop-type-str (pretty-print arena body-expr)))
-                              (when (or (starts-with slop-type-str "(Map ")
-                                        (or (starts-with slop-type-str "(Set ")
-                                            (or (starts-with slop-type-str "(Result ")
-                                                (starts-with slop-type-str "(Option "))))
+                              (when (is-generic-type-alias slop-type-str)
                                 (ctx-register-type-alias ctx type-name slop-type-str))
                               (when (or (starts-with slop-type-str "(Map ")
                                         (starts-with slop-type-str "(Set "))
