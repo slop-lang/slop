@@ -5080,9 +5080,11 @@
           (len (list-len items))
           ;; Extract param names for free variable analysis
           (param-names (extract-param-names arena params))
+          ;; Empty pending list for top-level lambda analysis
+          (empty-pending (list-new arena String))
           ;; Find free variables BEFORE pushing scope
           ;; (so we can see what's captured from enclosing scope)
-          (free-vars (find-free-vars ctx param-names items 2)))
+          (free-vars (find-free-vars ctx param-names items 2 empty-pending)))
       ;; Generate unique lambda name with module prefix
       (let ((base-name (ctx-gensym ctx "_lambda"))
             (lambda-name (match (ctx-get-module ctx)
@@ -5387,8 +5389,7 @@
     (@intent "Transpile lambda body expressions, return last as value")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> String))
     (@pre {ctx != nil})
-    ;; Thread Unit lambdas return int64_t but last expression may be Result
-    ;; We wrap to: (expr, 0) to evaluate and return 0
+    ;; Return the value of the last expression
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut result "")
@@ -5403,9 +5404,8 @@
                 (let ((expr-c (transpile-expr ctx expr))
                       (is-last (== i (- len 1))))
                   (if is-last
-                    ;; Last expression: evaluate for side effects and return 0
-                    ;; This handles Thread Unit where body might return Result but lambda returns int
-                    (set! result (ctx-str ctx result (ctx-str ctx "(" (ctx-str ctx expr-c ", 0); return 0;"))))
+                    ;; Last expression: return its value
+                    (set! result (ctx-str ctx result (ctx-str ctx "return " (ctx-str ctx expr-c ";"))))
                     ;; Not last: just evaluate for side effects
                     (set! result (ctx-str ctx result (ctx-str3 ctx expr-c "; " ""))))))
               ((none) (do)))
@@ -5500,7 +5500,8 @@
                   ((lst params-lst)
                     (let ((params (. params-lst items))
                           (param-names (extract-param-names arena params))
-                          (free-vars (find-free-vars ctx param-names items 2)))
+                          (empty-pending (list-new arena String))
+                          (free-vars (find-free-vars ctx param-names items 2 empty-pending)))
                       (> (list-len free-vars) 0)))
                   (_ false)))
               ((none) false)))))
@@ -5543,9 +5544,9 @@
   ;; Free Variable Analysis for Closures
   ;; ============================================================
 
-  (fn find-free-vars ((ctx (Ptr TranspileContext)) (param-names (List String)) (body-items (List (Ptr SExpr))) (start Int))
+  (fn find-free-vars ((ctx (Ptr TranspileContext)) (param-names (List String)) (body-items (List (Ptr SExpr))) (start Int) (pending (List String)))
     (@intent "Find variables in lambda body that are captured from enclosing scope")
-    (@spec (((Ptr TranspileContext) (List String) (List (Ptr SExpr)) Int) -> (List String)))
+    (@spec (((Ptr TranspileContext) (List String) (List (Ptr SExpr)) Int (List String)) -> (List String)))
     (@pre {ctx != nil})
     ;; Collect all symbol references in the body
     ;; Filter out: params, known functions, builtins, type names
@@ -5559,7 +5560,7 @@
       (while (< i len)
         (match (list-get body-items i)
           ((some expr)
-            (collect-symbols-in-expr ctx (addr all-symbols) expr))
+            (collect-symbols-in-expr ctx (addr all-symbols) pending expr))
           ((none) (do)))
         (set! i (+ i 1)))
       ;; Filter to find truly free variables
@@ -5568,7 +5569,7 @@
         (while (< j sym-count)
           (match (list-get all-symbols j)
             ((some sym-name)
-              (when (is-free-var ctx param-names sym-name)
+              (when (is-free-var ctx param-names pending sym-name)
                 ;; Check not already in free-vars
                 (when (not (list-contains-string free-vars sym-name))
                   (list-push free-vars sym-name))))
@@ -5576,9 +5577,9 @@
           (set! j (+ j 1))))
       free-vars))
 
-  (fn collect-symbols-in-expr ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (expr (Ptr SExpr)))
+  (fn collect-symbols-in-expr ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (pending (List String)) (expr (Ptr SExpr)))
     (@intent "Recursively collect all symbol references in an expression")
-    (@spec (((Ptr TranspileContext) (Ptr (List String)) (Ptr SExpr)) -> Unit))
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List String) (Ptr SExpr)) -> Unit))
     (@pre {ctx != nil})
     (@pre {expr != nil})
     (match (deref expr)
@@ -5601,75 +5602,79 @@
                       (cond
                         ;; let: skip binding names, recurse into values and body
                         ((string-eq op "let")
-                          (collect-symbols-in-let ctx symbols items))
+                          (collect-symbols-in-let ctx symbols pending items))
                         ;; fn: skip (we're analyzing inside a lambda, nested lambdas are separate)
                         ((string-eq op "fn")
                           (do))  ;; Don't recurse into nested lambdas
                         ;; match: recurse into scrutinee and bodies (pattern vars are local)
                         ((string-eq op "match")
-                          (collect-symbols-in-match ctx symbols items))
+                          (collect-symbols-in-match ctx symbols pending items))
                         ;; for/for-each: skip loop var, recurse into range/collection and body
                         ((or (string-eq op "for") (string-eq op "for-each"))
-                          (collect-symbols-in-for ctx symbols items))
+                          (collect-symbols-in-for ctx symbols pending items))
                         ;; Default: recurse into all items
                         (else
-                          (collect-symbols-in-list ctx symbols items 0)))))
+                          (collect-symbols-in-list ctx symbols pending items 0)))))
                   (else
                     ;; Non-symbol head, recurse into all
-                    (collect-symbols-in-list ctx symbols items 0))))
+                    (collect-symbols-in-list ctx symbols pending items 0))))
               ((none) (do))))))
       (else (do))))
 
-  (fn collect-symbols-in-list ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (items (List (Ptr SExpr))) (start Int))
+  (fn collect-symbols-in-list ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (pending (List String)) (items (List (Ptr SExpr))) (start Int))
     (@intent "Collect symbols from list items starting at index")
-    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List (Ptr SExpr)) Int) -> Unit))
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List String) (List (Ptr SExpr)) Int) -> Unit))
     (@pre {ctx != nil})
     (let ((len (list-len items))
           (mut i start))
       (while (< i len)
         (match (list-get items i)
           ((some item)
-            (collect-symbols-in-expr ctx symbols item))
+            (collect-symbols-in-expr ctx symbols pending item))
           ((none) (do)))
         (set! i (+ i 1)))))
 
-  (fn collect-symbols-in-let ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (items (List (Ptr SExpr))))
+  (fn collect-symbols-in-let ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (pending (List String)) (items (List (Ptr SExpr))))
     (@intent "Collect symbols from let form, excluding bound names")
-    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List (Ptr SExpr))) -> Unit))
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List String) (List (Ptr SExpr))) -> Unit))
     (@pre {ctx != nil})
     ;; (let ((name val) ...) body...)
     ;; Recurse into values and body, but not binding names
-    (let ((len (list-len items)))
+    ;; Add binding names to pending for the body
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items)))
       (when (>= len 2)
         (match (list-get items 1)
           ((some bindings-expr)
-            (match (deref bindings-expr)
-              ((lst bindings-lst)
-                ;; For each binding, only collect from the value
-                (let ((bindings (. bindings-lst items))
-                      (binding-count (list-len bindings))
-                      (mut i 0))
-                  (while (< i binding-count)
-                    (match (list-get bindings i)
-                      ((some binding)
-                        (match (deref binding)
-                          ((lst bind-lst)
-                            (let ((bind-items (. bind-lst items)))
-                              ;; binding is (name value) or (mut name value)
-                              ;; Collect from value only
-                              (when (>= (list-len bind-items) 2)
-                                (let ((val-idx (if (is-mut-binding bind-items) 2 1)))
-                                  (match (list-get bind-items val-idx)
-                                    ((some val-expr)
-                                      (collect-symbols-in-expr ctx symbols val-expr))
-                                    ((none) (do)))))))
-                          (else (do))))
-                      ((none) (do)))
-                    (set! i (+ i 1)))))
-              (else (do))))
-          ((none) (do)))
-        ;; Collect from body expressions
-        (collect-symbols-in-list ctx symbols items 2))))
+            (let ((new-names (extract-let-binding-names arena bindings-expr))
+                  (updated-pending (list-concat arena pending new-names)))
+              (match (deref bindings-expr)
+                ((lst bindings-lst)
+                  ;; For each binding, only collect from the value (with original pending)
+                  (let ((bindings (. bindings-lst items))
+                        (binding-count (list-len bindings))
+                        (mut i 0))
+                    (while (< i binding-count)
+                      (match (list-get bindings i)
+                        ((some binding)
+                          (match (deref binding)
+                            ((lst bind-lst)
+                              (let ((bind-items (. bind-lst items)))
+                                ;; binding is (name value) or (mut name value)
+                                ;; Collect from value only
+                                (when (>= (list-len bind-items) 2)
+                                  (let ((val-idx (if (is-mut-binding bind-items) 2 1)))
+                                    (match (list-get bind-items val-idx)
+                                      ((some val-expr)
+                                        (collect-symbols-in-expr ctx symbols pending val-expr))
+                                      ((none) (do)))))))
+                            (else (do))))
+                        ((none) (do)))
+                      (set! i (+ i 1)))))
+                (else (do)))
+              ;; Collect from body expressions with updated pending
+              (collect-symbols-in-list ctx symbols updated-pending items 2)))
+          ((none) (do))))))
 
   (fn is-mut-binding ((items (List (Ptr SExpr))))
     (@intent "Check if binding starts with mut keyword")
@@ -5683,9 +5688,39 @@
             (else false)))
         ((none) false))))
 
-  (fn collect-symbols-in-match ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (items (List (Ptr SExpr))))
+  (fn extract-let-binding-names ((arena Arena) (bindings-expr (Ptr SExpr)))
+    (@intent "Extract variable names from let bindings list")
+    (@spec ((Arena (Ptr SExpr)) -> (List String)))
+    (@pre {bindings-expr != nil})
+    (let ((names (list-new arena String)))
+      (match (deref bindings-expr)
+        ((lst bindings-lst)
+          (let ((bindings (. bindings-lst items))
+                (binding-count (list-len bindings))
+                (mut i 0))
+            (while (< i binding-count)
+              (match (list-get bindings i)
+                ((some binding)
+                  (match (deref binding)
+                    ((lst bind-lst)
+                      (let ((bind-items (. bind-lst items)))
+                        (when (>= (list-len bind-items) 1)
+                          (let ((name-idx (if (is-mut-binding bind-items) 1 0)))
+                            (match (list-get bind-items name-idx)
+                              ((some name-expr)
+                                (match (deref name-expr)
+                                  ((sym sym) (list-push names (. sym name)))
+                                  (else (do))))
+                              ((none) (do)))))))
+                    (else (do))))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        (else (do)))
+      names))
+
+  (fn collect-symbols-in-match ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (pending (List String)) (items (List (Ptr SExpr))))
     (@intent "Collect symbols from match form")
-    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List (Ptr SExpr))) -> Unit))
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List String) (List (Ptr SExpr))) -> Unit))
     (@pre {ctx != nil})
     ;; (match scrutinee (pattern body)...)
     ;; Collect from scrutinee and bodies (pattern vars are local)
@@ -5694,7 +5729,7 @@
         ;; Collect from scrutinee
         (match (list-get items 1)
           ((some scrutinee)
-            (collect-symbols-in-expr ctx symbols scrutinee))
+            (collect-symbols-in-expr ctx symbols pending scrutinee))
           ((none) (do)))
         ;; Collect from clause bodies (skip patterns)
         (let ((mut i 2))
@@ -5705,14 +5740,14 @@
                   ((lst clause-lst)
                     (let ((clause-items (. clause-lst items)))
                       ;; Clause is (pattern body...), collect from body only
-                      (collect-symbols-in-list ctx symbols clause-items 1)))
+                      (collect-symbols-in-list ctx symbols pending clause-items 1)))
                   (else (do))))
               ((none) (do)))
             (set! i (+ i 1)))))))
 
-  (fn collect-symbols-in-for ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (items (List (Ptr SExpr))))
+  (fn collect-symbols-in-for ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (pending (List String)) (items (List (Ptr SExpr))))
     (@intent "Collect symbols from for/for-each form")
-    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List (Ptr SExpr))) -> Unit))
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List String) (List (Ptr SExpr))) -> Unit))
     (@pre {ctx != nil})
     ;; (for (i start end) body...) or (for-each (item coll) body...)
     ;; Skip loop variable, collect from range/collection and body
@@ -5724,11 +5759,11 @@
               ((lst bind-lst)
                 (let ((bind-items (. bind-lst items)))
                   ;; Collect from start/end or collection (items after first)
-                  (collect-symbols-in-list ctx symbols bind-items 1)))
+                  (collect-symbols-in-list ctx symbols pending bind-items 1)))
               (else (do))))
           ((none) (do)))
         ;; Collect from body
-        (collect-symbols-in-list ctx symbols items 2))))
+        (collect-symbols-in-list ctx symbols pending items 2))))
 
   (fn is-special-keyword ((name String))
     (@intent "Check if name is a special keyword that shouldn't be collected")
@@ -5760,30 +5795,32 @@
         (string-eq name "or")
         (string-eq name "not")))
 
-  (fn is-free-var ((ctx (Ptr TranspileContext)) (param-names (List String)) (sym-name String))
+  (fn is-free-var ((ctx (Ptr TranspileContext)) (param-names (List String)) (pending (List String)) (sym-name String))
     (@intent "Check if symbol is a free variable (captured from enclosing scope)")
-    (@spec (((Ptr TranspileContext) (List String) String) -> Bool))
+    (@spec (((Ptr TranspileContext) (List String) (List String) String) -> Bool))
     (@pre {ctx != nil})
     ;; A symbol is free if:
     ;; - Not a lambda parameter
     ;; - Not a known function
     ;; - Not a type name
     ;; - Not a builtin operator
-    ;; - IS a variable in the current scope (from enclosing context)
+    ;; - IS a variable in the current scope OR in pending let bindings
     (if (list-contains-string param-names sym-name)
       false  ;; Lambda parameter, not free
-      (if (is-builtin-op sym-name)
-        false  ;; Builtin operator
-        (match (ctx-lookup-func ctx sym-name)
-          ((some _) false)  ;; Known function
-          ((none)
-            (match (ctx-lookup-type ctx sym-name)
-              ((some _) false)  ;; Type name
-              ((none)
-                ;; Check if it's a variable in scope
-                (match (ctx-lookup-var ctx sym-name)
-                  ((some _) true)  ;; It's a captured variable!
-                  ((none) false)))))))))  ;; Unknown symbol
+      (if (list-contains-string pending sym-name)
+        true  ;; Variable will be bound by enclosing let - it's capturable
+        (if (is-builtin-op sym-name)
+          false  ;; Builtin operator
+          (match (ctx-lookup-func ctx sym-name)
+            ((some _) false)  ;; Known function
+            ((none)
+              (match (ctx-lookup-type ctx sym-name)
+                ((some _) false)  ;; Type name
+                ((none)
+                  ;; Check if it's a variable in scope
+                  (match (ctx-lookup-var ctx sym-name)
+                    ((some _) true)  ;; It's a captured variable!
+                    ((none) false))))))))))  ;; Unknown symbol
 
   (fn is-builtin-op ((name String))
     (@intent "Check if name is a builtin operator")
@@ -5815,6 +5852,26 @@
           ((none) (do)))
         (set! i (+ i 1)))
       found))
+
+  (fn list-concat ((arena Arena) (a (List String)) (b (List String)))
+    (@intent "Concatenate two string lists, returning a new list")
+    (@spec ((Arena (List String) (List String)) -> (List String)))
+    (let ((result (list-new arena String))
+          (len-a (list-len a))
+          (len-b (list-len b))
+          (mut i 0))
+      (while (< i len-a)
+        (match (list-get a i)
+          ((some s) (list-push result s))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (set! i 0)
+      (while (< i len-b)
+        (match (list-get b i)
+          ((some s) (list-push result s))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
 
   ;; ============================================================
   ;; Type Argument Extraction Helpers
