@@ -814,28 +814,32 @@
                                           (c-sym-name (to-c-name arena sym-name)))
                                       (if (is-type-name sym-name)
                                         ;; Register type AND as variable (for constants like XSD_STRING)
-                                        (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name)))
+                                        ;; Re-exports: reuse existing c-name to preserve original module prefix
+                                        (let ((existing (ctx-lookup-type ctx sym-name))
+                                              (c-name (match existing
+                                                        ((some entry) (. entry c-name))
+                                                        ((none) (ctx-str3 ctx c-mod-name "_" c-sym-name)))))
                                           (do
-                                            (ctx-register-type ctx (TypeEntry sym-name c-name c-name false false false))
+                                            (ctx-register-type ctx (TypeEntry sym-name c-name c-name
+                                                                     (match existing ((some e) (. e is-enum)) ((none) false))
+                                                                     (match existing ((some e) (. e is-record)) ((none) false))
+                                                                     (match existing ((some e) (. e is-union)) ((none) false))))
                                             (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false false "" ""))))
                                         ;; Register function with module prefix
-                                        ;; Try to copy param-types from existing entry (if already processed)
-                                        (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name))
-                                              ;; Check if function was already registered (from processing imported module)
-                                              (existing-func (ctx-lookup-func ctx sym-name))
+                                        ;; Re-exports: reuse existing c-name to preserve original module prefix
+                                        (let ((existing-func (ctx-lookup-func ctx sym-name))
+                                              (c-name (match existing-func
+                                                        ((some entry) (. entry c-name))
+                                                        ((none) (ctx-str3 ctx c-mod-name "_" c-sym-name))))
                                               (param-types (match existing-func
-                                                             ;; Found existing entry - copy its param-types
                                                              ((some entry) (. entry param-types))
-                                                             ;; Not found - fall back to empty params
                                                              ((none) (list-new arena (Ptr FuncParamType)))))
-                                              ;; Copy return-type from existing entry
                                               (ret-type (match existing-func
                                                           ((some entry) (. entry return-type))
                                                           ((none) "")))
                                               (slop-ret (match existing-func
                                                           ((some entry) (. entry slop-return-type))
                                                           ((none) "")))
-                                              ;; Copy returns-pointer and returns-string from existing entry
                                               (ret-ptr (match existing-func
                                                          ((some entry) (. entry returns-pointer))
                                                          ((none) false)))
