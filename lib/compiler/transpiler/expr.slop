@@ -3959,11 +3959,22 @@
           ((some bindings-expr)
             (match (deref bindings-expr)
               ((lst bindings-lst)
+                ;; Push scope for let bindings
+                (ctx-push-scope ctx)
                 (let ((mut result "({ ")
                       (bindings-items (. bindings-lst items))
                       (bindings-len (list-len bindings-items))
                       (mut bi 0))
-                  ;; Emit bindings
+                  ;; First pass: register all binding names in context
+                  ;; (so nested lambdas can find them during free var analysis)
+                  (while (< bi bindings-len)
+                    (match (list-get bindings-items bi)
+                      ((some binding)
+                        (register-let-binding-in-context ctx binding))
+                      ((none) (do)))
+                    (set! bi (+ bi 1)))
+                  ;; Second pass: emit bindings
+                  (set! bi 0)
                   (while (< bi bindings-len)
                     (match (list-get bindings-items bi)
                       ((some binding)
@@ -3981,13 +3992,59 @@
                         ((none) (do)))
                       (set! i (+ i 1)))
                     ;; Last body expression is the result
-                    (match (list-get items (- len 1))
-                      ((some last-expr)
-                        (let ((last-c (transpile-expr ctx last-expr)))
-                          (ctx-str3 ctx result last-c "; })")))
-                      ((none) (ctx-str ctx result "0; })"))))))
+                    (let ((final-result
+                           (match (list-get items (- len 1))
+                             ((some last-expr)
+                               (let ((last-c (transpile-expr ctx last-expr)))
+                                 (ctx-str3 ctx result last-c "; })")))
+                             ((none) (ctx-str ctx result "0; })")))))
+                      ;; Pop scope before returning
+                      (ctx-pop-scope ctx)
+                      final-result))))
               (else "({ (void)0; })")))
           ((none) "({ (void)0; })")))))
+
+  (fn register-let-binding-in-context ((ctx (Ptr TranspileContext)) (binding (Ptr SExpr)))
+    (@intent "Register a let binding's variable name in context for free var analysis")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {binding != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref binding)
+        ((lst lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            (when (>= len 2)
+              ;; Check for mut: (mut name init) or (mut name Type init)
+              (let ((has-mut (binding-has-mut items))
+                    (name-idx (if has-mut 1 0))
+                    (has-type (if has-mut (>= len 4) (>= len 3)))
+                    (type-idx (+ name-idx 1))
+                    (init-idx (if has-mut (if has-type 3 2) (if has-type 2 1))))
+                (match (list-get items name-idx)
+                  ((some name-expr)
+                    (match (deref name-expr)
+                      ((sym name-sym)
+                        (let ((var-name (. name-sym name))
+                              (c-name (to-c-name arena var-name))
+                              ;; Get C type: prefer explicit type annotation, else infer from init
+                              (c-type (if has-type
+                                        ;; Use explicit type annotation
+                                        (match (list-get items type-idx)
+                                          ((some type-expr) (to-c-type-prefixed ctx type-expr))
+                                          ((none) "int64_t"))
+                                        ;; No explicit type - infer from init expr
+                                        (match (list-get items init-idx)
+                                          ((some init-expr)
+                                            (match (get-node-resolved-type init-expr)
+                                              ((some rt) (resolved-type-to-c arena rt))
+                                              ((none) "int64_t")))
+                                          ((none) "int64_t")))))
+                          ;; Register in context so nested lambdas can find it
+                          (ctx-bind-var ctx (VarEntry var-name c-name c-type "" false false false "" ""))))
+                      (else (do))))
+                  ((none) (do)))))))
+        (else (do)))))
 
   (fn transpile-binding-expr ((ctx (Ptr TranspileContext)) (binding (Ptr SExpr)))
     (@intent "Transpile a single let binding for expression context")
@@ -4209,9 +4266,12 @@
                                 (_ (let ((target-c (transpile-expr ctx target-expr)))
                                      (ctx-str5 ctx "({ " target-c " = " val-c "; (void)0; })")))))
                             ((none) "({ (void)0; })")))))
-                    ;; Simple variable assignment
+                    ;; Simple variable assignment - look up in context for captured vars
                     ((sym sym)
-                      (let ((target-c (to-c-name arena (. sym name))))
+                      (let ((var-name (. sym name))
+                            (target-c (match (ctx-lookup-var ctx var-name)
+                                        ((some entry) (. entry c-name))
+                                        ((none) (to-c-name arena var-name)))))
                         (ctx-str5 ctx "({ " target-c " = " val-c "; (void)0; })")))
                     (else
                       (let ((target-c (transpile-expr ctx target-expr)))
@@ -5398,10 +5458,10 @@
       (while (< i count)
         (match (list-get free-vars i)
           ((some var-name)
-            ;; Look up variable type
+            ;; Look up variable type from context (checker should have resolved it)
             (let ((var-type (match (ctx-lookup-var ctx var-name)
                               ((some entry) (. entry c-type))
-                              ((none) "int64_t")))  ;; Default to int64_t
+                              ((none) "int64_t")))
                   (c-name (to-c-name arena var-name)))
               (set! fields (ctx-str ctx fields (ctx-str4 ctx var-type " " c-name "; ")))))
           ((none) (do)))
@@ -5907,9 +5967,10 @@
     (@pre {expr != nil})
     (match (deref expr)
       ((sym sym)
-        ;; Add symbol name if not a special keyword
+        ;; Add symbol name if not a special keyword and not in pending (local binding)
         (let ((name (. sym name)))
-          (when (not (is-special-keyword name))
+          (when (and (not (is-special-keyword name))
+                     (not (list-contains-string pending name)))
             (list-push (deref symbols) name))))
       ((lst lst)
         ;; Recursively collect from list items
@@ -5926,9 +5987,9 @@
                         ;; let: skip binding names, recurse into values and body
                         ((string-eq op "let")
                           (collect-symbols-in-let ctx symbols pending items))
-                        ;; fn: skip (we're analyzing inside a lambda, nested lambdas are separate)
+                        ;; fn: collect free vars from nested lambda (they need to be captured by us too)
                         ((string-eq op "fn")
-                          (do))  ;; Don't recurse into nested lambdas
+                          (collect-nested-lambda-free-vars ctx symbols pending items))
                         ;; match: recurse into scrutinee and bodies (pattern vars are local)
                         ((string-eq op "match")
                           (collect-symbols-in-match ctx symbols pending items))
@@ -6074,7 +6135,8 @@
     (@pre {ctx != nil})
     ;; (for (i start end) body...) or (for-each (item coll) body...)
     ;; Skip loop variable, collect from range/collection and body
-    (let ((len (list-len items)))
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items)))
       (when (>= len 2)
         (match (list-get items 1)
           ((some binding)
@@ -6082,11 +6144,62 @@
               ((lst bind-lst)
                 (let ((bind-items (. bind-lst items)))
                   ;; Collect from start/end or collection (items after first)
-                  (collect-symbols-in-list ctx symbols pending bind-items 1)))
+                  (collect-symbols-in-list ctx symbols pending bind-items 1)
+                  ;; Extract loop var name and add to pending for body
+                  (let ((loop-var-pending (extract-for-loop-var-pending arena pending bind-items)))
+                    ;; Collect from body with loop var in pending
+                    (collect-symbols-in-list ctx symbols loop-var-pending items 2))))
               (else (do))))
-          ((none) (do)))
-        ;; Collect from body
-        (collect-symbols-in-list ctx symbols pending items 2))))
+          ((none) (do))))))
+
+  (fn extract-for-loop-var-pending ((arena Arena) (pending (List String)) (bind-items (List (Ptr SExpr))))
+    (@intent "Extract loop variable and add to pending list")
+    (@spec ((Arena (List String) (List (Ptr SExpr))) -> (List String)))
+    (if (< (list-len bind-items) 1)
+      pending
+      (match (list-get bind-items 0)
+        ((some var-expr)
+          (match (deref var-expr)
+            ((sym var-sym)
+              (let ((result (list-new arena String))
+                    (var-name (. var-sym name))
+                    (plen (list-len pending))
+                    (mut i 0))
+                ;; Copy existing pending
+                (while (< i plen)
+                  (match (list-get pending i)
+                    ((some s) (list-push result s))
+                    ((none) (do)))
+                  (set! i (+ i 1)))
+                ;; Add loop var
+                (list-push result var-name)
+                result))
+            (else pending)))
+        ((none) pending))))
+
+  (fn collect-nested-lambda-free-vars ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (pending (List String)) (items (List (Ptr SExpr))))
+    (@intent "Collect free variables from nested lambda that outer lambda must capture")
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List String) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; A nested lambda (fn ((params...)) body...) has free vars that we also need
+    ;; Extract param names to exclude them, then find free vars of nested lambda body
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items)))
+      (when (>= len 2)
+        ;; items[1] is params list
+        (match (list-get items 1)
+          ((some params-expr)
+            (match (deref params-expr)
+              ((lst params-lst)
+                (let ((params (. params-lst items))
+                      (param-names (extract-param-names arena params))
+                      ;; Combine pending with nested lambda params for recursive analysis
+                      (nested-pending (list-concat arena pending param-names)))
+                  ;; Recursively collect from nested lambda body
+                  ;; The nested lambda's params shadow outer vars, so use nested-pending
+                  (collect-symbols-in-list ctx symbols nested-pending items 2)))
+              (else (do))))
+          ((none) (do))))))
 
   (fn is-special-keyword ((name String))
     (@intent "Check if name is a special keyword that shouldn't be collected")
