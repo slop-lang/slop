@@ -3441,18 +3441,18 @@
           (cond
             ;; Pointer types like "(Ptr T)"
             ((starts-with slop-type "(Ptr ")
-              (let ((inner (substring arena slop-type 5 (max 0 (- (cast Int (string-len slop-type)) 1)))))
+              (let ((inner (substring arena slop-type 5 (max 0 (- (cast Int (string-len slop-type)) 6)))))
                 (ctx-str ctx (slop-type-to-c-type ctx inner) "*")))
             ;; Map/Set types -> slop_map*
             ((or (starts-with slop-type "(Map ") (starts-with slop-type "(Set "))
               "slop_map*")
             ;; List types -> need to generate list type name
             ((starts-with slop-type "(List ")
-              (let ((inner (substring arena slop-type 6 (max 0 (- (cast Int (string-len slop-type)) 1)))))
+              (let ((inner (substring arena slop-type 6 (max 0 (- (cast Int (string-len slop-type)) 7)))))
                 (ctx-str ctx "slop_list_" (slop-type-to-c-type ctx inner))))
             ;; Option types
             ((starts-with slop-type "(Option ")
-              (let ((inner (substring arena slop-type 8 (max 0 (- (cast Int (string-len slop-type)) 1)))))
+              (let ((inner (substring arena slop-type 8 (max 0 (- (cast Int (string-len slop-type)) 9)))))
                 (ctx-str ctx "slop_option_" (slop-type-to-c-type ctx inner))))
             ;; Default: use as-is (might be a C type already)
             (else slop-type))))))
@@ -5485,7 +5485,11 @@
           ((some var-name)
             ;; Look up variable type from context (checker should have resolved it)
             (let ((var-type (match (ctx-lookup-var ctx var-name)
-                              ((some entry) (. entry c-type))
+                              ((some entry)
+                                (let ((slop-type (. entry slop-type)))
+                                  (if (> (string-len slop-type) 0)
+                                    (slop-type-to-c-type ctx slop-type)
+                                    (. entry c-type))))
                               ((none) "int64_t")))
                   (c-name (to-c-name arena var-name)))
               (set! fields (ctx-str ctx fields (ctx-str4 ctx var-type " " c-name "; ")))))
@@ -5515,11 +5519,11 @@
             ;; We bind it with a special marker that the transpiler recognizes
             (let ((c-name (to-c-name arena var-name))
                   (access-expr (ctx-str3 ctx "_env->" c-name ""))
-                  (var-type (match (ctx-lookup-var ctx var-name)
-                              ((some entry) (. entry c-type))
-                              ((none) "int64_t"))))
+                  (var-info (ctx-lookup-var ctx var-name))
+                  (var-type (match var-info ((some entry) (. entry c-type)) ((none) "int64_t")))
+                  (slop-type (match var-info ((some entry) (. entry slop-type)) ((none) ""))))
               ;; Bind with the access expression as the C name
-              (ctx-bind-var ctx (VarEntry var-name access-expr var-type "" false false false "" ""))))
+              (ctx-bind-var ctx (VarEntry var-name access-expr var-type slop-type false false false "" ""))))
           ((none) (do)))
         (set! i (+ i 1)))))
 
