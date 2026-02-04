@@ -639,7 +639,11 @@
       ((starts-with slop-type "(Fn ")
         ;; Nested function type - use slop_closure_t
         "slop_closure_t")
-      (else "int64_t")))  ;; Default for unknown types
+      (else
+        ;; Try looking up as a custom type in the type registry
+        (match (ctx-lookup-type ctx slop-type)
+          ((some type-entry) (. type-entry c-name))
+          ((none) "int64_t")))))  ;; Default for truly unknown types
 
   (fn get-base-function-name ((arena Arena) (fn-name String))
     (@intent "Extract base function name from qualified name (file.open -> open)")
@@ -2763,7 +2767,9 @@
                                                        ((some p) (. (deref p) c-type))
                                                        ((none) "")))
                                       ;; Convert none to typed Option if needed
-                                      (final-arg (typed-none-arg ctx expected-type arg-c)))
+                                      (arg-c2 (typed-none-arg ctx expected-type arg-c))
+                                      ;; Wrap function references in slop_closure_t if needed
+                                      (final-arg (wrap-fn-ref-as-closure ctx expected-type arg-c2 arg)))
                                   (if (string-eq args "")
                                     (set! args final-arg)
                                     (set! args (ctx-str3 ctx args ", " final-arg)))
@@ -3836,6 +3842,25 @@
     (if (and (string-eq arg-c "none")
              (starts-with expected-type "slop_option_"))
       (ctx-str3 ctx "((" expected-type "){.has_value = false})")
+      arg-c))
+
+  (fn wrap-fn-ref-as-closure ((ctx (Ptr TranspileContext)) (expected-type String) (arg-c String) (arg-expr (Ptr SExpr)))
+    (@intent "Wrap function reference in slop_closure_t if expected type requires it")
+    (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    ;; If expected type is slop_closure_t and arg is a function name (symbol),
+    ;; wrap it: (slop_closure_t){(void*)fn_name, NULL}
+    (if (string-eq expected-type "slop_closure_t")
+      ;; Check if original expression is a symbol (function reference)
+      (match (deref arg-expr)
+        ((sym sym)
+          ;; Look up using SLOP name, wrap with C name
+          (let ((slop-name (. sym name)))
+            (match (ctx-lookup-func ctx slop-name)
+              ((some _)
+                (ctx-str5 ctx "(slop_closure_t){(void*)" arg-c ", NULL}" "" ""))
+              ((none) arg-c))))
+        (else arg-c))
       arg-c))
 
   (fn build-union-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String)
@@ -5681,12 +5706,16 @@
           result))))
 
   (fn build-lambda-function ((ctx (Ptr TranspileContext)) (name String) (ret-type String) (params String) (body String))
-    (@intent "Build complete static function definition for lambda")
+    (@intent "Build complete static function definition for lambda with env parameter")
     (@spec (((Ptr TranspileContext) String String String String) -> String))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena)))
-      ;; static ret_type name(params) { body }
-      (ctx-str ctx "static " (ctx-str ctx ret-type (ctx-str ctx " " (ctx-str ctx name (ctx-str ctx params (ctx-str ctx " { " (ctx-str ctx body " }")))))))))
+      ;; static ret_type name(void* _env, params) { body }
+      ;; _env is unused for non-capturing lambdas but required for uniform closure calling convention
+      (let ((full-params (if (string-eq params "(void)")
+                           "(void* _env)"
+                           (ctx-str5 ctx "(void* _env, " (trim-parens arena params) ")" "" ""))))
+        (ctx-str ctx "static " (ctx-str ctx ret-type (ctx-str ctx " " (ctx-str ctx name (ctx-str ctx full-params (ctx-str ctx " { " (ctx-str ctx body " }"))))))))))
 
   ;; ============================================================
   ;; spawn + Closure Support

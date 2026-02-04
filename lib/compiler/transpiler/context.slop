@@ -1725,23 +1725,9 @@
                           (ctx-register-inline-record ctx type-name field-str)
                           (set! result type-name))))
 
-                    ;; (Fn (args...) return) -> return_type(*)(arg_types...)
+                    ;; (Fn (args...) return) -> slop_closure_t (unified closure type)
                     ((string-eq head "Fn")
-                      (if (< len 2)
-                        (set! result "void*")
-                        ;; Return type is the last item
-                        (let ((ret-type (match (list-get items (- len 1))
-                                          ((some ret) (to-c-type-prefixed ctx ret))
-                                          ((none) "void"))))
-                          (if (= len 2)
-                            ;; (Fn RetType) - no args list
-                            (set! result (ctx-str ctx ret-type "(*)(void)"))
-                            ;; (Fn (args...) RetType)
-                            (match (list-get items 1)
-                              ((some args-expr)
-                                (let ((args-str (build-fn-args-str-prefixed ctx args-expr)))
-                                  (set! result (ctx-str ctx (ctx-str ctx ret-type "(*)") args-str))))
-                              ((none) (set! result (ctx-str ctx ret-type "(*)(void)"))))))))
+                      (set! result "slop_closure_t"))
 
                     ;; (Int min .. max) range types -> smallest C type
                     ((string-eq head "Int")

@@ -1101,10 +1101,10 @@
                                   (c-type (to-c-type-prefixed ctx type-expr))
                                   (slop-type-str (pretty-print arena type-expr))
                                   (is-ptr (is-pointer-type type-expr))
-                                  (is-fn-param (is-fn-type type-expr)))
-                              ;; (Fn ...) params are function pointers, NOT closures
-                              ;; is-closure=false so they're called directly as fn(args)
-                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false false "" ""))))
+                                  (is-closure (is-fn-type type-expr)))
+                              ;; (Fn ...) params are closures - set is-closure=true
+                              ;; They're called via emit-generic-closure-call: ((cast)f.fn)(f.env, args)
+                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false is-closure "" ""))))
                           ((none) (do))))
                       (else (do))))
                   ((none) (do)))))))
@@ -1479,13 +1479,10 @@
                         (match (list-get items type-idx)
                           ((some type-expr)
                             (let ((param-name (to-c-name arena (. name-sym name))))
-                              ;; Check if type is a function type (Fn ...)
-                              (if (is-fn-type type-expr)
-                                ;; Function pointer: emit as ret_type(*name)(args)
-                                (emit-fn-param-type ctx type-expr param-name)
-                                ;; Normal type: emit as type name
-                                (let ((param-type (to-c-type-prefixed ctx type-expr)))
-                                  (ctx-str3 ctx param-type " " param-name)))))
+                              ;; All types including (Fn ...) use unified handling
+                              ;; (Fn ...) becomes slop_closure_t via to-c-type-prefixed
+                              (let ((param-type (to-c-type-prefixed ctx type-expr)))
+                                (ctx-str3 ctx param-type " " param-name))))
                           ((none) "/* missing param type */")))
                       (else "/* param name must be symbol */")))
                   ((none) "/* missing param name */"))))))
