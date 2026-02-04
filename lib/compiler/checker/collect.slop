@@ -8,7 +8,9 @@
 (module collect
   (export
     ;; Main collection functions
-    collect-types collect-functions collect-constants collect-module)
+    collect-types collect-functions collect-constants collect-module
+    ;; Type parameter extraction
+    find-fn-type-params)
 
   (import parser (SExpr SExprList SExprSymbol is-form
                   sexpr-line sexpr-col
