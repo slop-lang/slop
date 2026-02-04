@@ -187,6 +187,7 @@ struct env_TypeEnv {
     slop_list_env_BindingAnnotation binding_annotations;
     slop_option_string current_file;
     slop_list_string loaded_modules;
+    slop_list_string fn_type_params;
 };
 typedef struct env_TypeEnv env_TypeEnv;
 
@@ -252,6 +253,10 @@ void env_env_set_current_file(env_TypeEnv* env, slop_option_string file_path);
 slop_option_string env_env_get_current_file(env_TypeEnv* env);
 void env_env_add_loaded_module(env_TypeEnv* env, slop_string module_path);
 uint8_t env_env_is_module_loaded(env_TypeEnv* env, slop_string module_path);
+void env_env_set_fn_type_params(env_TypeEnv* env, slop_list_string params);
+slop_list_string env_env_get_fn_type_params(env_TypeEnv* env);
+void env_env_clear_fn_type_params(env_TypeEnv* env);
+uint8_t env_env_is_type_param(env_TypeEnv* env, slop_string name);
 
 #ifndef SLOP_OPTION_ENV_VARBINDING_DEFINED
 #define SLOP_OPTION_ENV_VARBINDING_DEFINED

@@ -426,27 +426,32 @@
             ;; First check if this is a local variable (function pointer or closure)
             (match (ctx-lookup-var ctx fn-name)
               ((some var-entry)
-                ;; Check if this is a closure (captured lambda)
+                ;; Check if this is a closure (captured lambda with env)
                 (if (. var-entry is-closure)
-                  ;; Closure call: lambda_name((env_type*)f.env, args...)
                   (let ((lambda-name (. var-entry closure-lambda-name))
                         (env-type (. var-entry closure-env-type))
-                        (var-c-name (. var-entry c-name)))
-                    (if (> (string-len args) 0)
-                      ;; Has arguments: lambda_name((env_type*)var.env, args)
-                      (let ((s1 (ctx-str ctx lambda-name "(("))
-                            (s2 (ctx-str ctx s1 env-type))
-                            (s3 (ctx-str ctx s2 "*)"))
-                            (s4 (ctx-str ctx s3 var-c-name))
-                            (s5 (ctx-str ctx s4 ".env, "))
-                            (s6 (ctx-str ctx s5 args)))
-                        (ctx-str ctx s6 ")"))
-                      ;; No arguments (just env): lambda_name((env_type*)var.env)
-                      (let ((s1 (ctx-str ctx lambda-name "(("))
-                            (s2 (ctx-str ctx s1 env-type))
-                            (s3 (ctx-str ctx s2 "*)"))
-                            (s4 (ctx-str ctx s3 var-c-name)))
-                        (ctx-str ctx s4 ".env)"))))
+                        (var-c-name (. var-entry c-name))
+                        (slop-type (. var-entry slop-type)))
+                    ;; Check if specific closure (has lambda-name) or generic (Fn param)
+                    (if (> (string-len lambda-name) 0)
+                      ;; Specific closure call: lambda_name((env_type*)f.env, args...)
+                      (if (> (string-len args) 0)
+                        ;; Has arguments: lambda_name((env_type*)var.env, args)
+                        (let ((s1 (ctx-str ctx lambda-name "(("))
+                              (s2 (ctx-str ctx s1 env-type))
+                              (s3 (ctx-str ctx s2 "*)"))
+                              (s4 (ctx-str ctx s3 var-c-name))
+                              (s5 (ctx-str ctx s4 ".env, "))
+                              (s6 (ctx-str ctx s5 args)))
+                          (ctx-str ctx s6 ")"))
+                        ;; No arguments (just env): lambda_name((env_type*)var.env)
+                        (let ((s1 (ctx-str ctx lambda-name "(("))
+                              (s2 (ctx-str ctx s1 env-type))
+                              (s3 (ctx-str ctx s2 "*)"))
+                              (s4 (ctx-str ctx s3 var-c-name)))
+                          (ctx-str ctx s4 ".env)")))
+                      ;; Generic closure call for (Fn ...) params
+                      (emit-generic-closure-call ctx var-c-name slop-type args)))
                   ;; Local function pointer variable - use its c-name directly
                   (ctx-str4 ctx (. var-entry c-name) "(" args ")")))
               ((none)
@@ -462,6 +467,179 @@
                                     ;; Same-module call - add current module prefix
                                     (ctx-prefix-type ctx (to-c-name arena fn-name)))))))
                   (ctx-str4 ctx c-name "(" args ")")))))))))
+
+  ;; ============================================================
+  ;; Generic Closure Invocation (for (Fn ...) parameters)
+  ;; ============================================================
+
+  (fn emit-generic-closure-call ((ctx (Ptr TranspileContext)) (var-c-name String) (slop-type String) (args String))
+    (@intent "Emit generic closure call using cast-based invocation for (Fn ...) params")
+    (@spec (((Ptr TranspileContext) String String String) -> String))
+    (@pre {ctx != nil})
+    ;; Generic pattern: ((ret_type(*)(void*, arg_types...))var.fn)(var.env, args...)
+    (let ((arena (. (deref ctx) arena))
+          (fn-cast (build-closure-fn-cast ctx slop-type))
+          (fn-ptr (ctx-str ctx var-c-name ".fn"))
+          (env-ptr (ctx-str ctx var-c-name ".env")))
+      ;; Build: ((cast)fn)(env, args) or ((cast)fn)(env)
+      (let ((cast-expr (ctx-str4 ctx "((" fn-cast ")" fn-ptr))
+            (call-open (ctx-str ctx cast-expr ")(")))
+        (if (> (string-len args) 0)
+          ;; With args: ((cast)fn)(env, args)
+          (ctx-str4 ctx call-open env-ptr ", " (ctx-str ctx args ")"))
+          ;; No args: ((cast)fn)(env)
+          (ctx-str ctx call-open (ctx-str ctx env-ptr ")"))))))
+
+  (fn build-closure-fn-cast ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Build function pointer cast from SLOP type string like (Fn (Int) Int)")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; Parse "(Fn (args...) ret)" and build "ret_c(*)(void*, arg_c_types...)"
+    (let ((arena (. (deref ctx) arena))
+          (ret-type (extract-fn-return-c-type ctx slop-type))
+          (arg-types (extract-fn-arg-c-types ctx slop-type)))
+      ;; Build: ret_type(*)(void*, arg_types...)
+      ;; If no args, just void*. If args, void*, arg_types
+      (if (string-eq arg-types "")
+        (ctx-str ctx ret-type "(*)(void*)")
+        (ctx-str ctx ret-type (ctx-str ctx "(*)(void*, " (ctx-str ctx arg-types ")"))))))
+
+  (fn extract-fn-return-c-type ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Extract C return type from SLOP Fn type string")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; Parse "(Fn (args...) RetType)" - return type is after last close paren of args
+    ;; For simplicity, scan backwards from end to find the return type symbol
+    (let ((arena (. (deref ctx) arena))
+          (len (cast Int (string-len slop-type))))
+      ;; Find last space (after args list close paren)
+      (let ((mut last-space -1)
+            (mut paren-depth 0)
+            (mut i 0))
+        (while (< i len)
+          (let ((c (char-at slop-type (cast (Int 0 ..) i))))
+            (cond
+              ((== c 40) (set! paren-depth (+ paren-depth 1)))  ;; (
+              ((== c 41) (set! paren-depth (- paren-depth 1)))  ;; )
+              ((and (== c 32) (== paren-depth 1))  ;; space at depth 1 (inside Fn)
+                (set! last-space i))
+              (else (do))))
+          (set! i (+ i 1)))
+        (if (< last-space 0)
+          "int64_t"  ;; Default
+          ;; Extract from last-space+1 to len-1 (skip closing paren)
+          (let ((start (+ last-space 1))
+                (end (- len 1))
+                (sublen (- end start)))
+            (if (<= sublen 0)
+              "int64_t"
+              (let ((ret-slop (substring arena slop-type (cast (Int 0 ..) start) (cast (Int 0 ..) sublen))))
+                (closure-type-to-c ctx ret-slop))))))))
+
+  (fn extract-fn-arg-c-types ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Extract C argument types from SLOP Fn type string")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; Parse "(Fn (args...) RetType)" - args are in inner parens after "Fn "
+    ;; Returns comma-separated C types, or empty string if no args
+    (let ((arena (. (deref ctx) arena))
+          (len (cast Int (string-len slop-type))))
+      ;; Find the args list: starts after "(Fn " (index 4), ends at matching )
+      (let ((mut args-start -1)
+            (mut args-end -1)
+            (mut paren-depth 0)
+            (mut i 0))
+        (while (< i len)
+          (let ((c (char-at slop-type (cast (Int 0 ..) i))))
+            (cond
+              ((== c 40)  ;; (
+                (set! paren-depth (+ paren-depth 1))
+                (when (== paren-depth 2)
+                  (set! args-start (+ i 1))))
+              ((== c 41)  ;; )
+                (when (and (== paren-depth 2) (< args-end 0))
+                  (set! args-end i))
+                (set! paren-depth (- paren-depth 1)))
+              (else (do))))
+          (set! i (+ i 1)))
+        (if (or (< args-start 0) (< args-end 0) (>= args-start args-end))
+          ""  ;; No args or empty args
+          ;; Extract args string and parse individual types
+          (let ((args-str (substring arena slop-type (cast (Int 0 ..) args-start) (cast (Int 0 ..) (- args-end args-start)))))
+            (parse-fn-args-to-c-types ctx args-str))))))
+
+  (fn parse-fn-args-to-c-types ((ctx (Ptr TranspileContext)) (args-str String))
+    (@intent "Parse SLOP arg types string and convert to comma-separated C types")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; args-str is like "Int" or "Int String" or "(Ptr Int)" or "(Ptr Int) String"
+    ;; Split by space (but respect parens) and convert each to C type
+    (let ((arena (. (deref ctx) arena))
+          (len (cast Int (string-len args-str))))
+      (if (== len 0)
+        ""
+        (let ((mut result "")
+               (mut token-start 0)
+               (mut paren-depth 0)
+               (mut i 0)
+               (mut first true))
+          (while (<= i len)
+            (let ((c (if (< i len) (char-at args-str (cast (Int 0 ..) i)) 32)))  ;; space at end
+              (cond
+                ((== c 40) (set! paren-depth (+ paren-depth 1)))  ;; (
+                ((== c 41) (set! paren-depth (- paren-depth 1)))  ;; )
+                ((and (== c 32) (== paren-depth 0) (< token-start i))
+                  ;; End of a token
+                  (let ((token (substring arena args-str (cast (Int 0 ..) token-start) (cast (Int 0 ..) (- i token-start))))
+                        (c-type (closure-type-to-c ctx token)))
+                    (if first
+                      (do
+                        (set! result c-type)
+                        (set! first false))
+                      (set! result (ctx-str ctx result (ctx-str ctx ", " c-type)))))
+                  (set! token-start (+ i 1)))
+                ((and (== c 32) (== paren-depth 0))
+                  ;; Skip leading/consecutive spaces
+                  (set! token-start (+ i 1)))
+                (else (do))))
+            (set! i (+ i 1)))
+          result))))
+
+  (fn closure-type-to-c ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Convert SLOP type string to C type for closure cast generation")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; Handle common types - for complex types, default to int64_t
+    (cond
+      ((string-eq slop-type "Int") "int64_t")
+      ((string-eq slop-type "I8") "int8_t")
+      ((string-eq slop-type "I16") "int16_t")
+      ((string-eq slop-type "I32") "int32_t")
+      ((string-eq slop-type "I64") "int64_t")
+      ((string-eq slop-type "U8") "uint8_t")
+      ((string-eq slop-type "U16") "uint16_t")
+      ((string-eq slop-type "U32") "uint32_t")
+      ((string-eq slop-type "U64") "uint64_t")
+      ((string-eq slop-type "Float") "double")
+      ((string-eq slop-type "F32") "float")
+      ((string-eq slop-type "Bool") "uint8_t")
+      ((string-eq slop-type "String") "slop_string")
+      ((string-eq slop-type "Unit") "void")
+      ((string-eq slop-type "Void") "void")
+      ((starts-with slop-type "(Ptr ")
+        ;; Pointer type - extract inner and add *
+        (let ((arena (. (deref ctx) arena))
+              (len (cast Int (string-len slop-type)))
+              (inner-start 5)  ;; After "(Ptr "
+              (inner-end (- len 1)))  ;; Before ")"
+          (if (< inner-start inner-end)
+            (let ((inner (substring arena slop-type (cast (Int 0 ..) inner-start) (cast (Int 0 ..) (- inner-end inner-start)))))
+              (ctx-str ctx (closure-type-to-c ctx inner) "*"))
+            "void*")))
+      ((starts-with slop-type "(Fn ")
+        ;; Nested function type - use slop_closure_t
+        "slop_closure_t")
+      (else "int64_t")))  ;; Default for unknown types
 
   (fn get-base-function-name ((arena Arena) (fn-name String))
     (@intent "Extract base function name from qualified name (file.open -> open)")
@@ -5159,8 +5337,8 @@
         (let ((fn-def (build-lambda-function ctx lambda-name return-type param-str body-code)))
           ;; Add to deferred lambdas
           (ctx-add-deferred-lambda ctx fn-def)
-          ;; Return the lambda name as expression value (function pointer)
-          lambda-name))))
+          ;; Return closure struct with NULL env (non-capturing lambda)
+          (ctx-str5 ctx "(slop_closure_t){(void*)" lambda-name ", NULL}" "" "")))))
 
   (fn transpile-closure ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (params (List (Ptr SExpr))) (param-names (List String)) (free-vars (List String)) (lambda-name String))
     (@intent "Transpile capturing lambda (closure)")

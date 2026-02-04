@@ -1,0 +1,25 @@
+;; Closure regression test case
+;; Tests that (Fn ...) parameters work correctly as function pointers
+
+(module test-closure (export main)
+
+  ;; Higher-order function taking a predicate
+  (fn filter-positive ((predicate (Fn (Int) Bool)) (n Int))
+    (@intent "Test generic function parameter invocation")
+    (@spec (((Fn (Int) Bool) Int) -> Bool))
+    (predicate n))
+
+  ;; Simple predicate function
+  (fn is-positive ((n Int))
+    (@intent "Check if n > 0")
+    (@spec ((Int) -> Bool))
+    (> n 0))
+
+  ;; Main entry point
+  (fn main ()
+    (@intent "Test closure parameter passing")
+    (@spec (() -> Int))
+    ;; Pass function as argument - this should work
+    (if (filter-positive is-positive 5)
+        0
+        1)))

@@ -1100,7 +1100,10 @@
                                   (c-name (to-c-name arena param-name))
                                   (c-type (to-c-type-prefixed ctx type-expr))
                                   (slop-type-str (pretty-print arena type-expr))
-                                  (is-ptr (is-pointer-type type-expr)))
+                                  (is-ptr (is-pointer-type type-expr))
+                                  (is-fn-param (is-fn-type type-expr)))
+                              ;; (Fn ...) params are function pointers, NOT closures
+                              ;; is-closure=false so they're called directly as fn(args)
                               (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false false "" ""))))
                           ((none) (do))))
                       (else (do))))
