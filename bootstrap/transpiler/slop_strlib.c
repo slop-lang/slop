@@ -255,10 +255,10 @@ slop_string strlib_trim(slop_arena* arena, slop_string s) {
                 {
                     __auto_type newlen = (end - start);
                     if ((newlen == 0)) {
-                        return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 1)))};
+                        return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
                     } else {
                         {
-                            __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (newlen + 1));
+                            __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (newlen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                             memcpy(((void*)(buf)), ((void*)((s.data + start))), ((uint64_t)(newlen)));
                             return (slop_string){.len = ((uint64_t)(newlen)), .data = ((uint8_t*)(buf))};
                         }
@@ -283,10 +283,10 @@ slop_string strlib_trim_start(slop_arena* arena, slop_string s) {
                 {
                     __auto_type newlen = (slen - start);
                     if ((newlen == 0)) {
-                        return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 1)))};
+                        return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
                     } else {
                         {
-                            __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (newlen + 1));
+                            __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (newlen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                             memcpy(((void*)(buf)), ((void*)((s.data + start))), ((uint64_t)(newlen)));
                             return (slop_string){.len = ((uint64_t)(newlen)), .data = ((uint8_t*)(buf))};
                         }
@@ -309,10 +309,10 @@ slop_string strlib_trim_end(slop_arena* arena, slop_string s) {
                     end = (end - 1);
                 }
                 if ((end == 0)) {
-                    return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 1)))};
+                    return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
                 } else {
                     {
-                        __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (end + 1));
+                        __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (end + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                         memcpy(((void*)(buf)), ((void*)(s.data)), ((uint64_t)(end)));
                         return (slop_string){.len = ((uint64_t)(end)), .data = ((uint8_t*)(buf))};
                     }
@@ -330,7 +330,7 @@ slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_le
         } else {
             {
                 __auto_type pad_count = (target_len - slen);
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (target_len + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (target_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 memset(((void*)(buf)), ((int64_t)(pad_char)), ((uint64_t)(pad_count)));
                 memcpy(((void*)((buf + pad_count))), ((void*)(s.data)), ((uint64_t)(slen)));
                 return (slop_string){.len = ((uint64_t)(target_len)), .data = ((uint8_t*)(buf))};
@@ -347,7 +347,7 @@ slop_string strlib_pad_end(slop_arena* arena, slop_string s, int64_t target_len,
         } else {
             {
                 __auto_type pad_count = (target_len - slen);
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (target_len + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (target_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 memcpy(((void*)(buf)), ((void*)(s.data)), ((uint64_t)(slen)));
                 memset(((void*)((buf + slen))), ((int64_t)(pad_char)), ((uint64_t)(pad_count)));
                 return (slop_string){.len = ((uint64_t)(target_len)), .data = ((uint8_t*)(buf))};
@@ -363,7 +363,7 @@ slop_string strlib_reverse(slop_arena* arena, slop_string s) {
             return s;
         } else {
             {
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (slen + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 __auto_type i = 0;
                 while ((i < slen)) {
                     buf[i] = s.data[((slen - 1) - i)];
@@ -379,11 +379,11 @@ slop_string strlib_repeat(slop_arena* arena, slop_string s, int64_t n) {
     {
         __auto_type slen = ((int64_t)(s.len));
         if (((n == 0) || (slen == 0))) {
-            return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 1)))};
+            return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
         } else {
             {
                 __auto_type total_len = (slen * n);
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (total_len + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (total_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 __auto_type i = 0;
                 while ((i < n)) {
                     memcpy(((void*)((buf + (i * slen)))), ((void*)(s.data)), ((uint64_t)(slen)));
@@ -401,10 +401,10 @@ slop_string strlib_substring(slop_arena* arena, slop_string s, int64_t start, in
         __auto_type slen = ((int64_t)(s.len));
         __auto_type actual_len = ((((int64_t)(len))) < (((int64_t)((slen - ((int64_t)(start)))))) ? (((int64_t)(len))) : (((int64_t)((slen - ((int64_t)(start)))))));
         if ((actual_len == 0)) {
-            return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 1)))};
+            return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
         } else {
             {
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (actual_len + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (actual_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 memcpy(((void*)(buf)), ((void*)((s.data + start))), ((uint64_t)(actual_len)));
                 return (slop_string){.len = ((uint64_t)(actual_len)), .data = ((uint8_t*)(buf))};
             }
@@ -419,7 +419,7 @@ slop_string strlib_to_upper(slop_arena* arena, slop_string s) {
             return s;
         } else {
             {
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (slen + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 __auto_type i = 0;
                 while ((i < slen)) {
                     buf[i] = ((uint8_t)(strlib_char_to_upper(((strlib_AsciiChar)(s.data[i])))));
@@ -438,7 +438,7 @@ slop_string strlib_to_lower(slop_arena* arena, slop_string s) {
             return s;
         } else {
             {
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (slen + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 __auto_type i = 0;
                 while ((i < slen)) {
                     buf[i] = ((uint8_t)(strlib_char_to_lower(((strlib_AsciiChar)(s.data[i])))));
@@ -457,7 +457,7 @@ slop_string strlib_to_title(slop_arena* arena, slop_string s) {
             return s;
         } else {
             {
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (slen + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 __auto_type i = 0;
                 __auto_type word_start = 1;
                 while ((i < slen)) {
@@ -490,7 +490,7 @@ slop_string strlib_capitalize(slop_arena* arena, slop_string s) {
             return s;
         } else {
             {
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (slen + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 buf[0] = ((uint8_t)(strlib_char_to_upper(((strlib_AsciiChar)(s.data[0])))));
                 if ((slen > 1)) {
                     memcpy(((void*)((buf + 1))), ((void*)((s.data + 1))), ((uint64_t)((slen - 1))));
@@ -515,7 +515,7 @@ slop_result_int_strlib_ParseError strlib_parse_int(slop_string s) {
             #endif
             slop_arena* arena = &_arena;
             {
-                __auto_type endptr = (uint8_t*)slop_arena_alloc(arena, 8);
+                __auto_type endptr = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 8); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 __auto_type result = strtol(((char*)(s.data)), ((char**)(endptr)), 10);
                 {
                     __auto_type end_val = (*((char**)(endptr)));
@@ -545,7 +545,7 @@ slop_result_double_strlib_ParseError strlib_parse_float(slop_string s) {
             #endif
             slop_arena* arena = &_arena;
             {
-                __auto_type endptr = (uint8_t*)slop_arena_alloc(arena, 8);
+                __auto_type endptr = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 8); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 __auto_type result = strtod(((char*)(s.data)), ((char**)(endptr)));
                 {
                     __auto_type end_val = (*((char**)(endptr)));
@@ -564,8 +564,8 @@ slop_result_double_strlib_ParseError strlib_parse_float(slop_string s) {
 slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precision) {
     slop_string _retval;
     {
-        __auto_type fmt_buf = (uint8_t*)slop_arena_alloc(arena, 8);
-        __auto_type out_buf = (uint8_t*)slop_arena_alloc(arena, 64);
+        __auto_type fmt_buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 8); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
+        __auto_type out_buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
         fmt_buf[0] = ((uint8_t)(37));
         fmt_buf[1] = ((uint8_t)(46));
         if ((precision < 10)) {
@@ -580,7 +580,7 @@ slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precisio
         }
         {
             __auto_type len = snprintf(((char*)(out_buf)), ((uint64_t)(64)), ((char*)(fmt_buf)), f);
-            return (slop_string){.len = ((uint64_t)(len)), .data = ((uint8_t*)(out_buf))};
+            _retval = (slop_string){.len = ((uint64_t)(len)), .data = ((uint8_t*)(out_buf))};
         }
     }
     SLOP_POST(((_retval.len >= 1)), "(>= (. $result len) 1)");
@@ -592,7 +592,7 @@ slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string
     {
         __auto_type count = ((int64_t)(((int64_t)((strings).len))));
         if ((count == 0)) {
-            return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 1)))};
+            return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
         } else {
             if ((count == 1)) {
                 __auto_type _mv_1 = ({ __auto_type _lst = strings; size_t _idx = (size_t)0; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -600,7 +600,7 @@ slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string
                     __auto_type first_str = _mv_1.value;
                     return first_str;
                 } else if (!_mv_1.has_value) {
-                    return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 1)))};
+                    return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
                 }
             } else {
                 {
@@ -619,7 +619,7 @@ slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string
                     }
                     total_len = (total_len + (sep_len * (count - 1)));
                     {
-                        __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (total_len + 1));
+                        __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (total_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                         __auto_type pos = 0;
                         __auto_type j = 0;
                         while ((j < count)) {
@@ -664,7 +664,7 @@ slop_string strlib_replace(slop_arena* arena, slop_string s, slop_string old, sl
             __auto_type old_len = ((int64_t)(old.len));
             __auto_type new_len = ((int64_t)(new.len));
             __auto_type result_len = ((slen - old_len) + new_len);
-            __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (result_len + 1));
+            __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (result_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
             if ((idx > 0)) {
                 memcpy(((void*)(buf)), ((void*)(s.data)), ((uint64_t)(idx)));
             }
@@ -717,7 +717,7 @@ slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old
             } else {
                 {
                     __auto_type result_len = (slen + (count * (new_len - old_len)));
-                    __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (result_len + 1));
+                    __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (result_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                     __auto_type src_pos = 0;
                     __auto_type dst_pos = 0;
                     while ((src_pos < slen)) {

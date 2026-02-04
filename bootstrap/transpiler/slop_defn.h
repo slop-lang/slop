@@ -37,6 +37,7 @@ uint8_t defn_is_function_form(types_SExpr* expr);
 uint8_t defn_is_const_form(types_SExpr* expr);
 uint8_t defn_is_ffi_form(types_SExpr* expr);
 uint8_t defn_is_ffi_struct_form(types_SExpr* expr);
+uint8_t defn_has_generic_annotation(slop_list_types_SExpr_ptr items);
 uint8_t defn_is_pointer_type_expr(types_SExpr* type_expr);
 void defn_transpile_const(context_TranspileContext* ctx, types_SExpr* expr, uint8_t is_exported);
 void defn_emit_const_def(context_TranspileContext* ctx, slop_string c_name, types_SExpr* type_expr, types_SExpr* value_expr, uint8_t is_exported);
@@ -57,7 +58,9 @@ void defn_emit_enum_values(context_TranspileContext* ctx, slop_string type_name,
 void defn_transpile_union(context_TranspileContext* ctx, slop_string raw_name, slop_string qualified_name, types_SExpr* expr);
 void defn_emit_union_variants(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start_idx);
 void defn_emit_tag_constants(context_TranspileContext* ctx, slop_string type_name, slop_list_types_SExpr_ptr items, int64_t start_idx);
+void defn_register_union_variant_fields(context_TranspileContext* ctx, slop_string raw_name, slop_string qualified_name, slop_list_types_SExpr_ptr items, int64_t start_idx);
 void defn_transpile_type_alias(context_TranspileContext* ctx, slop_string raw_name, slop_string qualified_name, types_SExpr* type_expr);
+uint8_t defn_is_generic_type_alias(slop_string s);
 uint8_t defn_is_array_type(types_SExpr* type_expr);
 void defn_emit_array_typedef(context_TranspileContext* ctx, slop_string qualified_name, types_SExpr* type_expr);
 slop_string defn_get_number_as_string(types_SExpr* expr);

@@ -8,6 +8,7 @@
 #include "slop_types.h"
 #include "slop_env.h"
 #include "slop_strlib.h"
+#include "slop_collect.h"
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED

@@ -29,6 +29,7 @@ typedef struct context_ResultTypeAlias context_ResultTypeAlias;
 typedef struct context_FuncCNameAlias context_FuncCNameAlias;
 typedef struct context_TypeAliasEntry context_TypeAliasEntry;
 typedef struct context_InlineRecord context_InlineRecord;
+typedef struct context_GenericFuncInstantiation context_GenericFuncInstantiation;
 typedef struct context_TranspileContext context_TranspileContext;
 typedef struct context_LastLambdaInfo context_LastLambdaInfo;
 
@@ -47,14 +48,14 @@ SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 SLOP_OPTION_DEFINE(context_FuncParamType*, slop_option_context_FuncParamType_ptr)
 #endif
 
-#ifndef SLOP_OPTION_CONTEXT_SCOPE_PTR_DEFINED
-#define SLOP_OPTION_CONTEXT_SCOPE_PTR_DEFINED
-SLOP_OPTION_DEFINE(context_Scope*, slop_option_context_Scope_ptr)
-#endif
-
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_SCOPE_PTR_DEFINED
+#define SLOP_OPTION_CONTEXT_SCOPE_PTR_DEFINED
+SLOP_OPTION_DEFINE(context_Scope*, slop_option_context_Scope_ptr)
 #endif
 
 struct context_TranspileError {
@@ -135,6 +136,9 @@ struct context_FuncEntry {
     uint8_t returns_pointer;
     uint8_t returns_string;
     slop_list_context_FuncParamType_ptr param_types;
+    uint8_t is_generic;
+    slop_list_string type_params;
+    slop_option_types_SExpr_ptr generic_source;
 };
 typedef struct context_FuncEntry context_FuncEntry;
 
@@ -359,6 +363,24 @@ SLOP_OPTION_DEFINE(context_InlineRecord, slop_option_context_InlineRecord)
 SLOP_LIST_DEFINE(context_InlineRecord, slop_list_context_InlineRecord)
 #endif
 
+struct context_GenericFuncInstantiation {
+    slop_string fn_name;
+    slop_string type_bindings;
+    slop_string c_name;
+    slop_string module_name;
+};
+typedef struct context_GenericFuncInstantiation context_GenericFuncInstantiation;
+
+#ifndef SLOP_OPTION_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
+#define SLOP_OPTION_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
+SLOP_OPTION_DEFINE(context_GenericFuncInstantiation, slop_option_context_GenericFuncInstantiation)
+#endif
+
+#ifndef SLOP_LIST_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
+#define SLOP_LIST_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
+SLOP_LIST_DEFINE(context_GenericFuncInstantiation, slop_list_context_GenericFuncInstantiation)
+#endif
+
 struct context_TranspileContext {
     slop_arena* arena;
     slop_list_string output;
@@ -398,6 +420,7 @@ struct context_TranspileContext {
     uint8_t last_lambda_is_closure;
     slop_string last_lambda_env_type;
     slop_string last_lambda_name;
+    slop_list_context_GenericFuncInstantiation generic_func_instantiations;
 };
 typedef struct context_TranspileContext context_TranspileContext;
 
@@ -529,6 +552,10 @@ void context_ctx_clear_last_lambda_info(context_TranspileContext* ctx);
 void context_ctx_start_function_buffer(context_TranspileContext* ctx);
 void context_ctx_stop_function_buffer(context_TranspileContext* ctx);
 void context_ctx_flush_function_buffer(context_TranspileContext* ctx);
+void context_ctx_register_generic_instantiation(context_TranspileContext* ctx, slop_string fn_name, slop_string type_bindings, slop_string c_name, slop_string module_name);
+uint8_t context_ctx_has_generic_instantiation(context_TranspileContext* ctx, slop_string fn_name, slop_string type_bindings);
+slop_list_context_GenericFuncInstantiation context_ctx_get_generic_instantiations(context_TranspileContext* ctx);
+slop_string context_mangle_generic_fn_name(context_TranspileContext* ctx, slop_string base_c_name, slop_string type_binding);
 
 #ifndef SLOP_OPTION_CONTEXT_TRANSPILEERROR_DEFINED
 #define SLOP_OPTION_CONTEXT_TRANSPILEERROR_DEFINED
@@ -553,6 +580,11 @@ SLOP_OPTION_DEFINE(context_FuncParamType, slop_option_context_FuncParamType)
 #ifndef SLOP_OPTION_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
 #define SLOP_OPTION_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
 SLOP_OPTION_DEFINE(context_FuncParamType*, slop_option_context_FuncParamType_ptr)
+#endif
+
+#ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
+SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #endif
 
 #ifndef SLOP_OPTION_CONTEXT_FUNCENTRY_DEFINED
@@ -630,14 +662,14 @@ SLOP_OPTION_DEFINE(context_TypeAliasEntry, slop_option_context_TypeAliasEntry)
 SLOP_OPTION_DEFINE(context_InlineRecord, slop_option_context_InlineRecord)
 #endif
 
+#ifndef SLOP_OPTION_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
+#define SLOP_OPTION_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
+SLOP_OPTION_DEFINE(context_GenericFuncInstantiation, slop_option_context_GenericFuncInstantiation)
+#endif
+
 #ifndef SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 #define SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 SLOP_OPTION_DEFINE(context_TranspileContext, slop_option_context_TranspileContext)
-#endif
-
-#ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
-#define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
-SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #endif
 
 #ifndef SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED

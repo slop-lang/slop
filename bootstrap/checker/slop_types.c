@@ -79,7 +79,7 @@ types_RangeBounds types_range_union(types_RangeBounds a, types_RangeBounds b) {
 
 types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string name, int64_t index, slop_string tag_constant, slop_option_types_ResolvedType_ptr payload) {
     {
-        __auto_type v = ((types_ResolvedVariant*)((uint8_t*)slop_arena_alloc(arena, 64)));
+        __auto_type v = ((types_ResolvedVariant*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*v) = (types_ResolvedVariant){name, index, tag_constant, payload};
         return v;
     }
@@ -88,7 +88,7 @@ types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string
 types_ResolvedField* types_resolved_field_new(slop_arena* arena, slop_string name, types_ResolvedType* field_type, int64_t offset) {
     SLOP_PRE(((field_type != NULL)), "(!= field-type nil)");
     {
-        __auto_type f = ((types_ResolvedField*)((uint8_t*)slop_arena_alloc(arena, 48)));
+        __auto_type f = ((types_ResolvedField*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 48); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*f) = (types_ResolvedField){name, field_type, offset};
         return f;
     }
@@ -96,7 +96,7 @@ types_ResolvedField* types_resolved_field_new(slop_arena* arena, slop_string nam
 
 types_ResolvedType* types_resolved_type_new(slop_arena* arena, types_ResolvedTypeKind kind, slop_string name, slop_option_string module_name, slop_string c_name) {
     {
-        __auto_type t = ((types_ResolvedType*)((uint8_t*)slop_arena_alloc(arena, 128)));
+        __auto_type t = ((types_ResolvedType*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*t) = (types_ResolvedType){kind, name, module_name, c_name, ((slop_list_types_ResolvedVariant){ .data = (types_ResolvedVariant*)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedVariant)), .len = 0, .cap = 16 }), ((slop_list_types_ResolvedField){ .data = (types_ResolvedField*)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedField)), .len = 0, .cap = 16 }), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_RangeBounds){.has_value = false}), 0, 0};
         return t;
     }
@@ -121,7 +121,7 @@ void types_resolved_type_set_inner2(types_ResolvedType* t, types_ResolvedType* i
 types_ParamInfo* types_param_info_new(slop_arena* arena, slop_string name, types_ResolvedType* param_type) {
     SLOP_PRE(((param_type != NULL)), "(!= param-type nil)");
     {
-        __auto_type p = ((types_ParamInfo*)((uint8_t*)slop_arena_alloc(arena, 24)));
+        __auto_type p = ((types_ParamInfo*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 24); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*p) = (types_ParamInfo){name, param_type};
         return p;
     }
@@ -130,7 +130,7 @@ types_ParamInfo* types_param_info_new(slop_arena* arena, slop_string name, types
 types_FnSignature* types_fn_signature_new(slop_arena* arena, slop_string name, slop_string c_name, slop_list_types_ParamInfo params, types_ResolvedType* return_type) {
     SLOP_PRE(((return_type != NULL)), "(!= return-type nil)");
     {
-        __auto_type sig = ((types_FnSignature*)((uint8_t*)slop_arena_alloc(arena, 112)));
+        __auto_type sig = ((types_FnSignature*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 112); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*sig) = (types_FnSignature){name, c_name, params, return_type, 0, 0, ((slop_option_string){.has_value = false}), ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 })};
         return sig;
     }
@@ -146,14 +146,14 @@ types_Diagnostic types_diagnostic_new(types_DiagnosticLevel level, slop_string m
 
 uint8_t types_is_primitive_kind(types_ResolvedTypeKind kind) {
     uint8_t _retval;
-    return (kind == types_ResolvedTypeKind_rk_primitive);
+    _retval = (kind == types_ResolvedTypeKind_rk_primitive);
     SLOP_POST(((_retval == (kind == types_ResolvedTypeKind_rk_primitive))), "(== $result (== kind (quote rk-primitive)))");
     return _retval;
 }
 
 uint8_t types_is_container_kind(types_ResolvedTypeKind kind) {
     uint8_t _retval;
-    return (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_result)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array)));
+    _retval = (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_result)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array)));
     SLOP_POST(((_retval == (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_result)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array))))), "(== $result (or (== kind (quote rk-list)) (== kind (quote rk-ptr)) (== kind (quote rk-option)) (== kind (quote rk-result)) (== kind (quote rk-map)) (== kind (quote rk-array))))");
     return _retval;
 }
@@ -161,7 +161,7 @@ uint8_t types_is_container_kind(types_ResolvedTypeKind kind) {
 uint8_t types_resolved_type_is_pointer(types_ResolvedType* t) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     uint8_t _retval;
-    return ((*t).kind == types_ResolvedTypeKind_rk_ptr);
+    _retval = ((*t).kind == types_ResolvedTypeKind_rk_ptr);
     SLOP_POST(((_retval == ((*t).kind == types_ResolvedTypeKind_rk_ptr))), "(== $result (== (. (deref t) kind) (quote rk-ptr)))");
     return _retval;
 }
@@ -169,7 +169,7 @@ uint8_t types_resolved_type_is_pointer(types_ResolvedType* t) {
 uint8_t types_resolved_type_is_union(types_ResolvedType* t) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     uint8_t _retval;
-    return ((*t).kind == types_ResolvedTypeKind_rk_union);
+    _retval = ((*t).kind == types_ResolvedTypeKind_rk_union);
     SLOP_POST(((_retval == ((*t).kind == types_ResolvedTypeKind_rk_union))), "(== $result (== (. (deref t) kind) (quote rk-union)))");
     return _retval;
 }
@@ -177,7 +177,7 @@ uint8_t types_resolved_type_is_union(types_ResolvedType* t) {
 uint8_t types_resolved_type_is_record(types_ResolvedType* t) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     uint8_t _retval;
-    return ((*t).kind == types_ResolvedTypeKind_rk_record);
+    _retval = ((*t).kind == types_ResolvedTypeKind_rk_record);
     SLOP_POST(((_retval == ((*t).kind == types_ResolvedTypeKind_rk_record))), "(== $result (== (. (deref t) kind) (quote rk-record)))");
     return _retval;
 }
@@ -185,7 +185,7 @@ uint8_t types_resolved_type_is_record(types_ResolvedType* t) {
 uint8_t types_resolved_type_is_function(types_ResolvedType* t) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     uint8_t _retval;
-    return ((*t).kind == types_ResolvedTypeKind_rk_function);
+    _retval = ((*t).kind == types_ResolvedTypeKind_rk_function);
     SLOP_POST(((_retval == ((*t).kind == types_ResolvedTypeKind_rk_function))), "(== $result (== (. (deref t) kind) (quote rk-function)))");
     return _retval;
 }

@@ -52,9 +52,11 @@ typedef enum {
     types_ResolvedTypeKind_rk_function,
     types_ResolvedTypeKind_rk_array,
     types_ResolvedTypeKind_rk_map,
+    types_ResolvedTypeKind_rk_set,
     types_ResolvedTypeKind_rk_chan,
     types_ResolvedTypeKind_rk_thread,
-    types_ResolvedTypeKind_rk_typevar
+    types_ResolvedTypeKind_rk_typevar,
+    types_ResolvedTypeKind_rk_never
 } types_ResolvedTypeKind;
 
 typedef enum {

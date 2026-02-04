@@ -7,24 +7,24 @@
 #include "slop_types.h"
 #include "slop_parser.h"
 
-typedef struct type_extract_FieldEntry type_extract_FieldEntry;
+typedef struct type_extract_TstFieldEntry type_extract_TstFieldEntry;
 typedef struct type_extract_VariantEntry type_extract_VariantEntry;
 typedef struct type_extract_EnumValueEntry type_extract_EnumValueEntry;
 typedef struct type_extract_ImportEntry type_extract_ImportEntry;
-typedef struct type_extract_TypeEntry type_extract_TypeEntry;
+typedef struct type_extract_TstTypeEntry type_extract_TstTypeEntry;
 typedef struct type_extract_TypeRegistry type_extract_TypeRegistry;
 
 typedef enum {
-    type_extract_TypeEntryKind_te_record,
-    type_extract_TypeEntryKind_te_union,
-    type_extract_TypeEntryKind_te_enum,
-    type_extract_TypeEntryKind_te_range,
-    type_extract_TypeEntryKind_te_alias
-} type_extract_TypeEntryKind;
+    type_extract_TstTypeEntryKind_te_record,
+    type_extract_TstTypeEntryKind_te_union,
+    type_extract_TstTypeEntryKind_te_enum,
+    type_extract_TstTypeEntryKind_te_range,
+    type_extract_TstTypeEntryKind_te_alias
+} type_extract_TstTypeEntryKind;
 
-#ifndef SLOP_LIST_TYPE_EXTRACT_TYPEENTRY_PTR_DEFINED
-#define SLOP_LIST_TYPE_EXTRACT_TYPEENTRY_PTR_DEFINED
-SLOP_LIST_DEFINE(type_extract_TypeEntry*, slop_list_type_extract_TypeEntry_ptr)
+#ifndef SLOP_LIST_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
+SLOP_LIST_DEFINE(type_extract_TstTypeEntry*, slop_list_type_extract_TstTypeEntry_ptr)
 #endif
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
@@ -32,9 +32,9 @@ SLOP_LIST_DEFINE(type_extract_TypeEntry*, slop_list_type_extract_TypeEntry_ptr)
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
-#ifndef SLOP_OPTION_TYPE_EXTRACT_TYPEENTRY_PTR_DEFINED
-#define SLOP_OPTION_TYPE_EXTRACT_TYPEENTRY_PTR_DEFINED
-SLOP_OPTION_DEFINE(type_extract_TypeEntry*, slop_option_type_extract_TypeEntry_ptr)
+#ifndef SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
+SLOP_OPTION_DEFINE(type_extract_TstTypeEntry*, slop_option_type_extract_TstTypeEntry_ptr)
 #endif
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
@@ -42,25 +42,25 @@ SLOP_OPTION_DEFINE(type_extract_TypeEntry*, slop_option_type_extract_TypeEntry_p
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #endif
 
-struct type_extract_FieldEntry {
+struct type_extract_TstFieldEntry {
     slop_string name;
     slop_string type_name;
 };
-typedef struct type_extract_FieldEntry type_extract_FieldEntry;
+typedef struct type_extract_TstFieldEntry type_extract_TstFieldEntry;
 
-#ifndef SLOP_OPTION_TYPE_EXTRACT_FIELDENTRY_DEFINED
-#define SLOP_OPTION_TYPE_EXTRACT_FIELDENTRY_DEFINED
-SLOP_OPTION_DEFINE(type_extract_FieldEntry, slop_option_type_extract_FieldEntry)
+#ifndef SLOP_OPTION_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_TstFieldEntry, slop_option_type_extract_TstFieldEntry)
 #endif
 
-#ifndef SLOP_LIST_TYPE_EXTRACT_FIELDENTRY_DEFINED
-#define SLOP_LIST_TYPE_EXTRACT_FIELDENTRY_DEFINED
-SLOP_LIST_DEFINE(type_extract_FieldEntry, slop_list_type_extract_FieldEntry)
+#ifndef SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+SLOP_LIST_DEFINE(type_extract_TstFieldEntry, slop_list_type_extract_TstFieldEntry)
 #endif
 
-#ifndef SLOP_OPTION_LIST_TYPE_EXTRACT_FIELDENTRY_DEFINED
-#define SLOP_OPTION_LIST_TYPE_EXTRACT_FIELDENTRY_DEFINED
-SLOP_OPTION_DEFINE(slop_list_type_extract_FieldEntry, slop_option_list_type_extract_FieldEntry)
+#ifndef SLOP_OPTION_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+#define SLOP_OPTION_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+SLOP_OPTION_DEFINE(slop_list_type_extract_TstFieldEntry, slop_option_list_type_extract_TstFieldEntry)
 #endif
 
 struct type_extract_VariantEntry {
@@ -112,24 +112,24 @@ SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntr
 SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
 #endif
 
-struct type_extract_TypeEntry {
+struct type_extract_TstTypeEntry {
     slop_string name;
     slop_string c_name;
-    type_extract_TypeEntryKind kind;
-    slop_list_type_extract_FieldEntry fields;
+    type_extract_TstTypeEntryKind kind;
+    slop_list_type_extract_TstFieldEntry fields;
     slop_list_type_extract_VariantEntry variants;
     slop_list_type_extract_EnumValueEntry enum_values;
     slop_string inner_type;
 };
-typedef struct type_extract_TypeEntry type_extract_TypeEntry;
+typedef struct type_extract_TstTypeEntry type_extract_TstTypeEntry;
 
-#ifndef SLOP_OPTION_TYPE_EXTRACT_TYPEENTRY_DEFINED
-#define SLOP_OPTION_TYPE_EXTRACT_TYPEENTRY_DEFINED
-SLOP_OPTION_DEFINE(type_extract_TypeEntry, slop_option_type_extract_TypeEntry)
+#ifndef SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_TstTypeEntry, slop_option_type_extract_TstTypeEntry)
 #endif
 
 struct type_extract_TypeRegistry {
-    slop_list_type_extract_TypeEntry_ptr types;
+    slop_list_type_extract_TstTypeEntry_ptr types;
     slop_string module_prefix;
     slop_list_type_extract_ImportEntry import_entries;
 };
@@ -142,33 +142,33 @@ SLOP_OPTION_DEFINE(type_extract_TypeRegistry, slop_option_type_extract_TypeRegis
 
 type_extract_TypeRegistry type_extract_make_type_registry(slop_arena* arena, slop_string prefix);
 type_extract_TypeRegistry type_extract_make_type_registry_with_imports(slop_arena* arena, slop_string prefix, slop_list_type_extract_ImportEntry imports);
-void type_extract_registry_add_type(slop_arena* arena, type_extract_TypeRegistry* reg, type_extract_TypeEntry* entry);
-type_extract_TypeEntry* type_extract_type_entry_new(slop_arena* arena, slop_string name, slop_string c_name, type_extract_TypeEntryKind kind);
-type_extract_FieldEntry type_extract_field_entry_new(slop_string name, slop_string type_name);
+void type_extract_registry_add_type(slop_arena* arena, type_extract_TypeRegistry* reg, type_extract_TstTypeEntry* entry);
+type_extract_TstTypeEntry* type_extract_type_entry_new(slop_arena* arena, slop_string name, slop_string c_name, type_extract_TstTypeEntryKind kind);
+type_extract_TstFieldEntry type_extract_field_entry_new(slop_string name, slop_string type_name);
 type_extract_VariantEntry type_extract_variant_entry_new(slop_string name, int64_t index, slop_string payload_type);
 type_extract_EnumValueEntry type_extract_enum_value_entry_new(slop_string name, int64_t index);
 type_extract_TypeRegistry* type_extract_extract_types_from_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix);
 type_extract_TypeRegistry* type_extract_extract_types_from_ast_with_imports(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix, slop_list_type_extract_ImportEntry imports);
 void type_extract_extract_types_from_module(slop_arena* arena, types_SExpr* module_form, type_extract_TypeRegistry* reg_ptr, slop_string prefix);
 void type_extract_extract_type_def(slop_arena* arena, types_SExpr* type_form, type_extract_TypeRegistry* reg_ptr, slop_string prefix);
-type_extract_TypeEntry* type_extract_extract_record_type(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
-type_extract_TypeEntry* type_extract_extract_union_type(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
-type_extract_TypeEntry* type_extract_extract_enum_type(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
-slop_option_type_extract_TypeEntry_ptr type_extract_registry_lookup(type_extract_TypeRegistry reg, slop_string name);
-slop_option_type_extract_TypeEntry_ptr type_extract_registry_lookup_variant(type_extract_TypeRegistry reg, slop_string variant_name);
-slop_option_type_extract_TypeEntry_ptr type_extract_registry_lookup_enum_value(type_extract_TypeRegistry reg, slop_string value_name);
+type_extract_TstTypeEntry* type_extract_extract_record_type(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
+type_extract_TstTypeEntry* type_extract_extract_union_type(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
+type_extract_TstTypeEntry* type_extract_extract_enum_type(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
+slop_option_type_extract_TstTypeEntry_ptr type_extract_registry_lookup(type_extract_TypeRegistry reg, slop_string name);
+slop_option_type_extract_TstTypeEntry_ptr type_extract_registry_lookup_variant(type_extract_TypeRegistry reg, slop_string variant_name);
+slop_option_type_extract_TstTypeEntry_ptr type_extract_registry_lookup_enum_value(type_extract_TypeRegistry reg, slop_string value_name);
 slop_option_string type_extract_registry_lookup_import(type_extract_TypeRegistry reg, slop_string symbol_name);
 uint8_t type_extract_registry_is_union(type_extract_TypeRegistry reg, slop_string name);
 uint8_t type_extract_registry_is_record(type_extract_TypeRegistry reg, slop_string name);
 uint8_t type_extract_registry_is_enum(type_extract_TypeRegistry reg, slop_string name);
 slop_option_type_extract_VariantEntry type_extract_registry_get_variant_info(type_extract_TypeRegistry reg, slop_string variant_name);
-slop_option_list_type_extract_FieldEntry type_extract_registry_get_record_fields(type_extract_TypeRegistry reg, slop_string name);
+slop_option_list_type_extract_TstFieldEntry type_extract_registry_get_record_fields(type_extract_TypeRegistry reg, slop_string name);
 slop_string type_extract_make_c_type_name(slop_arena* arena, slop_string prefix, slop_string name);
 slop_string type_extract_convert_to_c_ident(slop_arena* arena, slop_string name);
 
-#ifndef SLOP_OPTION_TYPE_EXTRACT_FIELDENTRY_DEFINED
-#define SLOP_OPTION_TYPE_EXTRACT_FIELDENTRY_DEFINED
-SLOP_OPTION_DEFINE(type_extract_FieldEntry, slop_option_type_extract_FieldEntry)
+#ifndef SLOP_OPTION_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_TstFieldEntry, slop_option_type_extract_TstFieldEntry)
 #endif
 
 #ifndef SLOP_OPTION_TYPE_EXTRACT_VARIANTENTRY_DEFINED
@@ -186,14 +186,14 @@ SLOP_OPTION_DEFINE(type_extract_EnumValueEntry, slop_option_type_extract_EnumVal
 SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntry)
 #endif
 
-#ifndef SLOP_OPTION_TYPE_EXTRACT_TYPEENTRY_DEFINED
-#define SLOP_OPTION_TYPE_EXTRACT_TYPEENTRY_DEFINED
-SLOP_OPTION_DEFINE(type_extract_TypeEntry, slop_option_type_extract_TypeEntry)
+#ifndef SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_TstTypeEntry, slop_option_type_extract_TstTypeEntry)
 #endif
 
-#ifndef SLOP_OPTION_TYPE_EXTRACT_TYPEENTRY_PTR_DEFINED
-#define SLOP_OPTION_TYPE_EXTRACT_TYPEENTRY_PTR_DEFINED
-SLOP_OPTION_DEFINE(type_extract_TypeEntry*, slop_option_type_extract_TypeEntry_ptr)
+#ifndef SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
+SLOP_OPTION_DEFINE(type_extract_TstTypeEntry*, slop_option_type_extract_TstTypeEntry_ptr)
 #endif
 
 #ifndef SLOP_OPTION_TYPE_EXTRACT_TYPEREGISTRY_DEFINED
@@ -206,9 +206,9 @@ SLOP_OPTION_DEFINE(type_extract_TypeRegistry, slop_option_type_extract_TypeRegis
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #endif
 
-#ifndef SLOP_OPTION_LIST_TYPE_EXTRACT_FIELDENTRY_DEFINED
-#define SLOP_OPTION_LIST_TYPE_EXTRACT_FIELDENTRY_DEFINED
-SLOP_OPTION_DEFINE(slop_list_type_extract_FieldEntry, slop_option_list_type_extract_FieldEntry)
+#ifndef SLOP_OPTION_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+#define SLOP_OPTION_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+SLOP_OPTION_DEFINE(slop_list_type_extract_TstFieldEntry, slop_option_list_type_extract_TstFieldEntry)
 #endif
 
 

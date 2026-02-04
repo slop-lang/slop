@@ -187,6 +187,7 @@ struct env_TypeEnv {
     slop_list_env_BindingAnnotation binding_annotations;
     slop_option_string current_file;
     slop_list_string loaded_modules;
+    types_ResolvedType* never_type;
     slop_list_string fn_type_params;
 };
 typedef struct env_TypeEnv env_TypeEnv;
@@ -238,6 +239,7 @@ types_ResolvedType* env_env_get_string_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_unit_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_arena_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_unknown_type(env_TypeEnv* env);
+types_ResolvedType* env_env_get_never_type(env_TypeEnv* env);
 types_ResolvedType* env_env_make_option_type(env_TypeEnv* env, types_ResolvedType* inner_type);
 types_ResolvedType* env_env_make_ptr_type(env_TypeEnv* env, types_ResolvedType* inner_type);
 types_ResolvedType* env_env_get_generic_type(env_TypeEnv* env);
