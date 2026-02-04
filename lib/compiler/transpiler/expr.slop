@@ -3555,6 +3555,14 @@
             ((starts-with slop-type "(Option ")
               (let ((inner (substring arena slop-type 8 (max 0 (- (cast Int (string-len slop-type)) 9)))))
                 (ctx-str ctx "slop_option_" (slop-type-to-c-type ctx inner))))
+            ;; Chan types -> slop_chan_<inner>
+            ((starts-with slop-type "(Chan ")
+              (let ((inner (substring arena slop-type 6 (max 0 (- (cast Int (string-len slop-type)) 7)))))
+                (ctx-str ctx "slop_chan_" (type-to-identifier arena (slop-type-to-c-type ctx inner)))))
+            ;; Thread types -> slop_thread_<inner>
+            ((starts-with slop-type "(Thread ")
+              (let ((inner (substring arena slop-type 8 (max 0 (- (cast Int (string-len slop-type)) 9)))))
+                (ctx-str ctx "slop_thread_" (type-to-identifier arena (slop-type-to-c-type ctx inner)))))
             ;; Default: use as-is (might be a C type already)
             (else slop-type))))))
 
