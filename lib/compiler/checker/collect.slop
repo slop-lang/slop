@@ -8,9 +8,7 @@
 (module collect
   (export
     ;; Main collection functions
-    collect-types collect-functions collect-constants collect-module
-    ;; Generic type parameter extraction
-    find-fn-type-params)
+    collect-types collect-functions collect-constants collect-module)
 
   (import parser (SExpr SExprList SExprSymbol is-form
                   sexpr-line sexpr-col
@@ -352,26 +350,6 @@
                       (resolved-type-set-inner result-type ok-type)
                       (resolved-type-set-inner2 result-type err-type)
                       result-type))
-                  ;; Chan type: (Chan ElemType)
-                  ((string-eq head-name "Chan")
-                    (let ((inner-type (if (>= (list-len items) 2)
-                                        (match (list-get items 1)
-                                          ((some inner-expr) (get-field-type env arena inner-expr))
-                                          ((none) (env-get-int-type env)))
-                                        (env-get-int-type env))))
-                      (let ((chan-type (resolved-type-new arena 'rk-chan "Chan" (none) "slop_chan_int*")))
-                        (resolved-type-set-inner chan-type inner-type)
-                        chan-type)))
-                  ;; Thread type: (Thread ElemType)
-                  ((string-eq head-name "Thread")
-                    (let ((inner-type (if (>= (list-len items) 2)
-                                        (match (list-get items 1)
-                                          ((some inner-expr) (get-field-type env arena inner-expr))
-                                          ((none) (env-get-int-type env)))
-                                        (env-get-int-type env))))
-                      (let ((thread-type (resolved-type-new arena 'rk-thread "Thread" (none) "slop_thread_int*")))
-                        (resolved-type-set-inner thread-type inner-type)
-                        thread-type)))
                   ;; Unknown complex type
                   (else (resolved-type-new arena 'rk-primitive head-name (none) head-name)))))
             ((none) (env-get-unit-type env)))))
