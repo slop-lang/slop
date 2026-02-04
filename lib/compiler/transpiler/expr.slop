@@ -781,40 +781,47 @@
       ((str _)
         "slop_option_string")
       ((sym sym)
-        ;; Try to look up variable type
-        (let ((name (. sym name)))
-          (match (ctx-lookup-var ctx name)
-            ((some var-entry)
-              (let ((c-type (. var-entry c-type))
-                    (slop-type (. var-entry slop-type))
-                    (arena (. (deref ctx) arena)))
-                (cond
-                  ;; Handle auto type - try to derive from slop-type
-                  ((string-eq c-type "auto")
-                    (if (> (string-len slop-type) 0)
-                      ;; Convert SLOP type to C type and build Option type
-                      (let ((derived-c-type (slop-value-type-to-c-type ctx slop-type)))
-                        (c-type-to-option-type-name ctx derived-c-type))
-                      ;; No slop-type available - emit error
-                      (do
-                        (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for variable '" name "' - type is 'auto' with no SLOP type") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
-                        "__type_error__")))
-                  ((string-eq c-type "int64_t") "slop_option_int")
-                  ((string-eq c-type "double") "slop_option_double")
-                  ((string-eq c-type "slop_string") "slop_option_string")
-                  ((string-eq c-type "char") "slop_option_char")
-                  ((string-eq c-type "uint8_t") "slop_option_u8")
-                  ;; Check for pointer types (ends with *)
-                  ((ends-with c-type "*")
-                    (let ((base-type (strip-pointer-suffix arena c-type)))
-                      (ctx-str3 ctx "slop_option_" base-type "_ptr")))
-                  ;; Other custom types: build slop_option_<typename>
-                  (else (ctx-str3 ctx "slop_option_" c-type "")))))
-            ;; Unknown variable - emit error
-            ((none)
-              (do
-                (ctx-add-error-at ctx (ctx-str3 ctx "Unknown variable '" name "' for Option type inference") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
-                "__type_error__")))))
+        ;; First check if type checker annotated this node
+        (match (get-node-resolved-type val-expr)
+          ((some rt)
+            ;; Use resolved type to build Option type
+            (let ((c-type (resolved-type-to-c (. (deref ctx) arena) rt)))
+              (c-type-to-option-type-name ctx c-type)))
+          ((none)
+            ;; Fall back to variable lookup
+            (let ((name (. sym name)))
+              (match (ctx-lookup-var ctx name)
+                ((some var-entry)
+                  (let ((c-type (. var-entry c-type))
+                        (slop-type (. var-entry slop-type))
+                        (arena (. (deref ctx) arena)))
+                    (cond
+                      ;; Handle auto type - try to derive from slop-type
+                      ((string-eq c-type "auto")
+                        (if (> (string-len slop-type) 0)
+                          ;; Convert SLOP type to C type and build Option type
+                          (let ((derived-c-type (slop-value-type-to-c-type ctx slop-type)))
+                            (c-type-to-option-type-name ctx derived-c-type))
+                          ;; No slop-type available - emit error
+                          (do
+                            (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for variable '" name "' - type is 'auto' with no SLOP type") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
+                            "__type_error__")))
+                      ((string-eq c-type "int64_t") "slop_option_int")
+                      ((string-eq c-type "double") "slop_option_double")
+                      ((string-eq c-type "slop_string") "slop_option_string")
+                      ((string-eq c-type "char") "slop_option_char")
+                      ((string-eq c-type "uint8_t") "slop_option_u8")
+                      ;; Check for pointer types (ends with *)
+                      ((ends-with c-type "*")
+                        (let ((base-type (strip-pointer-suffix arena c-type)))
+                          (ctx-str3 ctx "slop_option_" base-type "_ptr")))
+                      ;; Other custom types: build slop_option_<typename>
+                      (else (ctx-str3 ctx "slop_option_" c-type "")))))
+                ;; Unknown variable - emit error
+                ((none)
+                  (do
+                    (ctx-add-error-at ctx (ctx-str3 ctx "Unknown variable '" name "' for Option type inference") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
+                    "__type_error__")))))))
       ;; For complex expressions, try to infer type from the structure
       ((lst lst)
         (infer-list-expr-option-type ctx (. lst items)))))
@@ -5331,7 +5338,7 @@
       (bind-lambda-params ctx params)
       ;; Transpile body expressions
       (let ((body-start 2)
-            (body-code (transpile-lambda-body ctx items body-start)))
+            (body-code (transpile-lambda-body ctx items body-start return-type)))
         (ctx-pop-scope ctx)
         ;; Build complete function definition
         (let ((fn-def (build-lambda-function ctx lambda-name return-type param-str body-code)))
@@ -5368,7 +5375,7 @@
           (bind-lambda-params ctx params)
           ;; Transpile body expressions
           (let ((body-start 2)
-                (body-code (transpile-lambda-body ctx items body-start)))
+                (body-code (transpile-lambda-body ctx items body-start return-type)))
             (ctx-pop-scope ctx)
             ;; Build closure function (takes void* env as first param)
             (let ((fn-def (build-closure-function ctx lambda-name env-type return-type param-str body-code free-vars)))
@@ -5455,31 +5462,23 @@
     (@intent "Build expression that creates closure instance")
     (@spec (((Ptr TranspileContext) String String String (List String)) -> String))
     (@pre {ctx != nil})
-    ;; For now, return a compound literal that packages the env
-    ;; The caller needs to handle allocating the env struct
-    ;; This generates: ({ static env_type _env = { .field1 = val1, ... }; (void*)&_env; })
-    ;; But that's complex. For simplicity, just return the lambda name.
-    ;; The caller (like spawn) should handle env creation.
-    ;;
-    ;; Actually, we need to emit the env creation at the call site.
-    ;; For now, emit an error placeholder.
+    ;; Return a compound statement expression that declares the env and creates the closure
+    ;; This ensures the env declaration is included when the closure is used in nested contexts
+    ;; ({ env_type env_name = { .var1 = var1, ... }; (slop_closure_t){ (void*)fn, (void*)&env_name }; })
     (let ((arena (. (deref ctx) arena)))
-      ;; Emit env declaration as a separate statement so it has proper scope
-      ;; env_type env_name = { captures... };
       (let ((initializer (build-env-initializer ctx free-vars)))
         (let ((env-decl (ctx-str ctx env-type
                           (ctx-str ctx " "
                             (ctx-str ctx env-name
                               (ctx-str ctx " = "
                                 (ctx-str ctx initializer ";")))))))
-          ;; Emit the env declaration
-          (ctx-emit ctx env-decl)
-          ;; Return just the closure struct literal (no compound expression)
-          ;; (slop_closure_t){ (void*)lambda, (void*)&env_name }
-          (ctx-str ctx "(slop_closure_t){ (void*)"
-            (ctx-str ctx lambda-name
-              (ctx-str ctx ", (void*)&"
-                (ctx-str ctx env-name " }"))))))))
+          ;; Return compound statement expression with declaration and closure
+          (ctx-str ctx "({ "
+            (ctx-str ctx env-decl
+              (ctx-str ctx " (slop_closure_t){ (void*)"
+                (ctx-str ctx lambda-name
+                  (ctx-str ctx ", (void*)&"
+                    (ctx-str ctx env-name " }; })"))))))))))
 
   (fn build-env-initializer ((ctx (Ptr TranspileContext)) (free-vars (List String)))
     (@intent "Build initializer for closure environment struct")
@@ -5492,10 +5491,15 @@
       (while (< i count)
         (match (list-get free-vars i)
           ((some var-name)
-            (let ((c-name (to-c-name arena var-name)))
+            (let ((c-name (to-c-name arena var-name))
+                  ;; Look up the actual access expression from context
+                  ;; For captured vars, this will be "_env->var", for locals just "var"
+                  (access-expr (match (ctx-lookup-var ctx var-name)
+                                 ((some entry) (. entry c-name))
+                                 ((none) c-name))))
               (if (> i 0)
-                (set! result (ctx-str ctx result (ctx-str5 ctx ", ." c-name " = " c-name "")))
-                (set! result (ctx-str ctx result (ctx-str5 ctx "." c-name " = " c-name ""))))))
+                (set! result (ctx-str ctx result (ctx-str5 ctx ", ." c-name " = " access-expr "")))
+                (set! result (ctx-str ctx result (ctx-str5 ctx "." c-name " = " access-expr ""))))))
           ((none) (do)))
         (set! i (+ i 1)))
       (ctx-str ctx result " }")))
@@ -5586,18 +5590,19 @@
               ((none) false)))))
       (else false)))
 
-  (fn transpile-lambda-body ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start Int))
+  (fn transpile-lambda-body ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start Int) (return-type String))
     (@intent "Transpile lambda body expressions, return last as value")
-    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> String))
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int String) -> String))
     (@pre {ctx != nil})
-    ;; Return the value of the last expression
+    ;; Return the value of the last expression (unless void)
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
+          (is-void (string-eq return-type "void"))
           (mut result "")
           (mut i start))
       (if (<= len start)
-        ;; No body - return 0
-        "return 0;"
+        ;; No body - return 0 or nothing for void
+        (if is-void "(void)0;" "return 0;")
         (do
           (while (< i len)
             (match (list-get items i)
@@ -5605,8 +5610,10 @@
                 (let ((expr-c (transpile-expr ctx expr))
                       (is-last (== i (- len 1))))
                   (if is-last
-                    ;; Last expression: return its value
-                    (set! result (ctx-str ctx result (ctx-str ctx "return " (ctx-str ctx expr-c ";"))))
+                    ;; Last expression: return its value (or just evaluate for void)
+                    (if is-void
+                      (set! result (ctx-str ctx result (ctx-str ctx expr-c ";")))
+                      (set! result (ctx-str ctx result (ctx-str ctx "return " (ctx-str ctx expr-c ";")))))
                     ;; Not last: just evaluate for side effects
                     (set! result (ctx-str ctx result (ctx-str3 ctx expr-c "; " ""))))))
               ((none) (do)))

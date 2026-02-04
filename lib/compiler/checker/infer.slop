@@ -24,7 +24,7 @@
                env-lookup-function env-lookup-variant env-lookup-constant
                env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
-               env-get-unknown-type
+               env-get-unknown-type env-get-never-type
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
                env-add-warning env-add-error
                env-set-fn-type-params env-clear-fn-type-params env-is-type-param))
@@ -468,16 +468,21 @@
     (@pre (!= env nil))
     (@pre (!= a nil))
     (@pre (!= b nil))
-    ;; If types are equal, return either
-    (if (types-equal a b)
-      a
-      ;; Types differ - emit warning and return first type
-      (let ((arena (env-arena env))
-            (msg (string-concat arena "Branch types differ: "
-                   (string-concat arena (. (deref a) name)
-                     (string-concat arena " vs " (. (deref b) name))))))
-        (env-add-warning env msg line col)
-        a)))
+    ;; Never is bottom type - unifies with anything
+    (if (== (. (deref a) kind) 'rk-never)
+      b  ;; First branch diverges, use second type
+      (if (== (. (deref b) kind) 'rk-never)
+        a  ;; Second branch diverges, use first type
+        ;; If types are equal, return either
+        (if (types-equal a b)
+          a
+          ;; Types differ - emit warning and return first type
+          (let ((arena (env-arena env))
+                (msg (string-concat arena "Branch types differ: "
+                       (string-concat arena (. (deref a) name)
+                         (string-concat arena " vs " (. (deref b) name))))))
+            (env-add-warning env msg line col)
+            a)))))
 
   ;; ============================================================
   ;; AST Type Annotation
@@ -810,13 +815,15 @@
                 (else (do)))
               (env-get-unit-type env)))
 
-        ;; (return expr) - type of expr
+        ;; (return expr) - Never type (divergent, control flow exits)
         ((string-eq op "return")
-          (if (>= len 2)
-            (match (list-get items 1)
-              ((some ret-expr) (infer-expr env ret-expr))
-              ((none) (env-get-unit-type env)))
-            (env-get-unit-type env)))
+          (do
+            ;; Still infer the expression for type checking
+            (when (>= len 2)
+              (match (list-get items 1)
+                ((some ret-expr) (let ((_ (infer-expr env ret-expr))) (do)))
+                ((none) (do))))
+            (env-get-never-type env)))
 
         ;; Comparison operators return Bool
         ((or (string-eq op "==") (string-eq op "!=")
