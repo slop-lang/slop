@@ -136,6 +136,12 @@ class ModuleResolver:
             candidate = dir_path / filename
             if candidate.exists():
                 return candidate.resolve()
+            # Try underscore variant (import-a -> import_a)
+            if '-' in module_name:
+                underscore_name = module_name.replace('-', '_')
+                candidate = dir_path / f"{underscore_name}.slop"
+                if candidate.exists():
+                    return candidate.resolve()
 
         searched = ', '.join(str(p) for p in search_dirs)
         raise ResolverError(f"Module '{module_name}' not found (searched: {searched})")

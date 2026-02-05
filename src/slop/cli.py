@@ -4372,6 +4372,14 @@ def cmd_verify(args):
     # Add standard library paths
     search_paths.extend(paths.get_stdlib_include_paths())
 
+    # Add [verify].sources directories to search paths for module resolution
+    # This ensures modules in different source directories can import from each other
+    if verify_cfg and verify_cfg.sources:
+        for src_dir in verify_cfg.sources:
+            src_path = (config_dir / src_dir).resolve()
+            if src_path.exists() and src_path.is_dir() and src_path not in search_paths:
+                search_paths.append(src_path)
+
     # Determine files to verify
     verify_files = []
 

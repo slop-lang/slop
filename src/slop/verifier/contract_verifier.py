@@ -69,6 +69,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         self.function_registry = function_registry
         self.imported_defs = imported_defs or ImportedDefinitions()
 
+    def _ensure_bool(self, expr: z3.ExprRef) -> z3.BoolRef:
+        """Coerce a Z3 expression to boolean if it's not already boolean.
+
+        Non-boolean expressions (Int, etc.) are converted using != 0 semantics.
+        """
+        if z3.is_bool(expr):
+            return expr
+        # Coerce non-boolean to boolean (non-zero = true)
+        return expr != 0
+
     def _references_mutable_state(self, expr: SExpr) -> bool:
         """Check if expression references mutable state (deref field access)"""
         if isinstance(expr, SList) and len(expr) >= 2:
@@ -1196,6 +1206,34 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         record_new_in_then = self._is_record_new(then_branch)
         record_new_in_else = self._is_record_new(else_branch)
 
+        # Handle case where BOTH branches are record-new
+        if record_new_in_then and record_new_in_else:
+            # Extract field axioms from both branches
+            then_return = self._get_return_expr(then_branch)
+            else_return = self._get_return_expr(else_branch)
+
+            # Process then branch: cond => field($result) == value
+            for item in then_return.items[2:]:  # Skip 'record-new' and Type
+                if isinstance(item, SList) and len(item) >= 2:
+                    field_name = item[0].name if isinstance(item[0], Symbol) else None
+                    if field_name:
+                        field_value = translator.translate_expr(item[1])
+                        if field_value is not None:
+                            field_func = translator._translate_field_for_obj(result_var, field_name)
+                            axioms.append(z3.Implies(cond_z3, field_func == field_value))
+
+            # Process else branch: !cond => field($result) == value
+            for item in else_return.items[2:]:  # Skip 'record-new' and Type
+                if isinstance(item, SList) and len(item) >= 2:
+                    field_name = item[0].name if isinstance(item[0], Symbol) else None
+                    if field_name:
+                        field_value = translator.translate_expr(item[1])
+                        if field_value is not None:
+                            field_func = translator._translate_field_for_obj(result_var, field_name)
+                            axioms.append(z3.Implies(z3.Not(cond_z3), field_func == field_value))
+
+            return axioms
+
         if record_new_in_then:
             record_branch = then_branch
             var_branch = else_branch
@@ -1357,15 +1395,24 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return constraints
 
-    def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator) -> List:
+    def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator,
+                                      base_accessor: Optional[z3.ExprRef] = None) -> List:
         """Extract axioms: field_X($result) == value for each field in record-new
 
-        Also handles list-new as field value: if field value is (list-new ...),
-        add axiom: field_len(field_accessor($result)) == 0
+        Also handles:
+        - list-new as field value: add field_len(field_accessor($result)) == 0
+        - nested record-new: recursively extract field axioms for nested records
+        - string literals: add string_len axiom
+
+        Args:
+            record_new: The record-new expression
+            translator: The Z3 translator
+            base_accessor: The Z3 accessor for the base object (default: $result)
         """
         axioms = []
-        result_var = translator.variables.get('$result')
-        if result_var is None:
+        if base_accessor is None:
+            base_accessor = translator.variables.get('$result')
+        if base_accessor is None:
             return axioms
 
         # record-new Type (field1 val1) (field2 val2) ...
@@ -1373,7 +1420,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if isinstance(item, SList) and len(item) >= 2:
                 field_name = item[0].name if isinstance(item[0], Symbol) else None
                 if field_name:
-                    field_func = translator._translate_field_for_obj(result_var, field_name)
+                    field_func = translator._translate_field_for_obj(base_accessor, field_name)
                     field_value = translator.translate_expr(item[1])
                     if field_value is not None:
                         axioms.append(field_func == field_value)
@@ -1388,6 +1435,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                             len_func = translator.variables[func_name]
                         axioms.append(len_func(field_func) == z3.IntVal(0))
 
+                    # If field value is a nested record-new, recursively extract its field axioms
+                    # This handles patterns like: (record-new Outer (inner (record-new Inner (x 1))))
+                    # We want: field_x(field_inner($result)) == 1
+                    if is_form(item[1], 'record-new'):
+                        nested_axioms = self._extract_record_field_axioms(
+                            item[1], translator, base_accessor=field_func
+                        )
+                        axioms.extend(nested_axioms)
+
                     # If field value is a string literal, add string_len axiom
                     # This allows proving postconditions like {(string-len (. report reason)) > 0}
                     if isinstance(item[1], String):
@@ -1399,6 +1455,50 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                             str_len_func = translator.variables[str_len_func_name]
                         actual_len = len(item[1].value)
                         axioms.append(str_len_func(field_func) == z3.IntVal(actual_len))
+
+                    # If field value is a union constructor (some, none, ok, error), add union axioms
+                    # This enables proving match postconditions on record fields containing Option/Result
+                    # e.g., (match $result.current-formula-id ((some id) (== id formula-id)) ((none) false))
+                    if isinstance(item[1], SList) and len(item[1]) >= 1:
+                        field_val = item[1]
+                        head = field_val[0]
+                        if isinstance(head, Symbol) and head.name in {'some', 'none', 'ok', 'error'}:
+                            constructor = head.name
+
+                            # Tag index mapping (matches translator.py lines 54-92)
+                            tag_map = {'none': 0, 'some': 1, 'ok': 0, 'error': 1}
+                            tag_idx = tag_map.get(constructor, 0)
+
+                            # Get/create union_tag function
+                            if "union_tag" not in translator.variables:
+                                tag_func = z3.Function("union_tag", z3.IntSort(), z3.IntSort())
+                                translator.variables["union_tag"] = tag_func
+                            else:
+                                tag_func = translator.variables["union_tag"]
+
+                            # Axiom 1: union_tag(field_X($result)) == tag_index
+                            axioms.append(tag_func(field_func) == z3.IntVal(tag_idx))
+
+                            # For constructors with payload (some, ok, error), add payload axiom
+                            if len(field_val) >= 2 and constructor != 'none':
+                                payload = translator.translate_expr(field_val[1])
+                                if payload is not None:
+                                    payload_func_name = f"union_payload_{constructor}"
+                                    if payload_func_name not in translator.variables:
+                                        payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
+                                        translator.variables[payload_func_name] = payload_func
+                                    else:
+                                        payload_func = translator.variables[payload_func_name]
+
+                                    # Axiom 2: union_payload_<constructor>(field_X($result)) == payload
+                                    axioms.append(payload_func(field_func) == payload)
+
+                                    # If payload is record-new, recursively extract its fields
+                                    if is_form(field_val[1], 'record-new'):
+                                        nested = self._extract_record_field_axioms(
+                                            field_val[1], translator, base_accessor=payload_func(field_func)
+                                        )
+                                        axioms.extend(nested)
         return axioms
 
     def _extract_list_new_axioms(self, list_new_expr: SList, translator: Z3Translator) -> List:
@@ -1935,7 +2035,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for pre_name, pre_expr in preconditions:
             z3_pre = translator.translate_expr(pre_expr)
             if z3_pre is not None:
-                pre_z3.append(z3_pre)
+                pre_z3.append(self._ensure_bool(z3_pre))
             else:
                 failed_pres.append((pre_name, pre_expr))
 
@@ -1945,7 +2045,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for post in postconditions:
             z3_post = translator.translate_expr(post)
             if z3_post is not None:
-                post_z3.append(z3_post)
+                post_z3.append(self._ensure_bool(z3_post))
             else:
                 failed_posts.append(post)
 
@@ -1964,7 +2064,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for assume in assumptions:
             z3_assume = translator.translate_expr(assume)
             if z3_assume is not None:
-                assume_z3.append(z3_assume)
+                assume_z3.append(self._ensure_bool(z3_assume))
             else:
                 failed_assumes.append(assume)
 
@@ -1975,7 +2075,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for prop_name, prop_expr in properties:
             z3_prop = translator.translate_expr(prop_expr)
             if z3_prop is not None:
-                prop_z3.append(z3_prop)
+                prop_z3.append(self._ensure_bool(z3_prop))
             else:
                 failed_props.append((prop_name, prop_expr))
 
@@ -2129,7 +2229,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for param_name, inv_expr in param_invariants:
             inv_z3 = translator.translate_expr(inv_expr)
             if inv_z3 is not None:
-                solver.add(inv_z3)
+                solver.add(self._ensure_bool(inv_z3))
 
         # Phase 1b: Add range type axioms for record fields
         # For record types with range-typed fields like (inferred-count (Int 0 ..)),
@@ -2242,10 +2342,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         # Phase 5: Add conditional record-new axioms
         # For (if cond (record-new Type (f1 v1) ...) else), add: cond => field_f1($result) == v1
-        if fn_body is not None and self._is_conditional_with_record_new(fn_body):
-            cond_axioms = self._extract_conditional_record_axioms(fn_body, translator)
-            for axiom in cond_axioms:
-                solver.add(axiom)
+        # Use _get_return_expr to handle let/do wrappers
+        if fn_body is not None:
+            return_expr = self._get_return_expr(fn_body)
+            if self._is_conditional_with_record_new(return_expr):
+                cond_axioms = self._extract_conditional_record_axioms(return_expr, translator)
+                for axiom in cond_axioms:
+                    solver.add(axiom)
 
         # Phase 6: Add accessor function axioms
         # For functions that are simple field accessors, add axiom: fn_name(x) == field_name(x)

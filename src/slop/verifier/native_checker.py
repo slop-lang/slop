@@ -42,25 +42,21 @@ def _run_native_checker(path: str, include_paths: Optional[List[Path]] = None) -
         # Build list of all files to check
         files_to_check = []
 
-        if include_paths:
-            # Resolve all dependencies using ModuleResolver
-            # The native checker processes multiple files with a shared type environment,
-            # so we pass all dependencies in topological order
-            from slop.resolver import ModuleResolver, ResolverError
+        # Always try to resolve dependencies - at minimum search the file's parent directory
+        from slop.resolver import ModuleResolver, ResolverError
 
-            search_paths = list(include_paths) + [Path(path).parent]
-            resolver = ModuleResolver(search_paths)
+        search_paths = list(include_paths) if include_paths else []
+        search_paths.append(Path(path).parent)  # Always include parent directory
+        resolver = ModuleResolver(search_paths)
 
-            try:
-                graph = resolver.build_dependency_graph(Path(path))
-                # Get files in topological order (dependencies first)
-                for mod_name in resolver.topological_sort(graph):
-                    mod_info = graph.modules[mod_name]
-                    files_to_check.append(str(mod_info.path))
-            except ResolverError:
-                # If resolution fails, just check the single file
-                files_to_check = [path]
-        else:
+        try:
+            graph = resolver.build_dependency_graph(Path(path))
+            # Get files in topological order (dependencies first)
+            for mod_name in resolver.topological_sort(graph):
+                mod_info = graph.modules[mod_name]
+                files_to_check.append(str(mod_info.path))
+        except ResolverError:
+            # If resolution fails, just check the single file
             files_to_check = [path]
 
         # Build command

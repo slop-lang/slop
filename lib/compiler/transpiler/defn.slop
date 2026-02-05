@@ -1022,7 +1022,9 @@
         (emit-preconditions ctx preconditions)
         ;; Declare _retval if needed for postconditions
         (when needs-retval
-          (ctx-emit ctx (ctx-str ctx actual-return " _retval;")))
+          (ctx-emit ctx (ctx-str ctx actual-return " _retval;"))
+          ;; Bind $result to _retval for postcondition field access
+          (ctx-bind-var ctx (VarEntry "$result" "_retval" actual-return "" (ends-with actual-return "*") false false "" "")))
         ;; Set capture mode if we need _retval
         (when needs-retval
           (ctx-set-capture-retval ctx true))

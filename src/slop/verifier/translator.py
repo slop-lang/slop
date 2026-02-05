@@ -1568,7 +1568,22 @@ class Z3Translator:
         return self._translate_field_for_obj(obj, field_name)
 
     def _translate_field_for_obj(self, obj: z3.ExprRef, field_name: str) -> z3.ExprRef:
-        """Translate field access given an already-translated object and field name"""
+        """Translate field access given an already-translated object and field name.
+
+        Handles nested field access: if field_name contains dots (e.g., "ctx.formula-counter"),
+        this recursively chains field accessors: field_formula-counter(field_ctx(obj))
+        """
+        # Handle nested field names by recursively chaining field accessors
+        if '.' in field_name:
+            first_dot = field_name.index('.')
+            first_field = field_name[:first_dot]
+            remaining = field_name[first_dot + 1:]
+            # Get intermediate object by accessing first field
+            intermediate = self._translate_field_for_obj(obj, first_field)
+            # Recursively access remaining fields
+            return self._translate_field_for_obj(intermediate, remaining)
+
+        # Base case: single field name
         # Create or get the field accessor function
         # Use Bool for fields that look boolean, Int otherwise
         func_name = f"field_{field_name}"
@@ -1594,6 +1609,10 @@ class Z3Translator:
 
         if cond is None or then_expr is None:
             return None
+
+        # Coerce non-boolean conditions to boolean (non-zero = true)
+        if not z3.is_bool(cond):
+            cond = cond != 0
 
         # else is optional, defaults to 0
         if len(expr) > 3:
@@ -1632,6 +1651,10 @@ class Z3Translator:
 
                 if test is None or body is None:
                     return None
+
+                # Coerce non-boolean test conditions to boolean (non-zero = true)
+                if not z3.is_bool(test):
+                    test = test != 0
 
                 if result is None:
                     # Last clause without else - use body as default
@@ -1906,6 +1929,7 @@ class Z3Translator:
                 # Use naming conventions for functions without imported signature
                 is_predicate = (fn_name.endswith('-eq') or fn_name.endswith('?') or
                               fn_name.startswith('is-') or fn_name.endswith('-contains') or
+                              '-contains-' in fn_name or  # matches string-contains-newline etc
                               fn_name == 'graph-contains' or fn_name == 'contains' or
                               fn_name.startswith('has-'))
                 if is_predicate:
