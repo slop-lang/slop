@@ -2791,6 +2791,8 @@
             ;; Fallback to memcmp-based macro if no fields registered
             (ctx-emit-header ctx (ctx-str3 ctx "SLOP_STRUCT_HASH_EQ_DEFINE(" c-type ")"))
             (do
+              ;; First emit hash/eq for any nested union/record field types
+              (emit-record-field-dependencies ctx fields)
               ;; Generate hash function
               (emit-struct-hash-fn ctx c-type fields)
               ;; Generate equality function
@@ -2821,6 +2823,47 @@
                       (emit-struct-hash-fn ctx c-payload-type fields)
                       (emit-struct-eq-fn ctx c-payload-type fields)
                       (ctx-emit-header ctx "#endif")))))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn emit-record-field-dependencies ((ctx (Ptr TranspileContext)) (fields (List FieldEntry)))
+    (@intent "Emit hash/eq functions for record field types that need them (unions, nested records)")
+    (@spec (((Ptr TranspileContext) (List FieldEntry)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((len (list-len fields))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get fields i)
+          ((some field)
+            (let ((slop-type (. field slop-type))
+                  (c-type (. field c-type)))
+              ;; Skip primitive types
+              (when (not (is-primitive-slop-type slop-type))
+                ;; Check if it's a union type
+                (let ((union-variants (ctx-get-union-variants ctx c-type)))
+                  (if (> (list-len union-variants) 0)
+                    ;; Union field - emit its hash/eq with guard
+                    (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" "")))
+                      (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
+                      (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+                      ;; First emit dependencies for union's payload types
+                      (emit-union-payload-hash-eq ctx union-variants)
+                      ;; Then emit the union's hash/eq
+                      (emit-union-hash-fn ctx c-type union-variants)
+                      (emit-union-eq-fn ctx c-type union-variants)
+                      (ctx-emit-header ctx "#endif"))
+                    ;; Not a union - check if it's a nested record
+                    (let ((nested-fields (ctx-get-fields-for-type ctx c-type)))
+                      (when (> (list-len nested-fields) 0)
+                        ;; Nested record - emit its hash/eq with guard
+                        (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" "")))
+                          (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
+                          (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+                          ;; Recursively emit dependencies first
+                          (emit-record-field-dependencies ctx nested-fields)
+                          (emit-struct-hash-fn ctx c-type nested-fields)
+                          (emit-struct-eq-fn ctx c-type nested-fields)
+                          (ctx-emit-header ctx "#endif")))))))))
           ((none) (do)))
         (set! i (+ i 1)))))
 
@@ -3078,6 +3121,12 @@
         ;; Range type aliases (e.g., BlankNodeId -> (Int 0 ..)) - use int hash
         ((is-range-type-alias ctx slop-type)
           (ctx-emit-header ctx (ctx-str3 ctx "    { int64_t _tmp = (int64_t)_k->" c-field-name "; hash ^= slop_hash_int(&_tmp); hash *= 1099511628211ULL; }")))
+        ;; Union types - register for deferred hash/eq generation, then call
+        ((> (list-len (ctx-get-union-variants ctx (. field c-type))) 0)
+          (let ((nested-c-type (. field c-type)))
+            ;; Register for deferred generation at module level to avoid interleaving
+            (ctx-register-struct-key-type ctx nested-c-type)
+            (ctx-emit-header ctx (ctx-str5 ctx "    hash ^= slop_hash_" nested-c-type "(&_k->" c-field-name "); hash *= 1099511628211ULL;"))))
         ;; Nested struct types - call their hash function
         (else
           ;; For other types (nested structs), call slop_hash_TypeName
@@ -3148,6 +3197,12 @@
         ;; Range type aliases (e.g., BlankNodeId -> (Int 0 ..)) - direct comparison
         ((is-range-type-alias ctx slop-type)
           (ctx-emit-header ctx (ctx-str4 ctx "        && _a->" c-field-name " == _b->" c-field-name)))
+        ;; Union types - register for deferred hash/eq generation, then call
+        ((> (list-len (ctx-get-union-variants ctx (. field c-type))) 0)
+          (let ((nested-c-type (. field c-type)))
+            ;; Register for deferred generation at module level to avoid interleaving
+            (ctx-register-struct-key-type ctx nested-c-type)
+            (ctx-emit-header ctx (ctx-str ctx (ctx-str5 ctx "        && slop_eq_" nested-c-type "(&_a->" c-field-name ", &_b->") (ctx-str ctx c-field-name ")")))))
         ;; Nested struct types - call their eq function
         (else
           (let ((nested-c-type (. field c-type)))
@@ -3161,12 +3216,11 @@
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
     (let ((struct-key-types (ctx-get-struct-key-types ctx))
-          (len (list-len struct-key-types))
           (mut i 0))
-      (when (> len 0)
+      (when (> (list-len struct-key-types) 0)
         (ctx-emit-header ctx "")
         (ctx-emit-header ctx "/* Hash/eq functions and list types for struct map/set keys */"))
-      (while (< i len)
+      (while (< i (list-len struct-key-types))
         (match (list-get struct-key-types i)
           ((some c-type)
             (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" ""))

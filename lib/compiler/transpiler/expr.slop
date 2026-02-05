@@ -812,6 +812,9 @@
       ((string-eq fn-name "strcmp") "strcmp")
       ((string-eq fn-name "exit") "exit")
       ((string-eq fn-name "abort") "abort")
+      ;; Time functions
+      ((string-eq fn-name "now-ms") "slop_now_ms")
+      ((string-eq fn-name "sleep-ms") "slop_sleep_ms")
       ;; Not a runtime function
       (else "")))
 
@@ -5613,7 +5616,9 @@
         ;; Build lambda with env parameter
         (let ((param-str (build-closure-params ctx params))
               ;; Infer return type from lambda body
-              (return-type (infer-lambda-return-type ctx body-expr)))
+              (return-type (infer-lambda-return-type ctx body-expr))
+              ;; Capture access expressions BEFORE pushing scope
+              (captured-accesses (capture-free-var-accesses ctx free-vars)))
           ;; Push scope for lambda body
           (ctx-push-scope ctx)
           ;; Bind env-accessed variables (they come from _env)
@@ -5631,7 +5636,7 @@
               (ctx-set-last-lambda-info ctx true env-type lambda-name)
               ;; Generate closure instantiation expression
               ;; This creates the env struct and returns a packaged closure
-              (build-closure-instance ctx lambda-name env-name env-type free-vars)))))))
+              (build-closure-instance ctx lambda-name env-name env-type free-vars captured-accesses)))))))
 
   (fn build-closure-struct ((ctx (Ptr TranspileContext)) (env-type String) (free-vars (List String)))
     (@intent "Build typedef for closure environment struct")
@@ -5689,6 +5694,26 @@
           ((none) (do)))
         (set! i (+ i 1)))))
 
+  (fn capture-free-var-accesses ((ctx (Ptr TranspileContext)) (free-vars (List String)))
+    (@intent "Capture access expressions for free vars while in current scope")
+    (@spec (((Ptr TranspileContext) (List String)) -> (List String)))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (count (list-len free-vars))
+          (result (list-new arena String))
+          (mut i 0))
+      (while (< i count)
+        (match (list-get free-vars i)
+          ((some var-name)
+            (let ((c-name (to-c-name arena var-name))
+                  (access-expr (match (ctx-lookup-var ctx var-name)
+                                 ((some entry) (. entry c-name))
+                                 ((none) c-name))))
+              (list-push result access-expr)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
   (fn build-closure-function ((ctx (Ptr TranspileContext)) (name String) (env-type String) (ret-type String) (params String) (body String) (free-vars (List String)))
     (@intent "Build static closure function with env parameter")
     (@spec (((Ptr TranspileContext) String String String String String (List String)) -> String))
@@ -5709,31 +5734,64 @@
         s
         (substring arena s (cast (Int 0 ..) 1) (cast (Int 0 ..) (- len 2))))))
 
-  (fn build-closure-instance ((ctx (Ptr TranspileContext)) (lambda-name String) (env-name String) (env-type String) (free-vars (List String)))
-    (@intent "Build expression that creates closure instance")
-    (@spec (((Ptr TranspileContext) String String String (List String)) -> String))
+  (fn find-arena-ptr-expr ((ctx (Ptr TranspileContext)))
+    (@intent "Find the arena pointer expression to use for allocation")
+    (@spec (((Ptr TranspileContext)) -> String))
     (@pre {ctx != nil})
-    ;; Return a compound statement expression that declares the env and creates the closure
-    ;; This ensures the env declaration is included when the closure is used in nested contexts
-    ;; ({ env_type env_name = { .var1 = var1, ... }; (slop_closure_t){ (void*)fn, (void*)&env_name }; })
-    (let ((arena (. (deref ctx) arena)))
-      (let ((initializer (build-env-initializer ctx free-vars)))
-        (let ((env-decl (ctx-str ctx env-type
-                          (ctx-str ctx " "
-                            (ctx-str ctx env-name
-                              (ctx-str ctx " = "
-                                (ctx-str ctx initializer ";")))))))
-          ;; Return compound statement expression with declaration and closure
-          (ctx-str ctx "({ "
-            (ctx-str ctx env-decl
-              (ctx-str ctx " (slop_closure_t){ (void*)"
-                (ctx-str ctx lambda-name
-                  (ctx-str ctx ", (void*)&"
-                    (ctx-str ctx env-name " }; })"))))))))))
+    ;; Check if _arena (value) is in scope - we're inside with-arena
+    (match (ctx-lookup-var ctx "_arena")
+      ((some entry)
+        ;; Found _arena (value), use &_arena to get pointer
+        "&_arena")
+      ((none)
+        ;; No _arena, look for arena (pointer) in scope or captured vars
+        (match (ctx-lookup-var ctx "arena")
+          ((some entry)
+            ;; Found arena variable, use it directly (it's already a pointer)
+            (. entry c-name))
+          ((none)
+            ;; Fallback - assume arena is available
+            "arena")))))
 
-  (fn build-env-initializer ((ctx (Ptr TranspileContext)) (free-vars (List String)))
+  (fn build-closure-instance ((ctx (Ptr TranspileContext)) (lambda-name String) (env-name String) (env-type String) (free-vars (List String)) (captured-accesses (List String)))
+    (@intent "Build expression that creates closure instance")
+    (@spec (((Ptr TranspileContext) String String String (List String) (List String)) -> String))
+    (@pre {ctx != nil})
+    ;; Return a compound statement expression that allocates env on arena and creates the closure
+    ;; This ensures the env outlives the current scope when the closure is returned
+    ;; ({ env_type* env_name = (env_type*)slop_arena_alloc(_arena, sizeof(env_type)); *env_name = (env_type){ .var1 = var1, ... }; (slop_closure_t){ (void*)fn, (void*)env_name }; })
+    (let ((arena (. (deref ctx) arena)))
+      (let ((initializer (build-env-initializer ctx free-vars captured-accesses)))
+        ;; env_type* env_name = (env_type*)slop_arena_alloc(_arena, sizeof(env_type));
+        (let ((alloc-decl (ctx-str ctx env-type
+                           (ctx-str ctx "* "
+                             (ctx-str ctx env-name
+                               (ctx-str ctx " = ("
+                                 (ctx-str ctx env-type
+                                   (ctx-str ctx "*)slop_arena_alloc("
+                                     (ctx-str ctx (find-arena-ptr-expr ctx)
+                                       (ctx-str ctx ", sizeof("
+                                         (ctx-str ctx env-type "));"))))))))))
+              ;; *env_name = (env_type){ .var1 = var1, ... };
+              (assign-stmt (ctx-str ctx "*"
+                             (ctx-str ctx env-name
+                               (ctx-str ctx " = ("
+                                 (ctx-str ctx env-type
+                                   (ctx-str ctx ")"
+                                     (ctx-str ctx initializer ";"))))))))
+          ;; Return compound statement expression with allocation, assignment, and closure
+          (ctx-str ctx "({ "
+            (ctx-str ctx alloc-decl
+              (ctx-str ctx " "
+                (ctx-str ctx assign-stmt
+                  (ctx-str ctx " (slop_closure_t){ (void*)"
+                    (ctx-str ctx lambda-name
+                      (ctx-str ctx ", (void*)"
+                        (ctx-str ctx env-name " }; })"))))))))))))
+
+  (fn build-env-initializer ((ctx (Ptr TranspileContext)) (free-vars (List String)) (captured-accesses (List String)))
     (@intent "Build initializer for closure environment struct")
-    (@spec (((Ptr TranspileContext) (List String)) -> String))
+    (@spec (((Ptr TranspileContext) (List String) (List String)) -> String))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
           (count (list-len free-vars))
@@ -5743,10 +5801,9 @@
         (match (list-get free-vars i)
           ((some var-name)
             (let ((c-name (to-c-name arena var-name))
-                  ;; Look up the actual access expression from context
-                  ;; For captured vars, this will be "_env->var", for locals just "var"
-                  (access-expr (match (ctx-lookup-var ctx var-name)
-                                 ((some entry) (. entry c-name))
+                  ;; Use pre-captured access expression from before scope was pushed
+                  (access-expr (match (list-get captured-accesses i)
+                                 ((some acc) acc)
                                  ((none) c-name))))
               (if (> i 0)
                 (set! result (ctx-str ctx result (ctx-str5 ctx ", ." c-name " = " access-expr "")))
