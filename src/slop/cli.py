@@ -293,8 +293,9 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
             if main_mod:
                 c_parts.append(f'\nint main(void) {{ return (int){main_mod}_main(); }}\n')
             combined = '\n'.join(c_parts)
-            # Deduplicate trampolines when combining multiple modules
-            combined = _deduplicate_trampolines(combined)
+            # Deduplicate trampolines only when combining multiple modules (test mode)
+            if dep_files:
+                combined = _deduplicate_trampolines(combined)
             return combined, True
         return result.stderr, False
     except json.JSONDecodeError as e:
