@@ -287,8 +287,13 @@
                                     ((none)
                                       ;; Regular binding - infer type from init expression
                                       (let ((inferred-type (infer-expr-c-type ctx init-expr))
-                                            (lambda-info (ctx-get-last-lambda-info ctx)))
-                                        (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " init-c ";"))
+                                            (lambda-info (ctx-get-last-lambda-info ctx))
+                                            ;; For mutable vars with simple primitive types, use explicit type
+                                            ;; to avoid __auto_type mismatch in closures. Complex types (lists, etc)
+                                            ;; still use __auto_type since type inference may be incorrect.
+                                            (use-explicit-type (and has-mut (is-simple-primitive-c-type inferred-type)))
+                                            (decl-type (if use-explicit-type (ctx-str ctx inferred-type " ") "__auto_type ")))
+                                        (ctx-emit ctx (ctx-str5 ctx decl-type var-name " = " init-c ";"))
                                         ;; Check if this is a closure binding
                                         (if (. lambda-info is-closure)
                                           (do
@@ -313,6 +318,28 @@
             ((sym sym) (string-eq (. sym name) "mut"))
             (else false)))
         ((none) false))))
+
+  (fn is-simple-primitive-c-type ((t String))
+    (@intent "Check if type is a simple C primitive safe for explicit declaration")
+    (@spec ((String) -> Bool))
+    ;; Only use explicit types for primitives where __auto_type inference
+    ;; from literals could cause type mismatches (e.g., int vs int64_t).
+    ;; Excludes "Unknown" and complex types which should use __auto_type.
+    (cond
+      ((string-eq t "int64_t") true)
+      ((string-eq t "int32_t") true)
+      ((string-eq t "int16_t") true)
+      ((string-eq t "int8_t") true)
+      ((string-eq t "uint64_t") true)
+      ((string-eq t "uint32_t") true)
+      ((string-eq t "uint16_t") true)
+      ((string-eq t "uint8_t") true)
+      ((string-eq t "double") true)
+      ((string-eq t "float") true)
+      ((string-eq t "size_t") true)
+      ((string-eq t "bool") true)
+      ((string-eq t "int") true)
+      (else false)))
 
   (fn get-some-value ((expr (Ptr SExpr)))
     (@intent "If expr is (some value), return the value expression")

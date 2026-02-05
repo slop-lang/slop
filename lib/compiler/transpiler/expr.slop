@@ -5651,15 +5651,31 @@
         (match (list-get free-vars i)
           ((some var-name)
             ;; Look up variable type from context (checker should have resolved it)
-            (let ((var-type (match (ctx-lookup-var ctx var-name)
+            (let ((var-info (ctx-lookup-var ctx var-name))
+                  (is-mut (match var-info ((some entry) (. entry is-mutable)) ((none) false)))
+                  ;; For mutable captures, prefer c-type if concrete (avoids __auto_type mismatch)
+                  ;; For immutable captures, prefer slop-type conversion (more reliable)
+                  (var-type (match var-info
                               ((some entry)
-                                (let ((slop-type (. entry slop-type)))
-                                  (if (> (string-len slop-type) 0)
-                                    (slop-type-to-c-type ctx slop-type)
-                                    (. entry c-type))))
+                                (let ((c-type (. entry c-type))
+                                      (slop-type (. entry slop-type)))
+                                  (if is-mut
+                                    ;; Mutable: prefer c-type if it's concrete
+                                    (if (and (> (string-len c-type) 0)
+                                             (not (string-eq c-type "__auto_type")))
+                                      c-type
+                                      (if (> (string-len slop-type) 0)
+                                        (slop-type-to-c-type ctx slop-type)
+                                        "int64_t"))
+                                    ;; Immutable: prefer slop-type conversion
+                                    (if (> (string-len slop-type) 0)
+                                      (slop-type-to-c-type ctx slop-type)
+                                      c-type))))
                               ((none) "int64_t")))
-                  (c-name (to-c-name arena var-name)))
-              (set! fields (ctx-str ctx fields (ctx-str4 ctx var-type " " c-name "; ")))))
+                  (c-name (to-c-name arena var-name))
+                  ;; For mutable vars, store pointer type in env struct
+                  (field-type (if is-mut (ctx-str ctx var-type "*") var-type)))
+              (set! fields (ctx-str ctx fields (ctx-str4 ctx field-type " " c-name "; ")))))
           ((none) (do)))
         (set! i (+ i 1)))
       ;; typedef struct { fields } env_type;
@@ -5683,14 +5699,18 @@
         (match (list-get free-vars i)
           ((some var-name)
             ;; The variable access will be translated to _env->var_name
-            ;; We bind it with a special marker that the transpiler recognizes
+            ;; For mutable captured vars, we dereference since env stores pointer
             (let ((c-name (to-c-name arena var-name))
-                  (access-expr (ctx-str3 ctx "_env->" c-name ""))
                   (var-info (ctx-lookup-var ctx var-name))
+                  (is-mut (match var-info ((some entry) (. entry is-mutable)) ((none) false)))
+                  ;; For mutable: dereference the pointer; for immutable: direct access
+                  (access-expr (if is-mut
+                                 (ctx-str3 ctx "(*_env->" c-name ")")
+                                 (ctx-str3 ctx "_env->" c-name "")))
                   (var-type (match var-info ((some entry) (. entry c-type)) ((none) "int64_t")))
                   (slop-type (match var-info ((some entry) (. entry slop-type)) ((none) ""))))
-              ;; Bind with the access expression as the C name
-              (ctx-bind-var ctx (VarEntry var-name access-expr var-type slop-type false false false "" ""))))
+              ;; Bind with the access expression as the C name, preserving mutability
+              (ctx-bind-var ctx (VarEntry var-name access-expr var-type slop-type false is-mut false "" ""))))
           ((none) (do)))
         (set! i (+ i 1)))))
 
@@ -5706,9 +5726,11 @@
         (match (list-get free-vars i)
           ((some var-name)
             (let ((c-name (to-c-name arena var-name))
-                  (access-expr (match (ctx-lookup-var ctx var-name)
-                                 ((some entry) (. entry c-name))
-                                 ((none) c-name))))
+                  (var-info (ctx-lookup-var ctx var-name))
+                  (base-access (match var-info ((some entry) (. entry c-name)) ((none) c-name)))
+                  (is-mut (match var-info ((some entry) (. entry is-mutable)) ((none) false)))
+                  ;; For mutable vars, capture address instead of value
+                  (access-expr (if is-mut (ctx-str3 ctx "&(" base-access ")") base-access)))
               (list-push result access-expr)))
           ((none) (do)))
         (set! i (+ i 1)))
