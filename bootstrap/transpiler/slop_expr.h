@@ -121,6 +121,7 @@ slop_string expr_build_union_match_expr(context_TranspileContext* ctx, types_SEx
 slop_string expr_typed_none(context_TranspileContext* ctx, slop_string result_type, slop_string body);
 slop_string expr_typed_none_arg(context_TranspileContext* ctx, slop_string expected_type, slop_string arg_c);
 slop_string expr_wrap_fn_ref_as_closure(context_TranspileContext* ctx, slop_string expected_type, slop_string arg_c, types_SExpr* arg_expr);
+slop_string expr_generate_fn_trampoline(context_TranspileContext* ctx, slop_string fn_c_name, context_FuncEntry func_entry);
 slop_string expr_build_union_case_expr(context_TranspileContext* ctx, slop_arena* arena, slop_string cases, types_SExpr* scrutinee, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, slop_string result_type);
 slop_string expr_build_ternary_match_expr(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_let_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
@@ -169,10 +170,12 @@ slop_string expr_transpile_closure(context_TranspileContext* ctx, slop_list_type
 slop_string expr_build_closure_struct(context_TranspileContext* ctx, slop_string env_type, slop_list_string free_vars);
 slop_string expr_build_closure_params(context_TranspileContext* ctx, slop_list_types_SExpr_ptr params);
 void expr_bind_closure_captures(context_TranspileContext* ctx, slop_list_string free_vars);
+slop_list_string expr_capture_free_var_accesses(context_TranspileContext* ctx, slop_list_string free_vars);
 slop_string expr_build_closure_function(context_TranspileContext* ctx, slop_string name, slop_string env_type, slop_string ret_type, slop_string params, slop_string body, slop_list_string free_vars);
 slop_string expr_trim_parens(slop_arena* arena, slop_string s);
-slop_string expr_build_closure_instance(context_TranspileContext* ctx, slop_string lambda_name, slop_string env_name, slop_string env_type, slop_list_string free_vars);
-slop_string expr_build_env_initializer(context_TranspileContext* ctx, slop_list_string free_vars);
+slop_string expr_find_arena_ptr_expr(context_TranspileContext* ctx);
+slop_string expr_build_closure_instance(context_TranspileContext* ctx, slop_string lambda_name, slop_string env_name, slop_string env_type, slop_list_string free_vars, slop_list_string captured_accesses);
+slop_string expr_build_env_initializer(context_TranspileContext* ctx, slop_list_string free_vars, slop_list_string captured_accesses);
 slop_string expr_build_lambda_params(context_TranspileContext* ctx, slop_list_types_SExpr_ptr params);
 void expr_bind_lambda_params(context_TranspileContext* ctx, slop_list_types_SExpr_ptr params);
 uint8_t expr_is_pointer_type_sexpr(types_SExpr* type_expr);

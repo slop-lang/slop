@@ -1499,14 +1499,17 @@ def cmd_fill(args):
         type_errors = [d for d in diagnostics if d.severity == 'error']
         type_warnings = [d for d in diagnostics if d.severity == 'warning']
 
+        # Filter out "Unfilled hole" errors - those are what we're trying to fill!
+        real_errors = [e for e in type_errors if 'Unfilled hole' not in str(e)]
+
         # Show warnings but don't block
         if type_warnings and not quiet:
             for w in type_warnings:
                 print(f"  warning: {w}")
 
-        if type_errors:
-            print(f"Scaffold has {len(type_errors)} type error(s) that must be fixed before filling:", file=sys.stderr)
-            for e in type_errors:
+        if real_errors:
+            print(f"Scaffold has {len(real_errors)} type error(s) that must be fixed before filling:", file=sys.stderr)
+            for e in real_errors:
                 print(f"  {e}", file=sys.stderr)
             print("\nFix these errors in the scaffold file first.", file=sys.stderr)
             return 1

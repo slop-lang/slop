@@ -199,7 +199,7 @@ SLOP_OPTION_DEFINE(env_TypeEnv, slop_option_env_TypeEnv)
 
 env_TypeEnv* env_env_new(slop_arena* arena);
 void env_env_register_builtin_fn(env_TypeEnv* env, slop_arena* arena, slop_string name, slop_string c_name, slop_list_types_ParamInfo params, types_ResolvedType* ret_type);
-void env_register_builtin_functions(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* int_t, types_ResolvedType* bool_t, types_ResolvedType* string_t, types_ResolvedType* arena_t, types_ResolvedType* u8_t);
+void env_register_builtin_functions(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* int_t, types_ResolvedType* bool_t, types_ResolvedType* string_t, types_ResolvedType* arena_t, types_ResolvedType* u8_t, types_ResolvedType* unit_t);
 slop_arena* env_env_arena(env_TypeEnv* env);
 void env_env_push_scope(env_TypeEnv* env);
 void env_env_pop_scope(env_TypeEnv* env);

@@ -58,9 +58,9 @@ slop_string parser_json_print(slop_arena* arena, types_SExpr* expr);
 
 uint8_t parser_string_contains_dot(slop_string s) {
     {
-        __auto_type i = 0;
+        int64_t i = 0;
         __auto_type slen = ((int64_t)(s.len));
-        __auto_type found = 0;
+        uint8_t found = 0;
         while (((i < slen) && !(found))) {
             if ((strlib_char_at(s, ((int64_t)(i))) == ((strlib_AsciiChar)(46)))) {
                 found = 1;
@@ -75,7 +75,7 @@ uint8_t parser_string_contains_dot(slop_string s) {
 slop_string parser_string_copy(slop_arena* arena, slop_string s) {
     {
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (s.len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        __auto_type i = 0;
+        int64_t i = 0;
         __auto_type slen = ((int64_t)(s.len));
         while ((i < slen)) {
             buf[i] = s.data[i];
@@ -142,7 +142,7 @@ void parser_lexer_skip_comment(parser_LexerState* state) {
 
 void parser_lexer_skip_whitespace_and_comments(parser_LexerState* state) {
     {
-        __auto_type slop_continue = 1;
+        uint8_t slop_continue = 1;
         while (slop_continue) {
             {
                 __auto_type c = parser_lexer_peek(state);
@@ -164,11 +164,11 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_string(slop_arena* 
         __auto_type start_line = (*state).line;
         __auto_type start_col = (*state).col;
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 4096); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        __auto_type buf_pos = 0;
+        int64_t buf_pos = 0;
         parser_lexer_advance(state);
         {
-            __auto_type done = 0;
-            __auto_type has_error = 0;
+            uint8_t done = 0;
+            uint8_t has_error = 0;
             while (((!(done)) && (!(has_error)) && (!(parser_lexer_at_end(state))))) {
                 {
                     __auto_type c = parser_lexer_peek(state);
@@ -232,7 +232,7 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_number(slop_arena* 
         __auto_type start_line = (*state).line;
         __auto_type start_col = (*state).col;
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        __auto_type buf_pos = 0;
+        int64_t buf_pos = 0;
         if ((parser_lexer_peek(state) == 45)) {
             buf[buf_pos] = ((uint8_t)(45));
             buf_pos = (buf_pos + 1);
@@ -263,7 +263,7 @@ parser_Token parser_lexer_read_symbol(slop_arena* arena, parser_LexerState* stat
         __auto_type start_line = (*state).line;
         __auto_type start_col = (*state).col;
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 256); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        __auto_type buf_pos = 0;
+        int64_t buf_pos = 0;
         while ((!(parser_lexer_at_end(state)) && strlib_char_is_symbol_char(parser_lexer_peek(state)))) {
             buf[buf_pos] = ((uint8_t)(parser_lexer_peek(state)));
             buf_pos = (buf_pos + 1);
@@ -279,7 +279,7 @@ parser_Token parser_lexer_read_operator(slop_arena* arena, parser_LexerState* st
         __auto_type start_line = (*state).line;
         __auto_type start_col = (*state).col;
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 16); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        __auto_type buf_pos = 0;
+        int64_t buf_pos = 0;
         while ((!(parser_lexer_at_end(state)) && strlib_char_is_operator(parser_lexer_peek(state)))) {
             buf[buf_pos] = ((uint8_t)(parser_lexer_peek(state)));
             buf_pos = (buf_pos + 1);
@@ -341,8 +341,8 @@ slop_result_list_parser_Token_parser_ParseError parser_tokenize(slop_arena* aren
     {
         __auto_type state = parser_lexer_new(source);
         __auto_type tokens = ((slop_list_parser_Token){ .data = (parser_Token*)slop_arena_alloc(arena, 16 * sizeof(parser_Token)), .len = 0, .cap = 16 });
-        __auto_type done = 0;
-        __auto_type has_error = 0;
+        uint8_t done = 0;
+        uint8_t has_error = 0;
         __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
         while ((!(done) && !(has_error))) {
             __auto_type _mv_58 = parser_lexer_next_token(arena, (&state));
@@ -471,7 +471,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
                         __auto_type kw_buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 256); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                         kw_buf[0] = ((uint8_t)(58));
                         {
-                            __auto_type i = 0;
+                            int64_t i = 0;
                             __auto_type slen = ((int64_t)(next_tok.value.len));
                             while ((i < slen)) {
                                 kw_buf[(i + 1)] = next_tok.value.data[i];
@@ -505,8 +505,8 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_list(slop_arena* aren
         parser_parser_advance(state);
         {
             __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
-            __auto_type done = 0;
-            __auto_type has_error = 0;
+            uint8_t done = 0;
+            uint8_t has_error = 0;
             __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
             while ((!(done) && !(has_error))) {
                 {
@@ -1162,8 +1162,8 @@ slop_string parser_json_escape_string(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, ((slen * 2) + 3)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        __auto_type i = 0;
-        __auto_type out = 1;
+        int64_t i = 0;
+        int64_t out = 1;
         buf[0] = 34;
         while ((i < slen)) {
             {
@@ -1208,7 +1208,7 @@ slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr 
         } else {
             {
                 __auto_type result = parser_string_copy(arena, SLOP_STR("["));
-                __auto_type i = 0;
+                int64_t i = 0;
                 while ((i < len)) {
                     __auto_type _mv_89 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_89.has_value) {

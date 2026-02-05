@@ -197,6 +197,7 @@ void transpiler_emit_value_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_complex_value_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_struct_hash_eq(context_TranspileContext* ctx, slop_string c_type);
 void transpiler_emit_union_payload_hash_eq(context_TranspileContext* ctx, slop_list_context_UnionVariantEntry variants);
+void transpiler_emit_record_field_dependencies(context_TranspileContext* ctx, slop_list_context_FieldEntry fields);
 uint8_t transpiler_is_primitive_slop_type(slop_string slop_type);
 uint8_t transpiler_is_range_type_alias(context_TranspileContext* ctx, slop_string slop_type);
 void transpiler_emit_union_hash_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_UnionVariantEntry variants);

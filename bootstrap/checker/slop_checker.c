@@ -161,7 +161,7 @@ void checker_check_module_functions(env_TypeEnv* env, types_SExpr* module_form) 
 void checker_print_str(uint8_t* s) {
     SLOP_PRE(((s != NULL)), "(!= s nil)");
     {
-        __auto_type i = 0;
+        int64_t i = 0;
         while ((s[i] != 0)) {
             putchar(((int64_t)(s[i])));
             i = (i + 1);
@@ -173,7 +173,7 @@ void checker_print_string(slop_string s) {
     {
         __auto_type len = ((int64_t)(s.len));
         __auto_type data = s.data;
-        __auto_type i = 0;
+        int64_t i = 0;
         while ((i < len)) {
             putchar(((int64_t)(data[i])));
             i = (i + 1);
@@ -186,7 +186,7 @@ void checker_print_json_string(slop_arena* arena, slop_string s) {
     {
         __auto_type len = ((int64_t)(s.len));
         __auto_type data = s.data;
-        __auto_type i = 0;
+        int64_t i = 0;
         while ((i < len)) {
             {
                 __auto_type c = ((int64_t)(data[i]));
@@ -301,7 +301,7 @@ void checker_print_diagnostic(slop_arena* arena, slop_string filename, types_Dia
 void checker_output_diagnostics_text(slop_arena* arena, slop_string filename, slop_list_types_Diagnostic diagnostics) {
     {
         __auto_type len = ((int64_t)((diagnostics).len));
-        __auto_type i = 0;
+        int64_t i = 0;
         while ((i < len)) {
             __auto_type _mv_350 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_350.has_value) {
@@ -318,7 +318,7 @@ void checker_output_diagnostics_json(slop_arena* arena, slop_list_types_Diagnost
     putchar(91);
     {
         __auto_type len = ((int64_t)((diagnostics).len));
-        __auto_type i = 0;
+        int64_t i = 0;
         while ((i < len)) {
             if ((i > 0)) {
                 putchar(44);
@@ -429,8 +429,8 @@ int64_t checker_check_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t* 
 int64_t checker_count_errors(slop_list_types_Diagnostic diagnostics) {
     {
         __auto_type len = ((int64_t)((diagnostics).len));
-        __auto_type errors = 0;
-        __auto_type i = 0;
+        int64_t errors = 0;
+        int64_t i = 0;
         while ((i < len)) {
             __auto_type _mv_356 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_356.has_value) {
@@ -688,7 +688,7 @@ int main(int64_t argc, uint8_t** argv) {
                     slop_string type_str = SLOP_STR("Int");
                     slop_string context_file = SLOP_STR("");
                     slop_string params_str = SLOP_STR("");
-                    __auto_type i = 2;
+                    int64_t i = 2;
                     if ((i < argc)) {
                         expr_str = checker_argv_to_string(argv, i);
                         i = (i + 1);
@@ -726,9 +726,9 @@ int main(int64_t argc, uint8_t** argv) {
             } else {
                 {
                     __auto_type env = env_env_new(arena);
-                    __auto_type total_errors = 0;
+                    int64_t total_errors = 0;
                     __auto_type format = checker_OutputFormat_fmt_text;
-                    __auto_type file_start = 1;
+                    int64_t file_start = 1;
                     if (string_eq(checker_argv_to_string(argv, 1), SLOP_STR("--json"))) {
                         format = checker_OutputFormat_fmt_json;
                         file_start = 2;
@@ -737,8 +737,8 @@ int main(int64_t argc, uint8_t** argv) {
                         putchar(123);
                     }
                     {
-                        __auto_type i = file_start;
-                        __auto_type first = 1;
+                        int64_t i = file_start;
+                        uint8_t first = 1;
                         while ((i < argc)) {
                             {
                                 __auto_type filename = argv[i];

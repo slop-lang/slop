@@ -449,7 +449,7 @@ types_ResolvedType* collect_get_field_type(env_TypeEnv* env, slop_arena* arena, 
 uint8_t collect_is_type_param(slop_string name, slop_list_string type_params) {
     {
         __auto_type len = ((int64_t)((type_params).len));
-        __auto_type found = 0;
+        uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
             __auto_type _mv_114 = ({ __auto_type _lst = type_params; size_t _idx = (size_t)i; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_114.has_value) {
@@ -852,7 +852,7 @@ void collect_collect_union_variants(env_TypeEnv* env, slop_arena* arena, types_R
     if (parser_sexpr_is_list(union_expr)) {
         {
             __auto_type len = parser_sexpr_list_len(union_expr);
-            __auto_type variant_idx = 0;
+            int64_t variant_idx = 0;
             for (int64_t i = 1; i < len; i++) {
                 __auto_type _mv_134 = parser_sexpr_list_get(union_expr, i);
                 if (_mv_134.has_value) {

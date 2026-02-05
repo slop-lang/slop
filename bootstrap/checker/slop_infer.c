@@ -64,7 +64,7 @@ uint8_t infer_string_contains_char(slop_string s, int64_t c) {
     {
         __auto_type len = ((int64_t)(s.len));
         __auto_type data = s.data;
-        __auto_type found = 0;
+        uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
             if ((!(found) && (((int64_t)(data[i])) == c))) {
                 found = 1;
@@ -78,7 +78,7 @@ int64_t infer_string_index_of(slop_string s, int64_t c) {
     {
         __auto_type len = ((int64_t)(s.len));
         __auto_type data = s.data;
-        __auto_type result = -1;
+        int64_t result = -1;
         for (int64_t i = 0; i < len; i++) {
             if (((result == -1) && (((int64_t)(data[i])) == c))) {
                 result = i;
@@ -1896,7 +1896,7 @@ types_ResolvedType* infer_infer_cond_expr(env_TypeEnv* env, types_SExpr* expr, t
         __auto_type col = parser_sexpr_col(expr);
         uint8_t has_result = 0;
         types_ResolvedType* result_type = env_env_get_unit_type(env);
-        __auto_type i = 1;
+        int64_t i = 1;
         while ((i < len)) {
             __auto_type _mv_268 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_268.has_value) {
@@ -2029,7 +2029,7 @@ types_ResolvedType* infer_infer_match_expr(env_TypeEnv* env, types_SExpr* expr, 
         uint8_t has_result = 0;
         types_ResolvedType* result_type = env_env_get_unit_type(env);
         __auto_type scrutinee_type = (((len >= 2)) ? ({ __auto_type _mv = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type scrutinee = _mv.value; infer_infer_expr(env, scrutinee); }) : (env_env_get_unit_type(env)); }) : env_env_get_unit_type(env));
-        __auto_type i = 2;
+        int64_t i = 2;
         while ((i < len)) {
             __auto_type _mv_277 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_277.has_value) {
@@ -2766,7 +2766,7 @@ slop_string infer_get_hole_prompt(slop_list_types_SExpr_ptr items, int64_t len) 
 int64_t infer_find_last_body_idx(slop_list_types_SExpr_ptr items) {
     {
         __auto_type len = ((int64_t)((items).len));
-        __auto_type i = (len - 1);
+        int64_t i = (len - 1);
         while (((i >= 3) && infer_is_c_name_related(items, i))) {
             i = (i - 1);
         }

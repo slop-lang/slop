@@ -110,7 +110,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
 uint8_t resolve_contains_slash(slop_string s) {
     {
         __auto_type len = ((int64_t)(s.len));
-        __auto_type found = 0;
+        uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
             if ((!(found) && (((int64_t)(s.data[i])) == 47))) {
                 found = 1;

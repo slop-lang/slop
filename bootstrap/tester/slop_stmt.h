@@ -30,6 +30,7 @@ void stmt_transpile_let(context_TranspileContext* ctx, types_SExpr* expr, uint8_
 void stmt_transpile_bindings(context_TranspileContext* ctx, slop_list_types_SExpr_ptr bindings);
 void stmt_transpile_single_binding(context_TranspileContext* ctx, types_SExpr* binding);
 uint8_t stmt_binding_has_mut(slop_list_types_SExpr_ptr items);
+uint8_t stmt_is_simple_primitive_c_type(slop_string t);
 slop_option_types_SExpr_ptr stmt_get_some_value(types_SExpr* expr);
 uint8_t stmt_is_none_form(types_SExpr* expr);
 void stmt_transpile_if(context_TranspileContext* ctx, types_SExpr* expr, uint8_t is_return);

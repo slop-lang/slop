@@ -154,7 +154,7 @@ uint8_t types_is_primitive_kind(types_ResolvedTypeKind kind) {
 uint8_t types_is_container_kind(types_ResolvedTypeKind kind) {
     uint8_t _retval;
     _retval = (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_result)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array)));
-    SLOP_POST(((_retval == (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_result)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array))))), "(== $result (or (== kind (quote rk-list)) (== kind (quote rk-ptr)) (== kind (quote rk-option)) (== kind (quote rk-result)) (== kind (quote rk-map)) (== kind (quote rk-array))))");
+    SLOP_POST(((_retval == (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_retval)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array))))), "(== $result (or (== kind (quote rk-list)) (== kind (quote rk-ptr)) (== kind (quote rk-option)) (== kind (quote rk-result)) (== kind (quote rk-map)) (== kind (quote rk-array))))");
     return _retval;
 }
 
@@ -196,8 +196,8 @@ slop_option_int types_resolved_type_get_variant_index(types_ResolvedType* t, slo
     {
         __auto_type variants = (*t).variants;
         __auto_type len = ((int64_t)((variants).len));
-        __auto_type i = 0;
-        __auto_type done = 0;
+        int64_t i = 0;
+        uint8_t done = 0;
         slop_option_int found = (slop_option_int){.has_value = false};
         while (((i < len) && !(done))) {
             __auto_type _mv_0 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -221,8 +221,8 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_variant_payload(types
         {
             __auto_type variants = (*t).variants;
             __auto_type len = ((int64_t)((variants).len));
-            __auto_type i = 0;
-            __auto_type done = 0;
+            int64_t i = 0;
+            uint8_t done = 0;
             slop_option_types_ResolvedType_ptr found = (slop_option_types_ResolvedType_ptr){.has_value = false};
             while (((i < len) && !(done))) {
                 __auto_type _mv_1 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -249,8 +249,8 @@ uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name) {
     {
         __auto_type fields = (*t).fields;
         __auto_type len = ((int64_t)((fields).len));
-        __auto_type i = 0;
-        __auto_type found = 0;
+        int64_t i = 0;
+        uint8_t found = 0;
         while (((i < len) && !(found))) {
             __auto_type _mv_2 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_2.has_value) {
@@ -271,8 +271,8 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_Reso
     {
         __auto_type fields = (*t).fields;
         __auto_type len = ((int64_t)((fields).len));
-        __auto_type i = 0;
-        __auto_type found = 0;
+        int64_t i = 0;
+        uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         while (((i < len) && !(found))) {
             __auto_type _mv_3 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });

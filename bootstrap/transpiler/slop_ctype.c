@@ -438,10 +438,10 @@ slop_string ctype_range_type_to_c_type(slop_arena* arena, slop_list_types_SExpr_
         return SLOP_STR("int64_t");
     } else {
         {
-            __auto_type min_val = ((int64_t)(0));
-            __auto_type max_val = ((int64_t)(0));
-            __auto_type has_min = 0;
-            __auto_type has_max = 0;
+            int64_t min_val = ((int64_t)(0));
+            int64_t max_val = ((int64_t)(0));
+            uint8_t has_min = 0;
+            uint8_t has_max = 0;
             __auto_type _mv_34 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_34.has_value) {
                 __auto_type min_expr = _mv_34.value;
