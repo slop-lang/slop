@@ -208,6 +208,36 @@ def parse_native_json_string(source: str):
         os.unlink(temp_path)
 
 
+def _deduplicate_trampolines(code: str) -> str:
+    """Remove duplicate trampoline definitions from combined C code.
+
+    When multiple modules use the same function as a closure, each generates
+    its own static trampoline. When combined into one file, these cause
+    redefinition errors. This function keeps only the first definition.
+    """
+    import re
+
+    # Match trampoline definitions: static <type> _wrap_<name>(...) { ... }
+    # Pattern captures the full definition including the body
+    trampoline_pattern = r'static [^\n]+ (_wrap_[a-zA-Z0-9_]+)\([^)]*\) \{ return [^}]+; \}'
+
+    seen_trampolines = set()
+    lines = code.split('\n')
+    result_lines = []
+
+    for line in lines:
+        match = re.search(trampoline_pattern, line)
+        if match:
+            trampoline_name = match.group(1)
+            if trampoline_name in seen_trampolines:
+                # Skip duplicate trampoline
+                continue
+            seen_trampolines.add(trampoline_name)
+        result_lines.append(line)
+
+    return '\n'.join(result_lines)
+
+
 def transpile_native(input_file: str, dep_files: list[str] = None):
     """Transpile using native transpiler, returns (c_code, success).
 
@@ -262,7 +292,10 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
             # Add main wrapper if module exports main
             if main_mod:
                 c_parts.append(f'\nint main(void) {{ return (int){main_mod}_main(); }}\n')
-            return '\n'.join(c_parts), True
+            combined = '\n'.join(c_parts)
+            # Deduplicate trampolines when combining multiple modules
+            combined = _deduplicate_trampolines(combined)
+            return combined, True
         return result.stderr, False
     except json.JSONDecodeError as e:
         return f"Failed to parse transpiler output: {e}", False

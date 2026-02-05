@@ -29,7 +29,7 @@
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
-                   ctx-warn-fallback
+                   ctx-warn-fallback ctx-has-trampoline ctx-add-trampoline ctx-skip-trampoline-generation
                    ctx-register-generic-instantiation ctx-has-generic-instantiation mangle-generic-fn-name))
   (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string
                  get-node-resolved-type resolved-type-to-c))
@@ -3958,19 +3958,72 @@
     (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> String))
     (@pre {ctx != nil})
     ;; If expected type is slop_closure_t and arg is a function name (symbol),
-    ;; wrap it: (slop_closure_t){(void*)fn_name, NULL}
+    ;; generate a trampoline and wrap it: (slop_closure_t){(void*)trampoline, NULL}
     (if (string-eq expected-type "slop_closure_t")
       ;; Check if original expression is a symbol (function reference)
       (match (deref arg-expr)
         ((sym sym)
-          ;; Look up using SLOP name, wrap with C name
+          ;; Look up using SLOP name
           (let ((slop-name (. sym name)))
             (match (ctx-lookup-func ctx slop-name)
-              ((some _)
-                (ctx-str5 ctx "(slop_closure_t){(void*)" arg-c ", NULL}" "" ""))
+              ((some func-entry)
+                ;; Generate trampoline wrapper if not already done
+                (let ((trampoline-name (generate-fn-trampoline ctx arg-c func-entry)))
+                  (ctx-str5 ctx "(slop_closure_t){(void*)" trampoline-name ", NULL}" "" "")))
               ((none) arg-c))))
         (else arg-c))
       arg-c))
+
+  (fn generate-fn-trampoline ((ctx (Ptr TranspileContext)) (fn-c-name String) (func-entry FuncEntry))
+    (@intent "Generate trampoline function that adapts named function to closure calling convention")
+    (@spec (((Ptr TranspileContext) String FuncEntry) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (trampoline-name (ctx-str ctx "_wrap_" fn-c-name)))
+      ;; In test harness mode, don't generate trampolines (they're in module code)
+      (if (ctx-skip-trampoline-generation ctx)
+        trampoline-name
+        ;; Check if trampoline already generated
+        (if (ctx-has-trampoline ctx fn-c-name)
+          ;; Already have trampoline, return its name
+          trampoline-name
+          ;; Generate new trampoline
+          (let ((ret-type (. func-entry return-type))
+                (param-types (. func-entry param-types))
+                (count (list-len param-types))
+                (mut param-str "")
+                (mut arg-str "")
+                (mut i 0))
+            ;; Build parameter list and forwarding args
+            (while (< i count)
+              (match (list-get param-types i)
+                ((some param-type-ptr)
+                  (let ((c-type (. (deref param-type-ptr) c-type))
+                        (arg-name (ctx-str3 ctx "_p" (int-to-string arena i) "")))
+                    ;; Add to param string: ", type argN"
+                    (set! param-str (ctx-str ctx param-str (ctx-str3 ctx ", " c-type (ctx-str ctx " " arg-name))))
+                    ;; Add to arg string: "argN" or ", argN"
+                    (if (== i 0)
+                      (set! arg-str arg-name)
+                      (set! arg-str (ctx-str3 ctx arg-str ", " arg-name)))))
+                ((none) (do)))
+              (set! i (+ i 1)))
+            ;; Generate: static ret_type _wrap_fn(void* _env, params...) { return fn(args...); }
+            (let ((fn-def (ctx-str ctx "static "
+                            (ctx-str ctx ret-type
+                              (ctx-str ctx " "
+                                (ctx-str ctx trampoline-name
+                                  (ctx-str ctx "(void* _env"
+                                    (ctx-str ctx param-str
+                                      (ctx-str ctx ") { return "
+                                        (ctx-str ctx fn-c-name
+                                          (ctx-str ctx "("
+                                            (ctx-str ctx arg-str "); }"))))))))))))
+              ;; Add to deferred lambdas
+              (ctx-add-deferred-lambda ctx fn-def)
+              ;; Track that we generated this trampoline
+              (ctx-add-trampoline ctx fn-c-name)
+              trampoline-name))))))
 
   (fn build-union-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String)
                              (scrutinee (Ptr SExpr)) (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String))

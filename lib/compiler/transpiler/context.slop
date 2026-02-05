@@ -65,6 +65,9 @@
     ctx-gensym
     ;; Deferred lambda tracking
     ctx-add-deferred-lambda ctx-get-deferred-lambdas ctx-clear-deferred-lambdas
+    ;; Function trampoline tracking
+    ctx-has-trampoline ctx-add-trampoline ctx-set-single-output-mode
+    ctx-set-skip-trampoline-generation ctx-skip-trampoline-generation
     ;; Last lambda info (for closure variable binding)
     LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
     ;; Function output buffer for two-phase emission
@@ -292,6 +295,8 @@
       (errors (List TranspileError))
       ;; Deferred lambda function definitions (generated C code strings)
       (deferred-lambdas (List String))
+      ;; Generated function trampolines (function C names that have wrappers)
+      (fn-trampolines (List String))
       ;; Function output buffer for two-phase emission (lambdas first, then functions)
       (function-output (List String))
       ;; Flag to redirect ctx-emit to function-output instead of main output
@@ -301,7 +306,11 @@
       (last-lambda-env-type String)
       (last-lambda-name String)
       ;; Generic function instantiations to emit
-      (generic-func-instantiations (List GenericFuncInstantiation))))
+      (generic-func-instantiations (List GenericFuncInstantiation))
+      ;; When true, don't reset fn-trampolines between modules (for test/single-file builds)
+      (single-output-mode Bool)
+      ;; When true, don't generate trampoline code (assume it exists elsewhere, e.g., in module code)
+      (skip-trampoline-generation Bool)))
 
   ;; ============================================================
   ;; Context Creation
@@ -353,6 +362,7 @@
       (set! (deref ctx) current-file "")
       (set! (deref ctx) errors (list-new arena TranspileError))
       (set! (deref ctx) deferred-lambdas (list-new arena String))
+      (set! (deref ctx) fn-trampolines (list-new arena String))
       (set! (deref ctx) function-output (list-new arena String))
       (set! (deref ctx) emit-to-function-buffer false)
       ;; Initialize last-lambda tracking fields
@@ -361,6 +371,10 @@
       (set! (deref ctx) last-lambda-name "")
       ;; Initialize generic function tracking
       (set! (deref ctx) generic-func-instantiations (list-new arena GenericFuncInstantiation))
+      ;; Initialize single-output mode (disabled by default)
+      (set! (deref ctx) single-output-mode false)
+      ;; Initialize skip-trampoline-generation (disabled by default)
+      (set! (deref ctx) skip-trampoline-generation false)
       ;; NOTE: String and Bytes have special constructor handling in
       ;; get-builtin-type-c-name / transpile-builtin-constructor (expr.slop)
       ;; for correct field ordering. If adding a new primitive type that needs
@@ -421,6 +435,10 @@
       (set! (deref ctx) struct-key-types (list-new arena String))
       ;; Clear deferred lambdas for new module
       (set! (deref ctx) deferred-lambdas (list-new arena String))
+      ;; Clear trampoline tracking for new module UNLESS in single-output mode
+      ;; (trampolines are static, module-local, but shared when compiling to one file)
+      (when (not (. (deref ctx) single-output-mode))
+        (set! (deref ctx) fn-trampolines (list-new arena String)))
       ;; Clear function output buffer for new module
       (set! (deref ctx) function-output (list-new arena String))
       (set! (deref ctx) emit-to-function-buffer false)
@@ -1891,6 +1909,55 @@
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena)))
       (set! (deref ctx) deferred-lambdas (list-new arena String))))
+
+  ;; ============================================================
+  ;; Function Trampoline Tracking
+  ;;
+  ;; When a named function is passed as a closure argument, we need
+  ;; to generate a trampoline that adapts its calling convention.
+  ;; Track which functions have trampolines to avoid duplicates.
+  ;; ============================================================
+
+  (fn ctx-has-trampoline ((ctx (Ptr TranspileContext)) (fn-c-name String))
+    (@intent "Check if trampoline already generated for function")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    (let ((trampolines (. (deref ctx) fn-trampolines))
+          (len (list-len trampolines))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get trampolines i)
+          ((some s)
+            (when (string-eq s fn-c-name)
+              (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn ctx-add-trampoline ((ctx (Ptr TranspileContext)) (fn-c-name String))
+    (@intent "Record that trampoline was generated for function")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) fn-trampolines) fn-c-name))
+
+  (fn ctx-set-single-output-mode ((ctx (Ptr TranspileContext)) (enabled Bool))
+    (@intent "Enable single-output mode to preserve trampolines across module resets")
+    (@spec (((Ptr TranspileContext) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) single-output-mode enabled))
+
+  (fn ctx-set-skip-trampoline-generation ((ctx (Ptr TranspileContext)) (skip Bool))
+    (@intent "Enable skip-trampoline-generation mode for test harness")
+    (@spec (((Ptr TranspileContext) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) skip-trampoline-generation skip))
+
+  (fn ctx-skip-trampoline-generation ((ctx (Ptr TranspileContext)))
+    (@intent "Check if trampoline generation should be skipped")
+    (@spec (((Ptr TranspileContext)) -> Bool))
+    (@pre {ctx != nil})
+    (. (deref ctx) skip-trampoline-generation))
 
   ;; ============================================================
   ;; Last Lambda Info Tracking

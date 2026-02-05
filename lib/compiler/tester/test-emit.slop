@@ -28,7 +28,8 @@
   (import ctype (to-c-name))
   (import context (TranspileContext context-new ctx-set-module ctx-get-module ctx-set-prefixing
                    ctx-push-scope ctx-bind-var VarEntry ctx-register-field-type
-                   ctx-prefixing-enabled ctx-prefix-type to-c-type-prefixed))
+                   ctx-prefixing-enabled ctx-prefix-type to-c-type-prefixed
+                   ctx-set-single-output-mode ctx-set-skip-trampoline-generation))
   (import expr (transpile-expr))
   (import transpiler (prescan-module))
 
@@ -1621,6 +1622,10 @@
     (@spec ((Arena (List (Ptr SExpr)) String) -> (Ptr TranspileContext)))
     (@alloc arena)
     (let ((tctx (context-new arena)))
+      ;; Enable single-output mode since test harness compiles all modules to one .c file
+      (ctx-set-single-output-mode tctx true)
+      ;; Skip trampoline generation - trampolines are already in the transpiled module code
+      (ctx-set-skip-trampoline-generation tctx true)
       (when (> (cast Int (. module-name len)) 0)
         (ctx-set-module tctx (some module-name))
         (ctx-set-prefixing tctx true))

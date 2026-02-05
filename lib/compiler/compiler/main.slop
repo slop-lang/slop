@@ -36,7 +36,8 @@
   ;; --- Transpiler imports ---
   (import context (TranspileContext context-new ctx-reset-for-new-module
                    ctx-get-output ctx-get-header ctx-set-prefixing
-                   ctx-set-file ctx-has-errors ctx-report-errors))
+                   ctx-set-file ctx-has-errors ctx-report-errors
+                   ctx-set-single-output-mode))
   (import transpiler (transpile-file))
   ;; --- I/O imports ---
   (import file (FileMode FileError File
@@ -972,6 +973,9 @@
                 (let ((env (env-new arena))
                       (ctx (context-new arena)))
                   (ctx-set-prefixing ctx true)
+                  ;; NOTE: Don't enable single-output-mode here. The Python CLI
+                  ;; handles trampoline deduplication when combining modules.
+                  ;; In library mode, each module needs its own trampolines.
                   (putchar 123)
                   (let ((mut i 2)
                         (mut first true)
