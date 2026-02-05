@@ -363,6 +363,10 @@
                     ((string-eq head "Map")
                       "slop_map*")
 
+                    ;; (Set T) -> slop_map* (sets are implemented as maps in runtime)
+                    ((string-eq head "Set")
+                      "slop_map*")
+
                     ;; (Array T size) -> T*
                     ((string-eq head "Array")
                       (if (< len 2)
@@ -394,26 +398,11 @@
                               (string-concat arena "slop_thread_" inner-id)))
                           ((none) "slop_thread_void"))))
 
-                    ;; (Fn (args...) return) -> return_type(*)(arg_types...)
+                    ;; (Fn (args...) return) -> slop_closure_t (unified closure type)
+                    ;; All function types use slop_closure_t so closures and non-capturing
+                    ;; lambdas can be passed uniformly to HOF parameters
                     ((string-eq head "Fn")
-                      (if (< len 2)
-                        "void*"
-                        ;; Return type is the last item
-                        (let ((ret-type (match (list-get items (- len 1))
-                                          ((some ret) (to-c-type arena ret))
-                                          ((none) "void"))))
-                          ;; Build argument list from items 1 to len-2
-                          (if (= len 2)
-                            ;; (Fn RetType) - no args list
-                            (string-concat arena ret-type "(*)(void)")
-                            ;; (Fn (args...) RetType)
-                            (match (list-get items 1)
-                              ((some args-expr)
-                                (let ((args-str (build-fn-args-str arena args-expr)))
-                                  (string-concat arena
-                                    (string-concat arena ret-type "(*)")
-                                    args-str)))
-                              ((none) (string-concat arena ret-type "(*)(void)")))))))
+                      "slop_closure_t")
 
                     ;; (Int min .. max) range types -> smallest C type
                     ((string-eq head "Int")
@@ -600,6 +589,8 @@
               (string-concat arena "_" err-id))))
         ;; Map K V -> slop_map*
         ((== kind 'rk-map) "slop_map*")
+        ;; Set T -> slop_map* (sets are maps with dummy values)
+        ((== kind 'rk-set) "slop_map*")
         ;; Function type -> void* (function pointers are complex)
         ((== kind 'rk-function) "void*")
         ;; Array -> inner*

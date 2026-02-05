@@ -58,9 +58,9 @@ slop_string parser_json_print(slop_arena* arena, types_SExpr* expr);
 
 uint8_t parser_string_contains_dot(slop_string s) {
     {
-        __auto_type i = 0;
+        int64_t i = 0;
         __auto_type slen = ((int64_t)(s.len));
-        __auto_type found = 0;
+        uint8_t found = 0;
         while (((i < slen) && !(found))) {
             if ((strlib_char_at(s, ((int64_t)(i))) == ((strlib_AsciiChar)(46)))) {
                 found = 1;
@@ -74,8 +74,8 @@ uint8_t parser_string_contains_dot(slop_string s) {
 
 slop_string parser_string_copy(slop_arena* arena, slop_string s) {
     {
-        __auto_type buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, (s.len + 1))));
-        __auto_type i = 0;
+        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (s.len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        int64_t i = 0;
         __auto_type slen = ((int64_t)(s.len));
         while ((i < slen)) {
             buf[i] = s.data[i];
@@ -142,7 +142,7 @@ void parser_lexer_skip_comment(parser_LexerState* state) {
 
 void parser_lexer_skip_whitespace_and_comments(parser_LexerState* state) {
     {
-        __auto_type slop_continue = 1;
+        uint8_t slop_continue = 1;
         while (slop_continue) {
             {
                 __auto_type c = parser_lexer_peek(state);
@@ -163,12 +163,12 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_string(slop_arena* 
     {
         __auto_type start_line = (*state).line;
         __auto_type start_col = (*state).col;
-        __auto_type buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 4096)));
-        __auto_type buf_pos = 0;
+        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 4096); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        int64_t buf_pos = 0;
         parser_lexer_advance(state);
         {
-            __auto_type done = 0;
-            __auto_type has_error = 0;
+            uint8_t done = 0;
+            uint8_t has_error = 0;
             while (((!(done)) && (!(has_error)) && (!(parser_lexer_at_end(state))))) {
                 {
                     __auto_type c = parser_lexer_peek(state);
@@ -231,8 +231,8 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_number(slop_arena* 
     {
         __auto_type start_line = (*state).line;
         __auto_type start_col = (*state).col;
-        __auto_type buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 64)));
-        __auto_type buf_pos = 0;
+        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        int64_t buf_pos = 0;
         if ((parser_lexer_peek(state) == 45)) {
             buf[buf_pos] = ((uint8_t)(45));
             buf_pos = (buf_pos + 1);
@@ -262,8 +262,8 @@ parser_Token parser_lexer_read_symbol(slop_arena* arena, parser_LexerState* stat
     {
         __auto_type start_line = (*state).line;
         __auto_type start_col = (*state).col;
-        __auto_type buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 256)));
-        __auto_type buf_pos = 0;
+        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 256); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        int64_t buf_pos = 0;
         while ((!(parser_lexer_at_end(state)) && strlib_char_is_symbol_char(parser_lexer_peek(state)))) {
             buf[buf_pos] = ((uint8_t)(parser_lexer_peek(state)));
             buf_pos = (buf_pos + 1);
@@ -278,8 +278,8 @@ parser_Token parser_lexer_read_operator(slop_arena* arena, parser_LexerState* st
     {
         __auto_type start_line = (*state).line;
         __auto_type start_col = (*state).col;
-        __auto_type buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 16)));
-        __auto_type buf_pos = 0;
+        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 16); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        int64_t buf_pos = 0;
         while ((!(parser_lexer_at_end(state)) && strlib_char_is_operator(parser_lexer_peek(state)))) {
             buf[buf_pos] = ((uint8_t)(parser_lexer_peek(state)));
             buf_pos = (buf_pos + 1);
@@ -341,19 +341,19 @@ slop_result_list_parser_Token_parser_ParseError parser_tokenize(slop_arena* aren
     {
         __auto_type state = parser_lexer_new(source);
         __auto_type tokens = ((slop_list_parser_Token){ .data = (parser_Token*)slop_arena_alloc(arena, 16 * sizeof(parser_Token)), .len = 0, .cap = 16 });
-        __auto_type done = 0;
-        __auto_type has_error = 0;
+        uint8_t done = 0;
+        uint8_t has_error = 0;
         __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
         while ((!(done) && !(has_error))) {
-            __auto_type _mv_18 = parser_lexer_next_token(arena, (&state));
-            if (_mv_18.is_ok) {
-                __auto_type tok = _mv_18.data.ok;
+            __auto_type _mv_554 = parser_lexer_next_token(arena, (&state));
+            if (_mv_554.is_ok) {
+                __auto_type tok = _mv_554.data.ok;
                 ({ __auto_type _lst_p = &(tokens); __auto_type _item = (tok); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                 if ((tok.kind == parser_TokenType_tok_eof)) {
                     done = 1;
                 }
-            } else if (!_mv_18.is_ok) {
-                __auto_type e = _mv_18.data.err;
+            } else if (!_mv_554.is_ok) {
+                __auto_type e = _mv_554.data.err;
                 has_error = 1;
                 error_val = e;
             }
@@ -375,11 +375,11 @@ uint8_t parser_parser_at_end(parser_ParserState* state) {
 }
 
 parser_Token parser_parser_peek(parser_ParserState* state) {
-    __auto_type _mv_19 = ({ __auto_type _lst = (*state).tokens; size_t _idx = (size_t)(*state).pos; slop_option_parser_Token _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-    if (_mv_19.has_value) {
-        __auto_type tok = _mv_19.value;
+    __auto_type _mv_555 = ({ __auto_type _lst = (*state).tokens; size_t _idx = (size_t)(*state).pos; slop_option_parser_Token _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+    if (_mv_555.has_value) {
+        __auto_type tok = _mv_555.value;
         return tok;
-    } else if (!_mv_19.has_value) {
+    } else if (!_mv_555.has_value) {
         return (parser_Token){parser_TokenType_tok_eof, SLOP_STR(""), 1, 1};
     }
 }
@@ -411,7 +411,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
         } else if ((tok.kind == parser_TokenType_tok_number)) {
             parser_parser_advance(state);
             {
-                __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 __auto_type is_float = parser_string_contains_dot(tok.value);
                 if (is_float) {
                     (*node) = ((types_SExpr){ .tag = types_SExpr_num, .data.num = (types_SExprNumber){0, strtod(((char*)(tok.value.data)), ((char**)(0))), 1, tok.value, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
@@ -423,18 +423,18 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
         } else if ((tok.kind == parser_TokenType_tok_string)) {
             parser_parser_advance(state);
             {
-                __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 (*node) = ((types_SExpr){ .tag = types_SExpr_str, .data.str = (types_SExprString){tok.value, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
             }
         } else if ((tok.kind == parser_TokenType_tok_quote)) {
             parser_parser_advance(state);
-            __auto_type _mv_20 = parser_parse_expr(arena, state);
-            if (_mv_20.is_ok) {
-                __auto_type quoted_expr = _mv_20.data.ok;
+            __auto_type _mv_556 = parser_parse_expr(arena, state);
+            if (_mv_556.is_ok) {
+                __auto_type quoted_expr = _mv_556.data.ok;
                 {
-                    __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
-                    __auto_type quote_sym = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                    __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+                    __auto_type quote_sym = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                     __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
                     (*quote_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){SLOP_STR("quote"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     ({ __auto_type _lst_p = &(items); __auto_type _item = (quote_sym); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -442,21 +442,21 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
                     (*node) = ((types_SExpr){ .tag = types_SExpr_lst, .data.lst = (types_SExprList){items, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
                 }
-            } else if (!_mv_20.is_ok) {
-                __auto_type e = _mv_20.data.err;
+            } else if (!_mv_556.is_ok) {
+                __auto_type e = _mv_556.data.err;
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
             }
         } else if ((tok.kind == parser_TokenType_tok_symbol)) {
             parser_parser_advance(state);
             {
-                __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 (*node) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){tok.value, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
             }
         } else if ((tok.kind == parser_TokenType_tok_operator)) {
             parser_parser_advance(state);
             {
-                __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 (*node) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){tok.value, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
             }
@@ -467,11 +467,11 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
                 if ((next_tok.kind == parser_TokenType_tok_symbol)) {
                     parser_parser_advance(state);
                     {
-                        __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
-                        __auto_type kw_buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, 256)));
+                        __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+                        __auto_type kw_buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 256); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                         kw_buf[0] = ((uint8_t)(58));
                         {
-                            __auto_type i = 0;
+                            int64_t i = 0;
                             __auto_type slen = ((int64_t)(next_tok.value.len));
                             while ((i < slen)) {
                                 kw_buf[(i + 1)] = next_tok.value.data[i];
@@ -488,7 +488,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
         } else if ((tok.kind == parser_TokenType_tok_range)) {
             parser_parser_advance(state);
             {
-                __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 (*node) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){SLOP_STR(".."), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
             }
@@ -505,8 +505,8 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_list(slop_arena* aren
         parser_parser_advance(state);
         {
             __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
-            __auto_type done = 0;
-            __auto_type has_error = 0;
+            uint8_t done = 0;
+            uint8_t has_error = 0;
             __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
             while ((!(done) && !(has_error))) {
                 {
@@ -518,12 +518,12 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_list(slop_arena* aren
                         has_error = 1;
                         error_val = (parser_ParseError){SLOP_STR("Unterminated list"), start_tok.line, start_tok.col};
                     } else {
-                        __auto_type _mv_21 = parser_parse_expr(arena, state);
-                        if (_mv_21.is_ok) {
-                            __auto_type expr = _mv_21.data.ok;
+                        __auto_type _mv_557 = parser_parse_expr(arena, state);
+                        if (_mv_557.is_ok) {
+                            __auto_type expr = _mv_557.data.ok;
                             ({ __auto_type _lst_p = &(items); __auto_type _item = (expr); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                        } else if (!_mv_21.is_ok) {
-                            __auto_type e = _mv_21.data.err;
+                        } else if (!_mv_557.is_ok) {
+                            __auto_type e = _mv_557.data.err;
                             has_error = 1;
                             error_val = e;
                         }
@@ -534,7 +534,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_list(slop_arena* aren
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = error_val });
             } else {
                 {
-                    __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                    __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                     (*node) = ((types_SExpr){ .tag = types_SExpr_lst, .data.lst = (types_SExprList){items, start_tok.line, start_tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
                 }
@@ -581,7 +581,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
         if ((tok.kind == parser_TokenType_tok_number)) {
             parser_parser_advance(state);
             {
-                __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 if (parser_string_contains_dot(tok.value)) {
                     (*node) = ((types_SExpr){ .tag = types_SExpr_num, .data.num = (types_SExprNumber){0, strtod(((char*)(tok.value.data)), ((char**)(0))), 1, tok.value, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                 } else {
@@ -592,15 +592,15 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
         } else if ((tok.kind == parser_TokenType_tok_symbol)) {
             if (string_eq(tok.value, SLOP_STR("not"))) {
                 parser_parser_advance(state);
-                __auto_type _mv_22 = parser_parse_infix_primary(arena, state);
-                if (!_mv_22.is_ok) {
-                    __auto_type e = _mv_22.data.err;
+                __auto_type _mv_558 = parser_parse_infix_primary(arena, state);
+                if (!_mv_558.is_ok) {
+                    __auto_type e = _mv_558.data.err;
                     return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
-                } else if (_mv_22.is_ok) {
-                    __auto_type operand = _mv_22.data.ok;
+                } else if (_mv_558.is_ok) {
+                    __auto_type operand = _mv_558.data.ok;
                     {
-                        __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
-                        __auto_type not_sym = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                        __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+                        __auto_type not_sym = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                         __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
                         (*not_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){SLOP_STR("not"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                         ({ __auto_type _lst_p = &(items); __auto_type _item = (not_sym); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -612,23 +612,23 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
             } else {
                 parser_parser_advance(state);
                 {
-                    __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                    __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                     (*node) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){tok.value, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
                 }
             }
         } else if (((tok.kind == parser_TokenType_tok_operator) && string_eq(tok.value, SLOP_STR("-")))) {
             parser_parser_advance(state);
-            __auto_type _mv_23 = parser_parse_infix_primary(arena, state);
-            if (!_mv_23.is_ok) {
-                __auto_type e = _mv_23.data.err;
+            __auto_type _mv_559 = parser_parse_infix_primary(arena, state);
+            if (!_mv_559.is_ok) {
+                __auto_type e = _mv_559.data.err;
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
-            } else if (_mv_23.is_ok) {
-                __auto_type operand = _mv_23.data.ok;
+            } else if (_mv_559.is_ok) {
+                __auto_type operand = _mv_559.data.ok;
                 {
-                    __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
-                    __auto_type minus_sym = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
-                    __auto_type zero_node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                    __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+                    __auto_type minus_sym = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+                    __auto_type zero_node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                     __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
                     (*minus_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){SLOP_STR("-"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     (*zero_node) = ((types_SExpr){ .tag = types_SExpr_num, .data.num = (types_SExprNumber){0, 0.0, 0, SLOP_STR("0"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
@@ -645,15 +645,15 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
             return parser_parse_list(arena, state);
         } else if ((tok.kind == parser_TokenType_tok_quote)) {
             parser_parser_advance(state);
-            __auto_type _mv_24 = parser_parse_infix_primary(arena, state);
-            if (!_mv_24.is_ok) {
-                __auto_type e = _mv_24.data.err;
+            __auto_type _mv_560 = parser_parse_infix_primary(arena, state);
+            if (!_mv_560.is_ok) {
+                __auto_type e = _mv_560.data.err;
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
-            } else if (_mv_24.is_ok) {
-                __auto_type quoted_expr = _mv_24.data.ok;
+            } else if (_mv_560.is_ok) {
+                __auto_type quoted_expr = _mv_560.data.ok;
                 {
-                    __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
-                    __auto_type quote_sym = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                    __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+                    __auto_type quote_sym = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                     __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
                     (*quote_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){SLOP_STR("quote"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     ({ __auto_type _lst_p = &(items); __auto_type _item = (quote_sym); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -669,12 +669,12 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
 }
 
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_prec(slop_arena* arena, parser_ParserState* state, int64_t min_prec) {
-    __auto_type _mv_25 = parser_parse_infix_primary(arena, state);
-    if (!_mv_25.is_ok) {
-        __auto_type e = _mv_25.data.err;
+    __auto_type _mv_561 = parser_parse_infix_primary(arena, state);
+    if (!_mv_561.is_ok) {
+        __auto_type e = _mv_561.data.err;
         return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
-    } else if (_mv_25.is_ok) {
-        __auto_type left = _mv_25.data.ok;
+    } else if (_mv_561.is_ok) {
+        __auto_type left = _mv_561.data.ok;
         {
             __auto_type result = left;
             __auto_type done = 0;
@@ -692,16 +692,16 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_prec(slop_arena
                                 {
                                     __auto_type op_tok = tok;
                                     parser_parser_advance(state);
-                                    __auto_type _mv_26 = parser_parse_infix_prec(arena, state, (op_prec + 1));
-                                    if (!_mv_26.is_ok) {
-                                        __auto_type e = _mv_26.data.err;
+                                    __auto_type _mv_562 = parser_parse_infix_prec(arena, state, (op_prec + 1));
+                                    if (!_mv_562.is_ok) {
+                                        __auto_type e = _mv_562.data.err;
                                         has_error = 1;
                                         error_val = e;
-                                    } else if (_mv_26.is_ok) {
-                                        __auto_type right = _mv_26.data.ok;
+                                    } else if (_mv_562.is_ok) {
+                                        __auto_type right = _mv_562.data.ok;
                                         {
-                                            __auto_type node = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
-                                            __auto_type op_sym = ((types_SExpr*)((uint8_t*)slop_arena_alloc(arena, 128)));
+                                            __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+                                            __auto_type op_sym = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                                             __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
                                             (*op_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){op_tok.value, op_tok.line, op_tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                                             ({ __auto_type _lst_p = &(items); __auto_type _item = (op_sym); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -737,12 +737,12 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix(slop_arena* are
         {
             __auto_type result = parser_parse_infix_prec(arena, state, 0);
             (*state).in_infix = 0;
-            __auto_type _mv_27 = result;
-            if (!_mv_27.is_ok) {
-                __auto_type e = _mv_27.data.err;
+            __auto_type _mv_563 = result;
+            if (!_mv_563.is_ok) {
+                __auto_type e = _mv_563.data.err;
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
-            } else if (_mv_27.is_ok) {
-                __auto_type expr = _mv_27.data.ok;
+            } else if (_mv_563.is_ok) {
+                __auto_type expr = _mv_563.data.ok;
                 {
                     __auto_type tok = parser_parser_peek(state);
                     if ((tok.kind == parser_TokenType_tok_rbrace)) {
@@ -758,9 +758,9 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix(slop_arena* are
 }
 
 slop_result_list_types_SExpr_ptr_parser_ParseError parser_parse(slop_arena* arena, slop_string source) {
-    __auto_type _mv_28 = parser_tokenize(arena, source);
-    if (_mv_28.is_ok) {
-        __auto_type tokens = _mv_28.data.ok;
+    __auto_type _mv_564 = parser_tokenize(arena, source);
+    if (_mv_564.is_ok) {
+        __auto_type tokens = _mv_564.data.ok;
         {
             __auto_type state = parser_parser_new(tokens);
             __auto_type result = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
@@ -773,12 +773,12 @@ slop_result_list_types_SExpr_ptr_parser_ParseError parser_parse(slop_arena* aren
                     if ((tok.kind == parser_TokenType_tok_eof)) {
                         done = 1;
                     } else {
-                        __auto_type _mv_29 = parser_parse_expr(arena, (&state));
-                        if (_mv_29.is_ok) {
-                            __auto_type expr = _mv_29.data.ok;
+                        __auto_type _mv_565 = parser_parse_expr(arena, (&state));
+                        if (_mv_565.is_ok) {
+                            __auto_type expr = _mv_565.data.ok;
                             ({ __auto_type _lst_p = &(result); __auto_type _item = (expr); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                        } else if (!_mv_29.is_ok) {
-                            __auto_type e = _mv_29.data.err;
+                        } else if (!_mv_565.is_ok) {
+                            __auto_type e = _mv_565.data.err;
                             has_error = 1;
                             error_val = e;
                         }
@@ -791,70 +791,70 @@ slop_result_list_types_SExpr_ptr_parser_ParseError parser_parse(slop_arena* aren
                 return ((slop_result_list_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = result });
             }
         }
-    } else if (!_mv_28.is_ok) {
-        __auto_type e = _mv_28.data.err;
+    } else if (!_mv_564.is_ok) {
+        __auto_type e = _mv_564.data.err;
         return ((slop_result_list_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
     }
 }
 
 int64_t parser_sexpr_line(types_SExpr* expr) {
-    __auto_type _mv_30 = (*expr);
-    switch (_mv_30.tag) {
+    __auto_type _mv_566 = (*expr);
+    switch (_mv_566.tag) {
         case types_SExpr_sym:
         {
-            __auto_type s = _mv_30.data.sym;
+            __auto_type s = _mv_566.data.sym;
             return s.line;
         }
         case types_SExpr_str:
         {
-            __auto_type s = _mv_30.data.str;
+            __auto_type s = _mv_566.data.str;
             return s.line;
         }
         case types_SExpr_num:
         {
-            __auto_type n = _mv_30.data.num;
+            __auto_type n = _mv_566.data.num;
             return n.line;
         }
         case types_SExpr_lst:
         {
-            __auto_type l = _mv_30.data.lst;
+            __auto_type l = _mv_566.data.lst;
             return l.line;
         }
     }
 }
 
 int64_t parser_sexpr_col(types_SExpr* expr) {
-    __auto_type _mv_31 = (*expr);
-    switch (_mv_31.tag) {
+    __auto_type _mv_567 = (*expr);
+    switch (_mv_567.tag) {
         case types_SExpr_sym:
         {
-            __auto_type s = _mv_31.data.sym;
+            __auto_type s = _mv_567.data.sym;
             return s.col;
         }
         case types_SExpr_str:
         {
-            __auto_type s = _mv_31.data.str;
+            __auto_type s = _mv_567.data.str;
             return s.col;
         }
         case types_SExpr_num:
         {
-            __auto_type n = _mv_31.data.num;
+            __auto_type n = _mv_567.data.num;
             return n.col;
         }
         case types_SExpr_lst:
         {
-            __auto_type l = _mv_31.data.lst;
+            __auto_type l = _mv_567.data.lst;
             return l.col;
         }
     }
 }
 
 uint8_t parser_sexpr_is_symbol_with_name(types_SExpr* expr, slop_string name) {
-    __auto_type _mv_32 = (*expr);
-    switch (_mv_32.tag) {
+    __auto_type _mv_568 = (*expr);
+    switch (_mv_568.tag) {
         case types_SExpr_sym:
         {
-            __auto_type sym = _mv_32.data.sym;
+            __auto_type sym = _mv_568.data.sym;
             return string_eq(sym.name, name);
         }
         default: {
@@ -864,19 +864,19 @@ uint8_t parser_sexpr_is_symbol_with_name(types_SExpr* expr, slop_string name) {
 }
 
 uint8_t parser_is_form(types_SExpr* expr, slop_string keyword) {
-    __auto_type _mv_33 = (*expr);
-    switch (_mv_33.tag) {
+    __auto_type _mv_569 = (*expr);
+    switch (_mv_569.tag) {
         case types_SExpr_lst:
         {
-            __auto_type l = _mv_33.data.lst;
+            __auto_type l = _mv_569.data.lst;
             if ((((int64_t)((l.items).len)) == 0)) {
                 return 0;
             } else {
-                __auto_type _mv_34 = ({ __auto_type _lst = l.items; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                if (_mv_34.has_value) {
-                    __auto_type first = _mv_34.value;
+                __auto_type _mv_570 = ({ __auto_type _lst = l.items; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                if (_mv_570.has_value) {
+                    __auto_type first = _mv_570.value;
                     return parser_sexpr_is_symbol_with_name(first, keyword);
-                } else if (!_mv_34.has_value) {
+                } else if (!_mv_570.has_value) {
                     return 0;
                 }
             }
@@ -888,11 +888,11 @@ uint8_t parser_is_form(types_SExpr* expr, slop_string keyword) {
 }
 
 int64_t parser_sexpr_list_len(types_SExpr* expr) {
-    __auto_type _mv_35 = (*expr);
-    switch (_mv_35.tag) {
+    __auto_type _mv_571 = (*expr);
+    switch (_mv_571.tag) {
         case types_SExpr_lst:
         {
-            __auto_type l = _mv_35.data.lst;
+            __auto_type l = _mv_571.data.lst;
             return ((int64_t)((l.items).len));
         }
         default: {
@@ -902,11 +902,11 @@ int64_t parser_sexpr_list_len(types_SExpr* expr) {
 }
 
 slop_option_types_SExpr_ptr parser_sexpr_list_get(types_SExpr* expr, int64_t index) {
-    __auto_type _mv_36 = (*expr);
-    switch (_mv_36.tag) {
+    __auto_type _mv_572 = (*expr);
+    switch (_mv_572.tag) {
         case types_SExpr_lst:
         {
-            __auto_type l = _mv_36.data.lst;
+            __auto_type l = _mv_572.data.lst;
             return ({ __auto_type _lst = l.items; size_t _idx = (size_t)index; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
         }
         default: {
@@ -916,11 +916,11 @@ slop_option_types_SExpr_ptr parser_sexpr_list_get(types_SExpr* expr, int64_t ind
 }
 
 uint8_t parser_sexpr_is_list(types_SExpr* expr) {
-    __auto_type _mv_37 = (*expr);
-    switch (_mv_37.tag) {
+    __auto_type _mv_573 = (*expr);
+    switch (_mv_573.tag) {
         case types_SExpr_lst:
         {
-            __auto_type l = _mv_37.data.lst;
+            __auto_type l = _mv_573.data.lst;
             return 1;
         }
         default: {
@@ -930,11 +930,11 @@ uint8_t parser_sexpr_is_list(types_SExpr* expr) {
 }
 
 slop_string parser_sexpr_get_symbol_name(types_SExpr* expr) {
-    __auto_type _mv_38 = (*expr);
-    switch (_mv_38.tag) {
+    __auto_type _mv_574 = (*expr);
+    switch (_mv_574.tag) {
         case types_SExpr_sym:
         {
-            __auto_type sym = _mv_38.data.sym;
+            __auto_type sym = _mv_574.data.sym;
             return sym.name;
         }
         default: {
@@ -948,11 +948,11 @@ slop_string parser_sexpr_symbol_name(types_SExpr* expr) {
 }
 
 uint8_t parser_sexpr_is_symbol(types_SExpr* expr) {
-    __auto_type _mv_39 = (*expr);
-    switch (_mv_39.tag) {
+    __auto_type _mv_575 = (*expr);
+    switch (_mv_575.tag) {
         case types_SExpr_sym:
         {
-            __auto_type s = _mv_39.data.sym;
+            __auto_type s = _mv_575.data.sym;
             return 1;
         }
         default: {
@@ -962,11 +962,11 @@ uint8_t parser_sexpr_is_symbol(types_SExpr* expr) {
 }
 
 uint8_t parser_sexpr_is_number(types_SExpr* expr) {
-    __auto_type _mv_40 = (*expr);
-    switch (_mv_40.tag) {
+    __auto_type _mv_576 = (*expr);
+    switch (_mv_576.tag) {
         case types_SExpr_num:
         {
-            __auto_type n = _mv_40.data.num;
+            __auto_type n = _mv_576.data.num;
             return 1;
         }
         default: {
@@ -976,11 +976,11 @@ uint8_t parser_sexpr_is_number(types_SExpr* expr) {
 }
 
 uint8_t parser_sexpr_is_string(types_SExpr* expr) {
-    __auto_type _mv_41 = (*expr);
-    switch (_mv_41.tag) {
+    __auto_type _mv_577 = (*expr);
+    switch (_mv_577.tag) {
         case types_SExpr_str:
         {
-            __auto_type s = _mv_41.data.str;
+            __auto_type s = _mv_577.data.str;
             return 1;
         }
         default: {
@@ -990,11 +990,11 @@ uint8_t parser_sexpr_is_string(types_SExpr* expr) {
 }
 
 slop_string parser_sexpr_number_string(types_SExpr* expr) {
-    __auto_type _mv_42 = (*expr);
-    switch (_mv_42.tag) {
+    __auto_type _mv_578 = (*expr);
+    switch (_mv_578.tag) {
         case types_SExpr_num:
         {
-            __auto_type n = _mv_42.data.num;
+            __auto_type n = _mv_578.data.num;
             return n.raw;
         }
         default: {
@@ -1004,11 +1004,11 @@ slop_string parser_sexpr_number_string(types_SExpr* expr) {
 }
 
 slop_string parser_sexpr_string_value(types_SExpr* expr) {
-    __auto_type _mv_43 = (*expr);
-    switch (_mv_43.tag) {
+    __auto_type _mv_579 = (*expr);
+    switch (_mv_579.tag) {
         case types_SExpr_str:
         {
-            __auto_type s = _mv_43.data.str;
+            __auto_type s = _mv_579.data.str;
             return s.value;
         }
         default: {
@@ -1023,34 +1023,34 @@ slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr
         if (parser_is_form(expr, SLOP_STR("hole"))) {
             ({ __auto_type _lst_p = &(result); __auto_type _item = (expr); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         }
-        __auto_type _mv_44 = (*expr);
-        switch (_mv_44.tag) {
+        __auto_type _mv_580 = (*expr);
+        switch (_mv_580.tag) {
             case types_SExpr_lst:
             {
-                __auto_type l = _mv_44.data.lst;
+                __auto_type l = _mv_580.data.lst;
                 {
                     __auto_type items = l.items;
                     __auto_type len = ((int64_t)((items).len));
                     __auto_type i = 0;
                     while ((i < len)) {
-                        __auto_type _mv_45 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                        if (_mv_45.has_value) {
-                            __auto_type child = _mv_45.value;
+                        __auto_type _mv_581 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        if (_mv_581.has_value) {
+                            __auto_type child = _mv_581.value;
                             {
                                 __auto_type child_holes = parser_find_holes(arena, child);
                                 __auto_type child_len = ((int64_t)((child_holes).len));
                                 __auto_type j = 0;
                                 while ((j < child_len)) {
-                                    __auto_type _mv_46 = ({ __auto_type _lst = child_holes; size_t _idx = (size_t)j; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                                    if (_mv_46.has_value) {
-                                        __auto_type h = _mv_46.value;
+                                    __auto_type _mv_582 = ({ __auto_type _lst = child_holes; size_t _idx = (size_t)j; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                    if (_mv_582.has_value) {
+                                        __auto_type h = _mv_582.value;
                                         ({ __auto_type _lst_p = &(result); __auto_type _item = (h); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                                    } else if (!_mv_46.has_value) {
+                                    } else if (!_mv_582.has_value) {
                                     }
                                     j = (j + 1);
                                 }
                             }
-                        } else if (!_mv_45.has_value) {
+                        } else if (!_mv_581.has_value) {
                         }
                         i = (i + 1);
                     }
@@ -1066,20 +1066,20 @@ slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr
 }
 
 slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
-    __auto_type _mv_47 = (*expr);
-    switch (_mv_47.tag) {
+    __auto_type _mv_583 = (*expr);
+    switch (_mv_583.tag) {
         case types_SExpr_sym:
         {
-            __auto_type sym = _mv_47.data.sym;
+            __auto_type sym = _mv_583.data.sym;
             return parser_string_copy(arena, sym.name);
         }
         case types_SExpr_str:
         {
-            __auto_type str = _mv_47.data.str;
+            __auto_type str = _mv_583.data.str;
             {
                 __auto_type val = str.value;
                 __auto_type slen = ((int64_t)(val.len));
-                __auto_type buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, ((slen * 2) + 3))));
+                __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, ((slen * 2) + 3)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 __auto_type i = 0;
                 __auto_type out = 1;
                 buf[0] = 34;
@@ -1116,7 +1116,7 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
         }
         case types_SExpr_num:
         {
-            __auto_type num = _mv_47.data.num;
+            __auto_type num = _mv_583.data.num;
             if (num.is_float) {
                 return parser_string_copy(arena, SLOP_STR("<float>"));
             } else {
@@ -1125,7 +1125,7 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
         }
         case types_SExpr_lst:
         {
-            __auto_type lst = _mv_47.data.lst;
+            __auto_type lst = _mv_583.data.lst;
             {
                 __auto_type items = lst.items;
                 __auto_type len = ((int64_t)((items).len));
@@ -1136,9 +1136,9 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
                         __auto_type result = parser_string_copy(arena, SLOP_STR("("));
                         __auto_type i = 0;
                         while ((i < len)) {
-                            __auto_type _mv_48 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                            if (_mv_48.has_value) {
-                                __auto_type child = _mv_48.value;
+                            __auto_type _mv_584 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                            if (_mv_584.has_value) {
+                                __auto_type child = _mv_584.value;
                                 {
                                     __auto_type child_str = parser_pretty_print(arena, child);
                                     if ((i > 0)) {
@@ -1146,7 +1146,7 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
                                     }
                                     result = string_concat(arena, result, child_str);
                                 }
-                            } else if (!_mv_48.has_value) {
+                            } else if (!_mv_584.has_value) {
                             }
                             i = (i + 1);
                         }
@@ -1161,9 +1161,9 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
 slop_string parser_json_escape_string(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        __auto_type buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, ((slen * 2) + 3))));
-        __auto_type i = 0;
-        __auto_type out = 1;
+        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, ((slen * 2) + 3)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        int64_t i = 0;
+        int64_t out = 1;
         buf[0] = 34;
         while ((i < slen)) {
             {
@@ -1208,11 +1208,11 @@ slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr 
         } else {
             {
                 __auto_type result = parser_string_copy(arena, SLOP_STR("["));
-                __auto_type i = 0;
+                int64_t i = 0;
                 while ((i < len)) {
-                    __auto_type _mv_49 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_49.has_value) {
-                        __auto_type child = _mv_49.value;
+                    __auto_type _mv_585 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_585.has_value) {
+                        __auto_type child = _mv_585.value;
                         {
                             __auto_type child_json = parser_json_print(arena, child);
                             if ((i > 0)) {
@@ -1220,7 +1220,7 @@ slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr 
                             }
                             result = string_concat(arena, result, child_json);
                         }
-                    } else if (!_mv_49.has_value) {
+                    } else if (!_mv_585.has_value) {
                     }
                     i = (i + 1);
                 }
@@ -1231,11 +1231,11 @@ slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr 
 }
 
 slop_string parser_json_print(slop_arena* arena, types_SExpr* expr) {
-    __auto_type _mv_50 = (*expr);
-    switch (_mv_50.tag) {
+    __auto_type _mv_586 = (*expr);
+    switch (_mv_586.tag) {
         case types_SExpr_sym:
         {
-            __auto_type sym = _mv_50.data.sym;
+            __auto_type sym = _mv_586.data.sym;
             {
                 __auto_type escaped = parser_json_escape_string(arena, sym.name);
                 __auto_type line_str = int_to_string(arena, sym.line);
@@ -1245,7 +1245,7 @@ slop_string parser_json_print(slop_arena* arena, types_SExpr* expr) {
         }
         case types_SExpr_str:
         {
-            __auto_type str = _mv_50.data.str;
+            __auto_type str = _mv_586.data.str;
             {
                 __auto_type escaped = parser_json_escape_string(arena, str.value);
                 __auto_type line_str = int_to_string(arena, str.line);
@@ -1255,7 +1255,7 @@ slop_string parser_json_print(slop_arena* arena, types_SExpr* expr) {
         }
         case types_SExpr_num:
         {
-            __auto_type num = _mv_50.data.num;
+            __auto_type num = _mv_586.data.num;
             {
                 __auto_type line_str = int_to_string(arena, num.line);
                 __auto_type col_str = int_to_string(arena, num.col);
@@ -1274,7 +1274,7 @@ slop_string parser_json_print(slop_arena* arena, types_SExpr* expr) {
         }
         case types_SExpr_lst:
         {
-            __auto_type lst = _mv_50.data.lst;
+            __auto_type lst = _mv_586.data.lst;
             {
                 __auto_type items_json = parser_json_print_list(arena, lst.items);
                 __auto_type line_str = int_to_string(arena, lst.line);

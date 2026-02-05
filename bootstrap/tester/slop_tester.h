@@ -7,7 +7,8 @@
 #include "slop_types.h"
 #include "slop_parser.h"
 #include "slop_extract.h"
-#include "slop_emit.h"
+#include "slop_test_emit.h"
+#include "slop_context.h"
 #include "slop_type_extract.h"
 #include "slop_ctype.h"
 
@@ -61,10 +62,10 @@ void tester_extract_types_from_module_form(slop_arena* arena, types_SExpr* modul
 void tester_extract_single_type_def(slop_arena* arena, types_SExpr* type_form, type_extract_TypeRegistry* types, slop_string prefix);
 slop_string tester_make_prefixed_c_name(slop_arena* arena, slop_string prefix, slop_string name);
 slop_string tester_convert_to_c_ident(slop_arena* arena, slop_string name);
-type_extract_TypeEntry* tester_type_entry_new_local(slop_arena* arena, slop_string name, slop_string c_name, int64_t kind);
-type_extract_TypeEntry* tester_extract_record_type_entry(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
-type_extract_TypeEntry* tester_extract_union_type_entry(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
-type_extract_TypeEntry* tester_extract_enum_type_entry(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
+type_extract_TstTypeEntry* tester_type_entry_new_local(slop_arena* arena, slop_string name, slop_string c_name, int64_t kind);
+type_extract_TstTypeEntry* tester_extract_record_type_entry(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
+type_extract_TstTypeEntry* tester_extract_union_type_entry(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
+type_extract_TstTypeEntry* tester_extract_enum_type_entry(slop_arena* arena, slop_string name, slop_string c_name, types_SExpr* def);
 slop_string tester_sexpr_to_string_simple(slop_arena* arena, types_SExpr* expr);
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED

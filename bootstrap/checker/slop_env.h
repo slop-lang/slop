@@ -187,6 +187,8 @@ struct env_TypeEnv {
     slop_list_env_BindingAnnotation binding_annotations;
     slop_option_string current_file;
     slop_list_string loaded_modules;
+    types_ResolvedType* never_type;
+    slop_list_string fn_type_params;
 };
 typedef struct env_TypeEnv env_TypeEnv;
 
@@ -197,7 +199,7 @@ SLOP_OPTION_DEFINE(env_TypeEnv, slop_option_env_TypeEnv)
 
 env_TypeEnv* env_env_new(slop_arena* arena);
 void env_env_register_builtin_fn(env_TypeEnv* env, slop_arena* arena, slop_string name, slop_string c_name, slop_list_types_ParamInfo params, types_ResolvedType* ret_type);
-void env_register_builtin_functions(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* int_t, types_ResolvedType* bool_t, types_ResolvedType* string_t, types_ResolvedType* arena_t, types_ResolvedType* u8_t);
+void env_register_builtin_functions(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* int_t, types_ResolvedType* bool_t, types_ResolvedType* string_t, types_ResolvedType* arena_t, types_ResolvedType* u8_t, types_ResolvedType* unit_t);
 slop_arena* env_env_arena(env_TypeEnv* env);
 void env_env_push_scope(env_TypeEnv* env);
 void env_env_pop_scope(env_TypeEnv* env);
@@ -237,6 +239,7 @@ types_ResolvedType* env_env_get_string_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_unit_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_arena_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_unknown_type(env_TypeEnv* env);
+types_ResolvedType* env_env_get_never_type(env_TypeEnv* env);
 types_ResolvedType* env_env_make_option_type(env_TypeEnv* env, types_ResolvedType* inner_type);
 types_ResolvedType* env_env_make_ptr_type(env_TypeEnv* env, types_ResolvedType* inner_type);
 types_ResolvedType* env_env_get_generic_type(env_TypeEnv* env);
@@ -252,6 +255,10 @@ void env_env_set_current_file(env_TypeEnv* env, slop_option_string file_path);
 slop_option_string env_env_get_current_file(env_TypeEnv* env);
 void env_env_add_loaded_module(env_TypeEnv* env, slop_string module_path);
 uint8_t env_env_is_module_loaded(env_TypeEnv* env, slop_string module_path);
+void env_env_set_fn_type_params(env_TypeEnv* env, slop_list_string params);
+slop_list_string env_env_get_fn_type_params(env_TypeEnv* env);
+void env_env_clear_fn_type_params(env_TypeEnv* env);
+uint8_t env_env_is_type_param(env_TypeEnv* env, slop_string name);
 
 #ifndef SLOP_OPTION_ENV_VARBINDING_DEFINED
 #define SLOP_OPTION_ENV_VARBINDING_DEFINED

@@ -124,6 +124,17 @@ class TestTypeErrors:
         # Must specifically mention the unknown field, not just "field" in function name
         assert "no field" in stdout.lower() or "has no field" in stdout.lower()
 
+    def test_arena_named_missing_args(self, run_checker, tests_dir):
+        """with-arena :as with insufficient args should error"""
+        slop_file = tests_dir / "error_arena_named_missing_args.slop"
+        exit_code, stdout, stderr = run_checker(slop_file)
+
+        # Should produce an error - the malformed with-arena causes type issues
+        assert exit_code != 0 or "error" in stdout.lower()
+        # The checker detects the issue (malformed arena causes return type mismatch or parse error)
+        # This validates that malformed :as syntax is not silently accepted
+        assert "error" in stdout.lower()
+
 
 class TestPythonErrorComparison:
     """Compare error detection between native and Python checkers"""
@@ -338,3 +349,48 @@ class TestExpressionMode:
             # No output is acceptable if exit code is non-zero
             # (empty input might just produce error message to stderr)
             assert result.returncode != 0 or "error" in result.stderr.lower()
+
+
+class TestWithArenaIntegration:
+    """Integration tests - compile and run with-arena test suite"""
+
+    def test_with_arena_transpiles(self):
+        """test_with_arena.slop should transpile without errors"""
+        import subprocess
+        from pathlib import Path
+
+        test_file = Path(__file__).parent.parent.parent / "transpiler" / "tests" / "test_with_arena.slop"
+
+        if not test_file.exists():
+            pytest.skip(f"Test file not found: {test_file}")
+
+        # Run native transpiler
+        result = subprocess.run(
+            ["./bin/slop-compiler", "transpile", str(test_file)],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parents[4],  # project root
+        )
+
+        assert result.returncode == 0, f"Transpile failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+
+    def test_with_arena_type_checks(self):
+        """test_with_arena.slop should type check without errors"""
+        import subprocess
+        from pathlib import Path
+
+        test_file = Path(__file__).parent.parent.parent / "transpiler" / "tests" / "test_with_arena.slop"
+
+        if not test_file.exists():
+            pytest.skip(f"Test file not found: {test_file}")
+
+        # Run native type checker via slop check
+        result = subprocess.run(
+            ["uv", "run", "slop", "check", str(test_file)],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parents[4],  # project root
+        )
+
+        assert result.returncode == 0, f"Type check failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        assert "error" not in result.stdout.lower(), f"Unexpected error: {result.stdout}"

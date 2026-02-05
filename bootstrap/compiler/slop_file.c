@@ -36,9 +36,9 @@ slop_result_u8_file_FileError file_file_close(file_File* f) {
     {
         __auto_type result = fclose((*f).handle);
         if ((result == 0)) {
-            return ((slop_result_u8_file_FileError){ .is_ok = true, .data.ok = 1 });
+            _retval = ((slop_result_u8_file_FileError){ .is_ok = true, .data.ok = 1 });
         } else {
-            return ((slop_result_u8_file_FileError){ .is_ok = false, .data.err = file_FileError_io_error });
+            _retval = ((slop_result_u8_file_FileError){ .is_ok = false, .data.err = file_FileError_io_error });
         }
     }
     SLOP_POST((!((*f).is_open)), "(not (. (deref f) is-open))");
@@ -48,7 +48,7 @@ slop_result_u8_file_FileError file_file_close(file_File* f) {
 slop_result_bytes_file_FileError file_file_read(slop_arena* arena, file_File* f, int64_t max_bytes) {
     SLOP_PRE(((*f).is_open), "(. (deref f) is-open)");
     {
-        __auto_type buf = ((uint8_t*)((uint8_t*)slop_arena_alloc(arena, max_bytes)));
+        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, max_bytes); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         {
             __auto_type bytes_read = fread(((void*)(buf)), ((uint64_t)(1)), ((uint64_t)(max_bytes)), (*f).handle);
             if (((bytes_read == 0) && (ferror((*f).handle) != 0))) {
@@ -63,7 +63,7 @@ slop_result_bytes_file_FileError file_file_read(slop_arena* arena, file_File* f,
 slop_result_string_file_FileError file_file_read_line(slop_arena* arena, file_File* f, int64_t max_len) {
     SLOP_PRE(((*f).is_open), "(. (deref f) is-open)");
     {
-        __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (max_len + 1));
+        __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (max_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
         {
             __auto_type result = fgets(((uint8_t*)(buf)), ((int64_t)(max_len)), (*f).handle);
             if ((result == NULL)) {
@@ -88,7 +88,7 @@ slop_result_string_file_FileError file_file_read_all(slop_arena* arena, file_Fil
             __auto_type size = ftell((*f).handle);
             fseek((*f).handle, start_pos, SEEK_SET);
             {
-                __auto_type buf = (uint8_t*)slop_arena_alloc(arena, (size + 1));
+                __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (size + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 {
                     __auto_type bytes_read = fread(((void*)(buf)), ((uint64_t)(1)), ((uint64_t)(size)), (*f).handle);
                     return ((slop_result_string_file_FileError){ .is_ok = true, .data.ok = (slop_string){.len = bytes_read, .data = ((uint8_t*)(buf))} });
@@ -177,7 +177,7 @@ slop_result_int_file_FileError file_file_size(slop_string path) {
         #endif
         slop_arena* arena = &_arena;
         {
-            __auto_type buf = (struct stat*)slop_arena_alloc(arena, sizeof(struct stat));
+            __auto_type buf = ({ __auto_type _alloc = (struct stat*)slop_arena_alloc(arena, sizeof(struct stat)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
             {
                 __auto_type result = stat(((uint8_t*)(path.data)), ((void*)(buf)));
                 if ((result != 0)) {

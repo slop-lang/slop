@@ -519,6 +519,94 @@ class TestModuleTypePrefixing:
         assert "Status_pending" in c_code
 
 
+class TestNamedArenas:
+    """Test named arena transpilation with :as keyword"""
+
+    def test_named_arena_basic(self):
+        """Named arena with :as should bind custom name"""
+        source = """
+        (fn test-named ()
+          (@intent "Test named arena")
+          (@spec (() -> Int))
+          (with-arena :as scratch 1024
+            42))
+        """
+        c_code = transpile(source)
+        # Should use _arena_scratch as the C local variable
+        assert "_arena_scratch" in c_code
+        assert "slop_arena_new(1024)" in c_code
+        # Should bind as scratch*
+        assert "slop_arena* scratch = &_arena_scratch" in c_code
+        # Should free using scratch
+        assert "slop_arena_free(scratch)" in c_code
+
+    def test_named_arena_allocation(self):
+        """Named arena should be usable for allocations"""
+        source = """
+        (fn test-alloc ()
+          (@intent "Test allocation with named arena")
+          (@spec (() -> (Ptr U8)))
+          (with-arena :as scratch 1024
+            (arena-alloc scratch 256)))
+        """
+        c_code = transpile(source)
+        assert "_arena_scratch" in c_code
+        assert "slop_arena* scratch" in c_code
+        # Should use scratch for allocation
+        assert "slop_arena_alloc(scratch" in c_code
+
+    def test_nested_named_arenas(self):
+        """Nested arenas with different names should work"""
+        source = """
+        (fn test-nested ()
+          (@intent "Test nested named arenas")
+          (@spec (() -> Int))
+          (with-arena :as outer 2048
+            (with-arena :as inner 1024
+              42)))
+        """
+        c_code = transpile(source)
+        # Should have both arena locals
+        assert "_arena_outer" in c_code
+        assert "_arena_inner" in c_code
+        # Should bind both names
+        assert "slop_arena* outer = &_arena_outer" in c_code
+        assert "slop_arena* inner = &_arena_inner" in c_code
+
+    def test_mixed_named_unnamed_arenas(self):
+        """Named and unnamed arenas can be mixed"""
+        source = """
+        (fn test-mixed ()
+          (@intent "Test mixed arenas")
+          (@spec (() -> Int))
+          (with-arena :as scratch 2048
+            (with-arena 1024
+              42)))
+        """
+        c_code = transpile(source)
+        # Named arena uses _arena_scratch
+        assert "_arena_scratch" in c_code
+        assert "slop_arena* scratch" in c_code
+        # Unnamed arena uses _arena (backward compatible)
+        assert "slop_arena _arena = slop_arena_new(1024)" in c_code
+        assert "slop_arena* arena = &_arena" in c_code
+
+    def test_unnamed_arena_backward_compat(self):
+        """Unnamed arena should still work as before"""
+        source = """
+        (fn test-unnamed ()
+          (@intent "Test unnamed arena")
+          (@spec (() -> Int))
+          (with-arena 1024
+            42))
+        """
+        c_code = transpile(source)
+        # Should use _arena (not _arena_arena)
+        assert "slop_arena _arena = slop_arena_new(1024)" in c_code
+        assert "slop_arena* arena = &_arena" in c_code
+        assert "_arena_arena" not in c_code
+
+
 class TestParameterModes:
     """Test parameter mode transpilation"""
 

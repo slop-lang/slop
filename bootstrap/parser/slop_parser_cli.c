@@ -16,7 +16,7 @@ slop_string parser_cli_argv_to_string(uint8_t** argv, int64_t index) {
 void parser_cli_print_json_array(slop_arena* arena, slop_list_types_SExpr_ptr exprs) {
     {
         __auto_type len = ((int64_t)((exprs).len));
-        __auto_type i = 0;
+        int64_t i = 0;
         printf("%s", "[");
         while ((i < len)) {
             __auto_type _mv_51 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -37,7 +37,7 @@ void parser_cli_print_json_array(slop_arena* arena, slop_list_types_SExpr_ptr ex
 void parser_cli_print_sexp_list(slop_arena* arena, slop_list_types_SExpr_ptr exprs) {
     {
         __auto_type len = ((int64_t)((exprs).len));
-        __auto_type i = 0;
+        int64_t i = 0;
         while ((i < len)) {
             __auto_type _mv_52 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_52.has_value) {
@@ -66,7 +66,7 @@ int main(int64_t argc, uint8_t** argv) {
             slop_arena* arena = &_arena;
             {
                 __auto_type format = parser_cli_OutputFormat_fmt_sexp;
-                __auto_type file_idx = 1;
+                int64_t file_idx = 1;
                 if (((argc >= 4) && string_eq(parser_cli_argv_to_string(argv, 1), SLOP_STR("--format")))) {
                     {
                         __auto_type fmt_arg = parser_cli_argv_to_string(argv, 2);

@@ -1,7 +1,7 @@
 ;; Test: with-arena binds arena variable - should pass
 
 (module pass-with-arena
-  (export main)
+  (export main test-named test-nested-named)
 
   (fn main ()
     (@intent "Test with-arena binds arena")
@@ -10,4 +10,23 @@
       ;; arena is bound and accessible here
       (let ((x arena))
         42)))
+
+  ;; Test named arena with :as keyword
+  (fn test-named ()
+    (@intent "Test named arena binds custom name")
+    (@spec (() -> Int))
+    (with-arena :as scratch 1024
+      ;; scratch is bound instead of arena
+      (let ((x scratch))
+        42)))
+
+  ;; Test nested named arenas with different names
+  (fn test-nested-named ()
+    (@intent "Test nested arenas with different names")
+    (@spec (() -> Int))
+    (with-arena :as outer 2048
+      (let ((x outer))
+        (with-arena :as inner 1024
+          (let ((y inner))
+            42)))))
 )

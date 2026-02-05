@@ -45,12 +45,74 @@
   (import emit (emit-standard-includes emit-include))
   (import defn (transpile-type transpile-function transpile-const is-const-form emit-forward-declaration
                 is-ffi-form is-ffi-struct-form transpile-ffi transpile-ffi-struct
-                get-return-type get-slop-return-type get-result-type-name build-param-str eval-const-value get-type-name-str))
+                get-return-type get-slop-return-type get-result-type-name build-param-str eval-const-value get-type-name-str
+                is-generic-type-alias))
   (import stmt (transpile-stmt))
   (import expr (transpile-expr))
   (import match (transpile-match))
   (import strlib (starts-with substring char-at))
   (import parser (pretty-print))
+
+  ;; ============================================================
+  ;; Generic Function Info
+  ;; ============================================================
+
+  ;; Helper record for extract-generic-info return
+  (type GenericInfo (record
+    (is-generic Bool)
+    (type-params (List String))))
+
+  (fn extract-generic-info ((arena Arena) (items (List (Ptr SExpr))))
+    (@intent "Extract @generic annotation info from function definition")
+    (@spec ((Arena (List (Ptr SExpr))) -> GenericInfo))
+    ;; Scan items looking for (@generic (T U ...))
+    (let ((len (list-len items))
+          (mut i 3)  ;; Start after fn, name, params
+          (result-is-generic false)
+          (result-type-params (list-new arena String)))
+      (while (< i len)
+        (match (list-get items i)
+          ((some item)
+            (match (deref item)
+              ((lst lst)
+                (let ((sub-items (. lst items)))
+                  (when (>= (list-len sub-items) 1)
+                    (match (list-get sub-items 0)
+                      ((some head)
+                        (match (deref head)
+                          ((sym sym)
+                            (when (string-eq (. sym name) "@generic")
+                              ;; Found @generic, extract type params from second element
+                              (when (>= (list-len sub-items) 2)
+                                (match (list-get sub-items 1)
+                                  ((some params-expr)
+                                    (match (deref params-expr)
+                                      ((lst params-lst)
+                                        ;; Extract each symbol from the params list
+                                        (let ((param-items (. params-lst items))
+                                              (param-len (list-len param-items))
+                                              (mut j 0))
+                                          (while (< j param-len)
+                                            (match (list-get param-items j)
+                                              ((some param)
+                                                (match (deref param)
+                                                  ((sym param-sym)
+                                                    (list-push result-type-params (. param-sym name)))
+                                                  (else (do))))
+                                              ((none) (do)))
+                                            (set! j (+ j 1)))))
+                                      ;; Single symbol like (@generic T) - unusual but handle it
+                                      ((sym single-sym)
+                                        (list-push result-type-params (. single-sym name)))
+                                      (else (do))))
+                                  ((none) (do))))))
+                          (else (do))))
+                      ((none) (do))))))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      ;; Return GenericInfo - is-generic is true if we found any type params
+      (GenericInfo (> (list-len result-type-params) 0) result-type-params)))
 
   ;; ============================================================
   ;; Module Prescan
@@ -155,14 +217,14 @@
                         ((some body-expr)
                           (do
                             (check-and-register-result-alias ctx type-name body-expr)
-                            ;; Register Map/Set type aliases during prescan and scan for generics
+                            ;; Register type aliases during prescan and scan for generics
                             (let ((slop-type-str (pretty-print arena body-expr)))
+                              (when (is-generic-type-alias slop-type-str)
+                                (ctx-register-type-alias ctx type-name slop-type-str))
                               (when (or (starts-with slop-type-str "(Map ")
                                         (starts-with slop-type-str "(Set "))
-                                (do
-                                  (ctx-register-type-alias ctx type-name slop-type-str)
-                                  ;; Scan Map/Set body to register list types for key/element
-                                  (scan-type-for-generics ctx body-expr))))))
+                                ;; Scan Map/Set body to register list types for key/element
+                                (scan-type-for-generics ctx body-expr)))))
                         ((none) (do)))))))
               (else (do))))
           ((none) (do))))))
@@ -243,9 +305,12 @@
                                           (match (list-get vl-items 1)
                                             ((some type-expr)
                                               (let ((slop-type (pretty-print arena type-expr))
-                                                    (c-type (to-c-type-prefixed ctx type-expr)))
+                                                    (c-type (to-c-type-prefixed ctx type-expr))
+                                                    (is-ptr (is-pointer-type-expr-header type-expr)))
                                                 (ctx-register-union-variant ctx variant-name union-name
-                                                                            c-variant-name slop-type c-type)))
+                                                                            c-variant-name slop-type c-type)
+                                                ;; Register as field type for type inference
+                                                (ctx-register-field-type ctx union-name variant-name c-type slop-type is-ptr)))
                                             ((none)
                                               (ctx-register-union-variant ctx variant-name union-name
                                                                           c-variant-name "" "")))))
@@ -286,8 +351,13 @@
                   ;; If c-name differs from mangled-name, register alias
                   (when (not (string-eq c-name mangled-name))
                     (ctx-add-c-name-alias ctx (FuncCNameAlias fn-name mangled-name c-name)))
-                  ;; Register function with the clean name (c-name)
-                  (ctx-register-func ctx (FuncEntry fn-name c-name return-type slop-ret-type false returns-str param-types))
+                  ;; Check if function is generic and extract type params
+                  (let ((generic-info (extract-generic-info arena items))
+                        (is-generic (. generic-info is-generic))
+                        (type-params (. generic-info type-params))
+                        (no-source (Option (Ptr SExpr)) none))
+                    ;; Register function with the clean name (c-name)
+                    (ctx-register-func ctx (FuncEntry fn-name c-name return-type slop-ret-type false returns-str param-types is-generic type-params no-source)))
                   ;; Scan param types for List/Option generics
                   (prescan-fn-params ctx items)
                   ;; Check for Result type and other generics in @spec
@@ -810,35 +880,46 @@
                                           (c-sym-name (to-c-name arena sym-name)))
                                       (if (is-type-name sym-name)
                                         ;; Register type AND as variable (for constants like XSD_STRING)
-                                        (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name)))
+                                        ;; Re-exports: reuse existing c-name to preserve original module prefix
+                                        (let ((existing (ctx-lookup-type ctx sym-name))
+                                              (c-name (match existing
+                                                        ((some entry) (. entry c-name))
+                                                        ((none) (ctx-str3 ctx c-mod-name "_" c-sym-name)))))
                                           (do
-                                            (ctx-register-type ctx (TypeEntry sym-name c-name c-name false false false))
+                                            (ctx-register-type ctx (TypeEntry sym-name c-name c-name
+                                                                     (match existing ((some e) (. e is-enum)) ((none) false))
+                                                                     (match existing ((some e) (. e is-record)) ((none) false))
+                                                                     (match existing ((some e) (. e is-union)) ((none) false))))
                                             (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false false "" ""))))
                                         ;; Register function with module prefix
-                                        ;; Try to copy param-types from existing entry (if already processed)
-                                        (let ((c-name (ctx-str3 ctx c-mod-name "_" c-sym-name))
-                                              ;; Check if function was already registered (from processing imported module)
-                                              (existing-func (ctx-lookup-func ctx sym-name))
+                                        ;; Re-exports: reuse existing c-name to preserve original module prefix
+                                        (let ((existing-func (ctx-lookup-func ctx sym-name))
+                                              (c-name (match existing-func
+                                                        ((some entry) (. entry c-name))
+                                                        ((none) (ctx-str3 ctx c-mod-name "_" c-sym-name))))
                                               (param-types (match existing-func
-                                                             ;; Found existing entry - copy its param-types
                                                              ((some entry) (. entry param-types))
-                                                             ;; Not found - fall back to empty params
                                                              ((none) (list-new arena (Ptr FuncParamType)))))
-                                              ;; Copy return-type from existing entry
                                               (ret-type (match existing-func
                                                           ((some entry) (. entry return-type))
                                                           ((none) "")))
                                               (slop-ret (match existing-func
                                                           ((some entry) (. entry slop-return-type))
                                                           ((none) "")))
-                                              ;; Copy returns-pointer and returns-string from existing entry
                                               (ret-ptr (match existing-func
                                                          ((some entry) (. entry returns-pointer))
                                                          ((none) false)))
                                               (ret-str (match existing-func
                                                          ((some entry) (. entry returns-string))
-                                                         ((none) false))))
-                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret ret-ptr ret-str param-types))))))
+                                                         ((none) false)))
+                                              (is-gen (match existing-func
+                                                        ((some entry) (. entry is-generic))
+                                                        ((none) false)))
+                                              (ty-params (match existing-func
+                                                           ((some entry) (. entry type-params))
+                                                           ((none) (list-new arena String))))
+                                              (no-source (Option (Ptr SExpr)) none))
+                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret ret-ptr ret-str param-types is-gen ty-params no-source))))))
                                   (else (do))))
                               ((none) (do)))
                             (set! j (+ j 1)))))
@@ -929,8 +1010,10 @@
                                          ((some ret-expr) (to-c-type-prefixed ctx ret-expr))
                                          ((none) ""))
                                        ""))
-                            (ret-is-string (string-eq ret-type "slop_string")))
-                        (ctx-register-func ctx (FuncEntry fn-name c-name ret-type "" true ret-is-string param-types))))
+                            (ret-is-string (string-eq ret-type "slop_string"))
+                            (empty-type-params (list-new arena String))
+                            (no-source (Option (Ptr SExpr)) none))
+                        (ctx-register-func ctx (FuncEntry fn-name c-name ret-type "" true ret-is-string param-types false empty-type-params no-source))))
                     (else (do))))
                 ((none) (do))))))
         (else (do)))))
@@ -2708,6 +2791,8 @@
             ;; Fallback to memcmp-based macro if no fields registered
             (ctx-emit-header ctx (ctx-str3 ctx "SLOP_STRUCT_HASH_EQ_DEFINE(" c-type ")"))
             (do
+              ;; First emit hash/eq for any nested union/record field types
+              (emit-record-field-dependencies ctx fields)
               ;; Generate hash function
               (emit-struct-hash-fn ctx c-type fields)
               ;; Generate equality function
@@ -2738,6 +2823,47 @@
                       (emit-struct-hash-fn ctx c-payload-type fields)
                       (emit-struct-eq-fn ctx c-payload-type fields)
                       (ctx-emit-header ctx "#endif")))))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn emit-record-field-dependencies ((ctx (Ptr TranspileContext)) (fields (List FieldEntry)))
+    (@intent "Emit hash/eq functions for record field types that need them (unions, nested records)")
+    (@spec (((Ptr TranspileContext) (List FieldEntry)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((len (list-len fields))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get fields i)
+          ((some field)
+            (let ((slop-type (. field slop-type))
+                  (c-type (. field c-type)))
+              ;; Skip primitive types
+              (when (not (is-primitive-slop-type slop-type))
+                ;; Check if it's a union type
+                (let ((union-variants (ctx-get-union-variants ctx c-type)))
+                  (if (> (list-len union-variants) 0)
+                    ;; Union field - emit its hash/eq with guard
+                    (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" "")))
+                      (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
+                      (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+                      ;; First emit dependencies for union's payload types
+                      (emit-union-payload-hash-eq ctx union-variants)
+                      ;; Then emit the union's hash/eq
+                      (emit-union-hash-fn ctx c-type union-variants)
+                      (emit-union-eq-fn ctx c-type union-variants)
+                      (ctx-emit-header ctx "#endif"))
+                    ;; Not a union - check if it's a nested record
+                    (let ((nested-fields (ctx-get-fields-for-type ctx c-type)))
+                      (when (> (list-len nested-fields) 0)
+                        ;; Nested record - emit its hash/eq with guard
+                        (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" "")))
+                          (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
+                          (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+                          ;; Recursively emit dependencies first
+                          (emit-record-field-dependencies ctx nested-fields)
+                          (emit-struct-hash-fn ctx c-type nested-fields)
+                          (emit-struct-eq-fn ctx c-type nested-fields)
+                          (ctx-emit-header ctx "#endif")))))))))
           ((none) (do)))
         (set! i (+ i 1)))))
 
@@ -2995,6 +3121,12 @@
         ;; Range type aliases (e.g., BlankNodeId -> (Int 0 ..)) - use int hash
         ((is-range-type-alias ctx slop-type)
           (ctx-emit-header ctx (ctx-str3 ctx "    { int64_t _tmp = (int64_t)_k->" c-field-name "; hash ^= slop_hash_int(&_tmp); hash *= 1099511628211ULL; }")))
+        ;; Union types - register for deferred hash/eq generation, then call
+        ((> (list-len (ctx-get-union-variants ctx (. field c-type))) 0)
+          (let ((nested-c-type (. field c-type)))
+            ;; Register for deferred generation at module level to avoid interleaving
+            (ctx-register-struct-key-type ctx nested-c-type)
+            (ctx-emit-header ctx (ctx-str5 ctx "    hash ^= slop_hash_" nested-c-type "(&_k->" c-field-name "); hash *= 1099511628211ULL;"))))
         ;; Nested struct types - call their hash function
         (else
           ;; For other types (nested structs), call slop_hash_TypeName
@@ -3065,6 +3197,12 @@
         ;; Range type aliases (e.g., BlankNodeId -> (Int 0 ..)) - direct comparison
         ((is-range-type-alias ctx slop-type)
           (ctx-emit-header ctx (ctx-str4 ctx "        && _a->" c-field-name " == _b->" c-field-name)))
+        ;; Union types - register for deferred hash/eq generation, then call
+        ((> (list-len (ctx-get-union-variants ctx (. field c-type))) 0)
+          (let ((nested-c-type (. field c-type)))
+            ;; Register for deferred generation at module level to avoid interleaving
+            (ctx-register-struct-key-type ctx nested-c-type)
+            (ctx-emit-header ctx (ctx-str ctx (ctx-str5 ctx "        && slop_eq_" nested-c-type "(&_a->" c-field-name ", &_b->") (ctx-str ctx c-field-name ")")))))
         ;; Nested struct types - call their eq function
         (else
           (let ((nested-c-type (. field c-type)))
@@ -3078,12 +3216,11 @@
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
     (let ((struct-key-types (ctx-get-struct-key-types ctx))
-          (len (list-len struct-key-types))
           (mut i 0))
-      (when (> len 0)
+      (when (> (list-len struct-key-types) 0)
         (ctx-emit-header ctx "")
         (ctx-emit-header ctx "/* Hash/eq functions and list types for struct map/set keys */"))
-      (while (< i len)
+      (while (< i (list-len struct-key-types))
         (match (list-get struct-key-types i)
           ((some c-type)
             (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" ""))

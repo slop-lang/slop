@@ -12,7 +12,7 @@
 (module type-extract
   (export
     ;; Types
-    TypeEntry TypeEntryKind FieldEntry VariantEntry EnumValueEntry TypeRegistry ImportEntry
+    TstTypeEntry TstTypeEntryKind TstFieldEntry VariantEntry EnumValueEntry TypeRegistry ImportEntry
     ;; Constructor
     make-type-registry make-type-registry-with-imports
     ;; Extraction
@@ -40,10 +40,10 @@
   ;; ============================================================
 
   ;; Kind of type entry
-  (type TypeEntryKind (enum te-record te-union te-enum te-range te-alias))
+  (type TstTypeEntryKind (enum te-record te-union te-enum te-range te-alias))
 
   ;; A field in a record type
-  (type FieldEntry (record
+  (type TstFieldEntry (record
     (name String)
     (type-name String)))  ;; Type as string for simplicity
 
@@ -64,11 +64,11 @@
     (symbols (List String))))
 
   ;; Complete type entry
-  (type TypeEntry (record
+  (type TstTypeEntry (record
     (name String)            ;; SLOP type name (e.g., "Term")
     (c-name String)          ;; C type name (e.g., "rdf_Term")
-    (kind TypeEntryKind)
-    (fields (List FieldEntry))         ;; For records
+    (kind TstTypeEntryKind)
+    (fields (List TstFieldEntry))         ;; For records
     (variants (List VariantEntry))     ;; For unions
     (enum-values (List EnumValueEntry)) ;; For enums
     (inner-type String)))    ;; For alias, range, etc.
@@ -78,7 +78,7 @@
   ;; ============================================================
 
   (type TypeRegistry (record
-    (types (List (Ptr TypeEntry)))
+    (types (List (Ptr TstTypeEntry)))
     (module-prefix String)
     (import-entries (List ImportEntry))))  ;; Full import mappings for symbol lookup
 
@@ -90,21 +90,21 @@
     (@intent "Create empty type registry with module prefix")
     (@spec ((Arena String) -> TypeRegistry))
     (@alloc arena)
-    (TypeRegistry (list-new arena (Ptr TypeEntry)) prefix (list-new arena ImportEntry)))
+    (TypeRegistry (list-new arena (Ptr TstTypeEntry)) prefix (list-new arena ImportEntry)))
 
   (fn make-type-registry-with-imports ((arena Arena) (prefix String) (imports (List ImportEntry)))
     (@intent "Create empty type registry with module prefix and import mappings")
     (@spec ((Arena String (List ImportEntry)) -> TypeRegistry))
     (@alloc arena)
-    (TypeRegistry (list-new arena (Ptr TypeEntry)) prefix imports))
+    (TypeRegistry (list-new arena (Ptr TstTypeEntry)) prefix imports))
 
   ;; ============================================================
   ;; Registry Mutation
   ;; ============================================================
 
-  (fn registry-add-type ((arena Arena) (reg (Ptr TypeRegistry)) (entry (Ptr TypeEntry)))
+  (fn registry-add-type ((arena Arena) (reg (Ptr TypeRegistry)) (entry (Ptr TstTypeEntry)))
     (@intent "Add a type entry to the registry")
-    (@spec ((Arena (Ptr TypeRegistry) (Ptr TypeEntry)) -> Unit))
+    (@spec ((Arena (Ptr TypeRegistry) (Ptr TstTypeEntry)) -> Unit))
     (@alloc arena)
     (list-push (. (deref reg) types) entry)
     (do))
@@ -113,14 +113,14 @@
   ;; Type Entry Constructor
   ;; ============================================================
 
-  (fn type-entry-new ((arena Arena) (name String) (c-name String) (kind TypeEntryKind))
+  (fn type-entry-new ((arena Arena) (name String) (c-name String) (kind TstTypeEntryKind))
     (@intent "Create a new type entry")
-    (@spec ((Arena String String TypeEntryKind) -> (Ptr TypeEntry)))
+    (@spec ((Arena String String TstTypeEntryKind) -> (Ptr TstTypeEntry)))
     (@alloc arena)
-    (let ((entry (cast (Ptr TypeEntry) (arena-alloc arena 128))))
-      (set! (deref entry) (TypeEntry
+    (let ((entry (cast (Ptr TstTypeEntry) (arena-alloc arena 128))))
+      (set! (deref entry) (TstTypeEntry
         name c-name kind
-        (list-new arena FieldEntry)
+        (list-new arena TstFieldEntry)
         (list-new arena VariantEntry)
         (list-new arena EnumValueEntry)
         ""))
@@ -128,9 +128,9 @@
 
   (fn field-entry-new ((name String) (type-name String))
     (@intent "Create a field entry")
-    (@spec ((String String) -> FieldEntry))
+    (@spec ((String String) -> TstFieldEntry))
     (@pure)
-    (FieldEntry name type-name))
+    (TstFieldEntry name type-name))
 
   (fn variant-entry-new ((name String) (index Int) (payload-type String))
     (@intent "Create a variant entry")
@@ -243,7 +243,7 @@
 
   (fn extract-record-type ((arena Arena) (name String) (c-name String) (def (Ptr SExpr)))
     (@intent "Extract record type definition")
-    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TypeEntry)))
+    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TstTypeEntry)))
     (@alloc arena)
     ;; def: (record (field1 Type1) (field2 Type2) ...)
     (let ((entry (type-entry-new arena name c-name 'te-record))
@@ -275,7 +275,7 @@
 
   (fn extract-union-type ((arena Arena) (name String) (c-name String) (def (Ptr SExpr)))
     (@intent "Extract union type definition")
-    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TypeEntry)))
+    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TstTypeEntry)))
     (@alloc arena)
     ;; def: (union (variant1 Type1) (variant2 Type2) ...)
     (let ((entry (type-entry-new arena name c-name 'te-union))
@@ -311,7 +311,7 @@
 
   (fn extract-enum-type ((arena Arena) (name String) (c-name String) (def (Ptr SExpr)))
     (@intent "Extract enum type definition")
-    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TypeEntry)))
+    (@spec ((Arena String String (Ptr SExpr)) -> (Ptr TstTypeEntry)))
     (@alloc arena)
     ;; def: (enum val1 val2 val3 ...)
     (let ((entry (type-entry-new arena name c-name 'te-enum))
@@ -336,12 +336,12 @@
 
   (fn registry-lookup ((reg TypeRegistry) (name String))
     (@intent "Find type by SLOP name")
-    (@spec ((TypeRegistry String) -> (Option (Ptr TypeEntry))))
+    (@spec ((TypeRegistry String) -> (Option (Ptr TstTypeEntry))))
     (@pure)
     (let ((types (. reg types))
           (len (list-len types))
           (mut i 0)
-          (mut found (Option (Ptr TypeEntry)) (none)))
+          (mut found (Option (Ptr TstTypeEntry)) (none)))
       (while (and (< i len) (match found ((none) true) (_ false)))
         (match (list-get types i)
           ((some entry)
@@ -353,12 +353,12 @@
 
   (fn registry-lookup-variant ((reg TypeRegistry) (variant-name String))
     (@intent "Find which union type contains a given variant, return (union-entry, variant-entry)")
-    (@spec ((TypeRegistry String) -> (Option (Ptr TypeEntry))))
+    (@spec ((TypeRegistry String) -> (Option (Ptr TstTypeEntry))))
     (@pure)
     (let ((types (. reg types))
           (len (list-len types))
           (mut i 0)
-          (mut found (Option (Ptr TypeEntry)) (none)))
+          (mut found (Option (Ptr TstTypeEntry)) (none)))
       (while (and (< i len) (match found ((none) true) (_ false)))
         (match (list-get types i)
           ((some entry)
@@ -382,12 +382,12 @@
 
   (fn registry-lookup-enum-value ((reg TypeRegistry) (value-name String))
     (@intent "Find which enum type contains a given value")
-    (@spec ((TypeRegistry String) -> (Option (Ptr TypeEntry))))
+    (@spec ((TypeRegistry String) -> (Option (Ptr TstTypeEntry))))
     (@pure)
     (let ((types (. reg types))
           (len (list-len types))
           (mut i 0)
-          (mut found (Option (Ptr TypeEntry)) (none)))
+          (mut found (Option (Ptr TstTypeEntry)) (none)))
       (while (and (< i len) (match found ((none) true) (_ false)))
         (match (list-get types i)
           ((some entry)
@@ -492,7 +492,7 @@
 
   (fn registry-get-record-fields ((reg TypeRegistry) (name String))
     (@intent "Get list of fields for a record type")
-    (@spec ((TypeRegistry String) -> (Option (List FieldEntry))))
+    (@spec ((TypeRegistry String) -> (Option (List TstFieldEntry))))
     (@pure)
     ;; Returns None if not found or not a record
     (match (registry-lookup reg name)

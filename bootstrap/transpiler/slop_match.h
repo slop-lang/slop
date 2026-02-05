@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "slop_types.h"
+#include "slop_parser.h"
 #include "slop_context.h"
 #include "slop_strlib.h"
 #include "slop_ctype.h"

@@ -16,7 +16,8 @@
     ;; FFI definitions
     transpile-ffi transpile-ffi-struct is-ffi-form is-ffi-struct-form
     ;; Helpers
-    is-type-form is-function-form get-return-type get-slop-return-type get-result-type-name build-param-str get-type-name-str)
+    is-type-form is-function-form get-return-type get-slop-return-type get-result-type-name build-param-str get-type-name-str
+    is-generic-type-alias)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds))
   (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
@@ -125,6 +126,35 @@
                   (else false)))
               ((none) false)))))
       (else false)))
+
+  (fn has-generic-annotation ((items (List (Ptr SExpr))))
+    (@intent "Check if function definition has @generic annotation")
+    (@spec (((List (Ptr SExpr))) -> Bool))
+    ;; Scan items looking for (@generic ...)
+    (let ((len (list-len items))
+          (i 0)
+          (found false))
+      (while (and (< i len) (not found))
+        (match (list-get items i)
+          ((some item)
+            (match (deref item)
+              ((lst lst)
+                (let ((sub-items (. lst items)))
+                  (if (> (list-len sub-items) 0)
+                    (match (list-get sub-items 0)
+                      ((some head)
+                        (match (deref head)
+                          ((sym sym)
+                            (if (string-eq (. sym name) "@generic")
+                              (set! found true)
+                              unit))
+                          (else unit)))
+                      ((none) unit))
+                    unit)))
+              (else unit)))
+          ((none) unit))
+        (set! i (+ i 1)))
+      found))
 
   ;; ============================================================
   ;; Type Expression Helpers
@@ -543,7 +573,9 @@
             (emit-tag-constants ctx qualified-name items 1)
             (ctx-emit ctx "")
             ;; Register type
-            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false false true))))
+            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false false true))
+            ;; Register field types for union variants (for type inference)
+            (register-union-variant-fields ctx raw-name qualified-name items 1)))
         (else (ctx-add-error-at ctx "invalid union form" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))
 
   (fn emit-union-variants ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start-idx Int))
@@ -573,7 +605,7 @@
                                     (let ((c-type (to-c-type-prefixed ctx type-expr)))
                                       ;; Use int for void (Unit) type since void can't be a struct field
                                       (let ((actual-type (if (string-eq c-type "void") "int" c-type)))
-                                        (ctx-emit ctx (ctx-str5 ctx "        " actual-type " " tag-name ";")))))
+                                        (ctx-emit ctx (ctx-str5 ctx "        " actual-type " " (to-c-name arena tag-name) ";")))))
                                   ((none) (do))))))
                           (else (do))))
                       ((none) (do))))))
@@ -601,12 +633,48 @@
                         (match (deref tag-expr)
                           ((sym tag-sym)
                             (let ((tag-name (. tag-sym name))
-                                  (define-name (ctx-str4 ctx type-name "_" tag-name "_TAG")))
+                                  (define-name (ctx-str4 ctx type-name "_" (to-c-name arena tag-name) "_TAG")))
                               ;; Emit #define TYPE_tag_TAG idx
                               (ctx-emit ctx (ctx-str4 ctx "#define " define-name " " (int-to-string arena tag-idx)))))
                           (else (do))))
                       ((none) (do))))
                   (set! tag-idx (+ tag-idx 1))))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn register-union-variant-fields ((ctx (Ptr TranspileContext)) (raw-name String) (qualified-name String)
+                                     (items (List (Ptr SExpr))) (start-idx Int))
+    (@intent "Register field types for union variants so type inference can resolve payload types")
+    (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr)) Int) -> Unit))
+    (@pre {ctx != nil})
+    (@post "Registers field types for each union variant with payload in the context")
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          (mut i start-idx))
+      (while (< i len)
+        (match (list-get items i)
+          ((some variant-expr)
+            (match (deref variant-expr)
+              ((lst var-lst)
+                (let ((var-items (. var-lst items))
+                      (var-len (list-len var-items)))
+                  (when (>= var-len 2)
+                    (match (list-get var-items 0)
+                      ((some tag-expr)
+                        (match (deref tag-expr)
+                          ((sym tag-sym)
+                            (let ((tag-name (. tag-sym name)))
+                              (match (list-get var-items 1)
+                                ((some type-expr)
+                                  (let ((c-type (to-c-type-prefixed ctx type-expr))
+                                        (slop-type-str (pretty-print arena type-expr))
+                                        (is-ptr (is-pointer-type-expr type-expr)))
+                                    (ctx-register-field-type ctx raw-name tag-name c-type slop-type-str is-ptr)
+                                    (ctx-register-field-type ctx qualified-name tag-name c-type slop-type-str is-ptr)))
+                                ((none) (do)))))
+                          (else (do))))
+                      ((none) (do))))))
               (else (do))))
           ((none) (do)))
         (set! i (+ i 1)))))
@@ -636,10 +704,17 @@
             (ctx-emit ctx "")
             ;; Register type
             (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))
-            ;; Register type alias for Map/Set resolution (helps infer-map-key-c-type)
-            (when (or (starts-with slop-type-str "(Map ")
-                      (starts-with slop-type-str "(Set "))
+            ;; Register type alias for Map/Set/Result/Option resolution
+            (when (is-generic-type-alias slop-type-str)
               (ctx-register-type-alias ctx raw-name slop-type-str)))))))
+
+  (fn is-generic-type-alias ((s String))
+    (@intent "Check if type string is a generic type that needs alias registration")
+    (@spec ((String) -> Bool))
+    (or (starts-with s "(Map ")
+        (or (starts-with s "(Set ")
+            (or (starts-with s "(Result ")
+                (starts-with s "(Option ")))))
 
   (fn is-array-type ((type-expr (Ptr SExpr)))
     (@intent "Check if type expression is an Array type")
@@ -881,9 +956,11 @@
                                             base-name
                                             (ctx-prefix-type ctx base-name)))
                             ;; Check for :c-name override
-                            (fn-name (extract-fn-c-name arena items mangled-name))
+                            (base-fn-name (extract-fn-c-name arena items mangled-name))
+                            ;; Generic functions keep base name - type params are for checking only
+                            (fn-name base-fn-name)
                             ;; Determine if this is a public API function (has :c-name override)
-                            (is-public-api (not (string-eq fn-name mangled-name))))
+                            (is-public-api (not (string-eq base-fn-name mangled-name))))
                         ;; Get params
                         (match (list-get items 2)
                           ((some params-expr)
@@ -945,7 +1022,9 @@
         (emit-preconditions ctx preconditions)
         ;; Declare _retval if needed for postconditions
         (when needs-retval
-          (ctx-emit ctx (ctx-str ctx actual-return " _retval;")))
+          (ctx-emit ctx (ctx-str ctx actual-return " _retval;"))
+          ;; Bind $result to _retval for postcondition field access
+          (ctx-bind-var ctx (VarEntry "$result" "_retval" actual-return "" (ends-with actual-return "*") false false "" "")))
         ;; Set capture mode if we need _retval
         (when needs-retval
           (ctx-set-capture-retval ctx true))
@@ -967,8 +1046,10 @@
         (ctx-emit ctx "")
         ;; Register function with parameter types for typed none handling
         (let ((param-types (collect-param-types ctx params-expr))
-              (slop-ret-type (get-slop-return-type ctx items)))
-          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return slop-ret-type false (string-eq actual-return "slop_string") param-types)))
+              (slop-ret-type (get-slop-return-type ctx items))
+              (empty-type-params (list-new arena String))
+              (no-source (Option (Ptr SExpr)) none))
+          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return slop-ret-type false (string-eq actual-return "slop_string") param-types false empty-type-params no-source)))
         ;; Clear current result type and return type
         (ctx-clear-current-result-type ctx)
         (ctx-clear-current-return-type ctx))))
@@ -1021,8 +1102,11 @@
                                   (c-name (to-c-name arena param-name))
                                   (c-type (to-c-type-prefixed ctx type-expr))
                                   (slop-type-str (pretty-print arena type-expr))
-                                  (is-ptr (is-pointer-type type-expr)))
-                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false false "" ""))))
+                                  (is-ptr (is-pointer-type type-expr))
+                                  (is-closure (is-fn-type type-expr)))
+                              ;; (Fn ...) params are closures - set is-closure=true
+                              ;; They're called via emit-generic-closure-call: ((cast)f.fn)(f.env, args)
+                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false is-closure "" ""))))
                           ((none) (do))))
                       (else (do))))
                   ((none) (do)))))))
@@ -1397,13 +1481,10 @@
                         (match (list-get items type-idx)
                           ((some type-expr)
                             (let ((param-name (to-c-name arena (. name-sym name))))
-                              ;; Check if type is a function type (Fn ...)
-                              (if (is-fn-type type-expr)
-                                ;; Function pointer: emit as ret_type(*name)(args)
-                                (emit-fn-param-type ctx type-expr param-name)
-                                ;; Normal type: emit as type name
-                                (let ((param-type (to-c-type-prefixed ctx type-expr)))
-                                  (ctx-str3 ctx param-type " " param-name)))))
+                              ;; All types including (Fn ...) use unified handling
+                              ;; (Fn ...) becomes slop_closure_t via to-c-type-prefixed
+                              (let ((param-type (to-c-type-prefixed ctx type-expr)))
+                                (ctx-str3 ctx param-type " " param-name))))
                           ((none) "/* missing param type */")))
                       (else "/* param name must be symbol */")))
                   ((none) "/* missing param name */"))))))

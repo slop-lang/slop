@@ -1,0 +1,25 @@
+;; Test case for closure capture and mutation issues
+;;
+;; This test targets the issue where:
+;; 1. Functions with (Fn ...) parameters receive slop_closure_t values
+;; 2. Closures need to properly capture variables from outer scopes
+;; 3. Captured mutable variables need to be accessed via _env-> in set!
+;;
+;; Current issues (as of this test creation):
+;; - "Unknown variable" errors for variables in nested closures
+;; - Type mismatch: (Fn ...) transpiles to function pointer but calls pass slop_closure_t
+
+(module main
+  (export main)
+
+  ;; Test: Simple closure with set! of captured mutable variable
+  (fn main ((argc Int) (argv (Ptr String)))
+    (@intent "Test closure that sets a captured variable")
+    (@spec ((Int (Ptr String)) -> Int))
+    (with-arena 1024
+      (let ((mut x Int 10))
+        (let ((cb (fn ()
+                    (@spec (() -> Unit))
+                    (set! x 42))))
+          (cb)
+          (if (== x 42) 0 1))))))

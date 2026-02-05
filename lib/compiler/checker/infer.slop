@@ -24,10 +24,12 @@
                env-lookup-function env-lookup-variant env-lookup-constant
                env-get-int-type env-get-bool-type
                env-get-string-type env-get-unit-type env-get-arena-type
-               env-get-unknown-type
+               env-get-unknown-type env-get-never-type
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
-               env-add-warning env-add-error))
+               env-add-warning env-add-error
+               env-set-fn-type-params env-clear-fn-type-params env-is-type-param))
   (import strlib (starts-with ends-with string-build))
+  (import collect (find-fn-type-params))
 
   ;; ============================================================
   ;; String Utilities
@@ -466,16 +468,21 @@
     (@pre (!= env nil))
     (@pre (!= a nil))
     (@pre (!= b nil))
-    ;; If types are equal, return either
-    (if (types-equal a b)
-      a
-      ;; Types differ - emit warning and return first type
-      (let ((arena (env-arena env))
-            (msg (string-concat arena "Branch types differ: "
-                   (string-concat arena (. (deref a) name)
-                     (string-concat arena " vs " (. (deref b) name))))))
-        (env-add-warning env msg line col)
-        a)))
+    ;; Never is bottom type - unifies with anything
+    (if (== (. (deref a) kind) 'rk-never)
+      b  ;; First branch diverges, use second type
+      (if (== (. (deref b) kind) 'rk-never)
+        a  ;; Second branch diverges, use first type
+        ;; If types are equal, return either
+        (if (types-equal a b)
+          a
+          ;; Types differ - emit warning and return first type
+          (let ((arena (env-arena env))
+                (msg (string-concat arena "Branch types differ: "
+                       (string-concat arena (. (deref a) name)
+                         (string-concat arena " vs " (. (deref b) name))))))
+            (env-add-warning env msg line col)
+            a)))))
 
   ;; ============================================================
   ;; AST Type Annotation
@@ -750,6 +757,44 @@
           (do (infer-body-exprs env expr 1)
               (env-get-unit-type env)))
 
+        ;; (fn ((param Type)...) body...) - lambda expression
+        ((string-eq op "fn")
+          ;; Push scope for lambda parameters
+          (env-push-scope env)
+          ;; Bind parameters - lambda params start at index 1
+          (when (>= len 2)
+            (match (list-get items 1)
+              ((some params-expr)
+                (when (sexpr-is-list params-expr)
+                  (let ((num-params (sexpr-list-len params-expr)))
+                    (for (k 0 num-params)
+                      (match (sexpr-list-get params-expr k)
+                        ((some param-form)
+                          (bind-param-from-form env param-form))
+                        ((none) (do)))))))
+              ((none) (do))))
+          ;; Infer body type - body starts at index 2
+          (let ((body-type (if (> len 2)
+                             (do
+                               ;; Infer all body expressions, last one is the return type
+                               (for (bi 2 (- len 1))
+                                 (match (list-get items bi)
+                                   ((some body-expr)
+                                     (when (not (is-annotation-expr body-expr))
+                                       (let ((_ (infer-expr env body-expr))) (do))))
+                                   ((none) (do))))
+                               (match (list-get items (- len 1))
+                                 ((some last-expr)
+                                   (if (is-annotation-expr last-expr)
+                                     (env-get-unit-type env)
+                                     (infer-expr env last-expr)))
+                                 ((none) (env-get-unit-type env))))
+                             (env-get-unit-type env))))
+            (env-pop-scope env)
+            ;; Return a function type for the lambda
+            (let ((arena (env-arena env)))
+              (resolved-type-new arena 'rk-function "Fn" (none) "void*"))))
+
         ;; (with-arena size body...) - binds 'arena' and returns last body type
         ((string-eq op "with-arena")
           (infer-with-arena-expr env expr))
@@ -770,25 +815,29 @@
                 (else (do)))
               (env-get-unit-type env)))
 
-        ;; (return expr) - type of expr
+        ;; (return expr) - Never type (divergent, control flow exits)
         ((string-eq op "return")
-          (if (>= len 2)
-            (match (list-get items 1)
-              ((some ret-expr) (infer-expr env ret-expr))
-              ((none) (env-get-unit-type env)))
-            (env-get-unit-type env)))
+          (do
+            ;; Still infer the expression for type checking
+            (when (>= len 2)
+              (match (list-get items 1)
+                ((some ret-expr) (let ((_ (infer-expr env ret-expr))) (do)))
+                ((none) (do))))
+            (env-get-never-type env)))
 
         ;; Comparison operators return Bool
         ((or (string-eq op "==") (string-eq op "!=")
              (string-eq op "<") (string-eq op "<=")
              (string-eq op ">") (string-eq op ">=")
              (string-eq op "and") (string-eq op "or") (string-eq op "not"))
-          (env-get-bool-type env))
+          (do (infer-body-exprs env expr 1)
+              (env-get-bool-type env)))
 
         ;; Arithmetic operators return Int
         ((or (string-eq op "+") (string-eq op "-")
              (string-eq op "*") (string-eq op "/") (string-eq op "%"))
-          (env-get-int-type env))
+          (do (infer-body-exprs env expr 1)
+              (env-get-int-type env)))
 
         ;; (deref ptr-expr) - dereference pointer, returns inner type
         ((string-eq op "deref")
@@ -2019,8 +2068,11 @@
             ((string-eq type-name "Void") (resolved-type-new arena 'rk-primitive "Void" (none) "void"))
             ;; Bytes - for binary data buffers
             ((string-eq type-name "Bytes") (resolved-type-new arena 'rk-primitive "Bytes" (none) "slop_bytes"))
-          ;; Unknown type - emit error (may be missing import)
-          (else
+            ;; Check if it's a type parameter (e.g., T from @generic)
+            ((env-is-type-param env type-name)
+              (resolved-type-new arena 'rk-typevar type-name (none) "int64_t"))
+            ;; Unknown type - emit error (may be missing import)
+            (else
             (let ((arena (env-arena env))
                   (msg (string-concat arena "Unknown type: " type-name)))
               (env-add-error env msg 0 0)
@@ -2123,39 +2175,56 @@
       result-type))
 
   (fn infer-with-arena-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
-    (@intent "Infer type of with-arena expression, binding 'arena' variable")
+    (@intent "Infer type of with-arena expression, binding arena variable")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
     (@pre (!= expr nil))
-    ;; (with-arena size body...) - size at index 1, body starts at index 2
-    ;; Validate size argument
+    ;; (with-arena size body...) - unnamed, binds 'arena', size at 1, body at 2+
+    ;; (with-arena :as name size body...) - named, binds 'name', size at 3, body at 4+
     (let ((len (sexpr-list-len expr)))
       (if (< len 2)
         (do
           (env-add-error env "with-arena requires size argument" (sexpr-line expr) (sexpr-col expr))
           (env-get-unit-type env))
-        (do
-          ;; Check for negative literal
-          (match (sexpr-list-get expr 1)
-            ((some size-expr)
-              (match (deref size-expr)
-                ((num num)
-                  (if (<= (. num int-value) 0)
-                    (env-add-error env "with-arena size must be positive" (. num line) (. num col))
-                    (do)))
-                (else (do))))
-            ((none) (do)))
-          ;; Proceed with normal type inference
-          (env-push-scope env)
-          (env-bind-var env "arena" (env-get-arena-type env))
-          (let ((mut result-type (Ptr ResolvedType) (env-get-unit-type env)))
-            (for (i 2 len)
-              (match (sexpr-list-get expr i)
-                ((some body-expr)
-                  (set! result-type (infer-expr env body-expr)))
-                ((none) (do))))
-            (env-pop-scope env)
-            result-type)))))
+        ;; Detect :as form - check if items[1] is symbol ":as"
+        (let ((is-named (match (sexpr-list-get expr 1)
+                          ((some item1)
+                            (string-eq (sexpr-get-symbol-name item1) ":as"))
+                          ((none) false)))
+              (arena-name (if is-named
+                            (match (sexpr-list-get expr 2)
+                              ((some name-expr) (sexpr-get-symbol-name name-expr))
+                              ((none) "arena"))
+                            "arena"))
+              (size-idx (if is-named 3 1))
+              (body-start (if is-named 4 2)))
+          ;; Validate minimum length for named form
+          (if (and is-named (< len 4))
+            (do
+              (env-add-error env "with-arena :as requires name and size" (sexpr-line expr) (sexpr-col expr))
+              (env-get-unit-type env))
+            (do
+              ;; Check for negative literal at size-idx
+              (match (sexpr-list-get expr size-idx)
+                ((some size-expr)
+                  (match (deref size-expr)
+                    ((num num)
+                      (if (<= (. num int-value) 0)
+                        (env-add-error env "with-arena size must be positive" (. num line) (. num col))
+                        (do)))
+                    (else (do))))
+                ((none) (do)))
+              ;; Proceed with normal type inference
+              (env-push-scope env)
+              (env-bind-var env arena-name (env-get-arena-type env))
+              (let ((mut result-type (Ptr ResolvedType) (env-get-unit-type env)))
+                (for (i body-start len)
+                  (match (sexpr-list-get expr i)
+                    ((some body-expr)
+                      (set! result-type (infer-expr env body-expr)))
+                    ((none) (do))))
+                (env-pop-scope env)
+                result-type)))))))
 
   (fn get-fn-name ((fn-form (Ptr SExpr)))
     (@intent "Extract function name from fn form")
@@ -2264,7 +2333,10 @@
     (@pre (is-form fn-form "fn"))
     (let ((fn-name (get-fn-name fn-form))
           (fn-line (sexpr-line fn-form))
-          (fn-col (sexpr-col fn-form)))
+          (fn-col (sexpr-col fn-form))
+          (type-params (find-fn-type-params (env-arena env) fn-form)))
+      ;; Set type parameters for this function (enables T to resolve in resolve-simple-type)
+      (env-set-fn-type-params env type-params)
       (env-push-scope env)
       ;; Extract and bind parameters using helper functions to avoid cross-module issues
       ;; fn-form is (fn name ((param Type) ...) ...)
@@ -2303,6 +2375,8 @@
         ;; Check return type matches declared spec
         (check-return-type env fn-form fn-name result-type fn-line fn-col)
         (env-pop-scope env)
+        ;; Clear type parameters after function processing
+        (env-clear-fn-type-params env)
         result-type)))
 
   ;; ============================================================

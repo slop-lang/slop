@@ -207,7 +207,7 @@
       (do
         (print-str (cast (Ptr Char) "Usage: slop-tester <input.slop> [import-files...]\n"))
         1)
-      (with-arena 16777216  ;; 16MB arena
+      (with-arena 67108864  ;; 64MB arena
         (match (read-file arena (cast (Ptr Char) (@ argv 1)))
             ((some source)
               ;; Read import file contents from additional arguments

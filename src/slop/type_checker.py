@@ -1975,14 +1975,34 @@ class TypeChecker:
         return hole_type
 
     def _infer_with_arena(self, expr: SList) -> Type:
-        """Infer type of with-arena block"""
+        """Infer type of with-arena block
+
+        Supports two forms:
+        - (with-arena size body...) - binds 'arena'
+        - (with-arena :as name size body...) - binds 'name'
+        """
+        # Detect :as form
+        is_named = (len(expr.items) >= 2 and
+                    isinstance(expr.items[1], Symbol) and
+                    expr.items[1].name == ':as')
+
+        if is_named:
+            if len(expr.items) < 4:
+                self.error("with-arena :as requires name and size", expr)
+                return PrimitiveType('Unit')
+            arena_name = expr.items[2].name if isinstance(expr.items[2], Symbol) else 'arena'
+            body_start = 4
+        else:
+            arena_name = 'arena'
+            body_start = 2
+
         self.env.push_scope()
-        self.env.bind_var('arena', PrimitiveType('Arena'))
+        self.env.bind_var(arena_name, PrimitiveType('Arena'))
 
         result = PrimitiveType('Unit')
-        for item in expr.items[1:]:
+        for item in expr.items[body_start:]:
             if isinstance(item, Number):
-                continue  # Arena size
+                continue  # Arena size (shouldn't happen after body_start, but be safe)
             result = self.infer_expr(item)
 
         self.env.pop_scope()

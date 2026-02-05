@@ -120,9 +120,11 @@
     rk-function       ;; Function type
     rk-array          ;; (Array T N)
     rk-map            ;; (Map K V)
-    rk-chan            ;; (Chan T)
+    rk-set            ;; (Set T)
+    rk-chan           ;; (Chan T)
     rk-thread         ;; (Thread T)
-    rk-typevar))      ;; Type variable (T, U, etc.)
+    rk-typevar        ;; Type variable (T, U, etc.)
+    rk-never))        ;; Never returns (divergent)
 
   ;; A fully-resolved variant in a union type
   (type ResolvedVariant (record

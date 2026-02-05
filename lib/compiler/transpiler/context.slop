@@ -65,6 +65,9 @@
     ctx-gensym
     ;; Deferred lambda tracking
     ctx-add-deferred-lambda ctx-get-deferred-lambdas ctx-clear-deferred-lambdas
+    ;; Function trampoline tracking
+    ctx-has-trampoline ctx-add-trampoline ctx-set-single-output-mode
+    ctx-set-skip-trampoline-generation ctx-skip-trampoline-generation
     ;; Last lambda info (for closure variable binding)
     LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
     ;; Function output buffer for two-phase emission
@@ -75,6 +78,9 @@
     ctx-register-struct-key-type ctx-has-struct-key-type ctx-get-struct-key-types
     ;; Type alias tracking for resolving Map/Set types
     TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias
+    ;; Generic function support
+    GenericFuncInstantiation ctx-register-generic-instantiation ctx-has-generic-instantiation
+    ctx-get-generic-instantiations mangle-generic-fn-name
     ;; Error handling
     ctx-fail
     ;; Fallback warnings
@@ -144,7 +150,11 @@
       (slop-return-type String)   ;; Original SLOP return type (e.g., "(List Term)")
       (returns-pointer Bool)
       (returns-string Bool)
-      (param-types (List (Ptr FuncParamType)))))  ;; Parameter types for none inference
+      (param-types (List (Ptr FuncParamType)))  ;; Parameter types for none inference
+      ;; Generic function support
+      (is-generic Bool)                         ;; Is this a @generic function?
+      (type-params (List String))               ;; Type parameter names (T, U, etc.)
+      (generic-source (Option (Ptr SExpr)))))   ;; AST for instantiation (if generic)
 
   ;; Field type info for record types
   (type FieldEntry
@@ -213,6 +223,13 @@
     (type-name String)    ;; Generated type name (e.g., "_anon_record_12345678")
     (field-body String))) ;; C struct body (e.g., "int64_t first; int64_t second; ")
 
+  ;; Generic function instantiation tracking
+  (type GenericFuncInstantiation (record
+    (fn-name String)              ;; Original SLOP function name (e.g., "send")
+    (type-bindings String)        ;; Mangled type binding string (e.g., "int")
+    (c-name String)               ;; Generated C name (e.g., "thread_send_int")
+    (module-name String)))        ;; Module containing the generic function
+
   ;; Main transpiler context
   (type TranspileContext
     (record
@@ -278,6 +295,8 @@
       (errors (List TranspileError))
       ;; Deferred lambda function definitions (generated C code strings)
       (deferred-lambdas (List String))
+      ;; Generated function trampolines (function C names that have wrappers)
+      (fn-trampolines (List String))
       ;; Function output buffer for two-phase emission (lambdas first, then functions)
       (function-output (List String))
       ;; Flag to redirect ctx-emit to function-output instead of main output
@@ -285,7 +304,13 @@
       ;; Last lambda info (for let binding to detect closures)
       (last-lambda-is-closure Bool)
       (last-lambda-env-type String)
-      (last-lambda-name String)))
+      (last-lambda-name String)
+      ;; Generic function instantiations to emit
+      (generic-func-instantiations (List GenericFuncInstantiation))
+      ;; When true, don't reset fn-trampolines between modules (for test/single-file builds)
+      (single-output-mode Bool)
+      ;; When true, don't generate trampoline code (assume it exists elsewhere, e.g., in module code)
+      (skip-trampoline-generation Bool)))
 
   ;; ============================================================
   ;; Context Creation
@@ -295,8 +320,8 @@
     (@intent "Create a new transpiler context")
     (@spec ((Arena) -> (Ptr TranspileContext)))
     (@example (arena) -> ctx)
-    ;; TranspileContext is ~432 bytes with all fields, allocate 512 for safety
-    (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena 512)))
+    ;; TranspileContext is ~730 bytes with all fields, allocate 1024 for safety
+    (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena 1024)))
           (initial-scope (cast (Ptr Scope) (arena-alloc arena 64)))
           (no-parent (Option (Ptr Scope)) none)
           (no-module (Option String) none))
@@ -337,12 +362,19 @@
       (set! (deref ctx) current-file "")
       (set! (deref ctx) errors (list-new arena TranspileError))
       (set! (deref ctx) deferred-lambdas (list-new arena String))
+      (set! (deref ctx) fn-trampolines (list-new arena String))
       (set! (deref ctx) function-output (list-new arena String))
       (set! (deref ctx) emit-to-function-buffer false)
       ;; Initialize last-lambda tracking fields
       (set! (deref ctx) last-lambda-is-closure false)
       (set! (deref ctx) last-lambda-env-type "")
       (set! (deref ctx) last-lambda-name "")
+      ;; Initialize generic function tracking
+      (set! (deref ctx) generic-func-instantiations (list-new arena GenericFuncInstantiation))
+      ;; Initialize single-output mode (disabled by default)
+      (set! (deref ctx) single-output-mode false)
+      ;; Initialize skip-trampoline-generation (disabled by default)
+      (set! (deref ctx) skip-trampoline-generation false)
       ;; NOTE: String and Bytes have special constructor handling in
       ;; get-builtin-type-c-name / transpile-builtin-constructor (expr.slop)
       ;; for correct field ordering. If adding a new primitive type that needs
@@ -403,9 +435,15 @@
       (set! (deref ctx) struct-key-types (list-new arena String))
       ;; Clear deferred lambdas for new module
       (set! (deref ctx) deferred-lambdas (list-new arena String))
+      ;; Clear trampoline tracking for new module UNLESS in single-output mode
+      ;; (trampolines are static, module-local, but shared when compiling to one file)
+      (when (not (. (deref ctx) single-output-mode))
+        (set! (deref ctx) fn-trampolines (list-new arena String)))
       ;; Clear function output buffer for new module
       (set! (deref ctx) function-output (list-new arena String))
       (set! (deref ctx) emit-to-function-buffer false)
+      ;; Clear generic function instantiations for new module
+      (set! (deref ctx) generic-func-instantiations (list-new arena GenericFuncInstantiation))
       ;; Set new module name
       (set! (deref ctx) current-module (Option String) (some mod-name))
       ;; KEEP preserved: types, funcs, enum-variants, result-type-aliases, pointer-vars
@@ -759,15 +797,15 @@
     (@pre {ctx != nil})
     (let ((funcs (. (deref ctx) funcs))
           (len (list-len funcs))
-          (mut i 0)
+          (mut i (- len 1))
           (mut result (Option FuncEntry) none))
-      (while (and (< i len) (match result ((none) true) ((some _) false)))
+      (while (and (>= i 0) (match result ((none) true) ((some _) false)))
         (match (list-get funcs i)
           ((some entry)
             (when (string-eq (. entry name) name)
               (set! result (some entry))))
           ((none) (do)))
-        (set! i (+ i 1)))
+        (set! i (- i 1)))
       result))
 
   (fn ctx-register-field-type ((ctx (Ptr TranspileContext)) (type-name String) (field-name String) (c-type String) (slop-type String) (is-pointer Bool))
@@ -1705,23 +1743,9 @@
                           (ctx-register-inline-record ctx type-name field-str)
                           (set! result type-name))))
 
-                    ;; (Fn (args...) return) -> return_type(*)(arg_types...)
+                    ;; (Fn (args...) return) -> slop_closure_t (unified closure type)
                     ((string-eq head "Fn")
-                      (if (< len 2)
-                        (set! result "void*")
-                        ;; Return type is the last item
-                        (let ((ret-type (match (list-get items (- len 1))
-                                          ((some ret) (to-c-type-prefixed ctx ret))
-                                          ((none) "void"))))
-                          (if (= len 2)
-                            ;; (Fn RetType) - no args list
-                            (set! result (ctx-str ctx ret-type "(*)(void)"))
-                            ;; (Fn (args...) RetType)
-                            (match (list-get items 1)
-                              ((some args-expr)
-                                (let ((args-str (build-fn-args-str-prefixed ctx args-expr)))
-                                  (set! result (ctx-str ctx (ctx-str ctx ret-type "(*)") args-str))))
-                              ((none) (set! result (ctx-str ctx ret-type "(*)(void)"))))))))
+                      (set! result "slop_closure_t"))
 
                     ;; (Int min .. max) range types -> smallest C type
                     ((string-eq head "Int")
@@ -1887,6 +1911,55 @@
       (set! (deref ctx) deferred-lambdas (list-new arena String))))
 
   ;; ============================================================
+  ;; Function Trampoline Tracking
+  ;;
+  ;; When a named function is passed as a closure argument, we need
+  ;; to generate a trampoline that adapts its calling convention.
+  ;; Track which functions have trampolines to avoid duplicates.
+  ;; ============================================================
+
+  (fn ctx-has-trampoline ((ctx (Ptr TranspileContext)) (fn-c-name String))
+    (@intent "Check if trampoline already generated for function")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    (let ((trampolines (. (deref ctx) fn-trampolines))
+          (len (list-len trampolines))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get trampolines i)
+          ((some s)
+            (when (string-eq s fn-c-name)
+              (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn ctx-add-trampoline ((ctx (Ptr TranspileContext)) (fn-c-name String))
+    (@intent "Record that trampoline was generated for function")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) fn-trampolines) fn-c-name))
+
+  (fn ctx-set-single-output-mode ((ctx (Ptr TranspileContext)) (enabled Bool))
+    (@intent "Enable single-output mode to preserve trampolines across module resets")
+    (@spec (((Ptr TranspileContext) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) single-output-mode enabled))
+
+  (fn ctx-set-skip-trampoline-generation ((ctx (Ptr TranspileContext)) (skip Bool))
+    (@intent "Enable skip-trampoline-generation mode for test harness")
+    (@spec (((Ptr TranspileContext) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) skip-trampoline-generation skip))
+
+  (fn ctx-skip-trampoline-generation ((ctx (Ptr TranspileContext)))
+    (@intent "Check if trampoline generation should be skipped")
+    (@spec (((Ptr TranspileContext)) -> Bool))
+    (@pre {ctx != nil})
+    (. (deref ctx) skip-trampoline-generation))
+
+  ;; ============================================================
   ;; Last Lambda Info Tracking
   ;;
   ;; When transpiling a lambda/closure, we record metadata here
@@ -1960,5 +2033,55 @@
       ;; Clear the function buffer
       (let ((arena (. (deref ctx) arena)))
         (set! (deref ctx) function-output (list-new arena String)))))
+
+  ;; ============================================================
+  ;; Generic Function Instantiation Tracking
+  ;; ============================================================
+
+  (fn ctx-register-generic-instantiation ((ctx (Ptr TranspileContext))
+                                          (fn-name String)
+                                          (type-bindings String)
+                                          (c-name String)
+                                          (module-name String))
+    (@intent "Register a generic function instantiation for later emission")
+    (@spec (((Ptr TranspileContext) String String String String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) generic-func-instantiations)
+               (GenericFuncInstantiation fn-name type-bindings c-name module-name)))
+
+  (fn ctx-has-generic-instantiation ((ctx (Ptr TranspileContext))
+                                     (fn-name String)
+                                     (type-bindings String))
+    (@intent "Check if a generic function instantiation already exists")
+    (@spec (((Ptr TranspileContext) String String) -> Bool))
+    (@pre {ctx != nil})
+    (let ((instances (. (deref ctx) generic-func-instantiations))
+          (len (list-len instances))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get instances i)
+          ((some inst)
+            (when (and (string-eq (. inst fn-name) fn-name)
+                       (string-eq (. inst type-bindings) type-bindings))
+              (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn ctx-get-generic-instantiations ((ctx (Ptr TranspileContext)))
+    (@intent "Get all registered generic function instantiations")
+    (@spec (((Ptr TranspileContext)) -> (List GenericFuncInstantiation)))
+    (@pre {ctx != nil})
+    (. (deref ctx) generic-func-instantiations))
+
+  (fn mangle-generic-fn-name ((ctx (Ptr TranspileContext))
+                              (base-c-name String)
+                              (type-binding String))
+    (@intent "Generate mangled function name for generic instantiation")
+    (@spec (((Ptr TranspileContext) String String) -> String))
+    (@pre {ctx != nil})
+    ;; e.g., "thread_send" + "int" -> "thread_send_int"
+    (ctx-str3 ctx base-c-name "_" type-binding))
 
 ) ;; end module

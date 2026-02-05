@@ -15,6 +15,7 @@
 #include "slop_strlib.h"
 #include "slop_parser.h"
 
+typedef struct transpiler_GenericInfo transpiler_GenericInfo;
 typedef struct transpiler_RangeBoundsHeader transpiler_RangeBoundsHeader;
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
@@ -67,6 +68,17 @@ SLOP_LIST_DEFINE(context_UnionVariantEntry, slop_list_context_UnionVariantEntry)
 SLOP_LIST_DEFINE(context_FieldEntry, slop_list_context_FieldEntry)
 #endif
 
+struct transpiler_GenericInfo {
+    uint8_t is_generic;
+    slop_list_string type_params;
+};
+typedef struct transpiler_GenericInfo transpiler_GenericInfo;
+
+#ifndef SLOP_OPTION_TRANSPILER_GENERICINFO_DEFINED
+#define SLOP_OPTION_TRANSPILER_GENERICINFO_DEFINED
+SLOP_OPTION_DEFINE(transpiler_GenericInfo, slop_option_transpiler_GenericInfo)
+#endif
+
 struct transpiler_RangeBoundsHeader {
     int64_t min;
     int64_t max;
@@ -80,6 +92,7 @@ typedef struct transpiler_RangeBoundsHeader transpiler_RangeBoundsHeader;
 SLOP_OPTION_DEFINE(transpiler_RangeBoundsHeader, slop_option_transpiler_RangeBoundsHeader)
 #endif
 
+transpiler_GenericInfo transpiler_extract_generic_info(slop_arena* arena, slop_list_types_SExpr_ptr items);
 void transpiler_prescan_module(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void transpiler_prescan_top_level(context_TranspileContext* ctx, types_SExpr* item);
 void transpiler_prescan_type(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
@@ -184,6 +197,7 @@ void transpiler_emit_value_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_complex_value_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_struct_hash_eq(context_TranspileContext* ctx, slop_string c_type);
 void transpiler_emit_union_payload_hash_eq(context_TranspileContext* ctx, slop_list_context_UnionVariantEntry variants);
+void transpiler_emit_record_field_dependencies(context_TranspileContext* ctx, slop_list_context_FieldEntry fields);
 uint8_t transpiler_is_primitive_slop_type(slop_string slop_type);
 uint8_t transpiler_is_range_type_alias(context_TranspileContext* ctx, slop_string slop_type);
 void transpiler_emit_union_hash_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_UnionVariantEntry variants);
@@ -265,6 +279,11 @@ void transpiler_emit_all_lambdas(context_TranspileContext* ctx);
 slop_string transpiler_generate_c_output(context_TranspileContext* ctx);
 void transpiler_transpile_file(context_TranspileContext* ctx, slop_list_types_SExpr_ptr exprs);
 uint8_t transpiler_is_module_expr(slop_list_types_SExpr_ptr exprs);
+
+#ifndef SLOP_OPTION_TRANSPILER_GENERICINFO_DEFINED
+#define SLOP_OPTION_TRANSPILER_GENERICINFO_DEFINED
+SLOP_OPTION_DEFINE(transpiler_GenericInfo, slop_option_transpiler_GenericInfo)
+#endif
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED

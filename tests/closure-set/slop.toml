@@ -1,0 +1,3 @@
+[project]
+name = "closure-set-test"
+entry = "main.slop"

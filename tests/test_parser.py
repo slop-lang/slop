@@ -325,7 +325,7 @@ class TestInfixContracts:
         """Infix outside contract raises ParseError"""
         with pytest.raises(ParseError) as exc_info:
             parse("(let x {1 + 2})")
-        assert "only allowed inside @pre, @post, or @assume" in str(exc_info.value)
+        assert "only allowed inside @pre, @post, @assume, or @loop-invariant" in str(exc_info.value)
 
     def test_infix_in_regular_expression_error(self):
         """Infix in regular code raises ParseError"""

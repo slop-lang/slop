@@ -208,6 +208,36 @@ def parse_native_json_string(source: str):
         os.unlink(temp_path)
 
 
+def _deduplicate_trampolines(code: str) -> str:
+    """Remove duplicate trampoline definitions from combined C code.
+
+    When multiple modules use the same function as a closure, each generates
+    its own static trampoline. When combined into one file, these cause
+    redefinition errors. This function keeps only the first definition.
+    """
+    import re
+
+    # Match trampoline definitions: static <type> _wrap_<name>(...) { ... }
+    # Pattern captures the full definition including the body
+    trampoline_pattern = r'static [^\n]+ (_wrap_[a-zA-Z0-9_]+)\([^)]*\) \{ return [^}]+; \}'
+
+    seen_trampolines = set()
+    lines = code.split('\n')
+    result_lines = []
+
+    for line in lines:
+        match = re.search(trampoline_pattern, line)
+        if match:
+            trampoline_name = match.group(1)
+            if trampoline_name in seen_trampolines:
+                # Skip duplicate trampoline
+                continue
+            seen_trampolines.add(trampoline_name)
+        result_lines.append(line)
+
+    return '\n'.join(result_lines)
+
+
 def transpile_native(input_file: str, dep_files: list[str] = None):
     """Transpile using native transpiler, returns (c_code, success).
 
@@ -262,7 +292,11 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
             # Add main wrapper if module exports main
             if main_mod:
                 c_parts.append(f'\nint main(void) {{ return (int){main_mod}_main(); }}\n')
-            return '\n'.join(c_parts), True
+            combined = '\n'.join(c_parts)
+            # Deduplicate trampolines only when combining multiple modules (test mode)
+            if dep_files:
+                combined = _deduplicate_trampolines(combined)
+            return combined, True
         return result.stderr, False
     except json.JSONDecodeError as e:
         return f"Failed to parse transpiler output: {e}", False
@@ -1465,14 +1499,17 @@ def cmd_fill(args):
         type_errors = [d for d in diagnostics if d.severity == 'error']
         type_warnings = [d for d in diagnostics if d.severity == 'warning']
 
+        # Filter out "Unfilled hole" errors - those are what we're trying to fill!
+        real_errors = [e for e in type_errors if 'Unfilled hole' not in str(e)]
+
         # Show warnings but don't block
         if type_warnings and not quiet:
             for w in type_warnings:
                 print(f"  warning: {w}")
 
-        if type_errors:
-            print(f"Scaffold has {len(type_errors)} type error(s) that must be fixed before filling:", file=sys.stderr)
-            for e in type_errors:
+        if real_errors:
+            print(f"Scaffold has {len(real_errors)} type error(s) that must be fixed before filling:", file=sys.stderr)
+            for e in real_errors:
                 print(f"  {e}", file=sys.stderr)
             print("\nFix these errors in the scaffold file first.", file=sys.stderr)
             return 1
@@ -2248,11 +2285,19 @@ def _build_library_from_sources(
         cmd = [str(native_compiler_bin), 'transpile'] + source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            # Try to continue - transpiler may have produced partial output with errors
-            if not result.stdout or not result.stdout.strip().startswith('{'):
-                print(f"Native transpiler failed:\n{result.stderr}")
+            # Check if stderr contains actual errors (not just warnings)
+            has_errors = False
+            if result.stderr:
+                for line in result.stderr.strip().split('\n'):
+                    if ': error:' in line:
+                        has_errors = True
+            if has_errors or not result.stdout or not result.stdout.strip().startswith('{'):
+                print(f"Native transpiler failed:")
+                if result.stderr:
+                    for line in result.stderr.strip().split('\n'):
+                        print(f"    {line}")
                 return 1
-            print(f"  Warning: transpiler reported errors, attempting to use output anyway")
+            print(f"  Warning: transpiler reported warnings, attempting to use output anyway")
             if result.stderr:
                 for line in result.stderr.strip().split('\n')[:5]:
                     print(f"    {line}")
@@ -2421,6 +2466,7 @@ def cmd_build(args):
             output = args.output or build_cfg.output or default_output
             include_paths = (args.include or []) + build_cfg.include
             debug = args.debug or build_cfg.debug
+            arena_cap = getattr(args, 'arena_cap', 0) or build_cfg.arena_cap
             # Map build_type to library flag format
             if build_cfg.build_type == "static":
                 library_mode = getattr(args, 'library', None) or "static"
@@ -2434,6 +2480,7 @@ def cmd_build(args):
             output = args.output or (input_path.stem if input_path else "output")
             include_paths = args.include or []
             debug = args.debug
+            arena_cap = getattr(args, 'arena_cap', 0)
             library_mode = getattr(args, 'library', None)
             link_libraries = []
             link_paths = []
@@ -2445,7 +2492,7 @@ def cmd_build(args):
                 include_paths.append(str(stdlib_path))
 
         # For sources-based library build, force library mode if not set
-        if source_files and not library_mode:
+        if source_files and not library_mode and build_cfg.build_type != "executable":
             library_mode = "static"
             print(f"  Defaulting to static library for sources-based build")
 
@@ -2617,10 +2664,19 @@ def cmd_build(args):
                 cmd = [str(native_compiler_bin), 'transpile'] + source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
-                    if not result.stdout or not result.stdout.strip().startswith('{'):
-                        print(f"Native transpiler failed:\n{result.stderr}")
+                    # Check if stderr contains actual errors (not just warnings)
+                    has_errors = False
+                    if result.stderr:
+                        for line in result.stderr.strip().split('\n'):
+                            if ': error:' in line:
+                                has_errors = True
+                    if has_errors or not result.stdout or not result.stdout.strip().startswith('{'):
+                        print(f"Native transpiler failed:")
+                        if result.stderr:
+                            for line in result.stderr.strip().split('\n'):
+                                print(f"    {line}")
                         return 1
-                    print(f"  Warning: transpiler reported errors, attempting to use output anyway")
+                    print(f"  Warning: transpiler reported warnings, attempting to use output anyway")
                     if result.stderr:
                         for line in result.stderr.strip().split('\n')[:5]:
                             print(f"    {line}")
@@ -2686,6 +2742,8 @@ def cmd_build(args):
                         if debug:
                             compile_cmd.insert(1, "-g")
                             compile_cmd.insert(2, "-DSLOP_DEBUG")
+                        if arena_cap:
+                            compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
                         result = subprocess.run(compile_cmd, capture_output=True, text=True)
                         if result.returncode != 0:
                             print(f"Compilation failed:\n{result.stderr}")
@@ -2708,6 +2766,8 @@ def cmd_build(args):
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    if arena_cap:
+                        compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
                     result = subprocess.run(compile_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
                         print(f"Compilation failed:\n{result.stderr}")
@@ -2720,6 +2780,8 @@ def cmd_build(args):
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    if arena_cap:
+                        compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
                     result = subprocess.run(compile_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
                         print(f"Compilation failed:\n{result.stderr}")
@@ -2849,6 +2911,8 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if arena_cap:
+                compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -2875,6 +2939,8 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if arena_cap:
+                compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -2896,6 +2962,8 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if arena_cap:
+                compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
 
@@ -4307,6 +4375,14 @@ def cmd_verify(args):
     # Add standard library paths
     search_paths.extend(paths.get_stdlib_include_paths())
 
+    # Add [verify].sources directories to search paths for module resolution
+    # This ensures modules in different source directories can import from each other
+    if verify_cfg and verify_cfg.sources:
+        for src_dir in verify_cfg.sources:
+            src_path = (config_dir / src_dir).resolve()
+            if src_path.exists() and src_path.is_dir() and src_path not in search_paths:
+                search_paths.append(src_path)
+
     # Determine files to verify
     verify_files = []
 
@@ -4623,6 +4699,8 @@ def main():
     p.add_argument('-I', '--include', action='append',
                    help='Add search path for imports (can be repeated)')
     p.add_argument('--debug', action='store_true')
+    p.add_argument('--arena-cap', type=int, default=0,
+                   help='Arena allocation cap in bytes (default: 256MB)')
     p.add_argument('--library', choices=['static', 'shared'],
                    help='Build as library instead of executable')
     p.add_argument('--python', action='store_true',
