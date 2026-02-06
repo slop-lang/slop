@@ -648,7 +648,6 @@
     (@intent "Register field types for union variants so type inference can resolve payload types")
     (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr)) Int) -> Unit))
     (@pre {ctx != nil})
-    (@post "Registers field types for each union variant with payload in the context")
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut i start-idx))
@@ -1941,9 +1940,7 @@
             ;; These are for the Z3 verifier, not runtime checks
             (when (not (is-verification-only-expr cond-expr))
               ;; Transpile the condition to C
-              (let ((cond-c-raw (transpile-expr ctx cond-expr))
-                    ;; Replace $result and _result with _retval
-                    (cond-c (replace arena (replace arena cond-c-raw "_result" "_retval") "$result" "_retval"))
+              (let ((cond-c (transpile-expr ctx cond-expr))
                     ;; Get the original expression as string for the error message
                     (expr-str (pretty-print arena cond-expr))
                     ;; Escape double quotes in the string
@@ -1966,9 +1963,7 @@
             ;; These are for the Z3 verifier, not runtime checks
             (when (not (is-verification-only-expr cond-expr))
               ;; Transpile the condition to C
-              (let ((cond-c-raw (transpile-expr ctx cond-expr))
-                    ;; Replace $result and _result with _retval
-                    (cond-c (replace arena (replace arena cond-c-raw "_result" "_retval") "$result" "_retval"))
+              (let ((cond-c (transpile-expr ctx cond-expr))
                     ;; Get the original expression as string for the error message
                     (expr-str (pretty-print arena cond-expr))
                     ;; Escape double quotes in the string

@@ -154,7 +154,7 @@ uint8_t types_is_primitive_kind(types_ResolvedTypeKind kind) {
 uint8_t types_is_container_kind(types_ResolvedTypeKind kind) {
     uint8_t _retval;
     _retval = (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_result)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array)));
-    SLOP_POST(((_retval == (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_retval)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array))))), "(== $result (or (== kind (quote rk-list)) (== kind (quote rk-ptr)) (== kind (quote rk-option)) (== kind (quote rk-result)) (== kind (quote rk-map)) (== kind (quote rk-array))))");
+    SLOP_POST(((_retval == (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_result)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array))))), "(== $result (or (== kind (quote rk-list)) (== kind (quote rk-ptr)) (== kind (quote rk-option)) (== kind (quote rk-result)) (== kind (quote rk-map)) (== kind (quote rk-array))))");
     return _retval;
 }
 

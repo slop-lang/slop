@@ -1159,7 +1159,6 @@ void defn_register_union_variant_fields(context_TranspileContext* ctx, slop_stri
             i = (i + 1);
         }
     }
-    SLOP_POST((SLOP_STR("Registers field types for each union variant with payload in the context")), "\"Registers field types for each union variant with payload in the context\"");
 }
 
 void defn_transpile_type_alias(context_TranspileContext* ctx, slop_string raw_name, slop_string qualified_name, types_SExpr* type_expr) {
@@ -3077,8 +3076,7 @@ void defn_emit_postconditions(context_TranspileContext* ctx, slop_list_types_SEx
                 __auto_type cond_expr = _mv_1047.value;
                 if (!(defn_is_verification_only_expr(cond_expr))) {
                     {
-                        __auto_type cond_c_raw = expr_transpile_expr(ctx, cond_expr);
-                        __auto_type cond_c = strlib_replace(arena, strlib_replace(arena, cond_c_raw, SLOP_STR("_result"), SLOP_STR("_retval")), SLOP_STR("$result"), SLOP_STR("_retval"));
+                        __auto_type cond_c = expr_transpile_expr(ctx, cond_expr);
                         __auto_type expr_str = parser_pretty_print(arena, cond_expr);
                         __auto_type escaped_str = defn_escape_for_c_string(arena, expr_str);
                         context_ctx_emit(ctx, context_ctx_str5(ctx, SLOP_STR("SLOP_POST(("), cond_c, SLOP_STR("), \""), escaped_str, SLOP_STR("\");")));
@@ -3103,8 +3101,7 @@ void defn_emit_assumptions(context_TranspileContext* ctx, slop_list_types_SExpr_
                 __auto_type cond_expr = _mv_1048.value;
                 if (!(defn_is_verification_only_expr(cond_expr))) {
                     {
-                        __auto_type cond_c_raw = expr_transpile_expr(ctx, cond_expr);
-                        __auto_type cond_c = strlib_replace(arena, strlib_replace(arena, cond_c_raw, SLOP_STR("_result"), SLOP_STR("_retval")), SLOP_STR("$result"), SLOP_STR("_retval"));
+                        __auto_type cond_c = expr_transpile_expr(ctx, cond_expr);
                         __auto_type expr_str = parser_pretty_print(arena, cond_expr);
                         __auto_type escaped_str = defn_escape_for_c_string(arena, expr_str);
                         context_ctx_emit(ctx, context_ctx_str5(ctx, SLOP_STR("SLOP_POST(("), cond_c, SLOP_STR("), \""), escaped_str, SLOP_STR("\");")));
