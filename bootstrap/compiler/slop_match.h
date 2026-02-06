@@ -68,6 +68,12 @@ void match_emit_inline_when(context_TranspileContext* ctx, slop_list_types_SExpr
 void match_emit_inline_cond(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, uint8_t is_return, uint8_t is_last);
 void match_emit_inline_cond_body(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start, uint8_t is_return, uint8_t is_last);
 void match_emit_inline_with_arena(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, uint8_t is_return);
+void match_emit_inline_body_items(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start);
+void match_emit_inline_for(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
+void match_emit_inline_for_each_set(context_TranspileContext* ctx, slop_string var_name, types_SExprSymbol var_sym, slop_string coll_c, slop_string resolved_type, slop_list_types_SExpr_ptr items, int64_t len);
+void match_emit_inline_for_each_map_keys(context_TranspileContext* ctx, slop_string var_name, types_SExprSymbol var_sym, slop_string coll_c, slop_string resolved_type, slop_list_types_SExpr_ptr items, int64_t len);
+void match_emit_inline_for_each_map_kv(context_TranspileContext* ctx, slop_list_types_SExpr_ptr binding_items, slop_list_types_SExpr_ptr items, int64_t len);
+void match_emit_inline_for_each(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void match_emit_inline_return(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void match_emit_return_typed(context_TranspileContext* ctx, slop_string code);
 void match_emit_typed_return_expr(context_TranspileContext* ctx, types_SExpr* expr);
