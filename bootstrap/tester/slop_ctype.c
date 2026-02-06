@@ -632,7 +632,7 @@ slop_string ctype_resolved_type_to_c(slop_arena* arena, types_ResolvedType* rt) 
                 return SLOP_STR("slop_thread_int*");
             }
         } else if ((kind == types_ResolvedTypeKind_rk_typevar)) {
-            return SLOP_STR("/* TRANSPILER_ERROR: unresolved type variable */");
+            return SLOP_STR("__typevar_error__");
         } else {
             return (*rt).c_name;
         }

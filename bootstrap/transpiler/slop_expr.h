@@ -76,6 +76,8 @@ slop_string expr_infer_set_elem_c_type_from_slop_type(context_TranspileContext* 
 slop_string expr_extract_map_value_from_inferred(context_TranspileContext* ctx, types_SExpr* map_expr);
 slop_string expr_extract_list_elem_from_inferred(context_TranspileContext* ctx, types_SExpr* list_expr);
 slop_string expr_infer_map_key_c_type(context_TranspileContext* ctx, types_SExpr* map_expr);
+uint8_t expr_is_set_type(slop_string slop_type);
+uint8_t expr_is_map_type(slop_string slop_type);
 slop_string expr_extract_set_elem_from_slop_type(slop_arena* arena, slop_string slop_type);
 slop_string expr_infer_set_elem_c_type(context_TranspileContext* ctx, types_SExpr* set_expr);
 slop_string expr_compound_slop_type_to_id(slop_arena* arena, slop_string slop_type);
@@ -161,6 +163,11 @@ slop_string expr_transpile_set_elements(context_TranspileContext* ctx, slop_list
 slop_string expr_transpile_set_literal(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_for_as_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_for_each_as_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
+slop_string expr_transpile_for_each_list_as_expr(context_TranspileContext* ctx, slop_string var_name, types_SExprSymbol var_sym, types_SExpr* coll_expr, slop_list_types_SExpr_ptr items, int64_t len);
+slop_string expr_transpile_for_each_set_as_expr(context_TranspileContext* ctx, slop_string var_name, types_SExprSymbol var_sym, types_SExpr* coll_expr, slop_string resolved_type, slop_list_types_SExpr_ptr items, int64_t len);
+slop_string expr_transpile_for_each_map_keys_as_expr(context_TranspileContext* ctx, slop_string var_name, types_SExprSymbol var_sym, types_SExpr* coll_expr, slop_string resolved_type, slop_list_types_SExpr_ptr items, int64_t len);
+slop_string expr_transpile_for_each_map_kv_as_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr binding_items, slop_list_types_SExpr_ptr items, int64_t len);
+slop_string expr_transpile_with_arena_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_lambda_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_lambda_with_params(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, slop_list_types_SExpr_ptr params);
 slop_list_string expr_extract_param_names(slop_arena* arena, slop_list_types_SExpr_ptr params);
@@ -199,6 +206,7 @@ slop_list_string expr_extract_let_binding_names(slop_arena* arena, types_SExpr* 
 void expr_collect_symbols_in_match(context_TranspileContext* ctx, slop_list_string* symbols, slop_list_string pending, slop_list_types_SExpr_ptr items);
 void expr_collect_symbols_in_for(context_TranspileContext* ctx, slop_list_string* symbols, slop_list_string pending, slop_list_types_SExpr_ptr items);
 slop_list_string expr_extract_for_loop_var_pending(slop_arena* arena, slop_list_string pending, slop_list_types_SExpr_ptr bind_items);
+void expr_collect_symbols_in_with_arena(context_TranspileContext* ctx, slop_list_string* symbols, slop_list_string pending, slop_list_types_SExpr_ptr items);
 void expr_collect_nested_lambda_free_vars(context_TranspileContext* ctx, slop_list_string* symbols, slop_list_string pending, slop_list_types_SExpr_ptr items);
 uint8_t expr_is_special_keyword(slop_string name);
 uint8_t expr_is_free_var(context_TranspileContext* ctx, slop_list_string param_names, slop_list_string pending, slop_string sym_name);

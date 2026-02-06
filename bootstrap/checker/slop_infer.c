@@ -11,6 +11,8 @@ uint8_t infer_is_send_op(slop_string op);
 uint8_t infer_is_recv_op(slop_string op);
 uint8_t infer_is_spawn_op(slop_string op);
 uint8_t infer_is_join_op(slop_string op);
+uint8_t infer_is_chan_buffered_op(slop_string op);
+uint8_t infer_is_chan_op(slop_string op);
 types_ResolvedType* infer_infer_threading_builtin(env_TypeEnv* env, slop_string op, types_SExpr* expr, slop_list_types_SExpr_ptr items, int64_t len, int64_t line, int64_t col);
 uint8_t infer_has_type_params(types_FnSignature* sig);
 slop_option_types_ResolvedType_ptr infer_find_binding(slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types, slop_string name);
@@ -121,6 +123,8 @@ uint8_t infer_is_qualified_threading_builtin(slop_string op) {
         return 1;
     } else if (strlib_ends_with(op, SLOP_STR(":chan-buffered"))) {
         return 1;
+    } else if (strlib_ends_with(op, SLOP_STR(":chan"))) {
+        return 1;
     } else {
         return 0;
     }
@@ -136,6 +140,8 @@ uint8_t infer_is_bare_threading_builtin(slop_string op) {
     } else if (string_eq(op, SLOP_STR("join"))) {
         return 1;
     } else if (string_eq(op, SLOP_STR("chan-buffered"))) {
+        return 1;
+    } else if (string_eq(op, SLOP_STR("chan"))) {
         return 1;
     } else {
         return 0;
@@ -162,6 +168,14 @@ uint8_t infer_is_join_op(slop_string op) {
     return (string_eq(op, SLOP_STR("join")) || strlib_ends_with(op, SLOP_STR(":join")));
 }
 
+uint8_t infer_is_chan_buffered_op(slop_string op) {
+    return (string_eq(op, SLOP_STR("chan-buffered")) || strlib_ends_with(op, SLOP_STR(":chan-buffered")));
+}
+
+uint8_t infer_is_chan_op(slop_string op) {
+    return (string_eq(op, SLOP_STR("chan")) || strlib_ends_with(op, SLOP_STR(":chan")));
+}
+
 types_ResolvedType* infer_infer_threading_builtin(env_TypeEnv* env, slop_string op, types_SExpr* expr, slop_list_types_SExpr_ptr items, int64_t len, int64_t line, int64_t col) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     infer_infer_builtin_args(env, expr);
@@ -177,8 +191,30 @@ types_ResolvedType* infer_infer_threading_builtin(env_TypeEnv* env, slop_string 
     } else if (infer_is_join_op(op)) {
         infer_check_builtin_args(env, SLOP_STR("join"), 1, (len - 1), line, col);
         return env_env_get_generic_type(env);
+    } else if (infer_is_chan_buffered_op(op)) {
+        infer_check_builtin_args(env, SLOP_STR("chan-buffered"), 3, (len - 1), line, col);
+        {
+            __auto_type arena = env_env_arena(env);
+            __auto_type elem_type = (((len >= 2)) ? ({ __auto_type _mv = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type type_arg = _mv.value; ({ __auto_type type_name = parser_sexpr_get_symbol_name(type_arg); ({ __auto_type _mv = env_env_lookup_type(env, type_name); _mv.has_value ? ({ __auto_type t = _mv.value; t; }) : (NULL); }); }); }) : (NULL); }) : NULL);
+            __auto_type chan_type = types_resolved_type_new(arena, types_ResolvedTypeKind_rk_chan, SLOP_STR("Chan"), ((slop_option_string){.has_value = false}), SLOP_STR("slop_chan_int*"));
+            if ((elem_type != NULL)) {
+                types_resolved_type_set_inner(chan_type, elem_type);
+            }
+            return env_env_make_ptr_type(env, chan_type);
+        }
+    } else if (infer_is_chan_op(op)) {
+        infer_check_builtin_args(env, SLOP_STR("chan"), 2, (len - 1), line, col);
+        {
+            __auto_type arena = env_env_arena(env);
+            __auto_type elem_type = (((len >= 2)) ? ({ __auto_type _mv = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type type_arg = _mv.value; ({ __auto_type type_name = parser_sexpr_get_symbol_name(type_arg); ({ __auto_type _mv = env_env_lookup_type(env, type_name); _mv.has_value ? ({ __auto_type t = _mv.value; t; }) : (NULL); }); }); }) : (NULL); }) : NULL);
+            __auto_type chan_type = types_resolved_type_new(arena, types_ResolvedTypeKind_rk_chan, SLOP_STR("Chan"), ((slop_option_string){.has_value = false}), SLOP_STR("slop_chan_int*"));
+            if ((elem_type != NULL)) {
+                types_resolved_type_set_inner(chan_type, elem_type);
+            }
+            return env_env_make_ptr_type(env, chan_type);
+        }
     } else {
-        infer_check_builtin_args(env, SLOP_STR("chan-buffered"), 2, (len - 1), line, col);
+        infer_check_builtin_args(env, SLOP_STR("chan-buffered"), 3, (len - 1), line, col);
         return env_env_make_ptr_type(env, env_env_get_generic_type(env));
     }
 }
@@ -1226,6 +1262,8 @@ types_ResolvedType* infer_infer_special_form(env_TypeEnv* env, types_SExpr* expr
                 env_env_add_error(env, hole_msg, line, col);
                 return hole_type;
             }
+        } else if ((infer_is_chan_buffered_op(op) || infer_is_chan_op(op))) {
+            return infer_infer_threading_builtin(env, op, expr, items, len, line, col);
         } else {
             __auto_type _mv_234 = env_env_lookup_function(env, op);
             if (_mv_234.has_value) {
@@ -1300,6 +1338,12 @@ types_ResolvedType* infer_infer_special_form(env_TypeEnv* env, types_SExpr* expr
                                 return env_env_get_int_type(env);
                             }
                         }
+                    } else if (string_eq(op, SLOP_STR("arena-new"))) {
+                        infer_check_builtin_args(env, SLOP_STR("arena-new"), 1, (len - 1), line, col);
+                        return env_env_get_arena_type(env);
+                    } else if (string_eq(op, SLOP_STR("arena-free"))) {
+                        infer_check_builtin_args(env, SLOP_STR("arena-free"), 1, (len - 1), line, col);
+                        return env_env_get_unit_type(env);
                     } else if (string_eq(op, SLOP_STR("cast"))) {
                         return env_env_get_int_type(env);
                     } else if (string_eq(op, SLOP_STR("list-push"))) {

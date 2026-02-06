@@ -40,6 +40,8 @@ uint8_t infer_is_send_op(slop_string op);
 uint8_t infer_is_recv_op(slop_string op);
 uint8_t infer_is_spawn_op(slop_string op);
 uint8_t infer_is_join_op(slop_string op);
+uint8_t infer_is_chan_buffered_op(slop_string op);
+uint8_t infer_is_chan_op(slop_string op);
 types_ResolvedType* infer_infer_threading_builtin(env_TypeEnv* env, slop_string op, types_SExpr* expr, slop_list_types_SExpr_ptr items, int64_t len, int64_t line, int64_t col);
 uint8_t infer_has_type_params(types_FnSignature* sig);
 slop_option_types_ResolvedType_ptr infer_find_binding(slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types, slop_string name);
