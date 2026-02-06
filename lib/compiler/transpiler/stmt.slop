@@ -1033,7 +1033,7 @@
       ;; ElementType var = *(ElementType*)_coll->entries[_i].key;
       (let ((cast-part (ctx-str ctx elem-c-type "*)_coll->entries[_i].key"))
             (assign-prefix (ctx-str4 ctx elem-c-type " " var-name " = *("))
-            (assign-part (ctx-str3 ctx assign-prefix cast-part ");")))
+            (assign-part (ctx-str3 ctx assign-prefix cast-part ";")))
         (ctx-emit ctx assign-part))
       ;; Bind loop variable
       (ctx-push-scope ctx)
@@ -1084,7 +1084,7 @@
       ;; KeyType var = *(KeyType*)_coll->entries[_i].key;
       (let ((cast-part (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
             (assign-prefix (ctx-str4 ctx key-c-type " " var-name " = *("))
-            (assign-part (ctx-str3 ctx assign-prefix cast-part ");")))
+            (assign-part (ctx-str3 ctx assign-prefix cast-part ";")))
         (ctx-emit ctx assign-part))
       ;; Bind loop variable
       (ctx-push-scope ctx)
@@ -1159,12 +1159,12 @@
                                         ;; Emit: KeyType k = *(KeyType*)_coll->entries[_i].key;
                                         (let ((k-cast (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
                                               (k-prefix (ctx-str4 ctx key-c-type " " k-name " = *("))
-                                              (k-assign (ctx-str3 ctx k-prefix k-cast ");")))
+                                              (k-assign (ctx-str3 ctx k-prefix k-cast ";")))
                                           (ctx-emit ctx k-assign))
                                         ;; Emit: ValueType v = *(ValueType*)_coll->entries[_i].value;
                                         (let ((v-cast (ctx-str ctx val-c-type "*)_coll->entries[_i].value"))
                                               (v-prefix (ctx-str4 ctx val-c-type " " v-name " = *("))
-                                              (v-assign (ctx-str3 ctx v-prefix v-cast ");")))
+                                              (v-assign (ctx-str3 ctx v-prefix v-cast ";")))
                                           (ctx-emit ctx v-assign))
                                         ;; Bind both variables
                                         (ctx-push-scope ctx)
