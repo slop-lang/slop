@@ -90,6 +90,7 @@
       ((ends-with op ":spawn") 1)
       ((ends-with op ":join") 1)
       ((ends-with op ":chan-buffered") 1)
+      ((ends-with op ":chan") 1)
       (else 0)))
 
   (fn is-bare-threading-builtin ((op String))
@@ -102,6 +103,7 @@
       ((string-eq op "spawn") 1)
       ((string-eq op "join") 1)
       ((string-eq op "chan-buffered") 1)
+      ((string-eq op "chan") 1)
       (else 0)))
 
   (fn is-threading-module ((mod-name String))
@@ -134,6 +136,18 @@
     (@pure)
     (or (string-eq op "join") (ends-with op ":join")))
 
+  (fn is-chan-buffered-op ((op String))
+    (@intent "Check if op is chan-buffered or qualified chan-buffered")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "chan-buffered") (ends-with op ":chan-buffered")))
+
+  (fn is-chan-op ((op String))
+    (@intent "Check if op is chan or qualified chan")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "chan") (ends-with op ":chan")))
+
   (fn infer-threading-builtin ((env (Ptr TypeEnv)) (op String) (expr (Ptr SExpr))
                                 (items (List (Ptr SExpr))) (len Int) (line Int) (col Int))
     (@intent "Infer return type for polymorphic threading builtins")
@@ -153,8 +167,40 @@
           ((is-join-op op)
             (do (check-builtin-args env "join" 1 (- len 1) line col)
                 (env-get-generic-type env)))
+          ((is-chan-buffered-op op)
+            (do (check-builtin-args env "chan-buffered" 3 (- len 1) line col)
+                (let ((arena (env-arena env))
+                      (elem-type (if (>= len 2)
+                                   (match (list-get items 1)
+                                     ((some type-arg)
+                                       (let ((type-name (sexpr-get-symbol-name type-arg)))
+                                         (match (env-lookup-type env type-name)
+                                           ((some t) t)
+                                           ((none) nil))))
+                                     ((none) nil))
+                                   nil))
+                      (chan-type (resolved-type-new arena 'rk-chan "Chan" (none) "slop_chan_int*")))
+                  (when (!= elem-type nil)
+                    (resolved-type-set-inner chan-type elem-type))
+                  (env-make-ptr-type env chan-type))))
+          ((is-chan-op op)
+            (do (check-builtin-args env "chan" 2 (- len 1) line col)
+                (let ((arena (env-arena env))
+                      (elem-type (if (>= len 2)
+                                   (match (list-get items 1)
+                                     ((some type-arg)
+                                       (let ((type-name (sexpr-get-symbol-name type-arg)))
+                                         (match (env-lookup-type env type-name)
+                                           ((some t) t)
+                                           ((none) nil))))
+                                     ((none) nil))
+                                   nil))
+                      (chan-type (resolved-type-new arena 'rk-chan "Chan" (none) "slop_chan_int*")))
+                  (when (!= elem-type nil)
+                    (resolved-type-set-inner chan-type elem-type))
+                  (env-make-ptr-type env chan-type))))
           (else
-            (do (check-builtin-args env "chan-buffered" 2 (- len 1) line col)
+            (do (check-builtin-args env "chan-buffered" 3 (- len 1) line col)
                 (env-make-ptr-type env (env-get-generic-type env)))))))
 
   ;; ============================================================
@@ -1003,6 +1049,10 @@
             (env-add-error env hole-msg line col)
             hole-type))
 
+        ;; Channel constructors - route to threading builtin handler
+        ((or (is-chan-buffered-op op) (is-chan-op op))
+          (infer-threading-builtin env op expr items len line col))
+
         ;; Function call - look up return type and check arguments
         (else
           (match (env-lookup-function env op)
@@ -1062,6 +1112,14 @@
                                         (env-add-warning env (string-concat arena "arena-alloc: unknown type: " type-name) line col))
                                       (env-get-int-type env)))))))
                           ((none) (env-get-int-type env)))))
+                    ;; arena-new expects 1 arg: size - returns Arena (heap-allocated pointer)
+                    ((string-eq op "arena-new")
+                      (do (check-builtin-args env "arena-new" 1 (- len 1) line col)
+                          (env-get-arena-type env)))
+                    ;; arena-free expects 1 arg: (Ptr Arena) - returns Unit
+                    ((string-eq op "arena-free")
+                      (do (check-builtin-args env "arena-free" 1 (- len 1) line col)
+                          (env-get-unit-type env)))
                     ;; cast returns Int (approximation)
                     ((string-eq op "cast") (env-get-int-type env))
                     ;; List operations

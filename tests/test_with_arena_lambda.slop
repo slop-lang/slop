@@ -1,0 +1,92 @@
+;; ============================================================
+;; Test: with-arena inside lambda bodies
+;;
+;; Verifies that with-arena works in expression context,
+;; particularly inside lambda bodies where transpile-expr
+;; (not transpile-stmt) is used.
+;; ============================================================
+
+(module test-with-arena-lambda
+
+  ;; Helper: apply a (Fn (Int) Int) closure to an argument
+  (fn apply-int ((f (Fn (Int) Int)) (x Int))
+    (@intent "Apply closure to int argument")
+    (@spec (((Fn (Int) Int) Int) -> Int))
+    (f x))
+
+  ;; ============================================================
+  ;; Test 1: Basic with-arena inside a lambda
+  ;; ============================================================
+  (fn test-basic-lambda-arena ()
+    (@intent "with-arena inside lambda returns correct value")
+    (@spec (() -> Int))
+    (apply-int (fn ((x Int)) (with-arena 1024 (+ x 10))) 32))
+
+  ;; ============================================================
+  ;; Test 2: Named with-arena inside a lambda
+  ;; ============================================================
+  (fn test-named-arena-lambda ()
+    (@intent "with-arena :as name inside lambda")
+    (@spec (() -> Int))
+    (apply-int
+      (fn ((x Int))
+        (with-arena :as myarena 2048
+          (let ((buf (arena-alloc myarena 64)))
+            (if (!= buf nil)
+              (+ x 100)
+              -1))))
+      5))
+
+  ;; ============================================================
+  ;; Test 3: Closure capturing outer variable + with-arena
+  ;; ============================================================
+  (fn test-closure-with-arena ()
+    (@intent "Closure captures outer var, uses with-arena in body")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((offset 50))
+        (apply-int (fn ((x Int)) (with-arena 1024 (+ x offset))) 7))))
+
+  ;; ============================================================
+  ;; Test 4: Nested with-arena inside lambda inside with-arena
+  ;; ============================================================
+  (fn test-nested-with-arena-lambda ()
+    (@intent "with-arena inside lambda inside with-arena (double nesting)")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (apply-int (fn ((x Int)) (with-arena 1024 (* x 3))) 11)))
+
+  ;; ============================================================
+  ;; Main
+  ;; ============================================================
+  (fn main ()
+    (@intent "Run all with-arena lambda tests")
+    (@spec (() -> Int))
+    (println "Running with-arena lambda tests...")
+    (let ((mut pass 0)
+          (mut fail 0))
+      ;; Test 1: basic
+      (let ((r1 (test-basic-lambda-arena)))
+        (if (== r1 42)
+          (do (println "Test 1 (basic lambda arena): PASS") (set! pass (+ pass 1)))
+          (do (println "Test 1 (basic lambda arena): FAIL") (set! fail (+ fail 1)))))
+      ;; Test 2: named
+      (let ((r2 (test-named-arena-lambda)))
+        (if (== r2 105)
+          (do (println "Test 2 (named arena lambda): PASS") (set! pass (+ pass 1)))
+          (do (println "Test 2 (named arena lambda): FAIL") (set! fail (+ fail 1)))))
+      ;; Test 3: closure
+      (let ((r3 (test-closure-with-arena)))
+        (if (== r3 57)
+          (do (println "Test 3 (closure with arena): PASS") (set! pass (+ pass 1)))
+          (do (println "Test 3 (closure with arena): FAIL") (set! fail (+ fail 1)))))
+      ;; Test 4: nested
+      (let ((r4 (test-nested-with-arena-lambda)))
+        (if (== r4 33)
+          (do (println "Test 4 (nested arena lambda): PASS") (set! pass (+ pass 1)))
+          (do (println "Test 4 (nested arena lambda): FAIL") (set! fail (+ fail 1)))))
+      ;; Summary
+      (if (== fail 0)
+        (println "All tests passed!")
+        (println "Some tests FAILED!"))
+      fail)))

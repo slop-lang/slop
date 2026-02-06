@@ -1,0 +1,81 @@
+;; ============================================================
+;; Test: for-each as expression for Set and Map
+;;
+;; Tests that for-each works in expression context (e.g., nested in let,
+;; used as callback argument) for Sets and Maps.
+;; ============================================================
+
+(module test-foreach-expr
+
+  ;; Nested for-each map iteration in expression context
+  ;; This is the pattern from slop-rdf that was broken
+  (fn test-nested-map-foreach-as-expr ()
+    (@intent "Test nested for-each on Map in expression context")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((subj-map (map-new arena String (Map String Int)))
+            (mut total 0))
+        ;; Create a nested map structure
+        (let ((inner (map-new arena String Int)))
+          (map-put inner "a" 10)
+          (map-put inner "b" 20)
+          (map-put subj-map "subject1" inner))
+        (let ((inner2 (map-new arena String Int)))
+          (map-put inner2 "c" 30)
+          (map-put subj-map "subject2" inner2))
+        ;; Nested for-each iteration in expression context
+        ;; The outer for-each uses the result of inner for-each
+        (for-each ((s triple-map) subj-map)
+          (for-each ((k v) triple-map)
+            (set! total (+ total v))))
+        (== total 60))))
+
+  ;; for-each Set in expression context
+  (fn test-set-foreach-as-expr ()
+    (@intent "Test for-each on Set in expression context")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena Int))
+            (mut sum 0))
+        (set-put s 5)
+        (set-put s 10)
+        (set-put s 15)
+        ;; for-each on set in expression context
+        (let ((result (do (for-each (item s) (set! sum (+ sum item))) sum)))
+          (== result 30)))))
+
+  ;; for-each Map key-only in expression context
+  (fn test-map-keys-foreach-as-expr ()
+    (@intent "Test for-each on Map keys in expression context")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena Int String))
+            (mut key-sum 0))
+        (map-put m 100 "hundred")
+        (map-put m 200 "two hundred")
+        ;; for-each on map keys in expression context
+        (let ((result (do (for-each (k m) (set! key-sum (+ key-sum k))) key-sum)))
+          (== result 300)))))
+
+  (fn main ()
+    (@intent "Run all for-each expression tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-nested-map-foreach-as-expr)
+        (println "test-nested-map-foreach-as-expr: PASS")
+        (do (println "test-nested-map-foreach-as-expr: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-set-foreach-as-expr)
+        (println "test-set-foreach-as-expr: PASS")
+        (do (println "test-set-foreach-as-expr: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-keys-foreach-as-expr)
+        (println "test-map-keys-foreach-as-expr: PASS")
+        (do (println "test-map-keys-foreach-as-expr: FAIL")
+            (set! failures (+ failures 1))))
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))

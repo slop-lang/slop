@@ -259,8 +259,15 @@ identifier               ; Variable reference
 (match expr ((pattern1) body1) ((pattern2) body2) ...)
 (while cond body)
 (for (i start end) body)
-(for-each (item collection) body)
+(for-each (item collection) body)     ; Iterate List, Set (keys), or Map (keys)
+(for-each ((key value) map) body)     ; Iterate Map key-value pairs
 (do expr1 expr2 ...)         ; Sequence, returns last
+
+; for-each Collection Types:
+; - List: iterates elements in order
+; - Set: iterates elements (zero allocation, order undefined)
+; - Map with (var map): iterates keys only (zero allocation)
+; - Map with ((k v) map): iterates key-value pairs (zero allocation)
 (break)
 (continue)
 (return expr)
@@ -743,9 +750,9 @@ ChanError                ; Error enum: closed, would-block, send-on-closed
 **Channel Operations:**
 
 ```
-; Channel creation
-(chan arena) -> (Ptr (Chan T))              ; Unbuffered channel (synchronous)
-(chan-buffered arena capacity) -> (Ptr (Chan T))  ; Buffered channel
+; Channel creation (explicit type argument required)
+(chan Type arena) -> (Ptr (Chan T))              ; Unbuffered channel (synchronous)
+(chan-buffered Type arena capacity) -> (Ptr (Chan T))  ; Buffered channel
 (chan-close ch) -> Unit                     ; Close channel
 
 ; Send/receive
@@ -765,7 +772,7 @@ ChanError                ; Error enum: closed, would-block, send-on-closed
 
 ```lisp
 (with-arena 4096
-  (let ((ch (chan-buffered arena 10)))  ;; Buffered channel for Int
+  (let ((ch (chan-buffered Int arena 10)))  ;; Buffered channel for Int
     (let ((producer (spawn arena (fn ()
         (for i 1 10 (send ch i))
         (chan-close ch)

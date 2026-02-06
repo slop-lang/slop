@@ -1685,7 +1685,7 @@
                           ((some inner) (set! result (ctx-str ctx (to-c-type-prefixed ctx inner) "*")))
                           ((none) (do)))))
 
-                    ;; (Chan T) -> slop_chan_<inner>
+                    ;; (Chan T) -> slop_chan_<inner> (use (Ptr (Chan T)) for pointer)
                     ((string-eq head "Chan")
                       (set! result "slop_chan_void")
                       (when (>= len 2)
@@ -1696,7 +1696,7 @@
                               (set! result (ctx-str ctx "slop_chan_" inner-id))))
                           ((none) (do)))))
 
-                    ;; (Thread T) -> slop_thread_<inner>
+                    ;; (Thread T) -> slop_thread_<inner> (use (Ptr (Thread T)) for pointer)
                     ((string-eq head "Thread")
                       (set! result "slop_thread_int")  ;; Safe default
                       (when (>= len 2)

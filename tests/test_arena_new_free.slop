@@ -1,0 +1,38 @@
+;; ============================================================
+;; Arena New/Free Test - Verify arena-new and arena-free work
+;; ============================================================
+
+(module test-arena-new-free
+  (export (main 0))
+
+  (fn test-arena-new ()
+    (@intent "Test that arena-new creates a valid arena")
+    (@spec (() -> Int))
+    (let ((arena (arena-new 1024)))
+      ;; Arena should be valid (non-null base) - arena is now a pointer
+      (if (!= (cast Int (. arena base)) 0) 0 1)))
+
+  (fn test-arena-alloc-after-new ()
+    (@intent "Test allocation from arena created with arena-new")
+    (@spec (() -> Int))
+    (let ((arena (arena-new 1024)))
+      ;; arena is already a pointer, no need for (addr arena)
+      (let ((ptr (arena-alloc arena 64)))
+        ;; Should get valid pointer
+        (if (!= (cast Int ptr) 0) 0 1))))
+
+  (fn test-arena-free ()
+    (@intent "Test that arena-free works without crashing")
+    (@spec (() -> Int))
+    (let ((arena (arena-new 1024)))
+      ;; arena is already a pointer, no need for (addr arena)
+      (arena-free arena)
+      ;; If we get here, free worked
+      0))
+
+  (fn main ()
+    (@intent "Run all arena tests, return 0 if all pass")
+    (@spec (() -> Int))
+    (+ (test-arena-new)
+       (test-arena-alloc-after-new)
+       (test-arena-free))))

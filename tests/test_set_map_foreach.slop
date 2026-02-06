@@ -1,0 +1,181 @@
+;; ============================================================
+;; Test: Zero-allocation Set and Map iteration via for-each
+;;
+;; Tests that for-each can iterate over Sets and Maps directly
+;; without requiring set-elements/map-keys (which allocate copies).
+;; ============================================================
+
+(module test-set-map-foreach
+
+  ;; Test record type for struct-keyed collections
+  (type Point (record
+    (x Int)
+    (y Int)))
+
+  ;; ============================================================
+  ;; Set Tests
+  ;; ============================================================
+
+  (fn test-for-each-set-int ()
+    (@intent "Test basic set iteration with Int elements")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena Int))
+            (mut sum 0))
+        (set-put s 10)
+        (set-put s 20)
+        (set-put s 30)
+        (for-each (item s)
+          (set! sum (+ sum item)))
+        (== sum 60))))
+
+  (fn test-for-each-set-empty ()
+    (@intent "Test iteration over empty set")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena Int))
+            (mut count 0))
+        (for-each (item s)
+          (set! count (+ count 1)))
+        (== count 0))))
+
+  (fn test-for-each-set-string ()
+    (@intent "Test set iteration with String elements")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena String))
+            (mut count 0))
+        (set-put s "hello")
+        (set-put s "world")
+        (for-each (item s)
+          (set! count (+ count 1)))
+        (== count 2))))
+
+  (fn test-for-each-set-struct ()
+    (@intent "Test set iteration with struct elements")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((s (set-new arena Point))
+            (mut sum 0))
+        (set-put s (Point 1 2))
+        (set-put s (Point 3 4))
+        (for-each (p s)
+          (set! sum (+ sum (+ (. p x) (. p y)))))
+        (== sum 10))))
+
+  ;; ============================================================
+  ;; Map Tests
+  ;; ============================================================
+
+  (fn test-for-each-map-kv-int ()
+    (@intent "Test Map key-value iteration with Int values")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Int))
+            (mut sum 0))
+        (map-put m "a" 10)
+        (map-put m "b" 20)
+        (map-put m "c" 30)
+        (for-each ((k v) m)
+          (set! sum (+ sum v)))
+        (== sum 60))))
+
+  (fn test-for-each-map-kv-empty ()
+    (@intent "Test iteration over empty map")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Int))
+            (mut count 0))
+        (for-each ((k v) m)
+          (set! count (+ count 1)))
+        (== count 0))))
+
+  (fn test-for-each-map-kv-string-values ()
+    (@intent "Test Map key-value iteration with String values")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena Int String))
+            (mut count 0))
+        (map-put m 1 "one")
+        (map-put m 2 "two")
+        (for-each ((k v) m)
+          (set! count (+ count k)))
+        (== count 3))))
+
+  (fn test-for-each-map-kv-struct-values ()
+    (@intent "Test Map iteration with struct values")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Point))
+            (mut sum 0))
+        (map-put m "origin" (Point 0 0))
+        (map-put m "point1" (Point 3 4))
+        (for-each ((k p) m)
+          (set! sum (+ sum (+ (. p x) (. p y)))))
+        (== sum 7))))
+
+  (fn test-for-each-map-keys-only ()
+    (@intent "Test Map single-var iteration (keys only)")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena Int String))
+            (mut sum 0))
+        (map-put m 10 "ten")
+        (map-put m 20 "twenty")
+        (for-each (k m)
+          (set! sum (+ sum k)))
+        (== sum 30))))
+
+  ;; ============================================================
+  ;; Main
+  ;; ============================================================
+
+  (fn main ()
+    (@intent "Run all Set and Map for-each tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      ;; Set tests
+      (if (test-for-each-set-int)
+        (println "test-for-each-set-int: PASS")
+        (do (println "test-for-each-set-int: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-for-each-set-empty)
+        (println "test-for-each-set-empty: PASS")
+        (do (println "test-for-each-set-empty: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-for-each-set-string)
+        (println "test-for-each-set-string: PASS")
+        (do (println "test-for-each-set-string: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-for-each-set-struct)
+        (println "test-for-each-set-struct: PASS")
+        (do (println "test-for-each-set-struct: FAIL")
+            (set! failures (+ failures 1))))
+      ;; Map tests
+      (if (test-for-each-map-kv-int)
+        (println "test-for-each-map-kv-int: PASS")
+        (do (println "test-for-each-map-kv-int: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-for-each-map-kv-empty)
+        (println "test-for-each-map-kv-empty: PASS")
+        (do (println "test-for-each-map-kv-empty: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-for-each-map-kv-string-values)
+        (println "test-for-each-map-kv-string-values: PASS")
+        (do (println "test-for-each-map-kv-string-values: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-for-each-map-kv-struct-values)
+        (println "test-for-each-map-kv-struct-values: PASS")
+        (do (println "test-for-each-map-kv-struct-values: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-for-each-map-keys-only)
+        (println "test-for-each-map-keys-only: PASS")
+        (do (println "test-for-each-map-keys-only: FAIL")
+            (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))
