@@ -17,7 +17,13 @@
     infer-expr-c-type infer-option-inner-slop-type infer-expr-slop-type
     ;; Collection/Result type inference helpers
     infer-collection-element-slop-type infer-result-ok-slop-type infer-result-err-slop-type
-    c-type-to-option-type-name)
+    c-type-to-option-type-name
+    ;; Set/Map type helpers
+    resolve-type-alias extract-set-elem-from-slop-type
+    extract-map-key-from-slop-type extract-map-value-from-slop-type
+    slop-value-type-to-c-type
+    ;; Set/Map type detection
+    is-set-type is-map-type)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
@@ -25,7 +31,7 @@
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
-                   ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias
+                   ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-register-chan-type
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
@@ -815,6 +821,9 @@
       ;; Time functions
       ((string-eq fn-name "now-ms") "slop_now_ms")
       ((string-eq fn-name "sleep-ms") "slop_sleep_ms")
+      ;; Arena operations
+      ((string-eq fn-name "arena-new") "slop_arena_new")
+      ((string-eq fn-name "arena-free") "slop_arena_free")
       ;; Not a runtime function
       (else "")))
 
@@ -1270,9 +1279,16 @@
     (@spec (((Ptr TranspileContext) String) -> String))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena)))
-      (match (ctx-lookup-type ctx slop-type)
-        ((some entry) (. entry c-name))
-        ((none) (to-c-name arena slop-type)))))
+      ;; Handle compound container types first
+      (cond
+        ((starts-with slop-type "(Map ") "slop_map*")
+        ((starts-with slop-type "(Set ") "slop_map*")
+        ((starts-with slop-type "(Ptr (Map ") "slop_map**")
+        ((starts-with slop-type "(Ptr (Set ") "slop_map**")
+        (else
+          (match (ctx-lookup-type ctx slop-type)
+            ((some entry) (. entry c-name))
+            ((none) (to-c-name arena slop-type)))))))
 
   (fn get-var-name-from-expr ((expr (Ptr SExpr)))
     (@intent "Extract variable name from expression if it's a simple symbol")
@@ -1426,6 +1442,24 @@
                                     (ctx-str3 ctx "(List " elem-str ")")))
                                 ((none) ""))
                               ""))
+                          ;; chan-buffered: (chan-buffered Type arena capacity) -> (Ptr (Chan Type))
+                          ((or (string-eq op "chan-buffered") (ends-with op ":chan-buffered"))
+                            (if (>= len 4)
+                              (match (list-get items 1)
+                                ((some type-expr)
+                                  (let ((type-str (sexpr-to-type-string arena type-expr)))
+                                    (ctx-str3 ctx "(Ptr (Chan " type-str "))")))
+                                ((none) ""))
+                              ""))
+                          ;; chan: (chan Type arena) -> (Ptr (Chan Type))
+                          ((or (string-eq op "chan") (ends-with op ":chan"))
+                            (if (>= len 3)
+                              (match (list-get items 1)
+                                ((some type-expr)
+                                  (let ((type-str (sexpr-to-type-string arena type-expr)))
+                                    (ctx-str3 ctx "(Ptr (Chan " type-str "))")))
+                                ((none) ""))
+                              ""))
                           ;; Default: check if it's a function call
                           (else
                             (match (ctx-lookup-func ctx op)
@@ -1526,6 +1560,22 @@
               ((none) ""))))
         ;; Non-symbol expression (field access, match binding, etc.) - use fallback inference
         (_ (infer-map-key-c-type-from-slop-type ctx (infer-expr-slop-type ctx map-expr))))))
+
+  ;; ============================================================
+  ;; Set/Map Type Detection Helpers
+  ;; ============================================================
+
+  (fn is-set-type ((slop-type String))
+    (@intent "Check if SLOP type is a Set type")
+    (@spec ((String) -> Bool))
+    (or (starts-with slop-type "(Set ")
+        (starts-with slop-type "(Ptr (Set ")))
+
+  (fn is-map-type ((slop-type String))
+    (@intent "Check if SLOP type is a Map type")
+    (@spec ((String) -> Bool))
+    (or (starts-with slop-type "(Map ")
+        (starts-with slop-type "(Ptr (Map ")))
 
   (fn extract-set-elem-from-slop-type ((arena Arena) (slop-type String))
     (@intent "Extract element type from '(Set T)' SLOP type string")
@@ -2301,6 +2351,26 @@
                           (do
                             (ctx-add-error-at ctx "missing arena argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "NULL"))))
+                    ;; arena-new: (arena-new size) -> heap-allocated slop_arena*
+                    ((and (string-eq op "arena-new") (>= len 2))
+                      (match (list-get items 1)
+                        ((some size-expr)
+                          (let ((size-c (transpile-expr ctx size-expr)))
+                            (ctx-str3 ctx "({ slop_arena* _new_arena = malloc(sizeof(slop_arena)); if (!_new_arena) { fprintf(stderr, \"SLOP: arena-new malloc failed\\n\"); abort(); } *_new_arena = slop_arena_new(" size-c "); _new_arena; })")))
+                        ((none)
+                          (do
+                            (ctx-add-error-at ctx "arena-new requires size argument" (ctx-list-first-line items) (ctx-list-first-col items))
+                            "NULL"))))
+                    ;; arena-free: (arena-free arena) -> free arena contents and struct
+                    ((and (string-eq op "arena-free") (>= len 2))
+                      (match (list-get items 1)
+                        ((some arena-expr)
+                          (let ((arena-c (transpile-expr ctx arena-expr)))
+                            (ctx-str5 ctx "({ slop_arena_free(" arena-c "); free(" arena-c "); })")))
+                        ((none)
+                          (do
+                            (ctx-add-error-at ctx "arena-free requires arena argument" (ctx-list-first-line items) (ctx-list-first-col items))
+                            "(void)0"))))
                     ;; quote: (quote variant) -> EnumType_variant
                     ((and (string-eq op "quote") (>= len 2))
                       (match (list-get items 1)
@@ -2580,6 +2650,9 @@
                     ;; Distinguish from named fn by checking if items[1] is a list (params) not a symbol (name)
                     ((string-eq op "fn")
                       (transpile-lambda-expr ctx items))
+                    ;; with-arena as expression: (with-arena size body...) -> ({ ... })
+                    ((string-eq op "with-arena")
+                      (transpile-with-arena-expr ctx items))
                     ;; Default: function call
                     (else
                       (transpile-fn-call ctx op items)))))
@@ -2712,6 +2785,63 @@
               ((none)
                 (do
                   (ctx-add-error-at ctx "spawn: missing function argument" (ctx-list-first-line items) (ctx-list-first-col items))
+                  "NULL")))))
+        ;; chan-buffered: (chan-buffered Type arena capacity) -> thread_chan_buffered(arena, capacity)
+        ((or (string-eq fn-name "chan-buffered") (ends-with fn-name ":chan-buffered"))
+          (if (< len 4)
+            (do
+              (ctx-add-error-at ctx "chan-buffered: need Type, arena, and capacity arguments" (ctx-list-first-line items) (ctx-list-first-col items))
+              "NULL")
+            (match (list-get items 1)
+              ((some type-expr)
+                (match (list-get items 2)
+                  ((some arena-expr)
+                    (match (list-get items 3)
+                      ((some cap-expr)
+                        (let ((elem-c (to-c-type-prefixed ctx type-expr))
+                              (elem-id (type-to-identifier arena elem-c))
+                              (chan-type (ctx-str ctx "slop_chan_" elem-id))
+                              (arena-c (transpile-expr ctx arena-expr))
+                              (cap-c (transpile-expr ctx cap-expr)))
+                          (ctx-register-chan-type ctx elem-c chan-type)
+                          (let ((call (ctx-str5 ctx "thread_chan_buffered(" arena-c ", " cap-c ")")))
+                            (ctx-str5 ctx "(" chan-type "*)" call ""))))
+                      ((none)
+                        (do
+                          (ctx-add-error-at ctx "chan-buffered: missing capacity argument" (ctx-list-first-line items) (ctx-list-first-col items))
+                          "NULL"))))
+                  ((none)
+                    (do
+                      (ctx-add-error-at ctx "chan-buffered: missing arena argument" (ctx-list-first-line items) (ctx-list-first-col items))
+                      "NULL"))))
+              ((none)
+                (do
+                  (ctx-add-error-at ctx "chan-buffered: missing type argument" (ctx-list-first-line items) (ctx-list-first-col items))
+                  "NULL")))))
+        ;; chan: (chan Type arena) -> thread_chan(arena)
+        ((or (string-eq fn-name "chan") (ends-with fn-name ":chan"))
+          (if (< len 3)
+            (do
+              (ctx-add-error-at ctx "chan: need Type and arena arguments" (ctx-list-first-line items) (ctx-list-first-col items))
+              "NULL")
+            (match (list-get items 1)
+              ((some type-expr)
+                (match (list-get items 2)
+                  ((some arena-expr)
+                    (let ((elem-c (to-c-type-prefixed ctx type-expr))
+                          (elem-id (type-to-identifier arena elem-c))
+                          (chan-type (ctx-str ctx "slop_chan_" elem-id))
+                          (arena-c (transpile-expr ctx arena-expr)))
+                      (ctx-register-chan-type ctx elem-c chan-type)
+                      (let ((call (ctx-str3 ctx "thread_chan(" arena-c ")")))
+                        (ctx-str5 ctx "(" chan-type "*)" call ""))))
+                  ((none)
+                    (do
+                      (ctx-add-error-at ctx "chan: missing arena argument" (ctx-list-first-line items) (ctx-list-first-col items))
+                      "NULL"))))
+              ((none)
+                (do
+                  (ctx-add-error-at ctx "chan: missing type argument" (ctx-list-first-line items) (ctx-list-first-col items))
                   "NULL")))))
         ;; send: type-specific channel send
         ;; (send chan value) -> thread_send_<chan_type>(chan, value)
@@ -3575,10 +3705,13 @@
     (@pre {ctx != nil})
     (@pre {expr != nil})
     ;; If the checker has annotated this node with a resolved type, use it
-    (match (get-node-resolved-type expr)
-      ((some rt)
-        (resolved-type-to-c (. (deref ctx) arena) rt))
-      ((none)
+    ;; But skip if the resolved type contains unresolved type variables
+    (let ((checker-type (match (get-node-resolved-type expr)
+                          ((some rt)
+                            (let ((c-type (resolved-type-to-c (. (deref ctx) arena) rt)))
+                              (if (contains c-type "__typevar_error__") "" c-type)))
+                          ((none) ""))))
+    (if (> (string-len checker-type) 0) checker-type
     (do (ctx-warn-fallback ctx expr "infer-expr-c-type")
     (match (deref expr)
       ;; String literal -> slop_string
@@ -3639,6 +3772,12 @@
                         ;; Cond expression - infer from first clause's body
                         ((string-eq op "cond")
                           (infer-cond-result-c-type ctx items))
+                        ;; with-arena expression - infer from last body expression
+                        ((string-eq op "with-arena")
+                          (if (< (list-len items) 3) "int64_t"
+                            (match (list-get items (- (list-len items) 1))
+                              ((some body) (infer-expr-c-type ctx body))
+                              ((none) "int64_t"))))
                         ;; Match expression - infer from first branch's body
                         ((string-eq op "match")
                           (infer-match-result-c-type ctx items))
@@ -3742,11 +3881,30 @@
                         ;; spawn returns a thread pointer
                         ((or (string-eq op "spawn") (ends-with op ":spawn"))
                           "slop_thread*")
-                        ;; chan-buffered returns a channel pointer
+                        ;; chan-buffered returns a channel pointer - extract type from explicit type arg
                         ((or (string-eq op "chan-buffered") (ends-with op ":chan-buffered"))
-                          "slop_chan_int*")
+                          (if (< (list-len items) 4) "slop_chan_int*"
+                            (match (list-get items 1)
+                              ((some type-expr)
+                                (let ((elem-c (to-c-type-prefixed ctx type-expr))
+                                      (elem-id (type-to-identifier (. (deref ctx) arena) elem-c)))
+                                  (ctx-str3 ctx "slop_chan_" elem-id "*")))
+                              ((none) "slop_chan_int*"))))
+                        ;; chan returns a channel pointer - extract type from explicit type arg
+                        ((or (string-eq op "chan") (ends-with op ":chan"))
+                          (if (< (list-len items) 3) "slop_chan_int*"
+                            (match (list-get items 1)
+                              ((some type-expr)
+                                (let ((elem-c (to-c-type-prefixed ctx type-expr))
+                                      (elem-id (type-to-identifier (. (deref ctx) arena) elem-c)))
+                                  (ctx-str3 ctx "slop_chan_" elem-id "*")))
+                              ((none) "slop_chan_int*"))))
                         ;; arena-alloc returns void*
                         ((string-eq op "arena-alloc") "void*")
+                        ;; arena-new returns slop_arena* (heap-allocated pointer)
+                        ((string-eq op "arena-new") "slop_arena*")
+                        ;; arena-free returns void
+                        ((string-eq op "arena-free") "void")
                         ;; list-new returns a list struct - need element type from 2nd arg
                         ((string-eq op "list-new")
                           (if (< (list-len items) 3)
@@ -3785,6 +3943,9 @@
                         ;; when returns void
                         ((string-eq op "when")
                           "void")
+                        ;; for and for-each as expressions return int (the 0 at the end)
+                        ((or (string-eq op "for") (string-eq op "for-each"))
+                          "int64_t")
                         ;; Arithmetic operators return int64_t
                         ((or (string-eq op "+") (or (string-eq op "-") (or (string-eq op "*") (or (string-eq op "/") (string-eq op "%")))))
                           "int64_t")
@@ -5424,7 +5585,7 @@
     (@intent "Transpile for-each loop as expression returning 0")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
-    ;; (for-each (item coll) body...) -> ({ for (size_t _i = 0; _i < coll.len; _i++) { __auto_type item = coll.data[_i]; body... } 0; })
+    ;; Supports: List, Set, Map key-only, and Map key-value iteration
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
       (if (< len 2)
@@ -5437,39 +5598,307 @@
                       (binding-len (list-len binding-items)))
                   (if (< binding-len 2)
                     "({ /* for-each: binding needs (var coll) */ 0; })"
+                    ;; Check if first element is a list (pair binding for Map k-v iteration)
                     (match (list-get binding-items 0)
-                      ((some var-expr)
-                        (match (deref var-expr)
+                      ((some first-elem)
+                        (match (deref first-elem)
+                          ;; Pair binding: ((k v) map)
+                          ((lst _)
+                            (transpile-for-each-map-kv-as-expr ctx binding-items items len))
+                          ;; Single variable binding: (var coll)
                           ((sym var-sym)
                             (let ((var-name (to-c-name arena (. var-sym name))))
                               (match (list-get binding-items 1)
                                 ((some coll-expr)
-                                  (let ((coll-c (transpile-expr ctx coll-expr))
-                                        ;; Infer element type from collection for proper type propagation
-                                        (elem-slop-type (infer-collection-element-slop-type ctx coll-expr))
-                                        ;; Build: ({ for (size_t _i = 0; _i < coll.len; _i++) { __auto_type item = coll.data[_i];
-                                        (mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < " coll-c
-                                                      (ctx-str5 ctx ".len; _i++) { __auto_type " var-name " = " coll-c ".data[_i]; "))))
-                                    ;; Bind loop variable for body expressions with inferred element type
-                                    (ctx-push-scope ctx)
-                                    (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false false "" ""))
-                                    ;; Process body expressions
-                                    (let ((mut i 2))
-                                      (while (< i len)
-                                        (match (list-get items i)
-                                          ((some body-expr)
-                                            (let ((body-c (transpile-expr ctx body-expr)))
-                                              (set! result (ctx-str3 ctx result body-c "; "))))
-                                          ((none) (do)))
-                                        (set! i (+ i 1))))
-                                    (ctx-pop-scope ctx)
-                                    ;; Close: } 0; })
-                                    (ctx-str ctx result "} 0; })")))
+                                  (let ((coll-slop-type (infer-expr-slop-type ctx coll-expr))
+                                        (resolved-type (resolve-type-alias ctx coll-slop-type)))
+                                    (cond
+                                      ;; Set iteration
+                                      ((is-set-type resolved-type)
+                                        (transpile-for-each-set-as-expr ctx var-name var-sym coll-expr resolved-type items len))
+                                      ;; Map iteration (keys only with single var)
+                                      ((is-map-type resolved-type)
+                                        (transpile-for-each-map-keys-as-expr ctx var-name var-sym coll-expr resolved-type items len))
+                                      ;; List iteration (original behavior)
+                                      (else
+                                        (transpile-for-each-list-as-expr ctx var-name var-sym coll-expr items len)))))
                                 ((none) "({ /* for-each: missing collection */ 0; })"))))
-                          (else "({ /* for-each: var must be symbol */ 0; })")))
+                          (_ "({ /* for-each: var must be symbol or list */ 0; })")))
                       ((none) "({ /* for-each: missing var */ 0; })")))))
               (else "({ /* for-each: binding must be list */ 0; })")))
           ((none) "({ /* for-each: missing binding */ 0; })")))))
+
+  ;; ============================================================
+  ;; For-Each List as Expression
+  ;; ============================================================
+
+  (fn transpile-for-each-list-as-expr ((ctx (Ptr TranspileContext))
+                                       (var-name String)
+                                       (var-sym SExprSymbol)
+                                       (coll-expr (Ptr SExpr))
+                                       (items (List (Ptr SExpr)))
+                                       (len Int))
+    (@intent "Generate C expression for List iteration")
+    (@spec (((Ptr TranspileContext) String SExprSymbol (Ptr SExpr) (List (Ptr SExpr)) Int) -> String))
+    (@pre {ctx != nil})
+    (@pre {coll-expr != nil})
+    (let ((coll-c (transpile-expr ctx coll-expr))
+          (elem-slop-type (infer-collection-element-slop-type ctx coll-expr))
+          ;; Build: ({ for (size_t _i = 0; _i < coll.len; _i++) { __auto_type item = coll.data[_i];
+          (mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < " coll-c
+                        (ctx-str5 ctx ".len; _i++) { __auto_type " var-name " = " coll-c ".data[_i]; "))))
+      ;; Bind loop variable for body expressions with inferred element type
+      (ctx-push-scope ctx)
+      (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false false "" ""))
+      ;; Process body expressions
+      (let ((mut i 2))
+        (while (< i len)
+          (match (list-get items i)
+            ((some body-expr)
+              (let ((body-c (transpile-expr ctx body-expr)))
+                (set! result (ctx-str3 ctx result body-c "; "))))
+            ((none) (do)))
+          (set! i (+ i 1))))
+      (ctx-pop-scope ctx)
+      ;; Close: } 0; })
+      (ctx-str ctx result "} 0; })")))
+
+  ;; ============================================================
+  ;; For-Each Set as Expression
+  ;; ============================================================
+
+  (fn transpile-for-each-set-as-expr ((ctx (Ptr TranspileContext))
+                                      (var-name String)
+                                      (var-sym SExprSymbol)
+                                      (coll-expr (Ptr SExpr))
+                                      (resolved-type String)
+                                      (items (List (Ptr SExpr)))
+                                      (len Int))
+    (@intent "Generate C expression for Set iteration")
+    (@spec (((Ptr TranspileContext) String SExprSymbol (Ptr SExpr) String (List (Ptr SExpr)) Int) -> String))
+    (@pre {ctx != nil})
+    (@pre {coll-expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (coll-c (transpile-expr ctx coll-expr))
+          (elem-slop-type (extract-set-elem-from-slop-type arena resolved-type))
+          (elem-c-type (slop-value-type-to-c-type ctx elem-slop-type)))
+      ;; Build: ({ for (size_t _i = 0; _i < ((slop_map*)coll)->cap; _i++) { if (((slop_map*)coll)->entries[_i].occupied) { ElementType var = *(ElementType*)((slop_map*)coll)->entries[_i].key;
+      (let ((mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < ((slop_map*)" coll-c ")->cap; _i++) { "))
+            (if-part (ctx-str3 ctx "if (((slop_map*)" coll-c ")->entries[_i].occupied) { "))
+            (cast-part (ctx-str4 ctx elem-c-type "*)((slop_map*)" coll-c ")->entries[_i].key"))
+            (assign-prefix (ctx-str4 ctx elem-c-type " " var-name " = *("))
+            (assign-part (ctx-str3 ctx assign-prefix cast-part "; ")))
+        (set! result (ctx-str3 ctx result if-part assign-part))
+        ;; Bind loop variable
+        (ctx-push-scope ctx)
+        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type false false false "" ""))
+        ;; Process body expressions
+        (let ((mut i 2))
+          (while (< i len)
+            (match (list-get items i)
+              ((some body-expr)
+                (let ((body-c (transpile-expr ctx body-expr)))
+                  (set! result (ctx-str3 ctx result body-c "; "))))
+              ((none) (do)))
+            (set! i (+ i 1))))
+        (ctx-pop-scope ctx)
+        ;; Close: } } 0; })
+        (ctx-str ctx result "} } 0; })"))))
+
+  ;; ============================================================
+  ;; For-Each Map Keys as Expression
+  ;; ============================================================
+
+  (fn transpile-for-each-map-keys-as-expr ((ctx (Ptr TranspileContext))
+                                           (var-name String)
+                                           (var-sym SExprSymbol)
+                                           (coll-expr (Ptr SExpr))
+                                           (resolved-type String)
+                                           (items (List (Ptr SExpr)))
+                                           (len Int))
+    (@intent "Generate C expression for Map key-only iteration")
+    (@spec (((Ptr TranspileContext) String SExprSymbol (Ptr SExpr) String (List (Ptr SExpr)) Int) -> String))
+    (@pre {ctx != nil})
+    (@pre {coll-expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (coll-c (transpile-expr ctx coll-expr))
+          (key-slop-type (extract-map-key-from-slop-type arena resolved-type))
+          (key-c-type (slop-value-type-to-c-type ctx key-slop-type)))
+      ;; Build: ({ for (size_t _i = 0; _i < ((slop_map*)coll)->cap; _i++) { if (((slop_map*)coll)->entries[_i].occupied) { KeyType var = *(KeyType*)((slop_map*)coll)->entries[_i].key;
+      (let ((mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < ((slop_map*)" coll-c ")->cap; _i++) { "))
+            (if-part (ctx-str3 ctx "if (((slop_map*)" coll-c ")->entries[_i].occupied) { "))
+            (cast-part (ctx-str4 ctx key-c-type "*)((slop_map*)" coll-c ")->entries[_i].key"))
+            (assign-prefix (ctx-str4 ctx key-c-type " " var-name " = *("))
+            (assign-part (ctx-str3 ctx assign-prefix cast-part "; ")))
+        (set! result (ctx-str3 ctx result if-part assign-part))
+        ;; Bind loop variable
+        (ctx-push-scope ctx)
+        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name key-c-type key-slop-type false false false "" ""))
+        ;; Process body expressions
+        (let ((mut i 2))
+          (while (< i len)
+            (match (list-get items i)
+              ((some body-expr)
+                (let ((body-c (transpile-expr ctx body-expr)))
+                  (set! result (ctx-str3 ctx result body-c "; "))))
+              ((none) (do)))
+            (set! i (+ i 1))))
+        (ctx-pop-scope ctx)
+        ;; Close: } } 0; })
+        (ctx-str ctx result "} } 0; })"))))
+
+  ;; ============================================================
+  ;; For-Each Map Key-Value as Expression
+  ;; ============================================================
+
+  (fn transpile-for-each-map-kv-as-expr ((ctx (Ptr TranspileContext))
+                                         (binding-items (List (Ptr SExpr)))
+                                         (items (List (Ptr SExpr)))
+                                         (len Int))
+    (@intent "Generate C expression for Map key-value iteration")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (List (Ptr SExpr)) Int) -> String))
+    (@pre {ctx != nil})
+    ;; Extract (k v) from first binding element, map-expr from second
+    (let ((arena (. (deref ctx) arena)))
+      (match (list-get binding-items 0)
+        ((some kv-list-expr)
+          (match (deref kv-list-expr)
+            ((lst kv-lst)
+              (let ((kv-items (. kv-lst items)))
+                (if (< (list-len kv-items) 2)
+                  "({ /* for-each: map binding needs ((k v) map) */ 0; })"
+                  (match (list-get kv-items 0)
+                    ((some k-expr)
+                      (match (list-get kv-items 1)
+                        ((some v-expr)
+                          (match (list-get binding-items 1)
+                            ((some map-expr)
+                              (match (deref k-expr)
+                                ((sym k-sym)
+                                  (match (deref v-expr)
+                                    ((sym v-sym)
+                                      (let ((k-name (to-c-name arena (. k-sym name)))
+                                            (v-name (to-c-name arena (. v-sym name)))
+                                            (map-c (transpile-expr ctx map-expr))
+                                            (map-slop-type (infer-expr-slop-type ctx map-expr))
+                                            (resolved-type (resolve-type-alias ctx map-slop-type))
+                                            (key-slop-type (extract-map-key-from-slop-type arena resolved-type))
+                                            (val-slop-type (extract-map-value-from-slop-type arena resolved-type))
+                                            (key-c-type (slop-value-type-to-c-type ctx key-slop-type))
+                                            (val-c-type (slop-value-type-to-c-type ctx val-slop-type)))
+                                        ;; Build: ({ for (size_t _i = 0; _i < ((slop_map*)map)->cap; _i++) { if (((slop_map*)map)->entries[_i].occupied) {
+                                        ;;         KeyType k = *(KeyType*)((slop_map*)map)->entries[_i].key; ValueType v = *(ValueType*)((slop_map*)map)->entries[_i].value;
+                                        (let ((mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < ((slop_map*)" map-c ")->cap; _i++) { "))
+                                              (if-part (ctx-str3 ctx "if (((slop_map*)" map-c ")->entries[_i].occupied) { "))
+                                              (k-cast (ctx-str4 ctx key-c-type "*)((slop_map*)" map-c ")->entries[_i].key"))
+                                              (k-prefix (ctx-str4 ctx key-c-type " " k-name " = *("))
+                                              (k-assign (ctx-str3 ctx k-prefix k-cast "; "))
+                                              (v-cast (ctx-str4 ctx val-c-type "*)((slop_map*)" map-c ")->entries[_i].value"))
+                                              (v-prefix (ctx-str4 ctx val-c-type " " v-name " = *("))
+                                              (v-assign (ctx-str3 ctx v-prefix v-cast "; ")))
+                                          (set! result (ctx-str4 ctx result if-part k-assign v-assign))
+                                          ;; Bind both variables
+                                          (ctx-push-scope ctx)
+                                          (ctx-bind-var ctx (VarEntry (. k-sym name) k-name key-c-type key-slop-type false false false "" ""))
+                                          (ctx-bind-var ctx (VarEntry (. v-sym name) v-name val-c-type val-slop-type false false false "" ""))
+                                          ;; Process body expressions
+                                          (let ((mut i 2))
+                                            (while (< i len)
+                                              (match (list-get items i)
+                                                ((some body-expr)
+                                                  (let ((body-c (transpile-expr ctx body-expr)))
+                                                    (set! result (ctx-str3 ctx result body-c "; "))))
+                                                ((none) (do)))
+                                              (set! i (+ i 1))))
+                                          (ctx-pop-scope ctx)
+                                          ;; Close: } } 0; })
+                                          (ctx-str ctx result "} } 0; })"))))
+                                    (_ "({ /* for-each: map value must be symbol */ 0; })")))
+                                (_ "({ /* for-each: map key must be symbol */ 0; })")))
+                            ((none) "({ /* for-each: missing map expression */ 0; })")))
+                        ((none) "({ /* for-each: missing value binding */ 0; })")))
+                    ((none) "({ /* for-each: missing key binding */ 0; })")))))
+            (_ "({ /* for-each: invalid map binding */ 0; })")))
+        ((none) "({ /* for-each: missing binding */ 0; })"))))
+
+  ;; ============================================================
+  ;; With-Arena Expression
+  ;; ============================================================
+
+  (fn transpile-with-arena-expr ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile with-arena as expression using GCC statement expression")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; (with-arena size body...) -> ({ slop_arena _arena = ...; ... _wa_result; })
+    ;; (with-arena :as name size body...) -> same with custom arena name
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items)))
+      (if (< len 3)
+        "({ (void)0; })"
+        ;; Detect :as form
+        (let ((is-named (match (list-get items 1)
+                          ((some item1)
+                            (match (deref item1)
+                              ((sym s1) (string-eq (. s1 name) ":as"))
+                              (else false)))
+                          ((none) false)))
+              (arena-name (if is-named
+                            (match (list-get items 2)
+                              ((some name-expr)
+                                (match (deref name-expr)
+                                  ((sym s2) (. s2 name))
+                                  (else "arena")))
+                              ((none) "arena"))
+                            "arena"))
+              (size-idx (if is-named 3 1))
+              (body-start (if is-named 4 2))
+              (c-local (if is-named
+                         (string-concat arena "_arena_" arena-name)
+                         "_arena")))
+          ;; Validate minimum length for named form
+          (if (and is-named (< len 5))
+            (do
+              (ctx-add-error-at ctx "with-arena :as requires name, size and body" (ctx-list-first-line items) (ctx-list-first-col items))
+              "({ (void)0; })")
+            (do
+              (ctx-push-scope ctx)
+              ;; Get size and build statement expression
+              (let ((result-str
+                (match (list-get items size-idx)
+                  ((some size-expr)
+                    (let ((size-c (transpile-expr ctx size-expr))
+                          ;; ({ slop_arena _arena = slop_arena_new(size);
+                          (mut result (ctx-str5 ctx "({ slop_arena " c-local " = slop_arena_new(" size-c "); ")))
+                      ;; slop_arena* arena = &_arena;
+                      (set! result (ctx-str5 ctx result "slop_arena* " arena-name " = &" (ctx-str ctx c-local "; ")))
+                      ;; Bind arena variable in scope
+                      (ctx-bind-var ctx (VarEntry arena-name arena-name "slop_arena*" "" true false false "" ""))
+                      ;; Process body expressions - all but last are side-effects
+                      (let ((mut i body-start))
+                        (while (< i (- len 1))
+                          (match (list-get items i)
+                            ((some body-expr)
+                              (let ((body-c (transpile-expr ctx body-expr)))
+                                (set! result (ctx-str3 ctx result body-c "; "))))
+                            ((none) (do)))
+                          (set! i (+ i 1))))
+                      ;; Last body expression is the result value
+                      (match (list-get items (- len 1))
+                        ((some last-expr)
+                          (let ((last-c (transpile-expr ctx last-expr))
+                                (free-part (ctx-str3 ctx "slop_arena_free(" arena-name "); ")))
+                            (set! result (ctx-str5 ctx result "__auto_type _wa_result = " last-c "; " free-part))
+                            (set! result (ctx-str ctx result "_wa_result; })"))))
+                        ((none)
+                          (let ((free-part (ctx-str3 ctx "slop_arena_free(" arena-name "); ")))
+                            (set! result (ctx-str3 ctx result free-part "0; })")))))
+                      result))
+                  ((none)
+                    (do
+                      (ctx-add-error-at ctx "with-arena: missing size" (ctx-list-first-line items) (ctx-list-first-col items))
+                      "({ (void)0; })")))))
+                (ctx-pop-scope ctx)
+                result-str)))))))
 
   ;; ============================================================
   ;; Lambda Expression Transpilation
@@ -6270,6 +6699,9 @@
                         ;; for/for-each: skip loop var, recurse into range/collection and body
                         ((or (string-eq op "for") (string-eq op "for-each"))
                           (collect-symbols-in-for ctx symbols pending items))
+                        ;; with-arena: skip arena binding, collect from size and body
+                        ((string-eq op "with-arena")
+                          (collect-symbols-in-with-arena ctx symbols pending items))
                         ;; Default: recurse into all items
                         (else
                           (collect-symbols-in-list ctx symbols pending items 0)))))
@@ -6451,6 +6883,40 @@
             (else pending)))
         ((none) pending))))
 
+  (fn collect-symbols-in-with-arena ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (pending (List String)) (items (List (Ptr SExpr))))
+    (@intent "Collect symbols from with-arena form, excluding arena binding")
+    (@spec (((Ptr TranspileContext) (Ptr (List String)) (List String) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; (with-arena size body...) or (with-arena :as name size body...)
+    ;; Collect from size expr, add arena name to pending, collect from body
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items)))
+      (when (>= len 3)
+        (let ((is-named (match (list-get items 1)
+                          ((some item1)
+                            (match (deref item1)
+                              ((sym s1) (string-eq (. s1 name) ":as"))
+                              (else false)))
+                          ((none) false)))
+              (arena-name (if is-named
+                            (match (list-get items 2)
+                              ((some name-expr)
+                                (match (deref name-expr)
+                                  ((sym s2) (. s2 name))
+                                  (else "arena")))
+                              ((none) "arena"))
+                            "arena"))
+              (size-idx (if is-named 3 1))
+              (body-start (if is-named 4 2)))
+          ;; Collect from size expression with original pending
+          (match (list-get items size-idx)
+            ((some size-expr)
+              (collect-symbols-in-expr ctx symbols pending size-expr))
+            ((none) (do)))
+          ;; Add arena name to pending, then collect from body
+          (let ((updated-pending (list-concat arena pending (let ((tmp (list-new arena String))) (list-push tmp arena-name) tmp))))
+            (collect-symbols-in-list ctx symbols updated-pending items body-start))))))
+
   (fn collect-nested-lambda-free-vars ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (pending (List String)) (items (List (Ptr SExpr))))
     (@intent "Collect free variables from nested lambda that outer lambda must capture")
     (@spec (((Ptr TranspileContext) (Ptr (List String)) (List String) (List (Ptr SExpr))) -> Unit))
@@ -6503,7 +6969,9 @@
         (string-eq name "else")
         (string-eq name "and")
         (string-eq name "or")
-        (string-eq name "not")))
+        (string-eq name "not")
+        (string-eq name "with-arena")
+        (string-eq name ":as")))
 
   (fn is-free-var ((ctx (Ptr TranspileContext)) (param-names (List String)) (pending (List String)) (sym-name String))
     (@intent "Check if symbol is a free variable (captured from enclosing scope)")

@@ -142,7 +142,7 @@
                 (listen sock 10)
 
                 ;; Create buffered channel for work queue (capacity 100)
-                (let ((ch (chan-buffered arena 100)))
+                (let ((ch (chan-buffered Int arena 100)))
                   ;; Spawn worker pool (4 threads), passing channel to each
                   (spawn-with-chan arena worker ch)
                   (spawn-with-chan arena worker ch)

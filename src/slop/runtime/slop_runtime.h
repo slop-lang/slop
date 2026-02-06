@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 /* ============================================================
  * Configuration
@@ -35,8 +36,9 @@
 #define SLOP_ARENA_MAX_TOTAL_BYTES (256UL * 1024UL * 1024UL)  /* 256 MB */
 #endif
 
-/* Global allocation tracking across all arenas */
-static size_t slop_global_allocated = 0;
+/* Global allocation tracking across all arenas (atomic for thread safety).
+ * Weak attribute ensures linker merges all TU definitions into one symbol. */
+_Atomic size_t slop_global_allocated __attribute__((weak)) = 0;
 
 /* ============================================================
  * Contracts
@@ -124,8 +126,8 @@ typedef struct {
 static slop_intern_pool* slop_global_intern_pool = NULL;
 
 static inline slop_arena slop_arena_new(size_t capacity) {
-    /* Check global cap BEFORE allocating */
-    if (slop_global_allocated + capacity > SLOP_ARENA_MAX_TOTAL_BYTES) {
+    /* Check global cap BEFORE allocating (atomic load for thread safety) */
+    if (atomic_load(&slop_global_allocated) + capacity > SLOP_ARENA_MAX_TOTAL_BYTES) {
         fprintf(stderr, "SLOP: arena allocation cap exceeded (%zu bytes). "
                 "Increase SLOP_ARENA_MAX_TOTAL_BYTES or reduce allocation.\n",
                 (size_t)SLOP_ARENA_MAX_TOTAL_BYTES);
@@ -140,7 +142,7 @@ static inline slop_arena slop_arena_new(size_t capacity) {
     arena.next = NULL;
 
     if (arena.base != NULL) {
-        slop_global_allocated += capacity;  /* Track globally */
+        atomic_fetch_add(&slop_global_allocated, capacity);  /* Track globally */
     }
     return arena;
 }
@@ -158,8 +160,8 @@ static inline void* slop_arena_alloc(slop_arena* arena, size_t size) {
             size_t new_cap = arena->capacity * 2;
             if (new_cap < size) new_cap = size * 2;
 
-            /* Check GLOBAL cap before allocating overflow */
-            if (slop_global_allocated + new_cap > SLOP_ARENA_MAX_TOTAL_BYTES) {
+            /* Check GLOBAL cap before allocating overflow (atomic load for thread safety) */
+            if (atomic_load(&slop_global_allocated) + new_cap > SLOP_ARENA_MAX_TOTAL_BYTES) {
                 fprintf(stderr, "SLOP: arena allocation cap exceeded (%zu bytes). "
                         "Increase SLOP_ARENA_MAX_TOTAL_BYTES or reduce allocation.\n",
                         (size_t)SLOP_ARENA_MAX_TOTAL_BYTES);
@@ -199,9 +201,9 @@ static inline void slop_arena_free(slop_arena* arena) {
         arena->next = NULL;
     }
 
-    /* Decrement global counter */
+    /* Decrement global counter (atomic for thread safety) */
     if (arena->base != NULL && arena->capacity > 0) {
-        slop_global_allocated -= arena->capacity;
+        atomic_fetch_sub(&slop_global_allocated, arena->capacity);
     }
 
     free(arena->base);

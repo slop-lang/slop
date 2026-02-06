@@ -35,8 +35,9 @@
 #define SLOP_ARENA_MAX_TOTAL_BYTES (256UL * 1024UL * 1024UL)  /* 256 MB */
 #endif
 
-/* Global allocation tracking across all arenas */
-static size_t slop_global_allocated = 0;
+/* Global allocation tracking across all arenas.
+ * Weak attribute ensures linker merges all TU definitions into one symbol. */
+size_t slop_global_allocated __attribute__((weak)) = 0;
 
 /* ============================================================
  * Contracts

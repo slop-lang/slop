@@ -617,7 +617,7 @@
             ((none) "slop_thread_int*")))
         ;; Type variable - should have been substituted before reaching transpiler
         ((== kind 'rk-typevar)
-          "/* TRANSPILER_ERROR: unresolved type variable */")
+          "__typevar_error__")
         ;; Fallback
         (else (. (deref rt) c-name)))))
 

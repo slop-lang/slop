@@ -518,7 +518,8 @@ Use `slop ref <module>` for detailed documentation, or `slop doc <path>`.
 
 ### Loops
 (for (i start end) body)                 ; i from start to end-1
-(for-each (x collection) body)           ; Iterate collection
+(for-each (x collection) body)           ; Iterate List/Set/Map-keys
+(for-each ((k v) map) body)              ; Iterate Map key-value pairs
 (while cond body)
 (break)                                  ; Exit loop
 (continue)                               ; Next iteration

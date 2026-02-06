@@ -25,7 +25,11 @@
                    to-c-type-prefixed ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    LastLambdaInfo ctx-get-last-lambda-info ctx-clear-last-lambda-info))
   (import ctype (to-c-type to-c-name))
-  (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-collection-element-slop-type c-type-to-option-type-name))
+  (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type
+              infer-collection-element-slop-type c-type-to-option-type-name
+              resolve-type-alias extract-set-elem-from-slop-type
+              extract-map-key-from-slop-type extract-map-value-from-slop-type
+              slop-value-type-to-c-type))
   (import strlib (starts-with ends-with))
   (import match (transpile-match))
 
@@ -984,11 +988,198 @@
         (else (ctx-add-error-at ctx "invalid for" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))
 
   ;; ============================================================
-  ;; For-Each Loop
+  ;; Set/Map Type Detection Helpers
+  ;; ============================================================
+
+  (fn is-set-type ((slop-type String))
+    (@intent "Check if SLOP type is a Set type")
+    (@spec ((String) -> Bool))
+    (or (starts-with slop-type "(Set ")
+        (starts-with slop-type "(Ptr (Set ")))
+
+  (fn is-map-type ((slop-type String))
+    (@intent "Check if SLOP type is a Map type")
+    (@spec ((String) -> Bool))
+    (or (starts-with slop-type "(Map ")
+        (starts-with slop-type "(Ptr (Map ")))
+
+  ;; ============================================================
+  ;; For-Each Loop: Set Iteration
+  ;; ============================================================
+
+  (fn transpile-for-each-set ((ctx (Ptr TranspileContext))
+                              (var-name String)
+                              (var-sym SExprSymbol)
+                              (coll-c String)
+                              (resolved-type String)
+                              (items (List (Ptr SExpr)))
+                              (len Int))
+    (@intent "Generate C code for iterating over a Set without allocation")
+    (@spec (((Ptr TranspileContext) String SExprSymbol String String (List (Ptr SExpr)) Int) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (elem-slop-type (extract-set-elem-from-slop-type arena resolved-type))
+          (elem-c-type (slop-value-type-to-c-type ctx elem-slop-type)))
+      ;; for (size_t _i = 0; _i < ((slop_map*)set)->cap; _i++) {
+      (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < ((slop_map*)" coll-c ")->cap; _i++) {"))
+      (ctx-indent ctx)
+      ;; if (((slop_map*)set)->entries[_i].occupied) {
+      (ctx-emit ctx (ctx-str3 ctx "if (((slop_map*)" coll-c ")->entries[_i].occupied) {"))
+      (ctx-indent ctx)
+      ;; ElementType var = *(ElementType*)((slop_map*)set)->entries[_i].key;
+      (let ((cast-part (ctx-str4 ctx elem-c-type "*)((slop_map*)" coll-c ")->entries[_i].key"))
+            (assign-prefix (ctx-str4 ctx elem-c-type " " var-name " = *("))
+            (assign-part (ctx-str3 ctx assign-prefix cast-part ");")))
+        (ctx-emit ctx assign-part))
+      ;; Bind loop variable
+      (ctx-push-scope ctx)
+      (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type false false false "" ""))
+      ;; Process body
+      (let ((mut i 2))
+        (while (< i len)
+          (match (list-get items i)
+            ((some body-expr) (transpile-stmt ctx body-expr false))
+            ((none) (do)))
+          (set! i (+ i 1))))
+      (ctx-pop-scope ctx)
+      ;; Close occupied check and for loop
+      (ctx-dedent ctx)
+      (ctx-emit ctx "}")
+      (ctx-dedent ctx)
+      (ctx-emit ctx "}")))
+
+  ;; ============================================================
+  ;; For-Each Loop: Map Key-Only Iteration
+  ;; ============================================================
+
+  (fn transpile-for-each-map-keys ((ctx (Ptr TranspileContext))
+                                   (var-name String)
+                                   (var-sym SExprSymbol)
+                                   (coll-c String)
+                                   (resolved-type String)
+                                   (items (List (Ptr SExpr)))
+                                   (len Int))
+    (@intent "Generate C code for iterating over Map keys without allocation")
+    (@spec (((Ptr TranspileContext) String SExprSymbol String String (List (Ptr SExpr)) Int) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (key-slop-type (extract-map-key-from-slop-type arena resolved-type))
+          (key-c-type (slop-value-type-to-c-type ctx key-slop-type)))
+      ;; for (size_t _i = 0; _i < ((slop_map*)map)->cap; _i++) {
+      (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < ((slop_map*)" coll-c ")->cap; _i++) {"))
+      (ctx-indent ctx)
+      ;; if (((slop_map*)map)->entries[_i].occupied) {
+      (ctx-emit ctx (ctx-str3 ctx "if (((slop_map*)" coll-c ")->entries[_i].occupied) {"))
+      (ctx-indent ctx)
+      ;; KeyType var = *(KeyType*)((slop_map*)map)->entries[_i].key;
+      (let ((cast-part (ctx-str4 ctx key-c-type "*)((slop_map*)" coll-c ")->entries[_i].key"))
+            (assign-prefix (ctx-str4 ctx key-c-type " " var-name " = *("))
+            (assign-part (ctx-str3 ctx assign-prefix cast-part ");")))
+        (ctx-emit ctx assign-part))
+      ;; Bind loop variable
+      (ctx-push-scope ctx)
+      (ctx-bind-var ctx (VarEntry (. var-sym name) var-name key-c-type key-slop-type false false false "" ""))
+      ;; Process body
+      (let ((mut i 2))
+        (while (< i len)
+          (match (list-get items i)
+            ((some body-expr) (transpile-stmt ctx body-expr false))
+            ((none) (do)))
+          (set! i (+ i 1))))
+      (ctx-pop-scope ctx)
+      ;; Close occupied check and for loop
+      (ctx-dedent ctx)
+      (ctx-emit ctx "}")
+      (ctx-dedent ctx)
+      (ctx-emit ctx "}")))
+
+  ;; ============================================================
+  ;; For-Each Loop: Map Key-Value Iteration
+  ;; ============================================================
+
+  (fn transpile-for-each-map-kv ((ctx (Ptr TranspileContext))
+                                 (binding-items (List (Ptr SExpr)))
+                                 (items (List (Ptr SExpr)))
+                                 (len Int))
+    (@intent "Generate C code for Map key-value iteration")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (List (Ptr SExpr)) Int) -> Unit))
+    (@pre {ctx != nil})
+    ;; Extract (k v) from first binding element
+    ;; Extract map-expr from second binding element
+    (let ((arena (. (deref ctx) arena)))
+      (match (list-get binding-items 0)
+        ((some kv-list-expr)
+          (match (deref kv-list-expr)
+            ((lst kv-lst)
+              (let ((kv-items (. kv-lst items)))
+                (if (< (list-len kv-items) 2)
+                  (ctx-add-error ctx "Map for-each needs ((k v) map)")
+                  (match (list-get kv-items 0)
+                    ((some k-expr)
+                      (match (list-get kv-items 1)
+                        ((some v-expr)
+                          (match (list-get binding-items 1)
+                            ((some map-expr)
+                              ;; Get key and value names
+                              (match (deref k-expr)
+                                ((sym k-sym)
+                                  (match (deref v-expr)
+                                    ((sym v-sym)
+                                      (let ((k-name (to-c-name arena (. k-sym name)))
+                                            (v-name (to-c-name arena (. v-sym name)))
+                                            (map-c (transpile-expr ctx map-expr))
+                                            (map-slop-type (infer-expr-slop-type ctx map-expr))
+                                            (resolved-type (resolve-type-alias ctx map-slop-type))
+                                            (key-slop-type (extract-map-key-from-slop-type arena resolved-type))
+                                            (val-slop-type (extract-map-value-from-slop-type arena resolved-type))
+                                            (key-c-type (slop-value-type-to-c-type ctx key-slop-type))
+                                            (val-c-type (slop-value-type-to-c-type ctx val-slop-type)))
+                                        ;; Emit: for (size_t _i = 0; _i < ((slop_map*)map)->cap; _i++) {
+                                        (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < ((slop_map*)" map-c ")->cap; _i++) {"))
+                                        (ctx-indent ctx)
+                                        ;; Emit: if (((slop_map*)map)->entries[_i].occupied) {
+                                        (ctx-emit ctx (ctx-str3 ctx "if (((slop_map*)" map-c ")->entries[_i].occupied) {"))
+                                        (ctx-indent ctx)
+                                        ;; Emit: KeyType k = *(KeyType*)((slop_map*)map)->entries[_i].key;
+                                        (let ((k-cast (ctx-str4 ctx key-c-type "*)((slop_map*)" map-c ")->entries[_i].key"))
+                                              (k-prefix (ctx-str4 ctx key-c-type " " k-name " = *("))
+                                              (k-assign (ctx-str3 ctx k-prefix k-cast ");")))
+                                          (ctx-emit ctx k-assign))
+                                        ;; Emit: ValueType v = *(ValueType*)((slop_map*)map)->entries[_i].value;
+                                        (let ((v-cast (ctx-str4 ctx val-c-type "*)((slop_map*)" map-c ")->entries[_i].value"))
+                                              (v-prefix (ctx-str4 ctx val-c-type " " v-name " = *("))
+                                              (v-assign (ctx-str3 ctx v-prefix v-cast ");")))
+                                          (ctx-emit ctx v-assign))
+                                        ;; Bind both variables
+                                        (ctx-push-scope ctx)
+                                        (ctx-bind-var ctx (VarEntry (. k-sym name) k-name key-c-type key-slop-type false false false "" ""))
+                                        (ctx-bind-var ctx (VarEntry (. v-sym name) v-name val-c-type val-slop-type false false false "" ""))
+                                        ;; Process body (starts at index 2)
+                                        (let ((mut i 2))
+                                          (while (< i len)
+                                            (match (list-get items i)
+                                              ((some body-expr) (transpile-stmt ctx body-expr false))
+                                              ((none) (do)))
+                                            (set! i (+ i 1))))
+                                        (ctx-pop-scope ctx)
+                                        (ctx-dedent ctx)
+                                        (ctx-emit ctx "}")
+                                        (ctx-dedent ctx)
+                                        (ctx-emit ctx "}")))
+                                    (_ (ctx-add-error ctx "Map for-each value must be symbol"))))
+                                (_ (ctx-add-error ctx "Map for-each key must be symbol"))))
+                            ((none) (ctx-add-error ctx "Missing map expression"))))
+                        ((none) (ctx-add-error ctx "Missing value binding"))))
+                    ((none) (ctx-add-error ctx "Missing key binding"))))))
+            (_ (ctx-add-error ctx "Invalid Map binding"))))
+        ((none) (ctx-add-error ctx "Missing binding")))))
+
+  ;; ============================================================
+  ;; For-Each Loop: Main Entry Point
   ;; ============================================================
 
   (fn transpile-for-each ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
-    (@intent "Transpile a for-each loop: (for-each (item coll) body)")
+    (@intent "Transpile a for-each loop: (for-each (item coll) body) or (for-each ((k v) map) body)")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
     (@pre {ctx != nil})
     (@pre {expr != nil})
@@ -1007,36 +1198,54 @@
                             (binding-len (list-len binding-items)))
                         (if (< binding-len 2)
                           (ctx-add-error-at ctx "for-each binding needs (var coll)" (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr))
+                          ;; Check if first element is a list (pair binding for Map k-v iteration)
                           (match (list-get binding-items 0)
-                            ((some var-expr)
-                              (match (deref var-expr)
+                            ((some first-elem)
+                              (match (deref first-elem)
+                                ;; Pair binding: ((k v) map)
+                                ((lst _)
+                                  (transpile-for-each-map-kv ctx binding-items items len))
+                                ;; Single variable binding: (var coll)
                                 ((sym var-sym)
                                   (let ((var-name (to-c-name arena (. var-sym name))))
                                     (match (list-get binding-items 1)
                                       ((some coll-expr)
-                                        (let ((coll-c (transpile-expr ctx coll-expr)))
-                                          ;; Emit: for (size_t _i = 0; _i < coll.len; _i++)
-                                          (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < " coll-c ".len; _i++) {"))
-                                          (ctx-indent ctx)
-                                          ;; Emit: __auto_type var = coll.data[_i];
-                                          (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " coll-c ".data[_i];"))
-                                          ;; Bind loop variable with inferred element type
-                                          (ctx-push-scope ctx)
-                                          (let ((elem-slop-type (infer-collection-element-slop-type ctx coll-expr)))
-                                            (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false false "" "")))
-                                          ;; Process body
-                                          (let ((mut i 2))
-                                            (while (< i len)
-                                              (match (list-get items i)
-                                                ((some body-expr)
-                                                  (transpile-stmt ctx body-expr false))
-                                                ((none) (do)))
-                                              (set! i (+ i 1))))
-                                          (ctx-pop-scope ctx)
-                                          (ctx-dedent ctx)
-                                          (ctx-emit ctx "}")))
+                                        (let ((coll-slop-type (infer-expr-slop-type ctx coll-expr))
+                                              (resolved-type (resolve-type-alias ctx coll-slop-type)))
+                                          (cond
+                                            ;; Set iteration
+                                            ((is-set-type resolved-type)
+                                              (let ((coll-c (transpile-expr ctx coll-expr)))
+                                                (transpile-for-each-set ctx var-name var-sym coll-c resolved-type items len)))
+                                            ;; Map iteration (keys only with single var)
+                                            ((is-map-type resolved-type)
+                                              (let ((coll-c (transpile-expr ctx coll-expr)))
+                                                (transpile-for-each-map-keys ctx var-name var-sym coll-c resolved-type items len)))
+                                            ;; List iteration (original behavior)
+                                            (else
+                                              (let ((coll-c (transpile-expr ctx coll-expr)))
+                                                ;; Emit: for (size_t _i = 0; _i < coll.len; _i++)
+                                                (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < " coll-c ".len; _i++) {"))
+                                                (ctx-indent ctx)
+                                                ;; Emit: __auto_type var = coll.data[_i];
+                                                (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " coll-c ".data[_i];"))
+                                                ;; Bind loop variable with inferred element type
+                                                (ctx-push-scope ctx)
+                                                (let ((elem-slop-type (infer-collection-element-slop-type ctx coll-expr)))
+                                                  (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false false "" "")))
+                                                ;; Process body
+                                                (let ((mut i 2))
+                                                  (while (< i len)
+                                                    (match (list-get items i)
+                                                      ((some body-expr)
+                                                        (transpile-stmt ctx body-expr false))
+                                                      ((none) (do)))
+                                                    (set! i (+ i 1))))
+                                                (ctx-pop-scope ctx)
+                                                (ctx-dedent ctx)
+                                                (ctx-emit ctx "}"))))))
                                       ((none) (ctx-add-error-at ctx "missing collection" (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr))))))
-                                (else (ctx-add-error-at ctx "for-each var must be symbol" (ctx-sexpr-line var-expr) (ctx-sexpr-col var-expr)))))
+                                (_ (ctx-add-error-at ctx "for-each var must be symbol or list" (ctx-sexpr-line first-elem) (ctx-sexpr-col first-elem)))))
                             ((none) (ctx-add-error-at ctx "missing var" (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr)))))))
                     (else (ctx-add-error-at ctx "for-each binding must be list" (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr)))))
                 ((none) (ctx-add-error-at ctx "missing binding" (ctx-sexpr-line expr) (ctx-sexpr-col expr)))))))

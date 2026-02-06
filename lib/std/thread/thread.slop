@@ -103,10 +103,11 @@
 
   (fn chan ((arena Arena))
     (@intent "Create an unbuffered channel - sends block until received")
-    (@spec ((Arena) -> (Ptr (Chan Int))))
+    (@generic (T))
+    (@spec ((Arena) -> (Ptr (Chan T))))
     (@alloc arena)
     (@post {$result != nil})
-    (let ((ch (arena-alloc arena (sizeof (Chan Int)))))
+    (let ((ch (arena-alloc arena (sizeof (Chan T)))))
       ;; Initialize pthread primitives
       (pthread-mutex-init (cast (Ptr Void) (addr ch.mutex)) nil)
       (pthread-cond-init (cast (Ptr Void) (addr ch.not-empty)) nil)
@@ -122,17 +123,18 @@
 
   (fn chan-buffered ((arena Arena) (capacity (Int 1 ..)))
     (@intent "Create a buffered channel with given capacity")
-    (@spec ((Arena (Int 1 ..)) -> (Ptr (Chan Int))))
+    (@generic (T))
+    (@spec ((Arena (Int 1 ..)) -> (Ptr (Chan T))))
     (@alloc arena)
     (@pre {capacity >= 1})
     (@post {$result != nil})
-    (let ((ch (arena-alloc arena (sizeof (Chan Int)))))
+    (let ((ch (arena-alloc arena (sizeof (Chan T)))))
       ;; Initialize pthread primitives
       (pthread-mutex-init (cast (Ptr Void) (addr ch.mutex)) nil)
       (pthread-cond-init (cast (Ptr Void) (addr ch.not-empty)) nil)
       (pthread-cond-init (cast (Ptr Void) (addr ch.not-full)) nil)
       ;; Initialize channel state with buffer
-      (set! ch.buffer (arena-alloc arena (* capacity (sizeof Int))))
+      (set! ch.buffer (arena-alloc arena (* capacity (sizeof T))))
       (set! ch.capacity (cast U64 capacity))
       (set! ch.count 0)
       (set! ch.head 0)
@@ -140,9 +142,10 @@
       (set! ch.closed false)
       ch))
 
-  (fn chan-close ((ch (Ptr (Chan Int))))
+  (fn chan-close ((ch (Ptr (Chan T))))
     (@intent "Close channel - subsequent sends fail, recvs drain then return error")
-    (@spec (((Ptr (Chan Int))) -> Unit))
+    (@generic (T))
+    (@spec (((Ptr (Chan T))) -> Unit))
     (@pre {ch != nil})
     ;; Lock, set closed flag, wake all waiters
     (pthread-mutex-lock (cast (Ptr Void) (addr ch.mutex)))

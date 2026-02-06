@@ -711,6 +711,26 @@
                               ((some elem-type-expr)
                                 (prescan-register-struct-key-type ctx elem-type-expr))
                               ((none) (do)))))
+                        ;; (chan-buffered Type arena capacity) - register chan type
+                        ((string-eq name "chan-buffered")
+                          (when (>= len 4)
+                            (match (list-get items 1)
+                              ((some type-expr)
+                                (let ((elem-c (to-c-type-prefixed ctx type-expr))
+                                      (elem-id (type-to-identifier (. (deref ctx) arena) elem-c))
+                                      (c-name (ctx-str ctx "slop_chan_" elem-id)))
+                                  (ctx-register-chan-type ctx elem-c c-name)))
+                              ((none) (do)))))
+                        ;; (chan Type arena) - register chan type
+                        ((string-eq name "chan")
+                          (when (>= len 3)
+                            (match (list-get items 1)
+                              ((some type-expr)
+                                (let ((elem-c (to-c-type-prefixed ctx type-expr))
+                                      (elem-id (type-to-identifier (. (deref ctx) arena) elem-c))
+                                      (c-name (ctx-str ctx "slop_chan_" elem-id)))
+                                  (ctx-register-chan-type ctx elem-c c-name)))
+                              ((none) (do)))))
                         ;; Other - recursively scan children
                         (else
                           (let ((mut i 0))
