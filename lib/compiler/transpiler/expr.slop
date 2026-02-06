@@ -5644,9 +5644,9 @@
     (@pre {coll-expr != nil})
     (let ((coll-c (transpile-expr ctx coll-expr))
           (elem-slop-type (infer-collection-element-slop-type ctx coll-expr))
-          ;; Build: ({ for (size_t _i = 0; _i < coll.len; _i++) { __auto_type item = coll.data[_i];
-          (mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < " coll-c
-                        (ctx-str5 ctx ".len; _i++) { __auto_type " var-name " = " coll-c ".data[_i]; "))))
+          ;; Build: ({ __auto_type _coll = coll; for (size_t _i = 0; _i < _coll.len; _i++) { __auto_type item = _coll.data[_i];
+          (mut result (ctx-str3 ctx "({ __auto_type _coll = " coll-c
+                        (ctx-str3 ctx "; for (size_t _i = 0; _i < _coll.len; _i++) { __auto_type " var-name " = _coll.data[_i]; "))))
       ;; Bind loop variable for body expressions with inferred element type
       (ctx-push-scope ctx)
       (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false false "" ""))
@@ -5682,10 +5682,10 @@
           (coll-c (transpile-expr ctx coll-expr))
           (elem-slop-type (extract-set-elem-from-slop-type arena resolved-type))
           (elem-c-type (slop-value-type-to-c-type ctx elem-slop-type)))
-      ;; Build: ({ for (size_t _i = 0; _i < ((slop_map*)coll)->cap; _i++) { if (((slop_map*)coll)->entries[_i].occupied) { ElementType var = *(ElementType*)((slop_map*)coll)->entries[_i].key;
-      (let ((mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < ((slop_map*)" coll-c ")->cap; _i++) { "))
-            (if-part (ctx-str3 ctx "if (((slop_map*)" coll-c ")->entries[_i].occupied) { "))
-            (cast-part (ctx-str4 ctx elem-c-type "*)((slop_map*)" coll-c ")->entries[_i].key"))
+      ;; Build: ({ slop_map* _coll = (slop_map*)coll; for (size_t _i = 0; _i < _coll->cap; _i++) { if (_coll->entries[_i].occupied) { ElementType var = *(ElementType*)_coll->entries[_i].key;
+      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" coll-c "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
+            (if-part "if (_coll->entries[_i].occupied) { ")
+            (cast-part (ctx-str ctx elem-c-type "*)_coll->entries[_i].key"))
             (assign-prefix (ctx-str4 ctx elem-c-type " " var-name " = *("))
             (assign-part (ctx-str3 ctx assign-prefix cast-part "; ")))
         (set! result (ctx-str3 ctx result if-part assign-part))
@@ -5724,10 +5724,10 @@
           (coll-c (transpile-expr ctx coll-expr))
           (key-slop-type (extract-map-key-from-slop-type arena resolved-type))
           (key-c-type (slop-value-type-to-c-type ctx key-slop-type)))
-      ;; Build: ({ for (size_t _i = 0; _i < ((slop_map*)coll)->cap; _i++) { if (((slop_map*)coll)->entries[_i].occupied) { KeyType var = *(KeyType*)((slop_map*)coll)->entries[_i].key;
-      (let ((mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < ((slop_map*)" coll-c ")->cap; _i++) { "))
-            (if-part (ctx-str3 ctx "if (((slop_map*)" coll-c ")->entries[_i].occupied) { "))
-            (cast-part (ctx-str4 ctx key-c-type "*)((slop_map*)" coll-c ")->entries[_i].key"))
+      ;; Build: ({ slop_map* _coll = (slop_map*)coll; for (size_t _i = 0; _i < _coll->cap; _i++) { if (_coll->entries[_i].occupied) { KeyType var = *(KeyType*)_coll->entries[_i].key;
+      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" coll-c "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
+            (if-part "if (_coll->entries[_i].occupied) { ")
+            (cast-part (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
             (assign-prefix (ctx-str4 ctx key-c-type " " var-name " = *("))
             (assign-part (ctx-str3 ctx assign-prefix cast-part "; ")))
         (set! result (ctx-str3 ctx result if-part assign-part))
@@ -5786,14 +5786,14 @@
                                             (val-slop-type (extract-map-value-from-slop-type arena resolved-type))
                                             (key-c-type (slop-value-type-to-c-type ctx key-slop-type))
                                             (val-c-type (slop-value-type-to-c-type ctx val-slop-type)))
-                                        ;; Build: ({ for (size_t _i = 0; _i < ((slop_map*)map)->cap; _i++) { if (((slop_map*)map)->entries[_i].occupied) {
-                                        ;;         KeyType k = *(KeyType*)((slop_map*)map)->entries[_i].key; ValueType v = *(ValueType*)((slop_map*)map)->entries[_i].value;
-                                        (let ((mut result (ctx-str3 ctx "({ for (size_t _i = 0; _i < ((slop_map*)" map-c ")->cap; _i++) { "))
-                                              (if-part (ctx-str3 ctx "if (((slop_map*)" map-c ")->entries[_i].occupied) { "))
-                                              (k-cast (ctx-str4 ctx key-c-type "*)((slop_map*)" map-c ")->entries[_i].key"))
+                                        ;; Build: ({ slop_map* _coll = (slop_map*)map; for (size_t _i = 0; _i < _coll->cap; _i++) { if (_coll->entries[_i].occupied) {
+                                        ;;         KeyType k = *(KeyType*)_coll->entries[_i].key; ValueType v = *(ValueType*)_coll->entries[_i].value;
+                                        (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" map-c "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
+                                              (if-part "if (_coll->entries[_i].occupied) { ")
+                                              (k-cast (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
                                               (k-prefix (ctx-str4 ctx key-c-type " " k-name " = *("))
                                               (k-assign (ctx-str3 ctx k-prefix k-cast "; "))
-                                              (v-cast (ctx-str4 ctx val-c-type "*)((slop_map*)" map-c ")->entries[_i].value"))
+                                              (v-cast (ctx-str ctx val-c-type "*)_coll->entries[_i].value"))
                                               (v-prefix (ctx-str4 ctx val-c-type " " v-name " = *("))
                                               (v-assign (ctx-str3 ctx v-prefix v-cast "; ")))
                                           (set! result (ctx-str4 ctx result if-part k-assign v-assign))

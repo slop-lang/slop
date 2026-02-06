@@ -1020,14 +1020,18 @@
     (let ((arena (. (deref ctx) arena))
           (elem-slop-type (extract-set-elem-from-slop-type arena resolved-type))
           (elem-c-type (slop-value-type-to-c-type ctx elem-slop-type)))
-      ;; for (size_t _i = 0; _i < ((slop_map*)set)->cap; _i++) {
-      (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < ((slop_map*)" coll-c ")->cap; _i++) {"))
+      ;; Cache collection in block-scoped temp to avoid re-evaluation
+      (ctx-emit ctx "{")
       (ctx-indent ctx)
-      ;; if (((slop_map*)set)->entries[_i].occupied) {
-      (ctx-emit ctx (ctx-str3 ctx "if (((slop_map*)" coll-c ")->entries[_i].occupied) {"))
+      (ctx-emit ctx (ctx-str3 ctx "slop_map* _coll = (slop_map*)" coll-c ";"))
+      ;; for (size_t _i = 0; _i < _coll->cap; _i++) {
+      (ctx-emit ctx "for (size_t _i = 0; _i < _coll->cap; _i++) {")
       (ctx-indent ctx)
-      ;; ElementType var = *(ElementType*)((slop_map*)set)->entries[_i].key;
-      (let ((cast-part (ctx-str4 ctx elem-c-type "*)((slop_map*)" coll-c ")->entries[_i].key"))
+      ;; if (_coll->entries[_i].occupied) {
+      (ctx-emit ctx "if (_coll->entries[_i].occupied) {")
+      (ctx-indent ctx)
+      ;; ElementType var = *(ElementType*)_coll->entries[_i].key;
+      (let ((cast-part (ctx-str ctx elem-c-type "*)_coll->entries[_i].key"))
             (assign-prefix (ctx-str4 ctx elem-c-type " " var-name " = *("))
             (assign-part (ctx-str3 ctx assign-prefix cast-part ");")))
         (ctx-emit ctx assign-part))
@@ -1042,7 +1046,9 @@
             ((none) (do)))
           (set! i (+ i 1))))
       (ctx-pop-scope ctx)
-      ;; Close occupied check and for loop
+      ;; Close occupied check, for loop, and block scope
+      (ctx-dedent ctx)
+      (ctx-emit ctx "}")
       (ctx-dedent ctx)
       (ctx-emit ctx "}")
       (ctx-dedent ctx)
@@ -1065,14 +1071,18 @@
     (let ((arena (. (deref ctx) arena))
           (key-slop-type (extract-map-key-from-slop-type arena resolved-type))
           (key-c-type (slop-value-type-to-c-type ctx key-slop-type)))
-      ;; for (size_t _i = 0; _i < ((slop_map*)map)->cap; _i++) {
-      (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < ((slop_map*)" coll-c ")->cap; _i++) {"))
+      ;; Cache collection in block-scoped temp to avoid re-evaluation
+      (ctx-emit ctx "{")
       (ctx-indent ctx)
-      ;; if (((slop_map*)map)->entries[_i].occupied) {
-      (ctx-emit ctx (ctx-str3 ctx "if (((slop_map*)" coll-c ")->entries[_i].occupied) {"))
+      (ctx-emit ctx (ctx-str3 ctx "slop_map* _coll = (slop_map*)" coll-c ";"))
+      ;; for (size_t _i = 0; _i < _coll->cap; _i++) {
+      (ctx-emit ctx "for (size_t _i = 0; _i < _coll->cap; _i++) {")
       (ctx-indent ctx)
-      ;; KeyType var = *(KeyType*)((slop_map*)map)->entries[_i].key;
-      (let ((cast-part (ctx-str4 ctx key-c-type "*)((slop_map*)" coll-c ")->entries[_i].key"))
+      ;; if (_coll->entries[_i].occupied) {
+      (ctx-emit ctx "if (_coll->entries[_i].occupied) {")
+      (ctx-indent ctx)
+      ;; KeyType var = *(KeyType*)_coll->entries[_i].key;
+      (let ((cast-part (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
             (assign-prefix (ctx-str4 ctx key-c-type " " var-name " = *("))
             (assign-part (ctx-str3 ctx assign-prefix cast-part ");")))
         (ctx-emit ctx assign-part))
@@ -1087,7 +1097,9 @@
             ((none) (do)))
           (set! i (+ i 1))))
       (ctx-pop-scope ctx)
-      ;; Close occupied check and for loop
+      ;; Close occupied check, for loop, and block scope
+      (ctx-dedent ctx)
+      (ctx-emit ctx "}")
       (ctx-dedent ctx)
       (ctx-emit ctx "}")
       (ctx-dedent ctx)
@@ -1134,19 +1146,23 @@
                                             (val-slop-type (extract-map-value-from-slop-type arena resolved-type))
                                             (key-c-type (slop-value-type-to-c-type ctx key-slop-type))
                                             (val-c-type (slop-value-type-to-c-type ctx val-slop-type)))
-                                        ;; Emit: for (size_t _i = 0; _i < ((slop_map*)map)->cap; _i++) {
-                                        (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < ((slop_map*)" map-c ")->cap; _i++) {"))
+                                        ;; Cache collection in block-scoped temp to avoid re-evaluation
+                                        (ctx-emit ctx "{")
                                         (ctx-indent ctx)
-                                        ;; Emit: if (((slop_map*)map)->entries[_i].occupied) {
-                                        (ctx-emit ctx (ctx-str3 ctx "if (((slop_map*)" map-c ")->entries[_i].occupied) {"))
+                                        (ctx-emit ctx (ctx-str3 ctx "slop_map* _coll = (slop_map*)" map-c ";"))
+                                        ;; Emit: for (size_t _i = 0; _i < _coll->cap; _i++) {
+                                        (ctx-emit ctx "for (size_t _i = 0; _i < _coll->cap; _i++) {")
                                         (ctx-indent ctx)
-                                        ;; Emit: KeyType k = *(KeyType*)((slop_map*)map)->entries[_i].key;
-                                        (let ((k-cast (ctx-str4 ctx key-c-type "*)((slop_map*)" map-c ")->entries[_i].key"))
+                                        ;; Emit: if (_coll->entries[_i].occupied) {
+                                        (ctx-emit ctx "if (_coll->entries[_i].occupied) {")
+                                        (ctx-indent ctx)
+                                        ;; Emit: KeyType k = *(KeyType*)_coll->entries[_i].key;
+                                        (let ((k-cast (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
                                               (k-prefix (ctx-str4 ctx key-c-type " " k-name " = *("))
                                               (k-assign (ctx-str3 ctx k-prefix k-cast ");")))
                                           (ctx-emit ctx k-assign))
-                                        ;; Emit: ValueType v = *(ValueType*)((slop_map*)map)->entries[_i].value;
-                                        (let ((v-cast (ctx-str4 ctx val-c-type "*)((slop_map*)" map-c ")->entries[_i].value"))
+                                        ;; Emit: ValueType v = *(ValueType*)_coll->entries[_i].value;
+                                        (let ((v-cast (ctx-str ctx val-c-type "*)_coll->entries[_i].value"))
                                               (v-prefix (ctx-str4 ctx val-c-type " " v-name " = *("))
                                               (v-assign (ctx-str3 ctx v-prefix v-cast ");")))
                                           (ctx-emit ctx v-assign))
@@ -1162,6 +1178,8 @@
                                               ((none) (do)))
                                             (set! i (+ i 1))))
                                         (ctx-pop-scope ctx)
+                                        (ctx-dedent ctx)
+                                        (ctx-emit ctx "}")
                                         (ctx-dedent ctx)
                                         (ctx-emit ctx "}")
                                         (ctx-dedent ctx)
@@ -1224,11 +1242,15 @@
                                             ;; List iteration (original behavior)
                                             (else
                                               (let ((coll-c (transpile-expr ctx coll-expr)))
-                                                ;; Emit: for (size_t _i = 0; _i < coll.len; _i++)
-                                                (ctx-emit ctx (ctx-str3 ctx "for (size_t _i = 0; _i < " coll-c ".len; _i++) {"))
+                                                ;; Cache collection in block-scoped temp to avoid re-evaluation
+                                                (ctx-emit ctx "{")
                                                 (ctx-indent ctx)
-                                                ;; Emit: __auto_type var = coll.data[_i];
-                                                (ctx-emit ctx (ctx-str5 ctx "__auto_type " var-name " = " coll-c ".data[_i];"))
+                                                (ctx-emit ctx (ctx-str3 ctx "__auto_type _coll = " coll-c ";"))
+                                                ;; Emit: for (size_t _i = 0; _i < _coll.len; _i++)
+                                                (ctx-emit ctx "for (size_t _i = 0; _i < _coll.len; _i++) {")
+                                                (ctx-indent ctx)
+                                                ;; Emit: __auto_type var = _coll.data[_i];
+                                                (ctx-emit ctx (ctx-str3 ctx "__auto_type " var-name " = _coll.data[_i];"))
                                                 ;; Bind loop variable with inferred element type
                                                 (ctx-push-scope ctx)
                                                 (let ((elem-slop-type (infer-collection-element-slop-type ctx coll-expr)))
@@ -1242,6 +1264,8 @@
                                                       ((none) (do)))
                                                     (set! i (+ i 1))))
                                                 (ctx-pop-scope ctx)
+                                                (ctx-dedent ctx)
+                                                (ctx-emit ctx "}")
                                                 (ctx-dedent ctx)
                                                 (ctx-emit ctx "}"))))))
                                       ((none) (ctx-add-error-at ctx "missing collection" (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr))))))
