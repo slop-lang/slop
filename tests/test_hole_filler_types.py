@@ -154,7 +154,7 @@ class TestTypesCompatible:
 
     def test_same_primitive_compatible(self):
         """Same primitive types are compatible."""
-        from slop.type_checker import PrimitiveType
+        from slop.types import PrimitiveType
         filler = make_filler()
 
         assert filler._types_compatible(
@@ -164,7 +164,7 @@ class TestTypesCompatible:
 
     def test_different_primitive_incompatible(self):
         """Different primitive types are incompatible."""
-        from slop.type_checker import PrimitiveType
+        from slop.types import PrimitiveType
         filler = make_filler()
 
         assert filler._types_compatible(
@@ -174,7 +174,7 @@ class TestTypesCompatible:
 
     def test_unknown_always_compatible(self):
         """Unknown type is compatible with anything."""
-        from slop.type_checker import PrimitiveType, UNKNOWN
+        from slop.types import PrimitiveType, UNKNOWN
         filler = make_filler()
 
         assert filler._types_compatible(UNKNOWN, PrimitiveType('Int')) is True
@@ -186,21 +186,21 @@ class TestIsAllowableUnknown:
 
     def test_unknown_is_allowable(self):
         """UNKNOWN type is allowable."""
-        from slop.type_checker import UNKNOWN
+        from slop.types import UNKNOWN
         filler = make_filler()
 
         assert filler._is_allowable_unknown(UNKNOWN) is True
 
     def test_type_var_is_allowable(self):
         """TypeVar is allowable."""
-        from slop.type_checker import TypeVar
+        from slop.types import TypeVar
         filler = make_filler()
 
         assert filler._is_allowable_unknown(TypeVar(1)) is True
 
     def test_primitive_not_allowable(self):
         """Primitive types are not allowable as unknowns."""
-        from slop.type_checker import PrimitiveType
+        from slop.types import PrimitiveType
         filler = make_filler()
 
         assert filler._is_allowable_unknown(PrimitiveType('Int')) is False
