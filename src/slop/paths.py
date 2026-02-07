@@ -237,6 +237,21 @@ def list_examples() -> List[Path]:
     return sorted(examples_dir.glob("*.slop"), key=lambda p: p.name)
 
 
+def find_project_config(start_path: Path) -> Optional[Path]:
+    """Search upward from start_path for a slop.toml file."""
+    current = start_path.resolve()
+    # Search up to 10 parent directories
+    for _ in range(10):
+        config_path = current / "slop.toml"
+        if config_path.exists():
+            return config_path
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return None
+
+
 def get_resolved_paths() -> dict:
     """Get all resolved paths for diagnostic purposes.
 

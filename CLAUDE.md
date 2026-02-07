@@ -20,10 +20,10 @@ Key features:
 uv run pytest
 
 # Run a single test file
-uv run pytest tests/test_transpiler.py
+uv run pytest tests/test_parser.py
 
 # Run a single test
-uv run pytest tests/test_transpiler.py::TestTypeDefinitions::test_range_type -v
+uv run pytest tests/test_parser.py::TestBasicParsing::test_symbol -v
 
 # Parse a SLOP file
 uv run slop parse examples/rate-limiter.slop
@@ -37,34 +37,34 @@ uv run slop transpile examples/rate-limiter.slop -o output.c
 # Build to native binary (requires cc)
 uv run slop build examples/rate-limiter.slop -o binary
 
-# Build the native toolchain using the python toolchain
-./build_native_py.sh
+# Build the native toolchain
+make build-native
 ```
 
 ## Architecture
 
 ### Pipeline Flow
 ```
-SLOP source → parser.py → AST → type_checker.py → transpiler.py → C code
-                                      ↓
-                              hole_filler.py (LLM fills holes)
+SLOP source → native parser → AST → native checker → native compiler → C code
+                                           ↓
+                                   hole_filler.py (LLM fills holes)
 ```
+
+Type checking and transpilation are handled by the native toolchain (`slop-compiler`). The Python CLI orchestrates the pipeline but delegates compilation to native binaries.
 
 ### Core Modules (src/slop/)
 
-- **parser.py**: S-expression parser producing AST (`SList`, `Symbol`, `String`, `Number`). Key functions: `parse()`, `is_form()`, `find_holes()`, `pretty_print()`
-
-- **type_checker.py**: Type inference with range propagation and path-sensitive analysis. Tracks pointer types, validates contracts, checks exhaustiveness. Raises `TypeError` with line numbers.
-
-- **transpiler.py**: AST to C code generation. Handles type mapping, field access (auto `.` vs `->`), FFI, modules. Raises `UnfilledHoleError` if holes remain.
+- **parser.py**: S-expression parser producing AST (`SList`, `Symbol`, `String`, `Number`). Key functions: `parse()`, `is_form()`, `find_holes()`, `pretty_print()`. Used as fallback when native parser unavailable.
 
 - **hole_filler.py**: Routes holes to LLM providers based on complexity tiers (tier-1 through tier-4). Validates generated code against type constraints.
 
 - **providers.py**: LLM provider implementations (Ollama, OpenAI-compatible, Interactive, Multi-provider routing)
 
-- **cli.py**: Command-line interface (`slop` command)
+- **cli.py**: Command-line interface (`slop` command). Orchestrates the native toolchain.
 
 - **resolver.py**: Module import/export resolution
+
+- **paths.py**: Centralized path resolution with SLOP_HOME support
 
 ### Language Spec
 
@@ -72,7 +72,7 @@ The authoritative language specification is in `spec/LANGUAGE.md`. When modifyin
 1. Update `spec/LANGUAGE.md`
 2. Update `.claude/skills/slop/SKILL.md` (Claude's quick reference)
 3. Update `src/slop/reference.py` (CLI reference for `slop ref` command)
-4. Update parser/transpiler/type_checker as needed
+4. Update native parser/checker/compiler as needed
 5. Update `tree-sitter-slop/` grammar and highlights if syntax changes
 
 ### Tree-sitter Grammar
@@ -114,7 +114,7 @@ Located in `tree-sitter-slop/`:
 
 ## Key Patterns
 
-**Pointer tracking**: Transpiler auto-detects pointers from `(Ptr T)` params and `arena-alloc` results. Uses `->` for pointer field access, `.` for values.
+**Pointer tracking**: The compiler auto-detects pointers from `(Ptr T)` params and `arena-alloc` results. Uses `->` for pointer field access, `.` for values.
 
 **Range types**: `(Int 0 .. 255)` maps to smallest C type (uint8_t) with runtime bounds checks via `SLOP_PRE`.
 
@@ -127,12 +127,12 @@ The goal is a self-hosting slop parser, type checker, and transpiler.  When work
 - It is always better to generate a transpiler error than to emit ambiguous C code and / or some hard-coded default when running into some unimplemented SLOP feature.
 - Errors should be caught as early as possible.  First by the parser, then the type checker, then the transpiler.  It is a FAILURE if an error is caught by the C compiler.
 - The goal is not simply to get something that builds.  We do not workaround code generation issues with hardcoding, default types, rewriting using a different SLOP construct, etc.  
-- The SLOP native tools are the priority for new features, implement there first, the python tools second.
+- The SLOP native tools are the priority for new features.
 
 
 ## General guidance
 - Paren balance is critical for a language based on S-expressions.  Verify balance BEFORE making multiple writes to a file to avoid large compounding imbalances that require extensive troubleshooting.  Use `python scripts/paren-balance.py <file>` to check paren balance of a `.slop` file.
-- The python build tools - parser, type checker, and transpiler ARE DEPRECATED and should generally not be used.  build_native_py.sh is likewise deprecated.  Always use the native build chain and build_native.sh to rebuild the native tooling.  build_native_py.sh is to be used only as a last resort.
+- The native toolchain (slop-parser, slop-checker, slop-compiler) is required. The Python type checker and transpiler have been removed. Run `make build-native` to build the native tools.
 
 Whenenver you are working with SLOP code, you are permanently in SLOP PAREDIT MODE — structural editing only for the Slop language (https://github.com/slop-lang/slop).
 

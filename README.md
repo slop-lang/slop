@@ -39,7 +39,7 @@ SLOP makes the spec the source of truth:
 
 ## Status
 
-The SLOP toolchain is **self-hosting**: the parser, type checker, and transpiler are all written in SLOP and compile themselves. The merged `slop-compiler` binary runs type checking and transpilation in a single pass and is the primary build tool. Native tools are used by default; the Python implementations in `src/slop/` remain available as fallbacks via the `--python` flag.
+The SLOP toolchain is **self-hosting**: the parser, type checker, and transpiler are all written in SLOP and compile themselves. The merged `slop-compiler` binary runs type checking and transpilation in a single pass and is the primary build tool.
 
 ## Philosophy
 
@@ -125,12 +125,10 @@ slop/
 │   ├── LANGUAGE.md          Grammar, types, semantics
 │   ├── HYBRID_PIPELINE.md   Generation architecture
 │   └── REFERENCE.md         Quick reference
-├── src/slop/                Python bootstrap toolchain
+├── src/slop/                Python CLI and support toolchain
 │   ├── runtime/
 │   │   └── slop_runtime.h   Minimal C runtime (~400 lines)
 │   ├── parser.py            S-expression parser
-│   ├── transpiler.py        SLOP → C transpiler (with type flow analysis)
-│   ├── type_checker.py      Type inference with range propagation
 │   ├── verifier.py          Contract verification via Z3
 │   ├── hole_filler.py       LLM integration with tiered routing
 │   ├── providers.py         LLM providers (Ollama, OpenAI, etc.)
@@ -196,21 +194,11 @@ slop paths -v                  # Include examples list
 
 ### Native Components
 
-SLOP includes native (self-hosted) implementations of core compiler components written in SLOP itself. **Native tools are used by default.** Use the `--python` flag to fall back to the Python implementations:
+SLOP includes native (self-hosted) implementations of core compiler components written in SLOP itself:
 
 ```bash
-# These use native tools by default
-slop parse examples/rate-limiter.slop
-slop check examples/rate-limiter.slop
-slop build examples/rate-limiter.slop
-
-# Use Python fallback
-slop parse examples/rate-limiter.slop --python
-slop check examples/rate-limiter.slop --python
-slop build examples/rate-limiter.slop --python
-
 # Build the native toolchain from source
-./build_native.sh
+make build-native
 ```
 
 Native component sources are in `lib/compiler/`:
@@ -220,7 +208,7 @@ Native component sources are in `lib/compiler/`:
 - `lib/compiler/compiler/` - Merged compiler (type check + transpile in one pass)
 - `lib/compiler/tester/` - Native test runner
 
-The merged `slop-compiler` binary is the primary build tool — it runs the type checker and transpiler together. Pre-built binaries are installed to `bin/` at the project root. If a native component isn't found, the CLI automatically falls back to the Python implementation.
+The merged `slop-compiler` binary is the primary build tool — it runs the type checker and transpiler together. Pre-built binaries are installed to `bin/` at the project root.
 
 ### SLOP_HOME Environment Variable
 

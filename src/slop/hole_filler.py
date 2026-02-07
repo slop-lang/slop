@@ -1235,7 +1235,7 @@ def _try_native_checker(
     compiler_path = paths.find_native_binary('compiler')
     checker_path = compiler_path or paths.find_native_binary('checker')
     if not checker_path:
-        logger.error("Native checker binary not found. Build native tools with ./build_native.sh")
+        logger.error("Native checker binary not found. Build native tools with 'make build-native'")
         return None
 
     try:
@@ -1385,7 +1385,7 @@ def check_hole_impl(
     # Native checker unavailable
     return CheckResult(
         valid=False,
-        errors=["Native checker unavailable. Build native tools with ./build_native.sh"],
+        errors=["Native checker unavailable. Build native tools with 'make build-native'"],
     )
 
 

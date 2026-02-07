@@ -25,7 +25,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Check that compiler exists
 if [ ! -x "$PROJECT_ROOT/bin/slop-compiler" ]; then
     echo "Error: Native compiler not found at $PROJECT_ROOT/bin/slop-compiler"
-    echo "Build the native toolchain first with: ./build_native.sh"
+    echo "Build the native toolchain first with: make build-native"
     exit 1
 fi
 

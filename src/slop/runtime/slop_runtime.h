@@ -127,12 +127,14 @@ static slop_intern_pool* slop_global_intern_pool = NULL;
 
 static inline slop_arena slop_arena_new(size_t capacity) {
     /* Check global cap BEFORE allocating (atomic load for thread safety) */
+#ifndef SLOP_ARENA_NO_CAP
     if (atomic_load(&slop_global_allocated) + capacity > SLOP_ARENA_MAX_TOTAL_BYTES) {
         fprintf(stderr, "SLOP: arena allocation cap exceeded (%zu bytes). "
                 "Increase SLOP_ARENA_MAX_TOTAL_BYTES or reduce allocation.\n",
                 (size_t)SLOP_ARENA_MAX_TOTAL_BYTES);
         abort();
     }
+#endif
 
     slop_arena arena;
     arena.base = (uint8_t*)malloc(capacity);
@@ -161,12 +163,14 @@ static inline void* slop_arena_alloc(slop_arena* arena, size_t size) {
             if (new_cap < size) new_cap = size * 2;
 
             /* Check GLOBAL cap before allocating overflow (atomic load for thread safety) */
+#ifndef SLOP_ARENA_NO_CAP
             if (atomic_load(&slop_global_allocated) + new_cap > SLOP_ARENA_MAX_TOTAL_BYTES) {
                 fprintf(stderr, "SLOP: arena allocation cap exceeded (%zu bytes). "
                         "Increase SLOP_ARENA_MAX_TOTAL_BYTES or reduce allocation.\n",
                         (size_t)SLOP_ARENA_MAX_TOTAL_BYTES);
                 abort();
             }
+#endif
 
             arena->next = (slop_arena*)malloc(sizeof(slop_arena));
             if (arena->next == NULL) {
