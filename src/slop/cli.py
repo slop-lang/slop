@@ -1977,6 +1977,7 @@ def _build_library_from_sources(
     output: str,
     include_paths: list,
     debug: bool,
+    opt_level: str,
     library_mode: str,
     link_libraries: list,
     link_paths: list,
@@ -2174,7 +2175,7 @@ def _build_library_from_sources(
             obj_files = []
             for c_file in c_files:
                 obj_file = c_file.replace('.c', '.o')
-                compile_cmd = ["cc", "-c", "-O2", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
+                compile_cmd = ["cc", "-c", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
                 if debug:
                     compile_cmd.insert(1, "-g")
                     compile_cmd.insert(2, "-DSLOP_DEBUG")
@@ -2199,12 +2200,21 @@ def _build_library_from_sources(
                 shutil.copy(header_path, dest)
                 print(f"  Header: {dest}")
 
+            # Generate clean FFI header
+            from slop.ffi import generate_ffi_header
+            project_name = Path(output).stem.removeprefix("lib")
+            ffi_header = generate_ffi_header(project_name, results, source_files_ordered)
+            if ffi_header:
+                ffi_path = output_dir / f"{project_name}.h"
+                ffi_path.write_text(ffi_header)
+                print(f"  FFI header: {ffi_path}")
+
             print(f"✓ Built {lib_file}")
 
         elif library_mode == 'shared':
             ext = ".dylib" if sys.platform == "darwin" else ".so"
             lib_file = f"{output}{ext}" if not output.endswith(ext) else output
-            compile_cmd = ["cc", "-shared", "-fPIC", "-O2", "-I", str(runtime_path), "-I", tmpdir,
+            compile_cmd = ["cc", "-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir,
                           "-o", lib_file] + c_files + link_flags
             if debug:
                 compile_cmd.insert(1, "-g")
@@ -2221,6 +2231,15 @@ def _build_library_from_sources(
                 import shutil
                 shutil.copy(header_path, dest)
                 print(f"  Header: {dest}")
+
+            # Generate clean FFI header
+            from slop.ffi import generate_ffi_header
+            project_name = Path(output).stem.removeprefix("lib")
+            ffi_header = generate_ffi_header(project_name, results, source_files_ordered)
+            if ffi_header:
+                ffi_path = output_dir / f"{project_name}.h"
+                ffi_path.write_text(ffi_header)
+                print(f"  FFI header: {ffi_path}")
 
             print(f"✓ Built {lib_file}")
 
@@ -2278,6 +2297,7 @@ def cmd_build(args):
             output = args.output or build_cfg.output or default_output
             include_paths = (args.include or []) + build_cfg.include
             debug = args.debug or build_cfg.debug
+            opt_level = args.optimize or build_cfg.optimize
             arena_cap = getattr(args, 'arena_cap', 0) or build_cfg.arena_cap
             # Map build_type to library flag format
             if build_cfg.build_type == "static":
@@ -2292,6 +2312,7 @@ def cmd_build(args):
             output = args.output or (input_path.stem if input_path else "output")
             include_paths = args.include or []
             debug = args.debug
+            opt_level = args.optimize or "2"
             arena_cap = getattr(args, 'arena_cap', 0)
             library_mode = getattr(args, 'library', None)
             link_libraries = []
@@ -2344,6 +2365,7 @@ def cmd_build(args):
                 output=output,
                 include_paths=include_paths,
                 debug=debug,
+                opt_level=opt_level,
                 library_mode=library_mode,
                 link_libraries=link_libraries,
                 link_paths=link_paths,
@@ -2524,7 +2546,7 @@ def cmd_build(args):
                     obj_files = []
                     for c_file in c_files:
                         obj_file = c_file.replace('.c', '.o')
-                        compile_cmd = ["cc", "-c", "-O2", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
+                        compile_cmd = ["cc", "-c", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
                         if debug:
                             compile_cmd.insert(1, "-g")
                             compile_cmd.insert(2, "-DSLOP_DEBUG")
@@ -2547,7 +2569,7 @@ def cmd_build(args):
                 elif library_mode == 'shared':
                     ext = ".dylib" if sys.platform == "darwin" else ".so"
                     lib_file = f"{output}{ext}"
-                    compile_cmd = ["cc", "-shared", "-fPIC", "-O2", "-I", str(runtime_path), "-I", tmpdir,
+                    compile_cmd = ["cc", "-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir,
                                   "-o", lib_file] + c_files + link_flags
                     if debug:
                         compile_cmd.insert(1, "-g")
@@ -2562,7 +2584,7 @@ def cmd_build(args):
 
                 else:
                     # Default: build executable
-                    compile_cmd = ["cc", "-O2", "-I", str(runtime_path), "-I", tmpdir, "-o", output] + c_files + link_flags
+                    compile_cmd = ["cc", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", output] + c_files + link_flags
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
@@ -2639,6 +2661,16 @@ def cmd_build(args):
                     f.write(header)
                 print(f"  Module header: {header_path}")
 
+            # Generate clean FFI header
+            from slop.ffi import generate_ffi_header
+            project_name = Path(output).stem.removeprefix("lib")
+            results_for_ffi = {mod_name: (h, "") for mod_name, h in native_module_headers.items()}
+            ffi_header = generate_ffi_header(project_name, results_for_ffi, [str(input_path)])
+            if ffi_header:
+                ffi_path = os.path.join(output_dir, f"{project_name}.h")
+                Path(ffi_path).write_text(ffi_header)
+                print(f"  FFI header: {ffi_path}")
+
         # Compile
         print("  Compiling...")
         import subprocess
@@ -2657,7 +2689,7 @@ def cmd_build(args):
             obj_file = f"{output}.o"
             lib_file = f"{output}.a"
 
-            compile_cmd = ["cc", "-c", "-O2", "-I", str(runtime_path), "-o", obj_file, c_file]
+            compile_cmd = ["cc", "-c", f"-O{opt_level}", "-I", str(runtime_path), "-o", obj_file, c_file]
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
@@ -2684,7 +2716,7 @@ def cmd_build(args):
             ext = ".dylib" if sys.platform == "darwin" else ".so"
             lib_file = f"{output}{ext}"
 
-            compile_cmd = ["cc", "-shared", "-fPIC", "-O2", "-I", str(runtime_path),
+            compile_cmd = ["cc", "-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path),
                           "-o", lib_file, c_file] + link_flags
             if debug:
                 compile_cmd.insert(1, "-g")
@@ -2703,7 +2735,7 @@ def cmd_build(args):
             # Default: build executable
             compile_cmd = [
                 "cc",
-                "-O2",
+                f"-O{opt_level}",
                 "-I", str(runtime_path),
                 "-o", output,
                 c_file,
@@ -4392,6 +4424,8 @@ def main():
                    help='Arena allocation cap in bytes (default: 256MB)')
     p.add_argument('--library', choices=['static', 'shared'],
                    help='Build as library instead of executable')
+    p.add_argument('-O', '--optimize', choices=['0', '1', '2', '3', 's'],
+                   default=None, help='Optimization level (default: 2)')
     p.add_argument('--skip-check', action='store_true',
                    help='Skip type checking (for bootstrapping)')
 
