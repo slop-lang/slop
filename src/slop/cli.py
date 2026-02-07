@@ -1983,6 +1983,8 @@ def _build_library_from_sources(
     link_paths: list,
     native_compiler_bin,
     native_checker_bin,
+    arena_cap: int = 0,
+    no_arena_cap: bool = False,
 ) -> int:
     """Build a library from multiple source files.
 
@@ -2299,6 +2301,7 @@ def cmd_build(args):
             debug = args.debug or build_cfg.debug
             opt_level = args.optimize or build_cfg.optimize
             arena_cap = getattr(args, 'arena_cap', 0) or build_cfg.arena_cap
+            no_arena_cap = getattr(args, 'no_arena_cap', False) or build_cfg.no_arena_cap
             # Map build_type to library flag format
             if build_cfg.build_type == "static":
                 library_mode = getattr(args, 'library', None) or "static"
@@ -2314,6 +2317,7 @@ def cmd_build(args):
             debug = args.debug
             opt_level = args.optimize or "2"
             arena_cap = getattr(args, 'arena_cap', 0)
+            no_arena_cap = getattr(args, 'no_arena_cap', False)
             library_mode = getattr(args, 'library', None)
             link_libraries = []
             link_paths = []
@@ -2371,6 +2375,8 @@ def cmd_build(args):
                 link_paths=link_paths,
                 native_compiler_bin=native_compiler_bin,
                 native_checker_bin=native_checker_bin,
+                arena_cap=arena_cap,
+                no_arena_cap=no_arena_cap,
             )
 
         # Parse
@@ -2550,7 +2556,9 @@ def cmd_build(args):
                         if debug:
                             compile_cmd.insert(1, "-g")
                             compile_cmd.insert(2, "-DSLOP_DEBUG")
-                        if arena_cap:
+                        if no_arena_cap:
+                            compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
+                        elif arena_cap:
                             compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
                         result = subprocess.run(compile_cmd, capture_output=True, text=True)
                         if result.returncode != 0:
@@ -2574,7 +2582,9 @@ def cmd_build(args):
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
-                    if arena_cap:
+                    if no_arena_cap:
+                        compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
+                    elif arena_cap:
                         compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
                     result = subprocess.run(compile_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
@@ -2588,7 +2598,9 @@ def cmd_build(args):
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
-                    if arena_cap:
+                    if no_arena_cap:
+                        compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
+                    elif arena_cap:
                         compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
                     result = subprocess.run(compile_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
@@ -2693,7 +2705,9 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
-            if arena_cap:
+            if no_arena_cap:
+                compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
+            elif arena_cap:
                 compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
@@ -2721,7 +2735,9 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
-            if arena_cap:
+            if no_arena_cap:
+                compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
+            elif arena_cap:
                 compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
@@ -2744,7 +2760,9 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
-            if arena_cap:
+            if no_arena_cap:
+                compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
+            elif arena_cap:
                 compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
@@ -4422,6 +4440,8 @@ def main():
     p.add_argument('--debug', action='store_true')
     p.add_argument('--arena-cap', type=int, default=0,
                    help='Arena allocation cap in bytes (default: 256MB)')
+    p.add_argument('--no-arena-cap', action='store_true',
+                   help='Disable arena allocation cap (default: 256MB limit)')
     p.add_argument('--library', choices=['static', 'shared'],
                    help='Build as library instead of executable')
     p.add_argument('-O', '--optimize', choices=['0', '1', '2', '3', 's'],
