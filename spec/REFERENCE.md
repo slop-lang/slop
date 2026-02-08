@@ -348,3 +348,14 @@ When automatic verification fails, use these annotations:
       (set! sum (+ sum (abs x))))
     sum))
 ```
+
+**`@callback-assume`** - Declare properties of callback arguments in higher-order functions:
+
+```lisp
+(fn for-each-item ((g Graph) (callback (Fn (Item) Unit)))
+  (@intent "Apply callback to each item in graph")
+  (@spec ((Graph (Fn (Item) Unit)) -> Unit))
+  (@callback-assume callback (graph-contains g $callback-arg))
+  ...)
+;; $callback-arg refers to each argument passed to the callback
+```

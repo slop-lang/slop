@@ -343,6 +343,65 @@ See `slop.toml.example` for complete configuration options.
 └─────────────────┘
 ```
 
+## Contract Verification
+
+SLOP can mathematically prove that implementations satisfy their contracts using Z3 SMT solving. Rather than just checking types or running tests, `slop verify` translates code and contracts into logical constraints and asks: *is there any input where the preconditions hold but the postcondition doesn't?* If no such input exists (UNSAT), the contract is proven. If one does (SAT), it's returned as a counterexample.
+
+```bash
+# Verify contracts (requires: pip install z3-solver)
+slop verify examples/rate-limiter.slop
+```
+
+### Example
+
+Consider a function that clamps a value to a range:
+
+```lisp
+(fn clamp ((val Int) (lo Int) (hi Int))
+  (@intent "Clamp val to [lo, hi]")
+  (@spec ((Int Int Int) -> Int))
+  (@pre {lo <= hi})
+  (@post {$result >= lo})
+  (@post {$result <= hi})
+
+  (if (< val lo)
+    lo
+    (if (> val hi)
+      val        ;; Bug: should return hi
+      val)))
+```
+
+The verifier catches the bug — when `val > hi`, returning `val` violates `$result <= hi`. It reports a counterexample (e.g., `val=10, hi=5`) showing exactly how the contract breaks. Fix `val` to `hi` in the second branch and verification passes.
+
+### What It Verifies
+
+- **`@pre` / `@post`** — preconditions and postconditions on functions
+- **`@property`** — universal assertions over results (e.g., `(forall (t $result) (pred t))`)
+- **Range types** — bounds preservation through arithmetic
+- **Union types** — tag and payload axioms for `match` postconditions on `Option`/`Result` fields
+- **`@callback-assume`** — properties of callback arguments in higher-order functions
+
+### How It Works
+
+The verifier uses weakest precondition (WP) calculus, reasoning backward through `if`/`cond`/`match`/`let`/`do` blocks to compute the weakest condition needed before execution. For loops, it detects common patterns (filter, map, count, fold) and automatically generates universally quantified axioms connecting outputs to inputs — no manual invariants needed for recognized patterns.
+
+When automatic detection isn't enough, you can provide explicit guidance:
+
+```lisp
+;; Inside a loop body
+(@loop-invariant {count >= 0})
+
+;; Or trust a postcondition the solver can't reach
+(@assume {(forall (t $result) (valid t))})
+```
+
+### Limitations
+
+- **Complex helper chains** — deeply nested function calls (e.g., `term-eq` → `literal-eq` → `option-string-eq`) can't be auto-verified. Use `@trusted` or `@assume`.
+- **Unrecognized loop patterns** — loops that don't match filter/map/count/fold need `@loop-invariant` or `@assume`.
+- **Recursion** — recursive functions aren't inlined; verification is limited to non-recursive bodies.
+- **Solver timeouts** — very complex constraint systems may hit the Z3 timeout.
+
 ## Typed Holes
 
 Holes are placeholders where LLMs generate code, constrained by types and contracts:

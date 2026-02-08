@@ -62,6 +62,13 @@ class MinimalTypeEnv:
 # ============================================================================
 
 @dataclass
+class CallbackAssumption:
+    """A @callback-assume annotation: property of the callback argument."""
+    callback_param: str   # Name of the callback parameter
+    assumption: 'SExpr'   # Property expr using $callback-arg
+
+
+@dataclass
 class FunctionSignature:
     """Signature of an imported function for verification."""
     name: str
@@ -70,6 +77,7 @@ class FunctionSignature:
     params: List[str] = field(default_factory=list)  # Parameter names for postcondition substitution
     postconditions: List['SExpr'] = field(default_factory=list)  # @post annotations
     assumptions: List['SExpr'] = field(default_factory=list)  # @assume annotations
+    callback_assumptions: List[CallbackAssumption] = field(default_factory=list)  # @callback-assume annotations
 
 
 @dataclass
@@ -118,6 +126,7 @@ class TypeInvariantRegistry:
 __all__ = [
     'SourceLocation',
     'MinimalTypeEnv',
+    'CallbackAssumption',
     'FunctionSignature',
     'ConstantDef',
     'ImportedDefinitions',

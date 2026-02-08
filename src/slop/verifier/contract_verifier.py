@@ -843,6 +843,79 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             # Number, String - return unchanged
             return expr
 
+    def _desugar_callback_iterations(self, expr: SExpr) -> SExpr:
+        """Rewrite callback-taking function calls as for-each loops (verifier-internal).
+
+        Transforms:
+            (fn-with-callback arg1 ... (fn ((var Type)) body))
+        Into:
+            (for-each (var (fn-with-callback arg1 ...)) body)
+
+        The virtual collection (fn-with-callback arg1 ...) gets its @callback-assume
+        axioms rewritten as collection postconditions by axiom generation.
+        """
+        if not isinstance(expr, SList) or len(expr) < 1:
+            return expr
+
+        # Recursively desugar children first
+        new_items = [self._desugar_callback_iterations(item) for item in expr.items]
+
+        head = new_items[0]
+        if isinstance(head, Symbol):
+            # Check if this is a call to a function with @callback-assume
+            sig = self.imported_defs.functions.get(head.name)
+            if sig and sig.callback_assumptions:
+                # Find the callback argument (last arg that is a lambda)
+                last_arg = new_items[-1] if len(new_items) > 1 else None
+                if (isinstance(last_arg, SList) and len(last_arg) >= 3 and
+                    isinstance(last_arg[0], Symbol) and last_arg[0].name == 'fn'):
+                    # Extract lambda params and body
+                    lambda_params = last_arg[1]  # ((var Type))
+                    lambda_body = last_arg.items[2:]  # body expressions
+
+                    # Get the loop variable from lambda params
+                    loop_var = None
+                    if isinstance(lambda_params, SList) and len(lambda_params) >= 1:
+                        first_param = lambda_params[0]
+                        if isinstance(first_param, SList) and len(first_param) >= 1:
+                            if isinstance(first_param[0], Symbol):
+                                loop_var = first_param[0].name
+                        elif isinstance(first_param, Symbol):
+                            loop_var = first_param.name
+
+                    if loop_var:
+                        # Build the virtual collection: (fn-name arg1 ... argN-1)
+                        # (everything except the callback argument)
+                        virtual_coll = SList(new_items[:-1])
+                        if hasattr(expr, 'line'):
+                            virtual_coll.line = expr.line
+                            virtual_coll.col = expr.col
+
+                        # Build binding: (var virtual-coll)
+                        binding = SList([Symbol(loop_var), virtual_coll])
+
+                        # Build body (wrap in do if multiple exprs)
+                        if len(lambda_body) == 1:
+                            body = lambda_body[0]
+                        else:
+                            body = SList([Symbol('for-each')] + list(lambda_body))
+                            # Actually wrap in do
+                            body = SList([Symbol('do')] + list(lambda_body))
+
+                        # Build for-each: (for-each (var virtual-coll) body)
+                        result = SList([Symbol('for-each'), binding, body])
+                        if hasattr(expr, 'line'):
+                            result.line = expr.line
+                            result.col = expr.col
+                        return result
+
+        # No desugaring needed, return with recursively processed children
+        result = SList(new_items)
+        if hasattr(expr, 'line'):
+            result.line = expr.line
+            result.col = expr.col
+        return result
+
     def _get_return_expr(self, expr: SExpr) -> SExpr:
         """Get the effective return expression from a body.
 
@@ -1873,7 +1946,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Annotation forms to skip when looking for body
         annotation_forms = {'@intent', '@spec', '@pre', '@post', '@assume', '@pure',
                            '@alloc', '@example', '@deprecated', '@property',
-                           '@generation-mode', '@requires'}
+                           '@generation-mode', '@requires', '@callback-assume'}
         skip_next_string = False  # Track if next String is a property value after :keyword
 
         for item in fn_form.items[3:]:
@@ -1929,6 +2002,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     skip_next_string = False
                     continue
                 fn_body = item
+
+        # Desugar callback-taking function calls to for-each loops (verifier-internal)
+        if fn_body is not None:
+            fn_body = self._desugar_callback_iterations(fn_body)
 
         # Extract loop invariants from function body and treat them as assumptions
         # @loop-invariant provides axioms that help verify loops
