@@ -24,7 +24,7 @@
     (@intent "Test Thread Unit and channel operations")
     (@spec (() -> Int))
     (with-arena 65536
-      (let ((ch (chan-buffered arena 10))
+      (let ((ch (chan-buffered Int arena 10))
             (mut total 0))
         ;; Spawn multiple worker threads that send to the channel
         (let ((t1 (spawn arena (fn ()

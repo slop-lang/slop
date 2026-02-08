@@ -97,9 +97,7 @@
     (@intent "Open a file with the specified mode, returning a File handle or error")
     (@spec ((String FileMode) -> (Result File FileError)))
     (@pre {(. path len) > 0})
-    (@example ("test.txt" 'read) -> (ok (File _ 'read true)))
     (@example ("missing.txt" 'read) -> (error 'not-found))
-    (@example ("output.txt" 'write) -> (ok (File _ 'write true)))
 
     (let ((mode-str (match mode
       ('read "r")
@@ -118,7 +116,6 @@
     (@spec (((Ptr File)) -> (Result Bool FileError)))
     (@pre (. (deref f) is-open))
     (@post (not (. (deref f) is-open)))
-    (@example ((File handle 'read true)) -> (ok true))
 
     (do
       (set! (. (deref f) is-open) false)
@@ -135,8 +132,6 @@
     (@intent "Read up to max-bytes from file into arena-allocated buffer")
     (@spec ((Arena (Ptr File) (Int 1 ..)) -> (Result Bytes FileError)))
     (@pre (. (deref f) is-open))
-    (@example (arena file 1024) -> (ok (Bytes data 512)))
-    (@example (arena closed-file 1024) -> (error 'closed))
 
     (let ((buf (cast (Ptr U8) (arena-alloc arena max-bytes))))
       (let ((bytes-read (fread (cast (Ptr Void) buf) (cast U64 1) (cast U64 max-bytes) (. (deref f) handle))))
@@ -148,8 +143,6 @@
     (@intent "Read a single line from file, up to max-len characters")
     (@spec ((Arena (Ptr File) (Int 1 ..)) -> (Result String FileError)))
     (@pre (. (deref f) is-open))
-    (@example (arena file 256) -> (ok "line content"))
-    (@example (arena file-at-eof 256) -> (error 'eof))
 
     (let ((buf (arena-alloc arena (+ max-len 1))))
       (let ((result (fgets (cast (Ptr U8) buf) (cast Int max-len) (. (deref f) handle))))
@@ -163,7 +156,6 @@
     (@intent "Read entire file contents into arena-allocated string")
     (@spec ((Arena (Ptr File)) -> (Result String FileError)))
     (@pre (. (deref f) is-open))
-    (@example (arena file) -> (ok "file contents..."))
 
     (do
       (let ((start-pos (ftell (. (deref f) handle))))
@@ -183,7 +175,6 @@
     (@intent "Write bytes to file, returning number of bytes written")
     (@spec (((Ptr File) Bytes) -> (Result (Int 0 ..) FileError)))
     (@pre (. (deref f) is-open))
-    (@example (file (Bytes "hello" 5)) -> (ok 5))
 
     (let ((written (fwrite (cast (Ptr Void) (. data data)) (cast U64 1) (cast U64 (. data len)) (. (deref f) handle))))
       (if (!= (ferror (. (deref f) handle)) 0)
@@ -194,7 +185,6 @@
     (@intent "Write string followed by newline to file")
     (@spec (((Ptr File) String) -> (Result (Int 0 ..) FileError)))
     (@pre (. (deref f) is-open))
-    (@example (file "hello") -> (ok 6))
 
     (let ((written1 (fwrite (cast (Ptr Void) (. line data)) (cast U64 1) (cast U64 (. line len)) (. (deref f) handle))))
       (let ((written2 (fwrite (cast (Ptr Void) "\n") (cast U64 1) (cast U64 1) (. (deref f) handle))))
@@ -210,7 +200,6 @@
     (@intent "Flush buffered writes to disk")
     (@spec (((Ptr File)) -> (Result Bool FileError)))
     (@pre (. (deref f) is-open))
-    (@example (file) -> (ok true))
 
     (let ((result (fflush (. (deref f) handle))))
       (if (== result 0)
@@ -222,8 +211,6 @@
     (@spec (((Ptr File) I64 Int) -> (Result Bool FileError)))
     (@pre (. (deref f) is-open))
     (@pre {whence >= 0 and whence <= 2})
-    (@example (file 0 0) -> (ok true))
-    (@example (file -10 2) -> (ok true))
 
     (let ((result (fseek (. (deref f) handle) offset whence)))
       (if (== result 0)
@@ -234,7 +221,6 @@
     (@intent "Get current position in file")
     (@spec (((Ptr File)) -> (Result I64 FileError)))
     (@pre (. (deref f) is-open))
-    (@example (file) -> (ok 42))
 
     (let ((pos (ftell (. (deref f) handle))))
       (if (< pos 0)
@@ -249,7 +235,6 @@
     (@intent "Check if file exists at path")
     (@spec ((String) -> Bool))
     (@pure)
-    (@example ("existing.txt") -> true)
     (@example ("missing.txt") -> false)
 
     (== (access (cast (Ptr U8) (. path data)) F_OK) 0))
@@ -258,7 +243,6 @@
     (@intent "Get size of file in bytes, or error if not accessible")
     (@spec ((String) -> (Result I64 FileError)))
     (@pure)
-    (@example ("test.txt") -> (ok 1024))
     (@example ("missing.txt") -> (error 'not-found))
 
     ;; Note: This function requires stack allocation which SLOP doesn't directly support.

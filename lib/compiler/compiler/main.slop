@@ -37,6 +37,7 @@
   (import context (TranspileContext context-new ctx-reset-for-new-module
                    ctx-get-output ctx-get-header ctx-set-prefixing
                    ctx-set-file ctx-has-errors ctx-report-errors
+                   ctx-has-warnings ctx-report-warnings
                    ctx-set-single-output-mode))
   (import transpiler (transpile-file))
   ;; --- I/O imports ---
@@ -681,6 +682,9 @@
                       ;; Phase 2: Transpile
                       (ctx-reset-for-new-module ctx mod-name)
                       (transpile-file ctx ast)
+                      ;; Report warnings (non-fatal)
+                      (when (ctx-has-warnings ctx)
+                        (ctx-report-warnings ctx))
                       ;; Check for transpiler errors
                       (when (ctx-has-errors ctx)
                         (ctx-report-errors ctx)

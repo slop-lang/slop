@@ -89,6 +89,8 @@
     ctx-warn-fallback
     ;; Error collection
     ctx-set-file ctx-add-error ctx-add-error-at ctx-has-errors ctx-get-errors ctx-report-errors
+    ;; Warning collection
+    ctx-add-warning ctx-add-warning-at ctx-has-warnings ctx-report-warnings
     ;; Position extraction helpers
     ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col)
 
@@ -295,6 +297,8 @@
       (current-file String)
       ;; Collected transpiler errors
       (errors (List TranspileError))
+      ;; Collected transpiler warnings (non-fatal diagnostics)
+      (warnings (List TranspileError))
       ;; Deferred lambda function definitions (generated C code strings)
       (deferred-lambdas (List String))
       ;; Generated function trampolines (function C names that have wrappers)
@@ -324,7 +328,7 @@
     (@intent "Create a new transpiler context")
     (@spec ((Arena) -> (Ptr TranspileContext)))
     (@example (arena) -> ctx)
-    ;; TranspileContext is ~730 bytes with all fields, allocate 1024 for safety
+    ;; TranspileContext is ~750 bytes with all fields, allocate 1024 for safety
     (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena 1024)))
           (initial-scope (cast (Ptr Scope) (arena-alloc arena 64)))
           (no-parent (Option (Ptr Scope)) none)
@@ -365,6 +369,7 @@
       (set! (deref ctx) type-aliases (list-new arena TypeAliasEntry))
       (set! (deref ctx) current-file "")
       (set! (deref ctx) errors (list-new arena TranspileError))
+      (set! (deref ctx) warnings (list-new arena TranspileError))
       (set! (deref ctx) deferred-lambdas (list-new arena String))
       (set! (deref ctx) fn-trampolines (list-new arena String))
       (set! (deref ctx) function-output (list-new arena String))
@@ -439,6 +444,8 @@
       (set! (deref ctx) inline-records (list-new arena InlineRecord))
       (set! (deref ctx) c-name-aliases (list-new arena FuncCNameAlias))
       (set! (deref ctx) struct-key-types (list-new arena String))
+      ;; Clear warnings for new module (already reported before this point)
+      (set! (deref ctx) warnings (list-new arena TranspileError))
       ;; Clear deferred lambdas for new module
       (set! (deref ctx) deferred-lambdas (list-new arena String))
       ;; Clear trampoline tracking for new module UNLESS in single-output mode
@@ -639,6 +646,57 @@
                            (slop-eputc 58)  ;; :
                            (print-string-stderr (int-to-string arena col))
                            (slop-eprint (cast (Ptr Char) ": error: "))
+                           (print-string-stderr (. err message))
+                           (slop-eputc 10)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (cast Int count)))
+
+  ;; ============================================================
+  ;; Warning Collection (non-fatal diagnostics)
+  ;; ============================================================
+
+  (fn ctx-add-warning ((ctx (Ptr TranspileContext)) (message String))
+    (@intent "Add a transpiler warning to the warnings list with no position info")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) warnings) (TranspileError message 0 0)))
+
+  (fn ctx-add-warning-at ((ctx (Ptr TranspileContext)) (message String) (line Int) (col Int))
+    (@intent "Add a transpiler warning with position information")
+    (@spec (((Ptr TranspileContext) String Int Int) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) warnings) (TranspileError message line col)))
+
+  (fn ctx-has-warnings ((ctx (Ptr TranspileContext)))
+    (@intent "Check if any transpiler warnings have been recorded")
+    (@spec (((Ptr TranspileContext)) -> Bool))
+    (@pre {ctx != nil})
+    (> (list-len (. (deref ctx) warnings)) 0))
+
+  (fn ctx-report-warnings ((ctx (Ptr TranspileContext)))
+    (@intent "Print all collected warnings to stderr and return warning count")
+    (@spec (((Ptr TranspileContext)) -> Int))
+    (@pre {ctx != nil})
+    (let ((warns (. (deref ctx) warnings))
+          (count (list-len warns))
+          (arena (. (deref ctx) arena))
+          (current-file (. (deref ctx) current-file))
+          (mut i 0))
+      (while (< i count)
+        (match (list-get warns i)
+          ((some err)
+            (cast Unit (let ((line (. err line))
+                             (col (. err col)))
+                         (do
+                           (if (> (string-len current-file) 0)
+                             (do (print-string-stderr current-file))
+                             (do (slop-eprint (cast (Ptr Char) "<unknown>"))))
+                           (slop-eputc 58)  ;; :
+                           (print-string-stderr (int-to-string arena line))
+                           (slop-eputc 58)  ;; :
+                           (print-string-stderr (int-to-string arena col))
+                           (slop-eprint (cast (Ptr Char) ": warning: "))
                            (print-string-stderr (. err message))
                            (slop-eputc 10)))))
           ((none) (do)))

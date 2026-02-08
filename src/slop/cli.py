@@ -265,6 +265,9 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
             capture_output=True,
             text=True
         )
+        # Forward any stderr (warnings) even on success
+        if result.stderr:
+            print(result.stderr, end='', file=sys.stderr)
         if result.returncode == 0:
             # Parse JSON output and combine into single C file
             stdout = result.stdout
@@ -324,6 +327,9 @@ def transpile_native_split(input_file: str):
             capture_output=True,
             text=True
         )
+        # Forward any stderr (warnings) even on success
+        if result.stderr:
+            print(result.stderr, end='', file=sys.stderr)
         if result.returncode == 0:
             stdout = result.stdout
             stdout = stdout.replace('Error: Could not read file\n', '')
