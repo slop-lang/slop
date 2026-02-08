@@ -31,6 +31,7 @@
                    ctx-prefixing-enabled ctx-get-module ctx-prefix-type
                    TypeEntry FuncEntry FuncParamType VarEntry
                    to-c-type-prefixed extract-fn-c-name ctx-fail
+                   ctx-set-current-fn-c-name ctx-clear-current-fn-c-name
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-int-type))
   (import stmt (transpile-stmt))
@@ -1027,8 +1028,12 @@
         ;; Set capture mode if we need _retval
         (when needs-retval
           (ctx-set-capture-retval ctx true))
+        ;; Set current function C name for FFI shadowing prevention
+        (ctx-set-current-fn-c-name ctx fn-name)
         ;; Emit body (skip name, params, and annotations)
         (emit-function-body ctx items)
+        ;; Clear current function C name
+        (ctx-clear-current-fn-c-name ctx)
         ;; Clear capture mode
         (when needs-retval
           (ctx-set-capture-retval ctx false))

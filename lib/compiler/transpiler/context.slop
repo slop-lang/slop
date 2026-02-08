@@ -68,6 +68,8 @@
     ;; Function trampoline tracking
     ctx-has-trampoline ctx-add-trampoline ctx-set-single-output-mode
     ctx-set-skip-trampoline-generation ctx-skip-trampoline-generation
+    ;; Current function C name (for FFI shadowing prevention)
+    ctx-set-current-fn-c-name ctx-clear-current-fn-c-name
     ;; Last lambda info (for closure variable binding)
     LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
     ;; Function output buffer for two-phase emission
@@ -310,7 +312,9 @@
       ;; When true, don't reset fn-trampolines between modules (for test/single-file builds)
       (single-output-mode Bool)
       ;; When true, don't generate trampoline code (assume it exists elsewhere, e.g., in module code)
-      (skip-trampoline-generation Bool)))
+      (skip-trampoline-generation Bool)
+      ;; Current function C name (to detect FFI shadowing in lookup)
+      (current-fn-c-name String)))
 
   ;; ============================================================
   ;; Context Creation
@@ -375,6 +379,8 @@
       (set! (deref ctx) single-output-mode false)
       ;; Initialize skip-trampoline-generation (disabled by default)
       (set! (deref ctx) skip-trampoline-generation false)
+      ;; Initialize current-fn-c-name (empty = not inside a function)
+      (set! (deref ctx) current-fn-c-name "")
       ;; NOTE: String and Bytes have special constructor handling in
       ;; get-builtin-type-c-name / transpile-builtin-constructor (expr.slop)
       ;; for correct field ordering. If adding a new primitive type that needs
@@ -792,21 +798,32 @@
     (list-push (. (deref ctx) funcs) entry))
 
   (fn ctx-lookup-func ((ctx (Ptr TranspileContext)) (name String))
-    (@intent "Look up a function by name")
+    (@intent "Look up a function by name, preferring non-self entries for FFI shadowing support")
     (@spec (((Ptr TranspileContext) String) -> (Option FuncEntry)))
     (@pre {ctx != nil})
     (let ((funcs (. (deref ctx) funcs))
           (len (list-len funcs))
           (mut i (- len 1))
-          (mut result (Option FuncEntry) none))
+          (skip-c-name (. (deref ctx) current-fn-c-name))
+          (has-skip (> (string-len skip-c-name) 0))
+          (mut result (Option FuncEntry) none)
+          (mut self-entry (Option FuncEntry) none))
+      ;; Search backward: prefer entries that don't match current-fn-c-name
       (while (and (>= i 0) (match result ((none) true) ((some _) false)))
         (match (list-get funcs i)
           ((some entry)
             (when (string-eq (. entry name) name)
-              (set! result (some entry))))
+              (if (and has-skip (string-eq (. entry c-name) skip-c-name))
+                ;; Self entry - save as fallback for genuine recursion
+                (set! self-entry (some entry))
+                ;; Non-self entry - use immediately (e.g., FFI entry)
+                (set! result (some entry)))))
           ((none) (do)))
         (set! i (- i 1)))
-      result))
+      ;; If no non-self entry found, fall back to self entry (genuine recursion)
+      (match result
+        ((some _) result)
+        ((none) self-entry))))
 
   (fn ctx-register-field-type ((ctx (Ptr TranspileContext)) (type-name String) (field-name String) (c-type String) (slop-type String) (is-pointer Bool))
     (@intent "Register a field type for a record type")
@@ -1958,6 +1975,22 @@
     (@spec (((Ptr TranspileContext)) -> Bool))
     (@pre {ctx != nil})
     (. (deref ctx) skip-trampoline-generation))
+
+  ;; ============================================================
+  ;; Current Function C Name Tracking (FFI shadowing prevention)
+  ;; ============================================================
+
+  (fn ctx-set-current-fn-c-name ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Set the current function C name for FFI lookup disambiguation")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) current-fn-c-name name))
+
+  (fn ctx-clear-current-fn-c-name ((ctx (Ptr TranspileContext)))
+    (@intent "Clear the current function C name")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) current-fn-c-name ""))
 
   ;; ============================================================
   ;; Last Lambda Info Tracking
