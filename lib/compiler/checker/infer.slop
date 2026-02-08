@@ -1101,8 +1101,26 @@
                           ((some type-expr)
                             (let ((type-name (sexpr-get-symbol-name type-expr)))
                               (if (string-eq type-name "")
-                                ;; Not a symbol - size expression, can't determine exact return type
-                                (env-get-int-type env)
+                                ;; Not a symbol - check for (sizeof Type) pattern
+                                (if (sexpr-is-list type-expr)
+                                  (match (sexpr-list-get type-expr 0)
+                                    ((some head-expr)
+                                      (if (string-eq (sexpr-get-symbol-name head-expr) "sizeof")
+                                        ;; (sizeof Type) - extract type name from second element
+                                        (match (sexpr-list-get type-expr 1)
+                                          ((some sizeof-type-expr)
+                                            (let ((sizeof-type-name (sexpr-get-symbol-name sizeof-type-expr)))
+                                              (if (string-eq sizeof-type-name "")
+                                                (env-get-int-type env)
+                                                (match (env-lookup-type env sizeof-type-name)
+                                                  ((some resolved) (env-make-ptr-type env resolved))
+                                                  ((none) (env-get-int-type env))))))
+                                          ((none) (env-get-int-type env)))
+                                        ;; List but not sizeof - raw byte allocation
+                                        (env-get-int-type env)))
+                                    ((none) (env-get-int-type env)))
+                                  ;; Not a list and not a symbol - raw byte allocation
+                                  (env-get-int-type env))
                                 (match (env-lookup-type env type-name)
                                   ((some resolved) (env-make-ptr-type env resolved))
                                   ((none)
