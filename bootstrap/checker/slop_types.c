@@ -130,8 +130,8 @@ types_ParamInfo* types_param_info_new(slop_arena* arena, slop_string name, types
 types_FnSignature* types_fn_signature_new(slop_arena* arena, slop_string name, slop_string c_name, slop_list_types_ParamInfo params, types_ResolvedType* return_type) {
     SLOP_PRE(((return_type != NULL)), "(!= return-type nil)");
     {
-        __auto_type sig = ((types_FnSignature*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 112); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        (*sig) = (types_FnSignature){name, c_name, params, return_type, 0, 0, ((slop_option_string){.has_value = false}), ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 })};
+        __auto_type sig = ((types_FnSignature*)(({ __auto_type _alloc = (types_FnSignature*)slop_arena_alloc(arena, sizeof(types_FnSignature)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        (*sig) = (types_FnSignature){name, c_name, params, return_type, 0, 0, ((slop_option_string){.has_value = false}), ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 }), 0};
         return sig;
     }
 }
