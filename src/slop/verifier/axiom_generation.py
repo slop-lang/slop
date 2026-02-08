@@ -426,6 +426,15 @@ class AxiomGenerationMixin:
                 if outer_name not in translator.list_seqs:
                     translator._create_list_seq(outer_name)
                 outer_seq = translator.list_seqs.get(outer_name)
+        elif isinstance(pattern.outer_collection, SList) and len(pattern.outer_collection) >= 1:
+            # Function call collection (from callback desugaring):
+            # (fn-name arg1 arg2 ...)
+            head = pattern.outer_collection[0]
+            if isinstance(head, Symbol):
+                outer_name = f"_call_{head.name}"
+                if outer_name not in translator.list_seqs:
+                    translator._create_list_seq(outer_name)
+                outer_seq = translator.list_seqs.get(outer_name)
 
         if outer_seq is None:
             return axioms
@@ -660,18 +669,36 @@ class AxiomGenerationMixin:
 
         # Collect all postconditions and assumptions
         annotations = list(sig.postconditions) + list(sig.assumptions)
+
+        # Rewrite @callback-assume annotations as collection postconditions
+        # (@callback-assume callback (prop $callback-arg)) becomes
+        # (forall (t $result) (prop t)) with $callback-arg → t
+        if sig.callback_assumptions:
+            for ca in sig.callback_assumptions:
+                rewritten = self._rewrite_callback_assume_as_postcondition(ca.assumption)
+                if rewritten is not None:
+                    annotations.append(rewritten)
+
         if not annotations:
             return axioms
 
         # Build param-name -> call-arg mapping
+        # For callback-desugared calls, the callback param is NOT in the call args
         call_args = resolved_coll.items[1:]  # arguments after function name
-        if len(call_args) != len(sig.params):
+        param_names = sig.params
+
+        # Filter out callback parameter names (they won't have corresponding call args)
+        if sig.callback_assumptions:
+            callback_param_names = {ca.callback_param for ca in sig.callback_assumptions}
+            param_names = [p for p in sig.params if p not in callback_param_names]
+
+        if len(call_args) != len(param_names):
             return axioms
 
         for post in annotations:
             try:
                 inst_axiom = self._instantiate_postcondition_for_inner_loop(
-                    fn_name, sig.params, call_args, post, inner_seq, translator
+                    fn_name, param_names, call_args, post, inner_seq, translator
                 )
                 if inst_axiom is not None:
                     axioms.append(inst_axiom)
@@ -688,6 +715,35 @@ class AxiomGenerationMixin:
         ))
 
         return axioms
+
+    def _rewrite_callback_assume_as_postcondition(self, assumption: SExpr) -> Optional[SExpr]:
+        """Rewrite a @callback-assume property into a collection postcondition.
+
+        Transforms: (indexed-graph-contains g $callback-arg)
+        Into:       (forall (t $result) (indexed-graph-contains g t))
+
+        Replaces $callback-arg with t and wraps in (forall (t $result) ...).
+        """
+        t_sym = Symbol('_cb_t')
+        rewritten_body = self._substitute_callback_arg(assumption, t_sym)
+        # Wrap: (forall (_cb_t $result) rewritten_body)
+        binding = SList([t_sym, Symbol('$result')])
+        return SList([Symbol('forall'), binding, rewritten_body])
+
+    def _substitute_callback_arg(self, expr: SExpr, replacement: Symbol) -> SExpr:
+        """Replace $callback-arg with replacement symbol throughout expr."""
+        if isinstance(expr, Symbol):
+            if expr.name == '$callback-arg':
+                return replacement
+            return expr
+        if isinstance(expr, SList):
+            new_items = [self._substitute_callback_arg(item, replacement) for item in expr.items]
+            result = SList(new_items)
+            if hasattr(expr, 'line'):
+                result.line = expr.line
+                result.col = expr.col
+            return result
+        return expr
 
     def _generate_containment_congruence_axioms(
         self,

@@ -177,6 +177,16 @@ Transpiler emits both the clean name and a #define alias.
 
 ; Calling deprecated functions emits a warning during type checking
 
+### Callback Assumptions (for higher-order functions)
+(@callback-assume <callback-param> <property-expr>)
+
+; Specify properties that hold for every argument passed to a callback parameter.
+; $callback-arg refers to the callback argument value.
+; Used by slop verify for reasoning about callback-taking functions.
+(fn for-each-item ((g Graph) (callback (Fn (Item) Unit)))
+  (@callback-assume callback (graph-contains g $callback-arg))
+  ...)
+
 ### Advanced Annotations
 (@property (forall (x T) expr))        ; Property assertion
 (@generation-mode mode)                 ; deterministic|template|llm

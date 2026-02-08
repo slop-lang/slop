@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from slop.parser import SList, Symbol, Number, String, is_form
 from slop.types import Type, UNKNOWN
 
-from .types import FunctionSignature, ConstantDef, ImportedDefinitions
+from .types import FunctionSignature, CallbackAssumption, ConstantDef, ImportedDefinitions
 from .type_builder import build_type_registry_from_ast, _parse_type_expr_simple
 
 if TYPE_CHECKING:
@@ -109,6 +109,7 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
     # Look for @spec to get return type, @post for postconditions, @assume for assumptions
     postconditions: List['SExpr'] = []
     assumptions: List['SExpr'] = []
+    callback_assumptions: List[CallbackAssumption] = []
     for item in fn_form.items[3:]:
         if is_form(item, '@spec') and len(item) > 1:
             spec = item[1]
@@ -124,8 +125,13 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
             postconditions.append(item[1])
         elif is_form(item, '@assume') and len(item) > 1:
             assumptions.append(item[1])
+        elif is_form(item, '@callback-assume') and len(item) >= 3:
+            if isinstance(item[1], Symbol):
+                callback_assumptions.append(
+                    CallbackAssumption(item[1].name, item[2])
+                )
 
-    return FunctionSignature(name, param_types, return_type, param_names, postconditions, assumptions)
+    return FunctionSignature(name, param_types, return_type, param_names, postconditions, assumptions, callback_assumptions)
 
 
 def _extract_const_value(expr: 'SExpr') -> Any:

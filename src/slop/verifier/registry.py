@@ -81,7 +81,7 @@ class FunctionRegistry:
         properties: List[Tuple[Optional[str], 'SExpr']] = []
         annotation_forms = {'@intent', '@spec', '@pre', '@post', '@assume', '@pure',
                            '@alloc', '@example', '@deprecated', '@property',
-                           '@generation-mode', '@requires'}
+                           '@generation-mode', '@requires', '@callback-assume'}
 
         skip_next_string = False
         for item in fn_form.items[3:]:

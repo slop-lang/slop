@@ -298,7 +298,35 @@ Assumptions are reported as "Verified via @assume (trusted)" in verification out
 
 **Soundness warning**: every `@assume` is a potential source of unsoundness. If an assumption is false, the verifier may accept incorrect code. Use sparingly.
 
-## 7. Imported Function Reasoning
+## 7. @callback-assume — Higher-Order Function Reasoning
+
+`@callback-assume` specifies properties that hold for every argument passed to a callback parameter in higher-order functions.
+
+**Syntax:**
+
+```lisp
+(@callback-assume <callback-param> <property-expr>)
+```
+
+Where `$callback-arg` is a magic variable referring to each argument passed to the callback.
+
+**Example:**
+
+```lisp
+(fn for-each-item ((g Graph) (callback (Fn (Item) Unit)))
+  (@intent "Apply callback to each item in graph")
+  (@spec ((Graph (Fn (Item) Unit)) -> Unit))
+  (@callback-assume callback (graph-contains g $callback-arg))
+  ...)
+```
+
+This declares that every `Item` passed to `callback` satisfies `(graph-contains g item)`.
+
+**How it works:** The verifier desugars callback-taking function calls into `for-each` loops and transforms the `@callback-assume` into a `(forall (t $result) ...)` axiom. This enables Z3 to reason about what properties hold for the values the callback processes.
+
+**Note:** The callback parameter itself is excluded from call-site argument matching — only the non-callback arguments are matched against `@spec` parameter types.
+
+## 8. Imported Function Reasoning
 
 When a module imports functions, the verifier uses their contracts as axioms.
 
@@ -340,7 +368,7 @@ This works with any record type that has:
 
 The axioms are sound because containment checks by field equality, not object identity.
 
-## 8. Verifier-Only Predicates
+## 9. Verifier-Only Predicates
 
 ### list-contains
 
@@ -368,7 +396,7 @@ Example usage in a postcondition:
 
 Since `list-contains` is verifier-only, it cannot appear in runtime code — only in contract annotations.
 
-## 9. Troubleshooting Verification Failures
+## 10. Troubleshooting Verification Failures
 
 ### timeout
 
@@ -420,7 +448,7 @@ When verification fails, the verifier prints actionable suggestions:
 - **Complex equality**: "This equality function uses nested match — too complex for automatic verification. Consider breaking into smaller functions."
 - **Conditional insert with contains**: "Consider `(@assume (predicate-name $result item))` to trust the invariant."
 
-## 10. Practical Examples
+## 11. Practical Examples
 
 ### Simple: Arithmetic with Range Types
 

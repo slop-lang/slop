@@ -194,6 +194,7 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 (@assume boolean-expr)           ; Trusted axiom for verification (e.g., FFI behavior)
 (@invariant boolean-expr)        ; Type invariant (on type definitions only)
 (@loop-invariant boolean-expr)   ; Loop invariant (inside for-each/while body)
+(@callback-assume param expr)    ; Property of callback args ($callback-arg for each arg)
 
 ; Infix notation (contracts only) - curly braces denote infix expressions
 (@pre {x > 0})                   ; Equivalent to (@pre (> x 0))
