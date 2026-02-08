@@ -940,6 +940,8 @@
                           (sig (fn-signature-new arena qualified-name fn-name params ret-type)))
                       ;; Set module-name for visibility checking
                       (set! (. (deref sig) module-name) mod-opt)
+                      ;; Check for variadic marker (...) in params list
+                      (set! (. (deref sig) is-variadic) (ffi-has-variadic func-decl))
                       (env-register-function env sig)))))
               ((none) (do))))
           ;; Constant declaration: 2 elements (name Type)
@@ -955,6 +957,20 @@
                       ((none) (do))))))
               ((none) (do))))
           (else (do))))))
+
+  (fn ffi-has-variadic ((func-decl (Ptr SExpr)))
+    (@intent "Check if FFI declaration has :variadic marker")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre (!= func-decl nil))
+    (@pure)
+    ;; (func-name ((params)) RetType :variadic) - 4 elements, last is :variadic
+    (let ((len (sexpr-list-len func-decl)))
+      (if (>= len 4)
+        (match (sexpr-list-get func-decl (- len 1))
+          ((some last-expr)
+            (string-eq (sexpr-get-symbol-name last-expr) ":variadic"))
+          ((none) false))
+        false)))
 
   (fn collect-ffi-params ((env (Ptr TypeEnv)) (arena Arena) (func-decl (Ptr SExpr)))
     (@intent "Collect parameters from FFI function declaration")

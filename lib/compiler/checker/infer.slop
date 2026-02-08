@@ -413,8 +413,8 @@
       ;; Infer argument types and unify with formal params
       (when (sexpr-is-list expr)
         (let ((num-args (- (sexpr-list-len expr) 1)))
-          ;; Check arity
-          (when (!= num-args num-params)
+          ;; Check arity (variadic functions allow extra args)
+          (when (if (. (deref sig) is-variadic) (< num-args num-params) (!= num-args num-params))
             (let ((msg (string-concat arena "'"
                          (string-concat arena (. (deref sig) name)
                            (string-concat arena "' expects "
@@ -1436,7 +1436,7 @@
                                  (string-concat arena " argument(s), got "
                                    (int-to-string arena num-args))))))))
                 (env-add-error env msg line col)))
-            ((> num-args num-params)
+            ((and (> num-args num-params) (not (. (deref sig) is-variadic)))
               (let ((msg (string-concat arena "'"
                            (string-concat arena fn-name
                              (string-concat arena "' expects "
@@ -1444,7 +1444,7 @@
                                  (string-concat arena " argument(s), got "
                                    (int-to-string arena num-args))))))))
                 (env-add-error env msg line col)))
-            ;; Counts match - check individual argument types
+            ;; Counts match (or variadic with extra args) - check declared argument types
             (else
               (for (i 0 num-params)
                 (check-single-arg env sig expr i line col))))))))

@@ -292,6 +292,13 @@
                                       ;; Regular binding - infer type from init expression
                                       (let ((inferred-type (infer-expr-c-type ctx init-expr))
                                             (lambda-info (ctx-get-last-lambda-info ctx))
+                                            ;; Only trust lambda-info if init is actually (fn ...)
+                                            (is-init-lambda (match (deref init-expr)
+                                                              ((lst init-lst)
+                                                                (match (list-get (. init-lst items) 0)
+                                                                  ((some head) (string-eq (sexpr-get-symbol-name head) "fn"))
+                                                                  ((none) false)))
+                                                              (else false)))
                                             ;; For mutable vars with simple primitive types, use explicit type
                                             ;; to avoid __auto_type mismatch in closures. Complex types (lists, etc)
                                             ;; still use __auto_type since type inference may be incorrect.
@@ -299,7 +306,7 @@
                                             (decl-type (if use-explicit-type (ctx-str ctx inferred-type " ") "__auto_type ")))
                                         (ctx-emit ctx (ctx-str5 ctx decl-type var-name " = " init-c ";"))
                                         ;; Check if this is a closure binding
-                                        (if (. lambda-info is-closure)
+                                        (if (and (. lambda-info is-closure) is-init-lambda)
                                           (do
                                             ;; Closure - record lambda info in VarEntry
                                             (ctx-bind-var ctx (VarEntry raw-name var-name "slop_closure_t" inferred-slop-type false has-mut true (. lambda-info env-type) (. lambda-info lambda-name)))

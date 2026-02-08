@@ -6023,6 +6023,8 @@
         (let ((fn-def (build-lambda-function ctx lambda-name return-type param-str body-code)))
           ;; Add to deferred lambdas
           (ctx-add-deferred-lambda ctx fn-def)
+          ;; Set lambda info so let-bindings mark the variable as a closure
+          (ctx-set-last-lambda-info ctx true "void" lambda-name)
           ;; Return closure struct with NULL env (non-capturing lambda)
           (ctx-str5 ctx "(slop_closure_t){(void*)" lambda-name ", NULL}" "" "")))))
 
@@ -6201,8 +6203,8 @@
             ;; Found arena variable, use it directly (it's already a pointer)
             (. entry c-name))
           ((none)
-            ;; Fallback - assume arena is available
-            "arena")))))
+            ;; No arena in scope - signal to caller to use malloc
+            "")))))
 
   (fn build-closure-instance ((ctx (Ptr TranspileContext)) (lambda-name String) (env-name String) (env-type String) (free-vars (List String)) (captured-accesses (List String)))
     (@intent "Build expression that creates closure instance")
@@ -6212,17 +6214,26 @@
     ;; This ensures the env outlives the current scope when the closure is returned
     ;; ({ env_type* env_name = (env_type*)slop_arena_alloc(_arena, sizeof(env_type)); *env_name = (env_type){ .var1 = var1, ... }; (slop_closure_t){ (void*)fn, (void*)env_name }; })
     (let ((arena (. (deref ctx) arena)))
-      (let ((initializer (build-env-initializer ctx free-vars captured-accesses)))
-        ;; env_type* env_name = (env_type*)slop_arena_alloc(_arena, sizeof(env_type));
-        (let ((alloc-decl (ctx-str ctx env-type
-                           (ctx-str ctx "* "
-                             (ctx-str ctx env-name
-                               (ctx-str ctx " = ("
-                                 (ctx-str ctx env-type
-                                   (ctx-str ctx "*)slop_arena_alloc("
-                                     (ctx-str ctx (find-arena-ptr-expr ctx)
-                                       (ctx-str ctx ", sizeof("
-                                         (ctx-str ctx env-type "));"))))))))))
+      (let ((initializer (build-env-initializer ctx free-vars captured-accesses))
+            (arena-expr (find-arena-ptr-expr ctx)))
+        ;; TODO: malloc fallback leaks - closures outside with-arena should ideally warn
+        (let ((alloc-decl (if (string-eq arena-expr "")
+                            (ctx-str ctx env-type
+                              (ctx-str ctx "* "
+                                (ctx-str ctx env-name
+                                  (ctx-str ctx " = ("
+                                    (ctx-str ctx env-type
+                                      (ctx-str ctx "*)malloc(sizeof("
+                                        (ctx-str ctx env-type "));")))))))
+                            (ctx-str ctx env-type
+                              (ctx-str ctx "* "
+                                (ctx-str ctx env-name
+                                  (ctx-str ctx " = ("
+                                    (ctx-str ctx env-type
+                                      (ctx-str ctx "*)slop_arena_alloc("
+                                        (ctx-str ctx arena-expr
+                                          (ctx-str ctx ", sizeof("
+                                            (ctx-str ctx env-type "));")))))))))))
               ;; *env_name = (env_type){ .var1 = var1, ... };
               (assign-stmt (ctx-str ctx "*"
                              (ctx-str ctx env-name
