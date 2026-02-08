@@ -4,7 +4,7 @@
   (export main)
 
   (ffi "stdio.h"
-    (printf ((fmt (Ptr Char))) Int))
+    (printf ((fmt (Ptr Char))) Int :variadic))
 
   ;; Test 1: Simple non-capturing lambda
   (fn test-simple ()

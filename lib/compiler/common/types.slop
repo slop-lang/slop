@@ -171,7 +171,8 @@
     (is-pure Bool)             ;; Has @pure annotation
     (allocates Bool)           ;; Has @alloc annotation
     (module-name (Option String))      ;; Module that defines this
-    (type-params (List String))))      ;; Generic type parameter names (e.g., ("T"))
+    (type-params (List String))        ;; Generic type parameter names (e.g., ("T"))
+    (is-variadic Bool)))               ;; FFI variadic function (e.g., printf)
 
   ;; ============================================================
   ;; Type Errors
@@ -354,8 +355,8 @@
     (@alloc arena)
     (@pre (!= return-type nil))
     ;; Example: (fn-signature-new arena "add" "add" params int-type)
-    (let ((sig (cast (Ptr FnSignature) (arena-alloc arena 112))))
-      (set! (deref sig) (FnSignature name c-name params return-type false false (none) (list-new arena String)))
+    (let ((sig (cast (Ptr FnSignature) (arena-alloc arena (sizeof FnSignature)))))
+      (set! (deref sig) (FnSignature name c-name params return-type false false (none) (list-new arena String) false))
       sig))
 
   (fn type-error-new ((kind TypeErrorKind) (message String) (line Int) (col Int))

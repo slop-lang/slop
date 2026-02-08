@@ -68,6 +68,8 @@
     ;; Function trampoline tracking
     ctx-has-trampoline ctx-add-trampoline ctx-set-single-output-mode
     ctx-set-skip-trampoline-generation ctx-skip-trampoline-generation
+    ;; Current function C name (for FFI shadowing prevention)
+    ctx-set-current-fn-c-name ctx-clear-current-fn-c-name
     ;; Last lambda info (for closure variable binding)
     LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
     ;; Function output buffer for two-phase emission
@@ -87,6 +89,8 @@
     ctx-warn-fallback
     ;; Error collection
     ctx-set-file ctx-add-error ctx-add-error-at ctx-has-errors ctx-get-errors ctx-report-errors
+    ;; Warning collection
+    ctx-add-warning ctx-add-warning-at ctx-has-warnings ctx-report-warnings
     ;; Position extraction helpers
     ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col)
 
@@ -293,6 +297,8 @@
       (current-file String)
       ;; Collected transpiler errors
       (errors (List TranspileError))
+      ;; Collected transpiler warnings (non-fatal diagnostics)
+      (warnings (List TranspileError))
       ;; Deferred lambda function definitions (generated C code strings)
       (deferred-lambdas (List String))
       ;; Generated function trampolines (function C names that have wrappers)
@@ -310,7 +316,9 @@
       ;; When true, don't reset fn-trampolines between modules (for test/single-file builds)
       (single-output-mode Bool)
       ;; When true, don't generate trampoline code (assume it exists elsewhere, e.g., in module code)
-      (skip-trampoline-generation Bool)))
+      (skip-trampoline-generation Bool)
+      ;; Current function C name (to detect FFI shadowing in lookup)
+      (current-fn-c-name String)))
 
   ;; ============================================================
   ;; Context Creation
@@ -320,7 +328,7 @@
     (@intent "Create a new transpiler context")
     (@spec ((Arena) -> (Ptr TranspileContext)))
     (@example (arena) -> ctx)
-    ;; TranspileContext is ~730 bytes with all fields, allocate 1024 for safety
+    ;; TranspileContext is ~750 bytes with all fields, allocate 1024 for safety
     (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena 1024)))
           (initial-scope (cast (Ptr Scope) (arena-alloc arena 64)))
           (no-parent (Option (Ptr Scope)) none)
@@ -361,6 +369,7 @@
       (set! (deref ctx) type-aliases (list-new arena TypeAliasEntry))
       (set! (deref ctx) current-file "")
       (set! (deref ctx) errors (list-new arena TranspileError))
+      (set! (deref ctx) warnings (list-new arena TranspileError))
       (set! (deref ctx) deferred-lambdas (list-new arena String))
       (set! (deref ctx) fn-trampolines (list-new arena String))
       (set! (deref ctx) function-output (list-new arena String))
@@ -375,6 +384,8 @@
       (set! (deref ctx) single-output-mode false)
       ;; Initialize skip-trampoline-generation (disabled by default)
       (set! (deref ctx) skip-trampoline-generation false)
+      ;; Initialize current-fn-c-name (empty = not inside a function)
+      (set! (deref ctx) current-fn-c-name "")
       ;; NOTE: String and Bytes have special constructor handling in
       ;; get-builtin-type-c-name / transpile-builtin-constructor (expr.slop)
       ;; for correct field ordering. If adding a new primitive type that needs
@@ -433,6 +444,8 @@
       (set! (deref ctx) inline-records (list-new arena InlineRecord))
       (set! (deref ctx) c-name-aliases (list-new arena FuncCNameAlias))
       (set! (deref ctx) struct-key-types (list-new arena String))
+      ;; Clear warnings for new module (already reported before this point)
+      (set! (deref ctx) warnings (list-new arena TranspileError))
       ;; Clear deferred lambdas for new module
       (set! (deref ctx) deferred-lambdas (list-new arena String))
       ;; Clear trampoline tracking for new module UNLESS in single-output mode
@@ -640,6 +653,57 @@
       (cast Int count)))
 
   ;; ============================================================
+  ;; Warning Collection (non-fatal diagnostics)
+  ;; ============================================================
+
+  (fn ctx-add-warning ((ctx (Ptr TranspileContext)) (message String))
+    (@intent "Add a transpiler warning to the warnings list with no position info")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) warnings) (TranspileError message 0 0)))
+
+  (fn ctx-add-warning-at ((ctx (Ptr TranspileContext)) (message String) (line Int) (col Int))
+    (@intent "Add a transpiler warning with position information")
+    (@spec (((Ptr TranspileContext) String Int Int) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) warnings) (TranspileError message line col)))
+
+  (fn ctx-has-warnings ((ctx (Ptr TranspileContext)))
+    (@intent "Check if any transpiler warnings have been recorded")
+    (@spec (((Ptr TranspileContext)) -> Bool))
+    (@pre {ctx != nil})
+    (> (list-len (. (deref ctx) warnings)) 0))
+
+  (fn ctx-report-warnings ((ctx (Ptr TranspileContext)))
+    (@intent "Print all collected warnings to stderr and return warning count")
+    (@spec (((Ptr TranspileContext)) -> Int))
+    (@pre {ctx != nil})
+    (let ((warns (. (deref ctx) warnings))
+          (count (list-len warns))
+          (arena (. (deref ctx) arena))
+          (current-file (. (deref ctx) current-file))
+          (mut i 0))
+      (while (< i count)
+        (match (list-get warns i)
+          ((some err)
+            (cast Unit (let ((line (. err line))
+                             (col (. err col)))
+                         (do
+                           (if (> (string-len current-file) 0)
+                             (do (print-string-stderr current-file))
+                             (do (slop-eprint (cast (Ptr Char) "<unknown>"))))
+                           (slop-eputc 58)  ;; :
+                           (print-string-stderr (int-to-string arena line))
+                           (slop-eputc 58)  ;; :
+                           (print-string-stderr (int-to-string arena col))
+                           (slop-eprint (cast (Ptr Char) ": warning: "))
+                           (print-string-stderr (. err message))
+                           (slop-eputc 10)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (cast Int count)))
+
+  ;; ============================================================
   ;; SExpr Position Extraction
   ;; ============================================================
 
@@ -792,21 +856,32 @@
     (list-push (. (deref ctx) funcs) entry))
 
   (fn ctx-lookup-func ((ctx (Ptr TranspileContext)) (name String))
-    (@intent "Look up a function by name")
+    (@intent "Look up a function by name, preferring non-self entries for FFI shadowing support")
     (@spec (((Ptr TranspileContext) String) -> (Option FuncEntry)))
     (@pre {ctx != nil})
     (let ((funcs (. (deref ctx) funcs))
           (len (list-len funcs))
           (mut i (- len 1))
-          (mut result (Option FuncEntry) none))
+          (skip-c-name (. (deref ctx) current-fn-c-name))
+          (has-skip (> (string-len skip-c-name) 0))
+          (mut result (Option FuncEntry) none)
+          (mut self-entry (Option FuncEntry) none))
+      ;; Search backward: prefer entries that don't match current-fn-c-name
       (while (and (>= i 0) (match result ((none) true) ((some _) false)))
         (match (list-get funcs i)
           ((some entry)
             (when (string-eq (. entry name) name)
-              (set! result (some entry))))
+              (if (and has-skip (string-eq (. entry c-name) skip-c-name))
+                ;; Self entry - save as fallback for genuine recursion
+                (set! self-entry (some entry))
+                ;; Non-self entry - use immediately (e.g., FFI entry)
+                (set! result (some entry)))))
           ((none) (do)))
         (set! i (- i 1)))
-      result))
+      ;; If no non-self entry found, fall back to self entry (genuine recursion)
+      (match result
+        ((some _) result)
+        ((none) self-entry))))
 
   (fn ctx-register-field-type ((ctx (Ptr TranspileContext)) (type-name String) (field-name String) (c-type String) (slop-type String) (is-pointer Bool))
     (@intent "Register a field type for a record type")
@@ -1958,6 +2033,22 @@
     (@spec (((Ptr TranspileContext)) -> Bool))
     (@pre {ctx != nil})
     (. (deref ctx) skip-trampoline-generation))
+
+  ;; ============================================================
+  ;; Current Function C Name Tracking (FFI shadowing prevention)
+  ;; ============================================================
+
+  (fn ctx-set-current-fn-c-name ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Set the current function C name for FFI lookup disambiguation")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) current-fn-c-name name))
+
+  (fn ctx-clear-current-fn-c-name ((ctx (Ptr TranspileContext)))
+    (@intent "Clear the current function C name")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) current-fn-c-name ""))
 
   ;; ============================================================
   ;; Last Lambda Info Tracking

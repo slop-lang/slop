@@ -77,6 +77,7 @@ void collect_collect_functions(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 void collect_collect_module_functions(env_TypeEnv* env, types_SExpr* module_form);
 void collect_collect_ffi_functions(env_TypeEnv* env, slop_arena* arena, types_SExpr* ffi_form);
 void collect_collect_ffi_function(env_TypeEnv* env, slop_arena* arena, types_SExpr* func_decl);
+uint8_t collect_ffi_has_variadic(types_SExpr* func_decl);
 slop_list_types_ParamInfo collect_collect_ffi_params(env_TypeEnv* env, slop_arena* arena, types_SExpr* func_decl);
 types_ResolvedType* collect_get_ffi_return_type(env_TypeEnv* env, slop_arena* arena, types_SExpr* func_decl);
 void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_SExpr* fn_form);

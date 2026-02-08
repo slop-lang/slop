@@ -414,6 +414,7 @@ struct context_TranspileContext {
     slop_list_context_TypeAliasEntry type_aliases;
     slop_string current_file;
     slop_list_context_TranspileError errors;
+    slop_list_context_TranspileError warnings;
     slop_list_string deferred_lambdas;
     slop_list_string fn_trampolines;
     slop_list_string function_output;
@@ -424,6 +425,7 @@ struct context_TranspileContext {
     slop_list_context_GenericFuncInstantiation generic_func_instantiations;
     uint8_t single_output_mode;
     uint8_t skip_trampoline_generation;
+    slop_string current_fn_c_name;
 };
 typedef struct context_TranspileContext context_TranspileContext;
 
@@ -462,6 +464,10 @@ void context_ctx_add_error_at(context_TranspileContext* ctx, slop_string message
 uint8_t context_ctx_has_errors(context_TranspileContext* ctx);
 slop_list_context_TranspileError context_ctx_get_errors(context_TranspileContext* ctx);
 int64_t context_ctx_report_errors(context_TranspileContext* ctx);
+void context_ctx_add_warning(context_TranspileContext* ctx, slop_string message);
+void context_ctx_add_warning_at(context_TranspileContext* ctx, slop_string message, int64_t line, int64_t col);
+uint8_t context_ctx_has_warnings(context_TranspileContext* ctx);
+int64_t context_ctx_report_warnings(context_TranspileContext* ctx);
 int64_t context_ctx_sexpr_line(types_SExpr* expr);
 int64_t context_ctx_sexpr_col(types_SExpr* expr);
 int64_t context_ctx_list_first_line(slop_list_types_SExpr_ptr items);
@@ -554,6 +560,8 @@ void context_ctx_add_trampoline(context_TranspileContext* ctx, slop_string fn_c_
 void context_ctx_set_single_output_mode(context_TranspileContext* ctx, uint8_t enabled);
 void context_ctx_set_skip_trampoline_generation(context_TranspileContext* ctx, uint8_t skip);
 uint8_t context_ctx_skip_trampoline_generation(context_TranspileContext* ctx);
+void context_ctx_set_current_fn_c_name(context_TranspileContext* ctx, slop_string name);
+void context_ctx_clear_current_fn_c_name(context_TranspileContext* ctx);
 void context_ctx_set_last_lambda_info(context_TranspileContext* ctx, uint8_t is_closure, slop_string env_type, slop_string lambda_name);
 context_LastLambdaInfo context_ctx_get_last_lambda_info(context_TranspileContext* ctx);
 void context_ctx_clear_last_lambda_info(context_TranspileContext* ctx);

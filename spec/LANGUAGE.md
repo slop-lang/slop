@@ -807,6 +807,9 @@ Example:
 (ffi "openssl/sha.h"
   (SHA256 ((data (Ptr U8)) (len U64) (out (Ptr U8))) (Ptr U8)))
 
+(ffi "stdio.h"
+    (printf ((fmt (Ptr Char))) Int :variadic)) ;; allow variadic arguments
+    
 (ffi "curl/curl.h"
   (curl-easy-init () (Ptr CurlHandle))
   (curl-easy-setopt ((handle (Ptr CurlHandle)) (opt Int) (val (Ptr U8))) Int))

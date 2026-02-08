@@ -328,6 +328,7 @@ struct types_FnSignature {
     uint8_t allocates;
     slop_option_string module_name;
     slop_list_string type_params;
+    uint8_t is_variadic;
 };
 typedef struct types_FnSignature types_FnSignature;
 
