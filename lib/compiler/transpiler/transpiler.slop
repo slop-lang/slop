@@ -996,11 +996,23 @@
     (ctx-register-type ctx (TypeEntry "File" "file_File" "file_File" false true false)))
 
   (fn prescan-const ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Prescan a constant definition")
+    (@intent "Prescan a constant definition - register as variable for symbol resolution")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
     (@pre {ctx != nil})
-    ;; Constants don't need registration in prescan - just emit in order
-    (do))
+    ;; Register constant as a variable so transpile-expr can resolve it with module prefix
+    ;; Const form: (const NAME TYPE VALUE) — items = [NAME, TYPE, VALUE]
+    (let ((arena (. (deref ctx) arena)))
+      (when (>= (list-len items) 3)
+        (match (list-get items 1)
+          ((some name-expr)
+            (match (deref name-expr)
+              ((sym sym)
+                (let ((const-name (. sym name))
+                      (base-name (to-c-name arena const-name))
+                      (c-name (ctx-prefix-type ctx base-name)))
+                  (ctx-bind-var ctx (VarEntry const-name c-name "auto" "" false false false "" ""))))
+              (else (do))))
+          ((none) (do))))))
 
   (fn register-ffi-function ((ctx (Ptr TranspileContext)) (func-decl (Ptr SExpr)))
     (@intent "Register an FFI function declaration with optional :c-name alias")
