@@ -2187,6 +2187,8 @@ def _build_library_from_sources(
                 if debug:
                     compile_cmd.insert(1, "-g")
                     compile_cmd.insert(2, "-DSLOP_DEBUG")
+                if "pthread" in link_libraries:
+                    compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
                 result = subprocess.run(compile_cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     print(f"Compilation failed:\n{result.stderr}")
@@ -2227,6 +2229,8 @@ def _build_library_from_sources(
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if "pthread" in link_libraries:
+                compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"Compilation failed:\n{result.stderr}")
@@ -2566,6 +2570,8 @@ def cmd_build(args):
                             compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
                         elif arena_cap:
                             compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
+                        if "pthread" in link_libraries:
+                            compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
                         result = subprocess.run(compile_cmd, capture_output=True, text=True)
                         if result.returncode != 0:
                             print(f"Compilation failed:\n{result.stderr}")
@@ -2592,6 +2598,8 @@ def cmd_build(args):
                         compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
                     elif arena_cap:
                         compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
+                    if "pthread" in link_libraries:
+                        compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
                     result = subprocess.run(compile_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
                         print(f"Compilation failed:\n{result.stderr}")
@@ -2608,6 +2616,8 @@ def cmd_build(args):
                         compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
                     elif arena_cap:
                         compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
+                    if "pthread" in link_libraries:
+                        compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
                     result = subprocess.run(compile_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
                         print(f"Compilation failed:\n{result.stderr}")
@@ -2715,6 +2725,8 @@ def cmd_build(args):
                 compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
             elif arena_cap:
                 compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
+            if "pthread" in link_libraries:
+                compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -2745,6 +2757,8 @@ def cmd_build(args):
                 compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
             elif arena_cap:
                 compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
+            if "pthread" in link_libraries:
+                compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -2770,6 +2784,8 @@ def cmd_build(args):
                 compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
             elif arena_cap:
                 compile_cmd.insert(1, f"-DSLOP_ARENA_MAX_TOTAL_BYTES={arena_cap}")
+            if "pthread" in link_libraries:
+                compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
 

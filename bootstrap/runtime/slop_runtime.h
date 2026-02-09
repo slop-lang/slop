@@ -20,6 +20,10 @@
 #include <stdio.h>
 #include <stdatomic.h>
 
+#ifdef SLOP_INTERN_THREADSAFE
+#include <pthread.h>
+#endif
+
 /* ============================================================
  * Configuration
  * ============================================================ */
@@ -121,6 +125,9 @@ typedef struct {
     size_t bucket_count;
     size_t entry_count;
     slop_arena* arena;  /* Pool owns its own arena */
+#ifdef SLOP_INTERN_THREADSAFE
+    pthread_mutex_t lock;
+#endif
 } slop_intern_pool;
 
 static slop_intern_pool* slop_global_intern_pool = NULL;
@@ -273,6 +280,22 @@ static inline uint64_t slop_hash_string_data(const char* str, size_t len) {
 }
 
 /* Initialize the global intern pool (called lazily) */
+#ifdef SLOP_INTERN_THREADSAFE
+static pthread_once_t slop_intern_once = PTHREAD_ONCE_INIT;
+static void slop_intern_pool_init_impl(void) {
+    slop_global_intern_pool = (slop_intern_pool*)malloc(sizeof(slop_intern_pool));
+    slop_global_intern_pool->bucket_count = SLOP_INTERN_BUCKET_COUNT;
+    slop_global_intern_pool->entry_count = 0;
+    slop_global_intern_pool->buckets = (slop_intern_entry**)calloc(
+        SLOP_INTERN_BUCKET_COUNT, sizeof(slop_intern_entry*));
+    slop_global_intern_pool->arena = (slop_arena*)malloc(sizeof(slop_arena));
+    *slop_global_intern_pool->arena = slop_arena_new(1024 * 1024);
+    pthread_mutex_init(&slop_global_intern_pool->lock, NULL);
+}
+static inline void slop_intern_pool_init(void) {
+    pthread_once(&slop_intern_once, slop_intern_pool_init_impl);
+}
+#else
 static inline void slop_intern_pool_init(void) {
     if (slop_global_intern_pool) return;
 
@@ -286,6 +309,7 @@ static inline void slop_intern_pool_init(void) {
     slop_global_intern_pool->arena = (slop_arena*)malloc(sizeof(slop_arena));
     *slop_global_intern_pool->arena = slop_arena_new(1024 * 1024);  /* 1MB initial */
 }
+#endif
 
 /* Intern a string - returns existing string if already interned, otherwise allocates new */
 static inline slop_string slop_intern_string(const char* str, size_t len) {
@@ -294,6 +318,10 @@ static inline slop_string slop_intern_string(const char* str, size_t len) {
     uint64_t hash = slop_hash_string_data(str, len);
     size_t bucket = hash % slop_global_intern_pool->bucket_count;
 
+#ifdef SLOP_INTERN_THREADSAFE
+    pthread_mutex_lock(&slop_global_intern_pool->lock);
+#endif
+
     /* Check existing entries */
     slop_intern_entry* entry = slop_global_intern_pool->buckets[bucket];
     while (entry) {
@@ -301,6 +329,9 @@ static inline slop_string slop_intern_string(const char* str, size_t len) {
             entry->len == len &&
             memcmp(entry->data, str, len) == 0) {
             /* Found existing - return it */
+#ifdef SLOP_INTERN_THREADSAFE
+            pthread_mutex_unlock(&slop_global_intern_pool->lock);
+#endif
             return (slop_string){entry->len, entry->data};
         }
         entry = entry->next;
@@ -321,6 +352,9 @@ static inline slop_string slop_intern_string(const char* str, size_t len) {
     slop_global_intern_pool->buckets[bucket] = new_entry;
     slop_global_intern_pool->entry_count++;
 
+#ifdef SLOP_INTERN_THREADSAFE
+    pthread_mutex_unlock(&slop_global_intern_pool->lock);
+#endif
     return (slop_string){len, data};
 }
 
