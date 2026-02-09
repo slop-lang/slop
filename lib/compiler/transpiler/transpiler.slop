@@ -291,9 +291,10 @@
                               (ctx-register-union-variant ctx variant-name union-name
                                                           (to-c-name arena variant-name) "" "")))
                           ((lst variant-lst)
-                            ;; Variant with payload - first item is name, second is type
+                            ;; Variant - may have payload or not
                             (let ((vl-items (. variant-lst items)))
-                              (when (>= (list-len vl-items) 2)
+                              (if (>= (list-len vl-items) 2)
+                                ;; Variant with payload: (name Type)
                                 (match (list-get vl-items 0)
                                   ((some name-expr)
                                     (match (deref name-expr)
@@ -315,7 +316,19 @@
                                               (ctx-register-union-variant ctx variant-name union-name
                                                                           c-variant-name "" "")))))
                                       (else (do))))
-                                  ((none) (do))))))
+                                  ((none) (do)))
+                                ;; No-payload variant in parens: (nothing)
+                                (when (== (list-len vl-items) 1)
+                                  (match (list-get vl-items 0)
+                                    ((some name-expr)
+                                      (match (deref name-expr)
+                                        ((sym name-sym)
+                                          (let ((variant-name (. name-sym name)))
+                                            (ctx-register-enum-variant ctx variant-name union-name)
+                                            (ctx-register-union-variant ctx variant-name union-name
+                                                                        (to-c-name arena variant-name) "" "")))
+                                        (else (do))))
+                                    ((none) (do)))))))
                           (else (do))))
                       ((none) (do)))
                     (set! i (+ i 1)))))

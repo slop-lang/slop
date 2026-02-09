@@ -580,8 +580,8 @@
                                 ((some union-type-name)
                                   (emit-union-case ctx scrutinee-c pattern tag union-type-name branch-items is-return))
                                 ((none)
-                                  ;; Fallback: emit error comment if variant not found
-                                  (ctx-emit ctx (ctx-str3 ctx "/* unknown union variant: " tag " */"))))))))
+                                  ;; Emit error - variant not registered for this union
+                                  (ctx-add-error ctx (ctx-str3 ctx "unknown union variant in match: " tag " (not registered as enum variant)"))))))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))

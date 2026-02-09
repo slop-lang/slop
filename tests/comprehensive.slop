@@ -113,9 +113,74 @@
     (@spec (((Option Int)) -> Int))
     (match opt
       ((some v) v)
-      ('none 0)))
+      ((none) 0)))
+
+  (fn test-divide-ok ()
+    (@intent "Test divide returns ok for valid division")
+    (@spec (() -> Int))
+    (match (divide 10 2)
+      ((ok v) (if (== v 5) 0 1))
+      ((error _) 1)))
+
+  (fn test-divide-error ()
+    (@intent "Test divide returns error for division by zero")
+    (@spec (() -> Int))
+    (match (divide 10 0)
+      ((ok _) 1)
+      ((error _) 0)))
+
+  (fn test-safe-divide-twice-ok ()
+    (@intent "Test safe-divide-twice returns ok for valid divisions")
+    (@spec (() -> Int))
+    (match (safe-divide-twice 100 10 2)
+      ((ok v) (if (== v 5) 0 1))
+      ((error _) 1)))
+
+  (fn test-safe-divide-twice-error ()
+    (@intent "Test safe-divide-twice returns error when second divisor is zero")
+    (@spec (() -> Int))
+    (match (safe-divide-twice 100 10 0)
+      ((ok _) 1)
+      ((error _) 0)))
 
   (fn main ()
-    (@intent "Entry point")
+    (@intent "Run all tests, return 0 if all pass")
     (@spec (() -> Int))
-    0))
+    (+ ;; bitwise-ops: (| (& 6 3) (^ 6 (<< 3 2))) = (| 2 (^ 6 12)) = (| 2 10) = 10
+       (if (== (bitwise-ops 6 3) 10) 0 1)
+       ;; count-down: counts 5 iterations
+       (if (== (count-down 5) 5) 0 1)
+       ;; state-name: enum mapping
+       (if (== (state-name 'waiting) 0) 0 1)
+       (if (== (state-name 'playing) 1) 0 1)
+       (if (== (state-name 'paused) 2) 0 1)
+       (if (== (state-name 'finished) 3) 0 1)
+       ;; extract-value: union destructuring
+       (if (== (extract-value (union-new Value number 42)) 42) 0 1)
+       (if (== (extract-value (union-new Value nothing)) -1) 0 1)
+       ;; divide: Result ok/error paths
+       (test-divide-ok)
+       (test-divide-error)
+       ;; safe-divide-twice: chained Result
+       (test-safe-divide-twice-ok)
+       (test-safe-divide-twice-error)
+       ;; classify: cond branches
+       (if (== (classify -5) -1) 0 1)
+       (if (== (classify 0) 0) 0 1)
+       (if (== (classify 5) 1) 0 1)
+       ;; arena-test: arena allocation and field access
+       (if (== (arena-test) 42) 0 1)
+       ;; sequence-test: do sequencing
+       (if (== (sequence-test 10) 11) 0 1)
+       ;; to-byte: cast
+       (if (== (cast Int (to-byte 65)) 65) 0 1)
+       ;; inline-c: C inline code
+       (if (== (inline-c) 42) 0 1)
+       ;; always-positive: postcondition function
+       (if (== (always-positive -5) 1) 0 1)
+       (if (== (always-positive 10) 10) 0 1)
+       ;; nested-calls: classify(bitwise-ops(6,3)) = classify(10) = 1
+       (if (== (nested-calls 6 3) 1) 0 1)
+       ;; option-test: Option matching
+       (if (== (option-test (some 42)) 42) 0 1)
+       (if (== (option-test none) 0) 0 1))))

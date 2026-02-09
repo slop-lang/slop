@@ -1,0 +1,100 @@
+;; ============================================================
+;; String Operations Test - Verify string runtime functions
+;; ============================================================
+
+(module test-string-ops
+  (export (main 0))
+
+  ;; --- string-eq ---
+  (fn test-string-eq-same ()
+    (@intent "Test string-eq on equal strings")
+    (@spec (() -> Int))
+    (if (string-eq "hello" "hello") 0 1))
+
+  (fn test-string-eq-diff ()
+    (@intent "Test string-eq on different strings")
+    (@spec (() -> Int))
+    (if (string-eq "hello" "world") 1 0))
+
+  (fn test-string-eq-empty ()
+    (@intent "Test string-eq on empty strings")
+    (@spec (() -> Int))
+    (if (string-eq "" "") 0 1))
+
+  ;; --- string-len ---
+  (fn test-string-len ()
+    (@intent "Test string-len returns correct length")
+    (@spec (() -> Int))
+    (if (== (cast Int (string-len "hello")) 5) 0 1))
+
+  (fn test-string-len-empty ()
+    (@intent "Test string-len on empty string")
+    (@spec (() -> Int))
+    (if (== (cast Int (string-len "")) 0) 0 1))
+
+  ;; --- string-concat ---
+  (fn test-string-concat ()
+    (@intent "Test string-concat joins two strings")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((result (string-concat arena "hello" " world")))
+        (if (string-eq result "hello world") 0 1))))
+
+  (fn test-string-concat-empty ()
+    (@intent "Test string-concat with empty string")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((result (string-concat arena "hello" "")))
+        (if (string-eq result "hello") 0 1))))
+
+  ;; --- int-to-string ---
+  (fn test-int-to-string ()
+    (@intent "Test int-to-string conversion")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((s (int-to-string arena 42)))
+        (if (string-eq s "42") 0 1))))
+
+  (fn test-int-to-string-negative ()
+    (@intent "Test int-to-string with negative number")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((s (int-to-string arena -7)))
+        (if (string-eq s "-7") 0 1))))
+
+  (fn test-int-to-string-zero ()
+    (@intent "Test int-to-string with zero")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((s (int-to-string arena 0)))
+        (if (string-eq s "0") 0 1))))
+
+  ;; Note: string-to-int is not yet a registered builtin (runtime has it but
+  ;; checker/transpiler don't expose it). Add tests when it becomes available.
+
+  ;; --- string in match/cond ---
+  (fn classify-greeting ((s String))
+    (@intent "Classify a greeting string")
+    (@spec ((String) -> Int))
+    (cond
+      ((string-eq s "hello") 1)
+      ((string-eq s "goodbye") 2)
+      (else 0)))
+
+  (fn main ()
+    (@intent "Run all tests, return 0 if all pass")
+    (@spec (() -> Int))
+    (+ (test-string-eq-same)
+       (test-string-eq-diff)
+       (test-string-eq-empty)
+       (test-string-len)
+       (test-string-len-empty)
+       (test-string-concat)
+       (test-string-concat-empty)
+       (test-int-to-string)
+       (test-int-to-string-negative)
+       (test-int-to-string-zero)
+       ;; string in cond
+       (if (== (classify-greeting "hello") 1) 0 1)
+       (if (== (classify-greeting "goodbye") 2) 0 1)
+       (if (== (classify-greeting "hi") 0) 0 1))))
