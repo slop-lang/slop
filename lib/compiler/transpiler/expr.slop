@@ -4656,8 +4656,10 @@
             (let ((arena-from-field (get-arena-from-field-access ctx list-expr)))
               (if (> (string-len arena-from-field) 0)
                 arena-from-field
-                ;; Fallback to "arena" - will error if not available
-                "arena")))))))
+                ;; Try finding any arena-typed variable, else fallback to "arena"
+                (match (ctx-find-arena-var ctx)
+                  ((some arena-entry) (. arena-entry c-name))
+                  ((none) "arena")))))))))
 
   (fn get-arena-from-field-access ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
     (@intent "Extract arena from base struct if expr is field access (. BASE FIELD)")
@@ -4939,24 +4941,61 @@
           ((some type-expr)
             (let ((elem-type (to-c-type-prefixed ctx type-expr))
                   (elem-count (- len 2)))
-              ;; Generate: (slop_list_TYPE){.len = N, .cap = N, .data = (TYPE[]){e1, e2, ...}}
               (let ((type-id (type-to-identifier arena elem-type))
                     (count-str (int-to-string arena elem-count))
-                    (mut result (ctx-str ctx "((slop_list_" (ctx-str ctx type-id "){")))
-                    (mut data-part (ctx-str ctx ".len = " (ctx-str ctx count-str (ctx-str ctx ", .cap = " (ctx-str ctx count-str (ctx-str ctx ", .data = (" (ctx-str ctx elem-type "[]){")))))))
-                    (mut i 2)
-                    (mut first true))
+                    ;; Collect transpiled element expressions
+                    (mut elem-codes (list-new arena String))
+                    (mut i 2))
                 (while (< i len)
                   (match (list-get items i)
                     ((some elem-expr)
-                      (let ((elem-c (transpile-expr ctx elem-expr)))
-                        (if first
-                          (set! data-part (ctx-str ctx data-part elem-c))
-                          (set! data-part (ctx-str ctx data-part (ctx-str ctx ", " elem-c))))
-                        (set! first false)))
+                      (list-push elem-codes (transpile-expr ctx elem-expr)))
                     ((none) (do)))
                   (set! i (+ i 1)))
-                (ctx-str ctx result (ctx-str ctx data-part "}})")))))
+                ;; Check if arena variable is in scope
+                ;; Try "arena" first (most common), then search scope for any arena-typed variable
+                (let ((arena-var (match (ctx-lookup-var ctx "arena")
+                                   ((some v) (some v))
+                                   ((none) (ctx-find-arena-var ctx)))))
+                (match arena-var
+                  ((some arena-var)
+                    ;; Arena available: generate statement expression with arena-allocated data
+                    ;; ({ slop_list_TYPE _ll = (slop_list_TYPE){ .data = (TYPE*)slop_arena_alloc(arena, N * sizeof(TYPE)), .len = N, .cap = N };
+                    ;;    _ll.data[0] = e1; _ll.data[1] = e2; ... _ll; })
+                    (let ((arena-c (. arena-var c-name))
+                          (list-type (ctx-str ctx "slop_list_" type-id))
+                          (mut result (ctx-str ctx "({ " (ctx-str ctx list-type (ctx-str ctx " _ll = (" (ctx-str ctx list-type "){ .data = ("))))))
+                      (set! result (ctx-str ctx result (ctx-str ctx elem-type (ctx-str ctx "*)slop_arena_alloc(" (ctx-str ctx arena-c (ctx-str ctx ", " (ctx-str ctx count-str (ctx-str ctx " * sizeof(" (ctx-str ctx elem-type "))")))))))))
+                      (set! result (ctx-str ctx result (ctx-str ctx ", .len = " (ctx-str ctx count-str (ctx-str ctx ", .cap = " (ctx-str ctx count-str " };"))))))
+                      ;; Add element assignments: _ll.data[0] = e1; ...
+                      (set! i 0)
+                      (while (< i (list-len elem-codes))
+                        (match (list-get elem-codes i)
+                          ((some ec)
+                            (let ((idx-str (int-to-string arena i)))
+                              (set! result (ctx-str ctx result (ctx-str ctx " _ll.data[" (ctx-str ctx idx-str (ctx-str ctx "] = " (ctx-str ctx ec ";"))))))))
+                          ((none) (do)))
+                        (set! i (+ i 1)))
+                      (ctx-str ctx result " _ll; })")))
+                  ((none)
+                    ;; No arena: fallback to compound literal (stack-allocated)
+                    ;; ((slop_list_TYPE){.len = N, .cap = N, .data = (TYPE[]){e1, e2, ...}})
+                    (do
+                      (ctx-add-warning ctx "list literal uses stack-allocated compound literal (no arena in scope)")
+                      (let ((mut result (ctx-str ctx "((slop_list_" (ctx-str ctx type-id "){")))
+                            (mut data-part (ctx-str ctx ".len = " (ctx-str ctx count-str (ctx-str ctx ", .cap = " (ctx-str ctx count-str (ctx-str ctx ", .data = (" (ctx-str ctx elem-type "[]){")))))))
+                            (mut first true))
+                        (set! i 0)
+                        (while (< i (list-len elem-codes))
+                          (match (list-get elem-codes i)
+                            ((some ec)
+                              (if first
+                                (set! data-part (ctx-str ctx data-part ec))
+                                (set! data-part (ctx-str ctx data-part (ctx-str ctx ", " ec))))
+                              (set! first false))
+                            ((none) (do)))
+                          (set! i (+ i 1)))
+                        (ctx-str ctx result (ctx-str ctx data-part "}})"))))))))))
           ((none)
             (do
               (ctx-add-error-at ctx "list: missing type" (ctx-list-first-line items) (ctx-list-first-col items))
