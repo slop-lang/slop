@@ -97,7 +97,8 @@
         (string-eq name "Unit")
         (string-eq name "Void")
         (string-eq name "Arena")
-        (string-eq name "Milliseconds")))
+        (string-eq name "Milliseconds")
+        (string-eq name "ThreadHandle")))
 
   (fn is-builtin-c-type ((c-name String))
     (@intent "Check if name is a builtin C type (int64_t, slop_string, etc.)")
@@ -121,7 +122,8 @@
         (string-eq c-name "slop_string")
         (string-eq c-name "slop_bytes")
         (string-eq c-name "slop_arena")
-        (string-eq c-name "slop_arena*")))
+        (string-eq c-name "slop_arena*")
+        (string-eq c-name "pthread_t")))
 
   ;; ============================================================
   ;; Type Category Predicates
@@ -190,6 +192,7 @@
       ((string-eq name "Void") (some "void"))
       ((string-eq name "Arena") (some "slop_arena*"))
       ((string-eq name "Milliseconds") (some "int64_t"))
+      ((string-eq name "ThreadHandle") (some "pthread_t"))
       (else none)))
 
   ;; ============================================================

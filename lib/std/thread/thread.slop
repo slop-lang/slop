@@ -39,9 +39,9 @@
   ;; ============================================================
 
   (ffi "pthread.h"
-    (pthread-create ((thread (Ptr U64)) (attr (Ptr Void))
+    (pthread-create ((thread (Ptr ThreadHandle)) (attr (Ptr Void))
                      (start (Ptr Void)) (arg (Ptr Void))) Int)
-    (pthread-join ((thread U64) (retval (Ptr (Ptr Void)))) Int)
+    (pthread-join ((thread ThreadHandle) (retval (Ptr (Ptr Void)))) Int)
     (pthread-mutex-init ((mutex (Ptr Void)) (attr (Ptr Void))) Int)
     (pthread-mutex-destroy ((mutex (Ptr Void))) Int)
     (pthread-mutex-lock ((mutex (Ptr Void))) Int)
@@ -64,11 +64,11 @@
   ;; Thread state for spawn and spawn-closure
   ;; Mirrors the transpiler-generated slop_thread_int structure
   (type ThreadInt (record
-    (func (Ptr Void))       ;; Function pointer
-    (env (Ptr Void))        ;; Closure environment (nil for regular functions)
-    (id U64)                ;; pthread_t handle
-    (result Int)            ;; Thread return value
-    (done Bool)))           ;; Completion flag
+    (id ThreadHandle)       ;; pthread_t handle (offset 0)
+    (result Int)            ;; Thread return value (offset 8)
+    (func (Ptr Void))       ;; Function pointer (offset 16)
+    (env (Ptr Void))        ;; Closure environment (nil for regular functions) (offset 24)
+    (done Bool)))           ;; Completion flag (offset 32)
 
   ;; Thread state for spawn-with-chan
   ;; Holds function pointer, channel argument, and thread state
@@ -76,7 +76,7 @@
     (func (Ptr Void))       ;; Function: (Ptr (Chan Int)) -> Int
     (chan (Ptr (Chan Int))) ;; Channel argument passed to function
     (env (Ptr Void))        ;; Closure environment (nil for regular functions)
-    (id U64)                ;; pthread_t handle
+    (id ThreadHandle)       ;; pthread_t handle
     (result Int)            ;; Thread return value
     (done Bool)))
 

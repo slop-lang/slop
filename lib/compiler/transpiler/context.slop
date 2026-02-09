@@ -400,6 +400,7 @@
       (ctx-register-type ctx (TypeEntry "U16" "uint16_t" "uint16_t" false false false))
       (ctx-register-type ctx (TypeEntry "U32" "uint32_t" "uint32_t" false false false))
       (ctx-register-type ctx (TypeEntry "U64" "uint64_t" "uint64_t" false false false))
+      (ctx-register-type ctx (TypeEntry "ThreadHandle" "pthread_t" "pthread_t" false false false))
       (ctx-register-type ctx (TypeEntry "Char" "char" "char" false false false))
       (ctx-register-type ctx (TypeEntry "Float" "double" "double" false false false))
       (ctx-register-type ctx (TypeEntry "F32" "float" "float" false false false))
