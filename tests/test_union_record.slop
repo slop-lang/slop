@@ -1,0 +1,122 @@
+;; ============================================================
+;; Union/Record Test - Verify construction and access patterns
+;; ============================================================
+
+(module test-union-record
+  (export (main 0))
+
+  ;; --- Type definitions ---
+
+  (type Point (record (x Int) (y Int)))
+
+  (type Shape (union
+    (circle Int)
+    (rect Point)
+    (empty)))
+
+  (type Status (union
+    (active Int)
+    (inactive)))
+
+  ;; --- Union construction and match ---
+
+  (fn test-union-with-payload ()
+    (@intent "Test union construction with payload and match extraction")
+    (@spec (() -> Int))
+    (let ((s (union-new Shape circle 42)))
+      (match s
+        ((circle r) r)
+        ((rect p) 0)
+        ((empty) 0))))
+
+  (fn test-union-no-payload ()
+    (@intent "Test union construction with no-payload variant")
+    (@spec (() -> Int))
+    (let ((s (union-new Shape empty)))
+      (match s
+        ((circle r) r)
+        ((rect p) 0)
+        ((empty) -1))))
+
+  (fn test-union-status-active ()
+    (@intent "Test Status active variant")
+    (@spec (() -> Int))
+    (let ((st (union-new Status active 99)))
+      (match st
+        ((active n) n)
+        ((inactive) 0))))
+
+  (fn test-union-status-inactive ()
+    (@intent "Test Status inactive variant")
+    (@spec (() -> Int))
+    (let ((st (union-new Status inactive)))
+      (match st
+        ((active n) n)
+        ((inactive) -1))))
+
+  ;; --- Record construction via arena ---
+
+  (fn test-record-arena ()
+    (@intent "Test record construction via arena-alloc and field access")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((p (arena-alloc arena (sizeof Point))))
+        (set! p x 10)
+        (set! p y 20)
+        (+ (. p x) (. p y)))))
+
+  ;; --- Record-new construction ---
+
+  (fn test-record-new ()
+    (@intent "Test record-new construction")
+    (@spec (() -> Int))
+    (let ((p (record-new Point (x 3) (y 7))))
+      (+ (. p x) (. p y))))
+
+  ;; --- Union containing record payload ---
+
+  (fn test-union-with-record ()
+    (@intent "Test union with record payload")
+    (@spec (() -> Int))
+    (let ((s (union-new Shape rect (record-new Point (x 5) (y 10)))))
+      (match s
+        ((circle r) 0)
+        ((rect p) (+ (. p x) (. p y)))
+        ((empty) 0))))
+
+  ;; --- Record with Option field via arena ---
+
+  (fn test-record-option-field ()
+    (@intent "Test record with Option field")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((p (arena-alloc arena (sizeof Point))))
+        (set! p x 100)
+        (set! p y 200)
+        (let ((opt (Option Int) (some (. p x))))
+          (match opt
+            ((some v) v)
+            ((none) 0))))))
+
+  ;; --- Match with wildcard on union ---
+
+  (fn test-union-wildcard ()
+    (@intent "Test union match with wildcard default")
+    (@spec (() -> Int))
+    (let ((s (union-new Shape circle 55)))
+      (match s
+        ((empty) 0)
+        (_ 1))))
+
+  (fn main ()
+    (@intent "Run all tests, return 0 if all pass")
+    (@spec (() -> Int))
+    (+ (if (== (test-union-with-payload) 42) 0 1)
+       (if (== (test-union-no-payload) -1) 0 1)
+       (if (== (test-union-status-active) 99) 0 1)
+       (if (== (test-union-status-inactive) -1) 0 1)
+       (if (== (test-record-arena) 30) 0 1)
+       (if (== (test-record-new) 10) 0 1)
+       (if (== (test-union-with-record) 15) 0 1)
+       (if (== (test-record-option-field) 100) 0 1)
+       (if (== (test-union-wildcard) 1) 0 1))))

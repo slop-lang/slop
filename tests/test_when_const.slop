@@ -1,0 +1,78 @@
+;; ============================================================
+;; When/Const Test - Verify when control flow and const declarations
+;; ============================================================
+
+(module test-when-const
+  (export (main 0))
+
+  ;; Integer consts become #define
+  (const MAX_VAL Int 100)
+  (const OFFSET Int 10)
+
+  ;; Const with expression
+  (const DOUBLED Int (* MAX_VAL 2))
+
+  ;; Test when as statement - mutates only if condition is true
+  (fn test-when-true ()
+    (@intent "Test when executes body when condition is true")
+    (@spec (() -> Int))
+    (let ((mut x 0))
+      (when true
+        (set! x 42))
+      x))
+
+  (fn test-when-false ()
+    (@intent "Test when skips body when condition is false")
+    (@spec (() -> Int))
+    (let ((mut x 0))
+      (when false
+        (set! x 42))
+      x))
+
+  ;; Test when with comparison condition
+  (fn test-when-comparison ((n Int))
+    (@intent "Test when with comparison in condition")
+    (@spec ((Int) -> Int))
+    (let ((mut result 0))
+      (when (> n 10)
+        (set! result 1))
+      result))
+
+  ;; Test when with multiple body expressions
+  (fn test-when-multi-body ()
+    (@intent "Test when with multiple body expressions")
+    (@spec (() -> Int))
+    (let ((mut a 0) (mut b 0))
+      (when true
+        (set! a 10)
+        (set! b 20))
+      (+ a b)))
+
+  ;; Test const values
+  (fn test-const-value ()
+    (@intent "Test that const values are accessible")
+    (@spec (() -> Int))
+    MAX_VAL)
+
+  (fn test-const-expr ()
+    (@intent "Test that const expressions evaluate correctly")
+    (@spec (() -> Int))
+    DOUBLED)
+
+  ;; Test const in arithmetic
+  (fn test-const-arithmetic ()
+    (@intent "Test const used in arithmetic expressions")
+    (@spec (() -> Int))
+    (+ MAX_VAL OFFSET))
+
+  (fn main ()
+    (@intent "Run all tests, return 0 if all pass")
+    (@spec (() -> Int))
+    (+ (if (== (test-when-true) 42) 0 1)
+       (if (== (test-when-false) 0) 0 1)
+       (if (== (test-when-comparison 20) 1) 0 1)
+       (if (== (test-when-comparison 5) 0) 0 1)
+       (if (== (test-when-multi-body) 30) 0 1)
+       (if (== (test-const-value) 100) 0 1)
+       (if (== (test-const-expr) 200) 0 1)
+       (if (== (test-const-arithmetic) 110) 0 1))))

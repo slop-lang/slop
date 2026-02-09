@@ -1,0 +1,119 @@
+;; ============================================================
+;; Nested Expressions Test - Verify complex expression nesting
+;; ============================================================
+
+(module test-nested-exprs
+  (export (main 0))
+
+  ;; --- Match as expression inside let ---
+  (fn test-match-in-let ((x Int))
+    (@intent "Test match as expression inside let binding")
+    (@spec ((Int) -> Int))
+    (let ((result (match (some x)
+                    ((some v) (* v 2))
+                    ((none) 0))))
+      result))
+
+  ;; --- Cond as expression inside function argument ---
+  (fn add ((a Int) (b Int))
+    (@intent "Simple addition helper")
+    (@spec ((Int Int) -> Int))
+    (+ a b))
+
+  (fn test-cond-in-arg ((x Int))
+    (@intent "Test cond as expression in function argument")
+    (@spec ((Int) -> Int))
+    (add (cond ((< x 0) -1) ((== x 0) 0) (else 1))
+         10))
+
+  ;; --- If as expression inside let ---
+  (fn test-if-in-let ((x Int))
+    (@intent "Test if as expression inside let binding")
+    (@spec ((Int) -> Int))
+    (let ((sign (if (< x 0) -1 1))
+          (magnitude (if (< x 0) (- 0 x) x)))
+      (* sign magnitude)))
+
+  ;; --- Nested let bindings with shadowed variables ---
+  (fn test-let-shadowing ()
+    (@intent "Test nested let bindings with same variable name")
+    (@spec (() -> Int))
+    (let ((x 10))
+      (let ((x 20))
+        (let ((x 30))
+          x))))
+
+  ;; --- Let in let using outer binding ---
+  (fn test-nested-let-reference ()
+    (@intent "Test nested let referencing outer bindings")
+    (@spec (() -> Int))
+    (let ((a 10))
+      (let ((b (+ a 5)))
+        (let ((c (* b 2)))
+          c))))
+
+  ;; --- If inside if ---
+  (fn test-nested-if ((x Int))
+    (@intent "Test if expression inside if expression")
+    (@spec ((Int) -> Int))
+    (if (> x 0)
+      (if (> x 10) 2 1)
+      (if (< x -10) -2 -1)))
+
+  ;; --- Cond as expression in let ---
+  (fn test-cond-in-let ()
+    (@intent "Test cond as expression assigned to let binding")
+    (@spec (() -> Int))
+    (let ((a (cond ((== 1 1) 100) (else 0)))
+          (b (cond ((== 2 3) 0) (else 200))))
+      (+ a b)))
+
+  ;; --- Arithmetic nesting ---
+  (fn test-deep-arithmetic ()
+    (@intent "Test deeply nested arithmetic expressions")
+    (@spec (() -> Int))
+    (+ (* (- 10 3) (+ 2 1))
+       (/ (* 4 5) (- 10 8))))
+
+  ;; --- Function calls as arguments ---
+  (fn double ((x Int))
+    (@intent "Double a value")
+    (@spec ((Int) -> Int))
+    (* x 2))
+
+  (fn test-nested-calls ()
+    (@intent "Test function calls as arguments to function calls")
+    (@spec (() -> Int))
+    (double (double (double 3))))
+
+  (fn main ()
+    (@intent "Run all tests, return 0 if all pass")
+    (@spec (() -> Int))
+    (+ ;; match in let: (some 5) -> 5 * 2 = 10
+       (if (== (test-match-in-let 5) 10) 0 1)
+       ;; cond in arg: x=5 -> (cond gives 1) + 10 = 11
+       (if (== (test-cond-in-arg 5) 11) 0 1)
+       ;; cond in arg: x=-3 -> (cond gives -1) + 10 = 9
+       (if (== (test-cond-in-arg -3) 9) 0 1)
+       ;; if in let: x=7 -> sign=1, magnitude=7, result=7
+       (if (== (test-if-in-let 7) 7) 0 1)
+       ;; if in let: x=-7 -> sign=-1, magnitude=7, result=-7
+       (if (== (test-if-in-let -7) -7) 0 1)
+       ;; let shadowing: innermost x=30
+       (if (== (test-let-shadowing) 30) 0 1)
+       ;; nested let reference: a=10, b=15, c=30
+       (if (== (test-nested-let-reference) 30) 0 1)
+       ;; nested if: x=15 -> 2
+       (if (== (test-nested-if 15) 2) 0 1)
+       ;; nested if: x=5 -> 1
+       (if (== (test-nested-if 5) 1) 0 1)
+       ;; nested if: x=-15 -> -2
+       (if (== (test-nested-if -15) -2) 0 1)
+       ;; nested if: x=-5 -> -1
+       (if (== (test-nested-if -5) -1) 0 1)
+       ;; cond in let: 100 + 200 = 300
+       (if (== (test-cond-in-let) 300) 0 1)
+       ;; deep arithmetic: (7*3) + (20/2) = 21 + 10 = 31
+       (if (== (test-deep-arithmetic) 31) 0 1)
+       ;; nested calls: double(double(double(3))) = 24
+       (if (== (test-nested-calls) 24) 0 1))))

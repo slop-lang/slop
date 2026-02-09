@@ -1,0 +1,91 @@
+;; ============================================================
+;; Variadic Operators Test - Verify 3+ operand arithmetic/bitwise
+;; ============================================================
+
+(module test-variadic-ops
+  (export (main 0))
+
+  ;; --- Variadic Addition ---
+  (fn test-add-3 ()
+    (@intent "Test 3-operand addition")
+    (@spec (() -> Int))
+    (+ 1 2 3))
+
+  (fn test-add-4 ()
+    (@intent "Test 4-operand addition")
+    (@spec (() -> Int))
+    (+ 10 20 30 40))
+
+  ;; --- Variadic Subtraction ---
+  ;; (- 10 3 2) should be ((10 - 3) - 2) = 5, left-to-right
+  (fn test-sub-3 ()
+    (@intent "Test 3-operand subtraction is left-associative")
+    (@spec (() -> Int))
+    (- 10 3 2))
+
+  ;; --- Variadic Multiplication ---
+  (fn test-mul-3 ()
+    (@intent "Test 3-operand multiplication")
+    (@spec (() -> Int))
+    (* 2 3 4))
+
+  ;; --- Variadic Division ---
+  ;; (/ 120 6 4) should be ((120 / 6) / 4) = 5, left-to-right
+  (fn test-div-3 ()
+    (@intent "Test 3-operand division is left-associative")
+    (@spec (() -> Int))
+    (/ 120 6 4))
+
+  ;; --- Variadic Bitwise AND ---
+  ;; (& 0xFF 0x0F 0x07) = ((0xFF & 0x0F) & 0x07) = (0x0F & 0x07) = 0x07 = 7
+  (fn test-bitwise-and-3 ()
+    (@intent "Test 3-operand bitwise AND")
+    (@spec (() -> Int))
+    (& 255 15 7))
+
+  ;; --- Variadic Bitwise OR ---
+  ;; (| 1 2 4) = ((1 | 2) | 4) = (3 | 4) = 7
+  (fn test-bitwise-or-3 ()
+    (@intent "Test 3-operand bitwise OR")
+    (@spec (() -> Int))
+    (| 1 2 4))
+
+  ;; --- Variadic Bitwise XOR ---
+  ;; (^ 7 3 1) = ((7 ^ 3) ^ 1) = (4 ^ 1) = 5
+  (fn test-bitwise-xor-3 ()
+    (@intent "Test 3-operand bitwise XOR")
+    (@spec (() -> Int))
+    (^ 7 3 1))
+
+  ;; --- Shift Operators (binary only) ---
+  (fn test-shift-left ()
+    (@intent "Test left shift")
+    (@spec (() -> Int))
+    (<< 1 4))
+
+  (fn test-shift-right ()
+    (@intent "Test right shift")
+    (@spec (() -> Int))
+    (>> 32 3))
+
+  ;; --- Mixed variadic with variables ---
+  (fn test-mixed-variadic ((a Int) (b Int) (c Int))
+    (@intent "Test variadic ops with variable arguments")
+    (@spec ((Int Int Int) -> Int))
+    (+ (* a b) (* b c) (* a c)))
+
+  (fn main ()
+    (@intent "Run all tests, return 0 if all pass")
+    (@spec (() -> Int))
+    (+ (if (== (test-add-3) 6) 0 1)
+       (if (== (test-add-4) 100) 0 1)
+       (if (== (test-sub-3) 5) 0 1)
+       (if (== (test-mul-3) 24) 0 1)
+       (if (== (test-div-3) 5) 0 1)
+       (if (== (test-bitwise-and-3) 7) 0 1)
+       (if (== (test-bitwise-or-3) 7) 0 1)
+       (if (== (test-bitwise-xor-3) 5) 0 1)
+       (if (== (test-shift-left) 16) 0 1)
+       (if (== (test-shift-right) 4) 0 1)
+       ;; mixed-variadic(2, 3, 4) = (2*3) + (3*4) + (2*4) = 6 + 12 + 8 = 26
+       (if (== (test-mixed-variadic 2 3 4) 26) 0 1))))

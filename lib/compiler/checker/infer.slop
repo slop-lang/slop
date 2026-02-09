@@ -1628,16 +1628,23 @@
             ;; Allow Unknown type field access
             (if (string-eq type-name "Unknown")
               (env-get-unknown-type env)
-              ;; Allow field access on Ptr types (transpiler handles auto-dereference)
-              (if (starts-with type-name "Ptr_")
-                (env-get-unknown-type env)
-                ;; Error: trying to access field on non-record type
-                (let ((msg (string-concat arena "Cannot access field '"
-                             (string-concat arena field-name
-                               (string-concat arena "' on non-record type '"
-                                 (string-concat arena type-name "'"))))))
-                  (env-add-error env msg line col)
-                  (env-get-unknown-type env)))))))))
+              ;; Field access on Ptr types - auto-dereference and check inner type
+              (if (resolved-type-is-pointer obj-type)
+                (match (. (deref obj-type) inner-type)
+                  ((some inner-type)
+                    (check-field-exists env inner-type field-name line col))
+                  ((none) (env-get-unknown-type env)))
+                ;; Chan and Thread are built-in types with C struct fields
+                (if (or (string-eq type-name "Chan")
+                        (string-eq type-name "Thread"))
+                  (env-get-unknown-type env)
+                  ;; Error: trying to access field on non-record type
+                  (let ((msg (string-concat arena "Cannot access field '"
+                               (string-concat arena field-name
+                                 (string-concat arena "' on non-record type '"
+                                   (string-concat arena type-name "'"))))))
+                    (env-add-error env msg line col)
+                    (env-get-unknown-type env))))))))))
 
   (fn infer-cond-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of cond expression, checking branch types")
