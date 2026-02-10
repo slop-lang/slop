@@ -14,7 +14,7 @@ from slop.types import RecordType, RangeType
 from .z3_setup import Z3_AVAILABLE, z3
 from .loop_patterns import (
     FilterPatternInfo, MapPatternInfo, NestedLoopPatternInfo, CountPatternInfo,
-    FoldPatternInfo, InnerLoopInfo, FieldSource,
+    FoldPatternInfo, InnerLoopInfo, FieldSource, MatchContext,
 )
 
 if TYPE_CHECKING:
@@ -351,6 +351,13 @@ class AxiomGenerationMixin:
                     )
                     axioms.append(completeness_axiom)
 
+            # Match context subset axioms: connect match-bound collection to parent
+            if map_pattern.match_context is not None:
+                match_axioms = self._generate_match_subset_axioms(
+                    map_pattern.match_context, source_seq, source_name, translator
+                )
+                axioms.extend(match_axioms)
+
         finally:
             # Restore binding
             if old_binding is not None:
@@ -612,6 +619,13 @@ class AxiomGenerationMixin:
                     )
                     axioms.extend(inst_axioms)
 
+            # Match context subset axioms for nested patterns
+            if pattern.match_context is not None:
+                match_axioms = self._generate_match_subset_axioms(
+                    pattern.match_context, outer_seq, outer_name, translator
+                )
+                axioms.extend(match_axioms)
+
         finally:
             # Restore bindings
             if old_outer_binding is not None:
@@ -624,6 +638,107 @@ class AxiomGenerationMixin:
                     translator.variables[var_name] = old_val
                 elif var_name in translator.variables:
                     del translator.variables[var_name]
+
+        return axioms
+
+    def _generate_match_subset_axioms(
+        self,
+        match_ctx: 'MatchContext',
+        child_seq: z3.SeqRef,
+        child_name: Optional[str],
+        translator: 'Z3Translator'
+    ) -> List[z3.BoolRef]:
+        """Generate subset axioms connecting a match-bound collection to its parent.
+
+        When iterating over pred-triples from:
+            (match (map-get (. delta by-predicate) KEY)
+              ((some pred-triples) (for-each (dt pred-triples) ...)))
+
+        pred-triples is a subset of delta.triples with predicate == KEY.
+
+        Generates:
+        1. Subset axiom: ForAll j in child: Exists k in parent: child[j] == parent[k]
+        2. Predicate filter: ForAll j in child: field_predicate(child[j]) == KEY
+           (only when KEY is resolvable and collection_expr is a by-predicate index)
+        """
+        axioms: List[z3.BoolRef] = []
+
+        # Determine the parent collection from the match_ctx.collection_expr
+        # e.g., (. delta by-predicate) → parent is (. delta triples) conceptually
+        # But for the subset axiom, we connect child elements to the parent list.
+        # The collection_expr is what map-get operates on (the index map).
+        # To find the parent list, we look at the structure:
+        # (. delta by-predicate) → parent is (. delta triples)
+        parent_seq = None
+        parent_name = None
+
+        if is_form(match_ctx.collection_expr, '.') and len(match_ctx.collection_expr) >= 3:
+            obj = match_ctx.collection_expr[1]
+            field = match_ctx.collection_expr[2]
+            if isinstance(obj, Symbol) and isinstance(field, Symbol):
+                # The index is (. obj by-predicate), parent list is (. obj triples)
+                parent_name = f"_field_{obj.name}_triples"
+                if parent_name not in translator.list_seqs:
+                    translator._create_list_seq(parent_name)
+                parent_seq = translator.list_seqs.get(parent_name)
+
+        if parent_seq is None:
+            return axioms
+
+        # 1. Subset axiom: every element of child_seq exists in parent_seq
+        child_idx = z3.Int('_match_child_j')
+        parent_idx = z3.Int('_match_parent_k')
+
+        subset_axiom = z3.ForAll([child_idx],
+            z3.Implies(
+                z3.And(child_idx >= 0, child_idx < z3.Length(child_seq)),
+                z3.Exists([parent_idx],
+                    z3.And(
+                        parent_idx >= 0,
+                        parent_idx < z3.Length(parent_seq),
+                        child_seq[child_idx] == parent_seq[parent_idx]
+                    )
+                )
+            )
+        )
+        axioms.append(subset_axiom)
+
+        # 2. Predicate filter axiom: elements have predicate == KEY
+        # Only when the collection is a by-predicate index
+        if is_form(match_ctx.collection_expr, '.') and len(match_ctx.collection_expr) >= 3:
+            field = match_ctx.collection_expr[2]
+            if isinstance(field, Symbol) and field.name == 'by-predicate':
+                # Translate the key expression
+                key_z3 = translator.translate_expr(match_ctx.key_expr)
+                if key_z3 is not None:
+                    # Get predicate field accessor
+                    pred_func_name = "fn_triple-predicate_1"
+                    if pred_func_name not in translator.variables:
+                        pred_func = z3.Function(pred_func_name, z3.IntSort(), z3.IntSort())
+                        translator.variables[pred_func_name] = pred_func
+                    else:
+                        pred_func = translator.variables[pred_func_name]
+
+                    # Get equality function
+                    eq_func = self._get_type_equality_function('triple-predicate', translator)
+
+                    filter_idx = z3.Int('_match_filter_j')
+                    elem_pred = pred_func(child_seq[filter_idx])
+                    if eq_func is not None:
+                        pred_constraint = eq_func(elem_pred, key_z3)
+                    else:
+                        pred_constraint = elem_pred == key_z3
+
+                    filter_axiom = z3.ForAll([filter_idx],
+                        z3.Implies(
+                            z3.And(filter_idx >= 0, filter_idx < z3.Length(child_seq)),
+                            pred_constraint
+                        )
+                    )
+                    axioms.append(filter_axiom)
+
+        # Size constraint
+        axioms.append(z3.Length(child_seq) <= z3.Length(parent_seq))
 
         return axioms
 
@@ -1201,18 +1316,35 @@ class AxiomGenerationMixin:
                     if var_name and var_value:
                         initial_bindings[var_name] = var_value
 
-        # Find for-each loop in body
+        # Find for-each loop in body (also inside match branches)
         body_exprs = fn_body.items[2:]
-        for body_expr in body_exprs:
-            if is_form(body_expr, 'for-each') and len(body_expr) >= 3:
-                loop_body = body_expr.items[2:]
-                # Extract conditions from the loop body
-                conditions, bindings_ctx = self._collect_filter_conditions(
-                    loop_body, initial_bindings.copy()
-                )
-                return conditions, bindings_ctx
+        result = self._find_for_each_and_collect_conditions(body_exprs, initial_bindings)
+        if result is not None:
+            return result
 
         return [], initial_bindings
+
+    def _find_for_each_and_collect_conditions(
+        self, stmts: list, bindings: Dict[str, 'SExpr']
+    ) -> Optional[Tuple[List['SExpr'], Dict[str, 'SExpr']]]:
+        """Find for-each in statements (including inside match branches) and collect filter conditions."""
+        for stmt in stmts:
+            if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                loop_body = stmt.items[2:]
+                conditions, bindings_ctx = self._collect_filter_conditions(
+                    loop_body, bindings.copy()
+                )
+                return conditions, bindings_ctx
+            # Recurse into match branches
+            if is_form(stmt, 'match') and len(stmt) >= 3:
+                for clause in stmt.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 2:
+                        result = self._find_for_each_and_collect_conditions(
+                            clause.items[1:], bindings.copy()
+                        )
+                        if result is not None:
+                            return result
+        return None
 
     def _collect_filter_conditions(
         self, stmts: List[SExpr], bindings: Dict[str, SExpr]

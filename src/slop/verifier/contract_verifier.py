@@ -993,6 +993,110 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     return True
         return False
 
+    def _body_has_list_push_to_result(self, fn_body: SExpr) -> bool:
+        """Check if function body has list-push to the mutable result variable.
+
+        Finds the result variable from the let body's return expression,
+        then checks if any code path contains a list-push targeting it.
+        """
+        if not is_form(fn_body, 'let') or len(fn_body) < 3:
+            return False
+
+        # Find the result variable name from the return expression
+        return_expr = self._get_return_expr(fn_body)
+        if not isinstance(return_expr, Symbol):
+            return False
+        result_var = return_expr.name
+
+        # Check if the body contains list-push targeting that variable
+        return self._has_list_push_to_var(fn_body.items[2:], result_var)
+
+    def _has_list_push_to_var(self, stmts: list, var_name: str) -> bool:
+        """Recursively check if any statement pushes to the named variable."""
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+            if is_form(stmt, 'list-push') and len(stmt) >= 2:
+                target = stmt[1]
+                if isinstance(target, Symbol) and target.name == var_name:
+                    return True
+            # Recurse into all subforms
+            for item in stmt.items:
+                if isinstance(item, SList):
+                    if self._has_list_push_to_var([item], var_name):
+                        return True
+        return False
+
+    def _count_list_push_to_result(self, fn_body: SExpr) -> int:
+        """Count total number of list-push sites targeting the result variable."""
+        if not is_form(fn_body, 'let') or len(fn_body) < 3:
+            return 0
+        return_expr = self._get_return_expr(fn_body)
+        if not isinstance(return_expr, Symbol):
+            return 0
+        result_var = return_expr.name
+        return self._count_push_to_var(fn_body.items[2:], result_var)
+
+    def _count_push_to_var(self, stmts: list, var_name: str) -> int:
+        """Recursively count list-push sites targeting the named variable."""
+        count = 0
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+            if is_form(stmt, 'list-push') and len(stmt) >= 2:
+                target = stmt[1]
+                if isinstance(target, Symbol) and target.name == var_name:
+                    count += 1
+            # Recurse into all subforms (except the list-push head itself)
+            for item in stmt.items:
+                if isinstance(item, SList):
+                    count += self._count_push_to_var([item], var_name)
+        return count
+
+    def _count_pattern_covered_pushes(self, fn_body: SExpr) -> int:
+        """Count push sites that are inside a detected pattern.
+
+        A push is "covered" if it's inside a for-each loop that was detected
+        as part of a filter, map, or nested loop pattern. This is a heuristic:
+        we count push sites that are inside for-each loops that are direct
+        children of the outer let (or inside match-some branches of those).
+        """
+        if not is_form(fn_body, 'let') or len(fn_body) < 3:
+            return 0
+        return_expr = self._get_return_expr(fn_body)
+        if not isinstance(return_expr, Symbol):
+            return 0
+        result_var = return_expr.name
+
+        # Count pushes inside for-each loops (the pattern-detected region)
+        body_exprs = fn_body.items[2:]
+        return self._count_pushes_in_patterns(body_exprs, result_var)
+
+    def _count_pushes_in_patterns(self, stmts: list, result_var: str) -> int:
+        """Count push sites inside for-each loops (which patterns would detect).
+
+        Recurses into let, when, do, and match forms to find for-each loops,
+        then counts all pushes to result_var inside those loops.
+        """
+        count = 0
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+            if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                # Pushes inside for-each are pattern-covered
+                count += self._count_push_to_var(stmt.items[2:], result_var)
+            elif is_form(stmt, 'match') and len(stmt) >= 3:
+                for clause in stmt.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 2:
+                        count += self._count_pushes_in_patterns(clause.items[1:], result_var)
+            elif is_form(stmt, 'let') and len(stmt) >= 3:
+                count += self._count_pushes_in_patterns(stmt.items[2:], result_var)
+            elif is_form(stmt, 'when') and len(stmt) >= 3:
+                count += self._count_pushes_in_patterns(stmt.items[2:], result_var)
+            elif is_form(stmt, 'do') and len(stmt) >= 2:
+                count += self._count_pushes_in_patterns(stmt.items[1:], result_var)
+        return count
+
     def _collect_all_return_exprs(self, expr: SExpr) -> List[SExpr]:
         """Collect ALL return expressions from a function body.
 
@@ -2561,6 +2665,25 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 solver.add(axiom)
                 pattern_axioms.append(axiom)
 
+        # Phase 14d: Vacuous truth safety net
+        # Detect functions with list-push to result but either:
+        # (a) no push axioms generated (result is unconstrained), or
+        # (b) push axioms exist but there are extra push sites outside the
+        #     detected pattern that the axioms don't model (unsound axiom).
+        has_unaxiomatized_pushes = False
+        if fn_body is not None and translator.use_seq_encoding:
+            if self._body_has_list_push_to_result(fn_body):
+                if not pattern_axioms:
+                    # Case (a): no axioms at all
+                    has_unaxiomatized_pushes = True
+                else:
+                    # Case (b): check if ALL push sites are inside detected patterns
+                    # Count total push sites vs. pattern-covered push sites
+                    total_pushes = self._count_list_push_to_result(fn_body)
+                    pattern_pushes = self._count_pattern_covered_pushes(fn_body)
+                    if total_pushes > pattern_pushes:
+                        has_unaxiomatized_pushes = True
+
         # Phase 15: Weakest Precondition Calculus
         # Use backward reasoning to generate stronger verification conditions.
         # WP(body, postcondition) computes what must be true before the body
@@ -2661,6 +2784,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                                          for decl in model.decls()
                                          if not str(decl.name()).startswith('field_')}
                         failed_properties.append((prop_name, prop_str, counterexample))
+                    elif prop_result == z3.unsat and has_unaxiomatized_pushes:
+                        # Z3 says "verified" but result was unconstrained — vacuous truth.
+                        # Check if this property quantifies over $result (forall over result).
+                        prop_str_check = pretty_print(prop_expr)
+                        if '$result' in prop_str_check:
+                            unknown_properties.append((prop_name, prop_str,
+                                "no push axioms for list-push body (vacuous)"))
                     elif prop_result == z3.unknown:
                         reason = prop_solver.reason_unknown()
                         unknown_properties.append((prop_name, prop_str, reason))

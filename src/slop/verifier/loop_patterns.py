@@ -65,6 +65,23 @@ class MapPatternInfo:
     constructor_expr: 'SExpr'  # The transformation/constructor expression
     field_mappings: Dict[str, 'SExpr']  # result_field -> source_expression
                                          # e.g., {'subject': (triple-object dt)}
+    match_context: Optional['MatchContext'] = None  # Context from enclosing match-on-map-get
+
+
+@dataclass
+class MatchContext:
+    """Context from a match-on-map-get pattern wrapping a for-each.
+
+    Represents the pattern:
+    (match (map-get COLLECTION KEY)
+      ((some VAR) BODY)
+      ((none) ...))
+
+    Where BODY contains a for-each that iterates over VAR.
+    """
+    bound_var: str          # "pred-triples" (the (some VAR) binding)
+    key_expr: 'SExpr'       # KEY from (map-get collection KEY)
+    collection_expr: 'SExpr' # collection from (map-get collection KEY)
 
 
 class FieldSource:
@@ -124,6 +141,9 @@ class NestedLoopPatternInfo:
 
     # Field provenance: which source each field comes from
     field_provenance: Dict[str, str]  # e.g., {subject: OUTER, predicate: CONSTANT, object: INNER}
+
+    # Optional match context when outer loop is inside a match-on-map-get
+    match_context: Optional['MatchContext'] = None
 
 
 @dataclass
@@ -232,6 +252,7 @@ __all__ = [
     'TypeInvariant',
     'FilterPatternInfo',
     'MapPatternInfo',
+    'MatchContext',
     'FieldSource',
     'InnerLoopInfo',
     'NestedLoopPatternInfo',
