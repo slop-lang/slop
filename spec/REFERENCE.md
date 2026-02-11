@@ -205,6 +205,10 @@ Result and Option carry data - bind with parens:
 in a module. Using the same variant name in different types will result in a
 compile error.
 
+**Recursive unions:** A variant cannot embed its parent union by value (this
+creates an infinite-size C struct). Use `(Ptr T)` or `(List T)` for
+self-referencing variants. `(Option T)` also embeds by value and is not allowed.
+
 ### Error Returns
 
 IMPORTANT: Quote the error variant!

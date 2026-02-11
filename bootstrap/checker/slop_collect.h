@@ -7,6 +7,7 @@
 #include "slop_parser.h"
 #include "slop_types.h"
 #include "slop_env.h"
+#include "slop_strlib.h"
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
@@ -38,11 +39,6 @@ SLOP_LIST_DEFINE(types_ParamInfo, slop_list_types_ParamInfo)
 SLOP_OPTION_DEFINE(types_ParamInfo, slop_option_types_ParamInfo)
 #endif
 
-#ifndef SLOP_LIST_TYPES_PARAMINFO_DEFINED
-#define SLOP_LIST_TYPES_PARAMINFO_DEFINED
-SLOP_LIST_DEFINE(types_ParamInfo, slop_list_types_ParamInfo)
-#endif
-
 void collect_collect_module(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 void collect_collect_types(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 void collect_register_type_name(env_TypeEnv* env, slop_arena* arena, types_SExpr* expr);
@@ -67,6 +63,7 @@ uint8_t collect_is_reserved_variant_name(slop_string name);
 void collect_collect_union_variants(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* resolved, types_SExpr* union_expr);
 slop_option_types_ResolvedType_ptr collect_get_variant_payload_type(env_TypeEnv* env, types_SExpr* variant_form);
 slop_string collect_checker_get_variant_name(types_SExpr* variant_form);
+uint8_t collect_has_recursive_value_payload(types_SExpr* variant_form, slop_string union_name);
 void collect_collect_single_union_variant(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* resolved, types_SExpr* variant_form, int64_t variant_idx);
 void collect_collect_enum_variants(env_TypeEnv* env, slop_string enum_name, types_SExpr* enum_expr);
 void collect_collect_constants(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);

@@ -1864,21 +1864,27 @@
   ;; Ternary None Fix Helper
   ;; ============================================================
 
-  (fn fix-ternary-none ((ctx (Ptr TranspileContext)) (other-branch String) (this-branch String))
+  (fn fix-ternary-none ((ctx (Ptr TranspileContext)) (other-expr (Ptr SExpr)) (other-branch String) (this-branch String))
     (@intent "Fix type mismatch when one ternary branch is 'none' and other is typed option")
-    (@spec (((Ptr TranspileContext) String String) -> String))
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String String) -> String))
     (@pre {ctx != nil})
     ;; If this-branch is "none" and other-branch looks like a typed option,
     ;; return typed none
     (if (and (string-eq this-branch "none")
              (starts-with other-branch "(slop_option_"))
-      ;; Extract option type from other-branch: "(slop_option_X){..."
+      ;; Direct compound literal — extract option type from "(slop_option_X){..."
       (let ((arena (. (deref ctx) arena)))
         (match (extract-option-type arena other-branch)
           ((some opt-type)
             (ctx-str3 ctx "(" opt-type "){.has_value = false}"))
           ((none) this-branch)))
-      this-branch))
+      ;; Fallback: infer option type from AST node
+      (if (string-eq this-branch "none")
+        (let ((inferred (infer-expr-c-type ctx other-expr)))
+          (if (starts-with inferred "slop_option_")
+            (ctx-str3 ctx "(" inferred "){.has_value = false}")
+            this-branch))
+        this-branch)))
 
   (fn extract-option-type ((arena Arena) (s String))
     (@intent "Extract option type name from '(slop_option_X){...'")
@@ -1901,6 +1907,7 @@
         (if found-brace
           (some (substring arena s 1 (cast (Int 0 ..) end-idx)))
           (none)))))
+
 
   ;; ============================================================
   ;; Array Index Helper
@@ -2142,8 +2149,8 @@
                                         (then-c (transpile-expr ctx then-expr))
                                         (else-c (transpile-expr ctx else-expr)))
                                     ;; Fix type mismatch when one branch is typed option and other is none
-                                    (let ((final-else (fix-ternary-none ctx then-c else-c))
-                                          (final-then (fix-ternary-none ctx else-c then-c)))
+                                    (let ((final-else (fix-ternary-none ctx then-expr then-c else-c))
+                                          (final-then (fix-ternary-none ctx else-expr else-c then-c)))
                                       (ctx-str5 ctx "((" cond-c ") ? " (ctx-str3 ctx final-then " : " final-else) ")"))))
                                 ((none)
                                   (do
@@ -3040,7 +3047,7 @@
       (match (deref arg)
         ;; String literal - direct printf
         ((str s)
-          (ctx-str5 ctx "printf(\"%s" nl "\", \"" (. s value) "\")"))
+          (ctx-str5 ctx "printf(\"%s" nl "\", \"" (escape-c-string ctx (. s value)) "\")"))
         ;; Number literal
         ((num n)
           ;; Check if float
@@ -3354,9 +3361,15 @@
                   (patterns (collect-match-patterns ctx items)))
               (cond
                 ((is-option-patterns patterns)
-                  (build-option-match-expr ctx scrutinee scrutinee-c items))
+                  (do
+                    (let ((scrut-type (resolve-type-alias ctx (infer-expr-slop-type ctx scrutinee))))
+                      (when (starts-with scrut-type "(Result ")
+                        (ctx-add-error-at ctx "match uses Option patterns (some/none) but scrutinee has Result type - use (ok)/(error) patterns" (ctx-sexpr-line scrutinee) (ctx-sexpr-col scrutinee))))
+                    (build-option-match-expr ctx scrutinee scrutinee-c items)))
                 ((is-result-patterns patterns)
                   (build-result-match-expr ctx scrutinee scrutinee-c items))
+                ((is-enum-expr-patterns ctx patterns)
+                  (build-enum-match-expr ctx scrutinee-c items))
                 ((is-union-expr-patterns ctx patterns)
                   (build-union-match-expr ctx scrutinee scrutinee-c items))
                 (else
@@ -3438,6 +3451,31 @@
           ((none) (do)))
         (set! i (+ i 1)))
       found))
+
+  (fn is-enum-expr-patterns ((ctx (Ptr TranspileContext)) (patterns (List (Ptr SExpr))))
+    (@intent "Check if patterns are enum match - all bare symbols with at least one registered variant")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Bool))
+    (@pre {ctx != nil})
+    ;; All patterns must be symbols, and at least one non-else/_ must resolve as enum variant
+    (let ((len (list-len patterns))
+          (mut all-symbols true)
+          (mut has-enum-variant false)
+          (mut i 0))
+      (while (and (< i len) all-symbols)
+        (match (list-get patterns i)
+          ((some pat-expr)
+            (match (deref pat-expr)
+              ((sym s)
+                (let ((name (. s name)))
+                  (when (and (not (string-eq name "else"))
+                             (not (string-eq name "_")))
+                    (match (ctx-lookup-enum-variant ctx name)
+                      ((some _) (set! has-enum-variant true))
+                      ((none) (do))))))
+              (else (set! all-symbols false))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (and all-symbols has-enum-variant)))
 
   (fn is-union-expr-patterns ((ctx (Ptr TranspileContext)) (patterns (List (Ptr SExpr))))
     (@intent "Check if patterns are union match (tagged union variants)")
@@ -4075,6 +4113,75 @@
                       (ctx-str ctx err-bind
                         (ctx-str ctx "_mr = "
                           (ctx-str ctx err-body "; } _mr; })")))))))))))))
+
+  (fn build-enum-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
+    (@intent "Build enum match as GCC statement expression with switch (no .tag)")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; Generate: ({ __auto_type _mv = scrutinee; <type> _mr = {0};
+    ;;              switch (_mv) { case T_v: { _mr = body; break; } ... } _mr; })
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len items))
+          (result-type (infer-match-result-c-type ctx items))
+          (mut cases "")
+          (mut i 2))
+      ;; Build switch cases
+      (while (< i len)
+        (match (list-get items i)
+          ((some branch)
+            (match (deref branch)
+              ((lst branch-lst)
+                (let ((branch-items (. branch-lst items)))
+                  (when (>= (list-len branch-items) 2)
+                    (match (list-get branch-items 0)
+                      ((some pattern)
+                        (set! cases (build-enum-case-expr ctx arena cases pattern branch-items result-type)))
+                      ((none) (do))))))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      ;; Build the full expression
+      (if (string-eq result-type "void")
+        ;; Void match - no result variable
+        (let ((s1 (ctx-str ctx "({ __auto_type _mv = " scrutinee-c))
+              (s2 (ctx-str ctx s1 "; switch (_mv) { "))
+              (s3 (ctx-str ctx s2 cases))
+              (s4 (ctx-str ctx s3 " } (void)0; })")))
+          s4)
+        ;; Non-void match with result variable
+        (let ((s1 (ctx-str ctx "({ __auto_type _mv = " scrutinee-c))
+              (s2 (ctx-str ctx s1 (ctx-str ctx "; " (ctx-str ctx result-type " _mr = {0}; switch (_mv) { "))))
+              (s3 (ctx-str ctx s2 cases))
+              (s4 (ctx-str ctx s3 " } _mr; })")))
+          s4))))
+
+  (fn build-enum-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String)
+                             (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String))
+    (@intent "Build a single enum case for expression-level match (no binding extraction)")
+    (@spec (((Ptr TranspileContext) Arena String (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
+    (@pre {ctx != nil})
+    (let ((tag (get-expr-pattern-tag pattern))
+          (is-void (string-eq result-type "void")))
+      (cond
+        ((or (string-eq tag "else") (string-eq tag "_"))
+          ;; Default case
+          (let ((body (typed-none ctx result-type (get-match-branch-body ctx branch-items))))
+            (if is-void
+              (ctx-str ctx cases (ctx-str3 ctx "default: { " body "; break; } "))
+              (ctx-str ctx cases (ctx-str3 ctx "default: { _mr = " body "; break; } ")))))
+        (else
+          ;; Regular enum variant case - no binding extraction
+          (match (ctx-lookup-enum-variant ctx tag)
+            ((some type-name)
+              (let ((c-tag (to-c-name arena tag))
+                    (case-label (ctx-str4 ctx type-name "_" c-tag ""))
+                    (body (typed-none ctx result-type (get-match-branch-body ctx branch-items))))
+                (if is-void
+                  (ctx-str ctx cases (ctx-str ctx "case " (ctx-str ctx case-label (ctx-str3 ctx ": { " body "; break; } "))))
+                  (ctx-str ctx cases (ctx-str ctx "case " (ctx-str ctx case-label (ctx-str3 ctx ": { _mr = " body "; break; } ")))))))
+            ((none)
+              (ctx-add-error-at ctx (ctx-str3 ctx "unknown enum variant '" tag "' in match expression") (ctx-sexpr-line pattern) (ctx-sexpr-col pattern))
+              cases))))))
 
   (fn build-union-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build union (tagged union) match as GCC statement expression with switch")

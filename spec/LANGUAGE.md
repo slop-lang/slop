@@ -114,6 +114,13 @@ literal     = number | string | 'true | 'false | 'nil
 (union (tag1 T1) (tag2 T2))    ; Tagged union
 (record (field1 T1) (field2 T2))  ; Struct
 
+; Recursive unions: variants must not embed the parent union by value,
+; as this creates an infinite-size C struct. Use (Ptr T) or (List T) instead.
+;   (bad-node MyUnion)            ; ERROR — infinite size
+;   (bad-maybe (Option MyUnion))  ; ERROR — Option embeds T by value
+;   (ok-children (List MyUnion))  ; OK — List is a fixed-size struct (pointer to data)
+;   (ok-next (Ptr MyUnion))       ; OK — pointer is fixed size
+
 ; Pointers (explicit when needed)
 (Ptr T)                  ; Pointer to T
 (ScopedPtr T)            ; Scoped pointer (freed when scope ends)

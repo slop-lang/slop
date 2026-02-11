@@ -1,0 +1,25 @@
+;; Test: Enum match expressions should pass type checking
+
+(module pass-enum-match
+  (export color-to-int status-check)
+
+  (type Color (enum red green blue))
+  (type Status (enum active inactive pending))
+
+  (fn color-to-int ((c Color))
+    (@intent "Match enum in expression position")
+    (@spec ((Color) -> Int))
+    (@pure)
+    (match c
+      (red 1)
+      (green 2)
+      (blue 3)))
+
+  (fn status-check ((s Status))
+    (@intent "Enum match with else clause")
+    (@spec ((Status) -> Int))
+    (@pure)
+    (match s
+      (active 1)
+      (else 0)))
+)

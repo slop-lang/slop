@@ -34,11 +34,6 @@ SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
 SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntry)
 #endif
 
-#ifndef SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
-#define SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
-SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
-#endif
-
 struct tester_TestResult {
     uint8_t success;
     slop_list_string test_harness;

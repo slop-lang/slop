@@ -52,3 +52,5 @@ james-tests/
 
 launch_reviewer.sh
 bin/backup/
+
+lib/compiler/checker/slop-checker

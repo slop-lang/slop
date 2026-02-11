@@ -64,16 +64,6 @@ SLOP_OPTION_DEFINE(types_Diagnostic, slop_option_types_Diagnostic)
 SLOP_OPTION_DEFINE(types_ParamInfo, slop_option_types_ParamInfo)
 #endif
 
-#ifndef SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
-#define SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
-SLOP_LIST_DEFINE(types_Diagnostic, slop_list_types_Diagnostic)
-#endif
-
-#ifndef SLOP_LIST_TYPES_PARAMINFO_DEFINED
-#define SLOP_LIST_TYPES_PARAMINFO_DEFINED
-SLOP_LIST_DEFINE(types_ParamInfo, slop_list_types_ParamInfo)
-#endif
-
 struct env_VarBinding {
     slop_string name;
     types_ResolvedType* var_type;

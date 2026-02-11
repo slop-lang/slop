@@ -1,0 +1,10 @@
+;; Test: Recursive union variant - should produce error
+;; Direct self-reference creates infinite-size C struct
+
+(module error-recursive-union
+  (export)
+
+  (type BadTree (union
+    (bad-leaf Int)
+    (bad-node BadTree)))
+)

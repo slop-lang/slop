@@ -1,0 +1,10 @@
+;; Test: Recursive union variant via Option - should produce error
+;; (Option T) embeds T by value, creating infinite-size struct
+
+(module error-recursive-option
+  (export)
+
+  (type BadLinked (union
+    (linked-leaf Int)
+    (linked-next (Option BadLinked))))
+)

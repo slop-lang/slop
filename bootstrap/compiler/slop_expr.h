@@ -85,7 +85,7 @@ slop_string expr_slop_value_type_to_option_id(slop_arena* arena, slop_string slo
 slop_string expr_infer_map_value_option_type(context_TranspileContext* ctx, types_SExpr* map_expr);
 slop_string expr_option_type_to_value_c_type(slop_arena* arena, slop_string option_type);
 slop_string expr_infer_option_inner_slop_type(context_TranspileContext* ctx, types_SExpr* scrutinee);
-slop_string expr_fix_ternary_none(context_TranspileContext* ctx, slop_string other_branch, slop_string this_branch);
+slop_string expr_fix_ternary_none(context_TranspileContext* ctx, types_SExpr* other_expr, slop_string other_branch, slop_string this_branch);
 slop_option_string expr_extract_option_type(slop_arena* arena, slop_string s);
 slop_string expr_transpile_array_index(context_TranspileContext* ctx, types_SExpr* arr_expr, slop_string arr_c, slop_string idx_c);
 uint8_t expr_is_pointer_expr(context_TranspileContext* ctx, types_SExpr* expr);
@@ -106,6 +106,7 @@ slop_list_types_SExpr_ptr expr_collect_match_patterns(context_TranspileContext* 
 slop_string expr_get_expr_pattern_tag(types_SExpr* pat_expr);
 uint8_t expr_is_option_patterns(slop_list_types_SExpr_ptr patterns);
 uint8_t expr_is_result_patterns(slop_list_types_SExpr_ptr patterns);
+uint8_t expr_is_enum_expr_patterns(context_TranspileContext* ctx, slop_list_types_SExpr_ptr patterns);
 uint8_t expr_is_union_expr_patterns(context_TranspileContext* ctx, slop_list_types_SExpr_ptr patterns);
 slop_option_string expr_get_expr_binding_name(types_SExpr* pat_expr);
 slop_string expr_get_match_branch_body(context_TranspileContext* ctx, slop_list_types_SExpr_ptr branch_items);
@@ -119,6 +120,8 @@ slop_string expr_infer_match_result_c_type(context_TranspileContext* ctx, slop_l
 slop_string expr_slop_type_to_c_type(context_TranspileContext* ctx, slop_string slop_type);
 slop_string expr_infer_expr_c_type(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string expr_build_result_match_expr(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
+slop_string expr_build_enum_match_expr(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
+slop_string expr_build_enum_case_expr(context_TranspileContext* ctx, slop_arena* arena, slop_string cases, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, slop_string result_type);
 slop_string expr_build_union_match_expr(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
 slop_string expr_typed_none(context_TranspileContext* ctx, slop_string result_type, slop_string body);
 slop_string expr_typed_none_arg(context_TranspileContext* ctx, slop_string expected_type, slop_string arg_c);

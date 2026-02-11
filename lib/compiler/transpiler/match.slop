@@ -200,7 +200,11 @@
                       ;; Dispatch based on pattern types
                       (cond
                         ((is-option-match patterns)
-                          (transpile-option-match ctx scrutinee-var scrutinee patterns items is-return))
+                          (do
+                            (let ((scrut-type (resolve-type-alias ctx (infer-expr-slop-type ctx scrutinee))))
+                              (when (starts-with scrut-type "(Result ")
+                                (ctx-add-error-at ctx "match uses Option patterns (some/none) but scrutinee has Result type - use (ok)/(error) patterns" (ctx-sexpr-line scrutinee) (ctx-sexpr-col scrutinee))))
+                            (transpile-option-match ctx scrutinee-var scrutinee patterns items is-return)))
                         ((is-result-match patterns)
                           (transpile-result-match ctx scrutinee-var scrutinee patterns items is-return))
                         ((is-enum-match patterns)
@@ -455,7 +459,7 @@
     (@pre {pattern != nil})
     (let ((arena (. (deref ctx) arena))
           (tag (get-pattern-tag pattern)))
-      (if (string-eq tag "else")
+      (if (or (string-eq tag "else") (string-eq tag "_"))
         (do
           (ctx-emit ctx "default: {")
           (ctx-indent ctx)
@@ -474,14 +478,8 @@
                 (ctx-dedent ctx)
                 (ctx-emit ctx "}")))
             ((none)
-              ;; Fallback for unregistered variants
-              (let ((c-case (to-c-name arena tag)))
-                (ctx-emit ctx (ctx-str ctx "case " (ctx-str ctx c-case ": {")))
-                (ctx-indent ctx)
-                (emit-branch-body ctx branch-items is-return)
-                (ctx-emit ctx "break;")
-                (ctx-dedent ctx)
-                (ctx-emit ctx "}"))))))))
+              (ctx-add-error-at ctx (ctx-str3 ctx "unknown enum variant '" tag "' in match") (ctx-sexpr-line pattern) (ctx-sexpr-col pattern))
+              (ctx-emit ctx (ctx-str ctx "/* unknown enum variant: " (ctx-str ctx tag " */")))))))))
 
   ;; ============================================================
   ;; Literal Match
@@ -697,7 +695,7 @@
                             (emit-inline-do ctx items is-return is-last))
                           ;; if statement
                           ((string-eq op "if")
-                            (emit-inline-if ctx items is-return))
+                            (emit-inline-if ctx items (and is-return is-last)))
                           ;; while loop
                           ((string-eq op "while")
                             (emit-inline-while ctx items))
@@ -712,10 +710,10 @@
                             (emit-inline-cond ctx items is-return is-last))
                           ;; match - nested match (recurse)
                           ((string-eq op "match")
-                            (transpile-match ctx body-expr is-return))
+                            (transpile-match ctx body-expr (and is-return is-last)))
                           ;; with-arena - emit arena block
                           ((string-eq op "with-arena")
-                            (emit-inline-with-arena ctx items is-return))
+                            (emit-inline-with-arena ctx items (and is-return is-last)))
                           ;; for loop
                           ((string-eq op "for")
                             (emit-inline-for ctx items))
