@@ -1,0 +1,166 @@
+;; ============================================================
+;; Enum match expression tests
+;; ============================================================
+
+(module test-enum-match
+
+  (type Color (enum red green blue))
+  (type Status (enum active inactive pending))
+
+  ;; ============================================================
+  ;; Basic enum match in expression position
+  ;; ============================================================
+
+  (fn color-to-int ((c Color))
+    (@intent "Convert color enum to integer via match expression")
+    (@spec ((Color) -> Int))
+    (match c
+      (red 1)
+      (green 2)
+      (blue 3)))
+
+  (fn status-to-int ((s Status))
+    (@intent "Convert status enum to integer via match expression")
+    (@spec ((Status) -> Int))
+    (match s
+      (active 10)
+      (inactive 20)
+      (pending 30)))
+
+  ;; ============================================================
+  ;; Enum match with else/wildcard
+  ;; ============================================================
+
+  (fn color-is-red ((c Color))
+    (@intent "Check if color is red using match with else")
+    (@spec ((Color) -> Int))
+    (match c
+      (red 1)
+      (else 0)))
+
+  (fn color-is-not-blue ((c Color))
+    (@intent "Check if color is not blue using match with else")
+    (@spec ((Color) -> Int))
+    (match c
+      (blue 0)
+      (else 1)))
+
+  ;; ============================================================
+  ;; Enum match in let binding (expression position)
+  ;; ============================================================
+
+  (fn test-enum-in-let ()
+    (@intent "Test enum match used in let binding")
+    (@spec (() -> Int))
+    (let ((c Color 'green)
+          (val (match c
+                 (red 1)
+                 (green 2)
+                 (blue 3))))
+      val))
+
+  ;; ============================================================
+  ;; Enum match as function argument (expression position)
+  ;; ============================================================
+
+  (fn add ((a Int) (b Int))
+    (@intent "Add two integers")
+    (@spec ((Int Int) -> Int))
+    (+ a b))
+
+  (fn test-enum-as-arg ()
+    (@intent "Test enum match result used as function argument")
+    (@spec (() -> Int))
+    (let ((c Color 'blue))
+      (add (match c
+             (red 1)
+             (green 2)
+             (blue 3))
+           100)))
+
+  ;; ============================================================
+  ;; Nested match: enum match inside option match arm body
+  ;; (This was the original bug: match-in-let-in-match)
+  ;; ============================================================
+
+  (fn test-nested-enum-in-option ()
+    (@intent "Test enum match nested inside option match arm with let")
+    (@spec (() -> Int))
+    (let ((c Color 'red)
+          (opt (Option Int) (some 42)))
+      (match opt
+        ((some val)
+          (let ((color-val (match c
+                             (red 1)
+                             (green 2)
+                             (blue 3))))
+            (+ val color-val)))
+        ((none) 0))))
+
+  ;; ============================================================
+  ;; Main runner
+  ;; ============================================================
+
+  (fn main ()
+    (@intent "Run enum match expression tests")
+    (@spec (() -> Int))
+    (let ((mut passed 0)
+          (mut failed 0))
+
+      ;; Basic enum match
+      (if (== (color-to-int 'red) 1)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      (if (== (color-to-int 'green) 2)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      (if (== (color-to-int 'blue) 3)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      (if (== (status-to-int 'active) 10)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      (if (== (status-to-int 'pending) 30)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      ;; Else/wildcard
+      (if (== (color-is-red 'red) 1)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      (if (== (color-is-red 'green) 0)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      (if (== (color-is-not-blue 'red) 1)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      (if (== (color-is-not-blue 'blue) 0)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      ;; Let binding
+      (if (== (test-enum-in-let) 2)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      ;; As function argument
+      (if (== (test-enum-as-arg) 103)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      ;; Nested match (the original bug scenario)
+      (if (== (test-nested-enum-in-option) 43)
+        (set! passed (+ passed 1))
+        (set! failed (+ failed 1)))
+
+      ;; Return 0 if all passed, 1 otherwise
+      (if (== failed 0)
+        0
+        1))))

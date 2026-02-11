@@ -53,6 +53,13 @@ TOPICS = {
 Note: Variant names must be globally unique across all enum and union types
 in a module. Using the same variant name in different types causes a compile error.
 
+Recursive unions: A variant cannot embed its parent union by value (infinite-size
+struct). Use (Ptr T) or (List T) for self-referencing variants:
+  (bad-node Tree)           ; ERROR — direct self-ref, infinite size
+  (bad (Option Tree))       ; ERROR — Option embeds T by value
+  (ok-children (List Tree)) ; OK — List is fixed-size (pointer to data)
+  (ok-next (Ptr Tree))      ; OK — pointer is fixed size
+
 ### Pointers
 (Ptr T)                 ; Borrowed pointer (T*)
 (ScopedPtr T)           ; Scoped, auto-freed on scope exit

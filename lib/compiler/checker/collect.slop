@@ -26,6 +26,7 @@
                env-get-int-type env-get-bool-type env-get-string-type
                env-get-unit-type env-register-variant env-check-variant-collisions
                env-make-option-type env-add-warning env-add-error))
+  (import strlib (string-build))
 
   ;; ============================================================
   ;; Main Collection Functions
@@ -727,6 +728,41 @@
         ((sym sym) (. sym name))
         (_ ""))))
 
+  (fn has-recursive-value-payload ((variant-form (Ptr SExpr)) (union-name String))
+    (@intent "Check if variant payload creates infinite-size type via direct self-ref or Option self-ref")
+    (@spec (((Ptr SExpr) String) -> Bool))
+    (@pre (!= variant-form nil))
+    (@pure)
+    ;; Variant form is (variant-name PayloadType) — check the type at index 1
+    (if (< (sexpr-list-len variant-form) 2)
+      false
+      (match (sexpr-list-get variant-form 1)
+        ((some type-expr)
+          (match (deref type-expr)
+            ;; Direct self-ref: (variant-name UnionName)
+            ((sym sym)
+              (string-eq (. sym name) union-name))
+            ;; Compound type: check for (Option UnionName)
+            ((lst lst)
+              (let ((items (. lst items)))
+                (if (< (list-len items) 2)
+                  false
+                  (match (list-get items 0)
+                    ((some head)
+                      (match (deref head)
+                        ((sym sym)
+                          (if (string-eq (. sym name) "Option")
+                            ;; (Option X) — check if X is the union name
+                            (match (list-get items 1)
+                              ((some inner)
+                                (string-eq (sexpr-get-symbol-name inner) union-name))
+                              ((none) false))
+                            false))
+                        (_ false)))
+                    ((none) false)))))
+            (_ false)))
+        ((none) false))))
+
   (fn collect-single-union-variant ((env (Ptr TypeEnv)) (arena Arena) (resolved (Ptr ResolvedType))
                                      (variant-form (Ptr SExpr)) (variant-idx Int))
     (@intent "Process a single union variant")
@@ -735,6 +771,20 @@
           (type-name (. (deref resolved) name))
           (arena (env-arena env)))
       (when (not (string-eq vname ""))
+        ;; Check for recursive value payload (infinite-size struct)
+        (when (has-recursive-value-payload variant-form type-name)
+          (let ((parts (list-new arena String)))
+            (list-push parts "recursive union variant '")
+            (list-push parts vname)
+            (list-push parts "' in type '")
+            (list-push parts type-name)
+            (list-push parts "' would create infinite-size struct; use (Ptr ")
+            (list-push parts type-name)
+            (list-push parts ") or (List ")
+            (list-push parts type-name)
+            (list-push parts ") instead")
+            (env-add-error env (string-build arena parts)
+              (sexpr-line variant-form) (sexpr-col variant-form))))
         ;; Check for reserved names that shadow built-in forms
         (when (is-reserved-variant-name vname)
           (let ((msg (string-concat arena "union variant '"

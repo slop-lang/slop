@@ -192,6 +192,7 @@ context_TranspileContext* context_context_new(slop_arena* arena) {
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("U16"), SLOP_STR("uint16_t"), SLOP_STR("uint16_t"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("U32"), SLOP_STR("uint32_t"), SLOP_STR("uint32_t"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("U64"), SLOP_STR("uint64_t"), SLOP_STR("uint64_t"), 0, 0, 0});
+        context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("ThreadHandle"), SLOP_STR("pthread_t"), SLOP_STR("pthread_t"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("Char"), SLOP_STR("char"), SLOP_STR("char"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("Float"), SLOP_STR("double"), SLOP_STR("double"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("F32"), SLOP_STR("float"), SLOP_STR("float"), 0, 0, 0});

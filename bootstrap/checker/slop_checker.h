@@ -40,11 +40,6 @@ SLOP_LIST_DEFINE(types_Diagnostic, slop_list_types_Diagnostic)
 SLOP_OPTION_DEFINE(types_Diagnostic, slop_option_types_Diagnostic)
 #endif
 
-#ifndef SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
-#define SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
-SLOP_LIST_DEFINE(types_Diagnostic, slop_list_types_Diagnostic)
-#endif
-
 #ifndef SLOP_RESULT_ENV_TYPEENV_PTR_TYPES_TYPEERROR_DEFINED
 #define SLOP_RESULT_ENV_TYPEENV_PTR_TYPES_TYPEERROR_DEFINED
 typedef struct { bool is_ok; union { env_TypeEnv* ok; types_TypeError err; } data; } slop_result_env_TypeEnv_ptr_types_TypeError;

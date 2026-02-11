@@ -51,11 +51,6 @@ SLOP_LIST_DEFINE(types_Diagnostic, slop_list_types_Diagnostic)
 SLOP_OPTION_DEFINE(types_Diagnostic, slop_option_types_Diagnostic)
 #endif
 
-#ifndef SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
-#define SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
-SLOP_LIST_DEFINE(types_Diagnostic, slop_list_types_Diagnostic)
-#endif
-
 void compiler_print_str(uint8_t* s);
 void compiler_print_string(slop_string s);
 void compiler_print_json_string(slop_arena* arena, slop_string s);

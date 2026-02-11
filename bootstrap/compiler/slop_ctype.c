@@ -25,11 +25,11 @@ uint8_t ctype_is_c_keyword(slop_string name) {
 }
 
 uint8_t ctype_is_builtin_type(slop_string name) {
-    return ((string_eq(name, SLOP_STR("Int"))) || (string_eq(name, SLOP_STR("I8"))) || (string_eq(name, SLOP_STR("I16"))) || (string_eq(name, SLOP_STR("I32"))) || (string_eq(name, SLOP_STR("I64"))) || (string_eq(name, SLOP_STR("U8"))) || (string_eq(name, SLOP_STR("U16"))) || (string_eq(name, SLOP_STR("U32"))) || (string_eq(name, SLOP_STR("U64"))) || (string_eq(name, SLOP_STR("Char"))) || (string_eq(name, SLOP_STR("Float"))) || (string_eq(name, SLOP_STR("F32"))) || (string_eq(name, SLOP_STR("Bool"))) || (string_eq(name, SLOP_STR("String"))) || (string_eq(name, SLOP_STR("Bytes"))) || (string_eq(name, SLOP_STR("Unit"))) || (string_eq(name, SLOP_STR("Void"))) || (string_eq(name, SLOP_STR("Arena"))) || (string_eq(name, SLOP_STR("Milliseconds"))));
+    return ((string_eq(name, SLOP_STR("Int"))) || (string_eq(name, SLOP_STR("I8"))) || (string_eq(name, SLOP_STR("I16"))) || (string_eq(name, SLOP_STR("I32"))) || (string_eq(name, SLOP_STR("I64"))) || (string_eq(name, SLOP_STR("U8"))) || (string_eq(name, SLOP_STR("U16"))) || (string_eq(name, SLOP_STR("U32"))) || (string_eq(name, SLOP_STR("U64"))) || (string_eq(name, SLOP_STR("Char"))) || (string_eq(name, SLOP_STR("Float"))) || (string_eq(name, SLOP_STR("F32"))) || (string_eq(name, SLOP_STR("Bool"))) || (string_eq(name, SLOP_STR("String"))) || (string_eq(name, SLOP_STR("Bytes"))) || (string_eq(name, SLOP_STR("Unit"))) || (string_eq(name, SLOP_STR("Void"))) || (string_eq(name, SLOP_STR("Arena"))) || (string_eq(name, SLOP_STR("Milliseconds"))) || (string_eq(name, SLOP_STR("ThreadHandle"))));
 }
 
 uint8_t ctype_is_builtin_c_type(slop_string c_name) {
-    return ((string_eq(c_name, SLOP_STR("int64_t"))) || (string_eq(c_name, SLOP_STR("int32_t"))) || (string_eq(c_name, SLOP_STR("int16_t"))) || (string_eq(c_name, SLOP_STR("int8_t"))) || (string_eq(c_name, SLOP_STR("uint64_t"))) || (string_eq(c_name, SLOP_STR("uint32_t"))) || (string_eq(c_name, SLOP_STR("uint16_t"))) || (string_eq(c_name, SLOP_STR("uint8_t"))) || (string_eq(c_name, SLOP_STR("double"))) || (string_eq(c_name, SLOP_STR("float"))) || (string_eq(c_name, SLOP_STR("bool"))) || (string_eq(c_name, SLOP_STR("char"))) || (string_eq(c_name, SLOP_STR("void"))) || (string_eq(c_name, SLOP_STR("slop_string"))) || (string_eq(c_name, SLOP_STR("slop_bytes"))) || (string_eq(c_name, SLOP_STR("slop_arena"))) || (string_eq(c_name, SLOP_STR("slop_arena*"))));
+    return ((string_eq(c_name, SLOP_STR("int64_t"))) || (string_eq(c_name, SLOP_STR("int32_t"))) || (string_eq(c_name, SLOP_STR("int16_t"))) || (string_eq(c_name, SLOP_STR("int8_t"))) || (string_eq(c_name, SLOP_STR("uint64_t"))) || (string_eq(c_name, SLOP_STR("uint32_t"))) || (string_eq(c_name, SLOP_STR("uint16_t"))) || (string_eq(c_name, SLOP_STR("uint8_t"))) || (string_eq(c_name, SLOP_STR("double"))) || (string_eq(c_name, SLOP_STR("float"))) || (string_eq(c_name, SLOP_STR("bool"))) || (string_eq(c_name, SLOP_STR("char"))) || (string_eq(c_name, SLOP_STR("void"))) || (string_eq(c_name, SLOP_STR("slop_string"))) || (string_eq(c_name, SLOP_STR("slop_bytes"))) || (string_eq(c_name, SLOP_STR("slop_arena"))) || (string_eq(c_name, SLOP_STR("slop_arena*"))) || (string_eq(c_name, SLOP_STR("pthread_t"))));
 }
 
 uint8_t ctype_is_int_type(slop_string name) {
@@ -87,6 +87,8 @@ slop_option_string ctype_builtin_type_c(slop_arena* arena, slop_string name) {
         return (slop_option_string){.has_value = 1, .value = SLOP_STR("slop_arena*")};
     } else if (string_eq(name, SLOP_STR("Milliseconds"))) {
         return (slop_option_string){.has_value = 1, .value = SLOP_STR("int64_t")};
+    } else if (string_eq(name, SLOP_STR("ThreadHandle"))) {
+        return (slop_option_string){.has_value = 1, .value = SLOP_STR("pthread_t")};
     } else {
         return (slop_option_string){.has_value = false};
     }
@@ -140,6 +142,9 @@ slop_string ctype_type_to_identifier(slop_arena* arena, slop_string c_type) {
         }
         if (string_eq(result, SLOP_STR("uint64_t"))) {
             result = SLOP_STR("u64");
+        }
+        if (string_eq(result, SLOP_STR("double"))) {
+            result = SLOP_STR("float");
         }
         return result;
     }

@@ -58,16 +58,6 @@ SLOP_OPTION_DEFINE(context_UnionVariantEntry, slop_option_context_UnionVariantEn
 SLOP_OPTION_DEFINE(context_FieldEntry, slop_option_context_FieldEntry)
 #endif
 
-#ifndef SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
-#define SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
-SLOP_LIST_DEFINE(context_UnionVariantEntry, slop_list_context_UnionVariantEntry)
-#endif
-
-#ifndef SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
-#define SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
-SLOP_LIST_DEFINE(context_FieldEntry, slop_list_context_FieldEntry)
-#endif
-
 struct transpiler_GenericInfo {
     uint8_t is_generic;
     slop_list_string type_params;
@@ -211,6 +201,7 @@ void transpiler_emit_field_eq(context_TranspileContext* ctx, context_FieldEntry 
 void transpiler_emit_struct_key_types_header(context_TranspileContext* ctx);
 uint8_t transpiler_is_pointer_elem_type(slop_string elem_type);
 void transpiler_emit_single_list_type_header(context_TranspileContext* ctx, context_ListType lt);
+void transpiler_emit_list_type_declare_only(context_TranspileContext* ctx, context_ListType lt);
 uint8_t transpiler_is_runtime_option_type(slop_string name);
 uint8_t transpiler_is_runtime_list_type(slop_string name);
 void transpiler_emit_chan_types_header(context_TranspileContext* ctx);
@@ -230,6 +221,10 @@ void transpiler_emit_pending_container_deps(context_TranspileContext* ctx, types
 void transpiler_emit_option_by_c_name(context_TranspileContext* ctx, slop_string c_name);
 void transpiler_emit_list_by_c_name(context_TranspileContext* ctx, slop_string c_name);
 void transpiler_emit_struct_union_types_sorted(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start);
+uint8_t transpiler_has_unemitted_struct_types(slop_list_types_SExpr_ptr items, int64_t start, int64_t len, slop_list_int emitted);
+void transpiler_break_list_cycles(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start, int64_t len, slop_list_int emitted);
+slop_list_string transpiler_find_blocking_list_deps(context_TranspileContext* ctx, types_SExpr* type_def);
+void transpiler_emit_list_declare_by_c_name(context_TranspileContext* ctx, slop_string c_name);
 uint8_t transpiler_index_in_list(slop_list_int lst, int64_t idx);
 uint8_t transpiler_type_deps_satisfied(context_TranspileContext* ctx, types_SExpr* type_def);
 uint8_t transpiler_type_is_available(context_TranspileContext* ctx, slop_string type_name);

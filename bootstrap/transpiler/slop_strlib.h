@@ -28,9 +28,9 @@ return (strlib_AsciiChar)v;
 typedef struct { bool is_ok; union { int64_t ok; strlib_ParseError err; } data; } slop_result_int_strlib_ParseError;
 #endif
 
-#ifndef SLOP_RESULT_DOUBLE_STRLIB_PARSEERROR_DEFINED
-#define SLOP_RESULT_DOUBLE_STRLIB_PARSEERROR_DEFINED
-typedef struct { bool is_ok; union { double ok; strlib_ParseError err; } data; } slop_result_double_strlib_ParseError;
+#ifndef SLOP_RESULT_FLOAT_STRLIB_PARSEERROR_DEFINED
+#define SLOP_RESULT_FLOAT_STRLIB_PARSEERROR_DEFINED
+typedef struct { bool is_ok; union { double ok; strlib_ParseError err; } data; } slop_result_float_strlib_ParseError;
 #endif
 
 int64_t strlib_min(int64_t a, int64_t b);
@@ -65,7 +65,7 @@ slop_string strlib_to_lower(slop_arena* arena, slop_string s);
 slop_string strlib_to_title(slop_arena* arena, slop_string s);
 slop_string strlib_capitalize(slop_arena* arena, slop_string s);
 slop_result_int_strlib_ParseError strlib_parse_int(slop_string s);
-slop_result_double_strlib_ParseError strlib_parse_float(slop_string s);
+slop_result_float_strlib_ParseError strlib_parse_float(slop_string s);
 slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precision);
 slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string separator);
 slop_string strlib_string_build(slop_arena* arena, slop_list_string strings);

@@ -21,6 +21,14 @@ class TestCheckerPasses:
         # Human-readable output: silence means success (GCC/Clang style)
         assert "error" not in stdout.lower(), f"Unexpected error: {stdout}"
 
+    def test_enum_match_pass(self, run_checker, tests_dir):
+        """Enum match in expression position should type check"""
+        slop_file = tests_dir / "pass_enum_match.slop"
+        exit_code, stdout, stderr = run_checker(slop_file)
+
+        assert exit_code == 0, f"Expected success, got:\n{stdout}\n{stderr}"
+        assert "error" not in stdout.lower(), f"Unexpected error: {stdout}"
+
 
 class TestBranchTypeWarnings:
     """Tests for branch type mismatch warnings"""
@@ -134,6 +142,24 @@ class TestTypeErrors:
         # The checker detects the issue (malformed arena causes return type mismatch or parse error)
         # This validates that malformed :as syntax is not silently accepted
         assert "error" in stdout.lower()
+
+    def test_recursive_union_direct(self, run_checker, tests_dir):
+        """Direct recursive union variant (infinite-size struct) should error"""
+        slop_file = tests_dir / "error_recursive_union.slop"
+        exit_code, stdout, stderr = run_checker(slop_file)
+
+        assert exit_code != 0 or "error" in stdout.lower()
+        assert "recursive" in stdout.lower()
+        assert "infinite-size" in stdout.lower() or "Ptr" in stdout
+
+    def test_recursive_union_option(self, run_checker, tests_dir):
+        """Option-wrapped recursive union variant (infinite-size struct) should error"""
+        slop_file = tests_dir / "error_recursive_union_option.slop"
+        exit_code, stdout, stderr = run_checker(slop_file)
+
+        assert exit_code != 0 or "error" in stdout.lower()
+        assert "recursive" in stdout.lower()
+        assert "infinite-size" in stdout.lower() or "Ptr" in stdout
 
 
 class TestPythonErrorComparison:

@@ -502,13 +502,16 @@ static inline slop_bytes slop_bytes_from(slop_arena* arena, const uint8_t* src, 
  * List Type (dynamic array, generic via macros)
  * ============================================================ */
 
-#define SLOP_LIST_DEFINE(T, Name) \
+/* SLOP_LIST_DECLARE: struct only — safe with incomplete element types (uses T*) */
+#define SLOP_LIST_DECLARE(T, Name) \
     typedef struct { \
         size_t len; \
         size_t cap; \
         T* data; \
-    } Name; \
-    \
+    } Name;
+
+/* SLOP_LIST_IMPL: inline functions — requires sizeof(T), so T must be complete */
+#define SLOP_LIST_IMPL(T, Name) \
     static inline Name Name##_new(slop_arena* arena, size_t initial_cap) { \
         T* data = (T*)slop_arena_alloc(arena, initial_cap * sizeof(T)); \
         return (Name){0, initial_cap, data}; \
@@ -529,6 +532,9 @@ static inline slop_bytes slop_bytes_from(slop_arena* arena, const uint8_t* src, 
         SLOP_PRE(i < list->len, "list index in bounds"); \
         return &list->data[i]; \
     }
+
+/* SLOP_LIST_DEFINE: combined declare + impl (original convenience macro) */
+#define SLOP_LIST_DEFINE(T, Name) SLOP_LIST_DECLARE(T, Name) SLOP_LIST_IMPL(T, Name)
 
 /* Pre-define common list types */
 SLOP_LIST_DEFINE(int64_t, slop_list_int)

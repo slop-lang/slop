@@ -58,16 +58,6 @@ SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntr
 SLOP_OPTION_DEFINE(type_extract_TstFieldEntry, slop_option_type_extract_TstFieldEntry)
 #endif
 
-#ifndef SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
-#define SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
-SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
-#endif
-
-#ifndef SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
-#define SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
-SLOP_LIST_DEFINE(type_extract_TstFieldEntry, slop_list_type_extract_TstFieldEntry)
-#endif
-
 struct test_emit_EmitContext {
     slop_list_string lines;
     slop_arena* arena;
