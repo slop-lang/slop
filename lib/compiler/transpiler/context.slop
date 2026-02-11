@@ -1743,7 +1743,7 @@
                           ((none) (do)))
                         (do)))
 
-                    ;; (Option T) -> slop_option_<inner>
+                    ;; (Option T) -> slop_option_<inner> (or slop_option_ptr for pointer types)
                     ((string-eq head "Option")
                       (set! result "__option_type_error__")
                       (when (>= len 2)

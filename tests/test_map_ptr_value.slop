@@ -1,0 +1,43 @@
+;; ============================================================
+;; Test: Map with Ptr value type
+;;
+;; Tests that (Map String (Ptr T)) generates correct option
+;; type for map-get (slop_option_ptr, not broken SLOP_OPTION_DEFINE)
+;; ============================================================
+
+(module test-map-ptr-value
+
+  (type Item (record
+    (name String)
+    (value Int)))
+
+  (fn test-map-ptr-get ()
+    (@intent "Test map-get on Map with Ptr value")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String (Ptr Item)))
+            (item (cast (Ptr Item) (arena-alloc arena (sizeof Item)))))
+        (set! item name "test")
+        (set! item value 42)
+        (map-put m "key1" item)
+        (match (map-get m "key1")
+          ((some found)
+            (let ((item-ptr (cast (Ptr Item) found)))
+              (== (. (deref item-ptr) value) 42)))
+          ((none) false)))))
+
+  (fn test-map-ptr-missing ()
+    (@intent "Test map-get miss on Map with Ptr value")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String (Ptr Item))))
+        (match (map-get m "missing")
+          ((some _) false)
+          ((none) true)))))
+
+  (fn main ()
+    (@intent "Run all tests")
+    (@spec (() -> Int))
+    (if (and (test-map-ptr-get) (test-map-ptr-missing))
+      (do (println "All Map Ptr value tests passed!") 0)
+      (do (println "Map Ptr value tests FAILED!") 1))))

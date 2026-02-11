@@ -249,6 +249,8 @@
         (set! result "i32"))
       (when (string-eq result "uint64_t")
         (set! result "u64"))
+      (when (string-eq result "double")
+        (set! result "float"))
       result))
 
   ;; ============================================================

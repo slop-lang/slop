@@ -12,8 +12,9 @@ from slop.parser import SList, Symbol, Number, is_form
 from .z3_setup import z3
 
 from .loop_patterns import (
+    PushSiteInfo,
     FilterPatternInfo, MapPatternInfo, NestedLoopPatternInfo, CountPatternInfo,
-    FoldPatternInfo, FindPatternInfo, InnerLoopInfo, FieldSource,
+    FoldPatternInfo, FindPatternInfo, InnerLoopInfo, FieldSource, MatchContext,
 )
 
 if TYPE_CHECKING:
@@ -110,6 +111,43 @@ class PatternDetectionMixin:
 
         return None
 
+    def _unwrap_match_some_body(self, expr: SExpr) -> Optional[Tuple[str, 'SExpr', 'SExpr', 'SExpr']]:
+        """Recognize a match-on-map-get with (some VAR) branch pattern.
+
+        Pattern:
+        (match (map-get COLLECTION KEY)
+          ((some VAR) BODY)
+          ((none) ...))
+
+        Returns (bound_var, body, key_expr, collection_expr) or None.
+        """
+        if not is_form(expr, 'match') or len(expr) < 3:
+            return None
+
+        scrutinee = expr[1]
+
+        # Check scrutinee is (map-get COLLECTION KEY)
+        if not is_form(scrutinee, 'map-get') or len(scrutinee) < 3:
+            return None
+
+        collection_expr = scrutinee[1]
+        key_expr = scrutinee[2]
+
+        # Find the (some VAR) branch
+        for clause in expr.items[2:]:
+            if not isinstance(clause, SList) or len(clause) < 2:
+                continue
+            pattern = clause[0]
+            # Check for (some VAR) pattern
+            if isinstance(pattern, SList) and len(pattern) == 2:
+                head = pattern[0]
+                var = pattern[1]
+                if isinstance(head, Symbol) and head.name == 'some' and isinstance(var, Symbol):
+                    body = clause[1]
+                    return (var.name, body, key_expr, collection_expr)
+
+        return None
+
     def _detect_filter_pattern(self, body: SExpr) -> Optional[FilterPatternInfo]:
         """Detect filter loop pattern in function body.
 
@@ -191,6 +229,49 @@ class PatternDetectionMixin:
                                     is_negated=is_negated,
                                     excluded_item=excluded_item
                                 )
+
+        # Second pass: look for for-each inside match branches
+        for body_expr in body_exprs:
+            match_info = self._unwrap_match_some_body(body_expr)
+            if match_info:
+                bound_var, match_body, key_expr, coll_expr = match_info
+                # Search match_body for for-each with filter pattern
+                match_stmts = [match_body] if not isinstance(match_body, SList) or not is_form(match_body, 'do') else match_body.items[1:]
+                for stmt in match_stmts:
+                    if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                        loop_binding = stmt[1]
+                        if isinstance(loop_binding, SList) and len(loop_binding) >= 2:
+                            loop_var = loop_binding[0].name if isinstance(loop_binding[0], Symbol) else None
+                            collection = loop_binding[1]
+                            if loop_var:
+                                loop_body = stmt.items[2:]
+                                for inner_stmt in loop_body:
+                                    if is_form(inner_stmt, '@loop-invariant'):
+                                        continue
+                                    predicate = self._find_conditional_set_in_expr(inner_stmt, result_var, loop_var)
+                                    if predicate is not None:
+                                        is_negated = False
+                                        excluded_item = None
+                                        if is_form(predicate, 'not') and len(predicate) >= 2:
+                                            inner = predicate[1]
+                                            is_negated = True
+                                            if isinstance(inner, SList) and len(inner) >= 3:
+                                                inner_head = inner[0]
+                                                if isinstance(inner_head, Symbol) and inner_head.name.endswith('-eq'):
+                                                    arg1 = inner[1]
+                                                    arg2 = inner[2]
+                                                    if isinstance(arg1, Symbol) and arg1.name == loop_var:
+                                                        excluded_item = arg2
+                                                    elif isinstance(arg2, Symbol) and arg2.name == loop_var:
+                                                        excluded_item = arg1
+                                        return FilterPatternInfo(
+                                            result_var=result_var,
+                                            collection=collection,
+                                            loop_var=loop_var,
+                                            predicate=predicate,
+                                            is_negated=is_negated,
+                                            excluded_item=excluded_item
+                                        )
 
         return None
 
@@ -291,6 +372,48 @@ class PatternDetectionMixin:
                                 field_mappings=field_mappings
                             )
 
+        # Second pass: look for for-each inside match branches
+        for body_expr in body_exprs:
+            match_info = self._unwrap_match_some_body(body_expr)
+            if match_info:
+                bound_var, match_body, key_expr, coll_expr = match_info
+                match_ctx = MatchContext(bound_var=bound_var, key_expr=key_expr, collection_expr=coll_expr)
+                match_stmts = [match_body] if not isinstance(match_body, SList) or not is_form(match_body, 'do') else match_body.items[1:]
+                for stmt in match_stmts:
+                    if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                        loop_binding = stmt[1]
+                        if isinstance(loop_binding, SList) and len(loop_binding) >= 2:
+                            loop_var = loop_binding[0].name if isinstance(loop_binding[0], Symbol) else None
+                            collection = loop_binding[1]
+                            if loop_var:
+                                loop_body = stmt.items[2:]
+                                push_info = self._find_unconditional_push_in_expr(
+                                    loop_body, result_var, loop_var
+                                )
+                                if push_info is not None:
+                                    constructor_expr, field_mappings = push_info
+                                    return MapPatternInfo(
+                                        result_var=result_var,
+                                        collection=collection,
+                                        loop_var=loop_var,
+                                        constructor_expr=constructor_expr,
+                                        field_mappings=field_mappings,
+                                        match_context=match_ctx
+                                    )
+                                cond_push_info = self._find_conditional_push_with_constructor(
+                                    loop_body, result_var, loop_var, initial_bindings
+                                )
+                                if cond_push_info is not None:
+                                    constructor_expr, field_mappings, predicate = cond_push_info
+                                    return MapPatternInfo(
+                                        result_var=result_var,
+                                        collection=collection,
+                                        loop_var=loop_var,
+                                        constructor_expr=constructor_expr,
+                                        field_mappings=field_mappings,
+                                        match_context=match_ctx
+                                    )
+
         return None
 
     def _detect_all_nested_loop_patterns(self, body: SExpr) -> List[NestedLoopPatternInfo]:
@@ -334,6 +457,17 @@ class PatternDetectionMixin:
                     body_expr.items[2:], first_pattern, body
                 )
                 results.extend(siblings)
+            # Also look for outer for-each inside match branches
+            match_info = self._unwrap_match_some_body(body_expr)
+            if match_info:
+                _, match_body, _, _ = match_info
+                match_stmts = [match_body] if not isinstance(match_body, SList) or not is_form(match_body, 'do') else match_body.items[1:]
+                for stmt in match_stmts:
+                    if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                        siblings = self._find_sibling_inner_loops(
+                            stmt.items[2:], first_pattern, body
+                        )
+                        results.extend(siblings)
         return results
 
     def _find_sibling_inner_loops(
@@ -390,6 +524,14 @@ class PatternDetectionMixin:
                         )
                         if sibling is not None:
                             results.append(sibling)
+            elif is_form(stmt, 'match') and len(stmt) >= 3:
+                # Recurse into match branches
+                match_info = self._unwrap_match_some_body(stmt)
+                if match_info:
+                    _, match_body, _, _ = match_info
+                    results.extend(self._find_sibling_inner_loops(
+                        [match_body], first_pattern, body, bindings.copy()
+                    ))
 
         return results
 
@@ -554,6 +696,55 @@ class PatternDetectionMixin:
                                 field_provenance=field_provenance
                             )
 
+        # Second pass: look for for-each inside match branches
+        for body_expr in body_exprs:
+            match_info = self._unwrap_match_some_body(body_expr)
+            if match_info:
+                bound_var, match_body, key_expr, coll_expr = match_info
+                match_ctx = MatchContext(bound_var=bound_var, key_expr=key_expr, collection_expr=coll_expr)
+                match_stmts = [match_body] if not isinstance(match_body, SList) or not is_form(match_body, 'do') else match_body.items[1:]
+                for stmt in match_stmts:
+                    if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                        loop_binding = stmt[1]
+                        if isinstance(loop_binding, SList) and len(loop_binding) >= 2:
+                            outer_loop_var = loop_binding[0].name if isinstance(loop_binding[0], Symbol) else None
+                            outer_collection = loop_binding[1]
+
+                            if outer_loop_var:
+                                nested_result = self._process_nested_loop_body(
+                                    stmt.items[2:],
+                                    outer_loop_var,
+                                    outer_let_bindings.copy(),
+                                    result_var,
+                                    []
+                                )
+
+                                if nested_result is not None:
+                                    (outer_filter, outer_bindings, inner_loops,
+                                     constructor_expr, field_mappings, all_bindings) = nested_result
+
+                                    field_provenance = self._classify_field_provenance(
+                                        field_mappings,
+                                        outer_loop_var,
+                                        outer_bindings,
+                                        outer_let_bindings,
+                                        inner_loops
+                                    )
+
+                                    return NestedLoopPatternInfo(
+                                        result_var=result_var,
+                                        outer_collection=outer_collection,
+                                        outer_loop_var=outer_loop_var,
+                                        outer_filter=outer_filter,
+                                        outer_bindings=outer_bindings,
+                                        outer_let_bindings=outer_let_bindings,
+                                        inner_loops=inner_loops,
+                                        constructor_expr=constructor_expr,
+                                        field_mappings=field_mappings,
+                                        field_provenance=field_provenance,
+                                        match_context=match_ctx
+                                    )
+
         return None
 
     def _process_nested_loop_body(
@@ -667,6 +858,19 @@ class PatternDetectionMixin:
                              constructor, field_mappings, all_bindings) = result
                             return (outer_filter, bindings, final_inner_loops,
                                     constructor, field_mappings, all_bindings)
+                continue
+
+            # Handle (match ...) - recurse into match branches
+            if is_form(stmt, 'match') and len(stmt) >= 3:
+                match_info = self._unwrap_match_some_body(stmt)
+                if match_info:
+                    _, match_body, _, _ = match_info
+                    result = self._process_nested_loop_body(
+                        [match_body], current_loop_var, bindings.copy(),
+                        result_var, inner_loops, outer_filter
+                    )
+                    if result is not None:
+                        return result
                 continue
 
             # Handle (list-push result (constructor ...))
@@ -1728,6 +1932,139 @@ class PatternDetectionMixin:
                     return nested_result
 
         return None
+
+    def _collect_push_sites(
+        self, stmts: list, result_var: str,
+        bindings: Optional[Dict[str, 'SExpr']] = None,
+        guards: Optional[List['SExpr']] = None
+    ) -> List[PushSiteInfo]:
+        """Collect all list-push sites to result_var with their context.
+
+        Recursively walks through ALL forms — while, for-each, match, when,
+        let, do, if — to find every push site regardless of nesting depth.
+
+        Args:
+            stmts: List of statements to search
+            result_var: Name of the result variable being pushed to
+            bindings: Variable bindings in scope (accumulated from let forms)
+            guards: Guard conditions enclosing this scope (from when/if forms)
+
+        Returns:
+            List of PushSiteInfo for each push site found
+        """
+        if bindings is None:
+            bindings = {}
+        if guards is None:
+            guards = []
+
+        sites: List[PushSiteInfo] = []
+
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+
+            # Direct push: (list-push result_var expr)
+            if is_form(stmt, 'list-push') and len(stmt) >= 3:
+                target = stmt[1]
+                if isinstance(target, Symbol) and target.name == result_var:
+                    sites.append(PushSiteInfo(
+                        pushed_expr=stmt[2],
+                        guard_conditions=list(guards),
+                        bindings=dict(bindings)
+                    ))
+                continue
+
+            # (when condition body) — adds guard
+            if is_form(stmt, 'when') and len(stmt) >= 3:
+                new_guards = guards + [stmt[1]]
+                sites += self._collect_push_sites(
+                    stmt.items[2:], result_var, bindings, new_guards
+                )
+                continue
+
+            # (if condition then-branch [else-branch]) — adds guard for then, recurses else
+            if is_form(stmt, 'if') and len(stmt) >= 3:
+                new_guards = guards + [stmt[1]]
+                sites += self._collect_push_sites(
+                    [stmt[2]], result_var, bindings, new_guards
+                )
+                if len(stmt) >= 4:
+                    sites += self._collect_push_sites(
+                        [stmt[3]], result_var, bindings, guards
+                    )
+                continue
+
+            # (let (bindings...) body...) — accumulate bindings
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                let_bindings = stmt[1]
+                new_bindings = bindings.copy()
+                if isinstance(let_bindings, SList):
+                    for binding in let_bindings.items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            first = binding[0]
+                            if isinstance(first, Symbol):
+                                if first.name == 'mut' and len(binding) >= 3:
+                                    var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                                    var_value = binding[2]
+                                else:
+                                    var_name = first.name
+                                    var_value = binding[1]
+                                if var_name:
+                                    new_bindings[var_name] = var_value
+                sites += self._collect_push_sites(
+                    stmt.items[2:], result_var, new_bindings, guards
+                )
+                continue
+
+            # (do body...) — recurse into body
+            if is_form(stmt, 'do'):
+                sites += self._collect_push_sites(
+                    stmt.items[1:], result_var, bindings, guards
+                )
+                continue
+
+            # (while condition body...) — recurse into body
+            if is_form(stmt, 'while') and len(stmt) >= 3:
+                sites += self._collect_push_sites(
+                    stmt.items[2:], result_var, bindings, guards
+                )
+                continue
+
+            # (for-each (var collection) body...) — recurse into body
+            if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                sites += self._collect_push_sites(
+                    stmt.items[2:], result_var, bindings, guards
+                )
+                continue
+
+            # (match scrutinee clause...) — recurse into each clause body
+            if is_form(stmt, 'match') and len(stmt) >= 3:
+                for clause in stmt.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 2:
+                        # Extract match-arm bindings (e.g., from (some VAR))
+                        pattern = clause[0]
+                        arm_bindings = bindings.copy()
+                        if isinstance(pattern, SList) and len(pattern) == 2:
+                            pat_head = pattern[0]
+                            pat_var = pattern[1]
+                            if isinstance(pat_head, Symbol) and isinstance(pat_var, Symbol):
+                                if pat_head.name == 'some':
+                                    arm_bindings[pat_var.name] = pattern
+                        sites += self._collect_push_sites(
+                            clause.items[1:], result_var, arm_bindings, guards
+                        )
+                continue
+
+            # Callback forms like (indexed-graph-for-each ... (fn ((var Type)) body))
+            # Recurse into (fn ...) bodies
+            if isinstance(stmt, SList) and len(stmt) >= 2:
+                for arg in stmt.items:
+                    if isinstance(arg, SList) and is_form(arg, 'fn') and len(arg) >= 3:
+                        sites += self._collect_push_sites(
+                            arg.items[2:], result_var, bindings, guards
+                        )
+
+        return sites
 
     def _has_for_each(self, expr: SExpr) -> bool:
         """Check if expression contains a for-each loop"""

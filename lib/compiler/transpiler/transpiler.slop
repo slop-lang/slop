@@ -1754,9 +1754,14 @@
                                     (ctx-register-list-type ctx key-c list-c-name)
                                     (ctx-register-option-type ctx key-c option-c-name)
                                     (scan-type-for-generics ctx key-type)
-                                    ;; Also scan value type for nested generics
+                                    ;; Also scan value type for nested generics and register option type
                                     (match (list-get items 2)
-                                      ((some val-type) (scan-type-for-generics ctx val-type))
+                                      ((some val-type)
+                                        (let ((val-c (to-c-type-prefixed ctx val-type))
+                                              (val-id (type-to-identifier arena val-c))
+                                              (val-option-c-name (ctx-str ctx "slop_option_" val-id)))
+                                          (ctx-register-option-type ctx val-c val-option-c-name)
+                                          (scan-type-for-generics ctx val-type)))
                                       ((none) (do)))))
                                 ((none) (do)))))
                           ;; Set type - register list type for element to support set iteration

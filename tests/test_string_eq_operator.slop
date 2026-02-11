@@ -1,0 +1,36 @@
+;; ============================================================
+;; Test: String == and != operators
+;;
+;; Tests that String comparison with == and != emits
+;; slop_string_eq() calls instead of C struct ==
+;; ============================================================
+
+(module test-string-eq-operator
+
+  (fn test-string-equal ()
+    (@intent "Test == on strings")
+    (@spec (() -> Bool))
+    (let ((a "hello")
+          (b "hello"))
+      (== a b)))
+
+  (fn test-string-not-equal ()
+    (@intent "Test != on strings")
+    (@spec (() -> Bool))
+    (let ((a "hello")
+          (b "world"))
+      (!= a b)))
+
+  (fn test-string-equal-false ()
+    (@intent "Test == on different strings returns false")
+    (@spec (() -> Bool))
+    (let ((a "foo")
+          (b "bar"))
+      (not (== a b))))
+
+  (fn main ()
+    (@intent "Run all tests")
+    (@spec (() -> Int))
+    (if (and (test-string-equal) (and (test-string-not-equal) (test-string-equal-false)))
+      (do (println "All String == tests passed!") 0)
+      (do (println "String == tests FAILED!") 1))))

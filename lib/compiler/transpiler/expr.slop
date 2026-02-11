@@ -883,7 +883,7 @@
       ((num num)
         ;; Numbers default to int option
         (if (. num is-float)
-          "slop_option_double"
+          "slop_option_float"
           "slop_option_int"))
       ((str _)
         "slop_option_string")
@@ -914,7 +914,7 @@
                             (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for variable '" name "' - type is 'auto' with no SLOP type") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr))
                             "__type_error__")))
                       ((string-eq c-type "int64_t") "slop_option_int")
-                      ((string-eq c-type "double") "slop_option_double")
+                      ((string-eq c-type "double") "slop_option_float")
                       ((string-eq c-type "slop_string") "slop_option_string")
                       ((string-eq c-type "char") "slop_option_char")
                       ((string-eq c-type "uint8_t") "slop_option_u8")
@@ -1057,7 +1057,7 @@
                                 (cond
                                   ((string-eq ret-type "slop_string") "slop_option_string")
                                   ((string-eq ret-type "int64_t") "slop_option_int")
-                                  ((string-eq ret-type "double") "slop_option_double")
+                                  ((string-eq ret-type "double") "slop_option_float")
                                   ;; Pointer type - generate slop_option_<base>_ptr
                                   ((ends-with ret-type "*")
                                     (let ((ctx-arena (. (deref ctx) arena))
@@ -1191,7 +1191,7 @@
       (cond
         ((string-eq c-type "slop_list_string") "slop_option_string")
         ((string-eq c-type "slop_list_int") "slop_option_int")
-        ((string-eq c-type "slop_list_double") "slop_option_double")
+        ((string-eq c-type "slop_list_float") "slop_option_float")
         ((string-eq c-type "slop_list_char") "slop_option_char")
         ((string-eq c-type "slop_list_u8") "slop_option_u8")
         ;; For other list types, extract element and build option type
@@ -1285,6 +1285,12 @@
         ((starts-with slop-type "(Set ") "slop_map*")
         ((starts-with slop-type "(Ptr (Map ") "slop_map**")
         ((starts-with slop-type "(Ptr (Set ") "slop_map**")
+        ((starts-with slop-type "(Ptr ")
+          ;; Extract inner type from "(Ptr T)" -> "T"
+          (let ((inner-len (max 0 (- (cast Int (string-len slop-type)) 6)))
+                (inner-type (substring arena slop-type 5 (cast (Int 0 ..) inner-len)))
+                (inner-c (slop-value-type-to-c-type ctx inner-type)))
+            (string-concat arena inner-c "*")))
         (else
           (match (ctx-lookup-type ctx slop-type)
             ((some entry) (. entry c-name))
@@ -1693,7 +1699,7 @@
       ((string-eq slop-type "U32") "uint32_t")
       ((string-eq slop-type "U64") "uint64_t")
       ((string-eq slop-type "Char") "char")
-      ((string-eq slop-type "Float") "double")
+      ((string-eq slop-type "Float") "float")
       ((string-eq slop-type "F32") "float")
       ((string-eq slop-type "Bool") "uint8_t")
       ((string-eq slop-type "String") "string")
@@ -1722,16 +1728,15 @@
                     (let ((resolved-type (resolve-type-alias ctx slop-type))
                           (value-slop-type (extract-map-value-from-slop-type arena resolved-type)))
                       (if (> (string-len value-slop-type) 0)
-                        ;; Got value type - check if it resolves to a container (pointer in C)
+                        ;; Check if value type is a container type that uses slop_option_ptr
                         (let ((resolved-value (resolve-type-alias ctx value-slop-type)))
                           (if (or (starts-with resolved-value "(Map ")
                                   (or (starts-with resolved-value "(Set ")
                                       (starts-with resolved-value "(List ")))
-                            ;; Container types are pointers in C
                             "slop_option_ptr"
-                            ;; Convert to option type name
-                            (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
-                              (ctx-str ctx "slop_option_" option-id))))
+                            (let ((value-c (slop-type-to-c-type ctx value-slop-type))
+                                  (value-id (type-to-identifier arena value-c)))
+                              (ctx-str ctx "slop_option_" value-id))))
                         ;; Couldn't extract value type
                         ""))
                     ;; No slop-type stored
@@ -1744,15 +1749,15 @@
                (let ((resolved-type (resolve-type-alias ctx slop-type))
                      (value-slop-type (extract-map-value-from-slop-type arena resolved-type)))
                  (if (> (string-len value-slop-type) 0)
-                   ;; Check if value type resolves to a container (pointer in C)
+                   ;; Check if value type is a container type that uses slop_option_ptr
                    (let ((resolved-value (resolve-type-alias ctx value-slop-type)))
                      (if (or (starts-with resolved-value "(Map ")
                              (or (starts-with resolved-value "(Set ")
                                  (starts-with resolved-value "(List ")))
-                       ;; Container types are pointers in C
                        "slop_option_ptr"
-                       (let ((option-id (slop-value-type-to-option-id arena value-slop-type)))
-                         (ctx-str ctx "slop_option_" option-id))))
+                       (let ((value-c (slop-type-to-c-type ctx value-slop-type))
+                             (value-id (type-to-identifier arena value-c)))
+                         (ctx-str ctx "slop_option_" value-id))))
                    ""))
                ""))))))
 
@@ -1763,16 +1768,20 @@
       ((string-eq option-type "slop_option_int") "int64_t")
       ((string-eq option-type "slop_option_string") "slop_string")
       ((string-eq option-type "slop_option_bool") "uint8_t")
-      ((string-eq option-type "slop_option_double") "double")
+      ((string-eq option-type "slop_option_float") "double")
       ((string-eq option-type "slop_option_char") "char")
       ((string-eq option-type "slop_option_u8") "uint8_t")
       ((string-eq option-type "slop_option_ptr") "void*")
       ((starts-with option-type "slop_option_")
         (let ((extracted (substring-after-prefix arena option-type "slop_option_")))
-          ;; Handle set_ types - sets are implemented as slop_map*
-          (if (starts-with extracted "set_")
-            "slop_map*"
-            extracted)))
+          (cond
+            ;; Handle set_ types - sets are implemented as slop_map*
+            ((starts-with extracted "set_") "slop_map*")
+            ;; Handle _ptr suffix - convert back to pointer type
+            ((ends-with extracted "_ptr")
+              (let ((base-len (- (cast Int (string-len extracted)) 4)))
+                (string-concat arena (substring arena extracted 0 (cast (Int 0 ..) base-len)) "*")))
+            (else extracted))))
       (else "void")))
 
   (fn infer-option-inner-slop-type ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)))
@@ -2084,8 +2093,16 @@
                           (match (list-get items 2)
                             ((some right)
                               (let ((left-c (transpile-expr ctx left))
-                                    (right-c (transpile-expr ctx right)))
-                                (transpile-binop ctx op left-c right-c)))
+                                    (right-c (transpile-expr ctx right))
+                                    (left-type (infer-expr-c-type ctx left)))
+                                (if (and (string-eq left-type "slop_string")
+                                         (or (string-eq op "==")
+                                             (or (string-eq op "=")
+                                                 (string-eq op "!="))))
+                                  (if (string-eq op "!=")
+                                    (ctx-str5 ctx "(!slop_string_eq(" left-c ", " right-c "))")
+                                    (ctx-str5 ctx "slop_string_eq(" left-c ", " right-c ")"))
+                                  (transpile-binop ctx op left-c right-c))))
                             ((none)
                               (do
                                 (ctx-add-error-at ctx "missing right operand" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -2258,7 +2275,7 @@
                                                    "__type_error__"))
                                                ((string-eq val-type "slop_string") "slop_option_string")
                                                ((string-eq val-type "int64_t") "slop_option_int")
-                                               ((string-eq val-type "double") "slop_option_double")
+                                               ((string-eq val-type "double") "slop_option_float")
                                                ;; For auto/unknown type, emit error
                                                ((string-eq val-type "auto")
                                                  (do
@@ -3799,7 +3816,7 @@
                                   (cond
                                     ((string-eq val-type "slop_string") "slop_option_string")
                                     ((string-eq val-type "int64_t") "slop_option_int")
-                                    ((string-eq val-type "double") "slop_option_double")
+                                    ((string-eq val-type "double") "slop_option_float")
                                     ;; Pointer type - generate slop_option_<base>_ptr
                                     ((ends-with val-type "*")
                                       (let ((ctx-arena (. (deref ctx) arena))
@@ -3950,10 +3967,13 @@
                         ((or (string-eq op "+") (or (string-eq op "-") (or (string-eq op "*") (or (string-eq op "/") (string-eq op "%")))))
                           "int64_t")
                         ;; Comparison operators return uint8_t (Bool)
-                        ((or (string-eq op ">") (or (string-eq op "<") (or (string-eq op ">=") (or (string-eq op "<=") (or (string-eq op "==") (string-eq op "!="))))))
+                        ((or (string-eq op "=") (or (string-eq op ">") (or (string-eq op "<") (or (string-eq op ">=") (or (string-eq op "<=") (or (string-eq op "==") (string-eq op "!=")))))))
                           "uint8_t")
                         ;; Logical operators return uint8_t (Bool)
                         ((or (string-eq op "and") (or (string-eq op "or") (string-eq op "not")))
+                          "uint8_t")
+                        ;; Array indexing returns element (treat as integer for inference)
+                        ((string-eq op "@")
                           "uint8_t")
                         ;; Function call or struct constructor - check type registry first
                         (else
@@ -5276,8 +5296,8 @@
                     ;; Named option type available - register it and generate proper code
                     (let ((inner-type-name (substring-after-prefix arena option-type "slop_option_"))
                           (value-c-type (option-type-to-value-c-type arena option-type)))
-                      ;; Register the option type using inner-type-name so set_* types are properly detected
-                      (ctx-register-option-type ctx inner-type-name option-type)
+                      ;; Register the option type using the actual C type (value-c-type) for SLOP_OPTION_DEFINE
+                      (ctx-register-option-type ctx value-c-type option-type)
                       (ctx-str ctx "({ void* _ptr = slop_map_get("
                         (ctx-str ctx map-c
                           (ctx-str ctx ", "

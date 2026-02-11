@@ -13,8 +13,9 @@ from slop.types import RecordType, RangeType
 
 from .z3_setup import Z3_AVAILABLE, z3
 from .loop_patterns import (
+    PushSiteInfo,
     FilterPatternInfo, MapPatternInfo, NestedLoopPatternInfo, CountPatternInfo,
-    FoldPatternInfo, InnerLoopInfo, FieldSource,
+    FoldPatternInfo, InnerLoopInfo, FieldSource, MatchContext,
 )
 
 if TYPE_CHECKING:
@@ -351,6 +352,13 @@ class AxiomGenerationMixin:
                     )
                     axioms.append(completeness_axiom)
 
+            # Match context subset axioms: connect match-bound collection to parent
+            if map_pattern.match_context is not None:
+                match_axioms = self._generate_match_subset_axioms(
+                    map_pattern.match_context, source_seq, source_name, translator
+                )
+                axioms.extend(match_axioms)
+
         finally:
             # Restore binding
             if old_binding is not None:
@@ -612,6 +620,13 @@ class AxiomGenerationMixin:
                     )
                     axioms.extend(inst_axioms)
 
+            # Match context subset axioms for nested patterns
+            if pattern.match_context is not None:
+                match_axioms = self._generate_match_subset_axioms(
+                    pattern.match_context, outer_seq, outer_name, translator
+                )
+                axioms.extend(match_axioms)
+
         finally:
             # Restore bindings
             if old_outer_binding is not None:
@@ -624,6 +639,107 @@ class AxiomGenerationMixin:
                     translator.variables[var_name] = old_val
                 elif var_name in translator.variables:
                     del translator.variables[var_name]
+
+        return axioms
+
+    def _generate_match_subset_axioms(
+        self,
+        match_ctx: 'MatchContext',
+        child_seq: z3.SeqRef,
+        child_name: Optional[str],
+        translator: 'Z3Translator'
+    ) -> List[z3.BoolRef]:
+        """Generate subset axioms connecting a match-bound collection to its parent.
+
+        When iterating over pred-triples from:
+            (match (map-get (. delta by-predicate) KEY)
+              ((some pred-triples) (for-each (dt pred-triples) ...)))
+
+        pred-triples is a subset of delta.triples with predicate == KEY.
+
+        Generates:
+        1. Subset axiom: ForAll j in child: Exists k in parent: child[j] == parent[k]
+        2. Predicate filter: ForAll j in child: field_predicate(child[j]) == KEY
+           (only when KEY is resolvable and collection_expr is a by-predicate index)
+        """
+        axioms: List[z3.BoolRef] = []
+
+        # Determine the parent collection from the match_ctx.collection_expr
+        # e.g., (. delta by-predicate) → parent is (. delta triples) conceptually
+        # But for the subset axiom, we connect child elements to the parent list.
+        # The collection_expr is what map-get operates on (the index map).
+        # To find the parent list, we look at the structure:
+        # (. delta by-predicate) → parent is (. delta triples)
+        parent_seq = None
+        parent_name = None
+
+        if is_form(match_ctx.collection_expr, '.') and len(match_ctx.collection_expr) >= 3:
+            obj = match_ctx.collection_expr[1]
+            field = match_ctx.collection_expr[2]
+            if isinstance(obj, Symbol) and isinstance(field, Symbol):
+                # The index is (. obj by-predicate), parent list is (. obj triples)
+                parent_name = f"_field_{obj.name}_triples"
+                if parent_name not in translator.list_seqs:
+                    translator._create_list_seq(parent_name)
+                parent_seq = translator.list_seqs.get(parent_name)
+
+        if parent_seq is None:
+            return axioms
+
+        # 1. Subset axiom: every element of child_seq exists in parent_seq
+        child_idx = z3.Int('_match_child_j')
+        parent_idx = z3.Int('_match_parent_k')
+
+        subset_axiom = z3.ForAll([child_idx],
+            z3.Implies(
+                z3.And(child_idx >= 0, child_idx < z3.Length(child_seq)),
+                z3.Exists([parent_idx],
+                    z3.And(
+                        parent_idx >= 0,
+                        parent_idx < z3.Length(parent_seq),
+                        child_seq[child_idx] == parent_seq[parent_idx]
+                    )
+                )
+            )
+        )
+        axioms.append(subset_axiom)
+
+        # 2. Predicate filter axiom: elements have predicate == KEY
+        # Only when the collection is a by-predicate index
+        if is_form(match_ctx.collection_expr, '.') and len(match_ctx.collection_expr) >= 3:
+            field = match_ctx.collection_expr[2]
+            if isinstance(field, Symbol) and field.name == 'by-predicate':
+                # Translate the key expression
+                key_z3 = translator.translate_expr(match_ctx.key_expr)
+                if key_z3 is not None:
+                    # Get predicate field accessor
+                    pred_func_name = "fn_triple-predicate_1"
+                    if pred_func_name not in translator.variables:
+                        pred_func = z3.Function(pred_func_name, z3.IntSort(), z3.IntSort())
+                        translator.variables[pred_func_name] = pred_func
+                    else:
+                        pred_func = translator.variables[pred_func_name]
+
+                    # Get equality function
+                    eq_func = self._get_type_equality_function('triple-predicate', translator)
+
+                    filter_idx = z3.Int('_match_filter_j')
+                    elem_pred = pred_func(child_seq[filter_idx])
+                    if eq_func is not None:
+                        pred_constraint = eq_func(elem_pred, key_z3)
+                    else:
+                        pred_constraint = elem_pred == key_z3
+
+                    filter_axiom = z3.ForAll([filter_idx],
+                        z3.Implies(
+                            z3.And(filter_idx >= 0, filter_idx < z3.Length(child_seq)),
+                            pred_constraint
+                        )
+                    )
+                    axioms.append(filter_axiom)
+
+        # Size constraint
+        axioms.append(z3.Length(child_seq) <= z3.Length(parent_seq))
 
         return axioms
 
@@ -1201,18 +1317,35 @@ class AxiomGenerationMixin:
                     if var_name and var_value:
                         initial_bindings[var_name] = var_value
 
-        # Find for-each loop in body
+        # Find for-each loop in body (also inside match branches)
         body_exprs = fn_body.items[2:]
-        for body_expr in body_exprs:
-            if is_form(body_expr, 'for-each') and len(body_expr) >= 3:
-                loop_body = body_expr.items[2:]
-                # Extract conditions from the loop body
-                conditions, bindings_ctx = self._collect_filter_conditions(
-                    loop_body, initial_bindings.copy()
-                )
-                return conditions, bindings_ctx
+        result = self._find_for_each_and_collect_conditions(body_exprs, initial_bindings)
+        if result is not None:
+            return result
 
         return [], initial_bindings
+
+    def _find_for_each_and_collect_conditions(
+        self, stmts: list, bindings: Dict[str, 'SExpr']
+    ) -> Optional[Tuple[List['SExpr'], Dict[str, 'SExpr']]]:
+        """Find for-each in statements (including inside match branches) and collect filter conditions."""
+        for stmt in stmts:
+            if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                loop_body = stmt.items[2:]
+                conditions, bindings_ctx = self._collect_filter_conditions(
+                    loop_body, bindings.copy()
+                )
+                return conditions, bindings_ctx
+            # Recurse into match branches
+            if is_form(stmt, 'match') and len(stmt) >= 3:
+                for clause in stmt.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 2:
+                        result = self._find_for_each_and_collect_conditions(
+                            clause.items[1:], bindings.copy()
+                        )
+                        if result is not None:
+                            return result
+        return None
 
     def _collect_filter_conditions(
         self, stmts: List[SExpr], bindings: Dict[str, SExpr]
@@ -2106,6 +2239,328 @@ class AxiomGenerationMixin:
                 axioms.append(result_var <= init_z3)
 
         return axioms
+
+
+    # ============================================================================
+    # Structural Push-Site Analysis
+    # ============================================================================
+
+    def _resolve_through_bindings(self, expr: 'SExpr', bindings: Dict[str, 'SExpr'],
+                                   depth: int = 0) -> 'SExpr':
+        """Resolve a variable through bindings, following chains up to a depth limit."""
+        if depth > 10:
+            return expr
+        if isinstance(expr, Symbol) and expr.name in bindings:
+            return self._resolve_through_bindings(bindings[expr.name], bindings, depth + 1)
+        return expr
+
+    def _exprs_structurally_equal(self, a: 'SExpr', b: 'SExpr') -> bool:
+        """Check if two S-expressions are structurally identical."""
+        if isinstance(a, Symbol) and isinstance(b, Symbol):
+            return a.name == b.name
+        if isinstance(a, Number) and isinstance(b, Number):
+            return a.value == b.value
+        if isinstance(a, String) and isinstance(b, String):
+            return a.value == b.value
+        if isinstance(a, SList) and isinstance(b, SList):
+            if len(a) != len(b):
+                return False
+            return all(self._exprs_structurally_equal(ai, bi)
+                       for ai, bi in zip(a.items, b.items))
+        return False
+
+    def _extract_constructor_fields(self, pushed_expr: 'SExpr',
+                                     bindings: Dict[str, 'SExpr']
+                                     ) -> Optional[Tuple[str, Dict[str, 'SExpr']]]:
+        """Extract constructor name and field values from a pushed expression.
+
+        For (make-triple arena S P O), returns:
+            ("triple", {"subject": S, "predicate": P, "object": O})
+
+        Uses imported postconditions to determine field mappings.
+        Falls back to positional field names.
+        """
+        resolved = self._resolve_through_bindings(pushed_expr, bindings)
+        if not isinstance(resolved, SList) or len(resolved) < 1:
+            return None
+
+        head = resolved[0]
+        if not isinstance(head, Symbol):
+            return None
+
+        # Use imported postconditions for field mapping
+        if hasattr(self, 'imported_defs') and self.imported_defs:
+            mappings = self._infer_field_mappings_from_postconditions(
+                head.name, resolved, bindings
+            )
+            if mappings:
+                # Resolve each field value through bindings
+                resolved_mappings = {}
+                for field_name, field_expr in mappings.items():
+                    resolved_mappings[field_name] = self._resolve_through_bindings(
+                        field_expr, bindings
+                    )
+                type_prefix = head.name.replace('make-', '').replace('-new', '')
+                return (type_prefix, resolved_mappings)
+
+        # Fallback: positional for make-X patterns (skip arena at position 1)
+        if head.name.startswith('make-') and len(resolved) >= 3:
+            type_prefix = head.name[5:]  # strip "make-"
+            mappings = {}
+            for i, arg in enumerate(resolved.items[2:]):  # skip fn name and arena
+                resolved_arg = self._resolve_through_bindings(arg, bindings)
+                mappings[f'field_{i}'] = resolved_arg
+            return (type_prefix, mappings)
+
+        return None
+
+    def _generate_structural_push_axioms(
+        self, push_sites: List['PushSiteInfo'], translator: 'Z3Translator',
+        fn_params: Optional[List[str]] = None
+    ) -> List[z3.BoolRef]:
+        """Generate axioms from structural analysis of push sites.
+
+        Two kinds of axioms:
+        1. Constant field: If the same field resolves to the same expression
+           across ALL push sites, generate field(result[i]) == const.
+        2. Novelty guard: If ALL push sites are guarded by
+           (not (indexed-graph-contains g EXPR)) where EXPR is the pushed value,
+           generate Not(indexed-graph-contains(g, result[i])).
+
+        Args:
+            push_sites: Collected push site information
+            translator: Z3 translator for expression conversion
+            fn_params: Function parameter names (treated as constants)
+
+        Returns:
+            List of Z3 axioms
+        """
+        if not push_sites:
+            return []
+
+        axioms: List[z3.BoolRef] = []
+
+        # Need Seq for $result
+        if '$result' not in translator.list_seqs:
+            return axioms
+
+        result_seq = translator.list_seqs['$result']
+        result_idx = z3.Int('_struct_res_i')
+
+        # --- Constant field axioms ---
+        axioms.extend(self._generate_constant_field_axioms(
+            push_sites, translator, result_seq, result_idx, fn_params
+        ))
+
+        # --- Novelty guard axioms ---
+        axioms.extend(self._generate_guard_axioms(
+            push_sites, translator, result_seq, result_idx
+        ))
+
+        return axioms
+
+    def _generate_constant_field_axioms(
+        self, push_sites: List['PushSiteInfo'], translator: 'Z3Translator',
+        result_seq, result_idx, fn_params: Optional[List[str]] = None
+    ) -> List[z3.BoolRef]:
+        """Generate axioms for fields that are constant across all push sites."""
+        axioms: List[z3.BoolRef] = []
+        if fn_params is None:
+            fn_params = []
+
+        # Extract constructor fields from each push site
+        all_site_fields: List[Optional[Tuple[str, Dict[str, 'SExpr']]]] = []
+        for site in push_sites:
+            fields = self._extract_constructor_fields(site.pushed_expr, site.bindings)
+            all_site_fields.append(fields)
+
+        # If any site doesn't have a constructor, we can't analyze fields
+        if any(f is None for f in all_site_fields):
+            return axioms
+
+        # Get field names from first site
+        first_type, first_fields = all_site_fields[0]
+
+        # Check each field for constancy across all sites
+        for field_name in first_fields:
+            first_value = first_fields[field_name]
+
+            # Check if this field has the same resolved value across all sites
+            all_same = True
+            for site_fields in all_site_fields[1:]:
+                _, other_fields = site_fields
+                if field_name not in other_fields:
+                    all_same = False
+                    break
+                other_value = other_fields[field_name]
+                if not self._exprs_structurally_equal(first_value, other_value):
+                    all_same = False
+                    break
+
+            if not all_same:
+                continue
+
+            # Verify the constant value is truly constant (a literal, a function param,
+            # or a call with only constant args like (make-iri arena OWL_SAME_AS))
+            if not self._is_constant_expr(first_value, fn_params):
+                continue
+
+            # Translate the constant to Z3
+            const_z3 = translator.translate_expr(first_value)
+            if const_z3 is None:
+                continue
+
+            # Get or create field accessor function
+            accessor_name = f"{first_type}-{field_name}" if first_type else field_name
+            field_func_name = f"fn_{accessor_name}_1"
+            if field_func_name not in translator.variables:
+                field_func = z3.Function(
+                    field_func_name, z3.IntSort(), z3.IntSort()
+                )
+                translator.variables[field_func_name] = field_func
+            else:
+                field_func = translator.variables[field_func_name]
+
+            # Get appropriate equality function
+            eq_func = self._get_type_equality_function(accessor_name, translator)
+
+            # Generate: ForAll i, 0 <= i < Length(result) =>
+            #           field(result[i]) == const
+            result_field = field_func(result_seq[result_idx])
+            if eq_func is not None:
+                field_eq = eq_func(result_field, const_z3)
+            else:
+                field_eq = (result_field == const_z3)
+
+            axiom = z3.ForAll([result_idx], z3.Implies(
+                z3.And(result_idx >= 0, result_idx < z3.Length(result_seq)),
+                field_eq
+            ))
+            axioms.append(axiom)
+
+        return axioms
+
+    def _generate_guard_axioms(
+        self, push_sites: List['PushSiteInfo'], translator: 'Z3Translator',
+        result_seq, result_idx
+    ) -> List[z3.BoolRef]:
+        """Generate axioms for guard conditions that hold across all push sites.
+
+        Detects (not (indexed-graph-contains g EXPR)) guards where EXPR is
+        the pushed expression (or resolves to the same variable).
+        """
+        axioms: List[z3.BoolRef] = []
+
+        # Check if ALL push sites have a novelty guard
+        all_have_novelty = True
+        for site in push_sites:
+            has_novelty = False
+            for guard in site.guard_conditions:
+                if self._is_novelty_guard(guard, site.pushed_expr, site.bindings):
+                    has_novelty = True
+                    break
+            if not has_novelty:
+                all_have_novelty = False
+                break
+
+        if not all_have_novelty:
+            return axioms
+
+        # Find the graph variable and contains function from the first site's guard
+        first_site = push_sites[0]
+        for guard in first_site.guard_conditions:
+            guard_info = self._extract_novelty_guard_info(guard, first_site.pushed_expr,
+                                                           first_site.bindings)
+            if guard_info is not None:
+                graph_expr, contains_fn_name = guard_info
+
+                # Translate graph variable
+                graph_z3 = translator.translate_expr(graph_expr)
+                if graph_z3 is None:
+                    break
+
+                # Get or create the contains function
+                if contains_fn_name not in translator.variables:
+                    contains_func = z3.Function(
+                        contains_fn_name, z3.IntSort(), z3.IntSort(), z3.BoolSort()
+                    )
+                    translator.variables[contains_fn_name] = contains_func
+                else:
+                    contains_func = translator.variables[contains_fn_name]
+
+                # Generate: ForAll i, 0 <= i < Length(result) =>
+                #           Not(contains(g, result[i]))
+                axiom = z3.ForAll([result_idx], z3.Implies(
+                    z3.And(result_idx >= 0, result_idx < z3.Length(result_seq)),
+                    z3.Not(contains_func(graph_z3, result_seq[result_idx]))
+                ))
+                axioms.append(axiom)
+                break
+
+        return axioms
+
+    def _is_novelty_guard(self, guard: 'SExpr', pushed_expr: 'SExpr',
+                           bindings: Dict[str, 'SExpr']) -> bool:
+        """Check if guard is (not (indexed-graph-contains g EXPR)) where EXPR
+        is the pushed expression or resolves to the same thing."""
+        if not is_form(guard, 'not') or len(guard) < 2:
+            return False
+        inner = guard[1]
+        if not is_form(inner, 'indexed-graph-contains') or len(inner) < 3:
+            return False
+        # inner[1] = graph, inner[2] = the expression being checked
+        checked_expr = inner[2]
+        resolved_pushed = self._resolve_through_bindings(pushed_expr, bindings)
+        resolved_checked = self._resolve_through_bindings(checked_expr, bindings)
+        return self._exprs_structurally_equal(resolved_pushed, resolved_checked)
+
+    def _extract_novelty_guard_info(
+        self, guard: 'SExpr', pushed_expr: 'SExpr', bindings: Dict[str, 'SExpr']
+    ) -> Optional[Tuple['SExpr', str]]:
+        """Extract (graph_expr, contains_fn_name) from a novelty guard."""
+        if not is_form(guard, 'not') or len(guard) < 2:
+            return None
+        inner = guard[1]
+        if not is_form(inner, 'indexed-graph-contains') or len(inner) < 3:
+            return None
+        checked_expr = inner[2]
+        resolved_pushed = self._resolve_through_bindings(pushed_expr, bindings)
+        resolved_checked = self._resolve_through_bindings(checked_expr, bindings)
+        if not self._exprs_structurally_equal(resolved_pushed, resolved_checked):
+            return None
+        graph_expr = inner[1]
+        contains_fn_name = "fn_indexed-graph-contains_2"
+        return (graph_expr, contains_fn_name)
+
+    def _is_constant_expr(self, expr: 'SExpr', fn_params: List[str]) -> bool:
+        """Check if an expression is constant for the duration of a function call.
+
+        Constant means: literal, function parameter, or a call with only constant args.
+        """
+        if isinstance(expr, (Number, String)):
+            return True
+        if isinstance(expr, Symbol):
+            # Function parameters are constant for the call
+            if expr.name in fn_params:
+                return True
+            # ALL_CAPS identifiers are module-level constants
+            if expr.name.isupper() or '_' in expr.name and all(
+                c.isupper() or c == '_' for c in expr.name
+            ):
+                return True
+            return False
+        if isinstance(expr, SList) and len(expr) >= 1:
+            head = expr[0]
+            if isinstance(head, Symbol):
+                # Constructor calls with constant args: (make-iri arena CONST)
+                if head.name.startswith('make-'):
+                    return all(
+                        self._is_constant_expr(arg, fn_params)
+                        or (isinstance(arg, Symbol) and arg.name == 'arena')
+                        for arg in expr.items[1:]
+                    )
+            return False
+        return False
 
 
 __all__ = ['AxiomGenerationMixin']
