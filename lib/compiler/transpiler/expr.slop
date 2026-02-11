@@ -3047,7 +3047,7 @@
       (match (deref arg)
         ;; String literal - direct printf
         ((str s)
-          (ctx-str5 ctx "printf(\"%s" nl "\", \"" (. s value) "\")"))
+          (ctx-str5 ctx "printf(\"%s" nl "\", \"" (escape-c-string ctx (. s value)) "\")"))
         ;; Number literal
         ((num n)
           ;; Check if float

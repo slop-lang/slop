@@ -4089,7 +4089,7 @@ slop_string expr_transpile_print(context_TranspileContext* ctx, types_SExpr* arg
             case types_SExpr_str:
             {
                 __auto_type s = _mv_298.data.str;
-                return context_ctx_str5(ctx, SLOP_STR("printf(\"%s"), nl, SLOP_STR("\", \""), s.value, SLOP_STR("\")"));
+                return context_ctx_str5(ctx, SLOP_STR("printf(\"%s"), nl, SLOP_STR("\", \""), expr_escape_c_string(ctx, s.value), SLOP_STR("\")"));
             }
             case types_SExpr_num:
             {
