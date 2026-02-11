@@ -1,0 +1,793 @@
+;; ============================================================
+;; JSON Module - Parse and serialize JSON values
+;;
+;; Provides:
+;; - Recursive descent parser for JSON (RFC 8259)
+;; - Compact and pretty-printed serialization
+;; - Type-safe constructors, accessors, and builders
+;; ============================================================
+
+(module json
+  (export
+    ;; Types
+    JsonType JsonErrorKind JsonError JsonNumber JsonArray JsonObject JsonValue
+    ;; Constructors
+    json-null json-bool json-number json-number-int json-string json-array json-object
+    ;; Predicates
+    json-is-null json-is-bool json-is-number json-is-string json-is-array json-is-object
+    json-type
+    ;; Accessors
+    json-get json-array-get json-array-len
+    json-as-bool json-as-number json-as-int json-as-string
+    ;; Builders
+    json-object-set json-array-push
+    ;; Parse / Stringify
+    json-parse json-stringify json-stringify-pretty)
+
+  (import strlib (char-at is-digit is-space parse-int parse-float
+                  float-to-string substring string-build repeat))
+
+  (ffi "string.h"
+    (memcpy ((dest (Ptr Void)) (src (Ptr Void)) (n U64)) (Ptr Void)))
+
+  ;; ============================================================
+  ;; Types
+  ;; ============================================================
+
+  (type JsonType (enum
+    json-type-null json-type-bool json-type-number
+    json-type-string json-type-array json-type-object))
+
+  (type JsonErrorKind (enum
+    unexpected-end unexpected-char invalid-number
+    invalid-string-escape unterminated-string
+    expected-colon expected-comma-or-brace
+    expected-comma-or-bracket expected-value))
+
+  (type JsonError (record
+    (kind JsonErrorKind)
+    (pos (Int 0 ..))
+    (message String)))
+
+  (type JsonNumber (record
+    (int-value I64)
+    (float-value Float)
+    (is-float Bool)))
+
+  (type JsonArray (record
+    (items (List (Ptr JsonValue)))))
+
+  (type JsonObject (record
+    (entries (Map String (Ptr JsonValue)))))
+
+  (type JsonValue (union
+    (jnull)
+    (jbool Bool)
+    (jnum JsonNumber)
+    (jstr String)
+    (jarr JsonArray)
+    (jobj JsonObject)))
+
+  ;; Internal parser state (not exported)
+  (type JsonParser (record
+    (input String)
+    (pos (Int 0 ..))
+    (len (Int 0 ..))))
+
+  ;; ============================================================
+  ;; Constructors
+  ;; ============================================================
+
+  (fn json-null ((arena Arena))
+    (@intent "Create a JSON null value")
+    (@spec ((Arena) -> (Ptr JsonValue)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((v (cast (Ptr JsonValue) (arena-alloc arena (sizeof JsonValue)))))
+      (set! (deref v) (union-new JsonValue jnull))
+      v))
+
+  (fn json-bool ((arena Arena) (b Bool))
+    (@intent "Create a JSON boolean value")
+    (@spec ((Arena Bool) -> (Ptr JsonValue)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((v (cast (Ptr JsonValue) (arena-alloc arena (sizeof JsonValue)))))
+      (set! (deref v) (union-new JsonValue jbool b))
+      v))
+
+  (fn json-number ((arena Arena) (f Float))
+    (@intent "Create a JSON number value from a float")
+    (@spec ((Arena Float) -> (Ptr JsonValue)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((v (cast (Ptr JsonValue) (arena-alloc arena (sizeof JsonValue)))))
+      (set! (deref v) (union-new JsonValue jnum
+        (record-new JsonNumber (int-value 0) (float-value f) (is-float true))))
+      v))
+
+  (fn json-number-int ((arena Arena) (n I64))
+    (@intent "Create a JSON number value from an integer")
+    (@spec ((Arena I64) -> (Ptr JsonValue)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((v (cast (Ptr JsonValue) (arena-alloc arena (sizeof JsonValue)))))
+      (set! (deref v) (union-new JsonValue jnum
+        (record-new JsonNumber (int-value n) (float-value 0.0) (is-float false))))
+      v))
+
+  (fn json-string ((arena Arena) (s String))
+    (@intent "Create a JSON string value")
+    (@spec ((Arena String) -> (Ptr JsonValue)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((v (cast (Ptr JsonValue) (arena-alloc arena (sizeof JsonValue)))))
+      (set! (deref v) (union-new JsonValue jstr s))
+      v))
+
+  (fn json-array ((arena Arena))
+    (@intent "Create an empty JSON array value")
+    (@spec ((Arena) -> (Ptr JsonValue)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((v (cast (Ptr JsonValue) (arena-alloc arena (sizeof JsonValue)))))
+      (set! (deref v) (union-new JsonValue jarr
+        (record-new JsonArray (items (list-new arena (Ptr JsonValue))))))
+      v))
+
+  (fn json-object ((arena Arena))
+    (@intent "Create an empty JSON object value")
+    (@spec ((Arena) -> (Ptr JsonValue)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((v (cast (Ptr JsonValue) (arena-alloc arena (sizeof JsonValue)))))
+      (set! (deref v) (union-new JsonValue jobj
+        (record-new JsonObject (entries (map-new arena String (Ptr JsonValue))))))
+      v))
+
+  ;; ============================================================
+  ;; Predicates
+  ;; ============================================================
+
+  (fn json-is-null ((v (Ptr JsonValue)))
+    (@intent "Check if JSON value is null")
+    (@spec (((Ptr JsonValue)) -> Bool))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jnull) true)
+      (_ false)))
+
+  (fn json-is-bool ((v (Ptr JsonValue)))
+    (@intent "Check if JSON value is a boolean")
+    (@spec (((Ptr JsonValue)) -> Bool))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jbool _) true)
+      (_ false)))
+
+  (fn json-is-number ((v (Ptr JsonValue)))
+    (@intent "Check if JSON value is a number")
+    (@spec (((Ptr JsonValue)) -> Bool))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jnum _) true)
+      (_ false)))
+
+  (fn json-is-string ((v (Ptr JsonValue)))
+    (@intent "Check if JSON value is a string")
+    (@spec (((Ptr JsonValue)) -> Bool))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jstr _) true)
+      (_ false)))
+
+  (fn json-is-array ((v (Ptr JsonValue)))
+    (@intent "Check if JSON value is an array")
+    (@spec (((Ptr JsonValue)) -> Bool))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jarr _) true)
+      (_ false)))
+
+  (fn json-is-object ((v (Ptr JsonValue)))
+    (@intent "Check if JSON value is an object")
+    (@spec (((Ptr JsonValue)) -> Bool))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jobj _) true)
+      (_ false)))
+
+  (fn json-type ((v (Ptr JsonValue)))
+    (@intent "Get the type tag of a JSON value")
+    (@spec (((Ptr JsonValue)) -> JsonType))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jnull) 'json-type-null)
+      ((jbool _) 'json-type-bool)
+      ((jnum _) 'json-type-number)
+      ((jstr _) 'json-type-string)
+      ((jarr _) 'json-type-array)
+      ((jobj _) 'json-type-object)))
+
+  ;; ============================================================
+  ;; Accessors
+  ;; ============================================================
+
+  (fn json-get ((v (Ptr JsonValue)) (key String))
+    (@intent "Get a value from a JSON object by key")
+    (@spec (((Ptr JsonValue) String) -> (Option (Ptr JsonValue))))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jobj o) (map-get (. o entries) key))
+      (_ none)))
+
+  (fn json-array-get ((v (Ptr JsonValue)) (index (Int 0 ..)))
+    (@intent "Get a value from a JSON array by index")
+    (@spec (((Ptr JsonValue) (Int 0 ..)) -> (Option (Ptr JsonValue))))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jarr a) (list-get (. a items) index))
+      (_ none)))
+
+  (fn json-array-len ((v (Ptr JsonValue)))
+    (@intent "Get the length of a JSON array")
+    (@spec (((Ptr JsonValue)) -> (Int 0 ..)))
+    (@pre (!= v nil))
+    (@post (>= $result 0))
+    (match (deref v)
+      ((jarr a) (cast (Int 0 ..) (list-len (. a items))))
+      (_ 0)))
+
+  (fn json-as-bool ((v (Ptr JsonValue)))
+    (@intent "Extract boolean value from JSON value")
+    (@spec (((Ptr JsonValue)) -> (Option Bool)))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jbool b) (some b))
+      (_ none)))
+
+  (fn json-as-number ((v (Ptr JsonValue)))
+    (@intent "Extract number as float from JSON value")
+    (@spec (((Ptr JsonValue)) -> (Option Float)))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jnum n)
+        (if (. n is-float)
+          (some (. n float-value))
+          (some (cast Float (. n int-value)))))
+      (_ none)))
+
+  (fn json-as-int ((v (Ptr JsonValue)))
+    (@intent "Extract integer value from JSON value")
+    (@spec (((Ptr JsonValue)) -> (Option I64)))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jnum n)
+        (if (. n is-float)
+          none
+          (some (. n int-value))))
+      (_ none)))
+
+  (fn json-as-string ((v (Ptr JsonValue)))
+    (@intent "Extract string value from JSON value")
+    (@spec (((Ptr JsonValue)) -> (Option String)))
+    (@pre (!= v nil))
+    (match (deref v)
+      ((jstr s) (some s))
+      (_ none)))
+
+  ;; ============================================================
+  ;; Builders
+  ;; ============================================================
+
+  (fn json-object-set ((arena Arena) (obj (Ptr JsonValue)) (key String) (val (Ptr JsonValue)))
+    (@intent "Set a key-value pair in a JSON object")
+    (@spec ((Arena (Ptr JsonValue) String (Ptr JsonValue)) -> Unit))
+    (@pre (!= obj nil))
+    (@pre (!= val nil))
+    (match (deref obj)
+      ((jobj o) (map-put (. o entries) key val))
+      (_ unit)))
+
+  (fn json-array-push ((arena Arena) (arr (Ptr JsonValue)) (val (Ptr JsonValue)))
+    (@intent "Push a value onto a JSON array")
+    (@spec ((Arena (Ptr JsonValue) (Ptr JsonValue)) -> Unit))
+    (@pre (!= arr nil))
+    (@pre (!= val nil))
+    (match (deref arr)
+      ((jarr a)
+        (do (list-push (. a items) val)
+            (set! (deref arr) (jarr a))))
+      (_ unit)))
+
+  ;; ============================================================
+  ;; Parser Internals
+  ;; ============================================================
+
+  (fn parser-new ((arena Arena) (input String))
+    (@intent "Create a new JSON parser state")
+    (@spec ((Arena String) -> (Ptr JsonParser)))
+    (let ((p (cast (Ptr JsonParser) (arena-alloc arena (sizeof JsonParser)))))
+      (set! p input input)
+      (set! p pos 0)
+      (set! p len (cast (Int 0 ..) (. input len)))
+      p))
+
+  (fn parser-at-end ((p (Ptr JsonParser)))
+    (@intent "Check if parser has reached end of input")
+    (@spec (((Ptr JsonParser)) -> Bool))
+    (>= (. p pos) (. p len)))
+
+  (fn parser-peek ((p (Ptr JsonParser)))
+    (@intent "Peek at current character without advancing")
+    (@spec (((Ptr JsonParser)) -> Int))
+    (if (>= (. p pos) (. p len))
+      0
+      (cast Int (char-at (. p input) (cast (Int 0 ..) (. p pos))))))
+
+  (fn parser-advance ((p (Ptr JsonParser)))
+    (@intent "Advance parser one character, return consumed character")
+    (@spec (((Ptr JsonParser)) -> Int))
+    (if (>= (. p pos) (. p len))
+      0
+      (let ((c (cast Int (char-at (. p input) (cast (Int 0 ..) (. p pos))))))
+        (set! p pos (+ (. p pos) 1))
+        c)))
+
+  (fn parser-skip-ws ((p (Ptr JsonParser)))
+    (@intent "Skip whitespace characters")
+    (@spec (((Ptr JsonParser)) -> Unit))
+    (while (and (< (. p pos) (. p len))
+                (is-space (char-at (. p input) (cast (Int 0 ..) (. p pos)))))
+      (set! p pos (+ (. p pos) 1)))
+    unit)
+
+  (fn parser-make-error ((p (Ptr JsonParser)) (kind JsonErrorKind) (msg String))
+    (@intent "Create a parse error at current position")
+    (@spec (((Ptr JsonParser) JsonErrorKind String) -> JsonError))
+    (record-new JsonError (kind kind) (pos (cast (Int 0 ..) (. p pos))) (message msg)))
+
+  ;; ============================================================
+  ;; Parse Functions
+  ;; ============================================================
+
+  (fn parse-string-raw ((arena Arena) (p (Ptr JsonParser)))
+    (@intent "Parse a JSON string, returning the decoded string value")
+    (@spec ((Arena (Ptr JsonParser)) -> (Result String JsonError)))
+    ;; Consume opening quote (caller verified peek == 34)
+    (set! p pos (+ (. p pos) 1))
+    (let ((buf (arena-alloc arena (+ (. p len) 1)))
+          (mut buf-len 0))
+      (while (< (. p pos) (. p len))
+        (let ((c (char-at (. p input) (cast (Int 0 ..) (. p pos)))))
+          (cond
+            ;; Closing quote
+            ((== c 34)
+              (do (set! p pos (+ (. p pos) 1))
+                  (return (ok (String (cast (Ptr U8) buf) (cast U64 buf-len))))))
+            ;; Backslash escape
+            ((== c 92)
+              (do (set! p pos (+ (. p pos) 1))
+                  (if (>= (. p pos) (. p len))
+                    (return (error (parser-make-error p 'unterminated-string
+                      "unterminated escape in string")))
+                    (let ((esc (char-at (. p input) (cast (Int 0 ..) (. p pos)))))
+                      (cond
+                        ((== esc 34)  (set! (@ buf buf-len) (cast U8 34)))
+                        ((== esc 92)  (set! (@ buf buf-len) (cast U8 92)))
+                        ((== esc 47)  (set! (@ buf buf-len) (cast U8 47)))
+                        ((== esc 98)  (set! (@ buf buf-len) (cast U8 8)))
+                        ((== esc 102) (set! (@ buf buf-len) (cast U8 12)))
+                        ((== esc 110) (set! (@ buf buf-len) (cast U8 10)))
+                        ((== esc 114) (set! (@ buf buf-len) (cast U8 13)))
+                        ((== esc 116) (set! (@ buf buf-len) (cast U8 9)))
+                        ((== esc 117)
+                          (do (set! p pos (+ (. p pos) 4))
+                              (set! (@ buf buf-len) (cast U8 63))))
+                        (else (return (error (parser-make-error p
+                          'invalid-string-escape "invalid escape character")))))
+                      (set! buf-len (+ buf-len 1))
+                      (set! p pos (+ (. p pos) 1))))))
+            ;; Normal character
+            (else
+              (do (set! (@ buf buf-len) (cast U8 c))
+                  (set! buf-len (+ buf-len 1))
+                  (set! p pos (+ (. p pos) 1)))))))
+      ;; Reached end without closing quote
+      (error (parser-make-error p 'unterminated-string "unterminated string"))))
+
+  (fn parse-number-value ((arena Arena) (p (Ptr JsonParser)))
+    (@intent "Parse a JSON number value")
+    (@spec ((Arena (Ptr JsonParser)) -> (Result (Ptr JsonValue) JsonError)))
+    (let ((start (. p pos))
+          (mut is-float false))
+      ;; Optional negative sign
+      (when (== (parser-peek p) 45)
+        (set! p pos (+ (. p pos) 1)))
+      ;; Integer part
+      (if (== (parser-peek p) 48)
+        ;; Leading zero - consume single 0
+        (set! p pos (+ (. p pos) 1))
+        (if (and (>= (parser-peek p) 49) (<= (parser-peek p) 57))
+          ;; Digits 1-9 followed by more digits
+          (while (and (< (. p pos) (. p len))
+                      (let ((ch (char-at (. p input) (cast (Int 0 ..) (. p pos)))))
+                        (and (>= ch 48) (<= ch 57))))
+            (set! p pos (+ (. p pos) 1)))
+          (return (error (parser-make-error p 'invalid-number "expected digit")))))
+      ;; Optional decimal part
+      (when (== (parser-peek p) 46)
+        (do (set! is-float true)
+            (set! p pos (+ (. p pos) 1))
+            (when (not (and (< (. p pos) (. p len))
+                            (let ((ch (char-at (. p input) (cast (Int 0 ..) (. p pos)))))
+                              (and (>= ch 48) (<= ch 57)))))
+              (return (error (parser-make-error p 'invalid-number "expected digit after '.'"))))
+            (while (and (< (. p pos) (. p len))
+                        (let ((ch (char-at (. p input) (cast (Int 0 ..) (. p pos)))))
+                          (and (>= ch 48) (<= ch 57))))
+              (set! p pos (+ (. p pos) 1)))))
+      ;; Optional exponent part
+      (when (or (== (parser-peek p) 101) (== (parser-peek p) 69))
+        (do (set! is-float true)
+            (set! p pos (+ (. p pos) 1))
+            (when (or (== (parser-peek p) 43) (== (parser-peek p) 45))
+              (set! p pos (+ (. p pos) 1)))
+            (when (not (and (< (. p pos) (. p len))
+                            (let ((ch (char-at (. p input) (cast (Int 0 ..) (. p pos)))))
+                              (and (>= ch 48) (<= ch 57)))))
+              (return (error (parser-make-error p 'invalid-number "expected digit in exponent"))))
+            (while (and (< (. p pos) (. p len))
+                        (let ((ch (char-at (. p input) (cast (Int 0 ..) (. p pos)))))
+                          (and (>= ch 48) (<= ch 57))))
+              (set! p pos (+ (. p pos) 1)))))
+      ;; Extract number string as null-terminated copy for strtol/strtod
+      (let ((num-len (- (. p pos) start))
+            (sub (substring arena (. p input)
+                   (cast (Int 0 ..) start) (cast (Int 0 ..) num-len)))
+            ;; Arena-alloc a copy with room for null terminator
+            (buf (cast (Ptr U8) (arena-alloc arena (+ (cast (Int 0 ..) num-len) 1)))))
+        (memcpy (cast (Ptr Void) buf) (cast (Ptr Void) (. sub data)) (cast U64 num-len))
+        (set! (@ buf num-len) (cast U8 0))
+        (let ((num-str (String buf (cast U64 num-len))))
+          (if is-float
+            (match (parse-float num-str)
+              ((ok f) (ok (json-number arena f)))
+              ((error _) (error (parser-make-error p 'invalid-number "invalid float"))))
+            (match (parse-int num-str)
+              ((ok n) (ok (json-number-int arena n)))
+              ((error _) (error (parser-make-error p 'invalid-number "invalid integer")))))))))
+
+  (fn parse-keyword ((arena Arena) (p (Ptr JsonParser)))
+    (@intent "Parse a JSON keyword: true, false, or null")
+    (@spec ((Arena (Ptr JsonParser)) -> (Result (Ptr JsonValue) JsonError)))
+    (let ((c (parser-peek p)))
+      (cond
+        ;; true
+        ((== c 116)
+          (if (and (<= (+ (. p pos) 4) (. p len))
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 1))) 114)
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 2))) 117)
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 3))) 101))
+            (do (set! p pos (+ (. p pos) 4))
+                (ok (json-bool arena true)))
+            (error (parser-make-error p 'unexpected-char "invalid keyword"))))
+        ;; false
+        ((== c 102)
+          (if (and (<= (+ (. p pos) 5) (. p len))
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 1))) 97)
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 2))) 108)
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 3))) 115)
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 4))) 101))
+            (do (set! p pos (+ (. p pos) 5))
+                (ok (json-bool arena false)))
+            (error (parser-make-error p 'unexpected-char "invalid keyword"))))
+        ;; null
+        ((== c 110)
+          (if (and (<= (+ (. p pos) 4) (. p len))
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 1))) 117)
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 2))) 108)
+                   (== (char-at (. p input) (cast (Int 0 ..) (+ (. p pos) 3))) 108))
+            (do (set! p pos (+ (. p pos) 4))
+                (ok (json-null arena)))
+            (error (parser-make-error p 'unexpected-char "invalid keyword"))))
+        (else (error (parser-make-error p 'unexpected-char "unexpected character"))))))
+
+  (fn parse-array-value ((arena Arena) (p (Ptr JsonParser)))
+    (@intent "Parse a JSON array")
+    (@spec ((Arena (Ptr JsonParser)) -> (Result (Ptr JsonValue) JsonError)))
+    ;; Consume opening [
+    (do
+      (set! p pos (+ (. p pos) 1))
+      (parser-skip-ws p)
+      (let ((arr (json-array arena)))
+        (if (== (parser-peek p) 93)
+          ;; Empty array
+          (do (parser-advance p) (ok arr))
+          ;; Parse elements
+          (let ((mut done false))
+            (while (not done)
+              (do
+                (parser-skip-ws p)
+                (match (parse-value arena p)
+                  ((error e) (return (error e)))
+                  ((ok val)
+                    (do
+                      (json-array-push arena arr val)
+                      (parser-skip-ws p)
+                      (let ((next (parser-peek p)))
+                        (cond
+                          ((== next 93)
+                            (do (parser-advance p) (set! done true)))
+                          ((== next 44)
+                            (parser-advance p))
+                          (else
+                            (return (error (parser-make-error p
+                              'expected-comma-or-bracket "expected ',' or ']'")))))))))))
+            (ok arr))))))
+
+  (fn parse-object-value ((arena Arena) (p (Ptr JsonParser)))
+    (@intent "Parse a JSON object")
+    (@spec ((Arena (Ptr JsonParser)) -> (Result (Ptr JsonValue) JsonError)))
+    ;; Consume opening {
+    (do
+      (set! p pos (+ (. p pos) 1))
+      (parser-skip-ws p)
+      (let ((obj (json-object arena)))
+        (if (== (parser-peek p) 125)
+          ;; Empty object
+          (do (parser-advance p) (ok obj))
+          ;; Parse entries
+          (let ((mut done false))
+            (while (not done)
+              (do
+                (parser-skip-ws p)
+                ;; Key must be a string
+                (when (!= (parser-peek p) 34)
+                  (return (error (parser-make-error p
+                    'expected-value "expected string key"))))
+                (match (parse-string-raw arena p)
+                  ((error e) (return (error e)))
+                  ((ok key)
+                    (do
+                      (parser-skip-ws p)
+                      ;; Expect colon
+                      (when (!= (parser-peek p) 58)
+                        (return (error (parser-make-error p
+                          'expected-colon "expected ':'"))))
+                      (parser-advance p)
+                      (parser-skip-ws p)
+                      ;; Parse value
+                      (match (parse-value arena p)
+                        ((error e) (return (error e)))
+                        ((ok val)
+                          (do
+                            (json-object-set arena obj key val)
+                            (parser-skip-ws p)
+                            (let ((next (parser-peek p)))
+                              (cond
+                                ((== next 125)
+                                  (do (parser-advance p) (set! done true)))
+                                ((== next 44)
+                                  (parser-advance p))
+                                (else
+                                  (return (error (parser-make-error p
+                                    'expected-comma-or-brace
+                                    "expected ',' or '}'"))))))))))))))
+            (ok obj))))))
+
+  (fn parse-value ((arena Arena) (p (Ptr JsonParser)))
+    (@intent "Parse any JSON value")
+    (@spec ((Arena (Ptr JsonParser)) -> (Result (Ptr JsonValue) JsonError)))
+    (do
+      (parser-skip-ws p)
+      (if (parser-at-end p)
+        (error (parser-make-error p 'unexpected-end "unexpected end of input"))
+        (let ((c (parser-peek p)))
+          (cond
+            ;; String
+            ((== c 34) ;; "
+              (match (parse-string-raw arena p)
+                ((ok s) (ok (json-string arena s)))
+                ((error e) (error e))))
+            ;; Object
+            ((== c 123) (parse-object-value arena p))
+            ;; Array
+            ((== c 91) (parse-array-value arena p))
+            ;; true
+            ((== c 116) (parse-keyword arena p))
+            ;; false
+            ((== c 102) (parse-keyword arena p))
+            ;; null
+            ((== c 110) (parse-keyword arena p))
+            ;; Number: - or digit
+            ((or (== c 45) (and (>= c 48) (<= c 57)))
+              (parse-number-value arena p))
+            (else
+              (error (parser-make-error p 'unexpected-char "unexpected character"))))))))
+
+  (fn json-parse ((arena Arena) (input String))
+    (@intent "Parse a JSON string into a value tree")
+    (@spec ((Arena String) -> (Result (Ptr JsonValue) JsonError)))
+    (let ((p (parser-new arena input)))
+      (if (== (. input len) 0)
+        (error (parser-make-error p 'unexpected-end "empty input"))
+        (match (parse-value arena p)
+          ((error e) (error e))
+          ((ok v)
+            (do
+              (parser-skip-ws p)
+              (if (parser-at-end p)
+                (ok v)
+                (error (parser-make-error p
+                  'unexpected-char "trailing content after value")))))))))
+
+  ;; ============================================================
+  ;; Serializer
+  ;; ============================================================
+
+  (fn escape-json-string ((arena Arena) (s String))
+    (@intent "Escape special characters in a string for JSON output")
+    (@spec ((Arena String) -> String))
+    (let ((slen (cast Int (. s len)))
+          ;; Worst case: every char becomes 2 chars (e.g. \ -> \\)
+          (buf (arena-alloc arena (+ (* slen 2) 1)))
+          (mut out 0)
+          (mut i 0))
+      (while (< i slen)
+        (let ((c (cast Int (@ (. s data) i))))
+          (cond
+            ((== c 34)
+              (do (set! (@ buf out) (cast U8 92))
+                  (set! (@ buf (+ out 1)) (cast U8 34))
+                  (set! out (+ out 2))))
+            ((== c 92)
+              (do (set! (@ buf out) (cast U8 92))
+                  (set! (@ buf (+ out 1)) (cast U8 92))
+                  (set! out (+ out 2))))
+            ((== c 10)
+              (do (set! (@ buf out) (cast U8 92))
+                  (set! (@ buf (+ out 1)) (cast U8 110))
+                  (set! out (+ out 2))))
+            ((== c 13)
+              (do (set! (@ buf out) (cast U8 92))
+                  (set! (@ buf (+ out 1)) (cast U8 114))
+                  (set! out (+ out 2))))
+            ((== c 9)
+              (do (set! (@ buf out) (cast U8 92))
+                  (set! (@ buf (+ out 1)) (cast U8 116))
+                  (set! out (+ out 2))))
+            ((== c 8)
+              (do (set! (@ buf out) (cast U8 92))
+                  (set! (@ buf (+ out 1)) (cast U8 98))
+                  (set! out (+ out 2))))
+            ((== c 12)
+              (do (set! (@ buf out) (cast U8 92))
+                  (set! (@ buf (+ out 1)) (cast U8 102))
+                  (set! out (+ out 2))))
+            (else
+              (do (set! (@ buf out) (cast U8 c))
+                  (set! out (+ out 1))))))
+        (set! i (+ i 1)))
+      (String (cast (Ptr U8) buf) (cast U64 out))))
+
+  (fn stringify-value ((arena Arena) (v (Ptr JsonValue)) (parts-ptr (Ptr (List String))))
+    (@intent "Recursively serialize a JSON value to string fragments")
+    (@spec ((Arena (Ptr JsonValue) (Ptr (List String))) -> Unit))
+    (match (deref v)
+      ((jnull) (list-push (deref parts-ptr) "null"))
+      ((jbool b) (list-push (deref parts-ptr) (if b "true" "false")))
+      ((jnum n)
+        (if (. n is-float)
+          (list-push (deref parts-ptr) (float-to-string arena (. n float-value) 6))
+          (list-push (deref parts-ptr) (int-to-string arena (cast Int (. n int-value))))))
+      ((jstr s)
+        (do (list-push (deref parts-ptr) "\"")
+            (list-push (deref parts-ptr) (escape-json-string arena s))
+            (list-push (deref parts-ptr) "\"")))
+      ((jarr a)
+        (do (list-push (deref parts-ptr) "[")
+            (let ((items (. a items))
+                  (count (cast Int (list-len items)))
+                  (mut i 0))
+              (while (< i count)
+                (do
+                  (when (> i 0) (list-push (deref parts-ptr) ","))
+                  (match (list-get items i)
+                    ((some item) (stringify-value arena item parts-ptr))
+                    ((none) unit))
+                  (set! i (+ i 1)))))
+            (list-push (deref parts-ptr) "]")))
+      ((jobj o)
+        (do (list-push (deref parts-ptr) "{")
+            (let ((entries (. o entries))
+                  (mut first true))
+              (for-each ((k val) entries)
+                (do
+                  (if first (set! first false) (list-push (deref parts-ptr) ","))
+                  (list-push (deref parts-ptr) "\"")
+                  (list-push (deref parts-ptr) (escape-json-string arena k))
+                  (list-push (deref parts-ptr) "\":")
+                  (stringify-value arena val parts-ptr))))
+            (list-push (deref parts-ptr) "}")))))
+
+  (fn json-stringify ((arena Arena) (v (Ptr JsonValue)))
+    (@intent "Serialize a JSON value to a compact string")
+    (@spec ((Arena (Ptr JsonValue)) -> String))
+    (@alloc arena)
+    (let ((parts-ptr (cast (Ptr (List String)) (arena-alloc arena (sizeof (List String))))))
+      (set! (deref parts-ptr) (list-new arena String))
+      (stringify-value arena v parts-ptr)
+      (string-build arena (deref parts-ptr))))
+
+  (fn stringify-pretty-value ((arena Arena) (v (Ptr JsonValue)) (parts-ptr (Ptr (List String)))
+                              (indent (Int 0 ..)) (indent-size (Int 0 ..)))
+    (@intent "Recursively serialize a JSON value with indentation")
+    (@spec ((Arena (Ptr JsonValue) (Ptr (List String)) (Int 0 ..) (Int 0 ..)) -> Unit))
+    (let ((indent-str (repeat arena " " indent))
+          (next-indent (+ indent indent-size))
+          (next-indent-str (repeat arena " " next-indent)))
+      (match (deref v)
+        ((jnull) (list-push (deref parts-ptr) "null"))
+        ((jbool b) (list-push (deref parts-ptr) (if b "true" "false")))
+        ((jnum n)
+          (if (. n is-float)
+            (list-push (deref parts-ptr) (float-to-string arena (. n float-value) 6))
+            (list-push (deref parts-ptr) (int-to-string arena (cast Int (. n int-value))))))
+        ((jstr s)
+          (do (list-push (deref parts-ptr) "\"")
+              (list-push (deref parts-ptr) (escape-json-string arena s))
+              (list-push (deref parts-ptr) "\"")))
+        ((jarr a)
+          (let ((items (. a items))
+                (count (cast Int (list-len items))))
+            (if (== count 0)
+              (list-push (deref parts-ptr) "[]")
+              (do (list-push (deref parts-ptr) "[\n")
+                  (let ((mut i 0))
+                    (while (< i count)
+                      (do
+                        (list-push (deref parts-ptr) next-indent-str)
+                        (match (list-get items i)
+                          ((some item)
+                            (stringify-pretty-value arena item parts-ptr
+                              (cast (Int 0 ..) next-indent) indent-size))
+                          ((none) unit))
+                        (when (< i (- count 1)) (list-push (deref parts-ptr) ","))
+                        (list-push (deref parts-ptr) "\n")
+                        (set! i (+ i 1)))))
+                  (list-push (deref parts-ptr) indent-str)
+                  (list-push (deref parts-ptr) "]")))))
+        ((jobj o)
+          (let ((entries (. o entries))
+                (mut has-entries false)
+                (mut first true))
+            (list-push (deref parts-ptr) "{")
+            (for-each ((k val) entries)
+              (do
+                (set! has-entries true)
+                (if first
+                  (do (set! first false) (list-push (deref parts-ptr) "\n"))
+                  (list-push (deref parts-ptr) ",\n"))
+                (list-push (deref parts-ptr) next-indent-str)
+                (list-push (deref parts-ptr) "\"")
+                (list-push (deref parts-ptr) (escape-json-string arena k))
+                (list-push (deref parts-ptr) "\": ")
+                (stringify-pretty-value arena val parts-ptr
+                  (cast (Int 0 ..) next-indent) indent-size)))
+            (if has-entries
+              (do (list-push (deref parts-ptr) "\n")
+                  (list-push (deref parts-ptr) indent-str)
+                  (list-push (deref parts-ptr) "}"))
+              (list-push (deref parts-ptr) "}")))))))
+
+  (fn json-stringify-pretty ((arena Arena) (v (Ptr JsonValue)) (indent-size (Int 0 ..)))
+    (@intent "Serialize a JSON value to a pretty-printed string")
+    (@spec ((Arena (Ptr JsonValue) (Int 0 ..)) -> String))
+    (@alloc arena)
+    (let ((parts-ptr (cast (Ptr (List String)) (arena-alloc arena (sizeof (List String))))))
+      (set! (deref parts-ptr) (list-new arena String))
+      (stringify-pretty-value arena v parts-ptr 0 indent-size)
+      (string-build arena (deref parts-ptr))))
+
+) ;; end module json

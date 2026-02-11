@@ -1,0 +1,42 @@
+;; ============================================================
+;; Test: Option Float
+;;
+;; Tests that (Option Float) generates correct slop_option_float
+;; type (not slop_option_double)
+;; ============================================================
+
+(module test-option-float
+
+  (fn make-some-float ((x Float))
+    (@intent "Return a some Option Float")
+    (@spec ((Float) -> (Option Float)))
+    (some x))
+
+  (fn make-none-float ()
+    (@intent "Return a none Option Float")
+    (@spec (() -> (Option Float)))
+    (none))
+
+  (fn test-some-float ()
+    (@intent "Test Option Float with some value")
+    (@spec (() -> Bool))
+    (let ((x (cast Float 3.14))
+          (val (make-some-float x)))
+      (match val
+        ((some f) (> f 3.0))
+        ((none) false))))
+
+  (fn test-none-float ()
+    (@intent "Test Option Float with none")
+    (@spec (() -> Bool))
+    (let ((val (make-none-float)))
+      (match val
+        ((some _) false)
+        ((none) true))))
+
+  (fn main ()
+    (@intent "Run all tests")
+    (@spec (() -> Int))
+    (if (and (test-some-float) (test-none-float))
+      (do (println "All Option Float tests passed!") 0)
+      (do (println "Option Float tests FAILED!") 1))))

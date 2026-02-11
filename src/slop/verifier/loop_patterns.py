@@ -28,6 +28,18 @@ class TypeInvariant:
 # ============================================================================
 
 @dataclass
+class PushSiteInfo:
+    """A single list-push site with its surrounding context.
+
+    Used for structural push-site analysis when loop pattern detection
+    fails (e.g., while loops, deeply nested callbacks).
+    """
+    pushed_expr: 'SExpr'                # The expression being pushed
+    guard_conditions: List['SExpr']     # Enclosing when/if conditions (innermost last)
+    bindings: Dict[str, 'SExpr']        # Variable bindings in scope at this push
+
+
+@dataclass
 class FilterPatternInfo:
     """Information about a detected filter loop pattern.
 
@@ -250,6 +262,7 @@ class WhileLoopContext:
 
 __all__ = [
     'TypeInvariant',
+    'PushSiteInfo',
     'FilterPatternInfo',
     'MapPatternInfo',
     'MatchContext',

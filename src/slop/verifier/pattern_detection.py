@@ -12,6 +12,7 @@ from slop.parser import SList, Symbol, Number, is_form
 from .z3_setup import z3
 
 from .loop_patterns import (
+    PushSiteInfo,
     FilterPatternInfo, MapPatternInfo, NestedLoopPatternInfo, CountPatternInfo,
     FoldPatternInfo, FindPatternInfo, InnerLoopInfo, FieldSource, MatchContext,
 )
@@ -1931,6 +1932,139 @@ class PatternDetectionMixin:
                     return nested_result
 
         return None
+
+    def _collect_push_sites(
+        self, stmts: list, result_var: str,
+        bindings: Optional[Dict[str, 'SExpr']] = None,
+        guards: Optional[List['SExpr']] = None
+    ) -> List[PushSiteInfo]:
+        """Collect all list-push sites to result_var with their context.
+
+        Recursively walks through ALL forms — while, for-each, match, when,
+        let, do, if — to find every push site regardless of nesting depth.
+
+        Args:
+            stmts: List of statements to search
+            result_var: Name of the result variable being pushed to
+            bindings: Variable bindings in scope (accumulated from let forms)
+            guards: Guard conditions enclosing this scope (from when/if forms)
+
+        Returns:
+            List of PushSiteInfo for each push site found
+        """
+        if bindings is None:
+            bindings = {}
+        if guards is None:
+            guards = []
+
+        sites: List[PushSiteInfo] = []
+
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+
+            # Direct push: (list-push result_var expr)
+            if is_form(stmt, 'list-push') and len(stmt) >= 3:
+                target = stmt[1]
+                if isinstance(target, Symbol) and target.name == result_var:
+                    sites.append(PushSiteInfo(
+                        pushed_expr=stmt[2],
+                        guard_conditions=list(guards),
+                        bindings=dict(bindings)
+                    ))
+                continue
+
+            # (when condition body) — adds guard
+            if is_form(stmt, 'when') and len(stmt) >= 3:
+                new_guards = guards + [stmt[1]]
+                sites += self._collect_push_sites(
+                    stmt.items[2:], result_var, bindings, new_guards
+                )
+                continue
+
+            # (if condition then-branch [else-branch]) — adds guard for then, recurses else
+            if is_form(stmt, 'if') and len(stmt) >= 3:
+                new_guards = guards + [stmt[1]]
+                sites += self._collect_push_sites(
+                    [stmt[2]], result_var, bindings, new_guards
+                )
+                if len(stmt) >= 4:
+                    sites += self._collect_push_sites(
+                        [stmt[3]], result_var, bindings, guards
+                    )
+                continue
+
+            # (let (bindings...) body...) — accumulate bindings
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                let_bindings = stmt[1]
+                new_bindings = bindings.copy()
+                if isinstance(let_bindings, SList):
+                    for binding in let_bindings.items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            first = binding[0]
+                            if isinstance(first, Symbol):
+                                if first.name == 'mut' and len(binding) >= 3:
+                                    var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                                    var_value = binding[2]
+                                else:
+                                    var_name = first.name
+                                    var_value = binding[1]
+                                if var_name:
+                                    new_bindings[var_name] = var_value
+                sites += self._collect_push_sites(
+                    stmt.items[2:], result_var, new_bindings, guards
+                )
+                continue
+
+            # (do body...) — recurse into body
+            if is_form(stmt, 'do'):
+                sites += self._collect_push_sites(
+                    stmt.items[1:], result_var, bindings, guards
+                )
+                continue
+
+            # (while condition body...) — recurse into body
+            if is_form(stmt, 'while') and len(stmt) >= 3:
+                sites += self._collect_push_sites(
+                    stmt.items[2:], result_var, bindings, guards
+                )
+                continue
+
+            # (for-each (var collection) body...) — recurse into body
+            if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                sites += self._collect_push_sites(
+                    stmt.items[2:], result_var, bindings, guards
+                )
+                continue
+
+            # (match scrutinee clause...) — recurse into each clause body
+            if is_form(stmt, 'match') and len(stmt) >= 3:
+                for clause in stmt.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 2:
+                        # Extract match-arm bindings (e.g., from (some VAR))
+                        pattern = clause[0]
+                        arm_bindings = bindings.copy()
+                        if isinstance(pattern, SList) and len(pattern) == 2:
+                            pat_head = pattern[0]
+                            pat_var = pattern[1]
+                            if isinstance(pat_head, Symbol) and isinstance(pat_var, Symbol):
+                                if pat_head.name == 'some':
+                                    arm_bindings[pat_var.name] = pattern
+                        sites += self._collect_push_sites(
+                            clause.items[1:], result_var, arm_bindings, guards
+                        )
+                continue
+
+            # Callback forms like (indexed-graph-for-each ... (fn ((var Type)) body))
+            # Recurse into (fn ...) bodies
+            if isinstance(stmt, SList) and len(stmt) >= 2:
+                for arg in stmt.items:
+                    if isinstance(arg, SList) and is_form(arg, 'fn') and len(arg) >= 3:
+                        sites += self._collect_push_sites(
+                            arg.items[2:], result_var, bindings, guards
+                        )
+
+        return sites
 
     def _has_for_each(self, expr: SExpr) -> bool:
         """Check if expression contains a for-each loop"""

@@ -2665,7 +2665,42 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 solver.add(axiom)
                 pattern_axioms.append(axiom)
 
-        # Phase 14d: Vacuous truth safety net
+        # Phase 14d: Structural push-site axioms
+        # For functions where loop patterns aren't detected (while loops,
+        # deeply nested callbacks), analyze push sites directly to generate
+        # axioms from constant fields in constructors and guard conditions.
+        has_only_structural_axioms = False
+        structural_axiom_list: List[z3.BoolRef] = []
+        if fn_body is not None and translator.use_seq_encoding:
+            if not pattern_axioms and self._body_has_list_push_to_result(fn_body):
+                return_expr = self._get_return_expr(fn_body)
+                if isinstance(return_expr, Symbol):
+                    result_var_name = return_expr.name
+                    push_sites = self._collect_push_sites(
+                        [fn_body], result_var_name
+                    )
+                    if push_sites:
+                        # Extract function parameter names
+                        fn_param_names = []
+                        for param in params:
+                            if isinstance(param, SList) and len(param) >= 2:
+                                first = param[0]
+                                if isinstance(first, Symbol) and first.name in ('in', 'out', 'mut'):
+                                    if isinstance(param[1], Symbol):
+                                        fn_param_names.append(param[1].name)
+                                elif isinstance(first, Symbol):
+                                    fn_param_names.append(first.name)
+
+                        structural_axiom_list = self._generate_structural_push_axioms(
+                            push_sites, translator, fn_param_names
+                        )
+                        for axiom in structural_axiom_list:
+                            solver.add(axiom)
+                            pattern_axioms.append(axiom)
+                        if structural_axiom_list:
+                            has_only_structural_axioms = True
+
+        # Phase 14e: Vacuous truth safety net
         # Detect functions with list-push to result but either:
         # (a) no push axioms generated (result is unconstrained), or
         # (b) push axioms exist but there are extra push sites outside the
@@ -2791,6 +2826,24 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         if '$result' in prop_str_check:
                             unknown_properties.append((prop_name, prop_str,
                                 "no push axioms for list-push body (vacuous)"))
+                    elif prop_result == z3.unsat and has_only_structural_axioms:
+                        # Z3 says "verified" with structural push axioms only.
+                        # Check for vacuous truth: re-verify with Length($result) > 0.
+                        # If the property only holds because the sequence is empty,
+                        # it's not actually provable from the structural axioms.
+                        prop_str_check = pretty_print(prop_expr)
+                        if '$result' in prop_str_check:
+                            result_seq = translator.list_seqs.get('$result')
+                            if result_seq is not None:
+                                prop_solver.push()
+                                prop_solver.add(z3.Length(result_seq) > 0)
+                                nonempty_result = prop_solver.check()
+                                prop_solver.pop()
+                                if nonempty_result != z3.unsat:
+                                    # Property not provable for non-empty result —
+                                    # either fails (sat) or times out (unknown)
+                                    unknown_properties.append((prop_name, prop_str,
+                                        "structural axioms insufficient (not provable for non-empty result)"))
                     elif prop_result == z3.unknown:
                         reason = prop_solver.reason_unknown()
                         unknown_properties.append((prop_name, prop_str, reason))

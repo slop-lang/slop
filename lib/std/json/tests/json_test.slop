@@ -1,0 +1,577 @@
+;; ============================================================
+;; JSON Module Test Suite
+;; ============================================================
+
+(module json-test
+  (export (main 0))
+
+  (import json (JsonType JsonValue JsonError
+    json-null json-bool json-number json-number-int json-string json-array json-object
+    json-is-null json-is-bool json-is-number json-is-string json-is-array json-is-object
+    json-type
+    json-get json-array-get json-array-len
+    json-as-bool json-as-number json-as-int json-as-string
+    json-object-set json-array-push
+    json-parse json-stringify json-stringify-pretty))
+
+  (import strlib (contains))
+
+  ;; ============================================================
+  ;; Constructor Tests
+  ;; ============================================================
+
+  (fn test-null-constructor ()
+    (@intent "Test json-null creates a null value")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((v (json-null arena)))
+        (json-is-null v))))
+
+  (fn test-bool-constructor ()
+    (@intent "Test json-bool creates boolean values")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((t (json-bool arena true))
+            (f (json-bool arena false)))
+        (and (json-is-bool t) (json-is-bool f)))))
+
+  (fn test-number-int-constructor ()
+    (@intent "Test json-number-int creates integer number")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((v (json-number-int arena 42)))
+        (and (json-is-number v)
+             (match (json-as-int v)
+               ((some n) (== n 42))
+               ((none) false))))))
+
+  (fn test-number-float-constructor ()
+    (@intent "Test json-number creates float number")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((v (json-number arena 3.14)))
+        (json-is-number v))))
+
+  (fn test-string-constructor ()
+    (@intent "Test json-string creates string value")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((v (json-string arena "hello")))
+        (and (json-is-string v)
+             (match (json-as-string v)
+               ((some s) (== s "hello"))
+               ((none) false))))))
+
+  (fn test-type-tags ()
+    (@intent "Test json-type returns correct tags")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (and (== (json-type (json-null arena)) 'json-type-null)
+           (== (json-type (json-bool arena true)) 'json-type-bool)
+           (== (json-type (json-number-int arena 1)) 'json-type-number)
+           (== (json-type (json-string arena "x")) 'json-type-string)
+           (== (json-type (json-array arena)) 'json-type-array)
+           (== (json-type (json-object arena)) 'json-type-object))))
+
+  ;; ============================================================
+  ;; Accessor & Builder Tests
+  ;; ============================================================
+
+  (fn test-object-set-get ()
+    (@intent "Test setting and getting object keys")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((obj (json-object arena)))
+        (json-object-set arena obj "name" (json-string arena "Alice"))
+        (json-object-set arena obj "age" (json-number-int arena 30))
+        (match (json-get obj "name")
+          ((some v)
+            (match (json-as-string v)
+              ((some s) (== s "Alice"))
+              ((none) false)))
+          ((none) false)))))
+
+  (fn test-array-push-get ()
+    (@intent "Test pushing to and getting from arrays")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((arr (json-array arena)))
+        (json-array-push arena arr (json-number-int arena 10))
+        (json-array-push arena arr (json-number-int arena 20))
+        (json-array-push arena arr (json-number-int arena 30))
+        (and (== (json-array-len arr) 3)
+             (match (json-array-get arr 1)
+               ((some v)
+                 (match (json-as-int v)
+                   ((some n) (== n 20))
+                   ((none) false)))
+               ((none) false))))))
+
+  (fn test-get-missing-key ()
+    (@intent "Test json-get returns none for missing keys")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((obj (json-object arena)))
+        (match (json-get obj "missing")
+          ((some _) false)
+          ((none) true)))))
+
+  (fn test-array-len-empty ()
+    (@intent "Test json-array-len returns 0 for empty array")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (== (json-array-len (json-array arena)) 0)))
+
+  (fn test-as-bool ()
+    (@intent "Test json-as-bool extraction")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (and (match (json-as-bool (json-bool arena true))
+             ((some b) b)
+             ((none) false))
+           (match (json-as-bool (json-null arena))
+             ((some _) false)
+             ((none) true)))))
+
+  ;; ============================================================
+  ;; Parse Primitive Tests
+  ;; ============================================================
+
+  (fn test-parse-null ()
+    (@intent "Test parsing null")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "null")
+        ((ok v) (json-is-null v))
+        ((error _) false))))
+
+  (fn test-parse-true ()
+    (@intent "Test parsing true")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "true")
+        ((ok v)
+          (match (json-as-bool v)
+            ((some b) b)
+            ((none) false)))
+        ((error _) false))))
+
+  (fn test-parse-false ()
+    (@intent "Test parsing false")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "false")
+        ((ok v)
+          (match (json-as-bool v)
+            ((some b) (not b))
+            ((none) false)))
+        ((error _) false))))
+
+  (fn test-parse-integer ()
+    (@intent "Test parsing integer numbers")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "42")
+        ((ok v)
+          (match (json-as-int v)
+            ((some n) (== n 42))
+            ((none) false)))
+        ((error _) false))))
+
+  (fn test-parse-negative-integer ()
+    (@intent "Test parsing negative integers")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "-7")
+        ((ok v)
+          (match (json-as-int v)
+            ((some n) (== n -7))
+            ((none) false)))
+        ((error _) false))))
+
+  (fn test-parse-float ()
+    (@intent "Test parsing floating-point numbers")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "3.14")
+        ((ok v) (json-is-number v))
+        ((error _) false))))
+
+  (fn test-parse-string ()
+    (@intent "Test parsing simple strings")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "\"hello\"")
+        ((ok v)
+          (match (json-as-string v)
+            ((some s) (== s "hello"))
+            ((none) false)))
+        ((error _) false))))
+
+  (fn test-parse-string-escapes ()
+    (@intent "Test parsing strings with escape sequences")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "\"a\\nb\"")
+        ((ok v)
+          (match (json-as-string v)
+            ((some s) (== (cast Int (. s len)) 3))
+            ((none) false)))
+        ((error _) false))))
+
+  ;; ============================================================
+  ;; Parse Compound Tests
+  ;; ============================================================
+
+  (fn test-parse-empty-array ()
+    (@intent "Test parsing empty array")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "[]")
+        ((ok v) (and (json-is-array v) (== (json-array-len v) 0)))
+        ((error _) false))))
+
+  (fn test-parse-array ()
+    (@intent "Test parsing array with elements")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (json-parse arena "[1, 2, 3]")
+        ((ok v)
+          (and (json-is-array v)
+               (== (json-array-len v) 3)))
+        ((error _) false))))
+
+  (fn test-parse-empty-object ()
+    (@intent "Test parsing empty object")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "{}")
+        ((ok v) (json-is-object v))
+        ((error _) false))))
+
+  (fn test-parse-object ()
+    (@intent "Test parsing object with entries")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (json-parse arena "{\"name\": \"Alice\", \"age\": 30}")
+        ((ok v)
+          (and (json-is-object v)
+               (match (json-get v "name")
+                 ((some name-val)
+                   (match (json-as-string name-val)
+                     ((some s) (== s "Alice"))
+                     ((none) false)))
+                 ((none) false))))
+        ((error _) false))))
+
+  (fn test-parse-nested ()
+    (@intent "Test parsing nested JSON structures")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (json-parse arena "{\"items\": [1, 2], \"meta\": {\"ok\": true}}")
+        ((ok v)
+          (and (json-is-object v)
+               (match (json-get v "items")
+                 ((some items) (== (json-array-len items) 2))
+                 ((none) false))))
+        ((error _) false))))
+
+  ;; ============================================================
+  ;; Parse Error Tests
+  ;; ============================================================
+
+  (fn test-parse-empty-input ()
+    (@intent "Test parsing empty input returns error")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "")
+        ((ok _) false)
+        ((error _) true))))
+
+  (fn test-parse-trailing-content ()
+    (@intent "Test trailing content after value is rejected")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "true false")
+        ((ok _) false)
+        ((error _) true))))
+
+  (fn test-parse-unterminated-string ()
+    (@intent "Test unterminated string returns error")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "\"hello")
+        ((ok _) false)
+        ((error _) true))))
+
+  (fn test-parse-unexpected-char ()
+    (@intent "Test unexpected character returns error")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "xyz")
+        ((ok _) false)
+        ((error _) true))))
+
+  ;; ============================================================
+  ;; Stringify Tests
+  ;; ============================================================
+
+  (fn test-stringify-null ()
+    (@intent "Test stringifying null")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (== (json-stringify arena (json-null arena)) "null")))
+
+  (fn test-stringify-bool ()
+    (@intent "Test stringifying booleans")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (and (== (json-stringify arena (json-bool arena true)) "true")
+           (== (json-stringify arena (json-bool arena false)) "false"))))
+
+  (fn test-stringify-int ()
+    (@intent "Test stringifying integer numbers")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (== (json-stringify arena (json-number-int arena 42)) "42")))
+
+  (fn test-stringify-string ()
+    (@intent "Test stringifying strings with escapes")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (== (json-stringify arena (json-string arena "hello")) "\"hello\"")))
+
+  (fn test-stringify-array ()
+    (@intent "Test stringifying arrays")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((arr (json-array arena)))
+        (json-array-push arena arr (json-number-int arena 1))
+        (json-array-push arena arr (json-number-int arena 2))
+        (== (json-stringify arena arr) "[1,2]"))))
+
+  (fn test-stringify-object ()
+    (@intent "Test stringifying objects")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((obj (json-object arena)))
+        (json-object-set arena obj "a" (json-number-int arena 1))
+        (let ((result (json-stringify arena obj)))
+          (contains result "\"a\":")))))
+
+  ;; ============================================================
+  ;; Round-trip Tests
+  ;; ============================================================
+
+  (fn test-roundtrip-simple ()
+    (@intent "Test parse then stringify round-trip for simple values")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (match (json-parse arena "true")
+        ((ok v) (== (json-stringify arena v) "true"))
+        ((error _) false))))
+
+  (fn test-roundtrip-array ()
+    (@intent "Test parse then stringify round-trip for array")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (json-parse arena "[1,2,3]")
+        ((ok v) (== (json-stringify arena v) "[1,2,3]"))
+        ((error _) false))))
+
+  ;; ============================================================
+  ;; Pretty-print Tests
+  ;; ============================================================
+
+  (fn test-pretty-object ()
+    (@intent "Test pretty-printing an object")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((obj (json-object arena)))
+        (json-object-set arena obj "x" (json-number-int arena 1))
+        (let ((result (json-stringify-pretty arena obj 2)))
+          (contains result "\n")))))
+
+  (fn test-pretty-empty ()
+    (@intent "Test pretty-printing empty containers")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (and (== (json-stringify-pretty arena (json-array arena) 2) "[]")
+           (== (json-stringify-pretty arena (json-object arena) 2) "{}"))))
+
+  ;; ============================================================
+  ;; Main
+  ;; ============================================================
+
+  (fn main ()
+    (@intent "Run all JSON tests, return 0 if all pass")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      ;; Constructor tests
+      (if (test-null-constructor)
+        (println "test-null-constructor: PASS")
+        (do (println "test-null-constructor: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-bool-constructor)
+        (println "test-bool-constructor: PASS")
+        (do (println "test-bool-constructor: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-number-int-constructor)
+        (println "test-number-int-constructor: PASS")
+        (do (println "test-number-int-constructor: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-number-float-constructor)
+        (println "test-number-float-constructor: PASS")
+        (do (println "test-number-float-constructor: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-string-constructor)
+        (println "test-string-constructor: PASS")
+        (do (println "test-string-constructor: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-type-tags)
+        (println "test-type-tags: PASS")
+        (do (println "test-type-tags: FAIL")
+            (set! failures (+ failures 1))))
+      ;; Accessor & builder tests
+      (if (test-object-set-get)
+        (println "test-object-set-get: PASS")
+        (do (println "test-object-set-get: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-array-push-get)
+        (println "test-array-push-get: PASS")
+        (do (println "test-array-push-get: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-get-missing-key)
+        (println "test-get-missing-key: PASS")
+        (do (println "test-get-missing-key: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-array-len-empty)
+        (println "test-array-len-empty: PASS")
+        (do (println "test-array-len-empty: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-as-bool)
+        (println "test-as-bool: PASS")
+        (do (println "test-as-bool: FAIL")
+            (set! failures (+ failures 1))))
+      ;; Parse primitive tests
+      (if (test-parse-null)
+        (println "test-parse-null: PASS")
+        (do (println "test-parse-null: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-true)
+        (println "test-parse-true: PASS")
+        (do (println "test-parse-true: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-false)
+        (println "test-parse-false: PASS")
+        (do (println "test-parse-false: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-integer)
+        (println "test-parse-integer: PASS")
+        (do (println "test-parse-integer: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-negative-integer)
+        (println "test-parse-negative-integer: PASS")
+        (do (println "test-parse-negative-integer: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-float)
+        (println "test-parse-float: PASS")
+        (do (println "test-parse-float: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-string)
+        (println "test-parse-string: PASS")
+        (do (println "test-parse-string: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-string-escapes)
+        (println "test-parse-string-escapes: PASS")
+        (do (println "test-parse-string-escapes: FAIL")
+            (set! failures (+ failures 1))))
+      ;; Parse compound tests
+      (if (test-parse-empty-array)
+        (println "test-parse-empty-array: PASS")
+        (do (println "test-parse-empty-array: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-array)
+        (println "test-parse-array: PASS")
+        (do (println "test-parse-array: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-empty-object)
+        (println "test-parse-empty-object: PASS")
+        (do (println "test-parse-empty-object: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-object)
+        (println "test-parse-object: PASS")
+        (do (println "test-parse-object: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-nested)
+        (println "test-parse-nested: PASS")
+        (do (println "test-parse-nested: FAIL")
+            (set! failures (+ failures 1))))
+      ;; Parse error tests
+      (if (test-parse-empty-input)
+        (println "test-parse-empty-input: PASS")
+        (do (println "test-parse-empty-input: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-trailing-content)
+        (println "test-parse-trailing-content: PASS")
+        (do (println "test-parse-trailing-content: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-unterminated-string)
+        (println "test-parse-unterminated-string: PASS")
+        (do (println "test-parse-unterminated-string: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-parse-unexpected-char)
+        (println "test-parse-unexpected-char: PASS")
+        (do (println "test-parse-unexpected-char: FAIL")
+            (set! failures (+ failures 1))))
+      ;; Stringify tests
+      (if (test-stringify-null)
+        (println "test-stringify-null: PASS")
+        (do (println "test-stringify-null: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-stringify-bool)
+        (println "test-stringify-bool: PASS")
+        (do (println "test-stringify-bool: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-stringify-int)
+        (println "test-stringify-int: PASS")
+        (do (println "test-stringify-int: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-stringify-string)
+        (println "test-stringify-string: PASS")
+        (do (println "test-stringify-string: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-stringify-array)
+        (println "test-stringify-array: PASS")
+        (do (println "test-stringify-array: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-stringify-object)
+        (println "test-stringify-object: PASS")
+        (do (println "test-stringify-object: FAIL")
+            (set! failures (+ failures 1))))
+      ;; Round-trip tests
+      (if (test-roundtrip-simple)
+        (println "test-roundtrip-simple: PASS")
+        (do (println "test-roundtrip-simple: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-roundtrip-array)
+        (println "test-roundtrip-array: PASS")
+        (do (println "test-roundtrip-array: FAIL")
+            (set! failures (+ failures 1))))
+      ;; Pretty-print tests
+      (if (test-pretty-object)
+        (println "test-pretty-object: PASS")
+        (do (println "test-pretty-object: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-pretty-empty)
+        (println "test-pretty-empty: PASS")
+        (do (println "test-pretty-empty: FAIL")
+            (set! failures (+ failures 1))))
+      ;; Summary
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))

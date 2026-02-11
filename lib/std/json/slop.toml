@@ -1,0 +1,7 @@
+[project]
+name = "json"
+entry = "json.slop"
+
+[build]
+type = "static"
+debug = false

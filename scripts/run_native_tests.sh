@@ -60,6 +60,7 @@ run_unit_tests "lib/std/math" "mathlib"
 run_unit_tests "lib/std/io" "io"
 run_unit_tests "lib/std/os" "os"
 run_unit_tests "lib/std/path" "path"
+run_unit_tests "lib/std/json" "json"
 
 echo ""
 
@@ -99,6 +100,42 @@ for test_file in "$REPO_ROOT"/tests/*.slop; do
         run_integration_test "$test_file"
     fi
 done
+
+# ============================================================
+# Part 3: Library Tests (tests with -I flags)
+# ============================================================
+echo "=== Running Library Tests ==="
+echo ""
+
+run_lib_test() {
+    local test_file="$1"
+    local test_name="$2"
+    shift 2
+    local exe_path="$BUILD_DIR/$test_name"
+
+    echo -n "Testing $test_name... "
+
+    # Build the test with extra flags
+    if ! uv run slop build "$test_file" "$@" -o "$exe_path" 2>/dev/null; then
+        echo -e "${RED}FAIL (build)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+
+    # Run the test
+    if "$exe_path" >/dev/null 2>&1; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL (exit $?)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_lib_test "$REPO_ROOT/lib/std/json/tests/json_test.slop" "json" \
+    -I "$REPO_ROOT/lib/std/json" -I "$REPO_ROOT/lib/std/strlib"
+
+echo ""
 
 # ============================================================
 # Cleanup and Summary
