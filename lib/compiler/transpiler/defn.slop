@@ -1039,8 +1039,10 @@
                                   ((none) raw-return)))
             ;; Special case: main returns int
             (actual-return (if (string-eq fn-name "main") "int" return-type))
-            ;; Build parameter string
-            (param-str (build-param-str ctx params-expr))
+            ;; Build parameter string (special case: main uses standard C types)
+            (param-str (if (string-eq fn-name "main")
+                         "int argc, char** _c_argv"
+                         (build-param-str ctx params-expr)))
             ;; Check if we need _retval (has postconditions/assumptions and non-void return)
             (has-post (or (> (list-len postconditions) 0) (> (list-len assumptions) 0)))
             (needs-retval (and has-post (not (string-eq actual-return "void")))))
@@ -1063,6 +1065,9 @@
         ;; Push new scope and bind parameters
         (ctx-push-scope ctx)
         (bind-params-to-scope ctx params-expr)
+        ;; Special case: main needs argv cast from char** to uint8_t**
+        (when (string-eq fn-name "main")
+          (ctx-emit ctx "uint8_t** argv = (uint8_t**)_c_argv;"))
         ;; Emit preconditions
         (emit-preconditions ctx preconditions)
         ;; Declare _retval if needed for postconditions
@@ -1261,7 +1266,10 @@
                                                           ((none) raw-return)))
                                     ;; Special case: main returns int
                                     (actual-return (if (string-eq base-name "main") "int" return-type))
-                                    (param-str (build-param-str ctx params-expr)))
+                                    ;; Special case: main uses standard C parameter types
+                                    (param-str (if (string-eq base-name "main")
+                                                 "int argc, char** _c_argv"
+                                                 (build-param-str ctx params-expr))))
                                 (ctx-emit ctx (ctx-str5 ctx actual-return " " fn-name "("
                                                 (ctx-str ctx (if (string-eq param-str "") "void" param-str) ");"))))))
                           ((none) (do)))))

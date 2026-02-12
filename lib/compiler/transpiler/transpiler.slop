@@ -2404,7 +2404,10 @@
                                                           ((none) raw-return)))
                                     ;; Special case: main returns int
                                     (actual-return (if (string-eq base-name "main") "int" return-type))
-                                    (param-str (build-param-str ctx params-expr)))
+                                    ;; Special case: main uses standard C parameter types
+                                    (param-str (if (string-eq base-name "main")
+                                                 "int argc, char** _c_argv"
+                                                 (build-param-str ctx params-expr))))
                                 (ctx-emit-header ctx (ctx-str5 ctx actual-return " " fn-name "("
                                                 (ctx-str ctx (if (string-eq param-str "") "void" param-str) ");"))))))
                           ((none) (do)))))

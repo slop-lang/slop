@@ -1,0 +1,28 @@
+;; ============================================================
+;; Main argv test - Verify main signature uses standard C types
+;; ============================================================
+;; This test ensures that:
+;; 1. main compiles with int argc, char** argv (no -Wmain)
+;; 2. argc is accessible as an integer
+;; 3. argv can be indexed and converted to String
+
+(module test-main-argv
+  (export (main 2))
+
+  (fn argv-to-string ((argv (Ptr (Ptr U8))) (index Int))
+    (@intent "Convert argv[index] to a SLOP String")
+    (@spec (((Ptr (Ptr U8)) Int) -> String))
+    (let ((ptr (@ argv index)))
+      (String ptr (strlen ptr))))
+
+  (fn main ((argc Int) (argv (Ptr (Ptr U8))))
+    (@intent "Test main receives argc/argv correctly")
+    (@spec ((Int (Ptr (Ptr U8))) -> Int))
+    ;; argc should be at least 1 (program name)
+    (if (< argc 1)
+      1
+      ;; argv[0] should be a non-empty string (program path)
+      (let ((prog (argv-to-string argv 0)))
+        (if (== (cast Int (string-len prog)) 0)
+          1
+          0)))))
