@@ -2471,19 +2471,34 @@
                                             (tag-name (to-c-name arena tag-str))
                                             ;; Build tag constant: Type_tag
                                             (tag-const (ctx-str ctx type-name (ctx-str ctx "_" tag-name))))
-                                        ;; Check for optional value
-                                        (if (>= len 4)
-                                          (match (list-get items 3)
-                                            ((some val-expr)
-                                              (let ((val-c (transpile-expr ctx val-expr)))
-                                                ;; ((Type){ .tag = Type_tag, .data.tag = value })
-                                                (ctx-str3 ctx "((" type-name (ctx-str3 ctx "){ .tag = " tag-const (ctx-str5 ctx ", .data." tag-name " = " val-c " })")))))
-                                            ((none)
-                                              (do
-                                                (ctx-add-error-at ctx "missing union value" (ctx-list-first-line items) (ctx-list-first-col items))
-                                                "0")))
+                                        (cond
+                                          ;; Multi-field: (union-new Type tag val0 val1 ...) with 5+ items
+                                          ((>= len 5)
+                                            (let ((mut field-init String ""))
+                                              (for (vi 3 len)
+                                                (match (list-get items vi)
+                                                  ((some val-expr)
+                                                    (let ((val-c (transpile-expr ctx val-expr))
+                                                          (field-name (ctx-str ctx ".f" (int-to-string arena (- vi 3))))
+                                                          (assignment (ctx-str3 ctx field-name " = " val-c)))
+                                                      (set! field-init (if (string-eq field-init "")
+                                                                         assignment
+                                                                         (ctx-str3 ctx field-init ", " assignment)))))
+                                                  ((none) (do))))
+                                              (ctx-str3 ctx "((" type-name (ctx-str3 ctx "){ .tag = " tag-const (ctx-str5 ctx ", .data." tag-name " = { " field-init " } })")))))
+                                          ;; Single-field: (union-new Type tag value)
+                                          ((>= len 4)
+                                            (match (list-get items 3)
+                                              ((some val-expr)
+                                                (let ((val-c (transpile-expr ctx val-expr)))
+                                                  (ctx-str3 ctx "((" type-name (ctx-str3 ctx "){ .tag = " tag-const (ctx-str5 ctx ", .data." tag-name " = " val-c " })")))))
+                                              ((none)
+                                                (do
+                                                  (ctx-add-error-at ctx "missing union value" (ctx-list-first-line items) (ctx-list-first-col items))
+                                                  "0"))))
                                           ;; No value - just tag: ((Type){ .tag = Type_tag })
-                                          (ctx-str3 ctx "((" type-name (ctx-str3 ctx "){ .tag = " tag-const " })")))))
+                                          (else
+                                            (ctx-str3 ctx "((" type-name (ctx-str3 ctx "){ .tag = " tag-const " })"))))))
                                     ((none)
                                       (do
                                         (ctx-add-error-at ctx "union-new tag must be symbol" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -3247,16 +3262,33 @@
                           ((sym tag-sym)
                             (let ((tag-name (. tag-sym name))
                                   (c-tag-name (to-c-name arena tag-name))
-                                  (c-tag-enum (ctx-str ctx c-type-name (ctx-str ctx "_" c-tag-name))))
-                              ;; Check if there's a value argument
-                              (if (>= (list-len tag-items) 2)
-                                (match (list-get tag-items 1)
-                                  ((some value-expr)
-                                    (let ((value-c (transpile-expr ctx value-expr)))
-                                      (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum (ctx-str ctx ", .data." (ctx-str ctx c-tag-name (ctx-str ctx " = " (ctx-str ctx value-c " })"))))))))))
-                                  ((none) (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum " })"))))))
+                                  (c-tag-enum (ctx-str ctx c-type-name (ctx-str ctx "_" c-tag-name)))
+                                  (num-tag-items (list-len tag-items)))
+                              (cond
+                                ;; Multi-field variant: (tag v0 v1 ...) -> .data.tag = { .f0 = v0, .f1 = v1, ... }
+                                ((>= num-tag-items 3)
+                                  (let ((mut field-init String ""))
+                                    (for (fi 1 num-tag-items)
+                                      (match (list-get tag-items fi)
+                                        ((some value-expr)
+                                          (let ((value-c (transpile-expr ctx value-expr))
+                                                (field-name (ctx-str ctx ".f" (int-to-string arena (- fi 1))))
+                                                (assignment (ctx-str3 ctx field-name " = " value-c)))
+                                            (set! field-init (if (string-eq field-init "")
+                                                               assignment
+                                                               (ctx-str3 ctx field-init ", " assignment)))))
+                                        ((none) (do))))
+                                    (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum (ctx-str ctx ", .data." (ctx-str ctx c-tag-name (ctx-str ctx " = { " (ctx-str ctx field-init " } })"))))))))))
+                                ;; Single-field variant: (tag value) -> .data.tag = value
+                                ((== num-tag-items 2)
+                                  (match (list-get tag-items 1)
+                                    ((some value-expr)
+                                      (let ((value-c (transpile-expr ctx value-expr)))
+                                        (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum (ctx-str ctx ", .data." (ctx-str ctx c-tag-name (ctx-str ctx " = " (ctx-str ctx value-c " })"))))))))))
+                                    ((none) (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum " })")))))))
                                 ;; No value - just tag
-                                (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum " })")))))))
+                                (else
+                                  (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum " })"))))))))
                           (_ (ctx-str3 ctx "((" c-type-name "){})/* tag not symbol */"))))
                       ((none) (ctx-str3 ctx "((" c-type-name "){})/* no tag */"))))))
               ;; Not a list - might be bare symbol like (some x) or (none)

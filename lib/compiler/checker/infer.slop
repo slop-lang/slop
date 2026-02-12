@@ -18,6 +18,7 @@
                  resolved-type-new resolved-type-set-inner resolved-type-set-inner2
                  resolved-type-is-pointer resolved-type-is-union
                  resolved-type-get-variant-index resolved-type-get-variant-payload
+                 resolved-type-get-variant-payloads
                  resolved-type-is-record resolved-type-has-field resolved-type-get-field-type))
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
                env-bind-var env-lookup-var env-lookup-type
@@ -1738,11 +1739,35 @@
                                     ;; Other variant names - fallback to generic
                                     (else (env-bind-var env binding-name (env-get-generic-type env))))
                                   ;; Normal variant lookup for non-Option/non-Result types
-                                  (match (resolved-type-get-variant-payload scrutinee-type variant-name)
-                                    ((some payload-type)
-                                      (env-bind-var env binding-name payload-type))
-                                    ((none)
-                                      ;; No payload - bind to generic type to avoid cascading errors
+                                  (let ((payload-types (resolved-type-get-variant-payloads (env-arena env) scrutinee-type variant-name)))
+                                    (if (> (list-len payload-types) 0)
+                                      (do
+                                        ;; Bind first binding (already extracted at position 1) to payloads[0]
+                                        ;; Skip literal pattern items (true/false) - they are guards, not bindings
+                                        (when (and (not (string-eq binding-name "true"))
+                                                   (not (string-eq binding-name "false")))
+                                          (match (list-get payload-types 0)
+                                            ((some first-type) (env-bind-var env binding-name first-type))
+                                            ((none) (env-bind-var env binding-name (env-get-generic-type env)))))
+                                        ;; Bind additional bindings at positions 2..N to payloads[1..N-1]
+                                        (let ((pat-len (sexpr-list-len pattern))
+                                              (num-types (list-len payload-types)))
+                                          (for (pi 2 pat-len)
+                                            (match (sexpr-list-get pattern pi)
+                                              ((some extra-binding)
+                                                (let ((extra-name (sexpr-get-symbol-name extra-binding)))
+                                                  (when (and (not (string-eq extra-name ""))
+                                                             (not (string-eq extra-name "_"))
+                                                             (not (string-eq extra-name "true"))
+                                                             (not (string-eq extra-name "false")))
+                                                    (let ((type-idx (- pi 1)))
+                                                      (if (< type-idx num-types)
+                                                        (match (list-get payload-types type-idx)
+                                                          ((some pt) (env-bind-var env extra-name pt))
+                                                          ((none) (env-bind-var env extra-name (env-get-generic-type env))))
+                                                        (env-bind-var env extra-name (env-get-generic-type env)))))))
+                                              ((none) (do))))))
+                                      ;; No payload types - bind to generic
                                       (env-bind-var env binding-name (env-get-generic-type env)))))))))))
                     ((none) (do)))))))
           ((none) (do))))))
@@ -2496,19 +2521,28 @@
                                     (match (deref variant-name-expr)
                                       ((sym variant-sym)
                                         (let ((variant-name (. variant-sym name)))
-                                          ;; Verify variant exists and get payload type
-                                          (match (resolved-type-get-variant-payload scrutinee-type variant-name)
-                                            ((some payload-type)
-                                              ;; Variant has payload - bind variable to payload type
-                                              (when (> (list-len variant-items) 1)
-                                                (match (list-get variant-items 1)
-                                                  ((some binding-expr)
-                                                    (match (deref binding-expr)
-                                                      ((sym binding-sym)
-                                                        (env-bind-var env (. binding-sym name) payload-type))
-                                                      (_ (do))))
-                                                  ((none) (do)))))
-                                            ((none)
+                                          ;; Verify variant exists and get payload types
+                                          (let ((payload-types (resolved-type-get-variant-payloads (env-arena env) scrutinee-type variant-name))
+                                                (num-pt (list-len payload-types)))
+                                            (if (> num-pt 0)
+                                              ;; Variant has payloads - bind all variables to payload types
+                                              (let ((num-vt (list-len variant-items)))
+                                                (for (vi 1 num-vt)
+                                                  (match (list-get variant-items vi)
+                                                    ((some binding-expr)
+                                                      (match (deref binding-expr)
+                                                        ((sym binding-sym)
+                                                          (let ((bname (. binding-sym name))
+                                                                (type-idx (- vi 1)))
+                                                            (when (and (not (string-eq bname "_"))
+                                                                       (not (string-eq bname "")))
+                                                              (if (< type-idx num-pt)
+                                                                (match (list-get payload-types type-idx)
+                                                                  ((some pt) (env-bind-var env bname pt))
+                                                                  ((none) (env-bind-var env bname (env-get-generic-type env))))
+                                                                (env-bind-var env bname (env-get-generic-type env))))))
+                                                        (_ (do))))
+                                                    ((none) (do)))))
                                               ;; Variant has no payload or doesn't exist - just verify it exists
                                               (match (resolved-type-get-variant-index scrutinee-type variant-name)
                                                 ((some _) (do))
