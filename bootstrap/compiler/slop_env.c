@@ -218,7 +218,7 @@ void env_env_bind_var(env_TypeEnv* env, slop_string name, types_ResolvedType* va
         __auto_type arena = (*env).arena;
         __auto_type scopes = (*env).scopes;
         __auto_type top_idx = (((int64_t)((scopes).len)) - 1);
-        __auto_type _mv_904 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)top_idx; slop_option_env_CheckerScope_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+        __auto_type _mv_904 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)top_idx; slop_option_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
         if (_mv_904.has_value) {
             __auto_type scope_ptr = _mv_904.value;
             ({ __auto_type _lst_p = &((*scope_ptr).bindings); __auto_type _item = ((env_VarBinding){name, var_type}); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -235,7 +235,7 @@ slop_option_types_ResolvedType_ptr env_scope_lookup_var(env_CheckerScope* scope_
         uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t j = 0; j < num_bindings; j++) {
-            __auto_type _mv_905 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_env_VarBinding _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_905 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_env_VarBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_905.has_value) {
                 __auto_type binding = _mv_905.value;
                 if ((!(found) && string_eq(binding.name, name))) {
@@ -260,7 +260,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_var(env_TypeEnv* env, slop_str
             if (!(found)) {
                 {
                     __auto_type scope_idx = ((num_scopes) - (1) - (i));
-                    __auto_type _mv_906 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)scope_idx; slop_option_env_CheckerScope_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_906 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)scope_idx; slop_option_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_906.has_value) {
                         __auto_type scope_ptr = _mv_906.value;
                         __auto_type _mv_907 = env_scope_lookup_var(scope_ptr, name);
@@ -313,7 +313,7 @@ uint8_t env_env_lookup_constant_in_module(env_TypeEnv* env, slop_string mod_name
         uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
             if (!(found)) {
-                __auto_type _mv_910 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                __auto_type _mv_910 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_910.has_value) {
                     __auto_type binding = _mv_910.value;
                     if ((string_eq(binding.name, const_name) && env_env_constant_matches_module(binding, mod_name))) {
@@ -340,7 +340,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_constant(env_TypeEnv* env, slo
             __auto_type mod = _mv_911.value;
             for (int64_t i = 0; i < len; i++) {
                 if (!(found)) {
-                    __auto_type _mv_912 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_912 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_912.has_value) {
                         __auto_type binding = _mv_912.value;
                         if ((string_eq(binding.name, name) && env_env_constant_matches_module(binding, mod))) {
@@ -364,7 +364,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_constant(env_TypeEnv* env, slo
                             __auto_type mod_part = (slop_string){.len = ((uint64_t)(colon_pos)), .data = qualified_name.data};
                             for (int64_t i = 0; i < len; i++) {
                                 if (!(found)) {
-                                    __auto_type _mv_914 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                    __auto_type _mv_914 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                     if (_mv_914.has_value) {
                                         __auto_type binding = _mv_914.value;
                                         if ((string_eq(binding.name, name) && env_env_constant_matches_module(binding, mod_part))) {
@@ -384,7 +384,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_constant(env_TypeEnv* env, slo
         if (!(found)) {
             for (int64_t i = 0; i < len; i++) {
                 if (!(found)) {
-                    __auto_type _mv_915 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_915 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_915.has_value) {
                         __auto_type binding = _mv_915.value;
                         if ((string_eq(binding.name, name) && env_env_constant_is_builtin(binding))) {
@@ -418,7 +418,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_type_direct(env_TypeEnv* env, 
         uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_916 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_916 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_916.has_value) {
                 __auto_type t = _mv_916.value;
                 if ((!(found) && string_eq((*t).name, name))) {
@@ -501,7 +501,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_type_qualified(env_TypeEnv* en
         uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_920 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_920 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_920.has_value) {
                 __auto_type t = _mv_920.value;
                 if (!(found)) {
@@ -572,7 +572,7 @@ slop_option_types_FnSignature_ptr env_env_lookup_function_direct(env_TypeEnv* en
         uint8_t found = 0;
         slop_option_types_FnSignature_ptr result = (slop_option_types_FnSignature_ptr){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_926 = ({ __auto_type _lst = functions; size_t _idx = (size_t)i; slop_option_types_FnSignature_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_926 = ({ __auto_type _lst = functions; size_t _idx = (size_t)i; slop_option_types_FnSignature_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_926.has_value) {
                 __auto_type sig = _mv_926.value;
                 if ((!(found) && (string_eq((*sig).name, name) || string_eq((*sig).c_name, name)))) {
@@ -644,7 +644,7 @@ slop_option_string env_env_resolve_import(env_TypeEnv* env, slop_string local_na
         uint8_t found = 0;
         slop_option_string result = (slop_option_string){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_932 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_env_ImportEntry _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_932 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_env_ImportEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_932.has_value) {
                 __auto_type entry = _mv_932.value;
                 if ((!(found) && string_eq(entry.local, local_name))) {
@@ -704,7 +704,7 @@ slop_option_string env_env_lookup_variant(env_TypeEnv* env, slop_string variant_
             __auto_type mod = _mv_935.value;
             for (int64_t i = 0; i < len; i++) {
                 if (!(found)) {
-                    __auto_type _mv_936 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_936 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_936.has_value) {
                         __auto_type v = _mv_936.value;
                         if ((string_eq(v.variant_name, variant_name) && env_env_variant_matches_module(v, mod))) {
@@ -720,7 +720,7 @@ slop_option_string env_env_lookup_variant(env_TypeEnv* env, slop_string variant_
         if (!(found)) {
             for (int64_t i = 0; i < len; i++) {
                 if (!(found)) {
-                    __auto_type _mv_937 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_937 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_937.has_value) {
                         __auto_type v = _mv_937.value;
                         if ((string_eq(v.variant_name, variant_name) && env_env_variant_is_builtin(v))) {
@@ -735,7 +735,7 @@ slop_option_string env_env_lookup_variant(env_TypeEnv* env, slop_string variant_
         if (!(found)) {
             for (int64_t i = 0; i < len; i++) {
                 if (!(found)) {
-                    __auto_type _mv_938 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_938 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_938.has_value) {
                         __auto_type v = _mv_938.value;
                         if (string_eq(v.variant_name, variant_name)) {
@@ -772,7 +772,7 @@ void env_env_check_variant_collisions(env_TypeEnv* env) {
         __auto_type len = ((int64_t)((variants).len));
         __auto_type arena = (*env).arena;
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_941 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_941 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_941.has_value) {
                 __auto_type v1 = _mv_941.value;
                 {
@@ -782,7 +782,7 @@ void env_env_check_variant_collisions(env_TypeEnv* env) {
                     __auto_type found_collision = 0;
                     slop_string collision_enum = SLOP_STR("");
                     for (int64_t j = (i + 1); j < len; j++) {
-                        __auto_type _mv_942 = ({ __auto_type _lst = variants; size_t _idx = (size_t)j; slop_option_env_VariantMapping _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        __auto_type _mv_942 = ({ __auto_type _lst = variants; size_t _idx = (size_t)j; slop_option_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                         if (_mv_942.has_value) {
                             __auto_type v2 = _mv_942.value;
                             if ((!(found_collision) && (string_eq(v2.variant_name, name1) && (!(string_eq(v2.enum_name, enum1)) && env_env_same_module_opt(mod1, v2.module_name))))) {
@@ -1013,7 +1013,7 @@ uint8_t env_env_is_module_loaded(env_TypeEnv* env, slop_string module_path) {
         __auto_type len = ((int64_t)((modules).len));
         uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_946 = ({ __auto_type _lst = modules; size_t _idx = (size_t)i; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_946 = ({ __auto_type _lst = modules; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_946.has_value) {
                 __auto_type path = _mv_946.value;
                 if ((!(found) && string_eq(path, module_path))) {
@@ -1049,7 +1049,7 @@ uint8_t env_env_is_type_param(env_TypeEnv* env, slop_string name) {
         uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
             if (!(found)) {
-                __auto_type _mv_947 = ({ __auto_type _lst = params; size_t _idx = (size_t)i; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                __auto_type _mv_947 = ({ __auto_type _lst = params; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_947.has_value) {
                     __auto_type p = _mv_947.value;
                     if (string_eq(p, name)) {

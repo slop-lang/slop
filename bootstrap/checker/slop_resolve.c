@@ -12,7 +12,7 @@ void resolve_resolve_imports(env_TypeEnv* env, slop_list_types_SExpr_ptr ast) {
     {
         __auto_type len = ((int64_t)((ast).len));
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_381 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_381 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_381.has_value) {
                 __auto_type expr = _mv_381.value;
                 if (parser_is_form(expr, SLOP_STR("import"))) {
@@ -60,7 +60,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
                 __auto_type lst = _mv_383.data.lst;
                 {
                     __auto_type items = lst.items;
-                    __auto_type _mv_384 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_384 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_384.has_value) {
                         __auto_type mod_name_expr = _mv_384.value;
                         __auto_type _mv_385 = (*mod_name_expr);
@@ -68,7 +68,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
                             case types_SExpr_sym:
                             {
                                 __auto_type mod_sym = _mv_385.data.sym;
-                                __auto_type _mv_386 = ({ __auto_type _lst = items; size_t _idx = (size_t)2; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                __auto_type _mv_386 = ({ __auto_type _lst = items; size_t _idx = (size_t)2; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                 if (_mv_386.has_value) {
                                     __auto_type names_expr = _mv_386.value;
                                     __auto_type _mv_387 = (*names_expr);
@@ -80,7 +80,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
                                                 __auto_type name_items = names_lst.items;
                                                 __auto_type name_len = ((int64_t)((name_items).len));
                                                 for (int64_t j = 0; j < name_len; j++) {
-                                                    __auto_type _mv_388 = ({ __auto_type _lst = name_items; size_t _idx = (size_t)j; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                                    __auto_type _mv_388 = ({ __auto_type _lst = name_items; size_t _idx = (size_t)j; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                                     if (_mv_388.has_value) {
                                                         __auto_type name_expr = _mv_388.value;
                                                         __auto_type _mv_389 = (*name_expr);

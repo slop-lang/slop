@@ -19,7 +19,7 @@ void parser_cli_print_json_array(slop_arena* arena, slop_list_types_SExpr_ptr ex
         int64_t i = 0;
         printf("%s", "[");
         while ((i < len)) {
-            __auto_type _mv_55 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_55 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_55.has_value) {
                 __auto_type expr = _mv_55.value;
                 if ((i > 0)) {
@@ -39,7 +39,7 @@ void parser_cli_print_sexp_list(slop_arena* arena, slop_list_types_SExpr_ptr exp
         __auto_type len = ((int64_t)((exprs).len));
         int64_t i = 0;
         while ((i < len)) {
-            __auto_type _mv_56 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_56 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_56.has_value) {
                 __auto_type expr = _mv_56.value;
                 printf("%.*s\n", (int)(parser_pretty_print(arena, expr)).len, (parser_pretty_print(arena, expr)).data);

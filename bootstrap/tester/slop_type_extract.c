@@ -71,7 +71,7 @@ type_extract_TypeRegistry* type_extract_extract_types_from_ast_with_imports(slop
             __auto_type len = ((int64_t)((ast).len));
             int64_t i = 0;
             while ((i < len)) {
-                __auto_type _mv_1464 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                __auto_type _mv_1464 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_1464.has_value) {
                     __auto_type expr = _mv_1464.value;
                     if (parser_is_form(expr, SLOP_STR("module"))) {
@@ -266,7 +266,7 @@ slop_option_type_extract_TstTypeEntry_ptr type_extract_registry_lookup(type_extr
         int64_t i = 0;
         slop_option_type_extract_TstTypeEntry_ptr found = (slop_option_type_extract_TstTypeEntry_ptr){.has_value = false};
         while (((i < len) && ({ __auto_type _mv = found; _mv.has_value ? (0) : (1); }))) {
-            __auto_type _mv_1474 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_type_extract_TstTypeEntry_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_1474 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_type_extract_TstTypeEntry_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_1474.has_value) {
                 __auto_type entry = _mv_1474.value;
                 if (string_eq((*entry).name, name)) {
@@ -287,7 +287,7 @@ slop_option_type_extract_TstTypeEntry_ptr type_extract_registry_lookup_variant(t
         int64_t i = 0;
         slop_option_type_extract_TstTypeEntry_ptr found = (slop_option_type_extract_TstTypeEntry_ptr){.has_value = false};
         while (((i < len) && ({ __auto_type _mv = found; _mv.has_value ? (0) : (1); }))) {
-            __auto_type _mv_1475 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_type_extract_TstTypeEntry_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_1475 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_type_extract_TstTypeEntry_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_1475.has_value) {
                 __auto_type entry = _mv_1475.value;
                 if (((*entry).kind == type_extract_TstTypeEntryKind_te_union)) {
@@ -297,7 +297,7 @@ slop_option_type_extract_TstTypeEntry_ptr type_extract_registry_lookup_variant(t
                         __auto_type j = 0;
                         __auto_type vfound = 0;
                         while (((j < vlen) && !(vfound))) {
-                            __auto_type _mv_1476 = ({ __auto_type _lst = variants; size_t _idx = (size_t)j; slop_option_type_extract_VariantEntry _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                            __auto_type _mv_1476 = ({ __auto_type _lst = variants; size_t _idx = (size_t)j; slop_option_type_extract_VariantEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_1476.has_value) {
                                 __auto_type ve = _mv_1476.value;
                                 if (string_eq(ve.name, variant_name)) {
@@ -325,7 +325,7 @@ slop_option_type_extract_TstTypeEntry_ptr type_extract_registry_lookup_enum_valu
         int64_t i = 0;
         slop_option_type_extract_TstTypeEntry_ptr found = (slop_option_type_extract_TstTypeEntry_ptr){.has_value = false};
         while (((i < len) && ({ __auto_type _mv = found; _mv.has_value ? (0) : (1); }))) {
-            __auto_type _mv_1477 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_type_extract_TstTypeEntry_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_1477 = ({ __auto_type _lst = types; size_t _idx = (size_t)i; slop_option_type_extract_TstTypeEntry_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_1477.has_value) {
                 __auto_type entry = _mv_1477.value;
                 if (((*entry).kind == type_extract_TstTypeEntryKind_te_enum)) {
@@ -335,7 +335,7 @@ slop_option_type_extract_TstTypeEntry_ptr type_extract_registry_lookup_enum_valu
                         __auto_type j = 0;
                         __auto_type vfound = 0;
                         while (((j < vlen) && !(vfound))) {
-                            __auto_type _mv_1478 = ({ __auto_type _lst = values; size_t _idx = (size_t)j; slop_option_type_extract_EnumValueEntry _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                            __auto_type _mv_1478 = ({ __auto_type _lst = values; size_t _idx = (size_t)j; slop_option_type_extract_EnumValueEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_1478.has_value) {
                                 __auto_type eve = _mv_1478.value;
                                 if (string_eq(eve.name, value_name)) {
@@ -363,7 +363,7 @@ slop_option_string type_extract_registry_lookup_import(type_extract_TypeRegistry
         int64_t i = 0;
         slop_option_string found = (slop_option_string){.has_value = false};
         while (((i < len) && ({ __auto_type _mv = found; _mv.has_value ? (0) : (1); }))) {
-            __auto_type _mv_1479 = ({ __auto_type _lst = entries; size_t _idx = (size_t)i; slop_option_type_extract_ImportEntry _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_1479 = ({ __auto_type _lst = entries; size_t _idx = (size_t)i; slop_option_type_extract_ImportEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_1479.has_value) {
                 __auto_type entry = _mv_1479.value;
                 {
@@ -371,7 +371,7 @@ slop_option_string type_extract_registry_lookup_import(type_extract_TypeRegistry
                     __auto_type slen = ((int64_t)((symbols).len));
                     __auto_type j = 0;
                     while (((j < slen) && ({ __auto_type _mv = found; _mv.has_value ? (0) : (1); }))) {
-                        __auto_type _mv_1480 = ({ __auto_type _lst = symbols; size_t _idx = (size_t)j; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        __auto_type _mv_1480 = ({ __auto_type _lst = symbols; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                         if (_mv_1480.has_value) {
                             __auto_type sym = _mv_1480.value;
                             if (string_eq(sym, symbol_name)) {
@@ -430,7 +430,7 @@ slop_option_type_extract_VariantEntry type_extract_registry_get_variant_info(typ
             __auto_type i = 0;
             slop_option_type_extract_VariantEntry found = (slop_option_type_extract_VariantEntry){.has_value = false};
             while (((i < vlen) && ({ __auto_type _mv = found; _mv.has_value ? (0) : (1); }))) {
-                __auto_type _mv_1485 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_type_extract_VariantEntry _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                __auto_type _mv_1485 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_type_extract_VariantEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_1485.has_value) {
                     __auto_type ve = _mv_1485.value;
                     if (string_eq(ve.name, variant_name)) {

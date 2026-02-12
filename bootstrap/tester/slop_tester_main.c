@@ -101,7 +101,7 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                 int64_t total = 0;
                 int64_t i = 0;
                 while ((i < len)) {
-                    __auto_type _mv_1605 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_1605 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_1605.has_value) {
                         __auto_type line = _mv_1605.value;
                         total = (total + (((int64_t)(line.len)) + 1));
@@ -114,7 +114,7 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                     int64_t pos = 0;
                     int64_t j = 0;
                     while ((j < len)) {
-                        __auto_type _mv_1606 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        __auto_type _mv_1606 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                         if (_mv_1606.has_value) {
                             __auto_type line = _mv_1606.value;
                             {

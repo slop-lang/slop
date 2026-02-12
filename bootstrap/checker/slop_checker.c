@@ -51,7 +51,7 @@ void checker_check_all_functions(env_TypeEnv* env, slop_list_types_SExpr_ptr ast
     {
         __auto_type len = ((int64_t)((ast).len));
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_391 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_391 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_391.has_value) {
                 __auto_type expr = _mv_391.value;
                 if (parser_is_form(expr, SLOP_STR("fn"))) {
@@ -219,7 +219,7 @@ slop_string checker_extract_module_name(slop_list_types_SExpr_ptr exprs) {
     if ((((int64_t)((exprs).len)) < 1)) {
         return SLOP_STR("unknown");
     } else {
-        __auto_type _mv_396 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+        __auto_type _mv_396 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
         if (_mv_396.has_value) {
             __auto_type first_expr = _mv_396.value;
             __auto_type _mv_397 = (*first_expr);
@@ -232,7 +232,7 @@ slop_string checker_extract_module_name(slop_list_types_SExpr_ptr exprs) {
                         if ((((int64_t)((items).len)) < 2)) {
                             return SLOP_STR("unknown");
                         } else {
-                            __auto_type _mv_398 = ({ __auto_type _lst = items; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                            __auto_type _mv_398 = ({ __auto_type _lst = items; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_398.has_value) {
                                 __auto_type head = _mv_398.value;
                                 __auto_type _mv_399 = (*head);
@@ -241,7 +241,7 @@ slop_string checker_extract_module_name(slop_list_types_SExpr_ptr exprs) {
                                     {
                                         __auto_type sym = _mv_399.data.sym;
                                         if (string_eq(sym.name, SLOP_STR("module"))) {
-                                            __auto_type _mv_400 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                            __auto_type _mv_400 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                             if (_mv_400.has_value) {
                                                 __auto_type name_expr = _mv_400.value;
                                                 __auto_type _mv_401 = (*name_expr);
@@ -303,7 +303,7 @@ void checker_output_diagnostics_text(slop_arena* arena, slop_string filename, sl
         __auto_type len = ((int64_t)((diagnostics).len));
         int64_t i = 0;
         while ((i < len)) {
-            __auto_type _mv_403 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_403 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_403.has_value) {
                 __auto_type diag = _mv_403.value;
                 checker_print_diagnostic(arena, filename, diag);
@@ -323,7 +323,7 @@ void checker_output_diagnostics_json(slop_arena* arena, slop_list_types_Diagnost
             if ((i > 0)) {
                 putchar(44);
             }
-            __auto_type _mv_404 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_404 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_404.has_value) {
                 __auto_type diag = _mv_404.value;
                 checker_output_single_diagnostic_json(arena, diag);
@@ -432,7 +432,7 @@ int64_t checker_count_errors(slop_list_types_Diagnostic diagnostics) {
         int64_t errors = 0;
         int64_t i = 0;
         while ((i < len)) {
-            __auto_type _mv_409 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_409 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_409.has_value) {
                 __auto_type diag = _mv_409.value;
                 __auto_type _mv_410 = diag.level;
@@ -463,7 +463,7 @@ types_ResolvedType* checker_resolve_type_string(env_TypeEnv* env, slop_arena* ar
         if ((((int64_t)((type_ast).len)) == 0)) {
             return env_env_get_int_type(env);
         } else {
-            __auto_type _mv_412 = ({ __auto_type _lst = type_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_412 = ({ __auto_type _lst = type_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_412.has_value) {
                 __auto_type type_expr = _mv_412.value;
                 if (parser_sexpr_is_list(type_expr)) {
@@ -494,7 +494,7 @@ void checker_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_str
     if (_mv_413.is_ok) {
         __auto_type params_ast = _mv_413.data.ok;
         if ((((int64_t)((params_ast).len)) > 0)) {
-            __auto_type _mv_414 = ({ __auto_type _lst = params_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_414 = ({ __auto_type _lst = params_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_414.has_value) {
                 __auto_type params_list = _mv_414.value;
                 __auto_type _mv_415 = (*params_list);
@@ -506,7 +506,7 @@ void checker_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_str
                             __auto_type items = lst.items;
                             __auto_type len = ((int64_t)((items).len));
                             for (int64_t i = 0; i < len; i++) {
-                                __auto_type _mv_416 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                __auto_type _mv_416 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                 if (_mv_416.has_value) {
                                     __auto_type param = _mv_416.value;
                                     __auto_type _mv_417 = (*param);
@@ -517,7 +517,7 @@ void checker_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_str
                                             {
                                                 __auto_type param_items = param_lst.items;
                                                 if ((((int64_t)((param_items).len)) >= 2)) {
-                                                    __auto_type _mv_418 = ({ __auto_type _lst = param_items; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                                    __auto_type _mv_418 = ({ __auto_type _lst = param_items; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                                     if (_mv_418.has_value) {
                                                         __auto_type name_expr = _mv_418.value;
                                                         __auto_type _mv_419 = (*name_expr);
@@ -527,7 +527,7 @@ void checker_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_str
                                                                 __auto_type name_sym = _mv_419.data.sym;
                                                                 {
                                                                     __auto_type param_name = name_sym.name;
-                                                                    __auto_type _mv_420 = ({ __auto_type _lst = param_items; size_t _idx = (size_t)1; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                                                    __auto_type _mv_420 = ({ __auto_type _lst = param_items; size_t _idx = (size_t)1; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                                                     if (_mv_420.has_value) {
                                                                         __auto_type type_expr = _mv_420.value;
                                                                         __auto_type _mv_421 = (*type_expr);
@@ -715,7 +715,7 @@ int64_t checker_check_expr_mode(slop_arena* arena, env_TypeEnv* env, slop_string
         checker_parse_and_bind_params(env, arena, params_str);
     }
     {
-        __auto_type result = ({ __auto_type _mv = parser_parse(arena, expr_str); int64_t _mr; if (_mv.is_ok) { __auto_type expr_ast = _mv.data.ok; _mr = (((((int64_t)((expr_ast).len)) == 0)) ? ({ checker_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n").data))); 1; }) : ({ __auto_type _mv = ({ __auto_type _lst = expr_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type expr = _mv.value; ({ ({ __auto_type inferred_type = infer_infer_expr(env, expr); ({ __auto_type expected_type = checker_resolve_type_string(env, arena, type_str); __auto_type diagnostics = env_env_get_diagnostics(env); __auto_type num_errors = checker_count_errors(diagnostics); ({ __auto_type type_match = checker_types_names_equal(inferred_type, expected_type); __auto_type final_diagnostics = env_env_get_diagnostics(env); __auto_type final_errors = checker_count_errors(final_diagnostics); __auto_type is_valid = (type_match && (final_errors == 0)); checker_output_expr_result(arena, is_valid, (*inferred_type).name, type_str, final_diagnostics); ((is_valid) ? 0 : 1); }); }); }); }); }) : (({ checker_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n").data))); 1; })); })); } else { __auto_type parse_err = _mv.data.err; _mr = ({ checker_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":").data))); checker_print_string(int_to_string(arena, parse_err.line)); checker_print_str(((uint8_t*)(SLOP_STR(",\"col\":").data))); checker_print_string(int_to_string(arena, parse_err.col)); checker_print_str(((uint8_t*)(SLOP_STR(",\"message\":").data))); checker_print_json_string(arena, parse_err.message); checker_print_str(((uint8_t*)(SLOP_STR("}]}\n").data))); 1; }); } _mr; });
+        __auto_type result = ({ __auto_type _mv = parser_parse(arena, expr_str); int64_t _mr; if (_mv.is_ok) { __auto_type expr_ast = _mv.data.ok; _mr = (((((int64_t)((expr_ast).len)) == 0)) ? ({ checker_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n").data))); 1; }) : ({ __auto_type _mv = ({ __auto_type _lst = expr_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type expr = _mv.value; ({ ({ __auto_type inferred_type = infer_infer_expr(env, expr); ({ __auto_type expected_type = checker_resolve_type_string(env, arena, type_str); __auto_type diagnostics = env_env_get_diagnostics(env); __auto_type num_errors = checker_count_errors(diagnostics); ({ __auto_type type_match = checker_types_names_equal(inferred_type, expected_type); __auto_type final_diagnostics = env_env_get_diagnostics(env); __auto_type final_errors = checker_count_errors(final_diagnostics); __auto_type is_valid = (type_match && (final_errors == 0)); checker_output_expr_result(arena, is_valid, (*inferred_type).name, type_str, final_diagnostics); ((is_valid) ? 0 : 1); }); }); }); }); }) : (({ checker_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n").data))); 1; })); })); } else { __auto_type parse_err = _mv.data.err; _mr = ({ checker_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":").data))); checker_print_string(int_to_string(arena, parse_err.line)); checker_print_str(((uint8_t*)(SLOP_STR(",\"col\":").data))); checker_print_string(int_to_string(arena, parse_err.col)); checker_print_str(((uint8_t*)(SLOP_STR(",\"message\":").data))); checker_print_json_string(arena, parse_err.message); checker_print_str(((uint8_t*)(SLOP_STR("}]}\n").data))); 1; }); } _mr; });
         env_env_pop_scope(env);
         return result;
     }
