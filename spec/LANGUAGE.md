@@ -111,7 +111,8 @@ literal     = number | string | 'true | 'false | 'nil
 
 ; Algebraic types
 (enum val1 val2 ...)           ; Enumeration (C enum)
-(union (tag1 T1) (tag2 T2))    ; Tagged union
+(union (tag1 T1) (tag2 T2))    ; Tagged union (single payload per variant)
+(union (tag T1 T2 ...))        ; Tagged union (multi-field payload)
 (record (field1 T1) (field2 T2))  ; Struct
 
 ; Recursive unions: variants must not embed the parent union by value,
@@ -290,7 +291,8 @@ identifier               ; Variable reference
 (map [KeyType ValueType] (k1 v1)...)     ; Map literal (types optional)
 (record-new Type (f1 v1) (f2 v2)...)     ; Struct construction (named fields)
 (TypeName v1 v2 ...)                     ; Struct construction (positional)
-(union-new Type Tag value)               ; Tagged union construction
+(union-new Type Tag value)               ; Tagged union construction (single payload)
+(Tag v1 v2 ...)                          ; Tagged union construction (multi-field, inferred)
 
 ; Collection Literal Type Inference:
 ; When explicit type is provided, it is used directly:
@@ -456,7 +458,8 @@ literal                      ; Literal match (number, string)
 (array p1 p2...)             ; Array pattern
 (list p1 p2... | rest)       ; List with rest
 (record Type (f1 p1)...)     ; Struct pattern
-(union Tag pattern)          ; Tagged union variant
+(union Tag pattern)          ; Tagged union variant (single payload)
+(Tag p1 p2 ...)              ; Multi-field variant destructuring
 (guard pattern when expr)    ; Guarded pattern
 ```
 
@@ -594,6 +597,7 @@ SLOP                    C
 (enum a b c)            enum { a, b, c }
 (record (x T) (y U))    struct { T x; U y; }
 (union (a T) (b U))     struct { uint8_t tag; union { T a; U b; } data; }
+(union (a T1 T2))      struct { uint8_t tag; union { struct { T1 f0; T2 f1; } a; } data; }
 (Ptr T)                 T*
 (ScopedPtr T)           T* (with cleanup)
 (Fn (A B) -> R)         R (*)(A, B)

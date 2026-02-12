@@ -1,0 +1,74 @@
+;; ============================================================
+;; Multi-field Union Variant Test
+;;
+;; Verifies construction and matching of union variants with
+;; multiple payload fields.
+;; ============================================================
+
+(module test-multi-field-union
+  (export (main 0))
+
+  (type Pair (union
+    (two-vals Int String)
+    (single Int)
+    (empty)))
+
+  (type Triple (union
+    (tri Int Bool String)
+    (duo Int Int)))
+
+  ;; Basic two-field match
+  (fn test-two-fields ()
+    (@intent "Match a two-field variant and use both bindings")
+    (@spec (() -> Int))
+    (let ((p (Pair (two-vals 42 "hello"))))
+      (match p
+        ((two-vals n s) n)
+        ((single n) n)
+        ((empty) 0))))
+
+  ;; Three-field match
+  (fn test-three-fields ()
+    (@intent "Match a three-field variant and use all bindings")
+    (@spec (() -> Int))
+    (let ((t (Triple (tri 10 true "ok"))))
+      (match t
+        ((tri n b s) (if b n 0))
+        ((duo a b) (+ a b)))))
+
+  ;; Wildcard in multi-field pattern
+  (fn test-wildcard-binding ()
+    (@intent "Use _ to skip fields in multi-field match")
+    (@spec (() -> Int))
+    (let ((p (Pair (two-vals 42 "hello"))))
+      (match p
+        ((two-vals _ s) 1)
+        ((single _) 0)
+        ((empty) 0))))
+
+  ;; Construct, match, return second field
+  (fn test-construct-and-read ()
+    (@intent "Round-trip: construct multi-field, match, read second field")
+    (@spec (() -> Int))
+    (let ((t (Triple (duo 3 7))))
+      (match t
+        ((tri _ _ _) 0)
+        ((duo _ b) b))))
+
+  ;; Test union-new form with multi-field
+  (fn test-union-new-multi ()
+    (@intent "Test union-new with multi-field variant")
+    (@spec (() -> Int))
+    (let ((t (union-new Triple duo 3 7)))
+      (match t
+        ((tri _ _ _) 0)
+        ((duo a b) (+ a b)))))
+
+  (fn main ()
+    (@intent "Run all tests, return 0 if all pass")
+    (@spec (() -> Int))
+    (+ (if (== (test-two-fields) 42) 0 1)
+       (if (== (test-three-fields) 10) 0 1)
+       (if (== (test-wildcard-binding) 1) 0 1)
+       (if (== (test-construct-and-read) 7) 0 1)
+       (if (== (test-union-new-multi) 10) 0 1))))

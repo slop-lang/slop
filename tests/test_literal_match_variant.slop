@@ -1,0 +1,43 @@
+(module test-literal-match-variant
+  (export (main 0))
+
+  (type Flagged (union
+    (flagged Bool Int)
+    (plain Int)))
+
+  ;; Literal true guard matches
+  (fn test-match-true ()
+    (@intent "Literal true guard in multi-field variant")
+    (@spec (() -> Int))
+    (let ((f (Flagged (flagged true 42))))
+      (match f
+        ((flagged true n) n)
+        ((plain n) n)
+        (else 0))))
+
+  ;; Literal false guard matches
+  (fn test-match-false ()
+    (@intent "Literal false guard in multi-field variant")
+    (@spec (() -> Int))
+    (let ((f (Flagged (flagged false 99))))
+      (match f
+        ((flagged false n) n)
+        ((plain n) n)
+        (else 0))))
+
+  ;; Non-matching literal falls through to else
+  (fn test-literal-no-match ()
+    (@intent "Literal guard that does not match falls through to else")
+    (@spec (() -> Int))
+    (let ((f (Flagged (flagged false 7))))
+      (match f
+        ((flagged true n) n)
+        ((plain n) n)
+        (else -1))))
+
+  (fn main ()
+    (@intent "Run tests")
+    (@spec (() -> Int))
+    (+ (if (== (test-match-true) 42) 0 1)
+       (if (== (test-match-false) 99) 0 1)
+       (if (== (test-literal-no-match) -1) 0 1))))

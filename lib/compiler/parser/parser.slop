@@ -694,8 +694,24 @@
       ((string-eq op "%") PREC_MUL)
       (else 0)))
 
+  ;; Helper: Parse parenthesized infix grouping: ( infix-expr )
+  ;; Used when parens inside {...} contain infix operators
+  (fn parse-infix-paren-group ((arena Arena) (state (Ptr ParserState)))
+    (@intent "Parse parenthesized infix grouping")
+    (@spec ((Arena (Ptr ParserState)) -> (Result (Ptr SExpr) ParseError)))
+    (@alloc arena)
+    ;; Consume opening paren
+    (parser-advance state)
+    ;; Parse infix expression inside parens
+    (match (parse-infix-prec arena state 0)
+      ((error e) (error e))
+      ((ok expr)
+        (match (parser-expect state 'tok-rparen)
+          ((error e) (error e))
+          ((ok _) (ok expr))))))
+
   ;; Helper: Parse a primary expression in infix context
-  ;; Primary = number | symbol | '(' list ')'
+  ;; Primary = number | symbol | '(' list ')' | '(' infix-group ')'
   (fn parse-infix-primary ((arena Arena) (state (Ptr ParserState)))
     (@intent "Parse primary expression in infix context")
     (@spec ((Arena (Ptr ParserState)) -> (Result (Ptr SExpr) ParseError)))
@@ -786,9 +802,33 @@
         ((== (. tok kind) 'tok-operator)
           (error (ParseError "Unexpected operator in expression" (. tok line) (. tok col))))
 
-        ;; Parenthesized subexpression (could be regular prefix list or grouping)
+        ;; Parenthesized subexpression (could be regular prefix list or infix grouping)
+        ;; Peek ahead to decide: consume (, parse one primary, check next token.
+        ;; If next is an operator → infix grouping; otherwise → regular S-expression.
         ((== (. tok kind) 'tok-lparen)
-          (parse-list arena state))
+          (let ((saved-pos (. (deref state) pos)))
+            (parser-advance state)
+            (match (parse-infix-primary arena state)
+              ((error _)
+                ;; Parse error during peek — restore and try as regular list
+                (do
+                  (set! (. (deref state) pos) saved-pos)
+                  (parse-list arena state)))
+              ((ok _)
+                (let ((next-tok (parser-peek state)))
+                  ;; If next is operator or and/or, this is infix grouping
+                  (if (or (== (. next-tok kind) 'tok-operator)
+                          (and (== (. next-tok kind) 'tok-symbol)
+                               (or (string-eq (. next-tok value) "and")
+                                   (string-eq (. next-tok value) "or"))))
+                    ;; Infix grouping — restore and parse as infix
+                    (do
+                      (set! (. (deref state) pos) saved-pos)
+                      (parse-infix-paren-group arena state))
+                    ;; Regular S-expression — restore and parse as list
+                    (do
+                      (set! (. (deref state) pos) saved-pos)
+                      (parse-list arena state))))))))
 
         ;; Quoted expression (e.g., 'tok-lparen for enum values)
         ((== (. tok kind) 'tok-quote)
