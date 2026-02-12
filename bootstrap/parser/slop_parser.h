@@ -139,6 +139,7 @@ slop_result_parser_Token_parser_ParseError parser_parser_expect(parser_ParserSta
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* arena, parser_ParserState* state);
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_list(slop_arena* arena, parser_ParserState* state);
 int64_t parser_get_precedence(slop_string op);
+slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_paren_group(slop_arena* arena, parser_ParserState* state);
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_arena* arena, parser_ParserState* state);
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_prec(slop_arena* arena, parser_ParserState* state, int64_t min_prec);
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix(slop_arena* arena, parser_ParserState* state);

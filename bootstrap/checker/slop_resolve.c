@@ -12,16 +12,16 @@ void resolve_resolve_imports(env_TypeEnv* env, slop_list_types_SExpr_ptr ast) {
     {
         __auto_type len = ((int64_t)((ast).len));
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_374 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_374.has_value) {
-                __auto_type expr = _mv_374.value;
+            __auto_type _mv_381 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_381.has_value) {
+                __auto_type expr = _mv_381.value;
                 if (parser_is_form(expr, SLOP_STR("import"))) {
                     resolve_resolve_import_stmt(env, expr);
                 } else if (parser_is_form(expr, SLOP_STR("module"))) {
                     resolve_resolve_module_imports(env, expr);
                 } else {
                 }
-            } else if (!_mv_374.has_value) {
+            } else if (!_mv_381.has_value) {
             }
         }
     }
@@ -34,13 +34,13 @@ void resolve_resolve_module_imports(env_TypeEnv* env, types_SExpr* module_form) 
         {
             __auto_type len = parser_sexpr_list_len(module_form);
             for (int64_t i = 2; i < len; i++) {
-                __auto_type _mv_375 = parser_sexpr_list_get(module_form, i);
-                if (_mv_375.has_value) {
-                    __auto_type item = _mv_375.value;
+                __auto_type _mv_382 = parser_sexpr_list_get(module_form, i);
+                if (_mv_382.has_value) {
+                    __auto_type item = _mv_382.value;
                     if (parser_is_form(item, SLOP_STR("import"))) {
                         resolve_resolve_import_stmt(env, item);
                     }
-                } else if (!_mv_375.has_value) {
+                } else if (!_mv_382.has_value) {
                 }
             }
         }
@@ -53,41 +53,41 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
     SLOP_PRE((parser_is_form(import_form, SLOP_STR("import"))), "(is-form import-form \"import\")");
     {
         __auto_type arena = env_env_arena(env);
-        __auto_type _mv_376 = (*import_form);
-        switch (_mv_376.tag) {
+        __auto_type _mv_383 = (*import_form);
+        switch (_mv_383.tag) {
             case types_SExpr_lst:
             {
-                __auto_type lst = _mv_376.data.lst;
+                __auto_type lst = _mv_383.data.lst;
                 {
                     __auto_type items = lst.items;
-                    __auto_type _mv_377 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_377.has_value) {
-                        __auto_type mod_name_expr = _mv_377.value;
-                        __auto_type _mv_378 = (*mod_name_expr);
-                        switch (_mv_378.tag) {
+                    __auto_type _mv_384 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_384.has_value) {
+                        __auto_type mod_name_expr = _mv_384.value;
+                        __auto_type _mv_385 = (*mod_name_expr);
+                        switch (_mv_385.tag) {
                             case types_SExpr_sym:
                             {
-                                __auto_type mod_sym = _mv_378.data.sym;
-                                __auto_type _mv_379 = ({ __auto_type _lst = items; size_t _idx = (size_t)2; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                                if (_mv_379.has_value) {
-                                    __auto_type names_expr = _mv_379.value;
-                                    __auto_type _mv_380 = (*names_expr);
-                                    switch (_mv_380.tag) {
+                                __auto_type mod_sym = _mv_385.data.sym;
+                                __auto_type _mv_386 = ({ __auto_type _lst = items; size_t _idx = (size_t)2; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                if (_mv_386.has_value) {
+                                    __auto_type names_expr = _mv_386.value;
+                                    __auto_type _mv_387 = (*names_expr);
+                                    switch (_mv_387.tag) {
                                         case types_SExpr_lst:
                                         {
-                                            __auto_type names_lst = _mv_380.data.lst;
+                                            __auto_type names_lst = _mv_387.data.lst;
                                             {
                                                 __auto_type name_items = names_lst.items;
                                                 __auto_type name_len = ((int64_t)((name_items).len));
                                                 for (int64_t j = 0; j < name_len; j++) {
-                                                    __auto_type _mv_381 = ({ __auto_type _lst = name_items; size_t _idx = (size_t)j; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                                                    if (_mv_381.has_value) {
-                                                        __auto_type name_expr = _mv_381.value;
-                                                        __auto_type _mv_382 = (*name_expr);
-                                                        switch (_mv_382.tag) {
+                                                    __auto_type _mv_388 = ({ __auto_type _lst = name_items; size_t _idx = (size_t)j; slop_option_types_SExpr_ptr _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                                    if (_mv_388.has_value) {
+                                                        __auto_type name_expr = _mv_388.value;
+                                                        __auto_type _mv_389 = (*name_expr);
+                                                        switch (_mv_389.tag) {
                                                             case types_SExpr_sym:
                                                             {
-                                                                __auto_type name_sym = _mv_382.data.sym;
+                                                                __auto_type name_sym = _mv_389.data.sym;
                                                                 {
                                                                     __auto_type local_name = name_sym.name;
                                                                     __auto_type actual_module = ({ __auto_type _mv = env_env_lookup_type_direct(env, local_name); _mv.has_value ? ({ __auto_type t = _mv.value; ({ __auto_type _mv = (*t).module_name; _mv.has_value ? ({ __auto_type mod = _mv.value; mod; }) : (mod_sym.name); }); }) : (mod_sym.name); });
@@ -103,7 +103,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
                                                                 break;
                                                             }
                                                         }
-                                                    } else if (!_mv_381.has_value) {
+                                                    } else if (!_mv_388.has_value) {
                                                     }
                                                 }
                                             }
@@ -113,7 +113,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
                                             break;
                                         }
                                     }
-                                } else if (!_mv_379.has_value) {
+                                } else if (!_mv_386.has_value) {
                                 }
                                 break;
                             }
@@ -121,7 +121,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
                                 break;
                             }
                         }
-                    } else if (!_mv_377.has_value) {
+                    } else if (!_mv_384.has_value) {
                     }
                 }
                 break;
@@ -150,9 +150,9 @@ slop_option_string resolve_resolve_module_file(slop_arena* arena, slop_string mo
     if (!(resolve_contains_slash(module_name))) {
         return (slop_option_string){.has_value = false};
     } else {
-        __auto_type _mv_383 = from_file;
-        if (_mv_383.has_value) {
-            __auto_type current_path = _mv_383.value;
+        __auto_type _mv_390 = from_file;
+        if (_mv_390.has_value) {
+            __auto_type current_path = _mv_390.value;
             {
                 __auto_type dir = path_path_dirname(arena, current_path);
                 __auto_type rel_path = string_concat(arena, module_name, SLOP_STR(".slop"));
@@ -163,7 +163,7 @@ slop_option_string resolve_resolve_module_file(slop_arena* arena, slop_string mo
                     return (slop_option_string){.has_value = false};
                 }
             }
-        } else if (!_mv_383.has_value) {
+        } else if (!_mv_390.has_value) {
             return (slop_option_string){.has_value = false};
         }
     }

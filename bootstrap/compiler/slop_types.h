@@ -84,6 +84,11 @@ typedef enum {
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
+#ifndef SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_DEFINED
+#define SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_DEFINED
+SLOP_LIST_DEFINE(types_ResolvedType*, slop_list_types_ResolvedType_ptr)
+#endif
+
 #ifndef SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
 #define SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
 SLOP_OPTION_DEFINE(types_ResolvedType*, slop_option_types_ResolvedType_ptr)
@@ -253,6 +258,7 @@ struct types_ResolvedVariant {
     int64_t index;
     slop_string tag_constant;
     slop_option_types_ResolvedType_ptr payload_type;
+    slop_list_types_ResolvedType_ptr payload_types;
 };
 typedef struct types_ResolvedVariant types_ResolvedVariant;
 
@@ -370,7 +376,7 @@ int64_t types_min(int64_t a, int64_t b);
 int64_t types_max(int64_t a, int64_t b);
 types_RangeBounds types_range_intersect(types_RangeBounds a, types_RangeBounds b);
 types_RangeBounds types_range_union(types_RangeBounds a, types_RangeBounds b);
-types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string name, int64_t index, slop_string tag_constant, slop_option_types_ResolvedType_ptr payload);
+types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string name, int64_t index, slop_string tag_constant, slop_option_types_ResolvedType_ptr payload, slop_list_types_ResolvedType_ptr payload_types);
 types_ResolvedField* types_resolved_field_new(slop_arena* arena, slop_string name, types_ResolvedType* field_type, int64_t offset);
 types_ResolvedType* types_resolved_type_new(slop_arena* arena, types_ResolvedTypeKind kind, slop_string name, slop_option_string module_name, slop_string c_name);
 void types_resolved_type_set_inner(types_ResolvedType* t, types_ResolvedType* inner);
@@ -387,6 +393,7 @@ uint8_t types_resolved_type_is_record(types_ResolvedType* t);
 uint8_t types_resolved_type_is_function(types_ResolvedType* t);
 slop_option_int types_resolved_type_get_variant_index(types_ResolvedType* t, slop_string name);
 slop_option_types_ResolvedType_ptr types_resolved_type_get_variant_payload(types_ResolvedType* t, slop_string name);
+slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_arena* arena, types_ResolvedType* t, slop_string name);
 uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name);
 slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_ResolvedType* t, slop_string name);
 slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_ResolvedType* t);

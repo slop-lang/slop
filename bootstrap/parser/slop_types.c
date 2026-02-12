@@ -8,7 +8,7 @@ int64_t types_min(int64_t a, int64_t b);
 int64_t types_max(int64_t a, int64_t b);
 types_RangeBounds types_range_intersect(types_RangeBounds a, types_RangeBounds b);
 types_RangeBounds types_range_union(types_RangeBounds a, types_RangeBounds b);
-types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string name, int64_t index, slop_string tag_constant, slop_option_types_ResolvedType_ptr payload);
+types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string name, int64_t index, slop_string tag_constant, slop_option_types_ResolvedType_ptr payload, slop_list_types_ResolvedType_ptr payload_types);
 types_ResolvedField* types_resolved_field_new(slop_arena* arena, slop_string name, types_ResolvedType* field_type, int64_t offset);
 types_ResolvedType* types_resolved_type_new(slop_arena* arena, types_ResolvedTypeKind kind, slop_string name, slop_option_string module_name, slop_string c_name);
 void types_resolved_type_set_inner(types_ResolvedType* t, types_ResolvedType* inner);
@@ -25,6 +25,7 @@ uint8_t types_resolved_type_is_record(types_ResolvedType* t);
 uint8_t types_resolved_type_is_function(types_ResolvedType* t);
 slop_option_int types_resolved_type_get_variant_index(types_ResolvedType* t, slop_string name);
 slop_option_types_ResolvedType_ptr types_resolved_type_get_variant_payload(types_ResolvedType* t, slop_string name);
+slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_arena* arena, types_ResolvedType* t, slop_string name);
 uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name);
 slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_ResolvedType* t, slop_string name);
 slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_ResolvedType* t);
@@ -77,10 +78,10 @@ types_RangeBounds types_range_union(types_RangeBounds a, types_RangeBounds b) {
     }
 }
 
-types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string name, int64_t index, slop_string tag_constant, slop_option_types_ResolvedType_ptr payload) {
+types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string name, int64_t index, slop_string tag_constant, slop_option_types_ResolvedType_ptr payload, slop_list_types_ResolvedType_ptr payload_types) {
     {
-        __auto_type v = ((types_ResolvedVariant*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        (*v) = (types_ResolvedVariant){name, index, tag_constant, payload};
+        __auto_type v = ((types_ResolvedVariant*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        (*v) = (types_ResolvedVariant){name, index, tag_constant, payload, payload_types};
         return v;
     }
 }
@@ -243,6 +244,34 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_variant_payload(types
     }
 }
 
+slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_arena* arena, types_ResolvedType* t, slop_string name) {
+    SLOP_PRE(((t != NULL)), "(!= t nil)");
+    if (((*t).kind == types_ResolvedTypeKind_rk_union)) {
+        {
+            __auto_type variants = (*t).variants;
+            __auto_type len = ((int64_t)((variants).len));
+            int64_t i = 0;
+            uint8_t done = 0;
+            slop_list_types_ResolvedType_ptr found = ((slop_list_types_ResolvedType_ptr){ .data = (types_ResolvedType**)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedType*)), .len = 0, .cap = 16 });
+            while (((i < len) && !(done))) {
+                __auto_type _mv_7 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                if (_mv_7.has_value) {
+                    __auto_type v = _mv_7.value;
+                    if (string_eq(v.name, name)) {
+                        done = 1;
+                        found = v.payload_types;
+                    }
+                } else if (!_mv_7.has_value) {
+                }
+                i = (i + 1);
+            }
+            return found;
+        }
+    } else {
+        return ((slop_list_types_ResolvedType_ptr){ .data = (types_ResolvedType**)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedType*)), .len = 0, .cap = 16 });
+    }
+}
+
 uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     SLOP_PRE((((*t).kind == types_ResolvedTypeKind_rk_record)), "(== (. (deref t) kind) (quote rk-record))");
@@ -252,13 +281,13 @@ uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name) {
         int64_t i = 0;
         uint8_t found = 0;
         while (((i < len) && !(found))) {
-            __auto_type _mv_7 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_7.has_value) {
-                __auto_type f = _mv_7.value;
+            __auto_type _mv_8 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_8.has_value) {
+                __auto_type f = _mv_8.value;
                 if (string_eq(f.name, name)) {
                     found = 1;
                 }
-            } else if (!_mv_7.has_value) {
+            } else if (!_mv_8.has_value) {
             }
             i = (i + 1);
         }
@@ -275,14 +304,14 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_Reso
         uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         while (((i < len) && !(found))) {
-            __auto_type _mv_8 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_8.has_value) {
-                __auto_type f = _mv_8.value;
+            __auto_type _mv_9 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_9.has_value) {
+                __auto_type f = _mv_9.value;
                 if (string_eq(f.name, name)) {
                     found = 1;
                     result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = f.field_type};
                 }
-            } else if (!_mv_8.has_value) {
+            } else if (!_mv_9.has_value) {
             }
             i = (i + 1);
         }
@@ -297,80 +326,80 @@ slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_Resolved
         {
             __auto_type kind = (*t).kind;
             __auto_type name = (*t).name;
-            __auto_type _mv_9 = kind;
-            if (_mv_9 == types_ResolvedTypeKind_rk_primitive) {
+            __auto_type _mv_10 = kind;
+            if (_mv_10 == types_ResolvedTypeKind_rk_primitive) {
                 return name;
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_record) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_record) {
                 return name;
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_enum) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_enum) {
                 return name;
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_union) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_union) {
                 return name;
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_function) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_function) {
                 return name;
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_range) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_range) {
                 return name;
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_option) {
-                __auto_type _mv_10 = (*t).inner_type;
-                if (_mv_10.has_value) {
-                    __auto_type inner = _mv_10.value;
-                    return string_concat(arena, SLOP_STR("(Option "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
-                } else if (!_mv_10.has_value) {
-                    return SLOP_STR("Option");
-                }
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_ptr) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_option) {
                 __auto_type _mv_11 = (*t).inner_type;
                 if (_mv_11.has_value) {
                     __auto_type inner = _mv_11.value;
-                    return string_concat(arena, SLOP_STR("(Ptr "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
+                    return string_concat(arena, SLOP_STR("(Option "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
                 } else if (!_mv_11.has_value) {
-                    return SLOP_STR("Ptr");
+                    return SLOP_STR("Option");
                 }
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_list) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_ptr) {
                 __auto_type _mv_12 = (*t).inner_type;
                 if (_mv_12.has_value) {
                     __auto_type inner = _mv_12.value;
-                    return string_concat(arena, SLOP_STR("(List "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
+                    return string_concat(arena, SLOP_STR("(Ptr "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
                 } else if (!_mv_12.has_value) {
-                    return SLOP_STR("List");
+                    return SLOP_STR("Ptr");
                 }
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_map) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_list) {
                 __auto_type _mv_13 = (*t).inner_type;
                 if (_mv_13.has_value) {
-                    __auto_type key_type = _mv_13.value;
-                    __auto_type _mv_14 = (*t).inner_type2;
-                    if (_mv_14.has_value) {
-                        __auto_type val_type = _mv_14.value;
+                    __auto_type inner = _mv_13.value;
+                    return string_concat(arena, SLOP_STR("(List "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
+                } else if (!_mv_13.has_value) {
+                    return SLOP_STR("List");
+                }
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_map) {
+                __auto_type _mv_14 = (*t).inner_type;
+                if (_mv_14.has_value) {
+                    __auto_type key_type = _mv_14.value;
+                    __auto_type _mv_15 = (*t).inner_type2;
+                    if (_mv_15.has_value) {
+                        __auto_type val_type = _mv_15.value;
                         return string_concat(arena, SLOP_STR("(Map "), string_concat(arena, types_resolved_type_to_slop_string(arena, key_type), string_concat(arena, SLOP_STR(" "), string_concat(arena, types_resolved_type_to_slop_string(arena, val_type), SLOP_STR(")")))));
-                    } else if (!_mv_14.has_value) {
+                    } else if (!_mv_15.has_value) {
                         return string_concat(arena, SLOP_STR("(Map "), string_concat(arena, types_resolved_type_to_slop_string(arena, key_type), SLOP_STR(")")));
                     }
-                } else if (!_mv_13.has_value) {
+                } else if (!_mv_14.has_value) {
                     return SLOP_STR("Map");
                 }
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_result) {
-                __auto_type _mv_15 = (*t).inner_type;
-                if (_mv_15.has_value) {
-                    __auto_type ok_type = _mv_15.value;
-                    __auto_type _mv_16 = (*t).inner_type2;
-                    if (_mv_16.has_value) {
-                        __auto_type err_type = _mv_16.value;
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_result) {
+                __auto_type _mv_16 = (*t).inner_type;
+                if (_mv_16.has_value) {
+                    __auto_type ok_type = _mv_16.value;
+                    __auto_type _mv_17 = (*t).inner_type2;
+                    if (_mv_17.has_value) {
+                        __auto_type err_type = _mv_17.value;
                         return string_concat(arena, SLOP_STR("(Result "), string_concat(arena, types_resolved_type_to_slop_string(arena, ok_type), string_concat(arena, SLOP_STR(" "), string_concat(arena, types_resolved_type_to_slop_string(arena, err_type), SLOP_STR(")")))));
-                    } else if (!_mv_16.has_value) {
+                    } else if (!_mv_17.has_value) {
                         return string_concat(arena, SLOP_STR("(Result "), string_concat(arena, types_resolved_type_to_slop_string(arena, ok_type), SLOP_STR(")")));
                     }
-                } else if (!_mv_15.has_value) {
+                } else if (!_mv_16.has_value) {
                     return SLOP_STR("Result");
                 }
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_array) {
-                __auto_type _mv_17 = (*t).inner_type;
-                if (_mv_17.has_value) {
-                    __auto_type inner = _mv_17.value;
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_array) {
+                __auto_type _mv_18 = (*t).inner_type;
+                if (_mv_18.has_value) {
+                    __auto_type inner = _mv_18.value;
                     return string_concat(arena, SLOP_STR("(Array "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
-                } else if (!_mv_17.has_value) {
+                } else if (!_mv_18.has_value) {
                     return SLOP_STR("Array");
                 }
-            } else if (_mv_9 == types_ResolvedTypeKind_rk_typevar) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_typevar) {
                 return name;
             } else {
                 return name;

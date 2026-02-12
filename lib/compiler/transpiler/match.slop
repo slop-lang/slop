@@ -773,15 +773,18 @@
                           (else
                             (if (and is-return is-last)
                               (emit-typed-return-expr ctx body-expr)
-                              (ctx-emit ctx (ctx-str ctx (transpile-expr ctx body-expr) ";")))))))
+                              (when (not (string-eq (sexpr-get-symbol-name body-expr) "unit"))
+                                (ctx-emit ctx (ctx-str ctx (transpile-expr ctx body-expr) ";"))))))))
                     (else
-                      (ctx-emit ctx (ctx-str ctx (transpile-expr ctx body-expr) ";")))))
+                      (when (not (string-eq (sexpr-get-symbol-name body-expr) "unit"))
+                        (ctx-emit ctx (ctx-str ctx (transpile-expr ctx body-expr) ";"))))))
                 ((none) (ctx-add-error-at ctx "empty" (ctx-list-first-line items) (ctx-list-first-col items)))))))
         (else
           ;; Non-list (literal/symbol) - use as expression
           (if (and is-return is-last)
             (emit-typed-return-expr ctx body-expr)
-            (ctx-emit ctx (ctx-str ctx (transpile-expr ctx body-expr) ";")))))))
+            (when (not (string-eq (sexpr-get-symbol-name body-expr) "unit"))
+              (ctx-emit ctx (ctx-str ctx (transpile-expr ctx body-expr) ";"))))))))
 
   (fn emit-inline-let ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (is-return Bool) (is-last Bool))
     (@intent "Emit inline let binding (to avoid circular dep with stmt)")

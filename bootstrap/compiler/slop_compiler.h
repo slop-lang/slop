@@ -84,7 +84,7 @@ slop_string compiler_emit_typed_toplevel(slop_arena* arena, types_SExpr* expr);
 slop_string compiler_emit_typed_module(slop_arena* arena, types_SExpr* module_form);
 slop_string compiler_emit_typed_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast);
 int64_t compiler_typed_ast_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first);
-int main(int64_t argc, uint8_t** argv);
+int main(int argc, char** _c_argv);
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED

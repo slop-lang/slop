@@ -809,6 +809,5 @@ uint8_t strlib_char_is_operator(strlib_AsciiChar c) {
 
 void strlib_fill_bytes(uint8_t* ptr, uint8_t value, int64_t len) {
     memset(((void*)(ptr)), ((int64_t)(value)), ((uint64_t)(len)));
-    0;
 }
 

@@ -61,8 +61,10 @@ types_ResolvedType* collect_get_range_base_type(env_TypeEnv* env, slop_arena* ar
 slop_string collect_get_type_name_from_expr(types_SExpr* expr);
 uint8_t collect_is_reserved_variant_name(slop_string name);
 void collect_collect_union_variants(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* resolved, types_SExpr* union_expr);
+slop_list_types_ResolvedType_ptr collect_get_variant_payload_types(env_TypeEnv* env, types_SExpr* variant_form);
 slop_option_types_ResolvedType_ptr collect_get_variant_payload_type(env_TypeEnv* env, types_SExpr* variant_form);
 slop_string collect_checker_get_variant_name(types_SExpr* variant_form);
+uint8_t collect_check_type_expr_recursive(types_SExpr* type_expr, slop_string union_name);
 uint8_t collect_has_recursive_value_payload(types_SExpr* variant_form, slop_string union_name);
 void collect_collect_single_union_variant(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* resolved, types_SExpr* variant_form, int64_t variant_idx);
 void collect_collect_enum_variants(env_TypeEnv* env, slop_string enum_name, types_SExpr* enum_expr);
