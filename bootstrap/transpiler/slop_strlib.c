@@ -562,7 +562,7 @@ slop_result_float_strlib_ParseError strlib_parse_float(slop_string s) {
 }
 
 slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precision) {
-    slop_string _retval;
+    slop_string _retval = {0};
     {
         __auto_type fmt_buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 8); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
         __auto_type out_buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
@@ -595,7 +595,7 @@ slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string
             return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
         } else {
             if ((count == 1)) {
-                __auto_type _mv_1 = ({ __auto_type _lst = strings; size_t _idx = (size_t)0; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                __auto_type _mv_1 = ({ __auto_type _lst = strings; size_t _idx = (size_t)0; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_1.has_value) {
                     __auto_type first_str = _mv_1.value;
                     return first_str;
@@ -608,7 +608,7 @@ slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string
                     int64_t i = 0;
                     __auto_type sep_len = ((int64_t)(separator.len));
                     while ((i < count)) {
-                        __auto_type _mv_2 = ({ __auto_type _lst = strings; size_t _idx = (size_t)i; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        __auto_type _mv_2 = ({ __auto_type _lst = strings; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                         if (_mv_2.has_value) {
                             __auto_type str = _mv_2.value;
                             total_len = (total_len + ((int64_t)(str.len)));
@@ -623,7 +623,7 @@ slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string
                         int64_t pos = 0;
                         int64_t j = 0;
                         while ((j < count)) {
-                            __auto_type _mv_3 = ({ __auto_type _lst = strings; size_t _idx = (size_t)j; slop_option_string _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                            __auto_type _mv_3 = ({ __auto_type _lst = strings; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_3.has_value) {
                                 __auto_type str = _mv_3.value;
                                 if ((str.len > 0)) {
@@ -809,6 +809,5 @@ uint8_t strlib_char_is_operator(strlib_AsciiChar c) {
 
 void strlib_fill_bytes(uint8_t* ptr, uint8_t value, int64_t len) {
     memset(((void*)(ptr)), ((int64_t)(value)), ((uint64_t)(len)));
-    0;
 }
 

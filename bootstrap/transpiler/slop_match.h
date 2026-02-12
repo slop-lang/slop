@@ -28,6 +28,7 @@ uint8_t match_is_literal_match(slop_list_types_SExpr_ptr patterns);
 uint8_t match_is_union_match(context_TranspileContext* ctx, slop_list_types_SExpr_ptr patterns);
 slop_string match_get_pattern_tag(types_SExpr* pat_expr);
 slop_option_string match_extract_binding_name(types_SExpr* pat_expr);
+int64_t match_count_pattern_bindings(types_SExpr* pat_expr);
 void match_transpile_match(context_TranspileContext* ctx, types_SExpr* expr, uint8_t is_return);
 slop_list_types_SExpr_ptr match_collect_patterns(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void match_transpile_option_match(context_TranspileContext* ctx, slop_string scrutinee_c, types_SExpr* scrutinee_expr, slop_list_types_SExpr_ptr patterns, slop_list_types_SExpr_ptr items, uint8_t is_return);
@@ -77,6 +78,13 @@ void match_emit_inline_for_each(context_TranspileContext* ctx, slop_list_types_S
 void match_emit_inline_return(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void match_emit_return_typed(context_TranspileContext* ctx, slop_string code);
 void match_emit_typed_return_expr(context_TranspileContext* ctx, types_SExpr* expr);
+uint8_t match_is_pattern_literal(types_SExpr* expr);
+slop_string match_pattern_literal_to_c(types_SExpr* expr);
+uint8_t match_has_literal_in_union_arm(types_SExpr* pat_expr);
+uint8_t match_has_literal_in_patterns(slop_list_types_SExpr_ptr patterns);
+slop_string match_build_literal_guard_cond(context_TranspileContext* ctx, slop_string scrutinee_c, slop_string c_tag, slop_string tag_cond, types_SExpr* pattern, uint8_t is_multi);
+void match_emit_union_literal_bindings(context_TranspileContext* ctx, slop_string scrutinee_c, types_SExpr* pattern, slop_string tag, slop_string union_type_name, slop_string c_tag, uint8_t is_multi);
+void match_transpile_union_match_with_literals(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr patterns, slop_list_types_SExpr_ptr items, uint8_t is_return);
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED

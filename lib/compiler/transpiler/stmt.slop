@@ -1336,22 +1336,28 @@
                           (ctx-emit ctx "break;"))
                         ((string-eq op "continue")
                           (ctx-emit ctx "continue;"))
+                        ;; Skip annotation forms like @loop-invariant, @intent, etc.
+                        ((and (starts-with op "@") (not (string-eq op "@")))
+                          unit)
                         ;; Default: expression statement
                         (else
                           (if is-return
                             (emit-typed-return-expr ctx expr)
-                            (ctx-emit ctx (ctx-str ctx (transpile-expr ctx expr) ";")))))))
+                            (when (not (string-eq (sexpr-get-symbol-name expr) "unit"))
+                              (ctx-emit ctx (ctx-str ctx (transpile-expr ctx expr) ";"))))))))
                   ;; Non-symbol head: expression statement
                   (else
                     (if is-return
                       (emit-typed-return-expr ctx expr)
-                      (ctx-emit ctx (ctx-str ctx (transpile-expr ctx expr) ";"))))))
+                      (when (not (string-eq (sexpr-get-symbol-name expr) "unit"))
+                        (ctx-emit ctx (ctx-str ctx (transpile-expr ctx expr) ";")))))))
               ((none) (ctx-add-error-at ctx "empty" (ctx-list-first-line items) (ctx-list-first-col items)))))))
       ;; Non-list: expression statement
       (else
         (if is-return
           (emit-typed-return-expr ctx expr)
-          (ctx-emit ctx (ctx-str ctx (transpile-expr ctx expr) ";"))))))
+          (when (not (string-eq (sexpr-get-symbol-name expr) "unit"))
+            (ctx-emit ctx (ctx-str ctx (transpile-expr ctx expr) ";")))))))
 
   ;; Helper to emit typed return from expression (handles some/none with proper typing)
   (fn emit-typed-return-expr ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))

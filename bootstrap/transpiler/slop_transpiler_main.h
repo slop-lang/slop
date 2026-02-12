@@ -29,7 +29,7 @@ void transpiler_main_print_string(slop_string s);
 void transpiler_main_print_json_string(slop_arena* arena, slop_string s);
 slop_string transpiler_main_lines_to_string(slop_arena* arena, slop_list_string lines);
 slop_string transpiler_main_extract_module_name(slop_list_types_SExpr_ptr exprs);
-int main(int64_t argc, char** argv);
+int main(int argc, char** _c_argv);
 int64_t transpiler_main_transpile_single_file_with_ctx(context_TranspileContext* ctx, slop_string source, uint8_t first);
 int64_t transpiler_main_transpile_single_file(slop_arena* arena, slop_string source, uint8_t first);
 void transpiler_main_output_module_json(slop_arena* arena, context_TranspileContext* ctx, slop_string mod_name, uint8_t first);

@@ -2578,11 +2578,11 @@
                                   (ctx-str ctx "({ __auto_type _lst = " (ctx-str ctx list-c
                                     (ctx-str ctx "; size_t _idx = (size_t)" (ctx-str ctx idx-c
                                       (ctx-str ctx "; " (ctx-str ctx option-type
-                                        " _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; })"))))))
+                                        " _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; })"))))))
                                   ;; Fallback to anonymous struct with __typeof__
                                   (ctx-str ctx "({ __auto_type _lst = " (ctx-str ctx list-c
                                     (ctx-str ctx "; size_t _idx = (size_t)" (ctx-str ctx idx-c
-                                      "; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; })")))))))
+                                      "; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; })")))))))
                             ((none)
                               (do
                                 (ctx-add-error-at ctx "missing list-get index" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -4408,7 +4408,6 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut result "")
-          (mut has-else false)
           (mut first-branch true)
           (mut i (- len 1)))
       (while (>= i 2)
@@ -4426,7 +4425,6 @@
                             ;; else/_ clause - use as default
                             ((or (string-eq tag "else") (string-eq tag "_"))
                               (set! result body)
-                              (set! has-else true)
                               (set! first-branch false))
                             ;; First non-else branch in reverse order - use as default for exhaustive matches
                             (first-branch

@@ -27,7 +27,7 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 slop_string parser_cli_argv_to_string(uint8_t** argv, int64_t index);
 void parser_cli_print_json_array(slop_arena* arena, slop_list_types_SExpr_ptr exprs);
 void parser_cli_print_sexp_list(slop_arena* arena, slop_list_types_SExpr_ptr exprs);
-int main(int64_t argc, uint8_t** argv);
+int main(int argc, char** _c_argv);
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED

@@ -16,7 +16,7 @@ void tester_main_print_json_string(slop_string s);
 slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string lines);
 void tester_main_print_int(int64_t n);
 slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, uint8_t** argv);
-int main(int64_t argc, uint8_t** argv);
+int main(int argc, char** _c_argv);
 
 
 #endif
