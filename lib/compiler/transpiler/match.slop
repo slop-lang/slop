@@ -769,6 +769,9 @@
                           ;; return - explicit return statement
                           ((string-eq op "return")
                             (emit-inline-return ctx items))
+                          ;; Skip annotation forms like @loop-invariant, @intent, etc.
+                          ((and (starts-with op "@") (not (string-eq op "@")))
+                            unit)
                           ;; Default: treat as expression
                           (else
                             (if (and is-return is-last)
