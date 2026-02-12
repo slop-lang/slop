@@ -1637,7 +1637,7 @@ void defn_emit_function_def(context_TranspileContext* ctx, slop_string raw_name,
             }
             defn_emit_preconditions(ctx, preconditions);
             if (needs_retval) {
-                context_ctx_emit(ctx, context_ctx_str(ctx, actual_return, SLOP_STR(" _retval;")));
+                context_ctx_emit(ctx, context_ctx_str(ctx, actual_return, SLOP_STR(" _retval = {0};")));
                 context_ctx_bind_var(ctx, (context_VarEntry){SLOP_STR("$result"), SLOP_STR("_retval"), actual_return, SLOP_STR(""), strlib_ends_with(actual_return, SLOP_STR("*")), 0, 0, SLOP_STR(""), SLOP_STR("")});
             }
             if (needs_retval) {

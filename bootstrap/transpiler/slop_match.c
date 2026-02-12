@@ -1014,6 +1014,7 @@ void match_emit_branch_body_item(context_TranspileContext* ctx, types_SExpr* bod
                                             match_emit_inline_for_each(ctx, items);
                                         } else if (string_eq(op, SLOP_STR("return"))) {
                                             match_emit_inline_return(ctx, items);
+                                        } else if ((strlib_starts_with(op, SLOP_STR("@")) && !(string_eq(op, SLOP_STR("@"))))) {
                                         } else {
                                             if ((is_return && is_last)) {
                                                 match_emit_typed_return_expr(ctx, body_expr);

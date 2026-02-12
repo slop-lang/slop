@@ -1855,6 +1855,7 @@ void stmt_transpile_stmt(context_TranspileContext* ctx, types_SExpr* expr, uint8
                                         context_ctx_emit(ctx, SLOP_STR("break;"));
                                     } else if (string_eq(op, SLOP_STR("continue"))) {
                                         context_ctx_emit(ctx, SLOP_STR("continue;"));
+                                    } else if ((strlib_starts_with(op, SLOP_STR("@")) && !(string_eq(op, SLOP_STR("@"))))) {
                                     } else {
                                         if (is_return) {
                                             stmt_emit_typed_return_expr(ctx, expr);

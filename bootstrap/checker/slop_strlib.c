@@ -562,7 +562,7 @@ slop_result_float_strlib_ParseError strlib_parse_float(slop_string s) {
 }
 
 slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precision) {
-    slop_string _retval;
+    slop_string _retval = {0};
     {
         __auto_type fmt_buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 8); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
         __auto_type out_buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });

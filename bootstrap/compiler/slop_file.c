@@ -31,7 +31,7 @@ slop_result_file_File_file_FileError file_file_open(slop_string path, file_FileM
 
 slop_result_u8_file_FileError file_file_close(file_File* f) {
     SLOP_PRE(((*f).is_open), "(. (deref f) is-open)");
-    slop_result_u8_file_FileError _retval;
+    slop_result_u8_file_FileError _retval = {0};
     (*f).is_open = 0;
     {
         __auto_type result = fclose((*f).handle);

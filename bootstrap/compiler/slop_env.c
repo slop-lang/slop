@@ -839,7 +839,7 @@ slop_option_string env_env_get_module(env_TypeEnv* env) {
 
 types_ResolvedType* env_env_get_int_type(env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     _retval = (*env).int_type;
     SLOP_POST(((_retval != NULL)), "(!= $result nil)");
     return _retval;
@@ -847,7 +847,7 @@ types_ResolvedType* env_env_get_int_type(env_TypeEnv* env) {
 
 types_ResolvedType* env_env_get_bool_type(env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     _retval = (*env).bool_type;
     SLOP_POST(((_retval != NULL)), "(!= $result nil)");
     return _retval;
@@ -855,7 +855,7 @@ types_ResolvedType* env_env_get_bool_type(env_TypeEnv* env) {
 
 types_ResolvedType* env_env_get_string_type(env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     _retval = (*env).string_type;
     SLOP_POST(((_retval != NULL)), "(!= $result nil)");
     return _retval;
@@ -863,7 +863,7 @@ types_ResolvedType* env_env_get_string_type(env_TypeEnv* env) {
 
 types_ResolvedType* env_env_get_unit_type(env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     _retval = (*env).unit_type;
     SLOP_POST(((_retval != NULL)), "(!= $result nil)");
     return _retval;
@@ -871,7 +871,7 @@ types_ResolvedType* env_env_get_unit_type(env_TypeEnv* env) {
 
 types_ResolvedType* env_env_get_arena_type(env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     _retval = (*env).arena_type;
     SLOP_POST(((_retval != NULL)), "(!= $result nil)");
     return _retval;
@@ -879,7 +879,7 @@ types_ResolvedType* env_env_get_arena_type(env_TypeEnv* env) {
 
 types_ResolvedType* env_env_get_unknown_type(env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     _retval = (*env).unknown_type;
     SLOP_POST(((_retval != NULL)), "(!= $result nil)");
     return _retval;
@@ -887,7 +887,7 @@ types_ResolvedType* env_env_get_unknown_type(env_TypeEnv* env) {
 
 types_ResolvedType* env_env_get_never_type(env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     _retval = (*env).never_type;
     SLOP_POST(((_retval != NULL)), "(!= $result nil)");
     return _retval;
@@ -895,7 +895,7 @@ types_ResolvedType* env_env_get_never_type(env_TypeEnv* env) {
 
 types_ResolvedType* env_env_make_option_type(env_TypeEnv* env, types_ResolvedType* inner_type) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     {
         __auto_type arena = (*env).arena;
         __auto_type inner_name = (((inner_type != NULL)) ? (*inner_type).name : SLOP_STR("T"));
@@ -910,7 +910,7 @@ types_ResolvedType* env_env_make_option_type(env_TypeEnv* env, types_ResolvedTyp
 
 types_ResolvedType* env_env_make_ptr_type(env_TypeEnv* env, types_ResolvedType* inner_type) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     {
         __auto_type arena = (*env).arena;
         __auto_type inner_name = (((inner_type != NULL)) ? (*inner_type).name : SLOP_STR("Void"));
@@ -925,7 +925,7 @@ types_ResolvedType* env_env_make_ptr_type(env_TypeEnv* env, types_ResolvedType* 
 
 types_ResolvedType* env_env_get_generic_type(env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     {
         __auto_type arena = (*env).arena;
         _retval = types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("T"), ((slop_option_string){.has_value = false}), SLOP_STR("void*"));
@@ -936,7 +936,7 @@ types_ResolvedType* env_env_get_generic_type(env_TypeEnv* env) {
 
 types_ResolvedType* env_env_make_result_type(env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     {
         __auto_type arena = (*env).arena;
         _retval = types_resolved_type_new(arena, types_ResolvedTypeKind_rk_result, SLOP_STR("Result"), ((slop_option_string){.has_value = false}), SLOP_STR("Result"));
@@ -948,7 +948,7 @@ types_ResolvedType* env_env_make_result_type(env_TypeEnv* env) {
 types_ResolvedType* env_env_make_fn_type(env_TypeEnv* env, types_FnSignature* sig) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((sig != NULL)), "(!= sig nil)");
-    types_ResolvedType* _retval;
+    types_ResolvedType* _retval = {0};
     {
         __auto_type arena = (*env).arena;
         __auto_type fn_name = string_concat(arena, SLOP_STR("Fn_"), (*sig).name);
