@@ -159,6 +159,36 @@ class NestedLoopPatternInfo:
 
 
 @dataclass
+class ConditionalPushPatternInfo:
+    """Information about a nested loop with conditional push via enum match.
+
+    Pattern (check-less-than):
+    (let ((mut results (list-new arena Type))
+          (other-values (resolve-path ...)))
+      (for-each (v value-nodes)
+        (for-each (o other-values)
+          (let ((cmp (xsd-compare arena v o)))
+            (match cmp
+              (variant-no-push (do))
+              (_ (list-push results ...))))))
+      results)
+
+    Used to generate emptiness-universality axioms:
+      Length($result) == 0 ↔ ForAll v,o: condition(v,o)
+    """
+    result_var: str
+    outer_loop_var: str
+    outer_collection: 'SExpr'
+    inner_loop_var: str
+    inner_collection: 'SExpr'         # The raw collection (may be let-bound variable)
+    inner_collection_resolved: Optional['SExpr']  # Resolved through let bindings
+    match_scrutinee_resolved: 'SExpr'  # Resolved through all let bindings
+    no_push_tag: Optional[str]         # Variant where no push (condition: scrutinee == tag)
+    push_tag: Optional[str]            # Variant where push (condition: scrutinee != tag)
+    let_bindings: Dict[str, 'SExpr']   # All let bindings for variable resolution
+
+
+@dataclass
 class CountPatternInfo:
     """Information about a detected count loop pattern.
 
@@ -207,6 +237,24 @@ class FindPatternInfo:
     collection: 'SExpr'  # The collection being iterated
     loop_var: str  # The loop variable name
     predicate: 'SExpr'  # The condition for selecting an item
+
+
+@dataclass
+class ExistsSearchPatternInfo:
+    """Information about a detected exists-search loop pattern.
+
+    Exists-search pattern:
+    (let ((mut found false))
+      (for-each (v collection)
+        (when (pred v target) (set! found true)))
+      (if found branch-when-found branch-when-not-found))
+    """
+    found_var: str               # The mutable boolean variable (e.g., "found")
+    collection: 'SExpr'          # The collection being iterated
+    loop_var: str                # The iteration variable
+    predicate: 'SExpr'           # The condition expression (e.g., (term-eq v required-value))
+    return_when_found: 'SExpr'   # Branch taken when found is true
+    return_when_not_found: 'SExpr'  # Branch taken when found is false
 
 
 # ============================================================================
@@ -272,6 +320,8 @@ __all__ = [
     'CountPatternInfo',
     'FoldPatternInfo',
     'FindPatternInfo',
+    'ExistsSearchPatternInfo',
+    'ConditionalPushPatternInfo',
     'SetBinding',
     'LoopContext',
     'WhileLoopContext',

@@ -14,7 +14,9 @@ from .z3_setup import z3
 from .loop_patterns import (
     PushSiteInfo,
     FilterPatternInfo, MapPatternInfo, NestedLoopPatternInfo, CountPatternInfo,
-    FoldPatternInfo, FindPatternInfo, InnerLoopInfo, FieldSource, MatchContext,
+    FoldPatternInfo, FindPatternInfo, ExistsSearchPatternInfo,
+    ConditionalPushPatternInfo,
+    InnerLoopInfo, FieldSource, MatchContext,
 )
 
 if TYPE_CHECKING:
@@ -147,6 +149,350 @@ class PatternDetectionMixin:
                     return (var.name, body, key_expr, collection_expr)
 
         return None
+
+    def _detect_exists_search_pattern(self, body: SExpr) -> Optional[ExistsSearchPatternInfo]:
+        """Detect exists-search loop pattern in function body.
+
+        Pattern:
+        (let ((mut found false))
+          (for-each (v collection)
+            (when (pred v target) (set! found true)))
+          (if found branch-when-found branch-when-not-found))
+
+        Returns ExistsSearchPatternInfo if detected, None otherwise.
+        """
+        if not is_form(body, 'let') or len(body) < 3:
+            return None
+
+        bindings = body[1]
+        if not isinstance(bindings, SList):
+            return None
+
+        # Find (mut FOUND_VAR false) binding
+        found_var = None
+        for binding in bindings.items:
+            if isinstance(binding, SList) and len(binding) >= 3:
+                first = binding[0]
+                if (isinstance(first, Symbol) and first.name == 'mut' and
+                        isinstance(binding[1], Symbol)):
+                    init_val = binding[2]
+                    if isinstance(init_val, Symbol) and init_val.name == 'false':
+                        found_var = binding[1].name
+                        break
+
+        if found_var is None:
+            return None
+
+        # Look for for-each and if in the let body
+        body_stmts = body.items[2:]
+        for_each_stmt = None
+        if_stmt = None
+
+        for stmt in body_stmts:
+            if isinstance(stmt, SList):
+                if is_form(stmt, 'for-each') and for_each_stmt is None:
+                    for_each_stmt = stmt
+                elif is_form(stmt, 'if'):
+                    if_stmt = stmt
+
+        if for_each_stmt is None or if_stmt is None:
+            return None
+
+        # Extract for-each info
+        if len(for_each_stmt) < 3:
+            return None
+
+        loop_binding = for_each_stmt[1]
+        if not isinstance(loop_binding, SList) or len(loop_binding) < 2:
+            return None
+
+        loop_var = loop_binding[0].name if isinstance(loop_binding[0], Symbol) else None
+        collection = loop_binding[1]
+
+        if loop_var is None:
+            return None
+
+        # Find the predicate: (when PRED (set! found_var true))
+        predicate = self._find_exists_search_predicate(for_each_stmt.items[2:], found_var)
+        if predicate is None:
+            return None
+
+        # Check if statement: (if found_var then else)
+        if len(if_stmt) < 4:
+            return None
+
+        cond = if_stmt[1]
+        if not isinstance(cond, Symbol) or cond.name != found_var:
+            return None
+
+        return ExistsSearchPatternInfo(
+            found_var=found_var,
+            collection=collection,
+            loop_var=loop_var,
+            predicate=predicate,
+            return_when_found=if_stmt[2],
+            return_when_not_found=if_stmt[3],
+        )
+
+    def _find_exists_search_predicate(self, stmts, found_var: str):
+        """Find the predicate in a for-each body that sets found_var to true.
+
+        Looks for: (when PRED (set! found_var true))
+        Returns the PRED expression or None.
+        """
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+
+            if is_form(stmt, 'when') and len(stmt) >= 3:
+                pred = stmt[1]
+                # Check if the when body contains (set! found_var true)
+                for body_item in stmt.items[2:]:
+                    if (isinstance(body_item, SList) and is_form(body_item, 'set!') and
+                            len(body_item) >= 3 and
+                            isinstance(body_item[1], Symbol) and body_item[1].name == found_var and
+                            isinstance(body_item[2], Symbol) and body_item[2].name == 'true'):
+                        return pred
+
+            # Recurse into nested let/do
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                result = self._find_exists_search_predicate(stmt.items[2:], found_var)
+                if result is not None:
+                    return result
+
+            if is_form(stmt, 'do') and len(stmt) >= 2:
+                result = self._find_exists_search_predicate(stmt.items[1:], found_var)
+                if result is not None:
+                    return result
+
+        return None
+
+    def _detect_conditional_push_pattern(self, body: SExpr) -> Optional[ConditionalPushPatternInfo]:
+        """Detect nested for-each with conditional push via enum match.
+
+        Pattern (check-less-than):
+        (let ((mut results (list-new arena Type))
+              (other-values (resolve-path ...)))
+          (for-each (v value-nodes)
+            (for-each (o other-values)
+              (let ((cmp (fn arena v o)))
+                (match cmp
+                  (variant-no-push (do))
+                  (_ (list-push results ...))))))
+          results)
+
+        Returns ConditionalPushPatternInfo if detected, None otherwise.
+        """
+        if not is_form(body, 'let') or len(body) < 3:
+            return None
+
+        bindings = body[1]
+        if not isinstance(bindings, SList):
+            return None
+
+        # Extract outer let bindings and find result var
+        result_var = None
+        let_bindings: Dict[str, 'SExpr'] = {}
+
+        for binding in bindings.items:
+            if isinstance(binding, SList) and len(binding) >= 2:
+                first = binding[0]
+                if isinstance(first, Symbol):
+                    if first.name == 'mut' and len(binding) >= 3:
+                        var_name = binding[1].name if isinstance(binding[1], Symbol) else None
+                        var_value = binding[2]
+                        if var_name and self._is_empty_collection_init(var_value):
+                            result_var = var_name
+                    else:
+                        var_name = first.name
+                        var_value = binding[1]
+                        if var_name and var_value:
+                            let_bindings[var_name] = var_value
+
+        if not result_var:
+            return None
+
+        # Find the outer for-each
+        body_stmts = body.items[2:]
+        for body_expr in body_stmts:
+            if not is_form(body_expr, 'for-each') or len(body_expr) < 3:
+                continue
+
+            outer_binding = body_expr[1]
+            if not isinstance(outer_binding, SList) or len(outer_binding) < 2:
+                continue
+
+            outer_var = outer_binding[0].name if isinstance(outer_binding[0], Symbol) else None
+            outer_coll = outer_binding[1]
+            if outer_var is None:
+                continue
+
+            # Search for nested for-each with match-based conditional push
+            result = self._find_conditional_push_in_body(
+                body_expr.items[2:], outer_var, result_var, let_bindings
+            )
+            if result is not None:
+                (inner_var, inner_coll, scrutinee_resolved,
+                 no_push_tag, push_tag, inner_bindings) = result
+
+                # Merge inner let bindings
+                all_bindings = {**let_bindings, **inner_bindings}
+
+                # Resolve inner collection through let bindings
+                inner_coll_resolved = None
+                if isinstance(inner_coll, Symbol) and inner_coll.name in all_bindings:
+                    inner_coll_resolved = all_bindings[inner_coll.name]
+
+                return ConditionalPushPatternInfo(
+                    result_var=result_var,
+                    outer_loop_var=outer_var,
+                    outer_collection=outer_coll,
+                    inner_loop_var=inner_var,
+                    inner_collection=inner_coll,
+                    inner_collection_resolved=inner_coll_resolved,
+                    match_scrutinee_resolved=scrutinee_resolved,
+                    no_push_tag=no_push_tag,
+                    push_tag=push_tag,
+                    let_bindings=all_bindings,
+                )
+
+        return None
+
+    def _find_conditional_push_in_body(
+        self, stmts, outer_var: str, result_var: str,
+        let_bindings: Dict[str, 'SExpr']
+    ):
+        """Find nested for-each with conditional push via enum match.
+
+        Returns (inner_var, inner_coll, scrutinee_resolved, no_push_tag,
+                 push_tag, inner_bindings) or None.
+        """
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+
+            # Handle (for-each (var coll) body)
+            if is_form(stmt, 'for-each') and len(stmt) >= 3:
+                inner_binding = stmt[1]
+                if isinstance(inner_binding, SList) and len(inner_binding) >= 2:
+                    inner_var = inner_binding[0].name if isinstance(inner_binding[0], Symbol) else None
+                    inner_coll = inner_binding[1]
+                    if inner_var:
+                        result = self._find_match_push_in_body(
+                            stmt.items[2:], result_var, let_bindings
+                        )
+                        if result is not None:
+                            scrutinee_resolved, no_push_tag, push_tag, inner_bindings = result
+                            return (inner_var, inner_coll, scrutinee_resolved,
+                                    no_push_tag, push_tag, inner_bindings)
+
+            # Recurse into let
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                new_bindings = dict(let_bindings)
+                stmt_bindings = stmt[1]
+                if isinstance(stmt_bindings, SList):
+                    for b in stmt_bindings.items:
+                        if isinstance(b, SList) and len(b) >= 2:
+                            first = b[0]
+                            if isinstance(first, Symbol) and not first.name == 'mut':
+                                new_bindings[first.name] = b[1]
+                result = self._find_conditional_push_in_body(
+                    stmt.items[2:], outer_var, result_var, new_bindings
+                )
+                if result is not None:
+                    return result
+
+        return None
+
+    def _find_match_push_in_body(self, stmts, result_var: str,
+                                  let_bindings: Dict[str, 'SExpr']):
+        """Find (match scrutinee ...) with conditional list-push in match arms.
+
+        Returns (scrutinee_resolved, no_push_tag, push_tag, inner_bindings) or None.
+        """
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+
+            # Recurse into let bindings, tracking new bindings
+            if is_form(stmt, 'let') and len(stmt) >= 3:
+                new_bindings = dict(let_bindings)
+                stmt_bindings = stmt[1]
+                if isinstance(stmt_bindings, SList):
+                    for b in stmt_bindings.items:
+                        if isinstance(b, SList) and len(b) >= 2:
+                            first = b[0]
+                            if isinstance(first, Symbol) and first.name != 'mut':
+                                new_bindings[first.name] = b[1]
+                result = self._find_match_push_in_body(
+                    stmt.items[2:], result_var, new_bindings
+                )
+                if result is not None:
+                    return result
+                continue
+
+            # Handle (match scrutinee (arm1 body1) (arm2 body2) ...)
+            if is_form(stmt, 'match') and len(stmt) >= 3:
+                scrutinee = stmt[1]
+
+                # Resolve scrutinee through let bindings
+                scrutinee_resolved = scrutinee
+                if isinstance(scrutinee, Symbol) and scrutinee.name in let_bindings:
+                    scrutinee_resolved = let_bindings[scrutinee.name]
+
+                # Analyze match arms to find which push and which don't
+                push_arms = []     # (variant_name, body) for arms that push
+                no_push_arms = []  # (variant_name, body) for arms that don't push
+                has_wildcard_push = False
+                has_wildcard_no_push = False
+
+                for arm in stmt.items[2:]:
+                    if not isinstance(arm, SList) or len(arm) < 2:
+                        continue
+                    pattern = arm[0]
+                    arm_body = arm[1]
+
+                    is_wildcard = isinstance(pattern, Symbol) and pattern.name == '_'
+                    variant_name = pattern.name if isinstance(pattern, Symbol) else None
+
+                    # Check if arm body contains list-push to result_var
+                    has_push = self._body_has_push_to(arm_body, result_var)
+
+                    if has_push:
+                        if is_wildcard:
+                            has_wildcard_push = True
+                        else:
+                            push_arms.append(variant_name)
+                    else:
+                        if is_wildcard:
+                            has_wildcard_no_push = True
+                        else:
+                            no_push_arms.append(variant_name)
+
+                # Pattern 1: specific variant(s) don't push, wildcard pushes
+                # Condition for no-push: scrutinee == no_push_variant
+                if no_push_arms and has_wildcard_push and len(no_push_arms) == 1:
+                    return (scrutinee_resolved, no_push_arms[0], None, let_bindings)
+
+                # Pattern 2: specific variant(s) push, wildcard doesn't
+                # Condition for no-push: scrutinee != push_variant
+                if push_arms and has_wildcard_no_push and len(push_arms) == 1:
+                    return (scrutinee_resolved, None, push_arms[0], let_bindings)
+
+        return None
+
+    def _body_has_push_to(self, expr: 'SExpr', result_var: str) -> bool:
+        """Check if expression contains (list-push result_var ...)."""
+        if not isinstance(expr, SList):
+            return False
+        if is_form(expr, 'list-push') and len(expr) >= 2:
+            target = expr[1]
+            if isinstance(target, Symbol) and target.name == result_var:
+                return True
+        for item in expr.items:
+            if self._body_has_push_to(item, result_var):
+                return True
+        return False
 
     def _detect_filter_pattern(self, body: SExpr) -> Optional[FilterPatternInfo]:
         """Detect filter loop pattern in function body.

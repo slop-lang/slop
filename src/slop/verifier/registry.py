@@ -224,8 +224,26 @@ class FunctionRegistry:
             head = expr[0]
             if isinstance(head, Symbol):
                 head_name = head.name
-                # Reject control flow and complex constructs
-                if head_name in ('if', 'cond', 'match', 'when', 'unless',
+
+                # Allow match in pure functions if all branch bodies are simple
+                if head_name == 'match':
+                    # Need at least scrutinee + one arm
+                    if len(expr) < 3:
+                        return False
+                    if not self._is_simple_expression(expr[1], fn_name):
+                        return False
+                    # Each arm's body (last element) must be simple
+                    for arm in expr.items[2:]:
+                        if isinstance(arm, SList) and len(arm) >= 1:
+                            arm_body = arm.items[-1]
+                            if not self._is_simple_expression(arm_body, fn_name):
+                                return False
+                        else:
+                            return False
+                    return True
+
+                # Reject other control flow and complex constructs
+                if head_name in ('if', 'cond', 'when', 'unless',
                                  'for-each', 'while',
                                  'let', 'do', 'set!'):
                     return False

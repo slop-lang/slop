@@ -916,6 +916,44 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             result.col = expr.col
         return result
 
+    @staticmethod
+    def _z3_exprs_match_ignoring_patterns(a, b) -> bool:
+        """Check if two Z3 expressions are structurally equal ignoring :pattern annotations.
+
+        ForAll quantifiers get different :pattern (trigger) hints from the axiom generator
+        vs the translator, but the semantic content is identical. This strips :pattern
+        from the sexpr representation before comparing.
+        """
+        def strip_patterns(sexpr: str) -> str:
+            result = []
+            i = 0
+            while i < len(sexpr):
+                # Look for :pattern
+                if sexpr[i:i+8] == ':pattern':
+                    # Skip whitespace before :pattern
+                    while result and result[-1] in ' \n\t':
+                        result.pop()
+                    # Skip :pattern
+                    i += 8
+                    # Skip whitespace after :pattern
+                    while i < len(sexpr) and sexpr[i] in ' \n\t':
+                        i += 1
+                    # Skip the balanced parenthesized pattern list
+                    if i < len(sexpr) and sexpr[i] == '(':
+                        depth = 1
+                        i += 1
+                        while i < len(sexpr) and depth > 0:
+                            if sexpr[i] == '(':
+                                depth += 1
+                            elif sexpr[i] == ')':
+                                depth -= 1
+                            i += 1
+                else:
+                    result.append(sexpr[i])
+                    i += 1
+            return ''.join(result)
+        return strip_patterns(a.sexpr()) == strip_patterns(b.sexpr())
+
     def _get_return_expr(self, expr: SExpr) -> SExpr:
         """Get the effective return expression from a body.
 
@@ -1156,29 +1194,29 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return self._has_list_new_result_binding(expr)
 
     def _has_list_new_result_binding(self, expr: SExpr) -> bool:
-        """Check if expression has a mutable 'result' bound to list-new.
+        """Check if expression has a mutable variable bound to list-new that is returned.
 
-        Looks for pattern: (let ((mut result (list-new ...))) ... result)
-        where the final return is the 'result' variable.
+        Looks for pattern: (let ((mut VAR (list-new ...))) ... VAR)
+        where the final return is the same variable.
         """
         if is_form(expr, 'let') and len(expr) >= 3:
             bindings = expr[1]
             body_exprs = expr.items[2:]
 
-            # Check if final expression is 'result'
+            # Check if final expression is a symbol (potential result variable)
             if body_exprs:
                 final_expr = self._get_return_expr(body_exprs[-1])
-                is_result_return = isinstance(final_expr, Symbol) and final_expr.name == 'result'
+                if isinstance(final_expr, Symbol) and isinstance(bindings, SList):
+                    return_name = final_expr.name
 
-                if is_result_return and isinstance(bindings, SList):
-                    # Look for (mut result (list-new ...)) binding
+                    # Look for (mut return_name (list-new ...)) binding
                     for binding in bindings.items:
                         if isinstance(binding, SList) and len(binding) >= 3:
                             first = binding[0]
                             if isinstance(first, Symbol) and first.name == 'mut':
                                 var_name = binding[1].name if isinstance(binding[1], Symbol) else None
                                 init_expr = binding[2]
-                                if var_name == 'result' and is_form(init_expr, 'list-new'):
+                                if var_name == return_name and is_form(init_expr, 'list-new'):
                                     return True
 
             # Recurse into body expressions
@@ -1217,7 +1255,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for item in expr.items:
                 self._find_list_push_calls(item, result)
 
-    def _extract_list_axioms(self, body: SExpr, translator: Z3Translator) -> List:
+    def _extract_list_axioms(self, body: SExpr, translator: Z3Translator,
+                             all_body_exprs: Optional[List] = None) -> List:
         """Extract axioms for list operations in body.
 
         For (list-push lst x):
@@ -1233,9 +1272,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         """
         axioms = []
 
-        # Find all list-push calls
+        # Find all list-push calls across all body expressions
+        # (handles multi-statement bodies where push is in an earlier expression)
         push_calls: List[Tuple[SExpr, SExpr]] = []
-        self._find_list_push_calls(body, push_calls)
+        if all_body_exprs and len(all_body_exprs) > 1:
+            for expr in all_body_exprs:
+                self._find_list_push_calls(expr, push_calls)
+        else:
+            self._find_list_push_calls(body, push_calls)
 
         for list_expr, item_expr in push_calls:
             # Translate the list expression to get its Z3 representation
@@ -1343,6 +1387,49 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                             )
                             # $result is the list after all pushes, so length >= push_count
                             axioms.append(func(result_var) >= push_count)
+
+            elif isinstance(return_expr, SList) and is_form(return_expr, 'record-new'):
+                # record-new return: connect field-pushed lists to $result fields
+                # For (record-new Type (field1 val1) (field2 val2) ...),
+                # check if any field value matches a push target.
+                # If so: field_len(field_X($result)) == field_len(push_target) + push_count
+                from slop.parser import pretty_print
+                func_name = "field_len"
+                if func_name not in translator.variables:
+                    func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
+                    translator.variables[func_name] = func
+                else:
+                    func = translator.variables[func_name]
+
+                # Build a map of push target repr -> count
+                push_target_counts: Dict[str, int] = {}
+                push_target_exprs: Dict[str, SExpr] = {}
+                for list_expr, _ in push_calls:
+                    key = pretty_print(list_expr)
+                    push_target_counts[key] = push_target_counts.get(key, 0) + 1
+                    push_target_exprs[key] = list_expr
+
+                for field_pair in return_expr.items[2:]:  # Skip 'record-new' and TypeName
+                    if isinstance(field_pair, SList) and len(field_pair) >= 2:
+                        field_name_sym = field_pair[0]
+                        field_value = field_pair[1]
+                        if isinstance(field_name_sym, Symbol):
+                            field_value_str = pretty_print(field_value)
+                            if field_value_str in push_target_counts:
+                                # This field references a list that was pushed to
+                                field_name = field_name_sym.name
+                                accessor_name = f"field_{field_name}"
+                                if accessor_name not in translator.variables:
+                                    accessor = z3.Function(accessor_name, z3.IntSort(), z3.IntSort())
+                                    translator.variables[accessor_name] = accessor
+                                else:
+                                    accessor = translator.variables[accessor_name]
+
+                                push_count = push_target_counts[field_value_str]
+                                lst_z3 = translator.translate_expr(push_target_exprs[field_value_str])
+                                if lst_z3 is not None:
+                                    # field_len(field_X($result)) == field_len(push_target) + push_count
+                                    axioms.append(func(accessor(result_var)) == func(lst_z3) + push_count)
 
         return axioms
 
@@ -2046,6 +2133,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         properties: List[Tuple[Optional[str], SExpr]] = []  # @property - (name, expr) tuples
         spec_return_type: Optional[Type] = None
         fn_body: Optional[SExpr] = None  # Function body for path-sensitive analysis
+        all_body_exprs: List[SExpr] = []  # All body expressions (for multi-statement bodies)
 
         # Annotation forms to skip when looking for body
         annotation_forms = {'@intent', '@spec', '@pre', '@post', '@assume', '@pure',
@@ -2087,6 +2175,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     continue
                 # This is the function body
                 fn_body = item
+                all_body_exprs.append(item)
             elif isinstance(item, Symbol):
                 # Skip keyword properties like :c-name
                 if item.name.startswith(':'):
@@ -2094,10 +2183,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     continue
                 # Simple expression as body (e.g., variable reference)
                 fn_body = item
+                all_body_exprs.append(item)
                 skip_next_string = False
             elif isinstance(item, Number):
                 # Simple numeric expression as body
                 fn_body = item
+                all_body_exprs.append(item)
                 skip_next_string = False
             elif isinstance(item, String):
                 # Skip string values after :keyword (property values)
@@ -2106,6 +2197,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     skip_next_string = False
                     continue
                 fn_body = item
+                all_body_exprs.append(item)
 
         # Desugar callback-taking function calls to for-each loops (verifier-internal)
         if fn_body is not None:
@@ -2542,7 +2634,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Phase 7: Add list operation axioms
         # For (list-push lst x), track that list-len increases by 1
         if fn_body is not None:
-            list_axioms = self._extract_list_axioms(fn_body, translator)
+            list_axioms = self._extract_list_axioms(fn_body, translator, all_body_exprs)
             for axiom in list_axioms:
                 solver.add(axiom)
 
@@ -2624,6 +2716,31 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         for axiom in inv_axioms:
                             solver.add(axiom)
 
+        # Phase 13b: Exists-search pattern axioms
+        # Detect (let ((mut found false)) (for-each (v coll) (when pred (set! found true)))
+        #   (if found branch-a branch-b))
+        # and generate: union_tag($result) == found_tag ↔ ∃v ∈ coll: pred(v)
+        exists_search_axioms: List[z3.BoolRef] = []
+        if fn_body is not None:
+            exists_pattern = self._detect_exists_search_pattern(fn_body)
+            if exists_pattern is not None:
+                exists_search_axioms = self._generate_exists_search_axioms(exists_pattern, translator)
+                for axiom in exists_search_axioms:
+                    solver.add(axiom)
+
+        # Phase 13c: Emptiness-universality axioms for nested conditional push
+        # Detect nested for-each with conditional push via enum match and generate:
+        #   Length($result) == 0 ↔ ForAll v,o: condition(v,o)
+        emptiness_axioms: List[z3.BoolRef] = []
+        if fn_body is not None:
+            cond_push_pattern = self._detect_conditional_push_pattern(fn_body)
+            if cond_push_pattern is not None:
+                emptiness_axioms = self._generate_emptiness_universality_axioms(
+                    cond_push_pattern, translator
+                )
+                for axiom in emptiness_axioms:
+                    solver.add(axiom)
+
         # Phase 14: List element property invariants (with array encoding)
         # For postconditions like (all-triples-have-predicate $result RDF_TYPE),
         # detect that all pushed elements have the required property and add
@@ -2631,6 +2748,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         #
         # Collect pattern axioms to share with property verification
         pattern_axioms: List[z3.BoolRef] = []
+
+        # Include exists-search and emptiness axioms in pattern_axioms
+        # so the vacuous truth safety net doesn't override them
+        pattern_axioms.extend(exists_search_axioms)
+        pattern_axioms.extend(emptiness_axioms)
 
         if fn_body is not None and translator.use_array_encoding:
             element_property_axioms = self._extract_list_element_property_axioms(
@@ -2793,6 +2915,21 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     for axiom in pattern_axioms:
                         prop_solver.add(axiom)
 
+                    # Add exists-search axioms (from Phase 13b)
+                    for axiom in exists_search_axioms:
+                        prop_solver.add(axiom)
+
+                    # Add emptiness-universality axioms (from Phase 13c)
+                    # If an axiom structurally matches the property, short-circuit:
+                    # the pattern analysis already proves this property.
+                    emptiness_verified = False
+                    for axiom in emptiness_axioms:
+                        prop_solver.add(axiom)
+                        # Compare ignoring :pattern annotations (quantifier triggers
+                        # differ between axiom and translator but semantics are the same)
+                        if self._z3_exprs_match_ignoring_patterns(axiom, prop_z3_expr):
+                            emptiness_verified = True
+
                     # Add axioms for imported equality functions
                     # This allows Z3 to understand that e.g., term-eq(a,b) == (a == b)
                     imported_eq_axioms = self._extract_imported_equality_axioms(translator)
@@ -2805,6 +2942,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     imported_postcond_axioms = self._extract_imported_postcondition_axioms(translator)
                     for axiom in imported_postcond_axioms:
                         prop_solver.add(axiom)
+
+                    # Add body constraint to connect $result to function body
+                    if body_z3 is not None:
+                        result_var = translator.variables.get('$result')
+                        if result_var is not None:
+                            prop_solver.add(result_var == body_z3)
+
+                    # Short-circuit: if pattern analysis already proves this property
+                    # (the axiom is structurally identical to the property), skip Z3.
+                    if emptiness_verified:
+                        continue
 
                     # Check if NOT property is satisfiable
                     prop_solver.add(z3.Not(prop_z3_expr))

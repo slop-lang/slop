@@ -1363,7 +1363,7 @@ def cmd_fill(args):
     try:
         # Load project config for entry point
         config_path = getattr(args, 'config', None)
-        project_cfg, _, _, _ = load_project_config(config_path)
+        project_cfg, build_cfg, _, _ = load_project_config(config_path)
 
         # Determine input file
         if hasattr(args, 'input') and args.input:
@@ -1376,6 +1376,25 @@ def cmd_fill(args):
             print("Error: No input file specified and no [project].entry in slop.toml", file=sys.stderr)
             return 1
 
+        # Build include paths: CLI -I args + slop.toml [build].include + stdlib
+        include_paths = list(getattr(args, 'include', None) or [])
+
+        if build_cfg and build_cfg.include:
+            config_dir = Path(config_path).parent if config_path else Path('.')
+            for p in build_cfg.include:
+                resolved = str((config_dir / p).resolve())
+                if resolved not in include_paths:
+                    include_paths.append(resolved)
+
+        for stdlib_path in paths.get_stdlib_include_paths():
+            sp = str(stdlib_path)
+            if sp not in include_paths:
+                include_paths.append(sp)
+
+        parent = str(Path(input_file).parent.resolve())
+        if parent not in include_paths:
+            include_paths.append(parent)
+
         ast = parse_file(input_file)
 
         # Pre-check scaffold for type errors before filling
@@ -1384,7 +1403,9 @@ def cmd_fill(args):
 
         # Try native checker first
         from slop.verifier import run_native_checker_diagnostics
-        diagnostics, native_available = run_native_checker_diagnostics(input_file)
+        diagnostics, native_available = run_native_checker_diagnostics(
+            input_file, include_paths=[Path(p) for p in include_paths]
+        )
         if not native_available:
             print("Warning: Native type checker not available, skipping pre-fill type check", file=sys.stderr)
             diagnostics = []
@@ -1535,8 +1556,8 @@ def cmd_fill(args):
         const_names = _extract_const_names(ast)
         const_specs = _extract_const_specs(ast)
         # Extract full signatures from imported modules
-        imported_specs = _extract_imported_specs(ast, from_path=Path(input_file))
-        imported_types = _extract_imported_types(ast, from_path=Path(input_file))
+        imported_specs = _extract_imported_specs(ast, search_paths=include_paths, from_path=Path(input_file))
+        imported_types = _extract_imported_types(ast, search_paths=include_paths, from_path=Path(input_file))
         if not quiet:
             if imported_specs:
                 print(f"  Extracted {len(imported_specs)} imported function specs")
@@ -2975,6 +2996,7 @@ def _run_tests_multi(args, test_files: list, toml_cfg, config_dir, build_cfg, te
     no_tests_files = 0
     total_tests = 0
     failed_tests = 0
+    error_files = 0
 
     print(f"Running tests on {total_files} file(s)...")
     print()
@@ -3030,10 +3052,55 @@ def _run_tests_multi(args, test_files: list, toml_cfg, config_dir, build_cfg, te
             if '-> PASS' in line or '-> FAIL' in line:
                 test_results.append(line.strip())
 
-        if "No @example annotations found" in output or "No testable @example" in output:
+        if returncode != 0:
+            failed_files += 1
+            if test_results:
+                # Some tests ran but there were failures
+                matches = re.findall(r'FAIL', output)
+                failed_in_file = len(matches)
+                failed_tests += failed_in_file
+                match = re.search(r'(\d+) test case\(s\)', output)
+                if match:
+                    total_tests += int(match.group(1))
+                print(f"  FAILED")
+                # Always show individual test results for failed files
+                for result in test_results:
+                    if '-> FAIL' in result:
+                        print(f"    ✗ {result}")
+                    elif args.verbose:
+                        print(f"    {result}")
+            else:
+                # No tests ran — error during resolution/transpilation/compilation
+                error_files += 1
+                print(f"  ERROR (failed before tests ran)")
+            # Show stderr for failures, filtering out compiler warnings
+            if stderr_output.strip():
+                stderr_lines = [l for l in stderr_output.strip().split('\n')
+                                if l.strip() and not l.strip().startswith('warning:')]
+                if stderr_lines:
+                    if args.verbose:
+                        for line in stderr_lines:
+                            print(f"    {line}")
+                    else:
+                        for line in stderr_lines[:3]:
+                            print(f"    {line}")
+                        if len(stderr_lines) > 3:
+                            print(f"    ... ({len(stderr_lines) - 3} more lines, use -v for full output)")
+            # For ERROR files, also extract error diagnostics from stdout
+            if not test_results and output.strip():
+                error_lines = [l.strip() for l in output.split('\n')
+                               if any(kw in l for kw in ['failed:', 'error:', 'Error:'])]
+                for line in error_lines[:5]:
+                    print(f"    {line}")
+        elif "No @example annotations found" in output or "No testable @example" in output:
             no_tests_files += 1
             print(f"  No tests found")
-        elif returncode == 0:
+            # Show stderr in verbose mode, excluding compiler warnings
+            if args.verbose and stderr_output.strip():
+                for line in stderr_output.strip().split('\n'):
+                    if line.strip() and not line.strip().startswith('warning:'):
+                        print(f"    {line}")
+        else:
             # Extract test count from output
             match = re.search(r'(\d+) test case\(s\)', output)
             if match:
@@ -3046,34 +3113,18 @@ def _run_tests_multi(args, test_files: list, toml_cfg, config_dir, build_cfg, te
                 if tests_in_file > 0:
                     total_tests = max(total_tests, tests_in_file)
             passed_files += 1
-            print(f"  PASSED ({len(test_results)} tests)")
+            if test_results:
+                print(f"  PASSED ({len(test_results)} tests)")
+            else:
+                print(f"  PASSED (no test output captured)")
             # Show individual test results in verbose mode
             if args.verbose and test_results:
                 for result in test_results:
                     print(f"    {result}")
-        else:
-            failed_files += 1
-            # Try to count failed tests
-            matches = re.findall(r'FAIL', output)
-            failed_in_file = len(matches)
-            failed_tests += failed_in_file
-            # Also count total tests
-            match = re.search(r'(\d+) test case\(s\)', output)
-            if match:
-                total_tests += int(match.group(1))
-            print(f"  FAILED")
-            # Always show individual test results for failed files
-            if test_results:
-                for result in test_results:
-                    # Highlight failures
-                    if '-> FAIL' in result:
-                        print(f"    ✗ {result}")
-                    elif args.verbose:
-                        print(f"    {result}")
-            # Show additional error output in verbose mode
-            if args.verbose:
+            # Show stderr in verbose mode, excluding compiler warnings
+            if args.verbose and stderr_output.strip():
                 for line in stderr_output.strip().split('\n'):
-                    if line.strip():
+                    if line.strip() and not line.strip().startswith('warning:'):
                         print(f"    {line}")
 
     # Print summary
@@ -3083,6 +3134,8 @@ def _run_tests_multi(args, test_files: list, toml_cfg, config_dir, build_cfg, te
     print(f"  Files tested:  {total_files}")
     print(f"  Files passed:  {passed_files}")
     print(f"  Files failed:  {failed_files}")
+    if error_files > 0:
+        print(f"    (of which {error_files} failed before tests ran)")
     print(f"  Files skipped: {no_tests_files} (no @example annotations)")
     if total_tests > 0:
         print(f"  Total tests:   {total_tests}")
@@ -3090,7 +3143,12 @@ def _run_tests_multi(args, test_files: list, toml_cfg, config_dir, build_cfg, te
             print(f"  Tests failed:  {failed_tests}")
 
     if failed_files > 0:
-        print(f"\n{failed_files} file(s) had failing tests")
+        if error_files > 0 and error_files == failed_files:
+            print(f"\n{failed_files} file(s) had errors (no tests ran)")
+        elif error_files > 0:
+            print(f"\n{failed_files} file(s) had failures ({error_files} errors, {failed_files - error_files} test failures)")
+        else:
+            print(f"\n{failed_files} file(s) had failing tests")
         return 1
     elif passed_files > 0:
         print(f"\nAll {passed_files} file(s) passed")
@@ -4427,6 +4485,8 @@ def main():
         help='Fill holes in parallel (respects per-tier rate limits)')
     p.add_argument('--max-workers', type=int, default=None,
         help='Max parallel workers (default: auto based on tier limits)')
+    p.add_argument('-I', '--include', action='append', default=[],
+                   help='Add search path for imports (can be repeated)')
 
     # check
     p = subparsers.add_parser('check', help='Validate')
