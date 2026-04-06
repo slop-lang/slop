@@ -1599,10 +1599,16 @@ def cmd_fill(args):
             print(f"Found {len(all_holes)} holes")
 
         # Create filler from config or use mock
-        # If --config specified, use it; otherwise look for slop.toml in current dir
+        # If --config specified, use it; otherwise look for slop.toml in:
+        #   1. Same directory as the input file
+        #   2. Current working directory
         config_file = args.config
-        if not config_file and Path("slop.toml").exists():
-            config_file = "slop.toml"
+        if not config_file:
+            input_dir_config = Path(input_file).resolve().parent / "slop.toml"
+            if input_dir_config.exists():
+                config_file = str(input_dir_config)
+            elif Path("slop.toml").exists():
+                config_file = "slop.toml"
 
         routing_config = {}
         if config_file:
@@ -1650,6 +1656,7 @@ def cmd_fill(args):
                 context['imported_types'] = imported_types
                 context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names + const_names
                 context['error_variants'] = error_variants
+                context['context_file'] = str(Path(input_file).resolve())
                 if tier not in tier_groups:
                     tier_groups[tier] = []
                 tier_groups[tier].append((form, hole, info, context))
@@ -1723,6 +1730,7 @@ def cmd_fill(args):
                 context['imported_types'] = imported_types
                 context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names + const_names
                 context['error_variants'] = error_variants
+                context['context_file'] = str(Path(input_file).resolve())
                 hole_data.append((form, hole, info, context))
 
             # Prepare for parallel fill
@@ -1774,6 +1782,7 @@ def cmd_fill(args):
                 context['imported_types'] = imported_types
                 context['defined_functions'] = [s['name'] for s in fn_specs] + type_names + ffi_functions + imported_names + const_names
                 context['error_variants'] = error_variants
+                context['context_file'] = str(Path(input_file).resolve())
 
                 result = filler.fill(info, context)
                 if result.success and result.expression:

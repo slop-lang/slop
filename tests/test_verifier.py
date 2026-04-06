@@ -1396,6 +1396,210 @@ class TestAccessorAxioms:
         assert make_double[0].status == 'verified'
 
 
+class TestArenaAllocAxiom:
+    """Test arena-alloc non-nil axiom in translator"""
+
+    def test_arena_alloc_non_nil(self):
+        """arena-alloc result is constrained to be non-zero (non-nil)"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        expr = parse("(arena-alloc arena 8)")[0]
+        result = translator.translate_expr(expr)
+        assert result is not None
+        # Should have a non-zero constraint (Z3 may format as "0 != var" or "var != 0")
+        assert any(
+            '!= 0' in str(c) or '0 !=' in str(c)
+            for c in translator.constraints
+        )
+
+    def test_arena_alloc_unique_variables(self):
+        """Multiple arena-alloc calls produce unique variables"""
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+
+        expr1 = parse("(arena-alloc arena 8)")[0]
+        expr2 = parse("(arena-alloc arena 16)")[0]
+        r1 = translator.translate_expr(expr1)
+        r2 = translator.translate_expr(expr2)
+        assert r1 is not None and r2 is not None
+        assert str(r1) != str(r2)
+
+    def test_cast_arena_alloc_non_nil(self):
+        """(cast (Ptr T) (arena-alloc ...)) preserves non-nil (cast is identity)"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Pair (record (a Int) (b Int)))
+
+          (fn make-pair ((arena Arena))
+            (@spec ((Arena) -> (Ptr Pair)))
+            (@alloc arena)
+            (@post (!= $result nil))
+            (cast (Ptr Pair) (arena-alloc arena (sizeof Pair)))))
+        """
+        results = verify_source(source)
+        make_pair = [r for r in results if r.name == 'make-pair']
+        assert len(make_pair) == 1
+        assert make_pair[0].status == 'verified'
+
+    def test_let_arena_alloc_non_nil(self):
+        """Let-bound arena-alloc propagates non-nil through return variable"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Pair (record (a Int) (b Int)))
+
+          (fn make-pair ((arena Arena))
+            (@spec ((Arena) -> (Ptr Pair)))
+            (@alloc arena)
+            (@post (!= $result nil))
+            (let ((p (cast (Ptr Pair) (arena-alloc arena (sizeof Pair)))))
+              p)))
+        """
+        results = verify_source(source)
+        make_pair = [r for r in results if r.name == 'make-pair']
+        assert len(make_pair) == 1
+        assert make_pair[0].status == 'verified'
+
+
+class TestSetDerefUnionNew:
+    """Test Phase 4.8: Union tag axiom from set!-deref-union-new pattern"""
+
+    def test_find_set_deref_union_new_simple(self):
+        """Detect (set! (deref n) (union-new ...)) in body"""
+        from slop.verifier.union_handling import UnionHandlingMixin
+        from slop.parser import parse
+
+        mixin = UnionHandlingMixin()
+        body = parse("""
+            (do
+              (set! (deref n) (union-new XmlNode text content))
+              n)
+        """)[0]
+        result = mixin._find_set_deref_union_new(body, 'n')
+        assert result is not None
+        assert result[0].name == 'union-new'
+
+    def test_find_set_deref_union_new_in_let(self):
+        """Detect set!-deref-union-new inside let body"""
+        from slop.verifier.union_handling import UnionHandlingMixin
+        from slop.parser import parse
+
+        mixin = UnionHandlingMixin()
+        body = parse("""
+            (let ((n (cast (Ptr XmlNode) (arena-alloc arena 8))))
+              (set! (deref n) (union-new XmlNode text content))
+              n)
+        """)[0]
+        result = mixin._find_set_deref_union_new(body, 'n')
+        assert result is not None
+        assert result[0].name == 'union-new'
+
+    def test_find_set_deref_wrong_var(self):
+        """Does not match when target variable differs"""
+        from slop.verifier.union_handling import UnionHandlingMixin
+        from slop.parser import parse
+
+        mixin = UnionHandlingMixin()
+        body = parse("""
+            (do
+              (set! (deref m) (union-new XmlNode text content))
+              n)
+        """)[0]
+        result = mixin._find_set_deref_union_new(body, 'n')
+        assert result is None
+
+    def test_find_set_deref_not_union_new(self):
+        """Does not match when value is not union-new"""
+        from slop.verifier.union_handling import UnionHandlingMixin
+        from slop.parser import parse
+
+        mixin = UnionHandlingMixin()
+        body = parse("""
+            (do
+              (set! (deref n) (record-new Pair (a 1) (b 2)))
+              n)
+        """)[0]
+        result = mixin._find_set_deref_union_new(body, 'n')
+        assert result is None
+
+    def test_set_deref_union_new_verifies_tag(self):
+        """Full integration: set!-deref-union-new proves match postcondition"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Node (union (text String) (elem Int)))
+
+          (fn make-text ((arena Arena) (content String))
+            (@spec ((Arena String) -> (Ptr Node)))
+            (@alloc arena)
+            (@post (!= $result nil))
+            (@post (match (deref $result) ((text _) true) (_ false)))
+            (let ((n (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+              (set! (deref n) (union-new Node text content))
+              n)))
+        """
+        results = verify_source(source)
+        make_text = [r for r in results if r.name == 'make-text']
+        assert len(make_text) == 1
+        assert make_text[0].status == 'verified'
+
+    def test_set_deref_union_new_wrong_tag_fails(self):
+        """set!-deref-union-new cannot prove match for wrong tag"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Node (union (text String) (elem Int)))
+
+          (fn make-text-wrong ((arena Arena) (content String))
+            (@spec ((Arena String) -> (Ptr Node)))
+            (@alloc arena)
+            (@post (match (deref $result) ((elem _) true) (_ false)))
+            (let ((n (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+              (set! (deref n) (union-new Node text content))
+              n)))
+        """
+        results = verify_source(source)
+        make_text = [r for r in results if r.name == 'make-text-wrong']
+        assert len(make_text) == 1
+        assert make_text[0].status == 'failed'
+
+    def test_nested_let_set_deref_union_new(self):
+        """Nested let with intermediate allocation still detects pattern"""
+        from slop.verifier import verify_source
+
+        source = """
+        (module test
+          (type Container (record (value Int)))
+          (type Node (union (box (Ptr Container)) (leaf Int)))
+
+          (fn make-box ((arena Arena) (v Int))
+            (@spec ((Arena Int) -> (Ptr Node)))
+            (@alloc arena)
+            (@post (!= $result nil))
+            (@post (match (deref $result) ((box _) true) (_ false)))
+            (let ((c (cast (Ptr Container) (arena-alloc arena (sizeof Container)))))
+              (let ((n (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+                (set! (deref n) (union-new Node box c))
+                n))))
+        """
+        results = verify_source(source)
+        make_box = [r for r in results if r.name == 'make-box']
+        assert len(make_box) == 1
+        assert make_box[0].status == 'verified'
+
+
 class TestConditionalRecordNew:
     """Test Phase 8: Conditional record-new axioms"""
 
@@ -6625,3 +6829,139 @@ class TestStructuralPushSiteAnalysis:
         # Should verify (not unknown) because the constant predicate field
         # generates an axiom that satisfies the property
         assert result.status != "failed", f"Expected verified or unknown, got failed: {result.message}"
+
+
+class TestStringOperationAxioms:
+    """Test string-concat semantic axiom generation (Phase 12b)."""
+
+    def test_concat_starts_with_first_arg(self):
+        """string-concat(arena, prefix, suffix) starts-with prefix."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        source = '''
+        (fn make-var ((arena Arena) (name String))
+          (@spec ((Arena String) -> String))
+          (@pre (> (string-len name) 0))
+          (@post (starts-with $result "?"))
+          (string-concat arena "?" name))
+        '''
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+        fn_form = parse(source)[0]
+        result = verifier.verify_function(fn_form)
+        assert result.status == "verified", f"Expected verified, got {result.status}: {result.message}"
+
+    def test_concat_starts_with_prefix_of_first_arg(self):
+        """string-concat(arena, "_:b", id) starts-with "_:" via literal pair + transitivity."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        source = '''
+        (fn make-blank ((arena Arena) (id String))
+          (@spec ((Arena String) -> String))
+          (@post (starts-with $result "_:"))
+          (string-concat arena "_:b" id))
+        '''
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+        fn_form = parse(source)[0]
+        result = verifier.verify_function(fn_form)
+        assert result.status == "verified", f"Expected verified, got {result.status}: {result.message}"
+
+    def test_concat_string_len_positive(self):
+        """string-concat with non-empty first arg produces non-empty result."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.parser import parse
+
+        source = '''
+        (fn wrap ((arena Arena) (s String))
+          (@spec ((Arena String) -> String))
+          (@post (> (string-len $result) 0))
+          (string-concat arena "<" s))
+        '''
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env)
+        fn_form = parse(source)[0]
+        result = verifier.verify_function(fn_form)
+        assert result.status == "verified", f"Expected verified, got {result.status}: {result.message}"
+
+
+class TestMatchArmPostconditionPropagation:
+    """Test Phase 12 match/cond arm postcondition propagation."""
+
+    def test_match_dispatch_propagates_postconditions(self):
+        """Match arms that call functions propagate those functions' postconditions."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.verifier.registry import FunctionRegistry
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        registry = FunctionRegistry()
+
+        # Register two functions with postconditions about string-len > 0
+        fn_a_source = '''
+        (fn serialize-a ((arena Arena) (x Int))
+          (@spec ((Arena Int) -> String))
+          (@post (> (string-len $result) 0))
+          (string-concat arena "<" "a"))
+        '''
+        fn_b_source = '''
+        (fn serialize-b ((arena Arena) (x Int))
+          (@spec ((Arena Int) -> String))
+          (@post (> (string-len $result) 0))
+          (string-concat arena "<" "b"))
+        '''
+        for src in [fn_a_source, fn_b_source]:
+            registry.register_from_ast([parse(src)[0]])
+
+        # Dispatch function that matches and delegates
+        dispatch_source = '''
+        (fn serialize-item ((arena Arena) (tag Int) (x Int))
+          (@spec ((Arena Int Int) -> String))
+          (@post (> (string-len $result) 0))
+          (if (== tag 0)
+            (serialize-a arena x)
+            (serialize-b arena x)))
+        '''
+        fn_form = parse(dispatch_source)[0]
+        verifier = ContractVerifier(env, function_registry=registry)
+        result = verifier.verify_function(fn_form)
+        assert result.status == "verified", f"Expected verified, got {result.status}: {result.message}"
+
+    def test_cond_dispatch_propagates_postconditions(self):
+        """Cond branches that call functions propagate postconditions."""
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        from slop.verifier.registry import FunctionRegistry
+        from slop.parser import parse
+
+        env = MinimalTypeEnv()
+        registry = FunctionRegistry()
+
+        fn_a_source = '''
+        (fn fmt-a ((arena Arena))
+          (@spec ((Arena) -> String))
+          (@post (> (string-len $result) 0))
+          (string-concat arena "(" ")"))
+        '''
+        fn_b_source = '''
+        (fn fmt-b ((arena Arena))
+          (@spec ((Arena) -> String))
+          (@post (> (string-len $result) 0))
+          (string-concat arena "[" "]"))
+        '''
+        for src in [fn_a_source, fn_b_source]:
+            registry.register_from_ast([parse(src)[0]])
+
+        dispatch_source = '''
+        (fn format-item ((arena Arena) (kind Int))
+          (@spec ((Arena Int) -> String))
+          (@post (> (string-len $result) 0))
+          (cond
+            ((== kind 0) (fmt-a arena))
+            (else (fmt-b arena))))
+        '''
+        fn_form = parse(dispatch_source)[0]
+        verifier = ContractVerifier(env, function_registry=registry)
+        result = verifier.verify_function(fn_form)
+        assert result.status == "verified", f"Expected verified, got {result.status}: {result.message}"

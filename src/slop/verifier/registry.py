@@ -166,45 +166,6 @@ class FunctionRegistry:
             return False
         return self._is_simple_expression(fn.body, name)
 
-    def inlines_to_native_equality(self, name: str) -> bool:
-        """Check if function inlines to native ==.
-
-        Used by union equality axioms to determine if a helper-eq function
-        should be treated as native Z3 equality rather than an uninterpreted function.
-
-        Returns True ONLY for functions that directly use == on parameters:
-        - (fn num-eq ((a Int) (b Int)) (@pure) (== a b))
-
-        Does NOT return True for string-eq since that's modeled as an
-        uninterpreted function in Z3, not native equality.
-        """
-        fn = self.functions.get(name)
-        if not fn or not fn.body or not fn.is_pure:
-            return False
-
-        if not self._is_simple_expression(fn.body, name):
-            return False
-
-        # Check if body is (== param1 param2) - ONLY native ==
-        body = fn.body
-        if not isinstance(body, SList) or len(body) < 3:
-            return False
-
-        head = body[0]
-        if not isinstance(head, Symbol):
-            return False
-
-        # Only native == counts, not string-eq or other comparison functions
-        if head.name != '==':
-            return False
-
-        # Check if arguments are direct parameter references
-        arg1, arg2 = body[1], body[2]
-        if isinstance(arg1, Symbol) and isinstance(arg2, Symbol):
-            if arg1.name in fn.params and arg2.name in fn.params:
-                return True
-
-        return False
 
     def _is_simple_expression(self, expr: 'SExpr', fn_name: str) -> bool:
         """Check if expression is a simple expression suitable for inlining.

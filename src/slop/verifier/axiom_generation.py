@@ -1621,20 +1621,10 @@ class AxiomGenerationMixin:
                     axioms.append(eq_axiom)
                     found_eq_axiom = True
 
-            if not found_eq_axiom:
-                # Fallback: auto-generate equality axiom for *-eq functions
-                # without an explicit equality postcondition.
-                # Safe assumption: name ending in -eq with 2 params implies
-                # structural equality: fn(a, b) == (a == b)
-                func_key = f"fn_{fn_name}_{len(sig.params)}"
-                if func_key not in translator.variables:
-                    func = z3.Function(func_key, z3.IntSort(), z3.IntSort(), z3.BoolSort())
-                    translator.variables[func_key] = func
-                else:
-                    func = translator.variables[func_key]
-                a = z3.Int(f'{fn_name}_a')
-                b = z3.Int(f'{fn_name}_b')
-                axioms.append(z3.ForAll([a, b], func(a, b) == (a == b)))
+            # No fallback: if a function lacks an explicit (@post (== $result (== a b)))
+            # postcondition, we do NOT assume structural equality. Functions like
+            # approx-eq or case-insensitive comparisons would be unsound with that axiom.
+            # To get equality semantics, add the postcondition to the function definition.
 
         return axioms
 

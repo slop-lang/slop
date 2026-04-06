@@ -780,7 +780,7 @@
                                                                (msg (string-concat arena "for-each: cannot determine element type of '"
                                                                       (string-concat arena coll-name
                                                                         "' - collection has no inner type"))))
-                                                           (env-add-error env msg coll-line coll-col)
+                                                           (env-add-warning env msg coll-line coll-col)
                                                            (env-get-unknown-type env))))))
                                       ;; Push scope, bind var, infer body, pop scope
                                       (env-push-scope env)
@@ -878,6 +878,10 @@
                 ((some ret-expr) (let ((_ (infer-expr env ret-expr))) (do)))
                 ((none) (do))))
             (env-get-never-type env)))
+
+        ;; (break) / (continue) - Never type (divergent, loop control flow)
+        ((or (string-eq op "break") (string-eq op "continue"))
+          (env-get-never-type env))
 
         ;; Comparison operators return Bool
         ((or (string-eq op "==") (string-eq op "!=")
@@ -2236,7 +2240,7 @@
                                     (list-push parts "' has ambiguous Option type - add explicit type: (mut ")
                                     (list-push parts var-name)
                                     (list-push parts " (Option T) ...)")
-                                    (env-add-error env (string-build arena parts) line col)
+                                    (env-add-warning env (string-build arena parts) line col)
                                     (env-bind-var env var-name val-type))
                                   ;; Concrete type - just bind it
                                   (env-bind-var env var-name val-type))))

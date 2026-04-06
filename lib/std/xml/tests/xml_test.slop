@@ -1,0 +1,761 @@
+;; ============================================================
+;; XML Module Test Suite
+;; ============================================================
+
+(module xml-test
+  (export (main 0))
+
+  (import xml (XmlErrorKind XmlError XmlQName XmlAttribute XmlNsDecl
+    XmlNodeType XmlNode XmlElement XmlDocument
+    xml-qname xml-element xml-text xml-comment xml-cdata xml-pi
+    xml-is-element xml-is-text xml-is-comment xml-is-cdata xml-is-pi
+    xml-node-type
+    xml-get-attribute xml-get-attribute-ns
+    xml-get-children xml-get-child-elements
+    xml-find-elements-by-tag xml-find-elements-by-qname
+    xml-get-text-content xml-get-base xml-get-lang
+    xml-element-tag xml-element-attributes
+    xml-add-child xml-set-attribute
+    xml-parse xml-stringify xml-stringify-pretty))
+
+  (import strlib (contains starts-with))
+
+  ;; ============================================================
+  ;; Constructor & Predicate Tests
+  ;; ============================================================
+
+  (fn test-element-constructor ()
+    (@intent "Test xml-element creates an element node")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((tag (xml-qname arena "" "div" "")))
+        (let ((n (xml-element arena tag)))
+          (and (!= n nil) (xml-is-element n))))))
+
+  (fn test-text-constructor ()
+    (@intent "Test xml-text creates a text node")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((n (xml-text arena "hello")))
+        (and (!= n nil) (xml-is-text n)))))
+
+  (fn test-comment-constructor ()
+    (@intent "Test xml-comment creates a comment node")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((n (xml-comment arena " a comment ")))
+        (and (!= n nil) (xml-is-comment n)))))
+
+  (fn test-cdata-constructor ()
+    (@intent "Test xml-cdata creates a cdata node")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((n (xml-cdata arena "raw data")))
+        (and (!= n nil) (xml-is-cdata n)))))
+
+  (fn test-pi-constructor ()
+    (@intent "Test xml-pi creates a processing instruction node")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((n (xml-pi arena "target" "data")))
+        (and (!= n nil) (xml-is-pi n)))))
+
+  (fn test-node-type ()
+    (@intent "Test xml-node-type returns correct discriminator")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((tag (xml-qname arena "" "p" "")))
+        (and (== (xml-node-type (xml-element arena tag)) 'xml-node-element)
+             (== (xml-node-type (xml-text arena "x")) 'xml-node-text)
+             (== (xml-node-type (xml-comment arena "c")) 'xml-node-comment)
+             (== (xml-node-type (xml-cdata arena "d")) 'xml-node-cdata)
+             (== (xml-node-type (xml-pi arena "t" "d")) 'xml-node-pi)))))
+
+  (fn test-qname-fields ()
+    (@intent "Test XmlQName field access")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((q (xml-qname arena "rdf" "Description" "http://www.w3.org/1999/02/22-rdf-syntax-ns#")))
+        (and (== (. q prefix) "rdf")
+             (== (. q local-name) "Description")
+             (== (. q namespace-uri) "http://www.w3.org/1999/02/22-rdf-syntax-ns#")))))
+
+  (fn test-element-tag-accessor ()
+    (@intent "Test xml-element-tag returns tag QName")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((tag (xml-qname arena "" "div" "")))
+        (let ((n (xml-element arena tag)))
+          (match (xml-element-tag n)
+            ((some t) (== (. t local-name) "div"))
+            ((none) false))))))
+
+  ;; ============================================================
+  ;; Accessor & Builder Tests
+  ;; ============================================================
+
+  (fn test-add-child-get-children ()
+    (@intent "Test adding children and getting them back")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((tag (xml-qname arena "" "div" "")))
+        (let ((parent (xml-element arena tag)))
+          (match (deref parent)
+            ((xml-elem elem)
+              (do
+                (xml-add-child arena elem (xml-text arena "hello"))
+                (xml-add-child arena elem (xml-text arena " world"))
+                (match (xml-get-children parent)
+                  ((some kids) (== (cast Int (list-len kids)) 2))
+                  ((none) false))))
+            (_ false))))))
+
+  (fn test-set-get-attribute ()
+    (@intent "Test setting and getting attributes")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((tag (xml-qname arena "" "a" "")))
+        (let ((n (xml-element arena tag)))
+          (match (deref n)
+            ((xml-elem elem)
+              (do
+                (let ((attr-name (xml-qname arena "" "href" "")))
+                  (xml-set-attribute arena elem attr-name "https://example.com"))
+                (match (xml-get-attribute n "href")
+                  ((some val) (== val "https://example.com"))
+                  ((none) false))))
+            (_ false))))))
+
+  (fn test-get-attribute-miss ()
+    (@intent "Test getting a missing attribute returns none")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((tag (xml-qname arena "" "div" "")))
+        (let ((n (xml-element arena tag)))
+          (match (xml-get-attribute n "missing")
+            ((some _) false)
+            ((none) true))))))
+
+  (fn test-get-child-elements ()
+    (@intent "Test xml-get-child-elements filters non-elements")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((tag (xml-qname arena "" "div" "")))
+        (let ((parent (xml-element arena tag))
+              (child-tag (xml-qname arena "" "p" "")))
+          (match (deref parent)
+            ((xml-elem elem)
+              (do
+                (xml-add-child arena elem (xml-text arena "text"))
+                (xml-add-child arena elem (xml-element arena child-tag))
+                (xml-add-child arena elem (xml-comment arena "comment"))
+                (let ((elems (xml-get-child-elements arena parent)))
+                  (== (cast Int (list-len elems)) 1))))
+            (_ false))))))
+
+  (fn test-find-elements-by-tag ()
+    (@intent "Test finding child elements by tag name")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((root-tag (xml-qname arena "" "root" ""))
+            (p-tag (xml-qname arena "" "p" ""))
+            (div-tag (xml-qname arena "" "div" "")))
+        (let ((root (xml-element arena root-tag)))
+          (match (deref root)
+            ((xml-elem elem)
+              (do
+                (xml-add-child arena elem (xml-element arena p-tag))
+                (xml-add-child arena elem (xml-element arena div-tag))
+                (xml-add-child arena elem (xml-element arena p-tag))
+                (let ((found (xml-find-elements-by-tag arena root "p")))
+                  (== (cast Int (list-len found)) 2))))
+            (_ false))))))
+
+  (fn test-get-text-content ()
+    (@intent "Test recursive text content concatenation")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((div-tag (xml-qname arena "" "div" ""))
+            (span-tag (xml-qname arena "" "span" "")))
+        (let ((outer (xml-element arena div-tag))
+              (inner (xml-element arena span-tag)))
+          (match (deref inner)
+            ((xml-elem inner-elem)
+              (do
+                (xml-add-child arena inner-elem (xml-text arena "world"))
+                (match (deref outer)
+                  ((xml-elem outer-elem)
+                    (do
+                      (xml-add-child arena outer-elem (xml-text arena "hello "))
+                      (xml-add-child arena outer-elem inner)
+                      (== (xml-get-text-content arena outer) "hello world")))
+                  (_ false))))
+            (_ false))))))
+
+  ;; ============================================================
+  ;; Basic Parse Tests
+  ;; ============================================================
+
+  (fn test-parse-self-closing ()
+    (@intent "Test parsing a self-closing element")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<root/>")
+        ((ok doc)
+          (xml-is-element (. doc root)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-parse-simple-element ()
+    (@intent "Test parsing an element with text content")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<p>hello</p>")
+        ((ok doc)
+          (and (xml-is-element (. doc root))
+               (== (xml-get-text-content arena (. doc root)) "hello")))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-parse-nested-elements ()
+    (@intent "Test parsing nested elements")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root><a><b/></a><c/></root>")
+        ((ok doc)
+          (let ((kids (xml-get-child-elements arena (. doc root))))
+            (== (cast Int (list-len kids)) 2)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-parse-attributes ()
+    (@intent "Test parsing element with attributes")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<a href=\"http://example.com\" title=\"test\"/>")
+        ((ok doc)
+          (match (xml-get-attribute (. doc root) "href")
+            ((some val) (== val "http://example.com"))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-parse-single-quoted-attr ()
+    (@intent "Test parsing single-quoted attribute values")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<a href='http://example.com'/>")
+        ((ok doc)
+          (match (xml-get-attribute (. doc root) "href")
+            ((some val) (== val "http://example.com"))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-parse-xml-decl ()
+    (@intent "Test parsing XML declaration")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<?xml version=\"1.0\" encoding=\"UTF-8\"?><root/>")
+        ((ok doc)
+          (and (== (. doc xml-version) "1.0")
+               (== (. doc encoding) "UTF-8")))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-parse-mixed-content ()
+    (@intent "Test parsing mixed text and element content")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<p>hello <b>world</b> end</p>")
+        ((ok doc)
+          (match (xml-get-children (. doc root))
+            ((some kids)
+              ;; Should have: text "hello ", element <b>, text " end"
+              (== (cast Int (list-len kids)) 3))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-parse-whitespace ()
+    (@intent "Test whitespace handling in content")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<root>  text  </root>")
+        ((ok doc)
+          (== (xml-get-text-content arena (. doc root)) "  text  "))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  ;; ============================================================
+  ;; Entity Tests
+  ;; ============================================================
+
+  (fn test-entity-predefined ()
+    (@intent "Test 5 predefined entities in text content")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<r>&lt;&gt;&amp;&quot;&apos;</r>")
+        ((ok doc)
+          (== (xml-get-text-content arena (. doc root)) "<>&\"'"))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-entity-decimal ()
+    (@intent "Test decimal character reference")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<r>&#65;</r>")
+        ((ok doc)
+          (== (xml-get-text-content arena (. doc root)) "A"))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-entity-hex ()
+    (@intent "Test hex character reference")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<r>&#x41;</r>")
+        ((ok doc)
+          (== (xml-get-text-content arena (. doc root)) "A"))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-entity-in-attr ()
+    (@intent "Test entity in attribute value")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<a title=\"a &amp; b\"/>")
+        ((ok doc)
+          (match (xml-get-attribute (. doc root) "title")
+            ((some val) (== val "a & b"))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  ;; ============================================================
+  ;; Special Node Tests
+  ;; ============================================================
+
+  (fn test-parse-comment ()
+    (@intent "Test parsing XML comments")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<r><!-- hello --></r>")
+        ((ok doc)
+          (match (xml-get-children (. doc root))
+            ((some kids)
+              (match (list-get kids 0)
+                ((some child) (xml-is-comment child))
+                ((none) false)))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-parse-cdata ()
+    (@intent "Test parsing CDATA sections")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<r><![CDATA[<not>xml</not>]]></r>")
+        ((ok doc)
+          (match (xml-get-children (. doc root))
+            ((some kids)
+              (match (list-get kids 0)
+                ((some child) (xml-is-cdata child))
+                ((none) false)))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-parse-pi-in-content ()
+    (@intent "Test parsing processing instruction inside element")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<r><?target data?></r>")
+        ((ok doc)
+          (match (xml-get-children (. doc root))
+            ((some kids)
+              (match (list-get kids 0)
+                ((some child) (xml-is-pi child))
+                ((none) false)))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  ;; ============================================================
+  ;; Namespace Tests
+  ;; ============================================================
+
+  (fn test-ns-default ()
+    (@intent "Test default namespace declaration")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root xmlns=\"http://example.com\"/>")
+        ((ok doc)
+          (match (xml-element-tag (. doc root))
+            ((some t) (== (. t namespace-uri) "http://example.com"))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-ns-prefixed ()
+    (@intent "Test prefixed namespace declaration")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"/>")
+        ((ok doc)
+          (match (xml-element-tag (. doc root))
+            ((some t)
+              (and (== (. t prefix) "rdf")
+                   (== (. t local-name) "RDF")
+                   (== (. t namespace-uri) "http://www.w3.org/1999/02/22-rdf-syntax-ns#")))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-ns-inheritance ()
+    (@intent "Test namespace inheritance to child elements")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root xmlns=\"http://example.com\"><child/></root>")
+        ((ok doc)
+          (let ((kids (xml-get-child-elements arena (. doc root))))
+            (match (list-get kids 0)
+              ((some child)
+                (match (xml-element-tag child)
+                  ((some t) (== (. t namespace-uri) "http://example.com"))
+                  ((none) false)))
+              ((none) false))))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-ns-unprefixed-attr ()
+    (@intent "Test unprefixed attributes do NOT get default namespace")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root xmlns=\"http://example.com\" id=\"1\"/>")
+        ((ok doc)
+          (match (xml-get-attribute-ns (. doc root) "" "id")
+            ((some val) (== val "1"))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-ns-xml-prefix ()
+    (@intent "Test xml: prefix is always available")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root xml:lang=\"en\"/>")
+        ((ok doc)
+          (match (xml-get-attribute-ns (. doc root) "http://www.w3.org/XML/1998/namespace" "lang")
+            ((some val) (== val "en"))
+            ((none) false)))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  ;; ============================================================
+  ;; xml:base and xml:lang Tests
+  ;; ============================================================
+
+  (fn test-xml-base ()
+    (@intent "Test xml:base resolution on element")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root xml:base=\"http://example.com/\"/>")
+        ((ok doc)
+          (== (xml-get-base (. doc root)) "http://example.com/"))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-xml-lang ()
+    (@intent "Test xml:lang resolution on element")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root xml:lang=\"en\"/>")
+        ((ok doc)
+          (== (xml-get-lang (. doc root)) "en"))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-xml-lang-inheritance ()
+    (@intent "Test xml:lang inheritance from parent")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root xml:lang=\"en\"><child/></root>")
+        ((ok doc)
+          (let ((kids (xml-get-child-elements arena (. doc root))))
+            (match (list-get kids 0)
+              ((some child) (== (xml-get-lang child) "en"))
+              ((none) false))))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  ;; ============================================================
+  ;; Stringify Tests
+  ;; ============================================================
+
+  (fn test-stringify-self-closing ()
+    (@intent "Test stringifying self-closing element")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((tag (xml-qname arena "" "br" "")))
+        (let ((n (xml-element arena tag)))
+          (== (xml-stringify arena n) "<br/>")))))
+
+  (fn test-stringify-with-text ()
+    (@intent "Test stringifying element with text")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((tag (xml-qname arena "" "p" "")))
+        (let ((n (xml-element arena tag)))
+          (match (deref n)
+            ((xml-elem elem)
+              (do
+                (xml-add-child arena elem (xml-text arena "hello"))
+                (== (xml-stringify arena n) "<p>hello</p>")))
+            (_ false))))))
+
+  (fn test-stringify-escaping ()
+    (@intent "Test text escaping in stringify")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((tag (xml-qname arena "" "r" "")))
+        (let ((n (xml-element arena tag)))
+          (match (deref n)
+            ((xml-elem elem)
+              (do
+                (xml-add-child arena elem (xml-text arena "a < b & c > d"))
+                (== (xml-stringify arena n) "<r>a &lt; b &amp; c &gt; d</r>")))
+            (_ false))))))
+
+  (fn test-stringify-attr-escaping ()
+    (@intent "Test attribute escaping in stringify")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (let ((tag (xml-qname arena "" "a" "")))
+        (let ((n (xml-element arena tag)))
+          (match (deref n)
+            ((xml-elem elem)
+              (do
+                (let ((href-name (xml-qname arena "" "title" "")))
+                  (xml-set-attribute arena elem href-name "a\"b"))
+                (let ((s (xml-stringify arena n)))
+                  (contains s "&quot;"))))
+            (_ false))))))
+
+  (fn test-stringify-ns-decl ()
+    (@intent "Test namespace declarations in stringify output")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root xmlns=\"http://example.com\"/>")
+        ((ok doc)
+          (let ((s (xml-stringify arena (. doc root))))
+            (contains s "xmlns=\"http://example.com\"")))
+        ((error e) false))))
+
+  (fn test-stringify-pretty-indent ()
+    (@intent "Test pretty-print indentation")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root><a/><b/></root>")
+        ((ok doc)
+          (let ((s (xml-stringify-pretty arena (. doc root) 2)))
+            (contains s "\n")))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-stringify-pretty-mixed ()
+    (@intent "Test pretty-print stays inline for mixed content")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<p>hello <b>world</b></p>")
+        ((ok doc)
+          (let ((s (xml-stringify-pretty arena (. doc root) 2)))
+            ;; Mixed content should NOT have indentation
+            (not (contains s "  <b>"))))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  ;; ============================================================
+  ;; Round-trip Tests
+  ;; ============================================================
+
+  (fn test-roundtrip-simple ()
+    (@intent "Test parse then stringify preserves structure")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<root><a/><b>text</b></root>")
+        ((ok doc)
+          (let ((s (xml-stringify arena (. doc root))))
+            (== s "<root><a/><b>text</b></root>")))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-roundtrip-ns ()
+    (@intent "Test namespaces survive round-trip")
+    (@spec (() -> Bool))
+    (with-arena 32768
+      (match (xml-parse arena "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description/></rdf:RDF>")
+        ((ok doc)
+          (let ((s (xml-stringify arena (. doc root))))
+            (and (contains s "xmlns:rdf=")
+                 (contains s "rdf:Description"))))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  (fn test-roundtrip-mixed ()
+    (@intent "Test mixed content round-trips correctly")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (match (xml-parse arena "<p>a<b>c</b>d</p>")
+        ((ok doc)
+          (let ((s (xml-stringify arena (. doc root))))
+            (== s "<p>a<b>c</b>d</p>")))
+        ((error e)
+          (do (println (. e message)) false)))))
+
+  ;; ============================================================
+  ;; Error Tests
+  ;; ============================================================
+
+  (fn test-error-mismatched-tag ()
+    (@intent "Test mismatched close tag returns error")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<a></b>")
+        ((ok _) false)
+        ((error e) (== (. e kind) 'mismatched-close-tag)))))
+
+  (fn test-error-unterminated ()
+    (@intent "Test unterminated element returns error")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<a>")
+        ((ok _) false)
+        ((error _) true))))
+
+  (fn test-error-unknown-entity ()
+    (@intent "Test unknown entity returns error")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<r>&foo;</r>")
+        ((ok _) false)
+        ((error e) (== (. e kind) 'invalid-entity)))))
+
+  (fn test-error-duplicate-attr ()
+    (@intent "Test duplicate attribute returns error")
+    (@spec (() -> Bool))
+    (with-arena 8192
+      (match (xml-parse arena "<r a=\"1\" a=\"2\"/>")
+        ((ok _) false)
+        ((error e) (== (. e kind) 'duplicate-attribute)))))
+
+  ;; ============================================================
+  ;; Main
+  ;; ============================================================
+
+  (fn run-test ((name String) (result Bool) (failures-ptr (Ptr Int)))
+    (@intent "Run a single test, print result, track failures")
+    (@spec ((String Bool (Ptr Int)) -> Unit))
+    (if result
+      (do (print "  ") (print name) (println ": PASS"))
+      (do (print "  ") (print name) (println ": FAIL")
+          (set! (deref failures-ptr) (+ (deref failures-ptr) 1))))
+    unit)
+
+  (fn main ()
+    (@intent "Run all XML tests, return 0 if all pass")
+    (@spec (() -> Int))
+    (let ((mut failures 0)
+          (fp (addr failures)))
+      ;; Constructor & Predicate tests
+      (println "Constructor & Predicate Tests:")
+      (run-test "element-constructor" (test-element-constructor) fp)
+      (run-test "text-constructor" (test-text-constructor) fp)
+      (run-test "comment-constructor" (test-comment-constructor) fp)
+      (run-test "cdata-constructor" (test-cdata-constructor) fp)
+      (run-test "pi-constructor" (test-pi-constructor) fp)
+      (run-test "node-type" (test-node-type) fp)
+      (run-test "qname-fields" (test-qname-fields) fp)
+      (run-test "element-tag-accessor" (test-element-tag-accessor) fp)
+
+      ;; Accessor & Builder tests
+      (println "Accessor & Builder Tests:")
+      (run-test "add-child-get-children" (test-add-child-get-children) fp)
+      (run-test "set-get-attribute" (test-set-get-attribute) fp)
+      (run-test "get-attribute-miss" (test-get-attribute-miss) fp)
+      (run-test "get-child-elements" (test-get-child-elements) fp)
+      (run-test "find-elements-by-tag" (test-find-elements-by-tag) fp)
+      (run-test "get-text-content" (test-get-text-content) fp)
+
+      ;; Basic Parse tests
+      (println "Basic Parse Tests:")
+      (run-test "parse-self-closing" (test-parse-self-closing) fp)
+      (run-test "parse-simple-element" (test-parse-simple-element) fp)
+      (run-test "parse-nested-elements" (test-parse-nested-elements) fp)
+      (run-test "parse-attributes" (test-parse-attributes) fp)
+      (run-test "parse-single-quoted-attr" (test-parse-single-quoted-attr) fp)
+      (run-test "parse-xml-decl" (test-parse-xml-decl) fp)
+      (run-test "parse-mixed-content" (test-parse-mixed-content) fp)
+      (run-test "parse-whitespace" (test-parse-whitespace) fp)
+
+      ;; Entity tests
+      (println "Entity Tests:")
+      (run-test "entity-predefined" (test-entity-predefined) fp)
+      (run-test "entity-decimal" (test-entity-decimal) fp)
+      (run-test "entity-hex" (test-entity-hex) fp)
+      (run-test "entity-in-attr" (test-entity-in-attr) fp)
+
+      ;; Special Node tests
+      (println "Special Node Tests:")
+      (run-test "parse-comment" (test-parse-comment) fp)
+      (run-test "parse-cdata" (test-parse-cdata) fp)
+      (run-test "parse-pi-in-content" (test-parse-pi-in-content) fp)
+
+      ;; Namespace tests
+      (println "Namespace Tests:")
+      (run-test "ns-default" (test-ns-default) fp)
+      (run-test "ns-prefixed" (test-ns-prefixed) fp)
+      (run-test "ns-inheritance" (test-ns-inheritance) fp)
+      (run-test "ns-unprefixed-attr" (test-ns-unprefixed-attr) fp)
+      (run-test "ns-xml-prefix" (test-ns-xml-prefix) fp)
+
+      ;; xml:base and xml:lang tests
+      (println "xml:base/xml:lang Tests:")
+      (run-test "xml-base" (test-xml-base) fp)
+      (run-test "xml-lang" (test-xml-lang) fp)
+      (run-test "xml-lang-inheritance" (test-xml-lang-inheritance) fp)
+
+      ;; Stringify tests
+      (println "Stringify Tests:")
+      (run-test "stringify-self-closing" (test-stringify-self-closing) fp)
+      (run-test "stringify-with-text" (test-stringify-with-text) fp)
+      (run-test "stringify-escaping" (test-stringify-escaping) fp)
+      (run-test "stringify-attr-escaping" (test-stringify-attr-escaping) fp)
+      (run-test "stringify-ns-decl" (test-stringify-ns-decl) fp)
+      (run-test "stringify-pretty-indent" (test-stringify-pretty-indent) fp)
+      (run-test "stringify-pretty-mixed" (test-stringify-pretty-mixed) fp)
+
+      ;; Round-trip tests
+      (println "Round-trip Tests:")
+      (run-test "roundtrip-simple" (test-roundtrip-simple) fp)
+      (run-test "roundtrip-ns" (test-roundtrip-ns) fp)
+      (run-test "roundtrip-mixed" (test-roundtrip-mixed) fp)
+
+      ;; Error tests
+      (println "Error Tests:")
+      (run-test "error-mismatched-tag" (test-error-mismatched-tag) fp)
+      (run-test "error-unterminated" (test-error-unterminated) fp)
+      (run-test "error-unknown-entity" (test-error-unknown-entity) fp)
+      (run-test "error-duplicate-attr" (test-error-duplicate-attr) fp)
+
+      ;; Summary
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1))))
+
+) ;; end module xml-test

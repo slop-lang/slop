@@ -32,7 +32,7 @@ from .loop_patterns import (
 )
 from .registry import FunctionRegistry, FunctionDef
 from .type_builder import _parse_type_expr_simple
-from .translator import Z3Translator
+from .translator import Z3Translator, _str_hash
 from .ssa import SSAContext, SSAVersion
 from .wp import WeakestPrecondition
 from .invariant_inference import InvariantInferencer, InferredInvariant
@@ -385,6 +385,191 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return result
 
+    # ── String operation axiom generation ──────────────────────────────────
+
+    def _generate_string_operation_axioms(
+        self, fn_body: SExpr, postconditions: List[SExpr], translator: Z3Translator
+    ) -> List:
+        """Generate semantic axioms connecting string-concat, starts-with, string-len.
+
+        Without these axioms, Z3 treats these as uninterpreted functions with no
+        relationships, making it impossible to verify postconditions like
+        (starts-with $result "?") when the body is (string-concat arena "?" name).
+
+        Axioms generated:
+        1. starts-with(concat(arena, a, b), a) — result starts with first operand
+        2. string-len(concat(arena, a, b)) == string-len(a) + string-len(b)
+        3. string-len(a) > 0 → string-len(concat(arena, a, b)) > 0
+        4. For string literal pairs where a.startswith(b): starts-with(hash_a, hash_b)
+        5. Transitivity: starts-with(a, prefix) → starts-with(concat(arena, a, ...), prefix)
+        """
+        axioms: list = []
+
+        # Collect all string-concat calls from body
+        concat_calls: List[SList] = []
+        self._collect_string_concat_calls(fn_body, concat_calls)
+
+        if not concat_calls and not self._postconditions_use_string_ops(postconditions):
+            return axioms
+
+        # Get or create the starts-with function (2 args: string, prefix → Int)
+        sw_key = "fn_starts-with_2"
+        if sw_key not in translator.variables:
+            sw_func = z3.Function(sw_key, z3.IntSort(), z3.IntSort(), z3.IntSort())
+            translator.variables[sw_key] = sw_func
+        else:
+            sw_func = translator.variables[sw_key]
+
+        # Get or create the string-len function
+        sl_key = "string_len"
+        if sl_key not in translator.variables:
+            sl_func = z3.Function(sl_key, z3.IntSort(), z3.IntSort())
+            translator.variables[sl_key] = sl_func
+        else:
+            sl_func = translator.variables[sl_key]
+
+        # For each string-concat call, add ground axioms
+        for concat_call in concat_calls:
+            if len(concat_call) < 4:
+                continue
+
+            first_arg = concat_call[2]   # a in (string-concat arena a b)
+            second_arg = concat_call[3]  # b
+
+            concat_z3 = translator.translate_expr(concat_call)
+            first_z3 = translator.translate_expr(first_arg)
+            second_z3 = translator.translate_expr(second_arg)
+
+            if concat_z3 is None or first_z3 is None:
+                continue
+
+            # Axiom 1: starts-with(concat(arena, a, b), a) is truthy
+            sw_result = sw_func(concat_z3, first_z3)
+            if z3.is_bool(sw_result):
+                axioms.append(sw_result)
+            else:
+                axioms.append(sw_result != 0)
+
+            # Axiom 2: string-len(concat) == string-len(a) + string-len(b)
+            if second_z3 is not None:
+                axioms.append(
+                    sl_func(concat_z3) == sl_func(first_z3) + sl_func(second_z3)
+                )
+
+            # Axiom 3: string-len(a) > 0 → string-len(concat) > 0
+            axioms.append(z3.Implies(sl_func(first_z3) > 0, sl_func(concat_z3) > 0))
+
+            # Also: string-len(b) > 0 → string-len(concat) > 0
+            if second_z3 is not None:
+                axioms.append(z3.Implies(sl_func(second_z3) > 0, sl_func(concat_z3) > 0))
+
+        # Collect all string literals from body and postconditions
+        body_literals: List[str] = []
+        self._collect_string_literals(fn_body, body_literals)
+        post_literals: List[str] = []
+        for post in postconditions:
+            self._collect_string_literals(post, post_literals)
+        all_literals = list(set(body_literals + post_literals))
+
+        # Axiom 4: For all pairs of string literals where a.startswith(b)
+        for i, lit_a in enumerate(all_literals):
+            for j, lit_b in enumerate(all_literals):
+                if i != j and lit_a.startswith(lit_b) and lit_b:
+                    hash_a = _str_hash(lit_a)
+                    hash_b = _str_hash(lit_b)
+                    sw_result = sw_func(z3.IntVal(hash_a), z3.IntVal(hash_b))
+                    if z3.is_bool(sw_result):
+                        axioms.append(sw_result)
+                    else:
+                        axioms.append(sw_result != 0)
+
+        # Axiom 5: Transitivity — starts-with(a, prefix) → starts-with(concat(arena, a, ...), prefix)
+        # For each concat call and each prefix used in postcondition starts-with calls
+        post_prefixes = self._extract_starts_with_prefix_z3(postconditions, translator)
+        for concat_call in concat_calls:
+            if len(concat_call) < 4:
+                continue
+            first_arg = concat_call[2]
+            first_z3 = translator.translate_expr(first_arg)
+            concat_z3 = translator.translate_expr(concat_call)
+            if first_z3 is None or concat_z3 is None:
+                continue
+            for prefix_z3 in post_prefixes:
+                sw_first = sw_func(first_z3, prefix_z3)
+                sw_concat = sw_func(concat_z3, prefix_z3)
+                if z3.is_bool(sw_first):
+                    axioms.append(z3.Implies(sw_first, sw_concat))
+                else:
+                    axioms.append(z3.Implies(sw_first != 0, sw_concat != 0))
+
+        return axioms
+
+    def _collect_string_concat_calls(self, expr: SExpr, result: List):
+        """Recursively collect all (string-concat ...) call expressions from AST."""
+        if not isinstance(expr, SList) or len(expr) == 0:
+            return
+        head = expr[0]
+        if isinstance(head, Symbol) and head.name == 'string-concat' and len(expr) >= 4:
+            result.append(expr)
+        # Recurse into subexpressions
+        for item in expr.items:
+            if isinstance(item, SList):
+                self._collect_string_concat_calls(item, result)
+
+    def _collect_string_literals(self, expr: SExpr, result: List[str]):
+        """Recursively collect all string literal values from AST."""
+        if isinstance(expr, String):
+            result.append(expr.value)
+        elif isinstance(expr, SList):
+            for item in expr.items:
+                self._collect_string_literals(item, result)
+
+    def _postconditions_use_string_ops(self, postconditions: List[SExpr]) -> bool:
+        """Check if any postcondition uses starts-with or string-len."""
+        for post in postconditions:
+            if self._uses_string_op(post):
+                return True
+        return False
+
+    def _uses_string_op(self, expr: SExpr) -> bool:
+        """Check if expression uses starts-with or string-len."""
+        if isinstance(expr, SList) and len(expr) > 0:
+            head = expr[0]
+            if isinstance(head, Symbol) and head.name in ('starts-with', 'string-len'):
+                return True
+            for item in expr.items:
+                if self._uses_string_op(item):
+                    return True
+        return False
+
+    def _extract_starts_with_prefix_z3(
+        self, postconditions: List[SExpr], translator: Z3Translator
+    ) -> List:
+        """Extract Z3 translations of prefix arguments from (starts-with ... prefix) in postconditions."""
+        prefixes: list = []
+        for post in postconditions:
+            self._collect_starts_with_prefixes(post, prefixes, translator)
+        return prefixes
+
+    def _collect_starts_with_prefixes(
+        self, expr: SExpr, result: list, translator: Z3Translator
+    ):
+        """Recursively find (starts-with X prefix) calls and collect translated prefix values."""
+        if isinstance(expr, SList) and len(expr) >= 3:
+            head = expr[0]
+            if isinstance(head, Symbol) and head.name == 'starts-with':
+                prefix_z3 = translator.translate_expr(expr[2])
+                if prefix_z3 is not None:
+                    result.append(prefix_z3)
+                return
+            for item in expr.items:
+                self._collect_starts_with_prefixes(item, result, translator)
+        elif isinstance(expr, SList):
+            for item in expr.items:
+                self._collect_starts_with_prefixes(item, result, translator)
+
+    # ── End string operation axioms ─────────────────────────────────────
+
     def _extract_call_postcondition_axioms(self, body: SExpr, translator: Z3Translator) -> List:
         """Extract postcondition axioms from function calls bound in let expressions.
 
@@ -464,6 +649,23 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         elif head.name == 'when' and len(expr) >= 3:
             for item in expr.items[2:]:
                 self._collect_call_postconditions(item, translator, axioms)
+
+        # Handle match expressions - recurse into arm bodies
+        # This enables postcondition propagation for dispatch functions like:
+        #   (match t ((term-iri iri) (serialize-iri arena iri prefixes)) ...)
+        # where each arm's result IS $result
+        elif head.name == 'match' and len(expr) >= 3:
+            for clause in expr.items[2:]:
+                if isinstance(clause, SList) and len(clause) >= 2:
+                    arm_body = clause[-1]
+                    self._collect_call_postconditions(arm_body, translator, axioms)
+
+        # Handle cond expressions - recurse into branch bodies
+        elif head.name == 'cond':
+            for clause in expr.items[1:]:
+                if isinstance(clause, SList) and len(clause) >= 2:
+                    arm_body = clause[-1]
+                    self._collect_call_postconditions(arm_body, translator, axioms)
 
     def _process_let_binding(self, binding: SExpr, translator: Z3Translator, axioms: List):
         """Process a single let binding, extracting postcondition axioms if it's a function call.
@@ -2613,6 +2815,20 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for constraint in exhaustiveness_constraints:
                 solver.add(constraint)
 
+        # Phase 4.8: Union tag axiom from set!-deref-union-new pattern
+        # For (set! (deref var) (union-new Type tag payload)) where var is the return value,
+        # add: union_tag($result) == tag_index
+        # This handles constructors like xml-element, xml-text, etc. that allocate,
+        # set via deref, then return the pointer.
+        if fn_body is not None:
+            return_expr = self._get_return_expr(fn_body)
+            if isinstance(return_expr, Symbol):
+                union_new_form = self._find_set_deref_union_new(fn_body, return_expr.name)
+                if union_new_form is not None:
+                    tag_axiom = self._extract_union_tag_axiom(union_new_form, translator)
+                    if tag_axiom is not None:
+                        solver.add(tag_axiom)
+
         # Phase 5: Add conditional record-new axioms
         # For (if cond (record-new Type (f1 v1) ...) else), add: cond => field_f1($result) == v1
         # Use _get_return_expr to handle let/do wrappers
@@ -2688,6 +2904,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None:
             call_postcond_axioms = self._extract_call_postcondition_axioms(fn_body, translator)
             for axiom in call_postcond_axioms:
+                solver.add(axiom)
+
+        # Phase 12b: String operation axioms
+        # Add semantic connections between string-concat, starts-with, and string-len.
+        # Without these, Z3 treats them as uninterpreted functions with no relationships.
+        if fn_body is not None and postconditions:
+            string_axioms = self._generate_string_operation_axioms(fn_body, postconditions, translator)
+            for axiom in string_axioms:
                 solver.add(axiom)
 
         # Phase 13: Inductive loop verification

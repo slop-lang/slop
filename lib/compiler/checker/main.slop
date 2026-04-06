@@ -600,7 +600,8 @@
                   ((ok context-ast)
                     (do
                       (collect-module env context-ast)
-                      (resolve-imports env context-ast)))
+                      (resolve-imports env context-ast)
+                      (env-clear-diagnostics env)))
                   ((error _) (do)))))))))
     ;; 2. Push scope and bind params if provided
     (env-push-scope env)

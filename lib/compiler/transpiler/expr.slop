@@ -23,7 +23,9 @@
     extract-map-key-from-slop-type extract-map-value-from-slop-type
     slop-value-type-to-c-type
     ;; Set/Map type detection
-    is-set-type is-map-type)
+    is-set-type is-map-type
+    ;; Pointer detection
+    is-pointer-expr)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
@@ -36,7 +38,8 @@
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
                    ctx-add-warning ctx-warn-fallback ctx-has-trampoline ctx-add-trampoline ctx-skip-trampoline-generation
-                   ctx-register-generic-instantiation ctx-has-generic-instantiation mangle-generic-fn-name))
+                   ctx-register-generic-instantiation ctx-has-generic-instantiation mangle-generic-fn-name
+                   ends-with-star))
   (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string
                  get-node-resolved-type resolved-type-to-c))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
@@ -1394,13 +1397,19 @@
                                     (match (deref field-expr)
                                       ((sym field-sym)
                                         (let ((field-name (. field-sym name)))
-                                          ;; Get object's type, then look up field's slop-type
-                                          (let ((obj-c-type (infer-expr-c-type ctx obj-expr)))
+                                          ;; Get object's type, strip pointer suffix for field lookup
+                                          (let ((obj-c-type-raw (infer-expr-c-type ctx obj-expr))
+                                                (obj-c-type (if (ends-with obj-c-type-raw "*")
+                                                              (substring arena obj-c-type-raw 0 (- (. obj-c-type-raw len) 1))
+                                                              obj-c-type-raw)))
                                             (match (ctx-lookup-field-slop-type ctx obj-c-type field-name)
                                               ((some slop-type) slop-type)
                                               ((none)
-                                                ;; Try with SLOP type
-                                                (let ((obj-slop-type (infer-expr-slop-type ctx obj-expr)))
+                                                ;; Try with SLOP type, stripping (Ptr ...) wrapper if present
+                                                (let ((obj-slop-type-raw (infer-expr-slop-type ctx obj-expr))
+                                                      (obj-slop-type (if (starts-with obj-slop-type-raw "(Ptr ")
+                                                                       (substring arena obj-slop-type-raw 5 (- (. obj-slop-type-raw len) 6))
+                                                                       obj-slop-type-raw)))
                                                   (match (ctx-lookup-field-slop-type ctx obj-slop-type field-name)
                                                     ((some slop-type2) slop-type2)
                                                     ((none) ""))))))))
@@ -1466,6 +1475,12 @@
                                     (ctx-str3 ctx "(Ptr (Chan " type-str "))")))
                                 ((none) ""))
                               ""))
+                          ;; ? (try) operator: extract ok type from Result
+                          ((and (string-eq op "?") (>= len 2))
+                            (match (list-get items 1)
+                              ((some inner-expr)
+                                (infer-result-ok-slop-type ctx inner-expr))
+                              ((none) "")))
                           ;; Default: check if it's a function call
                           (else
                             (match (ctx-lookup-func ctx op)
@@ -1951,8 +1966,9 @@
         (let ((name (. sym name)))
           (match (ctx-lookup-var ctx name)
             ((some var-entry)
-              (let ((c-type (. var-entry c-type)))
-                (ends-with c-type "*")))
+              (or (. var-entry is-pointer)
+                  (let ((c-type (. var-entry c-type)))
+                    (ends-with c-type "*"))))
             ((none) false))))
       ((lst lst)
         (let ((items (. lst items)))
@@ -2170,6 +2186,9 @@
                     ;; while as expression (side effect only, returns 0)
                     ((and (string-eq op "while") (>= len 3))
                       (transpile-while-expr ctx items))
+                    ;; break/continue as expression (inside do blocks in loops)
+                    ((or (string-eq op "break") (string-eq op "continue"))
+                      op)
                     ;; Annotations (@loop-invariant, @property, etc.) - no-op, returns 0
                     ;; (bare "@" is array indexing, handled below)
                     ((and (starts-with op "@") (not (string-eq op "@")))
@@ -4241,20 +4260,25 @@
               (else (do))))
           ((none) (do)))
         (set! i (+ i 1)))
-      ;; Build the full expression with inferred result type
-      (if (string-eq result-type "void")
-        ;; Void match - no result variable, execute for side effects only
-        (let ((s1 (ctx-str ctx "({ __auto_type _mv = " scrutinee-c))
-              (s2 (ctx-str ctx s1 "; switch (_mv.tag) { "))
-              (s3 (ctx-str ctx s2 cases))
-              (s4 (ctx-str ctx s3 " } (void)0; })")))
-          s4)
-        ;; Non-void match with result variable
-        (let ((s1 (ctx-str ctx "({ __auto_type _mv = " scrutinee-c))
-              (s2 (ctx-str ctx s1 (ctx-str ctx "; " (ctx-str ctx result-type " _mr = {0}; switch (_mv.tag) { "))))
-              (s3 (ctx-str ctx s2 cases))
-              (s4 (ctx-str ctx s3 " } _mr; })")))
-          s4))))
+      ;; Detect pointer scrutinee and dereference so .tag/.data accesses work
+      (let ((scrut-c-type (infer-expr-c-type ctx scrutinee))
+            (scrut-val (if (or (ends-with-star scrut-c-type) (is-pointer-expr ctx scrutinee))
+                         (ctx-str3 ctx "*(" scrutinee-c ")")
+                         scrutinee-c)))
+        ;; Build the full expression with inferred result type
+        (if (string-eq result-type "void")
+          ;; Void match - no result variable, execute for side effects only
+          (let ((s1 (ctx-str ctx "({ __auto_type _mv = " scrut-val))
+                (s2 (ctx-str ctx s1 "; switch (_mv.tag) { "))
+                (s3 (ctx-str ctx s2 cases))
+                (s4 (ctx-str ctx s3 " } (void)0; })")))
+            s4)
+          ;; Non-void match with result variable
+          (let ((s1 (ctx-str ctx "({ __auto_type _mv = " scrut-val))
+                (s2 (ctx-str ctx s1 (ctx-str ctx "; " (ctx-str ctx result-type " _mr = {0}; switch (_mv.tag) { "))))
+                (s3 (ctx-str ctx s2 cases))
+                (s4 (ctx-str ctx s3 " } _mr; })")))
+            s4)))))
 
   (fn typed-none ((ctx (Ptr TranspileContext)) (result-type String) (body String))
     (@intent "Convert 'none' to typed none if result type is an Option type")
@@ -5845,7 +5869,9 @@
                         (ctx-str3 ctx "; for (size_t _i = 0; _i < _coll.len; _i++) { __auto_type " var-name " = _coll.data[_i]; "))))
       ;; Bind loop variable for body expressions with inferred element type
       (ctx-push-scope ctx)
-      (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false false "" ""))
+      (let ((is-ptr-elem (starts-with elem-slop-type "(Ptr "))
+            (elem-c-type (if is-ptr-elem (slop-type-to-c-type ctx elem-slop-type) "auto")))
+        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type is-ptr-elem false false "" "")))
       ;; Process body expressions
       (let ((mut i 2))
         (while (< i len)

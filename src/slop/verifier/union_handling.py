@@ -274,6 +274,54 @@ class UnionHandlingMixin:
 
         return tag_func(result_var) == z3.IntVal(tag_idx)
 
+    def _find_set_deref_union_new(self, expr: SExpr, target_var: str) -> Optional[SList]:
+        """Find (set! (deref target_var) (union-new ...)) in body, return the union-new form.
+
+        Recursively walks do, let, nested let bodies looking for
+        (set! (deref <target_var>) (union-new ...)).
+        Returns the union-new SList if found, None otherwise.
+        """
+        if not isinstance(expr, SList) or len(expr) < 1:
+            return None
+
+        head = expr[0]
+        if not isinstance(head, Symbol):
+            return None
+
+        # Direct match: (set! (deref target_var) (union-new ...))
+        if head.name == 'set!' and len(expr) >= 3:
+            dest = expr[1]
+            value = expr[2]
+            if (is_form(dest, 'deref') and len(dest) >= 2 and
+                isinstance(dest[1], Symbol) and dest[1].name == target_var and
+                is_form(value, 'union-new')):
+                return value
+
+        # Walk into do blocks
+        if head.name == 'do':
+            for item in expr.items[1:]:
+                result = self._find_set_deref_union_new(item, target_var)
+                if result is not None:
+                    return result
+
+        # Walk into let blocks
+        if head.name == 'let' and len(expr) >= 3:
+            # Check bindings for set! in initializers
+            bindings = expr[1]
+            if isinstance(bindings, SList):
+                for binding in bindings.items:
+                    if isinstance(binding, SList) and len(binding) >= 2:
+                        result = self._find_set_deref_union_new(binding[-1], target_var)
+                        if result is not None:
+                            return result
+            # Check body expressions
+            for body_expr in expr.items[2:]:
+                result = self._find_set_deref_union_new(body_expr, target_var)
+                if result is not None:
+                    return result
+
+        return None
+
     def _extract_union_new_field_axioms(self, union_new: SList, translator: Z3Translator) -> List:
         """Extract field axioms for union-new with record-new payload.
 
@@ -457,37 +505,19 @@ class UnionHandlingMixin:
         """Find the first -eq function call or == operator in an expression.
 
         Returns:
-        - Function name ending in -eq (e.g., 'iri-eq', 'string-eq')
-        - '==' if the expression uses native equality OR if a -eq function
-          would inline to native equality
+        - Function name ending in -eq (e.g., 'num-eq', 'str-eq', 'iri-eq')
+        - '==' if the expression uses native equality directly
         - None if no equality comparison found
 
-        Note: If a -eq function is simple inlinable, we return what it INLINES TO
-        rather than the function name itself. This ensures union equality axioms
-        match the actual Z3 expressions generated during body translation.
-
-        Examples:
-        - (num-eq a b) where num-eq body is (== a b) → returns '=='
-        - (str-eq a b) where str-eq body is (string-eq a b) → returns 'string-eq'
-        - (iri-eq a b) where iri-eq body is (string-eq (. a value) ...) → returns 'iri-eq'
-          (not inlined because body isn't simple param comparison)
+        Since -eq functions are not inlined in the Z3 translator, we return
+        the function name as-is so Phase 11 axioms reference the same
+        uninterpreted function symbols that appear in the translated body.
         """
         if isinstance(expr, SList) and len(expr) >= 1:
             head = expr[0]
             if isinstance(head, Symbol):
                 # Check for -eq function call
                 if head.name.endswith('-eq'):
-                    # Check if this function inlines to native equality
-                    if (self.function_registry and
-                        self.function_registry.inlines_to_native_equality(head.name)):
-                        return '=='
-
-                    # Check if this function inlines to another -eq function
-                    if self.function_registry:
-                        inlined_eq = self._get_inlined_equality_func(head.name)
-                        if inlined_eq:
-                            return inlined_eq
-
                     return head.name
                 # Check for == operator (native equality)
                 if head.name == '==':
@@ -499,39 +529,6 @@ class UnionHandlingMixin:
                     return result
         return None
 
-    def _get_inlined_equality_func(self, name: str) -> Optional[str]:
-        """If function inlines to a simple equality call, return that function name.
-
-        For example, if str-eq has body (string-eq a b), returns 'string-eq'.
-        Returns None if the function doesn't inline to a simple equality.
-        """
-        if not self.function_registry:
-            return None
-
-        fn = self.function_registry.functions.get(name)
-        if not fn or not fn.body or not fn.is_pure:
-            return None
-
-        if not self.function_registry.is_simple_inlinable(name):
-            return None
-
-        # Check if body is (some-eq-func param1 param2)
-        body = fn.body
-        if not isinstance(body, SList) or len(body) < 3:
-            return None
-
-        head = body[0]
-        if not isinstance(head, Symbol):
-            return None
-
-        # Check if it's an equality-like function call on parameters
-        if head.name == '==' or head.name.endswith('-eq'):
-            arg1, arg2 = body[1], body[2]
-            if isinstance(arg1, Symbol) and isinstance(arg2, Symbol):
-                if arg1.name in fn.params and arg2.name in fn.params:
-                    return head.name
-
-        return None
 
     def _extract_union_equality_axioms(self, fn_form: SList, fn_body: SExpr,
                                         translator: Z3Translator) -> List:

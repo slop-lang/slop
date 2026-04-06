@@ -6,6 +6,8 @@ into Z3 SMT solver constraints for verification purposes.
 """
 from __future__ import annotations
 
+import hashlib
+import struct
 from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
 
 from slop.parser import SList, Symbol, String, Number, is_form
@@ -21,6 +23,15 @@ from .types import MinimalTypeEnv, ImportedDefinitions
 if TYPE_CHECKING:
     from slop.parser import SExpr
     from .registry import FunctionRegistry
+
+
+def _str_hash(s: str) -> int:
+    """Deterministic string hash for Z3 integer encoding.
+
+    Uses MD5 truncated to 31 bits. Unlike Python's hash(), this is
+    stable across processes regardless of PYTHONHASHSEED.
+    """
+    return struct.unpack('<I', hashlib.md5(s.encode()).digest()[:4])[0] % (2**31)
 
 
 class Z3Translator:
@@ -44,6 +55,7 @@ class Z3Translator:
         self.use_array_encoding = use_array_encoding
         self.list_arrays: Dict[str, Tuple[z3.ArrayRef, z3.ArithRef]] = {}
         self._array_counter = 0  # Counter for unique array names
+        self._alloc_counter = 0  # Counter for unique arena-alloc variable names
         # Sequence encoding for lists: maps list variable name to Seq variable
         # Seq encoding enables proper reasoning about list contents via Z3's native Sequence theory
         self.use_seq_encoding = use_seq_encoding
@@ -936,11 +948,11 @@ class Z3Translator:
                     if pred_expr.name in self.imported_defs.constants:
                         const = self.imported_defs.constants[pred_expr.name]
                         if isinstance(const.value, str):
-                            pred_hash = z3.IntVal(hash(const.value) % (2**31))
+                            pred_hash = z3.IntVal(_str_hash(const.value))
                     elif pred_expr.name in self.variables:
                         pred_hash = self.variables[pred_expr.name]
                 elif isinstance(pred_expr, String):
-                    pred_hash = z3.IntVal(hash(pred_expr.value) % (2**31))
+                    pred_hash = z3.IntVal(_str_hash(pred_expr.value))
 
                 if pred_hash is None:
                     pred_hash = self.translate_expr(pred_expr)
@@ -1043,7 +1055,7 @@ class Z3Translator:
         if isinstance(expr, String):
             # Model string as unique integer ID with known length
             # Use a hash to create a unique identifier
-            str_id = hash(expr.value) % (2**31)
+            str_id = _str_hash(expr.value)
             str_var = z3.IntVal(str_id)
             # Track string length for this specific string value
             func_name = "string_len"
@@ -1211,7 +1223,7 @@ class Z3Translator:
                         # Get form name and hash it for comparison
                         form_name = expr[2]
                         if isinstance(form_name, String):
-                            name_hash = hash(form_name.value) % (2**31)
+                            name_hash = _str_hash(form_name.value)
                         else:
                             name_hash = 0
                         return func(form_expr) == z3.IntVal(name_hash)
@@ -1303,6 +1315,13 @@ class Z3Translator:
                         self.constraints.append(tag_func(result) == z3.IntVal(0))
                     return result
 
+                # arena-alloc always returns non-nil pointer (runtime aborts on OOM)
+                if op == 'arena-alloc':
+                    alloc_var = z3.Int(f"_arena_alloc_{self._alloc_counter}")
+                    self._alloc_counter += 1
+                    self.constraints.append(alloc_var != z3.IntVal(0))
+                    return alloc_var
+
                 # record-new produces a fresh abstract value
                 # (record-new TypeName (field1 val1) ...) -> fresh Int constant
                 if op == 'record-new':
@@ -1349,10 +1368,10 @@ class Z3Translator:
                 return z3.IntVal(int(const.value))
             elif isinstance(const.value, str):
                 # For string constants, use a hash as a unique identifier
-                return z3.IntVal(hash(const.value) % (2**31))
+                return z3.IntVal(_str_hash(const.value))
             # If value is a symbol name, try to look it up
             elif const.value is not None:
-                return z3.IntVal(hash(str(const.value)) % (2**31))
+                return z3.IntVal(_str_hash(str(const.value)))
 
         # Shorthand dot notation: t.field -> (. t field)
         if '.' in name and not name.startswith('.'):
@@ -1935,7 +1954,10 @@ class Z3Translator:
                     return self._translate_field_for_obj(arg, field_name)
 
         # Try to inline simple pure functions (e.g., iri-eq, blank-eq)
-        if self.function_registry and self.function_registry.is_simple_inlinable(fn_name):
+        # Skip inlining for -eq functions: they must remain as uninterpreted functions
+        # so Phase 2 (reflexivity) and Phase 11 (union equality) axioms apply correctly.
+        if (self.function_registry and self.function_registry.is_simple_inlinable(fn_name)
+                and not fn_name.endswith('-eq')):
             fn_def = self.function_registry.functions[fn_name]
             if fn_def.body and len(fn_def.params) == len(expr.items) - 1:
                 # Build parameter -> argument mapping
