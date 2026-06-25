@@ -900,7 +900,11 @@ def build_prompt(
         "   - If return type is (Result T ApiError), use (error 'bad-request) or (error 'not-found)",
         "   - The error variant MUST come from the declared error enum in the @spec",
         "   - Remember: 'bad-request is ONE token, not (quote bad-request)",
-        "9. POINTER ALLOCATION: To allocate and cast to a pointer type:",
+        "9. MUTABLE OPTION/RESULT: Always use explicit types for mutable Option/Result bindings:",
+        "   - CORRECT: (mut result (Option String) (none))  - explicit type annotation",
+        "   - WRONG: (mut result (none))  - ambiguous, checker can't infer Option's inner type",
+        "   - Same for Result: (mut state (Result Int String) (ok 0))",
+        "10. POINTER ALLOCATION: To allocate and cast to a pointer type:",
         "   - CORRECT: (cast (Ptr User) (arena-alloc arena (sizeof User)))",
         "   - WRONG: (Ptr User (arena-alloc ...))  -- Ptr is NOT a function!",
         "   - The pattern is: (cast (Ptr Type) allocation-expression)",
@@ -1182,6 +1186,16 @@ def build_prompt(
     sections.append("Respond with ONLY the SLOP S-expression. No explanation.")
 
     return '\n'.join(sections)
+
+
+def _is_known_function_error(error_msg: str, defined_fns: set) -> bool:
+    """Check if error is 'Unknown function: X' where X is in defined_fns."""
+    if 'Unknown function' not in error_msg and 'forget to import' not in error_msg:
+        return False
+    for fn_name in defined_fns:
+        if f"'{fn_name}'" in error_msg:
+            return True
+    return False
 
 
 def _context_to_temp_file(type_defs: list) -> Optional[str]:
@@ -1685,8 +1699,9 @@ class HoleFiller:
             invalid_context = context_set - valid_items
             if invalid_context:
                 errors.append(f"Invalid context items (not defined): {', '.join(sorted(invalid_context))}")
-            # Allow built-in forms, built-in functions, enum variants, FFI functions, and context items
-            context_allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | enum_variants | ffi_names | context_set
+            # Allow built-in forms, built-in functions, enum variants, FFI functions, context items, and required items
+            required_set = set(hole.required) if hole.required else set()
+            context_allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | enum_variants | ffi_names | context_set | required_set
             disallowed = calls - context_allowed
             if disallowed:
                 errors.append(f"Only allowed to use: {', '.join(hole.context)}")
@@ -1765,6 +1780,32 @@ class HoleFiller:
                 pass
         if native_result is not None:
             errors, _, _ = native_result
+            # Filter out "unknown function" errors for functions we know exist
+            # (imported functions that native checker can't resolve in expr mode)
+            if errors and isinstance(context, dict):
+                defined_fns = set(context.get('defined_functions', []))
+                if defined_fns:
+                    pre_filter_count = len(errors)
+                    filtered_errors = [e for e in errors if not _is_known_function_error(e, defined_fns)]
+                    filtered_count = pre_filter_count - len(filtered_errors)
+                    if filtered_count > 0:
+                        logger.debug(f"Filtered {filtered_count} known-function error(s) from native checker")
+                        # If ALL errors were known-function errors, also filter cascading
+                        # type errors (e.g., "Branch types differ: Unknown vs X") that
+                        # result from the unknown function returning Unknown type
+                        if not filtered_errors:
+                            logger.debug("All native checker errors were known-function errors — expression passes")
+                        else:
+                            # Check if remaining errors are just cascading from filtered ones
+                            # (type mismatches mentioning "Unknown" are likely cascading)
+                            cascading = [e for e in filtered_errors
+                                         if 'Unknown' in e and ('type' in e.lower() or 'differ' in e.lower())]
+                            if cascading and len(cascading) == len(filtered_errors):
+                                logger.debug(f"Filtered {len(cascading)} cascading type error(s) from Unknown propagation")
+                                filtered_errors = []
+                    errors = filtered_errors
+                    if errors:
+                        logger.debug(f"Remaining native checker errors after filtering: {errors}")
             return errors
 
         # Native checker unavailable - allow expression (can't verify)

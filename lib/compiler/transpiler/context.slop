@@ -76,6 +76,8 @@
     ctx-start-function-buffer ctx-stop-function-buffer ctx-flush-function-buffer
     ;; Hash helper
     simple-hash
+    ;; String helpers
+    ends-with-star
     ;; Struct key type tracking
     ctx-register-struct-key-type ctx-has-struct-key-type ctx-get-struct-key-types
     ;; Type alias tracking for resolving Map/Set types

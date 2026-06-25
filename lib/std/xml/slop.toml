@@ -1,0 +1,36 @@
+[project]
+name = "xml"
+entry = "xml.slop"
+
+[build]
+type = "static"
+debug = false
+
+[providers.openrouter]
+type = "openai-compatible"
+base_url = "https://openrouter.ai/api/v1"
+api_key = "${OPENROUTER_API_KEY}"
+
+[tiers.tier-1]
+provider = "openrouter"
+model = "anthropic/claude-haiku-4.5"
+
+[tiers.tier-2]
+provider = "openrouter"
+model = "anthropic/claude-sonnet-4.5"
+
+[tiers.tier-3]
+provider = "openrouter"
+model = "anthropic/claude-sonnet-4.5"
+context_length = 8192
+temperature = 0.5
+
+[tiers.tier-4]
+provider = "openrouter"
+model = "anthropic/claude-opus-4.6"
+context_length = 128000
+temperature = 0.6
+
+[routing]
+max_retries = 2
+escalate_on_failure = true

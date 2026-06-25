@@ -61,6 +61,7 @@ run_unit_tests "lib/std/io" "io"
 run_unit_tests "lib/std/os" "os"
 run_unit_tests "lib/std/path" "path"
 run_unit_tests "lib/std/json" "json"
+run_unit_tests "lib/std/xml" "xml"
 
 echo ""
 
@@ -134,6 +135,9 @@ run_lib_test() {
 
 run_lib_test "$REPO_ROOT/lib/std/json/tests/json_test.slop" "json" \
     -I "$REPO_ROOT/lib/std/json" -I "$REPO_ROOT/lib/std/strlib"
+
+run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml" \
+    -I "$REPO_ROOT/lib/std/xml" -I "$REPO_ROOT/lib/std/strlib"
 
 echo ""
 

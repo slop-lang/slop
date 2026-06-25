@@ -625,10 +625,17 @@
                                 ((some type-info)
                                   type-info)
                                 ((none)
-                                  (let ((arena (env-arena env))
-                                        (msg (string-concat arena "Undefined variable: " name)))
-                                    (env-add-error env msg line col)
-                                    (env-get-int-type env)))))))))))))))
+                                  ;; Try looking up as an enum variant
+                                  (match (env-lookup-variant env name)
+                                    ((some enum-name)
+                                      (match (env-lookup-type env enum-name)
+                                        ((some t) t)
+                                        ((none) (env-get-int-type env))))
+                                    ((none)
+                                      (let ((arena (env-arena env))
+                                            (msg (string-concat arena "Undefined variable: " name)))
+                                        (env-add-error env msg line col)
+                                        (env-get-int-type env)))))))))))))))))
         ((num num)
           (env-get-int-type env))
         ((str str)
@@ -773,7 +780,7 @@
                                                                (msg (string-concat arena "for-each: cannot determine element type of '"
                                                                       (string-concat arena coll-name
                                                                         "' - collection has no inner type"))))
-                                                           (env-add-error env msg coll-line coll-col)
+                                                           (env-add-warning env msg coll-line coll-col)
                                                            (env-get-unknown-type env))))))
                                       ;; Push scope, bind var, infer body, pop scope
                                       (env-push-scope env)
@@ -871,6 +878,10 @@
                 ((some ret-expr) (let ((_ (infer-expr env ret-expr))) (do)))
                 ((none) (do))))
             (env-get-never-type env)))
+
+        ;; (break) / (continue) - Never type (divergent, loop control flow)
+        ((or (string-eq op "break") (string-eq op "continue"))
+          (env-get-never-type env))
 
         ;; Comparison operators return Bool
         ((or (string-eq op "==") (string-eq op "!=")
@@ -2229,7 +2240,7 @@
                                     (list-push parts "' has ambiguous Option type - add explicit type: (mut ")
                                     (list-push parts var-name)
                                     (list-push parts " (Option T) ...)")
-                                    (env-add-error env (string-build arena parts) line col)
+                                    (env-add-warning env (string-build arena parts) line col)
                                     (env-bind-var env var-name val-type))
                                   ;; Concrete type - just bind it
                                   (env-bind-var env var-name val-type))))
@@ -2435,6 +2446,24 @@
         ((none) false))
       false))
 
+  (fn is-checkable-annotation ((expr (Ptr SExpr)))
+    (@intent "Check if annotation has a condition that should be type-inferred")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (if (sexpr-is-list expr)
+      (match (sexpr-list-get expr 0)
+        ((some head)
+          (match (deref head)
+            ((sym sym)
+              (let ((name (. sym name)))
+                (or (string-eq name "@pre")
+                    (string-eq name "@post")
+                    (string-eq name "@assume")
+                    (string-eq name "@assert"))))
+            (_ false)))
+        ((none) false))
+      false))
+
   (fn infer-fn-body ((env (Ptr TypeEnv)) (fn-form (Ptr SExpr)))
     (@intent "Type check a function body, binding parameters and inferring body type")
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
@@ -2480,6 +2509,22 @@
                                                 (not (is-c-name-related items bi)))
                                        (set! body-type (infer-expr env body-expr))))
                                    ((none) (do))))
+                               ;; Second pass: infer types in contract annotations to populate resolved-type
+                               ;; This prevents fallback warnings in the transpiler
+                               (env-bind-var env "$result" body-type)
+                               (let ((saved-diags (env-get-diagnostics env)))
+                                 (for (bi 3 (+ last-body-idx 1))
+                                   (match (list-get items bi)
+                                     ((some ann-expr)
+                                       (when (is-checkable-annotation ann-expr)
+                                         (when (sexpr-is-list ann-expr)
+                                           (match (sexpr-list-get ann-expr 1)
+                                             ((some cond-expr)
+                                               (let ((_ (infer-expr env cond-expr)))
+                                                 (do)))
+                                             ((none) (do))))))
+                                     ((none) (do))))
+                                 (set! (. (deref env) diagnostics) saved-diags))
                                body-type))
                            (_ (env-get-unit-type env)))))
         ;; Check return type matches declared spec

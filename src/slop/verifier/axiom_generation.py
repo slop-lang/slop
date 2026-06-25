@@ -15,7 +15,8 @@ from .z3_setup import Z3_AVAILABLE, z3
 from .loop_patterns import (
     PushSiteInfo,
     FilterPatternInfo, MapPatternInfo, NestedLoopPatternInfo, CountPatternInfo,
-    FoldPatternInfo, InnerLoopInfo, FieldSource, MatchContext,
+    FoldPatternInfo, ExistsSearchPatternInfo, ConditionalPushPatternInfo,
+    InnerLoopInfo, FieldSource, MatchContext,
 )
 
 if TYPE_CHECKING:
@@ -1611,12 +1612,19 @@ class AxiomGenerationMixin:
                 continue
 
             # Check postconditions for pattern: (== $result (== a b))
+            found_eq_axiom = False
             for post in sig.postconditions:
                 eq_axiom = self._parse_equality_postcondition(
                     fn_name, sig.params, post, translator
                 )
                 if eq_axiom is not None:
                     axioms.append(eq_axiom)
+                    found_eq_axiom = True
+
+            # No fallback: if a function lacks an explicit (@post (== $result (== a b)))
+            # postcondition, we do NOT assume structural equality. Functions like
+            # approx-eq or case-insensitive comparisons would be unsound with that axiom.
+            # To get equality semantics, add the postcondition to the function definition.
 
         return axioms
 
@@ -1866,6 +1874,214 @@ class AxiomGenerationMixin:
                     return True
 
         return False
+
+    def _generate_exists_search_axioms(
+        self, pattern: ExistsSearchPatternInfo, translator: 'Z3Translator'
+    ) -> List[z3.BoolRef]:
+        """Generate axioms for an exists-search loop pattern.
+
+        For the pattern:
+          (let ((mut found false))
+            (for-each (v coll) (when pred (set! found true)))
+            (if found branch-when-found branch-when-not-found))
+
+        Determines which branch returns (none) vs (some ...) and generates:
+          union_tag($result) == none_tag ↔ ∃i: 0 <= i < Len(seq) ∧ pred(seq[i])
+
+        or the negation, depending on which branch is (none).
+        """
+        axioms: List[z3.BoolRef] = []
+
+        result_var = translator.variables.get('$result')
+        if result_var is None:
+            return axioms
+
+        # Determine which branch returns (none) and which returns (some ...)
+        # (none) has union tag 0, (some ...) has tag 1
+        found_returns_none = (isinstance(pattern.return_when_found, SList) and
+                              is_form(pattern.return_when_found, 'none'))
+        not_found_returns_none = (isinstance(pattern.return_when_not_found, SList) and
+                                  is_form(pattern.return_when_not_found, 'none'))
+
+        if not found_returns_none and not not_found_returns_none:
+            # Check for bare symbol 'none'
+            found_returns_none = (isinstance(pattern.return_when_found, Symbol) and
+                                  pattern.return_when_found.name == 'none')
+            not_found_returns_none = (isinstance(pattern.return_when_not_found, Symbol) and
+                                      pattern.return_when_not_found.name == 'none')
+
+        if not found_returns_none and not not_found_returns_none:
+            return axioms
+
+        # Get or create union_tag function
+        tag_func_name = "union_tag"
+        if tag_func_name not in translator.variables:
+            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+            translator.variables[tag_func_name] = tag_func
+        else:
+            tag_func = translator.variables[tag_func_name]
+
+        # Get collection sequence
+        if not translator.use_seq_encoding:
+            return axioms
+
+        seq = translator._get_or_create_collection_seq(pattern.collection)
+        if seq is None:
+            return axioms
+
+        # Create index variable and element at that index
+        idx_var = z3.Int(f'_exists_search_idx')
+        elem_at_idx = seq[idx_var]
+
+        # Translate the predicate with loop_var bound to seq[idx]
+        old_binding = translator.variables.get(pattern.loop_var)
+        try:
+            translator.variables[pattern.loop_var] = elem_at_idx
+            pred_z3 = translator.translate_expr(pattern.predicate)
+        finally:
+            if old_binding is not None:
+                translator.variables[pattern.loop_var] = old_binding
+            elif pattern.loop_var in translator.variables:
+                del translator.variables[pattern.loop_var]
+
+        if pred_z3 is None or not z3.is_bool(pred_z3):
+            return axioms
+
+        # Build existential: ∃i: 0 <= i < Length(seq) ∧ pred(seq[i])
+        existential = z3.Exists([idx_var], z3.And(
+            idx_var >= 0,
+            idx_var < z3.Length(seq),
+            pred_z3
+        ))
+
+        # none tag is 0 in the Option type encoding
+        none_tag = z3.IntVal(0)
+
+        if found_returns_none:
+            # found=true → (none), found=false → (some ...)
+            # So: union_tag($result) == 0 ↔ ∃v: pred(v)
+            axioms.append((tag_func(result_var) == none_tag) == existential)
+        else:
+            # found=true → (some ...), found=false → (none)
+            # So: union_tag($result) == 0 ↔ ¬∃v: pred(v)
+            axioms.append((tag_func(result_var) == none_tag) == z3.Not(existential))
+
+        return axioms
+
+    def _generate_emptiness_universality_axioms(
+        self, pattern: ConditionalPushPatternInfo, translator: 'Z3Translator'
+    ) -> List[z3.BoolRef]:
+        """Generate emptiness-universality axioms for nested conditional push.
+
+        For nested for-each loops with conditional push via enum match,
+        generates:
+          Length(seq_$result) == 0 ↔
+            ForAll i,j: 0 <= i < Len(outer_seq) ∧ 0 <= j < Len(inner_seq)
+              → no_push_condition(outer_seq[i], inner_seq[j])
+
+        This enables proving properties like:
+          (== (list-len $result) 0)
+            ↔ (forall (v coll1) (forall (o coll2) (== (fn v o) variant)))
+        """
+        axioms: List[z3.BoolRef] = []
+
+        if not translator.use_seq_encoding:
+            return axioms
+
+        # Get result sequence
+        result_seq = translator.list_seqs.get('$result')
+        if result_seq is None:
+            return axioms
+
+        # Get outer collection sequence
+        outer_seq = translator._get_or_create_collection_seq(pattern.outer_collection)
+        if outer_seq is None:
+            return axioms
+
+        # Get inner collection sequence — use resolved expression if available
+        inner_coll_for_seq = pattern.inner_collection_resolved or pattern.inner_collection
+        inner_seq = translator._get_or_create_collection_seq(inner_coll_for_seq)
+        if inner_seq is None:
+            return axioms
+
+        # Also equate the let-bound variable seq with the resolved seq
+        # (e.g., seq_other-values == seq_fn_resolve-path_...)
+        if (pattern.inner_collection_resolved is not None and
+                isinstance(pattern.inner_collection, Symbol)):
+            let_seq = translator._get_or_create_collection_seq(pattern.inner_collection)
+            if let_seq is not None and not z3.eq(let_seq, inner_seq):
+                axioms.append(let_seq == inner_seq)
+
+        # Use the same index variable naming as the translator (_idx_{loop_var})
+        # so Z3 can syntactically match with property expressions
+        i_var = z3.Int(f'_idx_{pattern.outer_loop_var}')
+        j_var = z3.Int(f'_idx_{pattern.inner_loop_var}')
+
+        # Bind loop vars to seq elements
+        outer_elem = outer_seq[i_var]
+        inner_elem = inner_seq[j_var]
+
+        old_outer = translator.variables.get(pattern.outer_loop_var)
+        old_inner = translator.variables.get(pattern.inner_loop_var)
+
+        try:
+            translator.variables[pattern.outer_loop_var] = outer_elem
+            translator.variables[pattern.inner_loop_var] = inner_elem
+
+            # Translate the match scrutinee (resolved through let bindings)
+            scrutinee_z3 = translator.translate_expr(pattern.match_scrutinee_resolved)
+            if scrutinee_z3 is None:
+                return axioms
+
+            # Build the no-push condition
+            if pattern.no_push_tag is not None:
+                # No push when scrutinee == no_push_tag
+                tag_z3 = translator.translate_expr(Symbol(pattern.no_push_tag))
+                if tag_z3 is None:
+                    return axioms
+                no_push_cond = (scrutinee_z3 == tag_z3)
+            elif pattern.push_tag is not None:
+                # Push when scrutinee == push_tag, so no push when !=
+                tag_z3 = translator.translate_expr(Symbol(pattern.push_tag))
+                if tag_z3 is None:
+                    return axioms
+                no_push_cond = (scrutinee_z3 != tag_z3)
+            else:
+                return axioms
+
+        finally:
+            if old_outer is not None:
+                translator.variables[pattern.outer_loop_var] = old_outer
+            elif pattern.outer_loop_var in translator.variables:
+                del translator.variables[pattern.outer_loop_var]
+            if old_inner is not None:
+                translator.variables[pattern.inner_loop_var] = old_inner
+            elif pattern.inner_loop_var in translator.variables:
+                del translator.variables[pattern.inner_loop_var]
+
+        # Build: Length($result) == 0 ↔
+        #   ForAll i,j: (0 <= i < Len(outer) ∧ 0 <= j < Len(inner)) → no_push_cond
+        # IMPORTANT: Must match the And nesting from translator._translate_forall_collection
+        # which builds z3.And(z3.And(i>=0, i<Len), z3.And(j>=0, j<Len)) — nested 2-ary Ands.
+        # A flat 4-ary And is semantically equivalent but Z3 can't match them structurally.
+        implication = z3.Implies(
+            z3.And(
+                z3.And(i_var >= 0, i_var < z3.Length(outer_seq)),
+                z3.And(j_var >= 0, j_var < z3.Length(inner_seq)),
+            ),
+            no_push_cond
+        )
+        multi_pat = z3.MultiPattern(outer_elem, inner_elem)
+        universality = z3.ForAll(
+            [i_var, j_var], implication, patterns=[multi_pat]
+        )
+
+        # Match the exact Z3 AST structure the translator produces for the property:
+        #   ForAll(...) == (0 == Length($result))
+        # The operand order matters — (0 == Length) not (Length == 0)
+        axioms.append(universality == (z3.IntVal(0) == z3.Length(result_seq)))
+
+        return axioms
 
     def _generate_filter_axioms(self, pattern: FilterPatternInfo,
                                 translator: Z3Translator) -> List:

@@ -6,6 +6,8 @@ into Z3 SMT solver constraints for verification purposes.
 """
 from __future__ import annotations
 
+import hashlib
+import struct
 from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
 
 from slop.parser import SList, Symbol, String, Number, is_form
@@ -21,6 +23,15 @@ from .types import MinimalTypeEnv, ImportedDefinitions
 if TYPE_CHECKING:
     from slop.parser import SExpr
     from .registry import FunctionRegistry
+
+
+def _str_hash(s: str) -> int:
+    """Deterministic string hash for Z3 integer encoding.
+
+    Uses MD5 truncated to 31 bits. Unlike Python's hash(), this is
+    stable across processes regardless of PYTHONHASHSEED.
+    """
+    return struct.unpack('<I', hashlib.md5(s.encode()).digest()[:4])[0] % (2**31)
 
 
 class Z3Translator:
@@ -44,11 +55,14 @@ class Z3Translator:
         self.use_array_encoding = use_array_encoding
         self.list_arrays: Dict[str, Tuple[z3.ArrayRef, z3.ArithRef]] = {}
         self._array_counter = 0  # Counter for unique array names
+        self._alloc_counter = 0  # Counter for unique arena-alloc variable names
         # Sequence encoding for lists: maps list variable name to Seq variable
         # Seq encoding enables proper reasoning about list contents via Z3's native Sequence theory
         self.use_seq_encoding = use_seq_encoding
         self.list_seqs: Dict[str, z3.SeqRef] = {}
         self._seq_counter = 0  # Counter for unique seq names
+        self._record_new_counter = 0  # Counter for unique record-new values
+        self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
         self._build_enum_map()
 
     def _build_enum_map(self):
@@ -72,6 +86,7 @@ class Z3Translator:
                 for i, variant in enumerate(typ.variants):
                     self.enum_values[variant] = i
                     self.enum_values[f"'{variant}"] = i
+                    self.enum_type_variants.add(variant)
             elif isinstance(typ, UnionType):
                 # Union variants also need indices for match expressions
                 for i, variant in enumerate(typ.variants.keys()):
@@ -85,6 +100,7 @@ class Z3Translator:
                     if variant not in self.enum_values:
                         self.enum_values[variant] = i
                         self.enum_values[f"'{variant}"] = i
+                    self.enum_type_variants.add(variant)
             elif isinstance(typ, UnionType):
                 for i, variant in enumerate(typ.variants.keys()):
                     if variant not in self.enum_values:
@@ -932,11 +948,11 @@ class Z3Translator:
                     if pred_expr.name in self.imported_defs.constants:
                         const = self.imported_defs.constants[pred_expr.name]
                         if isinstance(const.value, str):
-                            pred_hash = z3.IntVal(hash(const.value) % (2**31))
+                            pred_hash = z3.IntVal(_str_hash(const.value))
                     elif pred_expr.name in self.variables:
                         pred_hash = self.variables[pred_expr.name]
                 elif isinstance(pred_expr, String):
-                    pred_hash = z3.IntVal(hash(pred_expr.value) % (2**31))
+                    pred_hash = z3.IntVal(_str_hash(pred_expr.value))
 
                 if pred_hash is None:
                     pred_hash = self.translate_expr(pred_expr)
@@ -1039,7 +1055,7 @@ class Z3Translator:
         if isinstance(expr, String):
             # Model string as unique integer ID with known length
             # Use a hash to create a unique identifier
-            str_id = hash(expr.value) % (2**31)
+            str_id = _str_hash(expr.value)
             str_var = z3.IntVal(str_id)
             # Track string length for this specific string value
             func_name = "string_len"
@@ -1207,7 +1223,7 @@ class Z3Translator:
                         # Get form name and hash it for comparison
                         form_name = expr[2]
                         if isinstance(form_name, String):
-                            name_hash = hash(form_name.value) % (2**31)
+                            name_hash = _str_hash(form_name.value)
                         else:
                             name_hash = 0
                         return func(form_expr) == z3.IntVal(name_hash)
@@ -1299,6 +1315,19 @@ class Z3Translator:
                         self.constraints.append(tag_func(result) == z3.IntVal(0))
                     return result
 
+                # arena-alloc always returns non-nil pointer (runtime aborts on OOM)
+                if op == 'arena-alloc':
+                    alloc_var = z3.Int(f"_arena_alloc_{self._alloc_counter}")
+                    self._alloc_counter += 1
+                    self.constraints.append(alloc_var != z3.IntVal(0))
+                    return alloc_var
+
+                # record-new produces a fresh abstract value
+                # (record-new TypeName (field1 val1) ...) -> fresh Int constant
+                if op == 'record-new':
+                    self._record_new_counter += 1
+                    return z3.Int(f"record_new_{self._record_new_counter}")
+
                 # Handle potential user-defined function calls
                 # This is a fallback for functions not handled above
                 return self._translate_function_call(expr)
@@ -1339,10 +1368,10 @@ class Z3Translator:
                 return z3.IntVal(int(const.value))
             elif isinstance(const.value, str):
                 # For string constants, use a hash as a unique identifier
-                return z3.IntVal(hash(const.value) % (2**31))
+                return z3.IntVal(_str_hash(const.value))
             # If value is a symbol name, try to look it up
             elif const.value is not None:
-                return z3.IntVal(hash(str(const.value)) % (2**31))
+                return z3.IntVal(_str_hash(str(const.value)))
 
         # Shorthand dot notation: t.field -> (. t field)
         if '.' in name and not name.startswith('.'):
@@ -1363,6 +1392,10 @@ class Z3Translator:
         typ = self.type_env.lookup_var(name)
         if typ:
             return self.declare_variable(name, typ)
+
+        # Check enum values for bare (unquoted) enum variants
+        if name in self.enum_values:
+            return z3.IntVal(self.enum_values[name])
 
         return None
 
@@ -1730,14 +1763,13 @@ class Z3Translator:
         return result
 
     def _translate_match(self, expr: SList) -> Optional[z3.ExprRef]:
-        """Translate match expression for union types.
+        """Translate match expression for union and enum types.
 
         Pattern: (match expr ((tag1 var) body1) ((tag2 var) body2) ...)
 
         Translation strategy:
-        - Track union discriminator with uninterpreted function union_tag(expr) -> Int
-        - Each pattern (tag var) maps to tag index
-        - Build nested z3.If() based on tag equality
+        - For union types: use union_tag(expr) -> Int as discriminator
+        - For enum types: the scrutinee IS the tag value (integer), compare directly
         """
         if len(expr) < 3:
             return None
@@ -1746,15 +1778,21 @@ class Z3Translator:
         if scrutinee is None:
             return None
 
-        # Get or create tag discriminator function
-        tag_func_name = "union_tag"
-        if tag_func_name not in self.variables:
-            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
-            self.variables[tag_func_name] = tag_func
-        else:
-            tag_func = self.variables[tag_func_name]
+        # Detect if this is an enum match by checking arm tags
+        is_enum_match = self._is_enum_match(expr)
 
-        tag_value = tag_func(scrutinee)
+        if is_enum_match:
+            # For enums, the scrutinee value IS the discriminator
+            tag_value = scrutinee
+        else:
+            # For unions, use uninterpreted union_tag() function
+            tag_func_name = "union_tag"
+            if tag_func_name not in self.variables:
+                tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
+                self.variables[tag_func_name] = tag_func
+            else:
+                tag_func = self.variables[tag_func_name]
+            tag_value = tag_func(scrutinee)
 
         # Process clauses in reverse to build nested If
         result: Optional[z3.ExprRef] = None
@@ -1820,6 +1858,43 @@ class Z3Translator:
 
         return result
 
+    def _is_enum_match(self, expr: SList) -> bool:
+        """Check if a match expression is matching on an enum type (not a union).
+
+        For enum matches, the scrutinee IS the integer tag value and should be
+        compared directly. For union matches, union_tag() must be used.
+
+        Returns True if all non-wildcard arm patterns reference enum type variants.
+        Returns False for empty clause lists.
+        """
+        has_enum_arm = False
+        for clause in expr.items[2:]:
+            if not isinstance(clause, SList) or len(clause) < 2:
+                continue
+            pattern = clause[0]
+            if isinstance(pattern, Symbol):
+                if pattern.name == '_':
+                    continue
+                # Simple tag pattern - check if it's an enum variant
+                tag = pattern.name.lstrip("'")
+                if tag not in self.enum_type_variants:
+                    return False
+                has_enum_arm = True
+            elif isinstance(pattern, SList) and len(pattern) >= 1:
+                tag_elem = pattern[0]
+                tag = None
+                if isinstance(tag_elem, Symbol):
+                    tag = tag_elem.name.lstrip("'")
+                elif is_form(tag_elem, 'quote') and len(tag_elem) >= 2:
+                    inner = tag_elem[1]
+                    tag = inner.name if isinstance(inner, Symbol) else None
+                if tag is None or tag not in self.enum_type_variants:
+                    return False
+                has_enum_arm = True
+            else:
+                return False
+        return has_enum_arm
+
     def _translate_with_substitution(self, expr: SExpr, param_map: Dict[str, 'z3.ExprRef']) -> Optional[z3.ExprRef]:
         """Translate expression with parameter substitution for function inlining.
 
@@ -1879,7 +1954,10 @@ class Z3Translator:
                     return self._translate_field_for_obj(arg, field_name)
 
         # Try to inline simple pure functions (e.g., iri-eq, blank-eq)
-        if self.function_registry and self.function_registry.is_simple_inlinable(fn_name):
+        # Skip inlining for -eq functions: they must remain as uninterpreted functions
+        # so Phase 2 (reflexivity) and Phase 11 (union equality) axioms apply correctly.
+        if (self.function_registry and self.function_registry.is_simple_inlinable(fn_name)
+                and not fn_name.endswith('-eq')):
             fn_def = self.function_registry.functions[fn_name]
             if fn_def.body and len(fn_def.params) == len(expr.items) - 1:
                 # Build parameter -> argument mapping

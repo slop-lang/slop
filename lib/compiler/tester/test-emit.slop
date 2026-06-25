@@ -129,6 +129,51 @@
         (set! i (+ i 1)))
       found))
 
+  (fn is-call-operator ((name String))
+    (@intent "Check if name is a known SLOP call form that should not be treated as fixture ref")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "some") (string-eq name "ok") (string-eq name "error")
+        (string-eq name "none") (string-eq name "record-new") (string-eq name "union-new")
+        (string-eq name "cast") (string-eq name "list") (string-eq name "list-new")
+        (string-eq name "match") (string-eq name "if") (string-eq name "cond")
+        (string-eq name "let") (string-eq name "do") (string-eq name "begin")
+        (string-eq name "quote") (string-eq name "deref")))
+
+  (fn args-have-fixture-refs ((args (List (Ptr SExpr))))
+    (@intent "Check if any argument references a fixture variable")
+    (@spec (((List (Ptr SExpr))) -> Bool))
+    (@pure)
+    (let ((len (list-len args))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i len) (not found))
+        (match (list-get args i)
+          ((some arg)
+            (match (deref arg)
+              ((sym s)
+                (let ((name (. s name)))
+                  (when (and (contains name "-")
+                             (not (is-call-operator name)))
+                    (set! found true))))
+              ((lst l)
+                (when (> (list-len (. l items)) 0)
+                  (match (list-get (. l items) 0)
+                    ((some first-elem)
+                      (when (sexpr-is-symbol first-elem)
+                        (let ((name (sexpr-get-symbol-name first-elem)))
+                          ;; Fixture if: contains - and not a call operator,
+                          ;; OR is a wildcard-like symbol (e.g. single letter var like p)
+                          (when (or (and (not (is-call-operator name))
+                                        (contains name "-"))
+                                    (is-wildcard-like-symbol name))
+                            (set! found true)))))
+                    ((none) (do)))))
+              (_ (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
   (fn is-type-constructor-name ((name String))
     (@intent "Check if name starts with uppercase (type constructor)")
     (@spec ((String) -> Bool))
@@ -491,7 +536,8 @@
               (string-concat arena (escape-string arena args-display) ") -> \");")))))
       ;; Check if call expression still has unresolved wildcards or args had ellipsis
       (if (or (contains call-expr "__SLOP_WILDCARD__")
-              (args-have-ellipsis (. tc args)))
+              (or (args-have-ellipsis (. tc args))
+                  (args-have-fixture-refs (. tc args))))
         ;; Can't generate valid C — skip
         (do
           (emit ctx "    printf(\"SKIP (wildcard args)\\n\");")
@@ -613,6 +659,10 @@
     (@spec ((Arena (Ptr SExpr) (Option String) String TypeRegistry (Option String) (Ptr TranspileContext)) -> CompareInfo))
     (@alloc arena)
     (let ((ret-type-str (match return-type ((some s) s) ((none) "Int"))))
+      ;; Wildcard expected value (contains _ or ..) — comparison is "1" (always true)
+      ;; so the test only verifies the function call doesn't crash, not its return value
+      (if (contains-wildcard expected)
+        (CompareInfo "1" "%s" "\"<wildcard>\"" "%s" "\"<wildcard>\"")
       ;; Check for user-defined union types first
       (if (is-union-constructor-typed expected types)
         (build-union-comparison-typed arena expected prefix types ret-type-str tctx)
@@ -831,22 +881,22 @@
                     "(long long)result"
                     "%lld"
                     (string-concat arena "(long long)" c-expected)))))
-            ;; Check for String type
-            (if (contains ret-type-str "String")
-              (let ((c-expected (transpile-expr-safe arena tctx expected)))
-                (CompareInfo
-                  (string-concat arena "slop_string_eq(result, " (string-concat arena c-expected ")"))
-                  "\\\"%.*s\\\""
-                  "(int)result.len, result.data"
-                  "\\\"%.*s\\\""
-                  (let ((part1 (string-concat arena "(int)(" c-expected))
-                        (part2 (string-concat arena part1 ").len, ("))
-                        (part3 (string-concat arena part2 c-expected))
-                        (part4 (string-concat arena part3 ").data")))
-                    part4)))
-              ;; Check for List type
-              (if (contains ret-type-str "List")
-                (build-list-comparison-typed arena expected prefix types ret-type-str eq-fn tctx)
+            ;; Check for List type (before String, since "List String" contains "String")
+            (if (contains ret-type-str "List")
+              (build-list-comparison-typed arena expected prefix types ret-type-str eq-fn tctx)
+              ;; Check for String type
+              (if (contains ret-type-str "String")
+                (let ((c-expected (transpile-expr-safe arena tctx expected)))
+                  (CompareInfo
+                    (string-concat arena "slop_string_eq(result, " (string-concat arena c-expected ")"))
+                    "\\\"%.*s\\\""
+                    "(int)result.len, result.data"
+                    "\\\"%.*s\\\""
+                    (let ((part1 (string-concat arena "(int)(" c-expected))
+                          (part2 (string-concat arena part1 ").len, ("))
+                          (part3 (string-concat arena part2 c-expected))
+                          (part4 (string-concat arena part3 ").data")))
+                      part4)))
                 ;; Check for Bool type
                 (if (contains ret-type-str "Bool")
                   (let ((c-expected (transpile-expr-safe arena tctx expected)))
@@ -883,7 +933,7 @@
                             "%lld"
                             "(long long)result"
                             "%lld"
-                            (string-concat arena "(long long)" c-expected))))))))))))))
+                            (string-concat arena "(long long)" c-expected)))))))))))))))
 
   ;; ============================================================
   ;; Record Comparison Building
@@ -1542,7 +1592,8 @@
                         (list-push parts len-str)
                         (string-build arena parts)))
                     (let ((elem-type (extract-list-element-type arena ret-type-str))
-                          (is-complex (or (registry-is-record types elem-type)
+                          (is-complex (or (string-eq elem-type "String")
+                                          (registry-is-record types elem-type)
                                           (registry-is-union types elem-type))))
                       (let ((mut arr-init "{")
                             (mut i start-idx)
@@ -1580,7 +1631,10 @@
                                 (string-build arena parts))))
                           (let ((eq-fn-name (match eq-fn
                                               ((some fn-name) (prefix-symbol arena fn-name prefix types))
-                                              ((none) (build-eq-function-name arena elem-type prefix types)))))
+                                              ((none)
+                                                (if (string-eq elem-type "String")
+                                                  "slop_string_eq"
+                                                  (build-eq-function-name arena elem-type prefix types))))))
                             (let ((cmp-parts (list-new arena String)))
                               (list-push cmp-parts "({ typeof(*result.data) _expected[] = ")
                               (list-push cmp-parts arr-init)

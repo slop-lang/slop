@@ -119,85 +119,323 @@ Transpiler emits both the clean name and a #define alias.
 
     'contracts': """## Contracts
 
+Contract annotations declare what a function does, its type signature, and
+the conditions it requires and guarantees. They drive type checking, verification,
+example testing, and LLM hole-filling.
+
 ### Required Annotations
+
+Every `fn` must have @intent and @spec:
+
 (@intent "Human-readable purpose")         ; What the function does
 (@spec ((ParamTypes) -> ReturnType))       ; Type signature
 
-### Preconditions and Postconditions
-(@pre condition)           ; Input validation, checked on entry
-(@post condition)          ; Output guarantee, $result = return value
+### Annotation Ordering
 
-; Contracts support optional infix notation with curly braces:
-(@pre {x > 0})             ; Equivalent to (@pre (> x 0))
-(@pre {x >= 0 and x <= 100})  ; Equivalent to (@pre (and (>= x 0) (<= x 100)))
-(@post {$result == a + b}) ; Equivalent to (@post (== $result (+ a b)))
+Annotations should appear in this order at the top of a function body:
 
-; Infix precedence: *, /, % > +, - > comparisons > and > or
+(fn name ((params...))
+  (@intent "...")            ; 1. Purpose
+  (@spec ((...) -> ...))     ; 2. Type signature
+  (@alloc arena)             ; 3. Allocation (if applicable)
+  (@pure)                    ; 4. Properties
+  (@trusted)                 ; 4. (or @trusted, mutually exclusive with @pure)
+  (@pre ...)                 ; 5. Preconditions (zero or more)
+  (@post ...)                ; 6. Postconditions (zero or more)
+  (@assume ...)              ; 7. Assumptions (zero or more)
+  (@example ...)             ; 8. Examples (zero or more)
+  (@deprecated "...")        ; 9. Deprecation (if applicable)
+  body)
+
+### Preconditions (@pre)
+
+(@pre condition) checks a constraint on entry. Multiple @pre are AND-ed.
+Use prefix `(op ...)` or infix `{...}` syntax.
+
+; Non-nil pointer checks
+(@pre (!= ptr nil))
+
+; Non-empty string
+(@pre (> (string-len name) 0))
+(@pre (> (. name len) 0))            ; Field access form
+
+; Numeric bounds
+(@pre {x >= 0.0})
+(@pre {x <= 1.0})
+(@pre (>= max-tokens 1))
+
+; Field access on record params
+(@pre {(. config worker-count) >= 1})
+(@pre (>= (. g size) 0))
+
+; Boolean field check
+(@pre (. (deref f) is-open))
+
+; Multiple @pre chain — all must hold
+(fn clamp ((value Int) (min-val Int) (max-val Int))
+  (@intent "Clamp integer to range")
+  (@spec ((Int Int Int) -> Int))
+  (@pre {min-val <= max-val})
+  (@post {$result >= min-val})
+  (@post {$result <= max-val})
+  ...)
+
+### Postconditions (@post)
+
+(@post condition) guarantees a property of the return value.
+Use $result to refer to the return value.
+
+; Simple value constraints
+(@post (!= $result nil))
+(@post (>= $result 0))
+(@post {$result >= min-val})
+
+; Field access on $result (record return type)
+(@post {$result.offset == 0})
+(@post {$result.line == 1})
+(@post {$result.count == 0})
+
+; Relating $result fields to parameters
+(@post {$result.offset == state.offset + 1})
+(@post (>= $result.count pm.count))
+(@post (== (. $result iteration) iteration))
+
+; Function calls in @post — predicate on result
+(@post (xml-is-element $result))
+(@post (starts-with $result "?"))
+(@post (graph-contains $result t))
+(@post {(string-len $result) > 0})
+
+; Match on $result — for union/Option/Result return types
+(@post (match $result
+         ((term-iri _) true)
+         (_ false)))
+
+(@post (match $result
+         ((ok doc) (!= (. doc root) nil))
+         ((error _) true)))
+
+(@post (match $result
+         ((none) true)
+         ((some r) {(string-len (. r reason)) > 0})))
+
+; Match on $result record fields containing Option
+(@post (match $result.current-formula-id
+         ((some id) {id == formula-id})
+         ((none) false)))
+
+; Complex multi-part postcondition
+(@post
+  (and
+    (term-eq (triple-subject $result) subject)
+    (term-eq (triple-predicate $result) predicate)
+    (term-eq (triple-object $result) object)))
+
+; Multiple @post — all must hold
+(@post {$result >= 0})
+(@post {$result == n or $result == (- 0 n)})
+
+### Infix Notation
+
+Contracts support optional infix notation with curly braces:
+
+(@pre {x > 0})                    ; Equivalent to (@pre (> x 0))
+(@pre {x >= 0 and x <= 100})      ; Equivalent to (@pre (and (>= x 0) (<= x 100)))
+(@post {$result == a + b})        ; Equivalent to (@post (== $result (+ a b)))
+
+; Precedence: *, /, % > +, - > comparisons > and > or
 ; Use () for grouping: {(a + b) * c}
-; Use prefix notation for function calls within infix: {(len arr) > 0}
+; Function calls stay prefix inside {}: {(string-len s) > 0}
 
-; Example (both styles work)
+; Both styles work in the same function
 (fn divide ((a Int) (b Int))
   (@intent "Divide a by b")
   (@spec ((Int Int) -> Int))
-  (@pre {b != 0})                  ; Infix style
-  (@post (== (* $result b) a))     ; Prefix style
+  (@pre {b != 0})                  ; Infix
+  (@post (== (* $result b) a))     ; Prefix
   (/ a b))
 
-### Assumptions (for FFI and trusted behavior)
-(@assume condition)        ; Trusted axiom for verification
-
-; Use @assume for FFI wrappers where behavior can't be verified
-; The verifier trusts @assume as an axiom, runtime still checks it
-(fn abs-float ((x Float))
-  (@intent "Return absolute value of float")
-  (@spec ((Float) -> Float))
-  (@assume (>= $result 0.0))   ; Tell verifier to trust this
-  (fabs x))                    ; FFI call - verifier can't analyze
-
 ### Function Properties
+
 (@pure)                    ; No side effects, deterministic
 (@alloc arena)             ; Allocates in specified arena
+(@alloc static)            ; Returns static/global data
 (@alloc none)              ; No allocation
 
-### Examples (executable test cases)
-(@example (arg1 arg2) -> expected)
+; @pure — function produces same output for same inputs, no side effects.
+; Enables verifier inlining (single-expression @pure fns are expanded).
+(fn iri-eq ((a IRI) (b IRI))
+  (@intent "Check if two IRIs are equal")
+  (@spec ((IRI IRI) -> Bool))
+  (@pure)
+  (string-eq (. a value) (. b value)))
 
-; Multiple examples recommended
-(fn factorial ((n (Int 0 ..)))
-  (@intent "Calculate n!")
-  (@spec (((Int 0 ..)) -> (Int 1 ..)))
-  (@example (0) -> 1)
-  (@example (1) -> 1)
-  (@example (5) -> 120)
+; @alloc — declares which arena the function allocates into.
+(fn make-iri ((arena Arena) (value String))
+  (@intent "Create an IRI term from a string")
+  (@spec ((Arena String) -> Term))
+  (@alloc arena)
+  (@pre (> (string-len value) 0))
   ...)
 
-### Deprecation
-(@deprecated "message")                 ; Mark function as deprecated
+### @trusted — Skip Verification
 
-; Example
+Skip Z3 verification entirely for functions that cannot be auto-verified:
+
+(fn term-eq ((a Term) (b Term))
+  (@intent "Check if two terms are equal")
+  (@spec ((Term Term) -> Bool))
+  (@trusted)                             ; Too complex for auto-verify
+  (@pure)
+  ...)
+
+Use @trusted for:
+- Complex recursive equality (nested union traversal)
+- FFI wrappers with unprovable contracts
+- Platform-specific implementations
+
+### @assume — Verification Hints
+
+(@assume condition) is an axiom the verifier trusts without proof.
+Runtime still checks it.
+
+; FFI behavior the verifier can't deduce
+(fn sqrt ((x Float))
+  (@intent "Compute square root")
+  (@spec ((Float) -> Float))
+  (@pre {x >= 0.0})
+  (@assume {$result >= 0.0})
+  (@pure)
+  (c-inline "sqrt(x)"))
+
+; Collection membership semantics
+(@assume (implies
+  (exists (t2 (. g triples)) (triple-eq t t2))
+  $result))
+
+; Field properties of result
+(@assume {(. $result len) >= 1})
+(@assume {(. $result data) != nil})
+
+### @example — Executable Test Cases
+
+(@example (args...) -> expected)
+
+Examples serve as documentation AND executable tests. Provide multiple
+examples covering normal cases, edge cases, and error paths.
+
+; Basic: args match function params (skip arena params)
+(fn abs ((n Int))
+  (@intent "Return absolute value of integer")
+  (@spec ((Int) -> (Int 0 ..)))
+  (@pure)
+  (@example (5) -> 5)
+  (@example (-5) -> 5)
+  (@example (0) -> 0)
+  ...)
+
+; Arena parameter — include arena in args
+(fn path-dirname ((arena Arena) (path String))
+  (@intent "Extract directory portion of path")
+  (@spec ((Arena String) -> String))
+  (@pure)
+  (@example (arena "foo/bar/baz.slop") -> "foo/bar")
+  (@example (arena "baz.slop") -> ".")
+  (@example (arena "/") -> "/")
+  ...)
+
+; Option return types — use (some val) and none
+(fn index-of ((haystack String) (needle String))
+  (@intent "Find first occurrence of needle in haystack")
+  (@spec ((String String) -> (Option (Int 0 ..))))
+  (@pure)
+  (@example ("hello world" "world") -> (some 6))
+  (@example ("hello" "xyz") -> none)
+  (@example ("" "a") -> none)
+  ...)
+
+; Result return types — use (ok val) and (error variant)
+(fn parse-int ((s String))
+  (@intent "Parse string as decimal integer")
+  (@spec ((String) -> (Result I64 ParseError)))
+  (@pure)
+  (@example ("123") -> (ok 123))
+  (@example ("-456") -> (ok -456))
+  (@example ("abc") -> (error 'invalid-format))
+  (@example ("") -> (error 'empty-string))
+  ...)
+
+; Union constructor returns
+(@example
+  ("http://example.org/foo")
+  ->
+  (term-iri (IRI "http://example.org/foo")))
+
+; Custom equality function (for types without built-in ==)
+(@example :eq triple-eq
+  (arena g delta) -> expected-triples)
+
+### Deprecation
+
+(@deprecated "message")
+
 (fn old-api ((x Int))
   (@intent "Old API function")
   (@spec ((Int) -> Int))
   (@deprecated "use new-api instead")
   x)
 
-; Calling deprecated functions emits a warning during type checking
+; Calling deprecated functions emits a warning during type checking.
 
-### Callback Assumptions (for higher-order functions)
+### Callback Assumptions
+
 (@callback-assume <callback-param> <property-expr>)
 
-; Specify properties that hold for every argument passed to a callback parameter.
+; Specify properties that hold for every argument passed to a callback.
 ; $callback-arg refers to the callback argument value.
-; Used by slop verify for reasoning about callback-taking functions.
-(fn for-each-item ((g Graph) (callback (Fn (Item) Unit)))
-  (@callback-assume callback (graph-contains g $callback-arg))
+(fn for-each-triple ((g Graph) (callback (Fn (Triple) -> Unit)))
+  (@callback-assume callback (indexed-graph-contains g $callback-arg))
   ...)
 
-### Advanced Annotations
-(@property (forall (x T) expr))        ; Property assertion
-(@generation-mode mode)                 ; deterministic|template|llm
-(@requires category :prompt "..." ...)  ; Dependency requirements
+; Conditional callback assumptions
+(@callback-assume callback
+  (implies (!= subj (none))
+    (term-eq (triple-subject $callback-arg) (unwrap subj))))
+
+### Loop Invariants
+
+(@loop-invariant condition) inside a loop body:
+
+(while (and (not done) {(. state iteration) < (. config max-iterations)})
+  (@loop-invariant {(. state iteration) <= (. config max-iterations)})
+  ...)
+
+### Properties
+
+Named assertions for formal reasoning:
+
+(@property (forall (x T) expr))
+
+(@property novelty
+  (forall (t $result) (not (graph-contains g t))))
+
+(@property soundness
+  (forall (t $result)
+    (exists (dt (. delta triples))
+      (and (term-eq (triple-predicate dt) pred)
+           (term-eq (triple-subject t) (triple-subject dt))))))
+
+### Full Example
+
+(fn merge-into-graph ((arena Arena) (g IndexedGraph) (d Delta))
+  (@intent "Add all triples from delta into graph")
+  (@spec ((Arena IndexedGraph Delta) -> IndexedGraph))
+  (@alloc arena)
+  (@pre {(indexed-graph-size g) >= 0})
+  (@post {(indexed-graph-size $result) >= (indexed-graph-size g)})
+  (@post {(indexed-graph-size $result) <=
+          (+ (indexed-graph-size g) (list-len (. d triples)))})
+  ...)
 """,
 
     'verification': """## Verification (Z3 SMT Solver)
@@ -761,6 +999,7 @@ TOPIC_ORDER = [
     'types',
     'functions',
     'contracts',
+    'verification',
     'holes',
     'memory',
     'ffi',

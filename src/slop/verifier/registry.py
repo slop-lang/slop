@@ -166,45 +166,6 @@ class FunctionRegistry:
             return False
         return self._is_simple_expression(fn.body, name)
 
-    def inlines_to_native_equality(self, name: str) -> bool:
-        """Check if function inlines to native ==.
-
-        Used by union equality axioms to determine if a helper-eq function
-        should be treated as native Z3 equality rather than an uninterpreted function.
-
-        Returns True ONLY for functions that directly use == on parameters:
-        - (fn num-eq ((a Int) (b Int)) (@pure) (== a b))
-
-        Does NOT return True for string-eq since that's modeled as an
-        uninterpreted function in Z3, not native equality.
-        """
-        fn = self.functions.get(name)
-        if not fn or not fn.body or not fn.is_pure:
-            return False
-
-        if not self._is_simple_expression(fn.body, name):
-            return False
-
-        # Check if body is (== param1 param2) - ONLY native ==
-        body = fn.body
-        if not isinstance(body, SList) or len(body) < 3:
-            return False
-
-        head = body[0]
-        if not isinstance(head, Symbol):
-            return False
-
-        # Only native == counts, not string-eq or other comparison functions
-        if head.name != '==':
-            return False
-
-        # Check if arguments are direct parameter references
-        arg1, arg2 = body[1], body[2]
-        if isinstance(arg1, Symbol) and isinstance(arg2, Symbol):
-            if arg1.name in fn.params and arg2.name in fn.params:
-                return True
-
-        return False
 
     def _is_simple_expression(self, expr: 'SExpr', fn_name: str) -> bool:
         """Check if expression is a simple expression suitable for inlining.
@@ -224,8 +185,26 @@ class FunctionRegistry:
             head = expr[0]
             if isinstance(head, Symbol):
                 head_name = head.name
-                # Reject control flow and complex constructs
-                if head_name in ('if', 'cond', 'match', 'when', 'unless',
+
+                # Allow match in pure functions if all branch bodies are simple
+                if head_name == 'match':
+                    # Need at least scrutinee + one arm
+                    if len(expr) < 3:
+                        return False
+                    if not self._is_simple_expression(expr[1], fn_name):
+                        return False
+                    # Each arm's body (last element) must be simple
+                    for arm in expr.items[2:]:
+                        if isinstance(arm, SList) and len(arm) >= 1:
+                            arm_body = arm.items[-1]
+                            if not self._is_simple_expression(arm_body, fn_name):
+                                return False
+                        else:
+                            return False
+                    return True
+
+                # Reject other control flow and complex constructs
+                if head_name in ('if', 'cond', 'when', 'unless',
                                  'for-each', 'while',
                                  'let', 'do', 'set!'):
                     return False

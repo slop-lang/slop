@@ -18,7 +18,7 @@
   (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
                    ctx-lookup-enum-variant ctx-get-current-return-type ctx-gensym
-                   to-c-type-prefixed
+                   to-c-type-prefixed ends-with-star
                    ctx-lookup-field-type ctx-lookup-field-slop-type
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
   (import strlib (starts-with ends-with char-at))
@@ -26,7 +26,7 @@
   (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-option-inner-slop-type infer-result-ok-slop-type infer-result-err-slop-type c-type-to-option-type-name
                 resolve-type-alias infer-collection-element-slop-type is-set-type is-map-type
                 extract-set-elem-from-slop-type extract-map-key-from-slop-type extract-map-value-from-slop-type
-                slop-value-type-to-c-type))
+                slop-value-type-to-c-type is-pointer-expr))
 
   ;; ============================================================
   ;; Pattern Type Detection
@@ -207,7 +207,13 @@
                           ;; Generate unique variable name for the scrutinee
                           (scrutinee-var (ctx-gensym ctx "_mv")))
                       ;; Store scrutinee in a variable first (avoids multiple evaluation)
-                      (ctx-emit ctx (ctx-str4 ctx "__auto_type " scrutinee-var " = " (ctx-str ctx scrutinee-c ";")))
+                      ;; If scrutinee is a pointer to a union/option/result, dereference it
+                      ;; so downstream .tag/.data accesses work correctly
+                      (let ((scrut-c-type (infer-expr-c-type ctx scrutinee))
+                            (needs-deref (or (ends-with-star scrut-c-type) (is-pointer-expr ctx scrutinee))))
+                        (if needs-deref
+                          (ctx-emit ctx (ctx-str4 ctx "__auto_type " scrutinee-var " = *(" (ctx-str ctx scrutinee-c ");")))
+                          (ctx-emit ctx (ctx-str4 ctx "__auto_type " scrutinee-var " = " (ctx-str ctx scrutinee-c ";")))))
                       ;; Dispatch based on pattern types
                       (cond
                         ((is-option-match patterns)
@@ -316,9 +322,11 @@
         ((some binding-name)
           (let ((c-name (to-c-name arena binding-name))
                 ;; Infer the inner type from the scrutinee expression
-                (inner-slop-type (infer-option-inner-slop-type ctx scrutinee-expr)))
+                (inner-slop-type (infer-option-inner-slop-type ctx scrutinee-expr))
+                (is-ptr (starts-with inner-slop-type "(Ptr "))
+                (inner-c-type (if is-ptr (slop-value-type-to-c-type ctx inner-slop-type) "auto")))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".value;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" inner-slop-type false false false "" ""))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name inner-c-type inner-slop-type is-ptr false false "" ""))))
         ((none) (do)))
       ;; Emit body
       (emit-branch-body ctx branch-items is-return)
@@ -397,9 +405,11 @@
       (match (extract-binding-name pattern)
         ((some binding-name)
           (let ((c-name (to-c-name arena binding-name))
-                (ok-slop-type (infer-result-ok-slop-type ctx scrutinee-expr)))
+                (ok-slop-type (infer-result-ok-slop-type ctx scrutinee-expr))
+                (is-ptr (starts-with ok-slop-type "(Ptr "))
+                (ok-c-type (if is-ptr (slop-value-type-to-c-type ctx ok-slop-type) "auto")))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.ok;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" ok-slop-type false false false "" ""))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name ok-c-type ok-slop-type is-ptr false false "" ""))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
@@ -422,9 +432,11 @@
       (match (extract-binding-name pattern)
         ((some binding-name)
           (let ((c-name (to-c-name arena binding-name))
-                (err-slop-type (infer-result-err-slop-type ctx scrutinee-expr)))
+                (err-slop-type (infer-result-err-slop-type ctx scrutinee-expr))
+                (is-ptr (starts-with err-slop-type "(Ptr "))
+                (err-c-type (if is-ptr (slop-value-type-to-c-type ctx err-slop-type) "auto")))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.err;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name "auto" err-slop-type false false false "" ""))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name err-c-type err-slop-type is-ptr false false "" ""))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
@@ -1778,8 +1790,10 @@
                                           (ctx-indent ctx)
                                           (ctx-emit ctx (ctx-str3 ctx "__auto_type " var-name " = _coll.data[_i];"))
                                           (ctx-push-scope ctx)
-                                          (let ((elem-slop-type (infer-collection-element-slop-type ctx coll-expr)))
-                                            (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "auto" elem-slop-type false false false "" "")))
+                                          (let ((elem-slop-type (infer-collection-element-slop-type ctx coll-expr))
+                                                (is-ptr-elem (starts-with elem-slop-type "(Ptr "))
+                                                (elem-c-type (if is-ptr-elem (slop-value-type-to-c-type ctx elem-slop-type) "auto")))
+                                            (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type is-ptr-elem false false "" "")))
                                           (emit-inline-body-items ctx items 2)
                                           (ctx-pop-scope ctx)
                                           (ctx-dedent ctx)

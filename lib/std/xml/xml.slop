@@ -1,0 +1,1489 @@
+(module xml
+  (export
+    XmlErrorKind
+    XmlError
+    XmlQName
+    XmlAttribute
+    XmlNsDecl
+    XmlNodeType
+    XmlNode
+    XmlElement
+    XmlDocument
+    xml-qname
+    xml-element
+    xml-text
+    xml-comment
+    xml-cdata
+    xml-pi
+    xml-is-element
+    xml-is-text
+    xml-is-comment
+    xml-is-cdata
+    xml-is-pi
+    xml-node-type
+    xml-get-attribute
+    xml-get-attribute-ns
+    xml-get-children
+    xml-get-child-elements
+    xml-find-elements-by-tag
+    xml-find-elements-by-qname
+    xml-get-text-content
+    xml-get-base
+    xml-get-lang
+    xml-element-tag
+    xml-element-attributes
+    xml-add-child
+    xml-set-attribute
+    xml-parse
+    xml-stringify
+    xml-stringify-pretty)
+  (import strlib
+    (char-at is-digit is-alpha is-alnum is-space substring string-build contains starts-with compare index-of))
+
+  (ffi "string.h"
+    (memcpy ((dest (Ptr Void)) (src (Ptr Void)) (n U64)) (Ptr Void)))
+
+  (type XmlErrorKind (enum unexpected-end unexpected-char invalid-tag-name mismatched-close-tag unterminated-comment unterminated-cdata unterminated-string invalid-entity invalid-attribute duplicate-attribute invalid-namespace invalid-xml-decl invalid-pi))
+
+  (type XmlError (record (kind XmlErrorKind) (pos (Int 0 ..)) (message String)))
+
+  (type XmlQName (record
+      (prefix String)
+      (local-name String)
+      (namespace-uri String)))
+
+  (type XmlAttribute (record (name XmlQName) (value String)))
+
+  (type XmlNsDecl (record (prefix String) (uri String)))
+
+  (type XmlNodeType (enum xml-node-element xml-node-text xml-node-comment xml-node-cdata xml-node-pi))
+
+  (type XmlNode (union (xml-elem (Ptr XmlElement)) (xml-text-node String) (xml-comment-node String) (xml-cdata-node String) (xml-pi-node String String)))
+
+  (type XmlElement (record
+      (tag XmlQName)
+      (attributes (List (Ptr XmlAttribute)))
+      (children (List (Ptr XmlNode)))
+      (ns-decls (List (Ptr XmlNsDecl)))
+      (base-uri String)
+      (lang String)))
+
+  (type XmlDocument (record
+      (root (Ptr XmlNode))
+      (xml-version String)
+      (encoding String)
+      (standalone String)))
+
+  (type StringParts (record (items (List String))))
+
+  (type XmlParser (record (input String) (pos (Int 0 ..)) (len (Int 0 ..))))
+
+  (type XmlNsScope (record
+      (bindings (List (Ptr XmlNsDecl)))
+      (parent (Ptr XmlNsScope))))
+
+  (fn xml-qname ((arena Arena) (prefix String) (local-name String) (namespace-uri String))
+    (@intent "Create a qualified XML name")
+    (@spec ((Arena String String String) -> (Ptr XmlQName)))
+    (@alloc arena)
+    (@pre (> (. local-name len) 0))
+    (@post (!= $result nil))
+    (@example (arena "" "div" "") -> .. .)
+    (@example
+      (arena "rdf" "Description" "http://www.w3.org/1999/02/22-rdf-syntax-ns#")
+      ->
+      ..
+      .)
+    (let ((q (cast (Ptr XmlQName) (arena-alloc arena (sizeof XmlQName)))))
+      (set!
+        (deref q)
+        (record-new
+          XmlQName
+          (prefix prefix)
+          (local-name local-name)
+          (namespace-uri namespace-uri)))
+      q))
+
+  (fn xml-element ((arena Arena) (tag (Ptr XmlQName)))
+    (@intent "Create an element node with empty attributes and children")
+    (@spec ((Arena (Ptr XmlQName)) -> (Ptr XmlNode)))
+    (@alloc arena)
+    (@pre (!= tag nil))
+    (@post (!= $result nil))
+    (@post (xml-is-element $result))
+    (let ((elem (cast (Ptr XmlElement) (arena-alloc arena (sizeof XmlElement)))))
+      (set!
+        (deref elem)
+        (record-new
+          XmlElement
+          (tag (deref tag))
+          (attributes (list-new arena (Ptr XmlAttribute)))
+          (children (list-new arena (Ptr XmlNode)))
+          (ns-decls (list-new arena (Ptr XmlNsDecl)))
+          (base-uri "")
+          (lang "")))
+      (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
+        (set! (deref n) (union-new XmlNode xml-elem elem))
+        n)))
+
+  (fn xml-text ((arena Arena) (content String))
+    (@intent "Create a text node")
+    (@spec ((Arena String) -> (Ptr XmlNode)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (@post (xml-is-text $result))
+    (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
+      (set! (deref n) (union-new XmlNode xml-text-node content))
+      n))
+
+  (fn xml-comment ((arena Arena) (content String))
+    (@intent "Create a comment node")
+    (@spec ((Arena String) -> (Ptr XmlNode)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (@post (xml-is-comment $result))
+    (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
+      (set! (deref n) (union-new XmlNode xml-comment-node content))
+      n))
+
+  (fn xml-cdata ((arena Arena) (content String))
+    (@intent "Create a CDATA section node")
+    (@spec ((Arena String) -> (Ptr XmlNode)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (@post (xml-is-cdata $result))
+    (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
+      (set! (deref n) (union-new XmlNode xml-cdata-node content))
+      n))
+
+  (fn xml-pi ((arena Arena) (target String) (data String))
+    (@intent "Create a processing instruction node")
+    (@spec ((Arena String String) -> (Ptr XmlNode)))
+    (@alloc arena)
+    (@pre (> (. target len) 0))
+    (@post (!= $result nil))
+    (@post (xml-is-pi $result))
+    (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
+      (set! (deref n) (union-new XmlNode xml-pi-node target data))
+      n))
+
+  (fn xml-is-element ((n (Ptr XmlNode)))
+    (@intent "Check if node is an element")
+    (@spec (((Ptr XmlNode)) -> Bool))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-elem _) true)
+      (_ false)))
+
+  (fn xml-is-text ((n (Ptr XmlNode)))
+    (@intent "Check if node is a text node")
+    (@spec (((Ptr XmlNode)) -> Bool))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-text-node _) true)
+      (_ false)))
+
+  (fn xml-is-comment ((n (Ptr XmlNode)))
+    (@intent "Check if node is a comment")
+    (@spec (((Ptr XmlNode)) -> Bool))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-comment-node _) true)
+      (_ false)))
+
+  (fn xml-is-cdata ((n (Ptr XmlNode)))
+    (@intent "Check if node is a CDATA section")
+    (@spec (((Ptr XmlNode)) -> Bool))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-cdata-node _) true)
+      (_ false)))
+
+  (fn xml-is-pi ((n (Ptr XmlNode)))
+    (@intent "Check if node is a processing instruction")
+    (@spec (((Ptr XmlNode)) -> Bool))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-pi-node _ _) true)
+      (_ false)))
+
+  (fn xml-node-type ((n (Ptr XmlNode)))
+    (@intent "Get the type discriminator of a node")
+    (@spec (((Ptr XmlNode)) -> XmlNodeType))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-elem _) 'xml-node-element)
+      ((xml-text-node _) 'xml-node-text)
+      ((xml-comment-node _) 'xml-node-comment)
+      ((xml-cdata-node _) 'xml-node-cdata)
+      ((xml-pi-node _ _) 'xml-node-pi)))
+
+  (fn xml-get-attribute ((n (Ptr XmlNode)) (name String))
+    (@intent "Get attribute value by local name, ignoring namespace")
+    (@spec (((Ptr XmlNode) String) -> (Option String)))
+    (@pure)
+    (@pre (!= n nil))
+    (@pre (> (. name len) 0))
+    (@example (elem-with-href "href") -> (some "http://example.com"))
+    (@example (elem-with-href "missing") -> none)
+    (match n
+      ((xml-elem elem)
+        (let ((mut result (Option String) (none)))
+          (for-each (attr (. (deref elem) attributes))
+            (when (string-eq (. (. (deref attr) name) local-name) name)
+              (do (set! result (some (. (deref attr) value))) (break))))
+          result))
+      (_ (none))))
+
+  (fn xml-get-attribute-ns ((n (Ptr XmlNode)) (ns-uri String) (local-name String))
+    (@intent "Get attribute value by namespace URI and local name")
+    (@spec (((Ptr XmlNode) String String) -> (Option String)))
+    (@pure)
+    (@pre (!= n nil))
+    (@pre (> (. local-name len) 0))
+    (match n
+      ((xml-elem elem)
+        (let ((mut result (Option String) (none)))
+          (for-each (attr (. elem attributes))
+            (when (and (string-eq (. (. attr name) namespace-uri) ns-uri) (string-eq (. (. attr name) local-name) local-name))
+              (set! result (some (. attr value)))))
+          result))
+      (_ (none))))
+
+  (fn xml-get-children ((n (Ptr XmlNode)))
+    (@intent "Get all child nodes of an element, or none for non-elements")
+    (@spec (((Ptr XmlNode)) -> (Option (List (Ptr XmlNode)))))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-elem elem) (some (. elem children)))
+      (_ none)))
+
+  (fn xml-get-child-elements ((arena Arena) (n (Ptr XmlNode)))
+    (@intent "Get only element children, filtering out text/comment/etc")
+    (@spec ((Arena (Ptr XmlNode)) -> (List (Ptr XmlNode))))
+    (@alloc arena)
+    (@pre (!= n nil))
+    (match n
+      ((xml-elem elem)
+        (let ((result (list-new arena (Ptr XmlNode))))
+          (for-each (child (. elem children))
+            (if (xml-is-element child) (list-push result child)))
+          result))
+      (_ (list-new arena (Ptr XmlNode)))))
+
+  (fn xml-find-elements-by-tag ((arena Arena) (n (Ptr XmlNode)) (tag-name String))
+    (@intent "Find direct child elements matching a local tag name")
+    (@spec ((Arena (Ptr XmlNode) String) -> (List (Ptr XmlNode))))
+    (@alloc arena)
+    (@pre (!= n nil))
+    (@pre (> (. tag-name len) 0))
+    (let ((result (list-new arena (Ptr XmlNode))))
+      (match n
+        ((xml-elem elem)
+          (do
+            (for-each (child (. elem children))
+              (match child
+                ((xml-elem child-elem)
+                  (if (string-eq (. (. child-elem tag) local-name) tag-name)
+                    (list-push result child)))
+                (_ (do))))
+            result))
+        (_ result))))
+
+  (fn xml-find-elements-by-qname ((arena Arena) (n (Ptr XmlNode)) (ns-uri String) (local-name String))
+    (@intent "Find direct child elements matching namespace URI and local name")
+    (@spec ((Arena (Ptr XmlNode) String String) -> (List (Ptr XmlNode))))
+    (@alloc arena)
+    (@pre (!= n nil))
+    (@pre (> (. local-name len) 0))
+    (let ((result (list-new arena (Ptr XmlNode))))
+      (match n
+        ((xml-elem elem)
+          (for-each (child (. elem children))
+            (match child
+              ((xml-elem child-elem)
+                (let ((child-tag (. child-elem tag)))
+                  (when (and (string-eq (. child-tag namespace-uri) ns-uri) (string-eq (. child-tag local-name) local-name))
+                    (list-push result child))))
+              (_ (do)))))
+        (_ (do)))
+      result))
+
+  (fn xml-get-text-content ((arena Arena) (n (Ptr XmlNode)))
+    (@intent "Concatenate all descendant text content recursively")
+    (@spec ((Arena (Ptr XmlNode)) -> String))
+    (@alloc arena)
+    (@pre (!= n nil))
+    (@example (text-node-hello arena) -> "hello")
+    (@example (elem-with-mixed-content arena) -> "hello world")
+    (let ((wrapper (cast (Ptr StringParts) (arena-alloc arena (sizeof StringParts)))))
+      (set! (deref wrapper) (record-new StringParts (items (list-new arena String))))
+      (collect-text-content arena n wrapper)
+      (string-build arena (. wrapper items))))
+
+  (fn collect-text-content ((arena Arena) (n (Ptr XmlNode)) (parts (Ptr StringParts)))
+    (@intent "Recursively collect text content into a parts list")
+    (@spec ((Arena (Ptr XmlNode) (Ptr StringParts)) -> Unit))
+    (@alloc arena)
+    (match n
+      ((xml-text-node s) (list-push (. parts items) s))
+      ((xml-cdata-node s) (list-push (. parts items) s))
+      ((xml-elem elem)
+        (for-each (child (. elem children)) (collect-text-content arena child parts)))
+      (_ (do))))
+
+  (fn xml-get-base ((n (Ptr XmlNode)))
+    (@intent "Get resolved xml:base URI for this node")
+    (@spec (((Ptr XmlNode)) -> String))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-elem elem) (. elem base-uri))
+      (_ "")))
+
+  (fn xml-get-lang ((n (Ptr XmlNode)))
+    (@intent "Get resolved xml:lang for this node")
+    (@spec (((Ptr XmlNode)) -> String))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-elem elem) (. elem lang))
+      (_ "")))
+
+  (fn xml-element-tag ((n (Ptr XmlNode)))
+    (@intent "Get the qualified tag name of an element node")
+    (@spec (((Ptr XmlNode)) -> (Option XmlQName)))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-elem elem) (some (. elem tag)))
+      (_ none)))
+
+  (fn xml-element-attributes ((n (Ptr XmlNode)))
+    (@intent "Get the attribute list of an element node")
+    (@spec (((Ptr XmlNode)) -> (Option (List (Ptr XmlAttribute)))))
+    (@pure)
+    (@pre (!= n nil))
+    (match (deref n)
+      ((xml-elem elem) (some (. elem attributes)))
+      (_ none)))
+
+  (fn xml-add-child ((arena Arena) (elem (Ptr XmlElement)) (child (Ptr XmlNode)))
+    (@intent "Append a child node to an element")
+    (@spec ((Arena (Ptr XmlElement) (Ptr XmlNode)) -> Unit))
+    (@alloc arena)
+    (@pre (!= elem nil))
+    (@pre (!= child nil))
+    (list-push (. elem children) child)
+    unit)
+
+  (fn xml-set-attribute ((arena Arena) (elem (Ptr XmlElement)) (name (Ptr XmlQName)) (value String))
+    (@intent "Set or replace an attribute on an element")
+    (@spec ((Arena (Ptr XmlElement) (Ptr XmlQName) String) -> Unit))
+    (@alloc arena)
+    (@pre (!= elem nil))
+    (@pre (!= name nil))
+    (let ((new-attrs (list-new arena (Ptr XmlAttribute)))
+          (mut found false))
+      (for-each (attr (. elem attributes))
+        (if (and
+            (string-eq (. (. attr name) local-name) (. name local-name))
+            (string-eq (. (. attr name) namespace-uri) (. name namespace-uri)))
+          (do
+            (let ((new-attr (cast (Ptr XmlAttribute) (arena-alloc arena (sizeof XmlAttribute)))))
+              (set! new-attr name (deref name))
+              (set! new-attr value value)
+              (list-push new-attrs new-attr)
+              (set! found true)))
+          (list-push new-attrs attr)))
+      (if (not found)
+        (let ((new-attr (cast (Ptr XmlAttribute) (arena-alloc arena (sizeof XmlAttribute)))))
+          (set! new-attr name (deref name))
+          (set! new-attr value value)
+          (list-push new-attrs new-attr))
+        (do))
+      (set! elem attributes new-attrs)))
+
+  (fn parser-new ((arena Arena) (input String))
+    (@intent "Create a new XML parser state")
+    (@spec ((Arena String) -> (Ptr XmlParser)))
+    (@alloc arena)
+    (let ((p (cast (Ptr XmlParser) (arena-alloc arena (sizeof XmlParser)))))
+      (set! p input input)
+      (set! p pos 0)
+      (set! p len (cast (Int 0 ..) (. input len)))
+      p))
+
+  (fn parser-at-end ((p (Ptr XmlParser)))
+    (@intent "Check if parser has reached end of input")
+    (@spec (((Ptr XmlParser)) -> Bool))
+    (@pure)
+    (>= (. p pos) (. p len)))
+
+  (fn parser-peek ((p (Ptr XmlParser)))
+    (@intent "Peek at current character without advancing")
+    (@spec (((Ptr XmlParser)) -> Int))
+    (@pure)
+    (if (parser-at-end p)
+      0
+      (cast Int (char-at (. p input) (cast (Int 0 ..) (. p pos))))))
+
+  (fn parser-advance ((p (Ptr XmlParser)))
+    (@intent "Advance parser one character, return consumed character")
+    (@spec (((Ptr XmlParser)) -> Int))
+    (if (parser-at-end p)
+      0
+      (let ((c (cast Int (char-at (. p input) (cast (Int 0 ..) (. p pos))))))
+        (set! p pos (+ (. p pos) 1))
+        c)))
+
+  (fn parser-skip-ws ((p (Ptr XmlParser)))
+    (@intent "Skip whitespace characters")
+    (@spec (((Ptr XmlParser)) -> Unit))
+    (while (and (< (. p pos) (. p len)) (is-space (char-at (. p input) (cast (Int 0 ..) (. p pos)))))
+      (set! p pos (+ (. p pos) 1)))
+    unit)
+
+  (fn parser-make-error ((p (Ptr XmlParser)) (kind XmlErrorKind) (msg String))
+    (@intent "Create a parse error at current position")
+    (@spec (((Ptr XmlParser) XmlErrorKind String) -> XmlError))
+    (record-new
+      XmlError
+      (kind kind)
+      (pos (cast (Int 0 ..) (. p pos)))
+      (message msg)))
+
+  (fn parser-expect ((p (Ptr XmlParser)) (expected Int))
+    (@intent "Consume expected character or return error")
+    (@spec (((Ptr XmlParser) Int) -> (Result Unit XmlError)))
+    (@example (p 62) -> (ok unit))
+    (if (parser-at-end p)
+      (error (parser-make-error p 'unexpected-end "unexpected end of input"))
+      (if (== (parser-peek p) expected)
+        (do (parser-advance p) (ok unit))
+        (error (parser-make-error p 'unexpected-char "unexpected character")))))
+
+  (fn parser-match-str ((p (Ptr XmlParser)) (s String))
+    (@intent
+      "Check if input matches a string at current position without consuming")
+    (@spec (((Ptr XmlParser) String) -> Bool))
+    (@pure)
+    (@example (p "?>") -> true)
+    (@example (p "-->") -> false)
+    (let ((s-len (string-len s))
+          (p-pos (. p pos))
+          (p-len (. p len)))
+      (if (> (+ p-pos s-len) p-len)
+        false
+        (let ((mut i 0)
+              (mut match true))
+          (while (and (< i s-len) match)
+            (let ((p-char (char-at (. p input) (+ p-pos i)))
+                  (s-char (char-at s i)))
+              (if (!= p-char s-char) (set! match false) (set! i (+ i 1)))))
+          match))))
+
+  (fn is-name-start-char ((c Int))
+    (@intent "Check if character can start an XML name (letter or underscore)")
+    (@spec ((Int) -> Bool))
+    (@pure)
+    (@example (65) -> true)
+    (@example (95) -> true)
+    (@example (48) -> false)
+    (@example (45) -> false)
+    (or (and (>= c 65) (<= c 90)) (and (>= c 97) (<= c 122)) (== c 95)))
+
+  (fn is-name-char ((c Int))
+    (@intent "Check if character can appear in an XML name")
+    (@spec ((Int) -> Bool))
+    (@pure)
+    (@example (65) -> true)
+    (@example (48) -> true)
+    (@example (45) -> true)
+    (@example (46) -> true)
+    (@example (32) -> false)
+    (or (is-name-start-char c) (and (>= c 48) (<= c 57)) (== c 45) (== c 46)))
+
+  (fn parse-name ((arena Arena) (p (Ptr XmlParser)))
+    (@intent "Parse an XML name (allows colon for namespace-prefixed names)")
+    (@spec ((Arena (Ptr XmlParser)) -> (Result String XmlError)))
+    (@alloc arena)
+    (do
+      (if (parser-at-end p)
+        (error (parser-make-error p 'unexpected-end "Expected name"))
+        (let ((first-char (parser-peek p)))
+          (if (not (or (is-name-start-char first-char) (== first-char 58)))
+            (error
+              (parser-make-error p 'invalid-tag-name "Invalid name start character"))
+            (do
+              (let ((start-pos (. p pos)))
+                (parser-advance p)
+                (while (and (not (parser-at-end p)) (let ((c (parser-peek p))) (or (is-name-char c) (== c 58))))
+                  (parser-advance p))
+                (let ((name-len (- (. p pos) start-pos)))
+                  (ok (substring arena (. p input) start-pos name-len))))))))))
+
+  (fn resolve-predefined-entity ((name String))
+    (@intent "Resolve one of the 5 XML predefined entities to its code point")
+    (@spec ((String) -> (Option Int)))
+    (@pure)
+    (@example ("lt") -> (some 60))
+    (@example ("gt") -> (some 62))
+    (@example ("amp") -> (some 38))
+    (@example ("quot") -> (some 34))
+    (@example ("apos") -> (some 39))
+    (@example ("foo") -> none)
+    (cond
+      ((== name "lt") (some 60))
+      ((== name "gt") (some 62))
+      ((== name "amp") (some 38))
+      ((== name "quot") (some 34))
+      ((== name "apos") (some 39))
+      (else none)))
+
+  (fn parse-char-ref ((p (Ptr XmlParser)))
+    (@intent "Parse a character reference &#N; or &#xHH; (position after &#)")
+    (@spec (((Ptr XmlParser)) -> (Result Int XmlError)))
+    (@example (parser-at-65-semicolon) -> (ok 65))
+    (@example (parser-at-x41-semicolon) -> (ok 65))
+    (do
+      (let ((is-hex (== (parser-peek p) 120)))
+        (if is-hex
+          (do
+            (parser-advance p)
+            (let ((mut value 0))
+              (let ((mut found false))
+                (do
+                  (while (and (not found) (not (parser-at-end p)))
+                    (let ((c (parser-peek p)))
+                      (let ((is-semi (== c 59))
+                            (is-digit (and (>= c 48) (<= c 57)))
+                            (is-hex-lower (and (>= c 97) (<= c 102)))
+                            (is-hex-upper (and (>= c 65) (<= c 70))))
+                        (when (and (not is-semi) (not is-digit) (not is-hex-lower) (not is-hex-upper))
+                          (return
+                            (error
+                              (parser-make-error p 'invalid-entity "Invalid hex digit in character reference"))))
+                        (when is-semi (do (parser-advance p) (set! found true)))
+                        (when (and (not found) is-digit)
+                          (do
+                            (set! value (+ (* value 16) (- c 48)))
+                            (parser-advance p)))
+                        (when (and (not found) is-hex-lower)
+                          (do
+                            (set! value (+ (* value 16) (+ (- c 97) 10)))
+                            (parser-advance p)))
+                        (when (and (not found) is-hex-upper)
+                          (do
+                            (set! value (+ (* value 16) (+ (- c 65) 10)))
+                            (parser-advance p))))))
+                  (if found
+                    (ok value)
+                    (error
+                      (parser-make-error p 'invalid-entity "Unterminated character reference")))))))
+          (do
+            (let ((mut value 0))
+              (let ((mut found false))
+                (do
+                  (while (and (not found) (not (parser-at-end p)))
+                    (let ((c (parser-peek p)))
+                      (let ((is-semi (== c 59))
+                            (is-digit (and (>= c 48) (<= c 57))))
+                        (when (and (not is-semi) (not is-digit))
+                          (return
+                            (error
+                              (parser-make-error p 'invalid-entity "Invalid decimal digit in character reference"))))
+                        (when is-semi (do (parser-advance p) (set! found true)))
+                        (when (and (not found) is-digit)
+                          (do
+                            (set! value (+ (* value 10) (- c 48)))
+                            (parser-advance p))))))
+                  (if found
+                    (ok value)
+                    (error
+                      (parser-make-error p 'invalid-entity "Unterminated character reference")))))))))))
+
+  (fn decode-entities ((arena Arena) (p (Ptr XmlParser)) (stop-char Int))
+    (@intent "Decode text with entity resolution, stopping at stop-char or <")
+    (@spec ((Arena (Ptr XmlParser) Int) -> (Result String XmlError)))
+    (@alloc arena)
+    (let ((buf (cast (Ptr U8) (arena-alloc arena (+ (. p len) 1))))
+          (mut out-pos 0)
+          (mut done false))
+      (while (and (not done) (not (parser-at-end p)))
+        (let ((c (parser-peek p)))
+          (cond
+            ((and (!= stop-char 0) (== c stop-char))
+              (set! done true))
+            ((== c 60)
+              (set! done true))
+            ((== c 38)
+              (do
+                (parser-advance p)
+                (if (parser-at-end p)
+                  (return (error (parser-make-error p 'invalid-entity "Unexpected end after &")))
+                  (let ((next-c (parser-peek p)))
+                    (if (== next-c 35)
+                      (do
+                        (parser-advance p)
+                        (let ((cp (? (parse-char-ref p))))
+                          (if (<= cp 127)
+                            (do
+                              (set! (@ buf out-pos) (cast U8 cp))
+                              (set! out-pos (+ out-pos 1)))
+                            (if (<= cp 2047)
+                              (do
+                                (set! (@ buf out-pos) (cast U8 (+ 192 (/ cp 64))))
+                                (set! (@ buf (+ out-pos 1)) (cast U8 (+ 128 (% cp 64))))
+                                (set! out-pos (+ out-pos 2)))
+                              (if (<= cp 65535)
+                                (do
+                                  (set! (@ buf out-pos) (cast U8 (+ 224 (/ cp 4096))))
+                                  (set! (@ buf (+ out-pos 1)) (cast U8 (+ 128 (% (/ cp 64) 64))))
+                                  (set! (@ buf (+ out-pos 2)) (cast U8 (+ 128 (% cp 64))))
+                                  (set! out-pos (+ out-pos 3)))
+                                (do
+                                  (set! (@ buf out-pos) (cast U8 (+ 240 (/ cp 262144))))
+                                  (set! (@ buf (+ out-pos 1)) (cast U8 (+ 128 (% (/ cp 4096) 64))))
+                                  (set! (@ buf (+ out-pos 2)) (cast U8 (+ 128 (% (/ cp 64) 64))))
+                                  (set! (@ buf (+ out-pos 3)) (cast U8 (+ 128 (% cp 64))))
+                                  (set! out-pos (+ out-pos 4))))))))
+                      (let ((name-start (. p pos)))
+                        (let ((mut name-found false))
+                          (while (and (not name-found) (not (parser-at-end p)))
+                            (if (== (parser-peek p) 59)
+                              (set! name-found true)
+                              (parser-advance p)))
+                          (if (not name-found)
+                            (return (error (parser-make-error p 'invalid-entity "Unterminated entity reference")))
+                            (let ((entity-name (substring arena (. p input) name-start (- (. p pos) name-start))))
+                              (parser-advance p)
+                              (match (resolve-predefined-entity entity-name)
+                                ((some cp)
+                                  (do
+                                    (set! (@ buf out-pos) (cast U8 cp))
+                                    (set! out-pos (+ out-pos 1))))
+                                ((none)
+                                  (return (error (parser-make-error p 'invalid-entity "Unknown entity"))))))))))))))
+            (else
+              (do
+                (parser-advance p)
+                (set! (@ buf out-pos) (cast U8 c))
+                (set! out-pos (+ out-pos 1)))))))
+      (ok (record-new String (data buf) (len out-pos)))))
+
+  (fn parse-attr-value ((arena Arena) (p (Ptr XmlParser)))
+    (@intent "Parse a quoted attribute value with entity resolution")
+    (@spec ((Arena (Ptr XmlParser)) -> (Result String XmlError)))
+    (@alloc arena)
+    (let ((quote-char (parser-peek p)))
+      (if (and (!= quote-char 34) (!= quote-char 39))
+        (error
+          (parser-make-error p 'unterminated-string "Expected opening quote"))
+        (do
+          (parser-advance p)
+          (let ((content-result (decode-entities arena p quote-char)))
+            (match content-result
+              ((ok content)
+                (if (parser-at-end p)
+                  (error
+                    (parser-make-error p 'unterminated-string "Unexpected end in attribute value"))
+                  (let ((closing (parser-peek p)))
+                    (if (!= closing quote-char)
+                      (error
+                        (parser-make-error p 'unterminated-string "Expected closing quote"))
+                      (do (parser-advance p) (ok content))))))
+              ((error e) (error e))))))))
+
+  (fn parse-text-content ((arena Arena) (p (Ptr XmlParser)))
+    (@intent "Parse text content between tags, with entity resolution")
+    (@spec ((Arena (Ptr XmlParser)) -> (Result String XmlError)))
+    (@alloc arena)
+    (decode-entities arena p 0))
+
+  (fn parse-comment ((arena Arena) (p (Ptr XmlParser)))
+    (@intent "Parse an XML comment (position after <!--)")
+    (@spec ((Arena (Ptr XmlParser)) -> (Result (Ptr XmlNode) XmlError)))
+    (@alloc arena)
+    (let ((start-pos (. p pos)))
+      (let ((mut found false))
+        (while (and (not found) (not (parser-at-end p)))
+          (let ((matched (parser-match-str p "-->")))
+            (when matched (set! found true))
+            (when (not matched) (parser-advance p))))
+        (if found
+          (let ((content (substring arena (. p input) start-pos (- (. p pos) start-pos))))
+            (do
+              (parser-advance p)
+              (parser-advance p)
+              (parser-advance p)
+              (ok (xml-comment arena content))))
+          (error (parser-make-error p 'unterminated-comment "Expected -->"))))))
+
+  (fn parse-cdata ((arena Arena) (p (Ptr XmlParser)))
+    (@intent "Parse a CDATA section (position after <![CDATA[)")
+    (@spec ((Arena (Ptr XmlParser)) -> (Result (Ptr XmlNode) XmlError)))
+    (@alloc arena)
+    (let ((start (. p pos)))
+      (let ((mut found false))
+        (while (and (not found) (not (parser-at-end p)))
+          (let ((matched (parser-match-str p "]]>")))
+            (when matched (set! found true))
+            (when (not matched) (parser-advance p))))
+        (if found
+          (let ((content (substring arena (. p input) start (- (. p pos) start))))
+            (do
+              (parser-advance p)
+              (parser-advance p)
+              (parser-advance p)
+              (ok (xml-cdata arena content))))
+          (error
+            (parser-make-error p 'unterminated-cdata "CDATA section not closed"))))))
+
+  (fn parse-pi ((arena Arena) (p (Ptr XmlParser)))
+    (@intent "Parse a processing instruction (position after <?)")
+    (@spec ((Arena (Ptr XmlParser)) -> (Result (Ptr XmlNode) XmlError)))
+    (@alloc arena)
+    (do
+      (let ((target-result (parse-name arena p)))
+        (match target-result
+          ((ok target)
+            (do
+              (parser-skip-ws p)
+              (let ((start-pos (. p pos)))
+                (let ((mut found false))
+                  (do
+                    (while (and (not (parser-at-end p)) (not found))
+                      (let ((matched (parser-match-str p "?>")))
+                        (when matched (set! found true))
+                        (when (not matched) (parser-advance p))))
+                    (if found
+                      (let ((data (substring arena (. p input) start-pos (- (. p pos) start-pos))))
+                        (do
+                          (parser-advance p)
+                          (parser-advance p)
+                          (ok (xml-pi arena target data))))
+                      (error
+                        (parser-make-error p 'unexpected-end "Unterminated processing instruction"))))))))
+          ((error e) (error e))))))
+
+  (fn ns-scope-new ((arena Arena) (parent (Ptr XmlNsScope)))
+    (@intent "Create a new namespace scope with given parent")
+    (@spec ((Arena (Ptr XmlNsScope)) -> (Ptr XmlNsScope)))
+    (@alloc arena)
+    (let ((scope (cast (Ptr XmlNsScope) (arena-alloc arena (sizeof XmlNsScope)))))
+      (set!
+        (deref scope)
+        (record-new
+          XmlNsScope
+          (bindings (list-new arena (Ptr XmlNsDecl)))
+          (parent parent)))
+      scope))
+
+  (fn ns-scope-add ((arena Arena) (scope (Ptr XmlNsScope)) (prefix String) (uri String))
+    (@intent "Add a namespace binding to the current scope")
+    (@spec ((Arena (Ptr XmlNsScope) String String) -> Unit))
+    (@alloc arena)
+    (let ((decl (cast (Ptr XmlNsDecl) (arena-alloc arena (sizeof XmlNsDecl)))))
+      (set! (deref decl) (record-new XmlNsDecl (prefix prefix) (uri uri)))
+      (list-push (. scope bindings) decl))
+    unit)
+
+  (fn ns-resolve ((scope (Ptr XmlNsScope)) (prefix String))
+    (@intent
+      "Resolve a namespace prefix to its URI, searching up the scope chain")
+    (@spec (((Ptr XmlNsScope) String) -> (Option String)))
+    (@pure)
+    (@example
+      (scope-with-xml "xml")
+      ->
+      (some "http://www.w3.org/XML/1998/namespace"))
+    (@example (nil-scope "foo") -> none)
+    (if (== scope nil)
+      (none)
+      (do
+        (let ((mut result (Option String) (none)))
+          (for-each (decl (. scope bindings))
+            (if (string-eq (. decl prefix) prefix)
+              (set! result (some (. decl uri)))))
+          (match result
+            ((some uri) (some uri))
+            ((none) (ns-resolve (. scope parent) prefix)))))))
+
+  (fn split-qname ((arena Arena) (name String))
+    (@intent
+      "Split a name at colon into [prefix, local-name]. No colon means prefix is empty string")
+    (@spec ((Arena String) -> (List String)))
+    (@alloc arena)
+    (@example (arena "rdf:Description") -> (list "rdf" "Description"))
+    (@example (arena "div") -> (list "" "div"))
+    (match (index-of name ":")
+      ((some idx)
+        (list String
+          (substring arena name 0 idx)
+          (substring arena name (+ idx 1) (- (string-len name) (+ idx 1)))))
+      ((none) (list String "" name))))
+
+  (fn resolve-element-qname ((arena Arena) (scope (Ptr XmlNsScope)) (name String))
+    (@intent
+      "Resolve an element name to a QName using namespace scope. Unprefixed elements use default namespace")
+    (@spec
+      ((Arena (Ptr XmlNsScope) String) -> (Result (Ptr XmlQName) XmlError)))
+    (@alloc arena)
+    (let ((parts (split-qname arena name)))
+      (let ((prefix (match (list-get parts 0) ((some s) s) ((none) "")))
+            (local-name (match (list-get parts 1) ((some s) s) ((none) ""))))
+        (if (== (string-len prefix) 0)
+          (let ((ns-opt (ns-resolve scope "")))
+            (match ns-opt
+              ((some ns-uri) (ok (xml-qname arena "" local-name ns-uri)))
+              ((none) (ok (xml-qname arena "" local-name "")))))
+          (let ((ns-opt (ns-resolve scope prefix)))
+            (match ns-opt
+              ((some ns-uri) (ok (xml-qname arena prefix local-name ns-uri)))
+              ((none)
+                (error
+                  (record-new
+                    XmlError
+                    (kind 'invalid-namespace)
+                    (pos 0)
+                    (message
+                      (string-concat
+                        arena
+                        (string-concat arena "Undeclared namespace prefix: " prefix)
+                        "")))))))))))
+
+  (fn resolve-attr-qname ((arena Arena) (scope (Ptr XmlNsScope)) (name String))
+    (@intent
+      "Resolve an attribute name to a QName. Unprefixed attributes have NO namespace per XML Namespaces spec")
+    (@spec
+      ((Arena (Ptr XmlNsScope) String) -> (Result (Ptr XmlQName) XmlError)))
+    (@alloc arena)
+    (let ((parts (split-qname arena name)))
+      (let ((prefix (match (list-get parts 0) ((some s) s) ((none) "")))
+            (local (match (list-get parts 1) ((some s) s) ((none) ""))))
+        (if (== (string-len prefix) 0)
+          (ok (xml-qname arena "" local ""))
+          (match (ns-resolve scope prefix)
+            ((some uri) (ok (xml-qname arena prefix local uri)))
+            ((none)
+              (error (record-new XmlError
+                (kind 'invalid-namespace) (pos 0)
+                (message (string-concat arena "Undeclared namespace prefix: " prefix))))))))))
+
+  (fn parse-attributes ((arena Arena) (p (Ptr XmlParser)) (scope (Ptr XmlNsScope)) (ns-decls (List (Ptr XmlNsDecl))))
+    (@intent
+      "Parse element attributes, collecting namespace declarations into scope and ns-decls. Returns resolved attribute list")
+    (@spec
+      ((Arena (Ptr XmlParser) (Ptr XmlNsScope) (List (Ptr XmlNsDecl)))
+        ->
+        (Result (List (Ptr XmlAttribute)) XmlError)))
+    (@alloc arena)
+    (let ((raw-names (list-new arena String))
+          (raw-values (list-new arena String))
+          (seen-names (list-new arena String)))
+      (do
+        (parser-skip-ws p)
+        (let ((mut loop-done false))
+          (while (and (not loop-done) (not (parser-at-end p)))
+            (let ((c (parser-peek p)))
+              (if (or (== c 62) (== c 47))
+                (set! loop-done true)
+                (do
+                  (let ((name (? (parse-name arena p))))
+                    (do
+                      (let ((mut is-dup false))
+                        (for-each (existing seen-names)
+                          (when (string-eq existing name)
+                            (set! is-dup true)))
+                        (when is-dup
+                          (return (error (parser-make-error p 'duplicate-attribute "Duplicate attribute")))))
+                      (list-push seen-names name)
+                      (parser-skip-ws p)
+                      (? (parser-expect p 61))
+                      (parser-skip-ws p)
+                      (let ((val (? (parse-attr-value arena p))))
+                        (if (string-eq name "xmlns")
+                          (do
+                            (ns-scope-add arena scope "" val)
+                            (let ((decl (cast (Ptr XmlNsDecl) (arena-alloc arena (sizeof XmlNsDecl)))))
+                              (set! (deref decl) (record-new XmlNsDecl (prefix "") (uri val)))
+                              (list-push ns-decls decl)))
+                          (if (starts-with name "xmlns:")
+                            (let ((ns-prefix (substring arena name 6 (- (string-len name) 6))))
+                              (do
+                                (ns-scope-add arena scope ns-prefix val)
+                                (let ((decl (cast (Ptr XmlNsDecl) (arena-alloc arena (sizeof XmlNsDecl)))))
+                                  (set! (deref decl) (record-new XmlNsDecl (prefix ns-prefix) (uri val)))
+                                  (list-push ns-decls decl))))
+                            (do
+                              (list-push raw-names name)
+                              (list-push raw-values val)))))
+                      (parser-skip-ws p))))))))
+        (let ((attrs (list-new arena (Ptr XmlAttribute)))
+              (count (list-len raw-names))
+              (mut i 0))
+          (while (< i count)
+            (do
+              (let ((name (match (list-get raw-names i) ((some s) s) ((none) "")))
+                    (val (match (list-get raw-values i) ((some s) s) ((none) ""))))
+                (let ((qname (? (resolve-attr-qname arena scope name))))
+                  (let ((attr (cast (Ptr XmlAttribute) (arena-alloc arena (sizeof XmlAttribute)))))
+                    (set! (deref attr) (record-new XmlAttribute (name (deref qname)) (value val)))
+                    (list-push attrs attr))))
+              (set! i (+ i 1))))
+          (ok attrs)))))
+
+  (fn parse-child-nodes ((arena Arena) (p (Ptr XmlParser)) (elem (Ptr XmlElement)) (scope (Ptr XmlNsScope)) (tag-name String) (base-uri String) (lang-val String))
+    (@intent
+      "Parse children of an element until matching close tag. Handles child elements, comments, CDATA, PIs, and text content")
+    (@spec
+      ((Arena (Ptr XmlParser) (Ptr XmlElement) (Ptr XmlNsScope) String String String)
+        ->
+        (Result Unit XmlError)))
+    (@alloc arena)
+    (do
+      (let ((mut done false))
+        (while (not done)
+          (if (parser-at-end p)
+            (return
+              (error
+                (parser-make-error p 'unexpected-end "Unexpected end inside element")))
+            (let ((c (parser-peek p)))
+              (if (== c 60)
+                (do
+                  (parser-advance p)
+                  (if (parser-at-end p)
+                    (return
+                      (error
+                        (parser-make-error p 'unexpected-end "Unexpected end after <")))
+                    (let ((c2 (parser-peek p)))
+                      (if (== c2 47)
+                        (do
+                          (parser-advance p)
+                          (let ((close-name (? (parse-name arena p))))
+                            (parser-skip-ws p)
+                            (? (parser-expect p 62))
+                            (if (string-eq close-name tag-name)
+                              (set! done true)
+                              (return
+                                (error
+                                  (parser-make-error
+                                    p
+                                    'mismatched-close-tag
+                                    (string-concat
+                                      arena
+                                      (string-concat arena "Expected closing tag " tag-name)
+                                      (string-concat arena " but found " close-name))))))))
+                        (if (== c2 33)
+                          (do
+                            (if (parser-match-str p "!--")
+                              (do
+                                (parser-advance p) (parser-advance p) (parser-advance p)
+                                (let ((comment-node (? (parse-comment arena p))))
+                                  (xml-add-child arena elem comment-node)))
+                              (if (parser-match-str p "![CDATA[")
+                                (do
+                                  (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p)
+                                  (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p)
+                                  (let ((cdata-node (? (parse-cdata arena p))))
+                                    (xml-add-child arena elem cdata-node)))
+                                (return
+                                  (error
+                                    (parser-make-error p 'unexpected-char "Expected comment or CDATA after <!"))))))
+                          (if (== c2 63)
+                            (do
+                              (parser-advance p)
+                              (let ((pi-node (? (parse-pi arena p))))
+                                (xml-add-child arena elem pi-node)))
+                            (let ((child-node (? (parse-element arena p scope base-uri lang-val))))
+                              (xml-add-child arena elem child-node))))))))
+                (let ((text-str (? (parse-text-content arena p))))
+                  (if (> (string-len text-str) 0)
+                    (let ((text-node (xml-text arena text-str)))
+                      (xml-add-child arena elem text-node))
+                    (do))))))))
+      (ok unit)))
+
+  (fn parse-element ((arena Arena) (p (Ptr XmlParser)) (parent-scope (Ptr XmlNsScope)) (parent-base String) (parent-lang String))
+    (@intent
+      "Parse an XML element and its children recursively. Position is after opening <")
+    (@spec
+      ((Arena (Ptr XmlParser) (Ptr XmlNsScope) String String)
+        ->
+        (Result (Ptr XmlNode) XmlError)))
+    (@alloc arena)
+    (let ((tag-name (? (parse-name arena p))))
+      (let ((scope (ns-scope-new arena parent-scope)))
+        (let ((ns-decls (list-new arena (Ptr XmlNsDecl))))
+          (let ((attrs (? (parse-attributes arena p scope ns-decls))))
+            (let ((resolved-qname (? (resolve-element-qname arena scope tag-name))))
+              (let ((base-uri parent-base))
+                (let ((lang-val parent-lang))
+                  (let ((attr-count (list-len attrs)))
+                    (let ((mut i 0))
+                      (let ((mut found-base parent-base))
+                        (let ((mut found-lang parent-lang))
+                          (do
+                            (while (< i attr-count)
+                              (match (list-get attrs i)
+                                ((some attr-ptr)
+                                  (do
+                                    (if (and
+                                        (string-eq
+                                          (. (. attr-ptr name) local-name)
+                                          "base")
+                                        (string-eq
+                                          (. (. attr-ptr name) prefix)
+                                          "xml"))
+                                      (set! found-base (. attr-ptr value))
+                                      (if (and
+                                          (string-eq
+                                            (. (. attr-ptr name) local-name)
+                                            "lang")
+                                          (string-eq
+                                            (. (. attr-ptr name) prefix)
+                                            "xml"))
+                                        (set! found-lang (. attr-ptr value))
+                                        (do)))
+                                    (set! i (+ i 1))))
+                                ((none) (set! i (+ i 1)))))
+                            (let ((elem (cast (Ptr XmlElement) (arena-alloc arena (sizeof XmlElement)))))
+                              (do
+                                (let ((final-base found-base))
+                                  (let ((final-lang found-lang))
+                                    (do
+                                      (set! (deref elem) (record-new XmlElement
+                                        (tag (deref resolved-qname))
+                                        (attributes attrs)
+                                        (children (list-new arena (Ptr XmlNode)))
+                                        (ns-decls (. scope bindings))
+                                        (base-uri final-base)
+                                        (lang final-lang)))
+                                      (let ((ch (parser-peek p)))
+                                        (if (== ch 47)
+                                          (do
+                                            (parser-advance p)
+                                            (? (parser-expect p 62))
+                                            (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
+                                                (set! (deref n) (union-new XmlNode xml-elem elem))
+                                                (ok n)))
+                                          (do
+                                            (? (parser-expect p 62))
+                                            (?
+                                              (parse-child-nodes
+                                                arena
+                                                p
+                                                elem
+                                                scope
+                                                tag-name
+                                                final-base
+                                                final-lang))
+                                            (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
+                                                (set! (deref n) (union-new XmlNode xml-elem elem))
+                                                (ok n)))))))))))))))))))))))
+
+  (fn parse-xml-decl ((arena Arena) (p (Ptr XmlParser)))
+    (@intent
+      "Parse optional XML declaration <?xml version=... ?>. Returns 3-element list [version, encoding, standalone] or empty list if no decl")
+    (@spec ((Arena (Ptr XmlParser)) -> (Result (List String) XmlError)))
+    (@alloc arena)
+    (if (parser-match-str p "<?xml")
+      (do
+        (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p)
+        (parser-skip-ws p)
+        (let ((mut version-str "")
+              (mut encoding-str "")
+              (mut standalone-str "")
+              (mut result (list-new arena String)))
+          (do
+            (if (parser-match-str p "version")
+              (do
+                (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p)
+                (parser-advance p) (parser-advance p) (parser-advance p)
+                (parser-skip-ws p)
+                (? (parser-expect p 61))
+                (parser-skip-ws p)
+                (let ((ver (? (parse-attr-value arena p))))
+                  (set! version-str ver)))
+              (return (error
+                (parser-make-error p 'invalid-xml-decl "Expected version attribute"))))
+            (parser-skip-ws p)
+            (if (parser-match-str p "encoding")
+              (do
+                (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p)
+                (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p)
+                (parser-skip-ws p)
+                (? (parser-expect p 61))
+                (parser-skip-ws p)
+                (let ((enc (? (parse-attr-value arena p))))
+                  (set! encoding-str enc))
+                (parser-skip-ws p))
+              (do))
+            (if (parser-match-str p "standalone")
+              (do
+                (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p)
+                (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p) (parser-advance p)
+                (parser-skip-ws p)
+                (? (parser-expect p 61))
+                (parser-skip-ws p)
+                (let ((sa (? (parse-attr-value arena p))))
+                  (set! standalone-str sa))
+                (parser-skip-ws p))
+              (do))
+            (? (parser-expect p 63))
+            (? (parser-expect p 62))
+            (list-push result version-str)
+            (list-push result encoding-str)
+            (list-push result standalone-str)
+            (ok result))))
+      (ok (list String))))
+
+  (fn xml-parse ((arena Arena) (input String))
+    (@intent "Parse an XML document string into a tree")
+    (@spec ((Arena String) -> (Result (Ptr XmlDocument) XmlError)))
+    (@alloc arena)
+    (@pre (> (. input len) 0))
+    (@post (match $result ((ok doc) (!= (. doc root) nil)) ((error _) true)))
+    (@assume (match $result ((ok doc) (!= (. doc root) nil)) ((error _) true)))
+    (let ((p (parser-new arena input)))
+      (let ((root-scope (ns-scope-new arena (cast (Ptr XmlNsScope) (c-inline "NULL")))))
+        (do
+          (ns-scope-add arena root-scope "xml" "http://www.w3.org/XML/1998/namespace")
+          (parser-skip-ws p)
+          (let ((decl-result (parse-xml-decl arena p)))
+            (match decl-result
+              ((ok decl-parts)
+                (do
+                  (parser-skip-ws p)
+                  (let ((mut done false))
+                    (while (and (not done) (not (parser-at-end p)))
+                      (let ((c (parser-peek p)))
+                        (if (== c 60)
+                          (do
+                            (parser-advance p)
+                            (let ((next-c (parser-peek p)))
+                              (cond
+                                ((== next-c 33)
+                                  (do
+                                    (parser-advance p)
+                                    (let ((third-c (parser-peek p)))
+                                      (if (== third-c 45)
+                                        (do
+                                          (parser-advance p) (parser-advance p)
+                                          (? (parse-comment arena p))
+                                          (parser-skip-ws p))
+                                        (set! done true)))))
+                                ((== next-c 63)
+                                  (do (parser-advance p) (? (parse-pi arena p)) (parser-skip-ws p)))
+                                (else (set! done true)))))
+                          (set! done true)))))
+                  (if (parser-at-end p)
+                    (error
+                      (parser-make-error p 'unexpected-end "Expected root element"))
+                    (let ((root-result (parse-element arena p root-scope "" "")))
+                      (match root-result
+                        ((ok root-node)
+                          (let ((version (match (list-get decl-parts 0) ((some v) v) ((none) "1.0")))
+                                (encoding (match (list-get decl-parts 1) ((some v) v) ((none) "UTF-8")))
+                                (standalone (match (list-get decl-parts 2) ((some v) v) ((none) ""))))
+                            (let ((doc (cast (Ptr XmlDocument) (arena-alloc arena (sizeof XmlDocument)))))
+                              (set! (deref doc) (record-new XmlDocument (root root-node) (xml-version version) (encoding encoding) (standalone standalone)))
+                              (ok doc))))
+                        ((error e) (error e)))))))
+              ((error e) (error e))))))))
+
+  (fn escape-xml-text ((arena Arena) (s String))
+    (@intent "Escape <, >, & in text content")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (@example (arena "a < b") -> "a &lt; b")
+    (@example (arena "x & y") -> "x &amp; y")
+    (@example (arena "hello") -> "hello")
+    (let ((buf (cast (Ptr U8) (arena-alloc arena (* (string-len s) 5))))
+          (mut out-pos 0))
+      (for (i 0 (string-len s))
+        (let ((c (char-at s i)))
+          (cond
+            ((== c 60)
+              (do
+                (set! (@ buf out-pos) 38)
+                (set! (@ buf (+ out-pos 1)) 108)
+                (set! (@ buf (+ out-pos 2)) 116)
+                (set! (@ buf (+ out-pos 3)) 59)
+                (set! out-pos (+ out-pos 4))))
+            ((== c 62)
+              (do
+                (set! (@ buf out-pos) 38)
+                (set! (@ buf (+ out-pos 1)) 103)
+                (set! (@ buf (+ out-pos 2)) 116)
+                (set! (@ buf (+ out-pos 3)) 59)
+                (set! out-pos (+ out-pos 4))))
+            ((== c 38)
+              (do
+                (set! (@ buf out-pos) 38)
+                (set! (@ buf (+ out-pos 1)) 97)
+                (set! (@ buf (+ out-pos 2)) 109)
+                (set! (@ buf (+ out-pos 3)) 112)
+                (set! (@ buf (+ out-pos 4)) 59)
+                (set! out-pos (+ out-pos 5))))
+            (else
+              (do (set! (@ buf out-pos) c) (set! out-pos (+ out-pos 1)))))))
+      (record-new String (data buf) (len out-pos))))
+
+  (fn escape-xml-attr ((arena Arena) (s String))
+    (@intent "Escape <, >, &, double-quote in attribute values")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (@example (arena "a\"b") -> "a&quot;b")
+    (@example (arena "1 < 2") -> "1 &lt; 2")
+    (let ((len (string-len s))
+          (mut result-len 0))
+      (for (i 0 len)
+        (let ((c (char-at s i)))
+          (set!
+            result-len
+            (+
+              result-len
+              (cond
+                ((== c 60) 4)
+                ((== c 62) 4)
+                ((== c 38) 5)
+                ((== c 34) 6)
+                (else 1))))))
+      (let ((buf (cast (Ptr U8) (arena-alloc arena result-len)))
+            (mut pos 0))
+        (for (i 0 len)
+          (let ((c (char-at s i)))
+            (cond
+              ((== c 60)
+                (do
+                  (set! (@ buf pos) 38)
+                  (set! (@ buf (+ pos 1)) 108)
+                  (set! (@ buf (+ pos 2)) 116)
+                  (set! (@ buf (+ pos 3)) 59)
+                  (set! pos (+ pos 4))))
+              ((== c 62)
+                (do
+                  (set! (@ buf pos) 38)
+                  (set! (@ buf (+ pos 1)) 103)
+                  (set! (@ buf (+ pos 2)) 116)
+                  (set! (@ buf (+ pos 3)) 59)
+                  (set! pos (+ pos 4))))
+              ((== c 38)
+                (do
+                  (set! (@ buf pos) 38)
+                  (set! (@ buf (+ pos 1)) 97)
+                  (set! (@ buf (+ pos 2)) 109)
+                  (set! (@ buf (+ pos 3)) 112)
+                  (set! (@ buf (+ pos 4)) 59)
+                  (set! pos (+ pos 5))))
+              ((== c 34)
+                (do
+                  (set! (@ buf pos) 38)
+                  (set! (@ buf (+ pos 1)) 113)
+                  (set! (@ buf (+ pos 2)) 117)
+                  (set! (@ buf (+ pos 3)) 111)
+                  (set! (@ buf (+ pos 4)) 116)
+                  (set! (@ buf (+ pos 5)) 59)
+                  (set! pos (+ pos 6))))
+              (else (do (set! (@ buf pos) c) (set! pos (+ pos 1)))))))
+        (record-new String (data buf) (len result-len)))))
+
+  (fn stringify-node ((arena Arena) (n (Ptr XmlNode)) (parts (Ptr StringParts)))
+    (@intent
+      "Recursively serialize an XML node to string fragments appended to parts list")
+    (@spec ((Arena (Ptr XmlNode) (Ptr StringParts)) -> Unit))
+    (match (deref n)
+      ((xml-text-node content)
+        (list-push (. parts items) (escape-xml-text arena content)))
+      ((xml-comment-node content)
+        (do
+          (list-push (. parts items) "<!--")
+          (list-push (. parts items) content)
+          (list-push (. parts items) "-->")))
+      ((xml-cdata-node content)
+        (do
+          (list-push (. parts items) "<![CDATA[")
+          (list-push (. parts items) content)
+          (list-push (. parts items) "]]>")))
+      ((xml-pi-node target data)
+        (do
+          (list-push (. parts items) "<?")
+          (list-push (. parts items) target)
+          (list-push (. parts items) " ")
+          (list-push (. parts items) data)
+          (list-push (. parts items) "?>")))
+      ((xml-elem elem)
+        (do
+          (list-push (. parts items) "<")
+          (let ((tag (. elem tag)))
+            (if (> (string-len (. tag prefix)) 0)
+              (do
+                (list-push (. parts items) (. tag prefix))
+                (list-push (. parts items) ":")
+                (list-push (. parts items) (. tag local-name)))
+              (list-push (. parts items) (. tag local-name))))
+          (for-each (ns-decl (. elem ns-decls))
+            (do
+              (list-push (. parts items) " xmlns")
+              (if (> (string-len (. ns-decl prefix)) 0)
+                (do (list-push (. parts items) ":") (list-push (. parts items) (. ns-decl prefix)))
+                (do))
+              (list-push (. parts items) "=\"")
+              (list-push (. parts items) (escape-xml-attr arena (. ns-decl uri)))
+              (list-push (. parts items) "\"")))
+          (for-each (attr (. elem attributes))
+            (do
+              (list-push (. parts items) " ")
+              (let ((attr-name (. attr name)))
+                (if (> (string-len (. attr-name prefix)) 0)
+                  (do
+                    (list-push (. parts items) (. attr-name prefix))
+                    (list-push (. parts items) ":")
+                    (list-push (. parts items) (. attr-name local-name)))
+                  (list-push (. parts items) (. attr-name local-name))))
+              (list-push (. parts items) "=\"")
+              (list-push (. parts items) (escape-xml-attr arena (. attr value)))
+              (list-push (. parts items) "\"")))
+          (if (== (list-len (. elem children)) 0)
+            (list-push (. parts items) "/>")
+            (do
+              (list-push (. parts items) ">")
+              (for-each (child (. elem children))
+                (stringify-node arena child parts))
+              (list-push (. parts items) "</")
+              (let ((tag (. elem tag)))
+                (if (> (string-len (. tag prefix)) 0)
+                  (do
+                    (list-push (. parts items) (. tag prefix))
+                    (list-push (. parts items) ":")
+                    (list-push (. parts items) (. tag local-name)))
+                  (list-push (. parts items) (. tag local-name))))
+              (list-push (. parts items) ">")))))))
+
+  (fn xml-stringify ((arena Arena) (n (Ptr XmlNode)))
+    (@intent "Serialize XML node tree to compact string")
+    (@spec ((Arena (Ptr XmlNode)) -> String))
+    (@alloc arena)
+    (@pre (!= n nil))
+    (let ((wrapper (cast (Ptr StringParts) (arena-alloc arena (sizeof StringParts)))))
+      (set! (deref wrapper) (record-new StringParts (items (list-new arena String))))
+      (stringify-node arena n wrapper)
+      (string-build arena (. wrapper items))))
+
+  (fn has-only-element-children ((elem (Ptr XmlElement)))
+    (@intent
+      "Check if element has only element/comment/pi children (no text/cdata). Returns false for empty elements")
+    (@spec (((Ptr XmlElement)) -> Bool))
+    (@pure)
+    (let ((children (. elem children)))
+      (if (== (list-len children) 0)
+        false
+        (let ((mut all-element-like true))
+          (for-each (child children)
+            (match (deref child)
+              ((xml-text-node _) (set! all-element-like false))
+              ((xml-cdata-node _) (set! all-element-like false))
+              (_ (do))))
+          all-element-like))))
+
+  (fn stringify-node-pretty ((arena Arena) (n (Ptr XmlNode)) (parts (Ptr StringParts)) (indent (Int 0 ..)) (indent-size (Int 0 ..)))
+    (@intent "Recursively serialize an XML node with indentation")
+    (@spec ((Arena (Ptr XmlNode) (Ptr StringParts) (Int 0 ..) (Int 0 ..)) -> Unit))
+    (match (deref n)
+      ((xml-elem elem)
+        (do
+          (let ((tag-str (. (. elem tag) local-name))
+                (prefix-str (. (. elem tag) prefix))
+                (attrs (. elem attributes))
+                (children (. elem children))
+                (indent-str ""))
+            (do
+              (let ((mut pad ""))
+                (do
+                  (for (i 0 indent) (set! pad (string-concat arena pad " ")))
+                  (set! indent-str pad)))
+              (list-push (. parts items) indent-str)
+              (list-push (. parts items) "<")
+              (if (> (string-len prefix-str) 0)
+                (do (list-push (. parts items) prefix-str) (list-push (. parts items) ":"))
+                (do))
+              (list-push (. parts items) tag-str)
+              (for-each (attr attrs)
+                (do
+                  (list-push (. parts items) " ")
+                  (let ((attr-prefix (. (. attr name) prefix))
+                        (attr-local (. (. attr name) local-name))
+                        (attr-val (. attr value)))
+                    (do
+                      (if (> (string-len attr-prefix) 0)
+                        (do (list-push (. parts items) attr-prefix) (list-push (. parts items) ":"))
+                        (do))
+                      (list-push (. parts items) attr-local)
+                      (list-push (. parts items) "=\"")
+                      (list-push (. parts items) (escape-xml-attr arena attr-val))
+                      (list-push (. parts items) "\"")))))
+              (if (== (list-len children) 0)
+                (list-push (. parts items) "/>")
+                (do
+                  (list-push (. parts items) ">")
+                  (if (has-only-element-children elem)
+                    (do
+                      (list-push (. parts items) "\n")
+                      (for-each (child children)
+                        (do
+                          (stringify-node-pretty
+                            arena
+                            child
+                            parts
+                            (+ indent indent-size)
+                            indent-size)
+                          (list-push (. parts items) "\n")))
+                      (list-push (. parts items) indent-str))
+                    (do
+                      (for-each (child children)
+                        (stringify-node arena child parts))))
+                  (list-push (. parts items) "</")
+                  (if (> (string-len prefix-str) 0)
+                    (do (list-push (. parts items) prefix-str) (list-push (. parts items) ":"))
+                    (do))
+                  (list-push (. parts items) tag-str)
+                  (list-push (. parts items) ">")))))))
+      ((xml-text-node text) (list-push (. parts items) (escape-xml-text arena text)))
+      ((xml-comment-node text)
+        (do
+          (list-push (. parts items) "<!--")
+          (list-push (. parts items) text)
+          (list-push (. parts items) "-->")))
+      ((xml-cdata-node text)
+        (do
+          (list-push (. parts items) "<![CDATA[")
+          (list-push (. parts items) text)
+          (list-push (. parts items) "]]>")))
+      ((xml-pi-node target data)
+        (do
+          (list-push (. parts items) "<?")
+          (list-push (. parts items) target)
+          (if (> (string-len data) 0)
+            (do (list-push (. parts items) " ") (list-push (. parts items) data))
+            (do))
+          (list-push (. parts items) "?>")))))
+
+  (fn xml-stringify-pretty ((arena Arena) (n (Ptr XmlNode)) (indent-size (Int 0 ..)))
+    (@intent "Serialize XML node tree with indentation")
+    (@spec ((Arena (Ptr XmlNode) (Int 0 ..)) -> String))
+    (@alloc arena)
+    (@pre (!= n nil))
+    (@pre (<= indent-size 8))
+    (let ((wrapper (cast (Ptr StringParts) (arena-alloc arena (sizeof StringParts)))))
+      (set! (deref wrapper) (record-new StringParts (items (list-new arena String))))
+      (stringify-node-pretty arena n wrapper 0 indent-size)
+      (string-build arena (. wrapper items)))))

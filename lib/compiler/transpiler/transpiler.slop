@@ -2691,7 +2691,9 @@
           ((some lt)
             ;; Only emit pointer-element lists here
             (when (is-pointer-elem-type (. lt elem-type))
-              (emit-single-list-type-header ctx lt)))
+              (emit-single-list-type-header ctx lt)
+              ;; Also emit Option<List<T>> if registered
+              (emit-option-for-inner-type ctx (. lt c-name))))
           ((none) (do)))
         (set! i (+ i 1)))))
 
