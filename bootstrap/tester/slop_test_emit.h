@@ -92,6 +92,8 @@ types_SExpr* test_emit_make_sexpr_list(slop_arena* arena, slop_list_types_SExpr_
 uint8_t test_emit_is_wildcard_like_symbol(slop_string name);
 uint8_t test_emit_has_ellipsis(types_SExpr* expr);
 uint8_t test_emit_args_have_ellipsis(slop_list_types_SExpr_ptr args);
+uint8_t test_emit_is_call_operator(slop_string name);
+uint8_t test_emit_args_have_fixture_refs(slop_list_types_SExpr_ptr args);
 uint8_t test_emit_is_type_constructor_name(slop_string name);
 uint8_t test_emit_contains_wildcard(types_SExpr* expr);
 types_SExpr* test_emit_replace_wildcards(slop_arena* arena, types_SExpr* expr);

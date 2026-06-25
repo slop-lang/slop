@@ -88,6 +88,7 @@ slop_string infer_get_hole_prompt(slop_list_types_SExpr_ptr items, int64_t len);
 int64_t infer_find_last_body_idx(slop_list_types_SExpr_ptr items);
 uint8_t infer_is_c_name_related(slop_list_types_SExpr_ptr items, int64_t idx);
 uint8_t infer_is_annotation_expr(types_SExpr* expr);
+uint8_t infer_is_checkable_annotation(types_SExpr* expr);
 types_ResolvedType* infer_infer_fn_body(env_TypeEnv* env, types_SExpr* fn_form);
 void infer_check_match_patterns(env_TypeEnv* env, types_ResolvedType* scrutinee_type, slop_list_types_SExpr_ptr patterns);
 
