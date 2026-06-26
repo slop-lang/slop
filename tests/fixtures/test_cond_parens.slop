@@ -1,0 +1,28 @@
+(module test_cond_parens
+  (export classify present?)
+
+  (fn classify ((c (Int 0 .. 255)) (n Int))
+    (@intent "Exercise comparison conditions in if/while/when/cond/else-if")
+    (@spec (((Int 0 .. 255) Int) -> Int))
+    (let ((mut i 0)
+          (mut total 0))
+      (while (< i n)
+        (set! i (+ i 1)))
+      (if (== c 10)
+        (set! total 1)
+        (when (== c 13)
+          (set! total 2)))
+      (cond
+        ((== c 9) (set! total 3))
+        ((and (> c 32) (< c 127)) (set! total 4))
+        (else (set! total 0)))
+      total))
+
+  (fn present? ((o (Option Int)))
+    (@intent "Match expression used directly as a condition (GCC statement-expr in C)")
+    (@spec (((Option Int)) -> Int))
+    (if (match o
+          ((some _) true)
+          ((none) false))
+      1
+      0)))

@@ -16,7 +16,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import parser (sexpr-get-symbol-name sexpr-is-number sexpr-number-string))
   (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
-                   ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
+                   ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens VarEntry
                    ctx-lookup-enum-variant ctx-get-current-return-type ctx-gensym
                    to-c-type-prefixed ends-with-star
                    ctx-lookup-field-type ctx-lookup-field-slop-type
@@ -26,7 +26,7 @@
   (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-option-inner-slop-type infer-result-ok-slop-type infer-result-err-slop-type c-type-to-option-type-name
                 resolve-type-alias infer-collection-element-slop-type is-set-type is-map-type
                 extract-set-elem-from-slop-type extract-map-key-from-slop-type extract-map-value-from-slop-type
-                slop-value-type-to-c-type is-pointer-expr))
+                slop-value-type-to-c-type is-pointer-expr set-is-self-assign))
 
   ;; ============================================================
   ;; Pattern Type Detection
@@ -1101,7 +1101,7 @@
           ;; Condition
           (match (list-get items 1)
             ((some cond-expr)
-              (let ((cond-c (transpile-expr ctx cond-expr)))
+              (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx cond-expr))))
                 (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))))
             ((none) (ctx-emit ctx "if (/* missing */) {")))
           (ctx-indent ctx)
@@ -1136,7 +1136,7 @@
           ;; Condition
           (match (list-get items 1)
             ((some cond-expr)
-              (let ((cond-c (transpile-expr ctx cond-expr)))
+              (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx cond-expr))))
                 (ctx-emit ctx (ctx-str3 ctx "while (" cond-c ") {"))))
             ((none) (ctx-emit ctx "while (/* missing */) {")))
           (ctx-indent ctx)
@@ -1187,6 +1187,8 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
       (cond
+        ;; self-assign no-op: (set! x x) emits nothing (avoids -Wself-assign)
+        ((set-is-self-assign items) (do))
         ;; 5-arg form: (set! target field Type value) - typed field assignment
         ((== len 5)
           (match (list-get items 1)
@@ -1366,7 +1368,7 @@
           ;; Condition
           (match (list-get items 1)
             ((some cond-expr)
-              (let ((cond-c (transpile-expr ctx cond-expr)))
+              (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx cond-expr))))
                 (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))))
             ((none) (ctx-emit ctx "if (/* missing */) {")))
           (ctx-indent ctx)
@@ -1407,7 +1409,7 @@
                                 (ctx-dedent ctx))
                               (do
                                 ;; Regular test clause with symbol condition
-                                (let ((cond-c (transpile-expr ctx test-expr)))
+                                (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx test-expr))))
                                   (if first
                                     (do
                                       (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))
@@ -1418,7 +1420,7 @@
                                   (ctx-dedent ctx)))))
                           ;; Non-symbol test - evaluate as expression
                           (else
-                            (let ((cond-c (transpile-expr ctx test-expr)))
+                            (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx test-expr))))
                               (if first
                                 (do
                                   (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))

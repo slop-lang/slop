@@ -83,7 +83,7 @@ void emit_emit_block_close(context_TranspileContext* ctx) {
 
 void emit_emit_if_open(context_TranspileContext* ctx, slop_string condition) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
-    context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("if ("), condition, SLOP_STR(") {")));
+    context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("if ("), context_ctx_strip_cond_parens(ctx, condition), SLOP_STR(") {")));
     context_ctx_indent(ctx);
 }
 
@@ -97,13 +97,13 @@ void emit_emit_else(context_TranspileContext* ctx) {
 void emit_emit_else_if(context_TranspileContext* ctx, slop_string condition) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     context_ctx_dedent(ctx);
-    context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("} else if ("), condition, SLOP_STR(") {")));
+    context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("} else if ("), context_ctx_strip_cond_parens(ctx, condition), SLOP_STR(") {")));
     context_ctx_indent(ctx);
 }
 
 void emit_emit_while_open(context_TranspileContext* ctx, slop_string condition) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
-    context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("while ("), condition, SLOP_STR(") {")));
+    context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("while ("), context_ctx_strip_cond_parens(ctx, condition), SLOP_STR(") {")));
     context_ctx_indent(ctx);
 }
 

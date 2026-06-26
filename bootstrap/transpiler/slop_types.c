@@ -43,7 +43,7 @@ uint8_t types_range_contains(types_RangeBounds bounds, int64_t value) {
 }
 
 int64_t types_min(int64_t a, int64_t b) {
-    if ((a < b)) {
+    if (a < b) {
         return a;
     } else {
         return b;
@@ -51,7 +51,7 @@ int64_t types_min(int64_t a, int64_t b) {
 }
 
 int64_t types_max(int64_t a, int64_t b) {
-    if ((a > b)) {
+    if (a > b) {
         return a;
     } else {
         return b;
@@ -200,7 +200,7 @@ slop_option_int types_resolved_type_get_variant_index(types_ResolvedType* t, slo
         int64_t i = 0;
         uint8_t done = 0;
         slop_option_int found = (slop_option_int){.has_value = false};
-        while (((i < len) && !(done))) {
+        while ((i < len) && !(done)) {
             __auto_type _mv_5 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_5.has_value) {
                 __auto_type v = _mv_5.value;
@@ -218,14 +218,14 @@ slop_option_int types_resolved_type_get_variant_index(types_ResolvedType* t, slo
 
 slop_option_types_ResolvedType_ptr types_resolved_type_get_variant_payload(types_ResolvedType* t, slop_string name) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
-    if (((*t).kind == types_ResolvedTypeKind_rk_union)) {
+    if ((*t).kind == types_ResolvedTypeKind_rk_union) {
         {
             __auto_type variants = (*t).variants;
             __auto_type len = ((int64_t)((variants).len));
             int64_t i = 0;
             uint8_t done = 0;
             slop_option_types_ResolvedType_ptr found = (slop_option_types_ResolvedType_ptr){.has_value = false};
-            while (((i < len) && !(done))) {
+            while ((i < len) && !(done)) {
                 __auto_type _mv_6 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_6.has_value) {
                     __auto_type v = _mv_6.value;
@@ -246,14 +246,14 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_variant_payload(types
 
 slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_arena* arena, types_ResolvedType* t, slop_string name) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
-    if (((*t).kind == types_ResolvedTypeKind_rk_union)) {
+    if ((*t).kind == types_ResolvedTypeKind_rk_union) {
         {
             __auto_type variants = (*t).variants;
             __auto_type len = ((int64_t)((variants).len));
             int64_t i = 0;
             uint8_t done = 0;
             slop_list_types_ResolvedType_ptr found = ((slop_list_types_ResolvedType_ptr){ .data = (types_ResolvedType**)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedType*)), .len = 0, .cap = 16 });
-            while (((i < len) && !(done))) {
+            while ((i < len) && !(done)) {
                 __auto_type _mv_7 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_7.has_value) {
                     __auto_type v = _mv_7.value;
@@ -280,7 +280,7 @@ uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name) {
         __auto_type len = ((int64_t)((fields).len));
         int64_t i = 0;
         uint8_t found = 0;
-        while (((i < len) && !(found))) {
+        while ((i < len) && !(found)) {
             __auto_type _mv_8 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_8.has_value) {
                 __auto_type f = _mv_8.value;
@@ -303,7 +303,7 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_Reso
         int64_t i = 0;
         uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
-        while (((i < len) && !(found))) {
+        while ((i < len) && !(found)) {
             __auto_type _mv_9 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_9.has_value) {
                 __auto_type f = _mv_9.value;
@@ -320,7 +320,7 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_Reso
 }
 
 slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_ResolvedType* t) {
-    if ((t == NULL)) {
+    if (t == NULL) {
         return SLOP_STR("Unknown");
     } else {
         {

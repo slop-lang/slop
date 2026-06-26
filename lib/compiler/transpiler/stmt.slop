@@ -20,7 +20,7 @@
   (import parser (sexpr-get-symbol-name))
   (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type
-                   ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry
+                   ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens VarEntry
                    ctx-get-current-return-type ctx-is-capture-retval
                    to-c-type-prefixed ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    LastLambdaInfo ctx-get-last-lambda-info ctx-clear-last-lambda-info))
@@ -29,7 +29,7 @@
               infer-collection-element-slop-type c-type-to-option-type-name
               resolve-type-alias extract-set-elem-from-slop-type
               extract-map-key-from-slop-type extract-map-value-from-slop-type
-              slop-value-type-to-c-type))
+              slop-value-type-to-c-type set-is-self-assign))
   (import strlib (starts-with ends-with))
   (import match (transpile-match))
 
@@ -420,7 +420,7 @@
               ;; Get condition
               (match (list-get items 1)
                 ((some cond-expr)
-                  (let ((cond-c (transpile-expr ctx cond-expr)))
+                  (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx cond-expr))))
                     ;; Emit if
                     (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))
                     (ctx-indent ctx)
@@ -462,7 +462,7 @@
             (ctx-add-error-at ctx "invalid when: need condition and body" (ctx-sexpr-line expr) (ctx-sexpr-col expr))
             (match (list-get items 1)
               ((some cond-expr)
-                (let ((cond-c (transpile-expr ctx cond-expr)))
+                (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx cond-expr))))
                   (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))
                   (ctx-indent ctx)
                   ;; Process body statements
@@ -495,7 +495,7 @@
             (ctx-add-error-at ctx "invalid while: need condition and body" (ctx-sexpr-line expr) (ctx-sexpr-col expr))
             (match (list-get items 1)
               ((some cond-expr)
-                (let ((cond-c (transpile-expr ctx cond-expr)))
+                (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx cond-expr))))
                   (ctx-emit ctx (ctx-str3 ctx "while (" cond-c ") {"))
                   (ctx-indent ctx)
                   ;; Process body statements
@@ -526,6 +526,8 @@
           (let ((items (. lst items))
                 (len (list-len items)))
             (cond
+              ;; self-assign no-op: (set! x x) emits nothing (avoids -Wself-assign)
+              ((set-is-self-assign items) (do))
               ;; 5-arg form: (set! target field Type value) - typed field assignment
               ((== len 5)
                 (transpile-typed-field-set ctx items))
@@ -898,7 +900,7 @@
                                     (ctx-dedent ctx))
                                   (do
                                     ;; Regular test clause
-                                    (let ((cond-c (transpile-expr ctx test-expr)))
+                                    (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx test-expr))))
                                       (if first
                                         (do
                                           (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))
@@ -909,7 +911,7 @@
                                       (ctx-dedent ctx)))))
                               ;; Non-symbol test - evaluate as expression
                               (_
-                                (let ((cond-c (transpile-expr ctx test-expr)))
+                                (let ((cond-c (ctx-strip-cond-parens ctx (transpile-expr ctx test-expr))))
                                   (if first
                                     (do
                                       (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))

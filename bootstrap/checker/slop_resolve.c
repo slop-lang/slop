@@ -92,7 +92,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
                                                                     __auto_type local_name = name_sym.name;
                                                                     __auto_type actual_module = ({ __auto_type _mv = env_env_lookup_type_direct(env, local_name); _mv.has_value ? ({ __auto_type t = _mv.value; ({ __auto_type _mv = (*t).module_name; _mv.has_value ? ({ __auto_type mod = _mv.value; mod; }) : (mod_sym.name); }); }) : (mod_sym.name); });
                                                                     __auto_type qualified_name = string_concat(arena, actual_module, string_concat(arena, SLOP_STR(":"), local_name));
-                                                                    if (((!(resolve_contains_slash(mod_sym.name))) && (({ __auto_type _mv = env_lookup_type_by_qualified_name(env, qualified_name); _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) && (({ __auto_type _mv = env_env_lookup_function_direct(env, qualified_name); _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) && (!(env_env_lookup_constant_in_module(env, actual_module, local_name))))) {
+                                                                    if ((!(resolve_contains_slash(mod_sym.name))) && (({ __auto_type _mv = env_lookup_type_by_qualified_name(env, qualified_name); _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) && (({ __auto_type _mv = env_env_lookup_function_direct(env, qualified_name); _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) && (!(env_env_lookup_constant_in_module(env, actual_module, local_name)))) {
                                                                         env_env_add_error(env, string_concat(arena, SLOP_STR("module '"), string_concat(arena, mod_sym.name, string_concat(arena, SLOP_STR("' does not export '"), string_concat(arena, local_name, SLOP_STR("'"))))), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
                                                                     }
                                                                     env_env_add_import(env, local_name, qualified_name);
@@ -138,7 +138,7 @@ uint8_t resolve_contains_slash(slop_string s) {
         __auto_type len = ((int64_t)(s.len));
         uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
-            if ((!(found) && (((int64_t)(s.data[i])) == 47))) {
+            if (!(found) && (((int64_t)(s.data[i])) == 47)) {
                 found = 1;
             }
         }

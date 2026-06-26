@@ -1,7 +1,8 @@
-# Generated files
-src/
+# Local build artifacts
 build/
 node_modules/
+target/
+Cargo.lock
 
 # Build artifacts
 *.o

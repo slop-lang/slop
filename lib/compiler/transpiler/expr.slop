@@ -25,7 +25,9 @@
     ;; Set/Map type detection
     is-set-type is-map-type
     ;; Pointer detection
-    is-pointer-expr)
+    is-pointer-expr
+    ;; set! helpers
+    set-is-self-assign)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
@@ -4478,6 +4480,32 @@
   ;; Expression-position statement forms (GCC statement expressions)
   ;; ============================================================
 
+  (fn discard-needs-void ((e (Ptr SExpr)))
+    (@intent "True if e transpiles to a ternary whose discarded result trips -Wunused-value (if/when/cond). Loops are handled at the source by terminating in (void)0, so they are not listed here.")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (match (deref e)
+      ((lst lst)
+        (match (list-get (. lst items) 0)
+          ((some head)
+            (match (deref head)
+              ((sym sym)
+                (let ((name (. sym name)))
+                  (or (string-eq name "if")
+                      (or (string-eq name "when")
+                          (string-eq name "cond")))))
+              (_ false)))
+          ((none) false)))
+      (_ false)))
+
+  (fn transpile-discarded-expr ((ctx (Ptr TranspileContext)) (e (Ptr SExpr)))
+    (@intent "Transpile an expression whose value is discarded; void-cast control-flow forms so the unused ternary/loop result does not warn (-Wunused-value)")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (let ((c (transpile-expr ctx e)))
+      (if (discard-needs-void e)
+        (ctx-str3 ctx "(void)(" c ")")
+        c)))
+
   (fn transpile-let-expr ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile let as expression using GCC statement expression")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
@@ -4519,7 +4547,7 @@
                     (while (< i (- len 1))
                       (match (list-get items i)
                         ((some body-expr)
-                          (let ((body-c (transpile-expr ctx body-expr)))
+                          (let ((body-c (transpile-discarded-expr ctx body-expr)))
                             (set! result (ctx-str3 ctx result body-c "; "))))
                         ((none) (do)))
                       (set! i (+ i 1)))
@@ -4694,13 +4722,13 @@
                 (while (< i len)
                   (match (list-get items i)
                     ((some body-expr)
-                      (let ((body-c (transpile-expr ctx body-expr)))
+                      (let ((body-c (transpile-discarded-expr ctx body-expr)))
                         (set! body-str (ctx-str3 ctx body-str body-c "; "))))
                     ((none) (do)))
                   (set! i (+ i 1))))
               ;; Build result string
               (let ((part1 (ctx-str3 ctx "({ while (" cond-c ") { "))
-                    (part2 (ctx-str ctx body-str "} 0; })")))
+                    (part2 (ctx-str ctx body-str "} (void)0; })")))
                 (ctx-str ctx part1 part2))))
           ((none) "({ (void)0; })")))))
 
@@ -4717,8 +4745,10 @@
           (while (< i len)
             (match (list-get items i)
               ((some expr)
-                (let ((expr-c (transpile-expr ctx expr))
-                      (is-last (== i (- len 1))))
+                (let ((is-last (== i (- len 1)))
+                      (expr-c (if (== i (- len 1))
+                                (transpile-expr ctx expr)
+                                (transpile-discarded-expr ctx expr))))
                   (set! result (ctx-str3 ctx result expr-c "; "))))
               ((none) (do)))
             (set! i (+ i 1)))
@@ -4741,12 +4771,30 @@
                 (while (< i len)
                   (match (list-get items i)
                     ((some body-expr)
-                      (set! body-c (ctx-str3 ctx body-c (transpile-expr ctx body-expr) "; ")))
+                      (set! body-c (ctx-str3 ctx body-c (transpile-discarded-expr ctx body-expr) "; ")))
                     ((none) (do)))
                   (set! i (+ i 1))))
               (set! body-c (ctx-str ctx body-c "0; })"))
               (ctx-str5 ctx "((" cond-c ") ? " body-c " : ({ (void)0; }))")))
           ((none) "({ (void)0; })")))))
+
+  (fn set-is-self-assign ((items (List (Ptr SExpr))))
+    (@intent "True if a set! is a no-op self-assignment like (set! x x)")
+    (@spec (((List (Ptr SExpr))) -> Bool))
+    (if (== (list-len items) 3)
+      (match (list-get items 1)
+        ((some target-expr)
+          (match (deref target-expr)
+            ((sym tsym)
+              (match (list-get items 2)
+                ((some value-expr)
+                  (match (deref value-expr)
+                    ((sym vsym) (string-eq (. tsym name) (. vsym name)))
+                    (_ false)))
+                ((none) false)))
+            (_ false)))
+        ((none) false))
+      false))
 
   (fn transpile-set-expr ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile set! as expression (side effect, returns 0)")
@@ -4756,6 +4804,9 @@
     ;; or (set! (@ arr idx) value) -> ({ arr[idx] = value; (void)0; })
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
+      (if (set-is-self-assign items)
+        ;; (set! x x) is a no-op — emit a void statement-expr, no self-assign
+        "({ (void)0; })"
       (if (< len 3)
         "({ (void)0; })"
         (match (list-get items 1)
@@ -4809,7 +4860,7 @@
                       (let ((target-c (transpile-expr ctx target-expr)))
                         (ctx-str5 ctx "({ " target-c " = " val-c "; (void)0; })"))))))
               ((none) "({ (void)0; })")))
-          ((none) "({ (void)0; })")))))
+          ((none) "({ (void)0; })"))))))
 
   ;; ============================================================
   ;; Arena Detection for list-push
@@ -5789,7 +5840,7 @@
                                             (set! i (+ i 1))))
                                         (ctx-pop-scope ctx)
                                         ;; Close: } 0; })
-                                        (ctx-str ctx result "} 0; })")))
+                                        (ctx-str ctx result "} (void)0; })")))
                                     ((none) "({ /* for: missing end */ 0; })")))
                                 ((none) "({ /* for: missing start */ 0; })"))))
                           (else "({ /* for: var must be symbol */ 0; })")))
@@ -5883,7 +5934,7 @@
           (set! i (+ i 1))))
       (ctx-pop-scope ctx)
       ;; Close: } 0; })
-      (ctx-str ctx result "} 0; })")))
+      (ctx-str ctx result "} (void)0; })")))
 
   ;; ============================================================
   ;; For-Each Set as Expression
@@ -5925,7 +5976,7 @@
             (set! i (+ i 1))))
         (ctx-pop-scope ctx)
         ;; Close: } } 0; })
-        (ctx-str ctx result "} } 0; })"))))
+        (ctx-str ctx result "} } (void)0; })"))))
 
   ;; ============================================================
   ;; For-Each Map Keys as Expression
@@ -5967,7 +6018,7 @@
             (set! i (+ i 1))))
         (ctx-pop-scope ctx)
         ;; Close: } } 0; })
-        (ctx-str ctx result "} } 0; })"))))
+        (ctx-str ctx result "} } (void)0; })"))))
 
   ;; ============================================================
   ;; For-Each Map Key-Value as Expression
@@ -6034,7 +6085,7 @@
                                               (set! i (+ i 1))))
                                           (ctx-pop-scope ctx)
                                           ;; Close: } } 0; })
-                                          (ctx-str ctx result "} } 0; })"))))
+                                          (ctx-str ctx result "} } (void)0; })"))))
                                     (_ "({ /* for-each: map value must be symbol */ 0; })")))
                                 (_ "({ /* for-each: map key must be symbol */ 0; })")))
                             ((none) "({ /* for-each: missing map expression */ 0; })")))

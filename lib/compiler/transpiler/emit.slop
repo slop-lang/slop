@@ -20,7 +20,7 @@
     emit-typedef)
 
   (import types (SExpr SExprList SExprSymbol))
-  (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-add-include))
+  (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens ctx-add-include))
   (import ctype (to-c-type to-c-name))
   (import strlib (replace))
 
@@ -107,7 +107,7 @@
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (@example (ctx "x > 0") -> "if (x > 0) {")
     (@pre {ctx != nil})
-    (ctx-emit ctx (ctx-str3 ctx "if (" condition ") {"))
+    (ctx-emit ctx (ctx-str3 ctx "if (" (ctx-strip-cond-parens ctx condition) ") {"))
     (ctx-indent ctx))
 
   (fn emit-else ((ctx (Ptr TranspileContext)))
@@ -123,7 +123,7 @@
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (@pre {ctx != nil})
     (ctx-dedent ctx)
-    (ctx-emit ctx (ctx-str3 ctx "} else if (" condition ") {"))
+    (ctx-emit ctx (ctx-str3 ctx "} else if (" (ctx-strip-cond-parens ctx condition) ") {"))
     (ctx-indent ctx))
 
   (fn emit-while-open ((ctx (Ptr TranspileContext)) (condition String))
@@ -131,7 +131,7 @@
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (@example (ctx "i < n") -> "while (i < n) {")
     (@pre {ctx != nil})
-    (ctx-emit ctx (ctx-str3 ctx "while (" condition ") {"))
+    (ctx-emit ctx (ctx-str3 ctx "while (" (ctx-strip-cond-parens ctx condition) ") {"))
     (ctx-indent ctx))
 
   (fn emit-for-open ((ctx (Ptr TranspileContext)) (init String) (cond String) (incr String))

@@ -16,7 +16,7 @@ int tester_main_main(int argc, char** _c_argv);
 slop_option_string tester_main_read_file(slop_arena* arena, char* filename) {
     {
         __auto_type file = fopen(filename, ((char*)(SLOP_STR("rb").data)));
-        if ((file == NULL)) {
+        if (file == NULL) {
             return (slop_option_string){.has_value = false};
         } else {
             fseek(file, 0, tester_main_SEEK_END);
@@ -38,7 +38,7 @@ slop_option_string tester_main_read_file(slop_arena* arena, char* filename) {
 void tester_main_print_str(char* s) {
     {
         int64_t i = 0;
-        while ((s[i] != 0)) {
+        while (s[i] != 0) {
             putchar(((int64_t)(s[i])));
             i = (i + 1);
         }
@@ -50,7 +50,7 @@ void tester_main_print_string(slop_string s) {
         __auto_type len = ((int64_t)(s.len));
         __auto_type data = s.data;
         int64_t i = 0;
-        while ((i < len)) {
+        while (i < len) {
             putchar(((int64_t)(data[i])));
             i = (i + 1);
         }
@@ -63,22 +63,22 @@ void tester_main_print_json_string(slop_string s) {
         __auto_type len = ((int64_t)(s.len));
         __auto_type data = s.data;
         int64_t i = 0;
-        while ((i < len)) {
+        while (i < len) {
             {
                 __auto_type c = ((int64_t)(data[i]));
-                if ((c == 34)) {
+                if (c == 34) {
                     putchar(92);
                     putchar(34);
-                } else if ((c == 92)) {
+                } else if (c == 92) {
                     putchar(92);
                     putchar(92);
-                } else if ((c == 10)) {
+                } else if (c == 10) {
                     putchar(92);
                     putchar(110);
-                } else if ((c == 13)) {
+                } else if (c == 13) {
                     putchar(92);
                     putchar(114);
-                } else if ((c == 9)) {
+                } else if (c == 9) {
                     putchar(92);
                     putchar(116);
                 } else {
@@ -94,18 +94,18 @@ void tester_main_print_json_string(slop_string s) {
 slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string lines) {
     {
         __auto_type len = ((int64_t)((lines).len));
-        if ((len == 0)) {
+        if (len == 0) {
             return SLOP_STR("");
         } else {
             {
                 int64_t total = 0;
                 int64_t i = 0;
-                while ((i < len)) {
-                    __auto_type _mv_1610 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_1610.has_value) {
-                        __auto_type line = _mv_1610.value;
+                while (i < len) {
+                    __auto_type _mv_1617 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_1617.has_value) {
+                        __auto_type line = _mv_1617.value;
                         total = (total + (((int64_t)(line.len)) + 1));
-                    } else if (!_mv_1610.has_value) {
+                    } else if (!_mv_1617.has_value) {
                     }
                     i = (i + 1);
                 }
@@ -113,15 +113,15 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                     __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (total + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                     int64_t pos = 0;
                     int64_t j = 0;
-                    while ((j < len)) {
-                        __auto_type _mv_1611 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                        if (_mv_1611.has_value) {
-                            __auto_type line = _mv_1611.value;
+                    while (j < len) {
+                        __auto_type _mv_1618 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        if (_mv_1618.has_value) {
+                            __auto_type line = _mv_1618.value;
                             {
                                 __auto_type line_len = ((int64_t)(line.len));
                                 __auto_type line_data = line.data;
                                 __auto_type k = 0;
-                                while ((k < line_len)) {
+                                while (k < line_len) {
                                     buf[pos] = line_data[k];
                                     pos = (pos + 1);
                                     k = (k + 1);
@@ -129,7 +129,7 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                                 buf[pos] = 10;
                                 pos = (pos + 1);
                             }
-                        } else if (!_mv_1611.has_value) {
+                        } else if (!_mv_1618.has_value) {
                         }
                         j = (j + 1);
                     }
@@ -142,11 +142,11 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
 }
 
 void tester_main_print_int(int64_t n) {
-    if ((n < 0)) {
+    if (n < 0) {
         putchar(45);
         tester_main_print_int((0 - n));
     } else {
-        if ((n < 10)) {
+        if (n < 10) {
             putchar((48 + n));
         } else {
             tester_main_print_int((n / 10));
@@ -159,14 +159,14 @@ slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, 
     {
         __auto_type sources = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
         int64_t i = 2;
-        while ((i < argc)) {
+        while (i < argc) {
             {
                 __auto_type path_ptr = ((char*)(argv[i]));
-                __auto_type _mv_1612 = tester_main_read_file(arena, path_ptr);
-                if (_mv_1612.has_value) {
-                    __auto_type source = _mv_1612.value;
+                __auto_type _mv_1619 = tester_main_read_file(arena, path_ptr);
+                if (_mv_1619.has_value) {
+                    __auto_type source = _mv_1619.value;
                     ({ __auto_type _lst_p = &(sources); __auto_type _item = (source); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                } else if (!_mv_1612.has_value) {
+                } else if (!_mv_1619.has_value) {
                 }
             }
             i = (i + 1);
@@ -177,7 +177,7 @@ slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, 
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
-    if ((argc < 2)) {
+    if (argc < 2) {
         tester_main_print_str(((char*)(SLOP_STR("Usage: slop-tester <input.slop> [import-files...]\n").data)));
         return 1;
     } else {
@@ -190,9 +190,9 @@ int main(int argc, char** _c_argv) {
             SLOP_PRE(_arena.base != NULL, "arena allocation failed");
             #endif
             slop_arena* arena = &_arena;
-            __auto_type _mv_1613 = tester_main_read_file(arena, ((char*)(argv[1])));
-            if (_mv_1613.has_value) {
-                __auto_type source = _mv_1613.value;
+            __auto_type _mv_1620 = tester_main_read_file(arena, ((char*)(argv[1])));
+            if (_mv_1620.has_value) {
+                __auto_type source = _mv_1620.value;
                 {
                     __auto_type import_sources = tester_main_read_import_files(arena, argc, argv);
                     __auto_type result = tester_generate_tests_with_imports(arena, source, import_sources);
@@ -219,7 +219,7 @@ int main(int argc, char** _c_argv) {
                         return 1;
                     }
                 }
-            } else if (!_mv_1613.has_value) {
+            } else if (!_mv_1620.has_value) {
                 tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"Could not read file\"}\n").data)));
                 return 1;
             }
