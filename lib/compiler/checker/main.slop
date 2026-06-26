@@ -677,7 +677,7 @@
     (@spec ((Int (Ptr (Ptr U8))) -> Int))
     (when (>= argc 2)
       (when (string-eq (argv-to-string argv 1) "--version")
-        (println "slop-checker 0.1.0")
+        (println "slop-checker 0.1.1")
         (return 0)))
     (if (< argc 2)
       (do

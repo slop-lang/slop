@@ -12,6 +12,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Installing SLOP to $PREFIX..."
 
+# macOS tags downloaded files with a com.apple.quarantine flag; Gatekeeper then
+# blocks each unsigned binary on first run ("developer cannot be verified").
+# Clear it for the extracted package (scoped to this directory) so the installed
+# tools run without a per-binary prompt.
+if [ "$(uname)" = "Darwin" ]; then
+    echo "  Clearing macOS quarantine flag..."
+    xattr -dr com.apple.quarantine "$SCRIPT_DIR" 2>/dev/null || true
+fi
+
 # Create directories
 mkdir -p "$PREFIX/bin"
 mkdir -p "$PREFIX/lib/slop"

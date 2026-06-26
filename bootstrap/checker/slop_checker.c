@@ -742,7 +742,7 @@ int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
     if (argc >= 2) {
         if (string_eq(checker_argv_to_string(argv, 1), SLOP_STR("--version"))) {
-            printf("%s\n", "slop-checker 0.1.0");
+            printf("%s\n", "slop-checker 0.1.1");
             return 0;
         }
     }
