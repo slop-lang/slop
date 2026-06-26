@@ -1,0 +1,22 @@
+(module test_clean_warnings
+  (export check)
+
+  ;; Exercises two codegen pitfalls:
+  ;;  - (set! x x) no-op in a match none-arm reached in expression position
+  ;;    (must NOT emit `x = x;` -> -Wself-assign)
+  ;;  - a while loop in expression position (operand of `and`)
+  ;;    (must terminate in `(void)0` -> no -Wunused-value)
+  (fn check ((xs (List Int)))
+    (@intent "Self-assign match arm + while loop in expression position")
+    (@spec (((List Int)) -> Bool))
+    (let ((mut total 0)
+          (mut i 0))
+      (and (> (list-len xs) 0)
+           (do
+             (while (< i 3)
+               (do
+                 (match (list-get xs i)
+                   ((some v) (set! total (+ total v)))
+                   ((none) (set! total total)))
+                 (set! i (+ i 1))))
+             (> total 0))))))

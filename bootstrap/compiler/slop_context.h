@@ -538,6 +538,8 @@ slop_string context_ctx_str(context_TranspileContext* ctx, slop_string a, slop_s
 slop_string context_ctx_str3(context_TranspileContext* ctx, slop_string a, slop_string b, slop_string c);
 slop_string context_ctx_str4(context_TranspileContext* ctx, slop_string a, slop_string b, slop_string c, slop_string d);
 slop_string context_ctx_str5(context_TranspileContext* ctx, slop_string a, slop_string b, slop_string c, slop_string d, slop_string e);
+uint8_t context_cond_paren_wrapped(slop_string s);
+slop_string context_ctx_strip_cond_parens(context_TranspileContext* ctx, slop_string s);
 void context_ctx_add_import(context_TranspileContext* ctx, slop_string mod_name);
 slop_list_string context_ctx_get_imports(context_TranspileContext* ctx);
 void context_ctx_register_inline_record(context_TranspileContext* ctx, slop_string type_name, slop_string field_body);

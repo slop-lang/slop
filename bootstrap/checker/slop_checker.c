@@ -162,7 +162,7 @@ void checker_print_str(uint8_t* s) {
     SLOP_PRE(((s != NULL)), "(!= s nil)");
     {
         int64_t i = 0;
-        while ((s[i] != 0)) {
+        while (s[i] != 0) {
             putchar(((int64_t)(s[i])));
             i = (i + 1);
         }
@@ -174,7 +174,7 @@ void checker_print_string(slop_string s) {
         __auto_type len = ((int64_t)(s.len));
         __auto_type data = s.data;
         int64_t i = 0;
-        while ((i < len)) {
+        while (i < len) {
             putchar(((int64_t)(data[i])));
             i = (i + 1);
         }
@@ -187,22 +187,22 @@ void checker_print_json_string(slop_arena* arena, slop_string s) {
         __auto_type len = ((int64_t)(s.len));
         __auto_type data = s.data;
         int64_t i = 0;
-        while ((i < len)) {
+        while (i < len) {
             {
                 __auto_type c = ((int64_t)(data[i]));
-                if ((c == 34)) {
+                if (c == 34) {
                     putchar(92);
                     putchar(34);
-                } else if ((c == 92)) {
+                } else if (c == 92) {
                     putchar(92);
                     putchar(92);
-                } else if ((c == 10)) {
+                } else if (c == 10) {
                     putchar(92);
                     putchar(110);
-                } else if ((c == 13)) {
+                } else if (c == 13) {
                     putchar(92);
                     putchar(114);
-                } else if ((c == 9)) {
+                } else if (c == 9) {
                     putchar(92);
                     putchar(116);
                 } else {
@@ -216,7 +216,7 @@ void checker_print_json_string(slop_arena* arena, slop_string s) {
 }
 
 slop_string checker_extract_module_name(slop_list_types_SExpr_ptr exprs) {
-    if ((((int64_t)((exprs).len)) < 1)) {
+    if (((int64_t)((exprs).len)) < 1) {
         return SLOP_STR("unknown");
     } else {
         __auto_type _mv_400 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -229,7 +229,7 @@ slop_string checker_extract_module_name(slop_list_types_SExpr_ptr exprs) {
                     __auto_type lst = _mv_401.data.lst;
                     {
                         __auto_type items = lst.items;
-                        if ((((int64_t)((items).len)) < 2)) {
+                        if (((int64_t)((items).len)) < 2) {
                             return SLOP_STR("unknown");
                         } else {
                             __auto_type _mv_402 = ({ __auto_type _lst = items; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -302,7 +302,7 @@ void checker_output_diagnostics_text(slop_arena* arena, slop_string filename, sl
     {
         __auto_type len = ((int64_t)((diagnostics).len));
         int64_t i = 0;
-        while ((i < len)) {
+        while (i < len) {
             __auto_type _mv_407 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_407.has_value) {
                 __auto_type diag = _mv_407.value;
@@ -319,8 +319,8 @@ void checker_output_diagnostics_json(slop_arena* arena, slop_list_types_Diagnost
     {
         __auto_type len = ((int64_t)((diagnostics).len));
         int64_t i = 0;
-        while ((i < len)) {
-            if ((i > 0)) {
+        while (i < len) {
+            if (i > 0) {
                 putchar(44);
             }
             __auto_type _mv_408 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -401,10 +401,10 @@ int64_t checker_check_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t* 
                         checker_type_check_with_env(env, ast);
                         {
                             __auto_type diagnostics = env_env_get_diagnostics(env);
-                            if ((format == checker_OutputFormat_fmt_json)) {
+                            if (format == checker_OutputFormat_fmt_json) {
                                 checker_output_module_json(arena, mod_name, diagnostics, first);
                             }
-                            if ((format == checker_OutputFormat_fmt_text)) {
+                            if (format == checker_OutputFormat_fmt_text) {
                                 checker_output_diagnostics_text(arena, filename_str, diagnostics);
                             }
                             return checker_count_errors(diagnostics);
@@ -431,7 +431,7 @@ int64_t checker_count_errors(slop_list_types_Diagnostic diagnostics) {
         __auto_type len = ((int64_t)((diagnostics).len));
         int64_t errors = 0;
         int64_t i = 0;
-        while ((i < len)) {
+        while (i < len) {
             __auto_type _mv_413 = ({ __auto_type _lst = diagnostics; size_t _idx = (size_t)i; slop_option_types_Diagnostic _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_413.has_value) {
                 __auto_type diag = _mv_413.value;
@@ -460,7 +460,7 @@ types_ResolvedType* checker_resolve_type_string(env_TypeEnv* env, slop_arena* ar
     __auto_type _mv_415 = parser_parse(arena, type_str);
     if (_mv_415.is_ok) {
         __auto_type type_ast = _mv_415.data.ok;
-        if ((((int64_t)((type_ast).len)) == 0)) {
+        if (((int64_t)((type_ast).len)) == 0) {
             return env_env_get_int_type(env);
         } else {
             __auto_type _mv_416 = ({ __auto_type _lst = type_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -493,7 +493,7 @@ void checker_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_str
     __auto_type _mv_417 = parser_parse(arena, params_str);
     if (_mv_417.is_ok) {
         __auto_type params_ast = _mv_417.data.ok;
-        if ((((int64_t)((params_ast).len)) > 0)) {
+        if (((int64_t)((params_ast).len)) > 0) {
             __auto_type _mv_418 = ({ __auto_type _lst = params_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_418.has_value) {
                 __auto_type params_list = _mv_418.value;
@@ -516,7 +516,7 @@ void checker_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_str
                                             __auto_type param_lst = _mv_421.data.lst;
                                             {
                                                 __auto_type param_items = param_lst.items;
-                                                if ((((int64_t)((param_items).len)) >= 2)) {
+                                                if (((int64_t)((param_items).len)) >= 2) {
                                                     __auto_type _mv_422 = ({ __auto_type _lst = param_items; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                                     if (_mv_422.has_value) {
                                                         __auto_type name_expr = _mv_422.value;
@@ -602,11 +602,11 @@ uint8_t checker_types_names_equal(types_ResolvedType* a, types_ResolvedType* b) 
         __auto_type b_kind = (*b).kind;
         if (string_eq(a_name, b_name)) {
             return 1;
-        } else if ((string_eq(a_name, SLOP_STR("T")) || string_eq(b_name, SLOP_STR("T")))) {
+        } else if (string_eq(a_name, SLOP_STR("T")) || string_eq(b_name, SLOP_STR("T"))) {
             return 1;
-        } else if ((string_eq(a_name, SLOP_STR("Unknown")) || string_eq(b_name, SLOP_STR("Unknown")))) {
+        } else if (string_eq(a_name, SLOP_STR("Unknown")) || string_eq(b_name, SLOP_STR("Unknown"))) {
             return 1;
-        } else if (((a_kind == types_ResolvedTypeKind_rk_option) && (b_kind == types_ResolvedTypeKind_rk_option))) {
+        } else if ((a_kind == types_ResolvedTypeKind_rk_option) && (b_kind == types_ResolvedTypeKind_rk_option)) {
             __auto_type _mv_426 = (*a).inner_type;
             if (_mv_426.has_value) {
                 __auto_type a_inner = _mv_426.value;
@@ -620,13 +620,13 @@ uint8_t checker_types_names_equal(types_ResolvedType* a, types_ResolvedType* b) 
             } else if (!_mv_426.has_value) {
                 return 1;
             }
-        } else if (((a_kind == types_ResolvedTypeKind_rk_result) && (b_kind == types_ResolvedTypeKind_rk_result))) {
+        } else if ((a_kind == types_ResolvedTypeKind_rk_result) && (b_kind == types_ResolvedTypeKind_rk_result)) {
             {
                 __auto_type ok_match = ({ __auto_type _mv = (*a).inner_type; _mv.has_value ? ({ __auto_type a_inner = _mv.value; ({ __auto_type _mv = (*b).inner_type; _mv.has_value ? ({ __auto_type b_inner = _mv.value; checker_types_names_equal(a_inner, b_inner); }) : (1); }); }) : (1); });
                 __auto_type err_match = ({ __auto_type _mv = (*a).inner_type2; _mv.has_value ? ({ __auto_type a_inner2 = _mv.value; ({ __auto_type _mv = (*b).inner_type2; _mv.has_value ? ({ __auto_type b_inner2 = _mv.value; checker_types_names_equal(a_inner2, b_inner2); }) : (1); }); }) : (1); });
                 return (ok_match && err_match);
             }
-        } else if (((a_kind == types_ResolvedTypeKind_rk_ptr) && (b_kind == types_ResolvedTypeKind_rk_ptr))) {
+        } else if ((a_kind == types_ResolvedTypeKind_rk_ptr) && (b_kind == types_ResolvedTypeKind_rk_ptr)) {
             __auto_type _mv_428 = (*a).inner_type;
             if (_mv_428.has_value) {
                 __auto_type a_inner = _mv_428.value;
@@ -640,7 +640,7 @@ uint8_t checker_types_names_equal(types_ResolvedType* a, types_ResolvedType* b) 
             } else if (!_mv_428.has_value) {
                 return 1;
             }
-        } else if ((a_kind == types_ResolvedTypeKind_rk_range)) {
+        } else if (a_kind == types_ResolvedTypeKind_rk_range) {
             __auto_type _mv_430 = (*a).inner_type;
             if (_mv_430.has_value) {
                 __auto_type base = _mv_430.value;
@@ -648,7 +648,7 @@ uint8_t checker_types_names_equal(types_ResolvedType* a, types_ResolvedType* b) 
             } else if (!_mv_430.has_value) {
                 return 0;
             }
-        } else if ((b_kind == types_ResolvedTypeKind_rk_range)) {
+        } else if (b_kind == types_ResolvedTypeKind_rk_range) {
             __auto_type _mv_431 = (*b).inner_type;
             if (_mv_431.has_value) {
                 __auto_type base = _mv_431.value;
@@ -656,13 +656,13 @@ uint8_t checker_types_names_equal(types_ResolvedType* a, types_ResolvedType* b) 
             } else if (!_mv_431.has_value) {
                 return 0;
             }
-        } else if (((a_kind == types_ResolvedTypeKind_rk_primitive) && (b_kind == types_ResolvedTypeKind_rk_primitive))) {
+        } else if ((a_kind == types_ResolvedTypeKind_rk_primitive) && (b_kind == types_ResolvedTypeKind_rk_primitive)) {
             {
                 __auto_type a_match = ({ __auto_type _mv = (*a).inner_type; _mv.has_value ? ({ __auto_type a_base = _mv.value; checker_types_names_equal(a_base, b); }) : (0); });
                 __auto_type b_match = ({ __auto_type _mv = (*b).inner_type; _mv.has_value ? ({ __auto_type b_base = _mv.value; checker_types_names_equal(a, b_base); }) : (0); });
                 return (a_match || b_match);
             }
-        } else if ((a_kind == types_ResolvedTypeKind_rk_primitive)) {
+        } else if (a_kind == types_ResolvedTypeKind_rk_primitive) {
             __auto_type _mv_432 = (*a).inner_type;
             if (_mv_432.has_value) {
                 __auto_type a_base = _mv_432.value;
@@ -670,7 +670,7 @@ uint8_t checker_types_names_equal(types_ResolvedType* a, types_ResolvedType* b) 
             } else if (!_mv_432.has_value) {
                 return 0;
             }
-        } else if ((b_kind == types_ResolvedTypeKind_rk_primitive)) {
+        } else if (b_kind == types_ResolvedTypeKind_rk_primitive) {
             __auto_type _mv_433 = (*b).inner_type;
             if (_mv_433.has_value) {
                 __auto_type b_base = _mv_433.value;
@@ -686,7 +686,7 @@ uint8_t checker_types_names_equal(types_ResolvedType* a, types_ResolvedType* b) 
 
 int64_t checker_check_expr_mode(slop_arena* arena, env_TypeEnv* env, slop_string expr_str, slop_string type_str, slop_string context_file, slop_string params_str) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    if ((string_len(context_file) > 0)) {
+    if (string_len(context_file) > 0) {
         __auto_type _mv_434 = file_file_open(context_file, file_FileMode_read);
         if (!_mv_434.is_ok) {
             __auto_type _ = _mv_434.data.err;
@@ -712,7 +712,7 @@ int64_t checker_check_expr_mode(slop_arena* arena, env_TypeEnv* env, slop_string
         }
     }
     env_env_push_scope(env);
-    if ((string_len(params_str) > 0)) {
+    if (string_len(params_str) > 0) {
         checker_parse_and_bind_params(env, arena, params_str);
     }
     {
@@ -740,7 +740,7 @@ void checker_output_expr_result(slop_arena* arena, uint8_t valid, slop_string in
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
-    if ((argc < 2)) {
+    if (argc < 2) {
         printf("%s\n", "Usage: slop-checker [--json] <file.slop> [file2.slop ...]");
         printf("%s\n", "       slop-checker --expr EXPR --type TYPE [--context FILE] [--params PARAMS]");
         return 1;
@@ -762,25 +762,25 @@ int main(int argc, char** _c_argv) {
                     slop_string context_file = SLOP_STR("");
                     slop_string params_str = SLOP_STR("");
                     int64_t i = 2;
-                    if ((i < argc)) {
+                    if (i < argc) {
                         expr_str = checker_argv_to_string(argv, i);
                         i = (i + 1);
                     }
-                    while ((i < argc)) {
+                    while (i < argc) {
                         {
                             __auto_type arg = checker_argv_to_string(argv, i);
                             if (string_eq(arg, SLOP_STR("--type"))) {
-                                if (((i + 1) < argc)) {
+                                if ((i + 1) < argc) {
                                     type_str = checker_argv_to_string(argv, (i + 1));
                                     i = (i + 2);
                                 }
                             } else if (string_eq(arg, SLOP_STR("--context"))) {
-                                if (((i + 1) < argc)) {
+                                if ((i + 1) < argc) {
                                     context_file = checker_argv_to_string(argv, (i + 1));
                                     i = (i + 2);
                                 }
                             } else if (string_eq(arg, SLOP_STR("--params"))) {
-                                if (((i + 1) < argc)) {
+                                if ((i + 1) < argc) {
                                     params_str = checker_argv_to_string(argv, (i + 1));
                                     i = (i + 2);
                                 }
@@ -789,7 +789,7 @@ int main(int argc, char** _c_argv) {
                             }
                         }
                     }
-                    if ((string_len(expr_str) == 0)) {
+                    if (string_len(expr_str) == 0) {
                         printf("%s\n", "Error: --expr requires an expression argument");
                         return 1;
                     } else {
@@ -806,13 +806,13 @@ int main(int argc, char** _c_argv) {
                         format = checker_OutputFormat_fmt_json;
                         file_start = 2;
                     }
-                    if ((format == checker_OutputFormat_fmt_json)) {
+                    if (format == checker_OutputFormat_fmt_json) {
                         putchar(123);
                     }
                     {
                         int64_t i = file_start;
                         uint8_t first = 1;
-                        while ((i < argc)) {
+                        while (i < argc) {
                             {
                                 __auto_type filename = argv[i];
                                 __auto_type errors = checker_check_single_file(env, arena, filename, format, first);
@@ -822,11 +822,11 @@ int main(int argc, char** _c_argv) {
                             i = (i + 1);
                         }
                     }
-                    if ((format == checker_OutputFormat_fmt_json)) {
+                    if (format == checker_OutputFormat_fmt_json) {
                         putchar(125);
                         putchar(10);
                     }
-                    if ((total_errors > 0)) {
+                    if (total_errors > 0) {
                         return 1;
                     } else {
                         return 0;

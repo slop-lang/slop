@@ -857,7 +857,7 @@ uint8_t collect_is_range_type_expr(types_SExpr* type_expr) {
     if (!(parser_sexpr_is_list(type_expr))) {
         return 0;
     } else {
-        if ((parser_sexpr_list_len(type_expr) < 2)) {
+        if (parser_sexpr_list_len(type_expr) < 2) {
             return 0;
         } else {
             __auto_type _mv_145 = parser_sexpr_list_get(type_expr, 0);
@@ -959,7 +959,7 @@ slop_list_types_ResolvedType_ptr collect_get_variant_payload_types(env_TypeEnv* 
 }
 
 slop_option_types_ResolvedType_ptr collect_get_variant_payload_type(env_TypeEnv* env, types_SExpr* variant_form) {
-    if ((parser_sexpr_list_len(variant_form) <= 1)) {
+    if (parser_sexpr_list_len(variant_form) <= 1) {
         return (slop_option_types_ResolvedType_ptr){.has_value = false};
     } else {
         __auto_type _mv_151 = parser_sexpr_list_get(variant_form, 1);
@@ -974,7 +974,7 @@ slop_option_types_ResolvedType_ptr collect_get_variant_payload_type(env_TypeEnv*
 
 slop_string collect_checker_get_variant_name(types_SExpr* variant_form) {
     if (parser_sexpr_is_list(variant_form)) {
-        if ((parser_sexpr_list_len(variant_form) == 0)) {
+        if (parser_sexpr_list_len(variant_form) == 0) {
             return SLOP_STR("");
         } else {
             __auto_type _mv_152 = parser_sexpr_list_get(variant_form, 0);
@@ -1014,7 +1014,7 @@ uint8_t collect_check_type_expr_recursive(types_SExpr* type_expr, slop_string un
             __auto_type lst = _mv_154.data.lst;
             {
                 __auto_type items = lst.items;
-                if ((((int64_t)((items).len)) < 2)) {
+                if (((int64_t)((items).len)) < 2) {
                     return 0;
                 } else {
                     __auto_type _mv_155 = ({ __auto_type _lst = items; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -1199,7 +1199,7 @@ void collect_collect_single_constant(env_TypeEnv* env, slop_arena* arena, types_
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((const_form != NULL)), "(!= const-form nil)");
     if (parser_sexpr_is_list(const_form)) {
-        if ((parser_sexpr_list_len(const_form) >= 3)) {
+        if (parser_sexpr_list_len(const_form) >= 3) {
             __auto_type _mv_164 = parser_sexpr_list_get(const_form, 1);
             if (_mv_164.has_value) {
                 __auto_type name_expr = _mv_164.value;
@@ -1339,7 +1339,7 @@ void collect_collect_ffi_function(env_TypeEnv* env, slop_arena* arena, types_SEx
     if (parser_sexpr_is_list(func_decl)) {
         {
             __auto_type decl_len = parser_sexpr_list_len(func_decl);
-            if ((decl_len >= 3)) {
+            if (decl_len >= 3) {
                 __auto_type _mv_172 = parser_sexpr_list_get(func_decl, 0);
                 if (_mv_172.has_value) {
                     __auto_type name_expr = _mv_172.value;
@@ -1360,7 +1360,7 @@ void collect_collect_ffi_function(env_TypeEnv* env, slop_arena* arena, types_SEx
                     }
                 } else if (!_mv_172.has_value) {
                 }
-            } else if ((decl_len == 2)) {
+            } else if (decl_len == 2) {
                 __auto_type _mv_173 = parser_sexpr_list_get(func_decl, 0);
                 if (_mv_173.has_value) {
                     __auto_type name_expr = _mv_173.value;
@@ -1390,7 +1390,7 @@ uint8_t collect_ffi_has_variadic(types_SExpr* func_decl) {
     SLOP_PRE(((func_decl != NULL)), "(!= func-decl nil)");
     {
         __auto_type len = parser_sexpr_list_len(func_decl);
-        if ((len >= 4)) {
+        if (len >= 4) {
             __auto_type _mv_175 = parser_sexpr_list_get(func_decl, (len - 1));
             if (_mv_175.has_value) {
                 __auto_type last_expr = _mv_175.value;
@@ -1419,7 +1419,7 @@ slop_list_types_ParamInfo collect_collect_ffi_params(env_TypeEnv* env, slop_aren
                         if (_mv_177.has_value) {
                             __auto_type param_form = _mv_177.value;
                             if (parser_sexpr_is_list(param_form)) {
-                                if ((parser_sexpr_list_len(param_form) >= 2)) {
+                                if (parser_sexpr_list_len(param_form) >= 2) {
                                     __auto_type _mv_178 = parser_sexpr_list_get(param_form, 0);
                                     if (_mv_178.has_value) {
                                         __auto_type pname_expr = _mv_178.value;
@@ -1468,7 +1468,7 @@ void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((fn_form != NULL)), "(!= fn-form nil)");
     if (parser_sexpr_is_list(fn_form)) {
-        if ((parser_sexpr_list_len(fn_form) >= 3)) {
+        if (parser_sexpr_list_len(fn_form) >= 3) {
             __auto_type _mv_181 = parser_sexpr_list_get(fn_form, 1);
             if (_mv_181.has_value) {
                 __auto_type name_expr = _mv_181.value;
@@ -1512,14 +1512,14 @@ void collect_validate_main_params(env_TypeEnv* env, types_SExpr* fn_form, slop_l
         __auto_type num_params = ((int64_t)((params).len));
         __auto_type line = parser_sexpr_line(fn_form);
         __auto_type col = parser_sexpr_col(fn_form);
-        if ((num_params == 0)) {
-        } else if ((num_params == 2)) {
+        if (num_params == 0) {
+        } else if (num_params == 2) {
             __auto_type _mv_182 = ({ __auto_type _lst = params; size_t _idx = (size_t)0; slop_option_types_ParamInfo _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_182.has_value) {
                 __auto_type p0 = _mv_182.value;
                 {
                     __auto_type t0 = p0.param_type;
-                    if ((t0 != NULL)) {
+                    if (t0 != NULL) {
                         {
                             __auto_type name0 = (*t0).name;
                             if (!(collect_is_integer_type_name(name0))) {
@@ -1535,7 +1535,7 @@ void collect_validate_main_params(env_TypeEnv* env, types_SExpr* fn_form, slop_l
                 __auto_type p1 = _mv_183.value;
                 {
                     __auto_type t1 = p1.param_type;
-                    if ((t1 != NULL)) {
+                    if (t1 != NULL) {
                         if (!(types_resolved_type_is_pointer(t1))) {
                             env_env_add_error(env, SLOP_STR("main's second parameter must be a pointer type (e.g., (Ptr (Ptr U8)) for argv)"), line, col);
                         }
@@ -1564,14 +1564,14 @@ slop_list_types_ParamInfo collect_collect_fn_params(env_TypeEnv* env, slop_arena
                         __auto_type _mv_185 = parser_sexpr_list_get(params_expr, i);
                         if (_mv_185.has_value) {
                             __auto_type param_form = _mv_185.value;
-                            if ((parser_sexpr_is_list(param_form) && (parser_sexpr_list_len(param_form) >= 2))) {
+                            if (parser_sexpr_is_list(param_form) && (parser_sexpr_list_len(param_form) >= 2)) {
                                 __auto_type _mv_186 = parser_sexpr_list_get(param_form, 0);
                                 if (_mv_186.has_value) {
                                     __auto_type first_expr = _mv_186.value;
                                     {
                                         __auto_type first_name = parser_sexpr_get_symbol_name(first_expr);
-                                        if (((string_eq(first_name, SLOP_STR("in"))) || (string_eq(first_name, SLOP_STR("out"))) || (string_eq(first_name, SLOP_STR("mut"))))) {
-                                            if ((parser_sexpr_list_len(param_form) >= 3)) {
+                                        if ((string_eq(first_name, SLOP_STR("in"))) || (string_eq(first_name, SLOP_STR("out"))) || (string_eq(first_name, SLOP_STR("mut")))) {
+                                            if (parser_sexpr_list_len(param_form) >= 3) {
                                                 __auto_type _mv_187 = parser_sexpr_list_get(param_form, 1);
                                                 if (_mv_187.has_value) {
                                                     __auto_type name_expr = _mv_187.value;
@@ -1637,14 +1637,14 @@ slop_list_types_ParamInfo collect_collect_fn_params_generic(env_TypeEnv* env, sl
                         __auto_type _mv_191 = parser_sexpr_list_get(params_expr, i);
                         if (_mv_191.has_value) {
                             __auto_type param_form = _mv_191.value;
-                            if ((parser_sexpr_is_list(param_form) && (parser_sexpr_list_len(param_form) >= 2))) {
+                            if (parser_sexpr_is_list(param_form) && (parser_sexpr_list_len(param_form) >= 2)) {
                                 __auto_type _mv_192 = parser_sexpr_list_get(param_form, 0);
                                 if (_mv_192.has_value) {
                                     __auto_type first_expr = _mv_192.value;
                                     {
                                         __auto_type first_name = parser_sexpr_get_symbol_name(first_expr);
-                                        if (((string_eq(first_name, SLOP_STR("in"))) || (string_eq(first_name, SLOP_STR("out"))) || (string_eq(first_name, SLOP_STR("mut"))))) {
-                                            if ((parser_sexpr_list_len(param_form) >= 3)) {
+                                        if ((string_eq(first_name, SLOP_STR("in"))) || (string_eq(first_name, SLOP_STR("out"))) || (string_eq(first_name, SLOP_STR("mut")))) {
+                                            if (parser_sexpr_list_len(param_form) >= 3) {
                                                 __auto_type _mv_193 = parser_sexpr_list_get(param_form, 1);
                                                 if (_mv_193.has_value) {
                                                     __auto_type name_expr = _mv_193.value;

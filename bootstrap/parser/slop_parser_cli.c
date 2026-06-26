@@ -18,11 +18,11 @@ void parser_cli_print_json_array(slop_arena* arena, slop_list_types_SExpr_ptr ex
         __auto_type len = ((int64_t)((exprs).len));
         int64_t i = 0;
         printf("%s", "[");
-        while ((i < len)) {
+        while (i < len) {
             __auto_type _mv_55 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_55.has_value) {
                 __auto_type expr = _mv_55.value;
-                if ((i > 0)) {
+                if (i > 0) {
                     printf("%s", ",");
                 }
                 printf("%.*s", (int)(parser_json_print(arena, expr)).len, (parser_json_print(arena, expr)).data);
@@ -38,7 +38,7 @@ void parser_cli_print_sexp_list(slop_arena* arena, slop_list_types_SExpr_ptr exp
     {
         __auto_type len = ((int64_t)((exprs).len));
         int64_t i = 0;
-        while ((i < len)) {
+        while (i < len) {
             __auto_type _mv_56 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_56.has_value) {
                 __auto_type expr = _mv_56.value;
@@ -52,7 +52,7 @@ void parser_cli_print_sexp_list(slop_arena* arena, slop_list_types_SExpr_ptr exp
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
-    if ((argc < 2)) {
+    if (argc < 2) {
         printf("%s\n", "Usage: slop-parser [--format sexp|json] <file.slop>");
         return 1;
     } else {
@@ -68,7 +68,7 @@ int main(int argc, char** _c_argv) {
             {
                 __auto_type format = parser_cli_OutputFormat_fmt_sexp;
                 int64_t file_idx = 1;
-                if (((argc >= 4) && string_eq(parser_cli_argv_to_string(argv, 1), SLOP_STR("--format")))) {
+                if ((argc >= 4) && string_eq(parser_cli_argv_to_string(argv, 1), SLOP_STR("--format"))) {
                     {
                         __auto_type fmt_arg = parser_cli_argv_to_string(argv, 2);
                         if (string_eq(fmt_arg, SLOP_STR("json"))) {
@@ -114,7 +114,7 @@ int main(int argc, char** _c_argv) {
                                 return 1;
                             } else if (_mv_59.is_ok) {
                                 __auto_type exprs = _mv_59.data.ok;
-                                if ((format == parser_cli_OutputFormat_fmt_json)) {
+                                if (format == parser_cli_OutputFormat_fmt_json) {
                                     parser_cli_print_json_array(arena, exprs);
                                     return 0;
                                 } else {
