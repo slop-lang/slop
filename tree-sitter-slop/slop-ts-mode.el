@@ -73,7 +73,7 @@
    '((list
       :anchor
       (identifier) @font-lock-keyword-face
-      (:match "^\\(fn\\|sig\\|impl\\|module\\|export\\|import\\|type\\|const\\|record\\|enum\\|union\\|structure\\|logic\\|let\\|let\\*\\|mut\\|if\\|cond\\|match\\|when\\|while\\|for\\|for-each\\|do\\|hole\\|ffi\\|ffi-struct\\)$"
+      (:match "^\\(fn\\|impl\\|module\\|export\\|import\\|type\\|const\\|alias\\|record\\|enum\\|union\\|let\\|let\\*\\|mut\\|if\\|cond\\|match\\|when\\|while\\|for\\|for-each\\|do\\|loop\\|break\\|continue\\|return\\|else\\|guard\\|catch\\|hole\\|ffi\\|ffi-struct\\|c-inline\\)$"
               @font-lock-keyword-face)))
 
    :language 'slop
@@ -81,7 +81,7 @@
    '((list
       :anchor
       (identifier) @font-lock-operator-face
-      (:match "^\\(\\+\\|-\\|\\*\\|/\\|%\\|&\\||\\|\\^\\|<<\\|>>\\|==\\|!=\\|<\\|<=\\|>\\|>=\\|and\\|or\\|not\\|\\.\\|@\\|put\\|set!\\|deref\\|ok\\|error\\|try\\|\\?\\|is-ok\\|unwrap\\|some\\|none\\|break\\|continue\\|return\\|cast\\|sizeof\\|addr\\|array\\|list\\|map\\|record-new\\|union-new\\|arena-new\\|arena-alloc\\|arena-free\\|with-arena\\|string-new\\|string-len\\|string-concat\\|string-eq\\|string-slice\\|int-to-string\\|list-new\\|list-push\\|list-get\\|list-len\\|map-new\\|map-put\\|map-get\\|map-has\\|now-ms\\|sleep-ms\\|print\\|println\\)$"
+      (:match "^\\(\\+\\|-\\|\\*\\|/\\|%\\|&\\||\\|\\^\\|<<\\|>>\\|==\\|!=\\|<\\|<=\\|>\\|>=\\|and\\|or\\|not\\|min\\|max\\|\\.\\|@\\|put\\|set!\\|deref\\|ok\\|error\\|try\\|\\?\\|is-ok\\|unwrap\\|some\\|none\\|cast\\|sizeof\\|addr\\|array\\|list\\|map\\|set\\|record-new\\|union-new\\|arena-new\\|arena-alloc\\|arena-free\\|with-arena\\|string-new\\|string-len\\|string-concat\\|string-eq\\|string-slice\\|string-split\\|string-push-char\\|int-to-string\\|list-new\\|list-push\\|list-get\\|list-pop\\|list-len\\|map-new\\|map-put\\|map-get\\|map-has\\|map-keys\\|map-remove\\|set-new\\|set-put\\|set-has\\|set-remove\\|set-elements\\|chan\\|chan-buffered\\|chan-close\\|send\\|recv\\|try-recv\\|spawn\\|join\\|now-ms\\|sleep-ms\\|print\\|println\\)$"
               @font-lock-operator-face))
      (range_dots) @font-lock-operator-face)
 
@@ -101,9 +101,13 @@
       (:match "^type$" @_type)
       (type_name) @font-lock-type-face))
 
+   ;; NOTE: no `:override t' here. The variable feature runs in the last
+   ;; feature-list level, so with override it would re-fontify every head
+   ;; identifier as a variable, clobbering the keyword/operator/function/
+   ;; definition faces applied earlier. Without override it only fills
+   ;; identifiers that nothing more specific has already faced.
    :language 'slop
    :feature 'variable
-   :override t
    '((identifier) @font-lock-variable-name-face)
 
    :language 'slop
