@@ -893,6 +893,10 @@
   (fn main ((argc Int) (argv (Ptr (Ptr U8))))
     (@intent "Entry point for the merged compiler - dispatches check/transpile subcommands")
     (@spec ((Int (Ptr (Ptr U8))) -> Int))
+    (when (>= argc 2)
+      (when (string-eq (argv-to-string argv 1) "--version")
+        (println "slop-compiler 0.1.0")
+        (return 0)))
     (if (< argc 2)
       (do
         (println "Usage: slop-compiler <command> [options] <files...>")

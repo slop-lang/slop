@@ -740,6 +740,12 @@ void checker_output_expr_result(slop_arena* arena, uint8_t valid, slop_string in
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
+    if (argc >= 2) {
+        if (string_eq(checker_argv_to_string(argv, 1), SLOP_STR("--version"))) {
+            printf("%s\n", "slop-checker 0.1.0");
+            return 0;
+        }
+    }
     if (argc < 2) {
         printf("%s\n", "Usage: slop-checker [--json] <file.slop> [file2.slop ...]");
         printf("%s\n", "       slop-checker --expr EXPR --type TYPE [--context FILE] [--params PARAMS]");

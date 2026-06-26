@@ -144,6 +144,42 @@ slop/
 └── tests/                   Test suite
 ```
 
+## Installation
+
+### Download a release (recommended)
+
+Pre-built toolchains for Linux x64, macOS arm64, and Windows x64 are attached to
+each [GitHub Release](https://github.com/slop-lang/slop/releases). Each archive
+bundles the native binaries (`slop-parser`, `slop-checker`, `slop-compiler`,
+`slop-tester`), the standard library, the runtime header, specs, and examples.
+Verify downloads against the `SHA256SUMS` file published with the release.
+
+```bash
+# Linux x64 (replace VERSION with the release tag, e.g. v0.1.0)
+curl -LO https://github.com/slop-lang/slop/releases/download/VERSION/slop-VERSION-linux-x64.tar.gz
+tar -xzf slop-VERSION-linux-x64.tar.gz
+cd slop-VERSION-linux-x64
+
+# Install to /usr/local (or set PREFIX=~/.local for a user install)
+./install.sh
+
+slop --help        # Python CLI wrapper (requires Python 3.11+)
+slop-compiler      # standalone native compiler (no Python required)
+```
+
+> The `slop` command is a thin Python wrapper that orchestrates the native
+> binaries; it needs Python 3.11+. The `slop-*` binaries run standalone.
+
+### Build from source
+
+```bash
+# Cold-start the native toolchain from the bootstrap C snapshot, then self-host
+make install        # build bootstrap C -> bin/
+make selfhost       # two-stage rebuild from current SLOP source
+
+uv pip install -e . # install the Python CLI wrapper
+```
+
 ## Usage
 
 ```bash

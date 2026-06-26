@@ -34,14 +34,57 @@ env:
   RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
 
 jobs:
+  # Correctness gate: full two-stage self-host, bootstrap-sync check, and the
+  # native test suite. All platform builds depend on this passing. Also asserts
+  # the VERSION file matches the release tag so we can't ship a mismatch.
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync Python environment
+        run: uv sync
+
+      - name: Check VERSION matches release tag
+        run: |
+          FILE_VERSION="$(cat VERSION)"
+          echo "VERSION file: $FILE_VERSION   RELEASE_VERSION: $RELEASE_VERSION"
+          case "$RELEASE_VERSION" in
+            v*)
+              if [ "$RELEASE_VERSION" != "v$FILE_VERSION" ]; then
+                echo "ERROR: tag $RELEASE_VERSION does not match VERSION file (v$FILE_VERSION)" >&2
+                exit 1
+              fi ;;
+            *) echo "Non-tag build ($RELEASE_VERSION); skipping strict version check" ;;
+          esac
+
+      - name: Two-stage self-host build
+        run: make selfhost
+
+      - name: Verify bootstrap C is in sync with SLOP source
+        run: make check-sync
+
+      - name: Run native test suite
+        run: make test-native
+
   build-linux-x64:
+    needs: gate
     if: github.event_name == 'push' || inputs.build_linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build release binaries
-        run: cd bootstrap && make release
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync Python environment
+        run: uv sync
+
+      - name: Build self-hosted release toolchain
+        run: SLOP_OPT=3 make selfhost
 
       - name: Package distribution
         run: |
@@ -56,13 +99,20 @@ jobs:
           path: dist/*.tar.gz
 
   build-macos-arm64:
+    needs: gate
     if: github.event_name == 'push' || inputs.build_macos
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build release binaries
-        run: cd bootstrap && make release CC=clang
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync Python environment
+        run: uv sync
+
+      - name: Build self-hosted release toolchain
+        run: SLOP_OPT=3 make selfhost
 
       - name: Package distribution
         run: |
@@ -76,7 +126,12 @@ jobs:
           name: slop-macos-arm64
           path: dist/*.tar.gz
 
+  # Windows builds from the bootstrap C snapshot. The gate job has already
+  # proven (via check-sync) that the committed bootstrap is identical to the
+  # latest SLOP source, so these binaries match the self-hosted ones without
+  # needing Python/uv inside MSYS2.
   build-windows-x64:
+    needs: gate
     if: github.event_name == 'push' || inputs.build_windows
     runs-on: windows-latest
     defaults:
@@ -118,13 +173,27 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f 2>/dev/null || echo "No artifacts found"
 
+      - name: Generate checksums
+        run: |
+          mkdir -p release-files
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} release-files/ \;
+          cd release-files
+          if ls * >/dev/null 2>&1; then
+            sha256sum * > SHA256SUMS
+            echo "=== SHA256SUMS ==="
+            cat SHA256SUMS
+          else
+            echo "No artifacts to checksum"
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_VERSION }}
           files: |
-            artifacts/**/*.tar.gz
-            artifacts/**/*.zip
+            release-files/*.tar.gz
+            release-files/*.zip
+            release-files/SHA256SUMS
           generate_release_notes: true
           draft: ${{ github.event_name == 'workflow_dispatch' }}
         env:

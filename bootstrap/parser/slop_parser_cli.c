@@ -52,6 +52,12 @@ void parser_cli_print_sexp_list(slop_arena* arena, slop_list_types_SExpr_ptr exp
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
+    if (argc >= 2) {
+        if (string_eq(parser_cli_argv_to_string(argv, 1), SLOP_STR("--version"))) {
+            printf("%s\n", "slop-parser 0.1.0");
+            return 0;
+        }
+    }
     if (argc < 2) {
         printf("%s\n", "Usage: slop-parser [--format sexp|json] <file.slop>");
         return 1;

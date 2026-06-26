@@ -11,7 +11,7 @@ CFLAGS ?= -O2 -Wall -Wextra
 DEBUG_CFLAGS ?= -g -DSLOP_DEBUG -Wall -Wextra
 RUNTIME = runtime
 
-.PHONY: help install build-native test test-native test-all clean clean-native bootstrap bootstrap-update
+.PHONY: help install build-native selfhost check-sync test test-native test-all clean clean-native bootstrap bootstrap-update
 
 help:
 	@echo "SLOP Build System"
@@ -19,6 +19,8 @@ help:
 	@echo "Targets:"
 	@echo "  install            Build bootstrap toolchain and install it to bin/"
 	@echo "  build-native       Rebuild native toolchain from SLOP source into bin/ (needs install first)"
+	@echo "  selfhost           Cold-start + two-stage self-host rebuild (set SLOP_OPT=3 for release)"
+	@echo "  check-sync         Verify committed bootstrap C matches current SLOP source"
 	@echo "  test               Run Python test suite (uv run pytest)"
 	@echo "  test-native        Run native SLOP test suite"
 	@echo "  test-all           Run both test suites"
@@ -34,6 +36,14 @@ help:
 # Build the native toolchain
 build-native:
 	./scripts/build_native.sh
+
+# Two-stage self-host rebuild from current SLOP source (cold-start + 2 passes).
+selfhost:
+	./scripts/selfhost.sh
+
+# Fail if the committed bootstrap C has drifted from current SLOP source.
+check-sync:
+	./scripts/check_bootstrap_sync.sh
 
 # Run Python test suite
 test:

@@ -4461,6 +4461,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('--version', action='version', version='slop 0.1.0')
 
     subparsers = parser.add_subparsers(dest='command')
 
