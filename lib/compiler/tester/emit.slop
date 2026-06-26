@@ -69,7 +69,7 @@
     (@intent "Create new emit context without types")
     (@spec ((Arena) -> (Ptr EmitContext)))
     (@alloc arena)
-    (let ((ctx (cast (Ptr EmitContext) (arena-alloc arena 128))))
+    (let ((ctx (cast (Ptr EmitContext) (arena-alloc arena (sizeof EmitContext)))))
       (set! (deref ctx) (EmitContext
                           (list-new arena String)
                           arena
@@ -81,7 +81,7 @@
     (@intent "Create new emit context with type registry")
     (@spec ((Arena (Ptr TypeRegistry)) -> (Ptr EmitContext)))
     (@alloc arena)
-    (let ((ctx (cast (Ptr EmitContext) (arena-alloc arena 128))))
+    (let ((ctx (cast (Ptr EmitContext) (arena-alloc arena (sizeof EmitContext)))))
       (set! (deref ctx) (EmitContext
                           (list-new arena String)
                           arena

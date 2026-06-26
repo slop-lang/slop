@@ -331,8 +331,8 @@
     (@spec ((Arena) -> (Ptr TranspileContext)))
     (@example (arena) -> ctx)
     ;; TranspileContext is ~750 bytes with all fields, allocate 1024 for safety
-    (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena 1024)))
-          (initial-scope (cast (Ptr Scope) (arena-alloc arena 64)))
+    (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena (sizeof TranspileContext))))
+          (initial-scope (cast (Ptr Scope) (arena-alloc arena (sizeof Scope))))
           (no-parent (Option (Ptr Scope)) none)
           (no-module (Option String) none))
       ;; Initialize scope
@@ -421,7 +421,7 @@
     (@pre {ctx != nil})
     ;; Clear output and header (per-module)
     (let ((arena (. (deref ctx) arena))
-          (fresh-scope (cast (Ptr Scope) (arena-alloc arena 64)))
+          (fresh-scope (cast (Ptr Scope) (arena-alloc arena (sizeof Scope))))
           (no-parent (Option (Ptr Scope)) none))
       ;; Initialize fresh scope
       (set! (deref fresh-scope) vars (list-new arena VarEntry))
@@ -755,7 +755,7 @@
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
-          (new-scope (cast (Ptr Scope) (arena-alloc arena 64)))
+          (new-scope (cast (Ptr Scope) (arena-alloc arena (sizeof Scope))))
           (current (. (deref ctx) scope))
           (parent-opt (Option (Ptr Scope)) (some current)))
       (set! (deref new-scope) vars (list-new arena VarEntry))

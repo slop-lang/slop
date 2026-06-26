@@ -41,7 +41,7 @@ void type_extract_registry_add_type(slop_arena* arena, type_extract_TypeRegistry
 
 type_extract_TstTypeEntry* type_extract_type_entry_new(slop_arena* arena, slop_string name, slop_string c_name, type_extract_TstTypeEntryKind kind) {
     {
-        __auto_type entry = ((type_extract_TstTypeEntry*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type entry = ((type_extract_TstTypeEntry*)(({ __auto_type _alloc = (type_extract_TstTypeEntry*)slop_arena_alloc(arena, sizeof(type_extract_TstTypeEntry)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*entry) = (type_extract_TstTypeEntry){name, c_name, kind, ((slop_list_type_extract_TstFieldEntry){ .data = (type_extract_TstFieldEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_TstFieldEntry)), .len = 0, .cap = 16 }), ((slop_list_type_extract_VariantEntry){ .data = (type_extract_VariantEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_VariantEntry)), .len = 0, .cap = 16 }), ((slop_list_type_extract_EnumValueEntry){ .data = (type_extract_EnumValueEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_EnumValueEntry)), .len = 0, .cap = 16 }), SLOP_STR("")};
         return entry;
     }
@@ -65,7 +65,7 @@ type_extract_TypeRegistry* type_extract_extract_types_from_ast(slop_arena* arena
 
 type_extract_TypeRegistry* type_extract_extract_types_from_ast_with_imports(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix, slop_list_type_extract_ImportEntry imports) {
     {
-        __auto_type reg_ptr = ((type_extract_TypeRegistry*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type reg_ptr = ((type_extract_TypeRegistry*)(({ __auto_type _alloc = (type_extract_TypeRegistry*)slop_arena_alloc(arena, sizeof(type_extract_TypeRegistry)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*reg_ptr) = type_extract_make_type_registry_with_imports(arena, module_prefix, imports);
         {
             __auto_type len = ((int64_t)((ast).len));

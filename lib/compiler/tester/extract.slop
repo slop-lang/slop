@@ -46,7 +46,7 @@
     (@intent "Create a new TestCase record")
     (@spec ((Arena String (Option String) (List (Ptr SExpr)) (Ptr SExpr) (Option String) Bool Int (Option String)) -> (Ptr TestCase)))
     (@alloc arena)
-    (let ((tc (cast (Ptr TestCase) (arena-alloc arena 160))))
+    (let ((tc (cast (Ptr TestCase) (arena-alloc arena (sizeof TestCase)))))
       (set! (deref tc) (TestCase fn-name module-name args expected return-type needs-arena arena-position eq-fn))
       tc))
 
