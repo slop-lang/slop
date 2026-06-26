@@ -179,7 +179,7 @@ int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
     if (argc >= 2) {
         if (string_eq(strlib_cstring_to_string(argv[1]), SLOP_STR("--version"))) {
-            tester_main_print_str(((char*)(SLOP_STR("slop-tester 0.1.0\n").data)));
+            tester_main_print_str(((char*)(SLOP_STR("slop-tester 0.1.1\n").data)));
             return 0;
         }
     }

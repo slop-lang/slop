@@ -155,7 +155,7 @@ bundles the native binaries (`slop-parser`, `slop-checker`, `slop-compiler`,
 Verify downloads against the `SHA256SUMS` file published with the release.
 
 ```bash
-# Linux x64 (replace VERSION with the release tag, e.g. v0.1.0)
+# Linux x64 (replace VERSION with the release tag, e.g. v0.1.1)
 curl -LO https://github.com/slop-lang/slop/releases/download/VERSION/slop-VERSION-linux-x64.tar.gz
 tar -xzf slop-VERSION-linux-x64.tar.gz
 cd slop-VERSION-linux-x64
@@ -169,6 +169,17 @@ slop-compiler      # standalone native compiler (no Python required)
 
 > The `slop` command is a thin Python wrapper that orchestrates the native
 > binaries; it needs Python 3.11+. The `slop-*` binaries run standalone.
+
+#### macOS Gatekeeper
+
+The release binaries are not yet Apple-notarized, so macOS flags them with a
+quarantine attribute on download and blocks each one on first run. `install.sh`
+clears this automatically. If you run the binaries directly from the extracted
+folder instead of installing, clear the whole folder once:
+
+```bash
+xattr -dr com.apple.quarantine slop-VERSION-macos-arm64
+```
 
 ### Build from source
 

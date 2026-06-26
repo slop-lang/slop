@@ -114,6 +114,51 @@ jobs:
       - name: Build self-hosted release toolchain
         run: SLOP_OPT=3 make selfhost
 
+      # Code-sign with Developer ID + hardened runtime, then notarize. Skipped
+      # automatically when the signing secrets aren't configured (e.g. forks/PRs),
+      # so unsigned builds still succeed. Must run BEFORE packaging so the tarball
+      # carries the signed, notarized binaries (we never modify them afterward).
+      - name: Sign and notarize binaries
+        if: ${{ env.MACOS_CERT_P12_BASE64 != '' }}
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_KEY_P8_BASE64: ${{ secrets.AC_API_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          KCPASS="$(uuidgen)"
+
+          # Import the Developer ID Application cert into a temporary keychain.
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KCPASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KCPASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPASS" "$KEYCHAIN" >/dev/null
+
+          # Sign each native binary with the hardened runtime + secure timestamp.
+          for b in bin/slop-parser bin/slop-checker bin/slop-compiler bin/slop-tester; do
+            codesign --force --options runtime --timestamp \
+              --keychain "$KEYCHAIN" --sign "$MACOS_SIGN_IDENTITY" "$b"
+            codesign --verify --strict --verbose=2 "$b"
+          done
+
+          # Notarize: bare CLI binaries can't be stapled, so submit a zip and let
+          # Gatekeeper verify online on first run.
+          echo "$AC_API_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          ditto -c -k --keepParent bin "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+            --key "$RUNNER_TEMP/AuthKey.p8" \
+            --key-id "$AC_API_KEY_ID" \
+            --issuer "$AC_API_ISSUER_ID" \
+            --wait
+          echo "macOS binaries signed and notarized."
+
       - name: Package distribution
         run: |
           chmod +x ./scripts/package.sh
