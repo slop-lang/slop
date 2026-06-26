@@ -499,7 +499,7 @@
         ((== (. tok kind) 'tok-number)
           (do
             (parser-advance state)
-            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
                   (is-float (string-contains-dot (. tok value))))
               (if is-float
                 (set! (deref node)
@@ -528,7 +528,7 @@
         ((== (. tok kind) 'tok-string)
           (do
             (parser-advance state)
-            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
               (set! (deref node)
                     (union-new SExpr str
                       (SExprString (. tok value) (. tok line) (. tok col) (none))))
@@ -540,8 +540,8 @@
             (parser-advance state)
             (match (parse-expr arena state)
               ((ok quoted-expr)
-                (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
-                      (quote-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
+                (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
+                      (quote-sym (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
                       (items (list-new arena (Ptr SExpr))))
                   ;; Create quote symbol
                   (set! (deref quote-sym)
@@ -559,7 +559,7 @@
         ((== (. tok kind) 'tok-symbol)
           (do
             (parser-advance state)
-            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
               (set! (deref node)
                     (union-new SExpr sym
                       (SExprSymbol (. tok value) (. tok line) (. tok col) (none))))
@@ -569,7 +569,7 @@
         ((== (. tok kind) 'tok-operator)
           (do
             (parser-advance state)
-            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
               (set! (deref node)
                     (union-new SExpr sym
                       (SExprSymbol (. tok value) (. tok line) (. tok col) (none))))
@@ -584,7 +584,7 @@
                 (do
                   (parser-advance state)
                   ;; Create keyword by prepending :
-                  (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                  (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
                         (kw-buf (cast (Ptr U8) (arena-alloc arena 256))))
                     (set! (@ kw-buf 0) (cast U8 58))  ;; ':'
                     ;; Copy symbol name
@@ -608,7 +608,7 @@
         ((== (. tok kind) 'tok-range)
           (do
             (parser-advance state)
-            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
               (set! (deref node)
                     (union-new SExpr sym
                       (SExprSymbol ".." (. tok line) (. tok col) (none))))
@@ -653,7 +653,7 @@
                       (set! error-val e))))))))
         (if has-error
           (error error-val)
-          (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+          (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
             (set! (deref node)
                   (union-new SExpr lst
                     (SExprList items
@@ -722,7 +722,7 @@
         ((== (. tok kind) 'tok-number)
           (do
             (parser-advance state)
-            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+            (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
               (if (string-contains-dot (. tok value))
                 (set! (deref node)
                       (union-new SExpr num
@@ -751,8 +751,8 @@
               (match (parse-infix-primary arena state)
                 ((error e) (error e))
                 ((ok operand)
-                  (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
-                        (not-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
+                  (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
+                        (not-sym (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
                         (items (list-new arena (Ptr SExpr))))
                     (set! (deref not-sym)
                           (union-new SExpr sym
@@ -766,7 +766,7 @@
             ;; Regular symbol
             (do
               (parser-advance state)
-              (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+              (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
                 (set! (deref node)
                       (union-new SExpr sym
                         (SExprSymbol (. tok value) (. tok line) (. tok col) (none))))
@@ -780,9 +780,9 @@
             (match (parse-infix-primary arena state)
               ((error e) (error e))
               ((ok operand)
-                (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
-                      (minus-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
-                      (zero-node (cast (Ptr SExpr) (arena-alloc arena 128)))
+                (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
+                      (minus-sym (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
+                      (zero-node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
                       (items (list-new arena (Ptr SExpr))))
                   (set! (deref minus-sym)
                         (union-new SExpr sym
@@ -837,8 +837,8 @@
             (match (parse-infix-primary arena state)
               ((error e) (error e))
               ((ok quoted-expr)
-                (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
-                      (quote-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
+                (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
+                      (quote-sym (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
                       (items (list-new arena (Ptr SExpr))))
                   (set! (deref quote-sym)
                         (union-new SExpr sym
@@ -891,8 +891,8 @@
                               (set! error-val e)))
                           ((ok right)
                             ;; Build (op left right) list
-                            (let ((node (cast (Ptr SExpr) (arena-alloc arena 128)))
-                                  (op-sym (cast (Ptr SExpr) (arena-alloc arena 128)))
+                            (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
+                                  (op-sym (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
                                   (items (list-new arena (Ptr SExpr))))
                               ;; Create operator symbol
                               (set! (deref op-sym)

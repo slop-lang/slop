@@ -318,7 +318,7 @@
     (@intent "Create a new type entry for local use")
     (@spec ((Arena String String Int) -> (Ptr TstTypeEntry)))
     (@alloc arena)
-    (let ((entry (cast (Ptr TstTypeEntry) (arena-alloc arena 256))))
+    (let ((entry (cast (Ptr TstTypeEntry) (arena-alloc arena (sizeof TstTypeEntry)))))
       (set! (. (deref entry) name) name)
       (set! (. (deref entry) c-name) c-name)
       (set! (. (deref entry) kind) (cast TstTypeEntryKind kind))

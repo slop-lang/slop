@@ -135,8 +135,8 @@ slop_string context_mangle_generic_fn_name(context_TranspileContext* ctx, slop_s
 
 context_TranspileContext* context_context_new(slop_arena* arena) {
     {
-        __auto_type ctx = ((context_TranspileContext*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1024); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        __auto_type initial_scope = ((context_Scope*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type ctx = ((context_TranspileContext*)(({ __auto_type _alloc = (context_TranspileContext*)slop_arena_alloc(arena, sizeof(context_TranspileContext)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type initial_scope = ((context_Scope*)(({ __auto_type _alloc = (context_Scope*)slop_arena_alloc(arena, sizeof(context_Scope)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         slop_option_context_Scope_ptr no_parent = (slop_option_context_Scope_ptr){.has_value = false};
         slop_option_string no_module = (slop_option_string){.has_value = false};
         (*initial_scope).vars = ((slop_list_context_VarEntry){ .data = (context_VarEntry*)slop_arena_alloc(arena, 16 * sizeof(context_VarEntry)), .len = 0, .cap = 16 });
@@ -213,7 +213,7 @@ void context_ctx_reset_for_new_module(context_TranspileContext* ctx, slop_string
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
         __auto_type arena = (*ctx).arena;
-        __auto_type fresh_scope = ((context_Scope*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type fresh_scope = ((context_Scope*)(({ __auto_type _alloc = (context_Scope*)slop_arena_alloc(arena, sizeof(context_Scope)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         slop_option_context_Scope_ptr no_parent = (slop_option_context_Scope_ptr){.has_value = false};
         (*fresh_scope).vars = ((slop_list_context_VarEntry){ .data = (context_VarEntry*)slop_arena_alloc(arena, 16 * sizeof(context_VarEntry)), .len = 0, .cap = 16 });
         (*fresh_scope).parent = no_parent;
@@ -518,7 +518,7 @@ void context_ctx_push_scope(context_TranspileContext* ctx) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
         __auto_type arena = (*ctx).arena;
-        __auto_type new_scope = ((context_Scope*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type new_scope = ((context_Scope*)(({ __auto_type _alloc = (context_Scope*)slop_arena_alloc(arena, sizeof(context_Scope)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         __auto_type current = (*ctx).scope;
         slop_option_context_Scope_ptr parent_opt = (slop_option_context_Scope_ptr){.has_value = 1, .value = current};
         (*new_scope).vars = ((slop_list_context_VarEntry){ .data = (context_VarEntry*)slop_arena_alloc(arena, 16 * sizeof(context_VarEntry)), .len = 0, .cap = 16 });

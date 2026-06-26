@@ -315,7 +315,7 @@ slop_string tester_convert_to_c_ident(slop_arena* arena, slop_string name) {
 
 type_extract_TstTypeEntry* tester_type_entry_new_local(slop_arena* arena, slop_string name, slop_string c_name, int64_t kind) {
     {
-        __auto_type entry = ((type_extract_TstTypeEntry*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 256); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type entry = ((type_extract_TstTypeEntry*)(({ __auto_type _alloc = (type_extract_TstTypeEntry*)slop_arena_alloc(arena, sizeof(type_extract_TstTypeEntry)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*entry).name = name;
         (*entry).c_name = c_name;
         (*entry).kind = ((type_extract_TstTypeEntryKind)(kind));

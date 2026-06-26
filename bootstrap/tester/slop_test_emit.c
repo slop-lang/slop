@@ -66,7 +66,7 @@ void test_emit_register_type_fields(context_TranspileContext* tctx, types_SExpr*
 
 types_SExpr* test_emit_make_sexpr_sym(slop_arena* arena, slop_string name) {
     {
-        __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*node) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){name, 0, 0, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
         return node;
     }
@@ -74,7 +74,7 @@ types_SExpr* test_emit_make_sexpr_sym(slop_arena* arena, slop_string name) {
 
 types_SExpr* test_emit_make_sexpr_num(slop_arena* arena, slop_string raw) {
     {
-        __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*node) = ((types_SExpr){ .tag = types_SExpr_num, .data.num = (types_SExprNumber){0, 0, 0, raw, 0, 0, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
         return node;
     }
@@ -82,7 +82,7 @@ types_SExpr* test_emit_make_sexpr_num(slop_arena* arena, slop_string raw) {
 
 types_SExpr* test_emit_make_sexpr_list(slop_arena* arena, slop_list_types_SExpr_ptr items) {
     {
-        __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*node) = ((types_SExpr){ .tag = types_SExpr_lst, .data.lst = (types_SExprList){items, 0, 0, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
         return node;
     }
@@ -428,7 +428,7 @@ slop_string test_emit_prefix_symbol(slop_arena* arena, slop_string name, slop_st
 
 test_emit_EmitContext* test_emit_emit_ctx_new_typed(slop_arena* arena, type_extract_TypeRegistry* types, context_TranspileContext* tctx) {
     {
-        __auto_type ctx = ((test_emit_EmitContext*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type ctx = ((test_emit_EmitContext*)(({ __auto_type _alloc = (test_emit_EmitContext*)slop_arena_alloc(arena, sizeof(test_emit_EmitContext)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*ctx) = (test_emit_EmitContext){((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 }), arena, types, tctx, 1};
         return ctx;
     }

@@ -117,7 +117,7 @@
     (@intent "Create a new type entry")
     (@spec ((Arena String String TstTypeEntryKind) -> (Ptr TstTypeEntry)))
     (@alloc arena)
-    (let ((entry (cast (Ptr TstTypeEntry) (arena-alloc arena 128))))
+    (let ((entry (cast (Ptr TstTypeEntry) (arena-alloc arena (sizeof TstTypeEntry)))))
       (set! (deref entry) (TstTypeEntry
         name c-name kind
         (list-new arena TstFieldEntry)
@@ -160,7 +160,7 @@
     (@spec ((Arena (List (Ptr SExpr)) String (List ImportEntry)) -> (Ptr TypeRegistry)))
     (@alloc arena)
     ;; Allocate the registry on the arena
-    (let ((reg-ptr (cast (Ptr TypeRegistry) (arena-alloc arena 128))))
+    (let ((reg-ptr (cast (Ptr TypeRegistry) (arena-alloc arena (sizeof TypeRegistry)))))
       (set! (deref reg-ptr) (make-type-registry-with-imports arena module-prefix imports))
       (let ((len (list-len ast))
             (mut i 0))

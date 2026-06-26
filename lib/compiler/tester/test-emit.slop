@@ -41,7 +41,7 @@
     (@intent "Create an SExpr symbol node")
     (@spec ((Arena String) -> (Ptr SExpr)))
     (@alloc arena)
-    (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+    (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
       (set! (deref node) (union-new SExpr sym (SExprSymbol name 0 0 (none))))
       node))
 
@@ -49,7 +49,7 @@
     (@intent "Create an SExpr number node")
     (@spec ((Arena String) -> (Ptr SExpr)))
     (@alloc arena)
-    (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+    (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
       (set! (deref node) (union-new SExpr num (SExprNumber 0 0 false raw 0 0 (none))))
       node))
 
@@ -57,7 +57,7 @@
     (@intent "Create an SExpr list node")
     (@spec ((Arena (List (Ptr SExpr))) -> (Ptr SExpr)))
     (@alloc arena)
-    (let ((node (cast (Ptr SExpr) (arena-alloc arena 128))))
+    (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
       (set! (deref node) (union-new SExpr lst (SExprList items 0 0 (none))))
       node))
 
@@ -327,7 +327,7 @@
     (@intent "Create new emit context with type registry and transpile context")
     (@spec ((Arena (Ptr TypeRegistry) (Ptr TranspileContext)) -> (Ptr EmitContext)))
     (@alloc arena)
-    (let ((ctx (cast (Ptr EmitContext) (arena-alloc arena 128))))
+    (let ((ctx (cast (Ptr EmitContext) (arena-alloc arena (sizeof EmitContext)))))
       (set! (deref ctx) (EmitContext
                           (list-new arena String)
                           arena

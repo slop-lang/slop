@@ -1200,7 +1200,7 @@
               (match (list-get items i)
                 ((some param)
                   (let ((c-type (get-param-c-type ctx param))
-                        (param-info (cast (Ptr FuncParamType) (arena-alloc arena 64))))
+                        (param-info (cast (Ptr FuncParamType) (arena-alloc arena (sizeof FuncParamType)))))
                     (set! (. (deref param-info) c-type) c-type)
                     (list-push result param-info)))
                 ((none) (do)))

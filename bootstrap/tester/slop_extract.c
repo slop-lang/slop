@@ -14,7 +14,7 @@ slop_list_extract_TestCase_ptr extract_extract_examples_from_ast(slop_arena* are
 
 extract_TestCase* extract_test_case_new(slop_arena* arena, slop_string fn_name, slop_option_string module_name, slop_list_types_SExpr_ptr args, types_SExpr* expected, slop_option_string return_type, uint8_t needs_arena, int64_t arena_position, slop_option_string eq_fn) {
     {
-        __auto_type tc = ((extract_TestCase*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 160); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type tc = ((extract_TestCase*)(({ __auto_type _alloc = (extract_TestCase*)slop_arena_alloc(arena, sizeof(extract_TestCase)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*tc) = (extract_TestCase){fn_name, module_name, args, expected, return_type, needs_arena, arena_position, eq_fn};
         return tc;
     }
