@@ -292,7 +292,7 @@
     (@alloc arena)
     ;; Example: (resolved-variant-new arena "list" 3 "parser_SExpr_list_TAG" (none) empty-list)
     ;; Returns pointer to ResolvedVariant with name="list", index=3
-    (let ((v (cast (Ptr ResolvedVariant) (arena-alloc arena 128))))
+    (let ((v (cast (Ptr ResolvedVariant) (arena-alloc arena (sizeof ResolvedVariant)))))
       (set! (deref v) (ResolvedVariant name index tag-constant payload payload-types))
       v))
 
@@ -303,7 +303,7 @@
     (@pre (!= field-type nil))
     ;; Example: (resolved-field-new arena "items" list-type 0)
     ;; Returns pointer to ResolvedField with name="items", offset=0
-    (let ((f (cast (Ptr ResolvedField) (arena-alloc arena 48))))
+    (let ((f (cast (Ptr ResolvedField) (arena-alloc arena (sizeof ResolvedField)))))
       (set! (deref f) (ResolvedField name field-type offset))
       f))
 
@@ -314,7 +314,7 @@
     (@alloc arena)
     ;; Example: (resolved-type-new arena 'rk-primitive "Int" (none) "int64_t")
     ;; Example: (resolved-type-new arena 'rk-union "SExpr" (some "parser") "parser_SExpr")
-    (let ((t (cast (Ptr ResolvedType) (arena-alloc arena 128))))
+    (let ((t (cast (Ptr ResolvedType) (arena-alloc arena (sizeof ResolvedType)))))
       (set! (deref t) (ResolvedType
         kind name module-name c-name
         (list-new arena ResolvedVariant)  ;; Empty variants
@@ -347,7 +347,7 @@
     (@alloc arena)
     (@pre (!= param-type nil))
     ;; Example: (param-info-new arena "arena" arena-type)
-    (let ((p (cast (Ptr ParamInfo) (arena-alloc arena 24))))
+    (let ((p (cast (Ptr ParamInfo) (arena-alloc arena (sizeof ParamInfo)))))
       (set! (deref p) (ParamInfo name param-type))
       p))
 

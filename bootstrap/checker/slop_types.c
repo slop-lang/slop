@@ -80,7 +80,7 @@ types_RangeBounds types_range_union(types_RangeBounds a, types_RangeBounds b) {
 
 types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string name, int64_t index, slop_string tag_constant, slop_option_types_ResolvedType_ptr payload, slop_list_types_ResolvedType_ptr payload_types) {
     {
-        __auto_type v = ((types_ResolvedVariant*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type v = ((types_ResolvedVariant*)(({ __auto_type _alloc = (types_ResolvedVariant*)slop_arena_alloc(arena, sizeof(types_ResolvedVariant)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*v) = (types_ResolvedVariant){name, index, tag_constant, payload, payload_types};
         return v;
     }
@@ -89,7 +89,7 @@ types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string
 types_ResolvedField* types_resolved_field_new(slop_arena* arena, slop_string name, types_ResolvedType* field_type, int64_t offset) {
     SLOP_PRE(((field_type != NULL)), "(!= field-type nil)");
     {
-        __auto_type f = ((types_ResolvedField*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 48); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type f = ((types_ResolvedField*)(({ __auto_type _alloc = (types_ResolvedField*)slop_arena_alloc(arena, sizeof(types_ResolvedField)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*f) = (types_ResolvedField){name, field_type, offset};
         return f;
     }
@@ -97,7 +97,7 @@ types_ResolvedField* types_resolved_field_new(slop_arena* arena, slop_string nam
 
 types_ResolvedType* types_resolved_type_new(slop_arena* arena, types_ResolvedTypeKind kind, slop_string name, slop_option_string module_name, slop_string c_name) {
     {
-        __auto_type t = ((types_ResolvedType*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type t = ((types_ResolvedType*)(({ __auto_type _alloc = (types_ResolvedType*)slop_arena_alloc(arena, sizeof(types_ResolvedType)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*t) = (types_ResolvedType){kind, name, module_name, c_name, ((slop_list_types_ResolvedVariant){ .data = (types_ResolvedVariant*)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedVariant)), .len = 0, .cap = 16 }), ((slop_list_types_ResolvedField){ .data = (types_ResolvedField*)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedField)), .len = 0, .cap = 16 }), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_RangeBounds){.has_value = false}), 0, 0};
         return t;
     }
@@ -122,7 +122,7 @@ void types_resolved_type_set_inner2(types_ResolvedType* t, types_ResolvedType* i
 types_ParamInfo* types_param_info_new(slop_arena* arena, slop_string name, types_ResolvedType* param_type) {
     SLOP_PRE(((param_type != NULL)), "(!= param-type nil)");
     {
-        __auto_type p = ((types_ParamInfo*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 24); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type p = ((types_ParamInfo*)(({ __auto_type _alloc = (types_ParamInfo*)slop_arena_alloc(arena, sizeof(types_ParamInfo)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         (*p) = (types_ParamInfo){name, param_type};
         return p;
     }
