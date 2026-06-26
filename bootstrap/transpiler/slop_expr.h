@@ -129,6 +129,8 @@ slop_string expr_wrap_fn_ref_as_closure(context_TranspileContext* ctx, slop_stri
 slop_string expr_generate_fn_trampoline(context_TranspileContext* ctx, slop_string fn_c_name, context_FuncEntry func_entry);
 slop_string expr_build_union_case_expr(context_TranspileContext* ctx, slop_arena* arena, slop_string cases, types_SExpr* scrutinee, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, slop_string result_type);
 slop_string expr_build_ternary_match_expr(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
+uint8_t expr_discard_needs_void(types_SExpr* e);
+slop_string expr_transpile_discarded_expr(context_TranspileContext* ctx, types_SExpr* e);
 slop_string expr_transpile_let_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void expr_register_let_binding_in_context(context_TranspileContext* ctx, types_SExpr* binding);
 slop_string expr_transpile_binding_expr(context_TranspileContext* ctx, types_SExpr* binding);
@@ -137,6 +139,7 @@ slop_string expr_transpile_typed_init(context_TranspileContext* ctx, types_SExpr
 slop_string expr_transpile_while_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_do_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_when_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
+uint8_t expr_set_is_self_assign(slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_set_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_get_arena_for_list_push_expr(context_TranspileContext* ctx, types_SExpr* list_expr, slop_string list_c);
 slop_string expr_get_arena_from_field_access(context_TranspileContext* ctx, types_SExpr* expr);

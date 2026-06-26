@@ -26,7 +26,7 @@
     ctx-set-module ctx-get-module
     ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
     ;; String building helpers
-    ctx-str ctx-str3 ctx-str4 ctx-str5
+    ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens
     ;; Include management
     ctx-add-include ctx-get-includes
     ;; Generated type tracking
@@ -98,7 +98,7 @@
 
   (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type))
-  (import strlib (index-of substring))
+  (import strlib (index-of substring char-at))
 
   ;; FFI for error handling
   (ffi "stdio.h"
@@ -1561,6 +1561,48 @@
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena)))
       (string-concat arena (string-concat arena (string-concat arena (string-concat arena a b) c) d) e)))
+
+  (fn cond-paren-wrapped ((s String))
+    (@intent "True if a C expression is one balanced paren group spanning the whole string")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (let ((len (cast Int (. s len))))
+      (if (< len 2)
+        false
+        ;; Must open with '('; reject '({' since GCC statement-expression
+        ;; parens are required, not redundant (stripping breaks `if (...)`).
+        (if (and (== (char-at s 0) 40) (not (== (char-at s 1) 123)))
+          (let ((mut depth 0)
+                (mut in-str false)
+                (mut i 0)
+                (mut ok true))
+            (while (< i len)
+              (let ((c (char-at s (cast (Int 0 ..) i))))
+                (cond
+                  (in-str
+                    (cond
+                      ((== c 92) (set! i (+ i 1)))
+                      ((== c 34) (set! in-str false))
+                      (else (do))))
+                  ((== c 34) (set! in-str true))
+                  ((== c 40) (set! depth (+ depth 1)))
+                  ((== c 41)
+                    (do
+                      (set! depth (- depth 1))
+                      (when (and (== depth 0) (< i (- len 1)))
+                        (set! ok false))))
+                  (else (do))))
+              (set! i (+ i 1)))
+            (and ok (== depth 0)))
+          false))))
+
+  (fn ctx-strip-cond-parens ((ctx (Ptr TranspileContext)) (s String))
+    (@intent "Drop one redundant outer paren layer from a transpiled condition string")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (if (cond-paren-wrapped s)
+      (substring (. (deref ctx) arena) s 1 (cast (Int 0 ..) (- (cast Int (. s len)) 2)))
+      s))
 
   ;; ============================================================
   ;; Import Module Tracking

@@ -62,8 +62,8 @@ uint8_t parser_string_contains_dot(slop_string s) {
         int64_t i = 0;
         __auto_type slen = ((int64_t)(s.len));
         uint8_t found = 0;
-        while (((i < slen) && !(found))) {
-            if ((strlib_char_at(s, ((int64_t)(i))) == ((strlib_AsciiChar)(46)))) {
+        while ((i < slen) && !(found)) {
+            if (strlib_char_at(s, ((int64_t)(i))) == ((strlib_AsciiChar)(46))) {
                 found = 1;
             } else {
                 i = (i + 1);
@@ -78,7 +78,7 @@ slop_string parser_string_copy(slop_arena* arena, slop_string s) {
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (s.len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         int64_t i = 0;
         __auto_type slen = ((int64_t)(s.len));
-        while ((i < slen)) {
+        while (i < slen) {
             buf[i] = s.data[i];
             i = (i + 1);
         }
@@ -106,7 +106,7 @@ strlib_AsciiChar parser_lexer_peek(parser_LexerState* state) {
 strlib_AsciiChar parser_lexer_peek_next(parser_LexerState* state) {
     {
         __auto_type next_pos = ((*state).pos + 1);
-        if ((next_pos >= ((int64_t)((*state).source.len)))) {
+        if (next_pos >= ((int64_t)((*state).source.len))) {
             return ((strlib_AsciiChar)(0));
         } else {
             return strlib_char_at((*state).source, next_pos);
@@ -119,7 +119,7 @@ void parser_lexer_advance(parser_LexerState* state) {
     {
         __auto_type c = parser_lexer_peek(state);
         (*state).pos = ((*state).pos + 1);
-        if ((c == 10)) {
+        if (c == 10) {
             (*state).line = ((*state).line + 1);
             (*state).col = 1;
         } else {
@@ -129,14 +129,14 @@ void parser_lexer_advance(parser_LexerState* state) {
 }
 
 void parser_lexer_skip_whitespace(parser_LexerState* state) {
-    while ((!(parser_lexer_at_end(state)) && strlib_is_space(parser_lexer_peek(state)))) {
+    while (!(parser_lexer_at_end(state)) && strlib_is_space(parser_lexer_peek(state))) {
         parser_lexer_advance(state);
     }
 }
 
 void parser_lexer_skip_comment(parser_LexerState* state) {
     SLOP_PRE(((parser_lexer_peek(state) == 59)), "(== (lexer-peek state) 59)");
-    while ((!(parser_lexer_at_end(state)) && (parser_lexer_peek(state) != 10))) {
+    while (!(parser_lexer_at_end(state)) && (parser_lexer_peek(state) != 10)) {
         parser_lexer_advance(state);
     }
 }
@@ -149,7 +149,7 @@ void parser_lexer_skip_whitespace_and_comments(parser_LexerState* state) {
                 __auto_type c = parser_lexer_peek(state);
                 if (strlib_is_space(c)) {
                     parser_lexer_skip_whitespace(state);
-                } else if ((c == 59)) {
+                } else if (c == 59) {
                     parser_lexer_skip_comment(state);
                 } else {
                     slop_continue = 0;
@@ -170,13 +170,13 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_string(slop_arena* 
         {
             uint8_t done = 0;
             uint8_t has_error = 0;
-            while (((!(done)) && (!(has_error)) && (!(parser_lexer_at_end(state))))) {
+            while ((!(done)) && (!(has_error)) && (!(parser_lexer_at_end(state)))) {
                 {
                     __auto_type c = parser_lexer_peek(state);
-                    if ((c == 34)) {
+                    if (c == 34) {
                         parser_lexer_advance(state);
                         done = 1;
-                    } else if ((c == 92)) {
+                    } else if (c == 92) {
                         parser_lexer_advance(state);
                         if (parser_lexer_at_end(state)) {
                             has_error = 1;
@@ -184,19 +184,19 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_string(slop_arena* 
                             {
                                 __auto_type next = parser_lexer_peek(state);
                                 parser_lexer_advance(state);
-                                if ((next == 110)) {
+                                if (next == 110) {
                                     buf[buf_pos] = ((uint8_t)(10));
                                     buf_pos = (buf_pos + 1);
-                                } else if ((next == 116)) {
+                                } else if (next == 116) {
                                     buf[buf_pos] = ((uint8_t)(9));
                                     buf_pos = (buf_pos + 1);
-                                } else if ((next == 114)) {
+                                } else if (next == 114) {
                                     buf[buf_pos] = ((uint8_t)(13));
                                     buf_pos = (buf_pos + 1);
-                                } else if ((next == 34)) {
+                                } else if (next == 34) {
                                     buf[buf_pos] = ((uint8_t)(34));
                                     buf_pos = (buf_pos + 1);
-                                } else if ((next == 92)) {
+                                } else if (next == 92) {
                                     buf[buf_pos] = ((uint8_t)(92));
                                     buf_pos = (buf_pos + 1);
                                 } else {
@@ -214,7 +214,7 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_string(slop_arena* 
                     }
                 }
             }
-            if ((!(done) && !(has_error))) {
+            if (!(done) && !(has_error)) {
                 return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Unterminated string"), start_line, start_col} });
             } else {
                 if (has_error) {
@@ -234,21 +234,21 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_number(slop_arena* 
         __auto_type start_col = (*state).col;
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         int64_t buf_pos = 0;
-        if ((parser_lexer_peek(state) == 45)) {
+        if (parser_lexer_peek(state) == 45) {
             buf[buf_pos] = ((uint8_t)(45));
             buf_pos = (buf_pos + 1);
             parser_lexer_advance(state);
         }
-        while ((!(parser_lexer_at_end(state)) && strlib_is_digit(parser_lexer_peek(state)))) {
+        while (!(parser_lexer_at_end(state)) && strlib_is_digit(parser_lexer_peek(state))) {
             buf[buf_pos] = ((uint8_t)(parser_lexer_peek(state)));
             buf_pos = (buf_pos + 1);
             parser_lexer_advance(state);
         }
-        if (((!(parser_lexer_at_end(state))) && ((parser_lexer_peek(state) == 46)) && (strlib_is_digit(parser_lexer_peek_next(state))))) {
+        if ((!(parser_lexer_at_end(state))) && ((parser_lexer_peek(state) == 46)) && (strlib_is_digit(parser_lexer_peek_next(state)))) {
             buf[buf_pos] = ((uint8_t)(46));
             buf_pos = (buf_pos + 1);
             parser_lexer_advance(state);
-            while ((!(parser_lexer_at_end(state)) && strlib_is_digit(parser_lexer_peek(state)))) {
+            while (!(parser_lexer_at_end(state)) && strlib_is_digit(parser_lexer_peek(state))) {
                 buf[buf_pos] = ((uint8_t)(parser_lexer_peek(state)));
                 buf_pos = (buf_pos + 1);
                 parser_lexer_advance(state);
@@ -265,7 +265,7 @@ parser_Token parser_lexer_read_symbol(slop_arena* arena, parser_LexerState* stat
         __auto_type start_col = (*state).col;
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 256); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         int64_t buf_pos = 0;
-        while ((!(parser_lexer_at_end(state)) && strlib_char_is_symbol_char(parser_lexer_peek(state)))) {
+        while (!(parser_lexer_at_end(state)) && strlib_char_is_symbol_char(parser_lexer_peek(state))) {
             buf[buf_pos] = ((uint8_t)(parser_lexer_peek(state)));
             buf_pos = (buf_pos + 1);
             parser_lexer_advance(state);
@@ -281,7 +281,7 @@ parser_Token parser_lexer_read_operator(slop_arena* arena, parser_LexerState* st
         __auto_type start_col = (*state).col;
         __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 16); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         int64_t buf_pos = 0;
-        while ((!(parser_lexer_at_end(state)) && strlib_char_is_operator(parser_lexer_peek(state)))) {
+        while (!(parser_lexer_at_end(state)) && strlib_char_is_operator(parser_lexer_peek(state))) {
             buf[buf_pos] = ((uint8_t)(parser_lexer_peek(state)));
             buf_pos = (buf_pos + 1);
             parser_lexer_advance(state);
@@ -296,34 +296,34 @@ slop_result_parser_Token_parser_ParseError parser_lexer_next_token(slop_arena* a
         __auto_type line = (*state).line;
         __auto_type col = (*state).col;
         __auto_type c = parser_lexer_peek(state);
-        if ((c == 0)) {
+        if (c == 0) {
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_eof, SLOP_STR(""), line, col} });
-        } else if ((c == 40)) {
+        } else if (c == 40) {
             parser_lexer_advance(state);
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_lparen, SLOP_STR("("), line, col} });
-        } else if ((c == 41)) {
+        } else if (c == 41) {
             parser_lexer_advance(state);
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_rparen, SLOP_STR(")"), line, col} });
-        } else if ((c == 123)) {
+        } else if (c == 123) {
             parser_lexer_advance(state);
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_lbrace, SLOP_STR("{"), line, col} });
-        } else if ((c == 125)) {
+        } else if (c == 125) {
             parser_lexer_advance(state);
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_rbrace, SLOP_STR("}"), line, col} });
-        } else if ((c == 39)) {
+        } else if (c == 39) {
             parser_lexer_advance(state);
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_quote, SLOP_STR("'"), line, col} });
-        } else if ((c == 58)) {
+        } else if (c == 58) {
             parser_lexer_advance(state);
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_colon, SLOP_STR(":"), line, col} });
-        } else if ((c == 34)) {
+        } else if (c == 34) {
             return parser_lexer_read_string(arena, state);
-        } else if ((strlib_is_digit(c) || ((c == 45) && strlib_is_digit(parser_lexer_peek_next(state))))) {
+        } else if (strlib_is_digit(c) || ((c == 45) && strlib_is_digit(parser_lexer_peek_next(state)))) {
             return parser_lexer_read_number(arena, state);
         } else if (strlib_char_is_symbol_start(c)) {
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = parser_lexer_read_symbol(arena, state) });
-        } else if ((c == 46)) {
-            if ((parser_lexer_peek_next(state) == 46)) {
+        } else if (c == 46) {
+            if (parser_lexer_peek_next(state) == 46) {
                 parser_lexer_advance(state);
                 parser_lexer_advance(state);
                 return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_range, SLOP_STR(".."), line, col} });
@@ -345,12 +345,12 @@ slop_result_list_parser_Token_parser_ParseError parser_tokenize(slop_arena* aren
         uint8_t done = 0;
         uint8_t has_error = 0;
         __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
-        while ((!(done) && !(has_error))) {
+        while (!(done) && !(has_error)) {
             __auto_type _mv_63 = parser_lexer_next_token(arena, (&state));
             if (_mv_63.is_ok) {
                 __auto_type tok = _mv_63.data.ok;
                 ({ __auto_type _lst_p = &(tokens); __auto_type _item = (tok); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                if ((tok.kind == parser_TokenType_tok_eof)) {
+                if (tok.kind == parser_TokenType_tok_eof) {
                     done = 1;
                 }
             } else if (!_mv_63.is_ok) {
@@ -393,7 +393,7 @@ void parser_parser_advance(parser_ParserState* state) {
 slop_result_parser_Token_parser_ParseError parser_parser_expect(parser_ParserState* state, parser_TokenType expected) {
     {
         __auto_type tok = parser_parser_peek(state);
-        if ((tok.kind == expected)) {
+        if (tok.kind == expected) {
             parser_parser_advance(state);
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = tok });
         } else {
@@ -405,11 +405,11 @@ slop_result_parser_Token_parser_ParseError parser_parser_expect(parser_ParserSta
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* arena, parser_ParserState* state) {
     {
         __auto_type tok = parser_parser_peek(state);
-        if ((tok.kind == parser_TokenType_tok_lparen)) {
+        if (tok.kind == parser_TokenType_tok_lparen) {
             return parser_parse_list(arena, state);
-        } else if ((tok.kind == parser_TokenType_tok_lbrace)) {
+        } else if (tok.kind == parser_TokenType_tok_lbrace) {
             return parser_parse_infix(arena, state);
-        } else if ((tok.kind == parser_TokenType_tok_number)) {
+        } else if (tok.kind == parser_TokenType_tok_number) {
             parser_parser_advance(state);
             {
                 __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
@@ -421,14 +421,14 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
                 }
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
             }
-        } else if ((tok.kind == parser_TokenType_tok_string)) {
+        } else if (tok.kind == parser_TokenType_tok_string) {
             parser_parser_advance(state);
             {
                 __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 (*node) = ((types_SExpr){ .tag = types_SExpr_str, .data.str = (types_SExprString){tok.value, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
             }
-        } else if ((tok.kind == parser_TokenType_tok_quote)) {
+        } else if (tok.kind == parser_TokenType_tok_quote) {
             parser_parser_advance(state);
             __auto_type _mv_65 = parser_parse_expr(arena, state);
             if (_mv_65.is_ok) {
@@ -447,25 +447,25 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
                 __auto_type e = _mv_65.data.err;
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
             }
-        } else if ((tok.kind == parser_TokenType_tok_symbol)) {
+        } else if (tok.kind == parser_TokenType_tok_symbol) {
             parser_parser_advance(state);
             {
                 __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 (*node) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){tok.value, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
             }
-        } else if ((tok.kind == parser_TokenType_tok_operator)) {
+        } else if (tok.kind == parser_TokenType_tok_operator) {
             parser_parser_advance(state);
             {
                 __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                 (*node) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){tok.value, tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
             }
-        } else if ((tok.kind == parser_TokenType_tok_colon)) {
+        } else if (tok.kind == parser_TokenType_tok_colon) {
             parser_parser_advance(state);
             {
                 __auto_type next_tok = parser_parser_peek(state);
-                if ((next_tok.kind == parser_TokenType_tok_symbol)) {
+                if (next_tok.kind == parser_TokenType_tok_symbol) {
                     parser_parser_advance(state);
                     {
                         __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
@@ -474,7 +474,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
                         {
                             int64_t i = 0;
                             __auto_type slen = ((int64_t)(next_tok.value.len));
-                            while ((i < slen)) {
+                            while (i < slen) {
                                 kw_buf[(i + 1)] = next_tok.value.data[i];
                                 i = (i + 1);
                             }
@@ -486,7 +486,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
                     return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Expected symbol after :"), tok.line, tok.col} });
                 }
             }
-        } else if ((tok.kind == parser_TokenType_tok_range)) {
+        } else if (tok.kind == parser_TokenType_tok_range) {
             parser_parser_advance(state);
             {
                 __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
@@ -509,13 +509,13 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_list(slop_arena* aren
             uint8_t done = 0;
             uint8_t has_error = 0;
             __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
-            while ((!(done) && !(has_error))) {
+            while (!(done) && !(has_error)) {
                 {
                     __auto_type tok = parser_parser_peek(state);
-                    if ((tok.kind == parser_TokenType_tok_rparen)) {
+                    if (tok.kind == parser_TokenType_tok_rparen) {
                         parser_parser_advance(state);
                         done = 1;
-                    } else if ((tok.kind == parser_TokenType_tok_eof)) {
+                    } else if (tok.kind == parser_TokenType_tok_eof) {
                         has_error = 1;
                         error_val = (parser_ParseError){SLOP_STR("Unterminated list"), start_tok.line, start_tok.col};
                     } else {
@@ -598,7 +598,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_paren_group(slo
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_arena* arena, parser_ParserState* state) {
     {
         __auto_type tok = parser_parser_peek(state);
-        if ((tok.kind == parser_TokenType_tok_number)) {
+        if (tok.kind == parser_TokenType_tok_number) {
             parser_parser_advance(state);
             {
                 __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 128); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
@@ -609,7 +609,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                 }
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
             }
-        } else if ((tok.kind == parser_TokenType_tok_symbol)) {
+        } else if (tok.kind == parser_TokenType_tok_symbol) {
             if (string_eq(tok.value, SLOP_STR("not"))) {
                 parser_parser_advance(state);
                 __auto_type _mv_69 = parser_parse_infix_primary(arena, state);
@@ -637,7 +637,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                     return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
                 }
             }
-        } else if (((tok.kind == parser_TokenType_tok_operator) && string_eq(tok.value, SLOP_STR("-")))) {
+        } else if ((tok.kind == parser_TokenType_tok_operator) && string_eq(tok.value, SLOP_STR("-"))) {
             parser_parser_advance(state);
             __auto_type _mv_70 = parser_parse_infix_primary(arena, state);
             if (!_mv_70.is_ok) {
@@ -659,9 +659,9 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                     return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
                 }
             }
-        } else if ((tok.kind == parser_TokenType_tok_operator)) {
+        } else if (tok.kind == parser_TokenType_tok_operator) {
             return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Unexpected operator in expression"), tok.line, tok.col} });
-        } else if ((tok.kind == parser_TokenType_tok_lparen)) {
+        } else if (tok.kind == parser_TokenType_tok_lparen) {
             {
                 __auto_type saved_pos = (*state).pos;
                 parser_parser_advance(state);
@@ -674,7 +674,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                     __auto_type _ = _mv_71.data.ok;
                     {
                         __auto_type next_tok = parser_parser_peek(state);
-                        if (((next_tok.kind == parser_TokenType_tok_operator) || ((next_tok.kind == parser_TokenType_tok_symbol) && (string_eq(next_tok.value, SLOP_STR("and")) || string_eq(next_tok.value, SLOP_STR("or")))))) {
+                        if ((next_tok.kind == parser_TokenType_tok_operator) || ((next_tok.kind == parser_TokenType_tok_symbol) && (string_eq(next_tok.value, SLOP_STR("and")) || string_eq(next_tok.value, SLOP_STR("or"))))) {
                             (*state).pos = saved_pos;
                             return parser_parse_infix_paren_group(arena, state);
                         } else {
@@ -684,7 +684,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                     }
                 }
             }
-        } else if ((tok.kind == parser_TokenType_tok_quote)) {
+        } else if (tok.kind == parser_TokenType_tok_quote) {
             parser_parser_advance(state);
             __auto_type _mv_72 = parser_parse_infix_primary(arena, state);
             if (!_mv_72.is_ok) {
@@ -721,13 +721,13 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_prec(slop_arena
             __auto_type done = 0;
             __auto_type has_error = 0;
             __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
-            while ((!(done) && !(has_error))) {
+            while (!(done) && !(has_error)) {
                 {
                     __auto_type tok = parser_parser_peek(state);
-                    if (((tok.kind == parser_TokenType_tok_operator) || ((tok.kind == parser_TokenType_tok_symbol) && (string_eq(tok.value, SLOP_STR("and")) || string_eq(tok.value, SLOP_STR("or")))))) {
+                    if ((tok.kind == parser_TokenType_tok_operator) || ((tok.kind == parser_TokenType_tok_symbol) && (string_eq(tok.value, SLOP_STR("and")) || string_eq(tok.value, SLOP_STR("or"))))) {
                         {
                             __auto_type op_prec = parser_get_precedence(tok.value);
-                            if ((op_prec < min_prec)) {
+                            if (op_prec < min_prec) {
                                 done = 1;
                             } else {
                                 {
@@ -786,7 +786,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix(slop_arena* are
                 __auto_type expr = _mv_75.data.ok;
                 {
                     __auto_type tok = parser_parser_peek(state);
-                    if ((tok.kind == parser_TokenType_tok_rbrace)) {
+                    if (tok.kind == parser_TokenType_tok_rbrace) {
                         parser_parser_advance(state);
                         return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = expr });
                     } else {
@@ -808,10 +808,10 @@ slop_result_list_types_SExpr_ptr_parser_ParseError parser_parse(slop_arena* aren
             __auto_type done = 0;
             __auto_type has_error = 0;
             __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
-            while ((!(done) && !(has_error))) {
+            while (!(done) && !(has_error)) {
                 {
                     __auto_type tok = parser_parser_peek((&state));
-                    if ((tok.kind == parser_TokenType_tok_eof)) {
+                    if (tok.kind == parser_TokenType_tok_eof) {
                         done = 1;
                     } else {
                         __auto_type _mv_77 = parser_parse_expr(arena, (&state));
@@ -910,7 +910,7 @@ uint8_t parser_is_form(types_SExpr* expr, slop_string keyword) {
         case types_SExpr_lst:
         {
             __auto_type l = _mv_81.data.lst;
-            if ((((int64_t)((l.items).len)) == 0)) {
+            if (((int64_t)((l.items).len)) == 0) {
                 return 0;
             } else {
                 __auto_type _mv_82 = ({ __auto_type _lst = l.items; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -1073,7 +1073,7 @@ slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr
                     __auto_type items = l.items;
                     __auto_type len = ((int64_t)((items).len));
                     __auto_type i = 0;
-                    while ((i < len)) {
+                    while (i < len) {
                         __auto_type _mv_93 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                         if (_mv_93.has_value) {
                             __auto_type child = _mv_93.value;
@@ -1081,7 +1081,7 @@ slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr
                                 __auto_type child_holes = parser_find_holes(arena, child);
                                 __auto_type child_len = ((int64_t)((child_holes).len));
                                 __auto_type j = 0;
-                                while ((j < child_len)) {
+                                while (j < child_len) {
                                     __auto_type _mv_94 = ({ __auto_type _lst = child_holes; size_t _idx = (size_t)j; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                     if (_mv_94.has_value) {
                                         __auto_type h = _mv_94.value;
@@ -1124,22 +1124,22 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
                 __auto_type i = 0;
                 __auto_type out = 1;
                 buf[0] = 34;
-                while ((i < slen)) {
+                while (i < slen) {
                     {
                         __auto_type c = val.data[i];
-                        if ((c == 10)) {
+                        if (c == 10) {
                             buf[out] = 92;
                             buf[(out + 1)] = 110;
                             out = (out + 2);
-                        } else if ((c == 9)) {
+                        } else if (c == 9) {
                             buf[out] = 92;
                             buf[(out + 1)] = 116;
                             out = (out + 2);
-                        } else if ((c == 34)) {
+                        } else if (c == 34) {
                             buf[out] = 92;
                             buf[(out + 1)] = 34;
                             out = (out + 2);
-                        } else if ((c == 92)) {
+                        } else if (c == 92) {
                             buf[out] = 92;
                             buf[(out + 1)] = 92;
                             out = (out + 2);
@@ -1170,19 +1170,19 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
             {
                 __auto_type items = lst.items;
                 __auto_type len = ((int64_t)((items).len));
-                if ((len == 0)) {
+                if (len == 0) {
                     return parser_string_copy(arena, SLOP_STR("()"));
                 } else {
                     {
                         __auto_type result = parser_string_copy(arena, SLOP_STR("("));
                         __auto_type i = 0;
-                        while ((i < len)) {
+                        while (i < len) {
                             __auto_type _mv_96 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_96.has_value) {
                                 __auto_type child = _mv_96.value;
                                 {
                                     __auto_type child_str = parser_pretty_print(arena, child);
-                                    if ((i > 0)) {
+                                    if (i > 0) {
                                         result = string_concat(arena, result, SLOP_STR(" "));
                                     }
                                     result = string_concat(arena, result, child_str);
@@ -1206,26 +1206,26 @@ slop_string parser_json_escape_string(slop_arena* arena, slop_string s) {
         int64_t i = 0;
         int64_t out = 1;
         buf[0] = 34;
-        while ((i < slen)) {
+        while (i < slen) {
             {
                 __auto_type c = s.data[i];
-                if ((c == 34)) {
+                if (c == 34) {
                     buf[out] = 92;
                     buf[(out + 1)] = 34;
                     out = (out + 2);
-                } else if ((c == 92)) {
+                } else if (c == 92) {
                     buf[out] = 92;
                     buf[(out + 1)] = 92;
                     out = (out + 2);
-                } else if ((c == 10)) {
+                } else if (c == 10) {
                     buf[out] = 92;
                     buf[(out + 1)] = 110;
                     out = (out + 2);
-                } else if ((c == 13)) {
+                } else if (c == 13) {
                     buf[out] = 92;
                     buf[(out + 1)] = 114;
                     out = (out + 2);
-                } else if ((c == 9)) {
+                } else if (c == 9) {
                     buf[out] = 92;
                     buf[(out + 1)] = 116;
                     out = (out + 2);
@@ -1244,19 +1244,19 @@ slop_string parser_json_escape_string(slop_arena* arena, slop_string s) {
 slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr items) {
     {
         __auto_type len = ((int64_t)((items).len));
-        if ((len == 0)) {
+        if (len == 0) {
             return parser_string_copy(arena, SLOP_STR("[]"));
         } else {
             {
                 __auto_type result = parser_string_copy(arena, SLOP_STR("["));
                 int64_t i = 0;
-                while ((i < len)) {
+                while (i < len) {
                     __auto_type _mv_97 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_97.has_value) {
                         __auto_type child = _mv_97.value;
                         {
                             __auto_type child_json = parser_json_print(arena, child);
-                            if ((i > 0)) {
+                            if (i > 0) {
                                 result = string_concat(arena, result, SLOP_STR(","));
                             }
                             result = string_concat(arena, result, child_json);

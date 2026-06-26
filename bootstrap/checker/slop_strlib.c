@@ -48,7 +48,7 @@ uint8_t strlib_char_is_operator(strlib_AsciiChar c);
 void strlib_fill_bytes(uint8_t* ptr, uint8_t value, int64_t len);
 
 int64_t strlib_min(int64_t a, int64_t b) {
-    if ((a < b)) {
+    if (a < b) {
         return a;
     } else {
         return b;
@@ -104,23 +104,23 @@ strlib_AsciiChar strlib_char_to_lower(strlib_AsciiChar c) {
 }
 
 slop_option_int strlib_index_of(slop_string haystack, slop_string needle) {
-    if ((needle.len == 0)) {
+    if (needle.len == 0) {
         return (slop_option_int){.has_value = 1, .value = 0};
     } else {
         {
             __auto_type hlen = ((int64_t)(haystack.len));
             __auto_type nlen = ((int64_t)(needle.len));
-            if ((nlen > hlen)) {
+            if (nlen > hlen) {
                 return (slop_option_int){.has_value = false};
             } else {
                 {
                     int64_t i = 0;
-                    while ((i <= (hlen - nlen))) {
+                    while (i <= (hlen - nlen)) {
                         {
                             uint8_t match_found = 1;
                             int64_t j = 0;
-                            while (((j < nlen) && match_found)) {
-                                if ((((int64_t)(haystack.data[(i + j)])) != ((int64_t)(needle.data[j])))) {
+                            while ((j < nlen) && match_found) {
+                                if (((int64_t)(haystack.data[(i + j)])) != ((int64_t)(needle.data[j]))) {
                                     match_found = 0;
                                 } else {
                                     j = (j + 1);
@@ -140,23 +140,23 @@ slop_option_int strlib_index_of(slop_string haystack, slop_string needle) {
 }
 
 slop_option_int strlib_last_index_of(slop_string haystack, slop_string needle) {
-    if ((needle.len == 0)) {
+    if (needle.len == 0) {
         return (slop_option_int){.has_value = 1, .value = ((int64_t)(haystack.len))};
     } else {
         {
             __auto_type hlen = ((int64_t)(haystack.len));
             __auto_type nlen = ((int64_t)(needle.len));
-            if ((nlen > hlen)) {
+            if (nlen > hlen) {
                 return (slop_option_int){.has_value = false};
             } else {
                 {
                     int64_t i = (hlen - nlen);
-                    while ((i >= 0)) {
+                    while (i >= 0) {
                         {
                             uint8_t match_found = 1;
                             int64_t j = 0;
-                            while (((j < nlen) && match_found)) {
-                                if ((((int64_t)(haystack.data[(i + j)])) != ((int64_t)(needle.data[j])))) {
+                            while ((j < nlen) && match_found) {
+                                if (((int64_t)(haystack.data[(i + j)])) != ((int64_t)(needle.data[j]))) {
                                     match_found = 0;
                                 } else {
                                     j = (j + 1);
@@ -186,7 +186,7 @@ uint8_t strlib_contains(slop_string haystack, slop_string needle) {
 }
 
 uint8_t strlib_starts_with(slop_string s, slop_string prefix) {
-    if ((prefix.len > s.len)) {
+    if (prefix.len > s.len) {
         return 0;
     } else {
         return (strncmp(((uint8_t*)(s.data)), ((uint8_t*)(prefix.data)), prefix.len) == 0);
@@ -194,7 +194,7 @@ uint8_t strlib_starts_with(slop_string s, slop_string prefix) {
 }
 
 uint8_t strlib_ends_with(slop_string s, slop_string suffix) {
-    if ((suffix.len > s.len)) {
+    if (suffix.len > s.len) {
         return 0;
     } else {
         {
@@ -205,7 +205,7 @@ uint8_t strlib_ends_with(slop_string s, slop_string suffix) {
 }
 
 int64_t strlib_count_occurrences(slop_string haystack, slop_string needle) {
-    if ((needle.len == 0)) {
+    if (needle.len == 0) {
         return 0;
     } else {
         {
@@ -213,12 +213,12 @@ int64_t strlib_count_occurrences(slop_string haystack, slop_string needle) {
             int64_t pos = 0;
             __auto_type hlen = ((int64_t)(haystack.len));
             __auto_type nlen = ((int64_t)(needle.len));
-            while ((pos <= (hlen - nlen))) {
+            while (pos <= (hlen - nlen)) {
                 {
                     uint8_t match_found = 1;
                     int64_t j = 0;
-                    while (((j < nlen) && match_found)) {
-                        if ((((int64_t)(haystack.data[(pos + j)])) != ((int64_t)(needle.data[j])))) {
+                    while ((j < nlen) && match_found) {
+                        if (((int64_t)(haystack.data[(pos + j)])) != ((int64_t)(needle.data[j]))) {
                             match_found = 0;
                         } else {
                             j = (j + 1);
@@ -240,21 +240,21 @@ int64_t strlib_count_occurrences(slop_string haystack, slop_string needle) {
 slop_string strlib_trim(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen == 0)) {
+        if (slen == 0) {
             return s;
         } else {
             {
                 int64_t start = 0;
                 int64_t end = slen;
-                while (((start < slen) && strlib_is_space(((strlib_AsciiChar)(s.data[start]))))) {
+                while ((start < slen) && strlib_is_space(((strlib_AsciiChar)(s.data[start])))) {
                     start = (start + 1);
                 }
-                while (((end > start) && strlib_is_space(((strlib_AsciiChar)(s.data[(end - 1)]))))) {
+                while ((end > start) && strlib_is_space(((strlib_AsciiChar)(s.data[(end - 1)])))) {
                     end = (end - 1);
                 }
                 {
                     __auto_type newlen = (end - start);
-                    if ((newlen == 0)) {
+                    if (newlen == 0) {
                         return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
                     } else {
                         {
@@ -272,17 +272,17 @@ slop_string strlib_trim(slop_arena* arena, slop_string s) {
 slop_string strlib_trim_start(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen == 0)) {
+        if (slen == 0) {
             return s;
         } else {
             {
                 int64_t start = 0;
-                while (((start < slen) && strlib_is_space(((strlib_AsciiChar)(s.data[start]))))) {
+                while ((start < slen) && strlib_is_space(((strlib_AsciiChar)(s.data[start])))) {
                     start = (start + 1);
                 }
                 {
                     __auto_type newlen = (slen - start);
-                    if ((newlen == 0)) {
+                    if (newlen == 0) {
                         return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
                     } else {
                         {
@@ -300,15 +300,15 @@ slop_string strlib_trim_start(slop_arena* arena, slop_string s) {
 slop_string strlib_trim_end(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen == 0)) {
+        if (slen == 0) {
             return s;
         } else {
             {
                 int64_t end = slen;
-                while (((end > 0) && strlib_is_space(((strlib_AsciiChar)(s.data[(end - 1)]))))) {
+                while ((end > 0) && strlib_is_space(((strlib_AsciiChar)(s.data[(end - 1)])))) {
                     end = (end - 1);
                 }
-                if ((end == 0)) {
+                if (end == 0) {
                     return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
                 } else {
                     {
@@ -325,7 +325,7 @@ slop_string strlib_trim_end(slop_arena* arena, slop_string s) {
 slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_len, strlib_AsciiChar pad_char) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen >= target_len)) {
+        if (slen >= target_len) {
             return s;
         } else {
             {
@@ -342,7 +342,7 @@ slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_le
 slop_string strlib_pad_end(slop_arena* arena, slop_string s, int64_t target_len, strlib_AsciiChar pad_char) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen >= target_len)) {
+        if (slen >= target_len) {
             return s;
         } else {
             {
@@ -359,13 +359,13 @@ slop_string strlib_pad_end(slop_arena* arena, slop_string s, int64_t target_len,
 slop_string strlib_reverse(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen == 0)) {
+        if (slen == 0) {
             return s;
         } else {
             {
                 __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 int64_t i = 0;
-                while ((i < slen)) {
+                while (i < slen) {
                     buf[i] = s.data[((slen - 1) - i)];
                     i = (i + 1);
                 }
@@ -378,14 +378,14 @@ slop_string strlib_reverse(slop_arena* arena, slop_string s) {
 slop_string strlib_repeat(slop_arena* arena, slop_string s, int64_t n) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if (((n == 0) || (slen == 0))) {
+        if ((n == 0) || (slen == 0)) {
             return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
         } else {
             {
                 __auto_type total_len = (slen * n);
                 __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (total_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 int64_t i = 0;
-                while ((i < n)) {
+                while (i < n) {
                     memcpy(((void*)((buf + (i * slen)))), ((void*)(s.data)), ((uint64_t)(slen)));
                     i = (i + 1);
                 }
@@ -400,7 +400,7 @@ slop_string strlib_substring(slop_arena* arena, slop_string s, int64_t start, in
     {
         __auto_type slen = ((int64_t)(s.len));
         __auto_type actual_len = ((((int64_t)(len))) < (((int64_t)((slen - ((int64_t)(start)))))) ? (((int64_t)(len))) : (((int64_t)((slen - ((int64_t)(start)))))));
-        if ((actual_len == 0)) {
+        if (actual_len == 0) {
             return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
         } else {
             {
@@ -415,13 +415,13 @@ slop_string strlib_substring(slop_arena* arena, slop_string s, int64_t start, in
 slop_string strlib_to_upper(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen == 0)) {
+        if (slen == 0) {
             return s;
         } else {
             {
                 __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 int64_t i = 0;
-                while ((i < slen)) {
+                while (i < slen) {
                     buf[i] = ((uint8_t)(strlib_char_to_upper(((strlib_AsciiChar)(s.data[i])))));
                     i = (i + 1);
                 }
@@ -434,13 +434,13 @@ slop_string strlib_to_upper(slop_arena* arena, slop_string s) {
 slop_string strlib_to_lower(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen == 0)) {
+        if (slen == 0) {
             return s;
         } else {
             {
                 __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 int64_t i = 0;
-                while ((i < slen)) {
+                while (i < slen) {
                     buf[i] = ((uint8_t)(strlib_char_to_lower(((strlib_AsciiChar)(s.data[i])))));
                     i = (i + 1);
                 }
@@ -453,14 +453,14 @@ slop_string strlib_to_lower(slop_arena* arena, slop_string s) {
 slop_string strlib_to_title(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen == 0)) {
+        if (slen == 0) {
             return s;
         } else {
             {
                 __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 int64_t i = 0;
                 uint8_t word_start = 1;
-                while ((i < slen)) {
+                while (i < slen) {
                     {
                         __auto_type c = ((strlib_AsciiChar)(s.data[i]));
                         if (strlib_is_space(c)) {
@@ -486,13 +486,13 @@ slop_string strlib_to_title(slop_arena* arena, slop_string s) {
 slop_string strlib_capitalize(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        if ((slen == 0)) {
+        if (slen == 0) {
             return s;
         } else {
             {
                 __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 buf[0] = ((uint8_t)(strlib_char_to_upper(((strlib_AsciiChar)(s.data[0])))));
-                if ((slen > 1)) {
+                if (slen > 1) {
                     memcpy(((void*)((buf + 1))), ((void*)((s.data + 1))), ((uint64_t)((slen - 1))));
                 }
                 return (slop_string){.len = ((uint64_t)(slen)), .data = ((uint8_t*)(buf))};
@@ -502,7 +502,7 @@ slop_string strlib_capitalize(slop_arena* arena, slop_string s) {
 }
 
 slop_result_int_strlib_ParseError strlib_parse_int(slop_string s) {
-    if ((s.len == 0)) {
+    if (s.len == 0) {
         return ((slop_result_int_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_empty_string });
     } else {
         {
@@ -519,7 +519,7 @@ slop_result_int_strlib_ParseError strlib_parse_int(slop_string s) {
                 __auto_type result = strtol(((char*)(s.data)), ((char**)(endptr)), 10);
                 {
                     __auto_type end_val = (*((char**)(endptr)));
-                    if ((end_val == ((char*)(s.data)))) {
+                    if (end_val == ((char*)(s.data))) {
                         return ((slop_result_int_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_invalid_format });
                     } else {
                         return ((slop_result_int_strlib_ParseError){ .is_ok = true, .data.ok = result });
@@ -532,7 +532,7 @@ slop_result_int_strlib_ParseError strlib_parse_int(slop_string s) {
 }
 
 slop_result_float_strlib_ParseError strlib_parse_float(slop_string s) {
-    if ((s.len == 0)) {
+    if (s.len == 0) {
         return ((slop_result_float_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_empty_string });
     } else {
         {
@@ -549,7 +549,7 @@ slop_result_float_strlib_ParseError strlib_parse_float(slop_string s) {
                 __auto_type result = strtod(((char*)(s.data)), ((char**)(endptr)));
                 {
                     __auto_type end_val = (*((char**)(endptr)));
-                    if ((end_val == ((char*)(s.data)))) {
+                    if (end_val == ((char*)(s.data))) {
                         return ((slop_result_float_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_invalid_format });
                     } else {
                         return ((slop_result_float_strlib_ParseError){ .is_ok = true, .data.ok = result });
@@ -568,7 +568,7 @@ slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precisio
         __auto_type out_buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 64); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
         fmt_buf[0] = ((uint8_t)(37));
         fmt_buf[1] = ((uint8_t)(46));
-        if ((precision < 10)) {
+        if (precision < 10) {
             fmt_buf[2] = ((uint8_t)((48 + precision)));
             fmt_buf[3] = ((uint8_t)(102));
             fmt_buf[4] = ((uint8_t)(0));
@@ -591,10 +591,10 @@ slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precisio
 slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string separator) {
     {
         __auto_type count = ((int64_t)(((int64_t)((strings).len))));
-        if ((count == 0)) {
+        if (count == 0) {
             return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
         } else {
-            if ((count == 1)) {
+            if (count == 1) {
                 __auto_type _mv_15 = ({ __auto_type _lst = strings; size_t _idx = (size_t)0; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_15.has_value) {
                     __auto_type first_str = _mv_15.value;
@@ -607,13 +607,12 @@ slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string
                     int64_t total_len = 0;
                     int64_t i = 0;
                     __auto_type sep_len = ((int64_t)(separator.len));
-                    while ((i < count)) {
+                    while (i < count) {
                         __auto_type _mv_16 = ({ __auto_type _lst = strings; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                         if (_mv_16.has_value) {
                             __auto_type str = _mv_16.value;
                             total_len = (total_len + ((int64_t)(str.len)));
                         } else if (!_mv_16.has_value) {
-                            total_len = total_len;
                         }
                         i = (i + 1);
                     }
@@ -622,19 +621,18 @@ slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string
                         __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (total_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                         int64_t pos = 0;
                         int64_t j = 0;
-                        while ((j < count)) {
+                        while (j < count) {
                             __auto_type _mv_17 = ({ __auto_type _lst = strings; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_17.has_value) {
                                 __auto_type str = _mv_17.value;
-                                if ((str.len > 0)) {
+                                if (str.len > 0) {
                                     memcpy(((void*)((buf + pos))), ((void*)(str.data)), str.len);
                                 }
                                 pos = (pos + ((int64_t)(str.len)));
                             } else if (!_mv_17.has_value) {
-                                pos = pos;
                             }
-                            if ((j < (count - 1))) {
-                                if ((sep_len > 0)) {
+                            if (j < (count - 1)) {
+                                if (sep_len > 0) {
                                     memcpy(((void*)((buf + pos))), ((void*)(separator.data)), ((uint64_t)(sep_len)));
                                 }
                                 pos = (pos + sep_len);
@@ -665,16 +663,16 @@ slop_string strlib_replace(slop_arena* arena, slop_string s, slop_string old, sl
             __auto_type new_len = ((int64_t)(new.len));
             __auto_type result_len = ((slen - old_len) + new_len);
             __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (result_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
-            if ((idx > 0)) {
+            if (idx > 0) {
                 memcpy(((void*)(buf)), ((void*)(s.data)), ((uint64_t)(idx)));
             }
-            if ((new_len > 0)) {
+            if (new_len > 0) {
                 memcpy(((void*)((buf + idx))), ((void*)(new.data)), ((uint64_t)(new_len)));
             }
             {
                 __auto_type after_idx = (idx + old_len);
                 __auto_type after_len = (slen - after_idx);
-                if ((after_len > 0)) {
+                if (after_len > 0) {
                     memcpy(((void*)((buf + (idx + new_len)))), ((void*)((s.data + after_idx))), ((uint64_t)(after_len)));
                 }
             }
@@ -684,7 +682,7 @@ slop_string strlib_replace(slop_arena* arena, slop_string s, slop_string old, sl
 }
 
 slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old, slop_string new) {
-    if ((old.len == 0)) {
+    if (old.len == 0) {
         return s;
     } else {
         {
@@ -693,12 +691,12 @@ slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old
             __auto_type slen = ((int64_t)(s.len));
             int64_t count = 0;
             int64_t pos = 0;
-            while ((pos <= (slen - old_len))) {
+            while (pos <= (slen - old_len)) {
                 {
                     uint8_t match_found = 1;
                     int64_t j = 0;
-                    while (((j < old_len) && match_found)) {
-                        if ((((int64_t)(s.data[(pos + j)])) != ((int64_t)(old.data[j])))) {
+                    while ((j < old_len) && match_found) {
+                        if (((int64_t)(s.data[(pos + j)])) != ((int64_t)(old.data[j]))) {
                             match_found = 0;
                         } else {
                             j = (j + 1);
@@ -712,7 +710,7 @@ slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old
                     }
                 }
             }
-            if ((count == 0)) {
+            if (count == 0) {
                 return s;
             } else {
                 {
@@ -720,9 +718,9 @@ slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old
                     __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (result_len + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                     int64_t src_pos = 0;
                     int64_t dst_pos = 0;
-                    while ((src_pos < slen)) {
-                        if ((((src_pos + old_len) <= slen) && ({ __auto_type match_found = 1; __auto_type k = 0; ({ while (((k < old_len) && match_found)) { (((((int64_t)(s.data[(src_pos + k)])) != ((int64_t)(old.data[k])))) ? ({ match_found = 0; (void)0; }) : ({ k = (k + 1); (void)0; })); } 0; }); match_found; }))) {
-                            if ((new_len > 0)) {
+                    while (src_pos < slen) {
+                        if (((src_pos + old_len) <= slen) && ({ __auto_type match_found = 1; __auto_type k = 0; ({ while (((k < old_len) && match_found)) { (void)((((((int64_t)(s.data[(src_pos + k)])) != ((int64_t)(old.data[k])))) ? ({ match_found = 0; (void)0; }) : ({ k = (k + 1); (void)0; }))); } (void)0; }); match_found; })) {
+                            if (new_len > 0) {
                                 memcpy(((void*)((buf + dst_pos))), ((void*)(new.data)), ((uint64_t)(new_len)));
                             }
                             dst_pos = (dst_pos + new_len);
@@ -743,9 +741,9 @@ slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old
 int64_t strlib_compare(slop_string a, slop_string b) {
     {
         __auto_type result = strcmp(((uint8_t*)(a.data)), ((uint8_t*)(b.data)));
-        if ((result < 0)) {
+        if (result < 0) {
             return -1;
-        } else if ((result > 0)) {
+        } else if (result > 0) {
             return 1;
         } else {
             return 0;
@@ -760,25 +758,25 @@ int64_t strlib_compare_ignore_case(slop_string a, slop_string b) {
         __auto_type min_len = ((alen) < (blen) ? (alen) : (blen));
         int64_t i = 0;
         int64_t result = 0;
-        while (((i < min_len) && (result == 0))) {
+        while ((i < min_len) && (result == 0)) {
             {
                 __auto_type ca = strlib_char_to_lower(((strlib_AsciiChar)(a.data[i])));
                 __auto_type cb = strlib_char_to_lower(((strlib_AsciiChar)(b.data[i])));
-                if ((ca < cb)) {
+                if (ca < cb) {
                     result = -1;
-                } else if ((ca > cb)) {
+                } else if (ca > cb) {
                     result = 1;
                 } else {
                     i = (i + 1);
                 }
             }
         }
-        if ((result != 0)) {
+        if (result != 0) {
             return result;
         } else {
-            if ((alen < blen)) {
+            if (alen < blen) {
                 return -1;
-            } else if ((alen > blen)) {
+            } else if (alen > blen) {
                 return 1;
             } else {
                 return 0;
@@ -788,7 +786,7 @@ int64_t strlib_compare_ignore_case(slop_string a, slop_string b) {
 }
 
 strlib_AsciiChar strlib_char_at(slop_string s, int64_t index) {
-    if ((index >= ((int64_t)(s.len)))) {
+    if (index >= ((int64_t)(s.len))) {
         return 0;
     } else {
         return ((strlib_AsciiChar)(s.data[index]));
