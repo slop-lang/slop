@@ -26,6 +26,10 @@ on:
         description: 'Create GitHub Release (only for tagged releases)'
         type: boolean
         default: false
+      notarize:
+        description: 'Code-sign + notarize the macOS binaries (off by default; Homebrew is the primary macOS path)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -114,12 +118,14 @@ jobs:
       - name: Build self-hosted release toolchain
         run: SLOP_OPT=3 make selfhost
 
-      # Code-sign with Developer ID + hardened runtime, then notarize. Skipped
-      # automatically when the signing secrets aren't configured (e.g. forks/PRs),
-      # so unsigned builds still succeed. Must run BEFORE packaging so the tarball
-      # carries the signed, notarized binaries (we never modify them afterward).
+      # Code-sign with Developer ID + hardened runtime, then notarize.
+      # OPT-IN: skipped by default — Homebrew (a from-source tap) is the primary
+      # macOS path and needs no notarization. Enable per-run via the `notarize`
+      # workflow_dispatch input, or for tag pushes by setting repo variable
+      # MACOS_NOTARIZE=true. Also requires the signing secrets to be present.
+      # Must run BEFORE packaging so the tarball carries the notarized binaries.
       - name: Sign and notarize binaries
-        if: ${{ env.MACOS_CERT_P12_BASE64 != '' }}
+        if: ${{ env.MACOS_CERT_P12_BASE64 != '' && (inputs.notarize || vars.MACOS_NOTARIZE == 'true') }}
         env:
           MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}

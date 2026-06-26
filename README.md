@@ -146,6 +146,23 @@ slop/
 
 ## Installation
 
+### Install via Homebrew (macOS)
+
+```bash
+brew tap slop-lang/slop
+brew install slop
+```
+
+Builds the native toolchain from source and installs the `slop` CLI in an
+isolated virtualenv, alongside the standalone `slop-parser`, `slop-checker`,
+`slop-compiler`, and `slop-tester` binaries. `slop build` transpiles to C and
+calls `cc`, so install the Xcode Command Line Tools: `xcode-select --install`.
+
+```bash
+slop --version
+slop build examples/fibonacci.slop -o fib && ./fib
+```
+
 ### Download a release (recommended)
 
 Pre-built toolchains for Linux x64, macOS arm64, and Windows x64 are attached to
