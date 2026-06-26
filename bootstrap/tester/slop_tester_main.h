@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include "slop_types.h"
 #include "slop_tester.h"
+#include "slop_strlib.h"
 #include <stdio.h>
 #include <stdlib.h>
 

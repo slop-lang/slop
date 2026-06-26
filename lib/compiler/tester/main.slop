@@ -18,6 +18,7 @@
 (module tester-main
   (import types (SExpr SExprList SExprSymbol))
   (import tester (generate-tests generate-tests-with-imports TestResult))
+  (import strlib (cstring-to-string))
 
   ;; FFI for file I/O and command-line arguments
   (ffi "stdio.h"
@@ -203,6 +204,10 @@
     (@intent "Main entry point - generate test harness JSON")
     (@spec ((Int (Ptr (Ptr U8))) -> Int))
     ;; Check arguments
+    (when (>= argc 2)
+      (when (string-eq (cstring-to-string (@ argv 1)) "--version")
+        (print-str (cast (Ptr Char) "slop-tester 0.1.0\n"))
+        (return 0)))
     (if (< argc 2)
       (do
         (print-str (cast (Ptr Char) "Usage: slop-tester <input.slop> [import-files...]\n"))

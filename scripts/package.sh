@@ -26,9 +26,9 @@ mkdir -p "dist/${DIST_NAME}/lib/python/slop"
 mkdir -p "dist/${DIST_NAME}/spec"
 mkdir -p "dist/${DIST_NAME}/examples"
 
-# Copy binaries
+# Copy binaries (the self-hosted toolchain built into bin/ by scripts/selfhost.sh)
 echo "  Copying binaries..."
-cp "$ROOT_DIR/bootstrap/bin/"* "dist/${DIST_NAME}/bin/"
+cp "$ROOT_DIR/bin/slop-"* "dist/${DIST_NAME}/bin/"
 chmod +x "dist/${DIST_NAME}/bin/"*
 
 # Copy standard library

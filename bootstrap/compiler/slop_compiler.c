@@ -1078,6 +1078,12 @@ int64_t compiler_typed_ast_single_file(env_TypeEnv* env, slop_arena* arena, uint
 
 int main(int argc, char** _c_argv) {
     uint8_t** argv = (uint8_t**)_c_argv;
+    if (argc >= 2) {
+        if (string_eq(compiler_argv_to_string(argv, 1), SLOP_STR("--version"))) {
+            printf("%s\n", "slop-compiler 0.1.0");
+            return 0;
+        }
+    }
     if (argc < 2) {
         printf("%s\n", "Usage: slop-compiler <command> [options] <files...>");
         printf("%s\n", "");

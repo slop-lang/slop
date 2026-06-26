@@ -675,6 +675,10 @@
   (fn main ((argc Int) (argv (Ptr (Ptr U8))))
     (@intent "Entry point for the type checker CLI - supports multiple files and expression mode")
     (@spec ((Int (Ptr (Ptr U8))) -> Int))
+    (when (>= argc 2)
+      (when (string-eq (argv-to-string argv 1) "--version")
+        (println "slop-checker 0.1.0")
+        (return 0)))
     (if (< argc 2)
       (do
         (println "Usage: slop-checker [--json] <file.slop> [file2.slop ...]")

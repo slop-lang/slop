@@ -25,12 +25,19 @@ fi
 
 mkdir -p "$BIN"
 
+# Optional optimization level for the C backend. Release builds set SLOP_OPT=3;
+# the default leaves `slop build` on its own default (-O2).
+OPT_FLAG=""
+if [ -n "${SLOP_OPT:-}" ]; then
+    OPT_FLAG="-O ${SLOP_OPT}"
+fi
+
 # Build each tool from SLOP source and move the result into bin/.
 # Only the merged slop-compiler is built (it subsumes the transpiler modules).
 for tool in parser checker tester compiler; do
     echo "Building slop-$tool..."
     cd "$ROOT/lib/compiler/$tool"
-    uv run slop build
+    uv run slop build $OPT_FLAG
     mv "./slop-$tool" "$BIN/slop-$tool"
 done
 
