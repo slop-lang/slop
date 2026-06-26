@@ -53,20 +53,30 @@ brew install slop
 
 ## Local testing before publishing
 
-Requires the `v0.1.1` tag + correct `sha256` (since `--build-from-source` still
-downloads `url`):
+Requires the `v0.1.1` tag + correct `sha256` (the build downloads `url`).
+
+`brew style` runs on the file directly, but **Homebrew 6.0+ refuses to install a
+bare formula path** — formulae must live in a tap. Use a throwaway local tap (a
+different name than the real `slop-lang/slop`, so it can't collide):
 
 ```bash
-brew audit --new --formula packaging/homebrew/slop.rb
-brew install --build-from-source --verbose ./packaging/homebrew/slop.rb
-brew test slop
+brew style packaging/homebrew/slop.rb
+
+brew tap-new localtest/slop --no-git
+cp packaging/homebrew/slop.rb \
+   "$(brew --repository)/Library/Taps/localtest/homebrew-slop/Formula/slop.rb"
+
+brew install --build-from-source localtest/slop/slop
+brew test localtest/slop/slop
 slop --version            # slop 0.1.1
 slop-compiler --version   # slop-compiler 0.1.1
 slop paths                # SLOP_HOME / stdlib_dir / bin_dir resolve under the keg
-brew uninstall slop
+
+# cleanup
+brew uninstall slop && brew untap localtest/slop
 ```
 
-To iterate on the formula without a tag, temporarily add
-`head "https://github.com/slop-lang/slop.git", branch: "main"` and use
-`brew install --HEAD --build-from-source ./packaging/homebrew/slop.rb`; remove
-the `head` line before publishing.
+To iterate without a tag, temporarily add
+`head "https://github.com/slop-lang/slop.git", branch: "main"` to the formula in
+the local tap and `brew install --HEAD --build-from-source localtest/slop/slop`;
+remove the `head` line before publishing.

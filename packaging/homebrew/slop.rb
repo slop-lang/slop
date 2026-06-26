@@ -4,9 +4,7 @@ class Slop < Formula
   desc "Symbolic LLM-optimized programming language toolchain"
   homepage "https://github.com/slop-lang/slop"
   url "https://github.com/slop-lang/slop/archive/refs/tags/v0.1.1.tar.gz"
-  # Compute after the v0.1.1 tag is pushed:
-  #   curl -sL https://github.com/slop-lang/slop/archive/refs/tags/v0.1.1.tar.gz | shasum -a 256
-  sha256 "REPLACE_WITH_TARBALL_SHA256"
+  sha256 "e23072a2d5dd9a8c4670854e7923fe42bc59bbea7dcfd9844ad83f59e450864f"
   license "Apache-2.0"
 
   depends_on :macos
