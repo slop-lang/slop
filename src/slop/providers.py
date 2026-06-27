@@ -179,7 +179,10 @@ class InteractiveProvider(Provider):
         # Handle file path input
         if response.startswith("/") or response.startswith("./") or response.startswith("~"):
             from pathlib import Path
-            path = Path(response).expanduser()
+            path = Path(response).expanduser().resolve()
+            if ".." in Path(response).parts:
+                print(f"  Warning: Path traversal sequences not allowed")
+                return response
             if path.exists():
                 return path.read_text()
             else:
