@@ -150,6 +150,7 @@ slop/
 
 ```bash
 brew tap slop-lang/slop
+brew trust slop-lang/slop   # Homebrew 6.0+ requires trusting third-party taps
 brew install slop
 ```
 
