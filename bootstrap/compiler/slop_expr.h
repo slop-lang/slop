@@ -157,6 +157,7 @@ slop_string expr_get_struct_key_info_by_name(context_TranspileContext* ctx, slop
 slop_string expr_transpile_map_new(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 uint8_t expr_is_c_primitive_type(slop_string t);
 slop_string expr_wrap_map_key_as_ptr(context_TranspileContext* ctx, slop_string key_c, types_SExpr* key_expr, types_SExpr* container_expr);
+slop_string expr_map_put_value_decl_type(context_TranspileContext* ctx, types_SExpr* map_expr);
 slop_string expr_transpile_map_put(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_map_get(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_map_has(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);

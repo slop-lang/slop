@@ -139,6 +139,7 @@ slop_string expr_get_struct_key_info_by_name(context_TranspileContext* ctx, slop
 slop_string expr_transpile_map_new(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 uint8_t expr_is_c_primitive_type(slop_string t);
 slop_string expr_wrap_map_key_as_ptr(context_TranspileContext* ctx, slop_string key_c, types_SExpr* key_expr, types_SExpr* container_expr);
+slop_string expr_map_put_value_decl_type(context_TranspileContext* ctx, types_SExpr* map_expr);
 slop_string expr_transpile_map_put(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_map_get(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_map_has(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
@@ -7382,6 +7383,29 @@ slop_string expr_wrap_map_key_as_ptr(context_TranspileContext* ctx, slop_string 
     }
 }
 
+slop_string expr_map_put_value_decl_type(context_TranspileContext* ctx, types_SExpr* map_expr) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    SLOP_PRE(((map_expr != NULL)), "(!= map-expr nil)");
+    {
+        __auto_type arena = (*ctx).arena;
+        __auto_type option_type = expr_infer_map_value_option_type(ctx, map_expr);
+        __auto_type value_slop_type = expr_extract_map_value_from_inferred(ctx, map_expr);
+        if ((string_len(option_type) == 0) || (string_len(value_slop_type) == 0)) {
+            return SLOP_STR("__auto_type");
+        } else {
+            {
+                __auto_type read_c_type = expr_option_type_to_value_c_type(arena, option_type);
+                __auto_type foreach_c_type = expr_slop_value_type_to_c_type(ctx, value_slop_type);
+                if (expr_is_c_primitive_type(read_c_type) && string_eq(read_c_type, foreach_c_type)) {
+                    return read_c_type;
+                } else {
+                    return SLOP_STR("__auto_type");
+                }
+            }
+        }
+    }
+}
+
 slop_string expr_transpile_map_put(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
@@ -7405,9 +7429,10 @@ slop_string expr_transpile_map_put(context_TranspileContext* ctx, slop_list_type
                             __auto_type val_c = expr_transpile_expr(ctx, val_expr);
                             __auto_type key_ptr = expr_wrap_map_key_as_ptr(ctx, key_c, key_expr, map_expr);
                             __auto_type needs_deref = expr_is_ptr_to_ptr_map(ctx, map_expr);
+                            __auto_type val_decl_type = expr_map_put_value_decl_type(ctx, map_expr);
                             if (needs_deref) {
                                 {
-                                    __auto_type s1 = context_ctx_str(ctx, SLOP_STR("({ __auto_type _val = "), val_c);
+                                    __auto_type s1 = context_ctx_str4(ctx, SLOP_STR("({ "), val_decl_type, SLOP_STR(" _val = "), val_c);
                                     __auto_type s2 = context_ctx_str(ctx, s1, SLOP_STR("; void* _vptr = slop_arena_alloc(arena, sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(arena, (*"));
                                     __auto_type s3 = context_ctx_str(ctx, s2, map_c);
                                     __auto_type s4 = context_ctx_str(ctx, s3, SLOP_STR("), "));
@@ -7417,7 +7442,7 @@ slop_string expr_transpile_map_put(context_TranspileContext* ctx, slop_list_type
                                 }
                             } else {
                                 {
-                                    __auto_type s1 = context_ctx_str(ctx, SLOP_STR("({ __auto_type _val = "), val_c);
+                                    __auto_type s1 = context_ctx_str4(ctx, SLOP_STR("({ "), val_decl_type, SLOP_STR(" _val = "), val_c);
                                     __auto_type s2 = context_ctx_str(ctx, s1, SLOP_STR("; void* _vptr = slop_arena_alloc(arena, sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(arena, "));
                                     __auto_type s3 = context_ctx_str(ctx, s2, map_c);
                                     __auto_type s4 = context_ctx_str(ctx, s3, SLOP_STR(", "));
