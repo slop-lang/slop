@@ -5429,6 +5429,24 @@
         (else
           (ctx-str ctx "&(" (ctx-str ctx key-c ")"))))))
 
+  (fn map-put-value-decl-type ((ctx (Ptr TranspileContext)) (map-expr (Ptr SExpr)))
+    (@intent
+      "C type to declare map-put's `_val` with, so the width WRITTEN equals the width the readers dereference. map-put sizes its arena slot with sizeof(_val); map-get emits *(<option-type-to-value-c-type>*)_ptr and map for-each emits *(<slop-value-type-to-c-type>*)entries[i].value. With `__auto_type` the write width came from the value EXPRESSION, so a (Map K Int) storing an integer literal or int arithmetic wrote 4 bytes into a slot read back as 8 -- the upper half being whatever the bump allocator last left there (arena alloc never zeroes). Returns the declared type only when the two independent reader derivations AGREE and the result is a C arithmetic type; otherwise returns \"__auto_type\", reproducing the previous codegen byte for byte. That triple condition is what keeps String, structs, nested Map/Set (void* vs slop_map*), (List T) (void* vs a 24-byte struct -- a hard compile error if declared), (Option T), (Ptr T), F32 and range types on the identity path.")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {map-expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (option-type (infer-map-value-option-type ctx map-expr))
+          (value-slop-type (extract-map-value-from-inferred ctx map-expr)))
+      (if (or (== (string-len option-type) 0) (== (string-len value-slop-type) 0))
+        "__auto_type"
+        (let ((read-c-type (option-type-to-value-c-type arena option-type))
+              (foreach-c-type (slop-value-type-to-c-type ctx value-slop-type)))
+          (if (and (is-c-primitive-type read-c-type)
+                   (string-eq read-c-type foreach-c-type))
+            read-c-type
+            "__auto_type")))))
+
   (fn transpile-map-put ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile map-put to slop_map_put with proper key pointer wrapping")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
@@ -5450,20 +5468,24 @@
                           ;; Wrap key as pointer for generic map API
                           (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr))
                           ;; Check if map is a pointer-to-pointer (Ptr Map -> slop_map**)
-                          (needs-deref (is-ptr-to-ptr-map ctx map-expr)))
+                          (needs-deref (is-ptr-to-ptr-map ctx map-expr))
+                          ;; Declare _val with the map's declared value type when that is
+                          ;; provably safe, so sizeof(_val) matches what map-get and map
+                          ;; for-each dereference. Falls back to "__auto_type".
+                          (val-decl-type (map-put-value-decl-type ctx map-expr)))
                       ;; slop_map_put expects arena, slop_map* and key as const void*
                       ;; Arena is assumed to be in scope from with-arena
                       ;; Allocate value on arena so it persists beyond the statement
                       ;; If we have slop_map**, dereference once
                       (if needs-deref
-                        (let ((s1 (ctx-str ctx "({ __auto_type _val = " val-c))
+                        (let ((s1 (ctx-str4 ctx "({ " val-decl-type " _val = " val-c))
                               (s2 (ctx-str ctx s1 "; void* _vptr = slop_arena_alloc(arena, sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(arena, (*"))
                               (s3 (ctx-str ctx s2 map-c))
                               (s4 (ctx-str ctx s3 "), "))
                               (s5 (ctx-str ctx s4 key-ptr))
                               (s6 (ctx-str ctx s5 ", _vptr); })")))
                           s6)
-                        (let ((s1 (ctx-str ctx "({ __auto_type _val = " val-c))
+                        (let ((s1 (ctx-str4 ctx "({ " val-decl-type " _val = " val-c))
                               (s2 (ctx-str ctx s1 "; void* _vptr = slop_arena_alloc(arena, sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(arena, "))
                               (s3 (ctx-str ctx s2 map-c))
                               (s4 (ctx-str ctx s3 ", "))

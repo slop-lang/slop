@@ -1,0 +1,193 @@
+;; ============================================================
+;; Test: map-put stores a value at the width map-get reads back
+;;
+;; Regression. map-put sized its arena slot with sizeof(_val) where
+;; `_val` was declared `__auto_type` and therefore took the C type of the
+;; value EXPRESSION, while map-get emits *(int64_t*)_ptr from the map's
+;; DECLARED value type. For a (Map K Int) an integer literal or int
+;; arithmetic is C `int`, so the put wrote 4 bytes into a slot every read
+;; takes 8 from -- the upper half being whatever the bump allocator last
+;; left there (slop_arena_alloc never zeroes, and neither does
+;; slop_arena_reset).
+;;
+;; test-negative-value is the sharp end: it fails on a PRISTINE arena, so
+;; it does not depend on heap history the way the positive cases do. A
+;; 4-byte `-1` is 0xFFFFFFFF, and reading that slot as int64_t yields
+;; 4294967295 rather than -1. The positive cases below can pass by luck
+;; on fresh (zero) pages, which is exactly why the bug survived so long.
+;;
+;; The remaining tests pin the FALLBACK paths: struct, String, and
+;; nested-Map values must keep the previous `__auto_type` codegen, since
+;; declaring those with the map-get read type would be wrong (or, for
+;; (List T), a hard compile error).
+;; ============================================================
+
+(module test-map-int-value
+
+  (type Point (record
+    (x Int)
+    (y Int)))
+
+  ;; ============================================================
+  ;; The regression: Int-valued maps
+  ;; ============================================================
+
+  (fn test-negative-value ()
+    (@intent "Int map round-trips a negative value. Deterministic on a pristine arena: a 4-byte write of -1 reads back as 4294967295 through the int64_t cast")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Int)))
+        (map-put m "k" (- 0 1))
+        (match (map-get m "k")
+          ((some v) (== v (- 0 1)))
+          ((none) false)))))
+
+  (fn test-negative-computed ()
+    (@intent "Same, where the value is int arithmetic over a literal-seeded mut rather than a bare literal. Note this case passed even PRE-fix: in this position the transpiler already emitted `int64_t best = 0`, so `(+ best 1)` was 8 bytes. snarl's path-depth memo got `__auto_type best = 0` for the same SLOP form, which is what made it 4 bytes -- so treat this as coverage of the arithmetic path, not as a reproduction of that shape")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Int))
+            (mut best 0))
+        (set! best (- 0 100))
+        (map-put m "k" (+ best 1))
+        (match (map-get m "k")
+          ((some v) (== v (- 0 99)))
+          ((none) false)))))
+
+  (fn test-literal-round-trip ()
+    (@intent "Int map round-trips a small positive literal (the snarl memo's actual value); passes pre-fix only when the slot happens to sit on zeroed memory")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Int)))
+        (map-put m "k" 1)
+        (match (map-get m "k")
+          ((some v) (== v 1))
+          ((none) false)))))
+
+  (fn test-large-value ()
+    (@intent "Int map round-trips a value that does not fit in 32 bits, so truncation is visible regardless of arena state")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Int)))
+        (map-put m "k" 5000000000)
+        (match (map-get m "k")
+          ((some v) (== v 5000000000))
+          ((none) false)))))
+
+  (fn test-int-for-each ()
+    (@intent "Int map values read through for-each (a third derivation of the value C type) agree with what map-put wrote")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Int))
+            (mut sum 0))
+        (map-put m "a" 10)
+        (map-put m "b" 20)
+        (map-put m "c" 30)
+        (for-each ((k v) m)
+          (set! sum (+ sum v)))
+        (== sum 60))))
+
+  ;; ============================================================
+  ;; Fallback paths: these must keep the previous codegen
+  ;; ============================================================
+
+  (fn test-bool-value ()
+    (@intent "Bool-valued map round-trips both truth values")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Bool)))
+        (map-put m "t" true)
+        (map-put m "f" false)
+        (match (map-get m "t")
+          ((some tv)
+            (match (map-get m "f")
+              ((some fv) (and tv (not fv)))
+              ((none) false)))
+          ((none) false)))))
+
+  (fn test-struct-value ()
+    (@intent "Struct-valued map is unaffected: __auto_type already deduces the exact struct type, so write width equals read width")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Point)))
+        (map-put m "p" (Point 3 4))
+        (match (map-get m "p")
+          ((some p) (== (+ (. p x) (. p y)) 7))
+          ((none) false)))))
+
+  (fn test-string-value ()
+    (@intent "String-valued map is unaffected: slop_string is 16 bytes on both sides")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena Int String)))
+        (map-put m 1 "one")
+        (match (map-get m 1)
+          ((some s) (string-eq s "one"))
+          ((none) false)))))
+
+  (fn test-nested-map-value ()
+    (@intent "Nested-Map value is unaffected: the value is a slop_map* on both sides. Declaring it with map-get's read type (void*) would be a needless change, and for a (List T) value it would not even compile -- hence the fallback")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((outer (map-new arena String (Map String Int)))
+            (inner (map-new arena String Int)))
+        (map-put inner "x" 42)
+        (map-put outer "i" inner)
+        (match (map-get outer "i")
+          ((some got)
+            (match (map-get got "x")
+              ((some v) (== v 42))
+              ((none) false)))
+          ((none) false)))))
+
+  ;; ============================================================
+  ;; Main
+  ;; ============================================================
+
+  (fn main ()
+    (@intent "Run all map value-width tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-negative-value)
+        (println "test-negative-value: PASS")
+        (do (println "test-negative-value: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-negative-computed)
+        (println "test-negative-computed: PASS")
+        (do (println "test-negative-computed: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-literal-round-trip)
+        (println "test-literal-round-trip: PASS")
+        (do (println "test-literal-round-trip: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-large-value)
+        (println "test-large-value: PASS")
+        (do (println "test-large-value: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-int-for-each)
+        (println "test-int-for-each: PASS")
+        (do (println "test-int-for-each: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-bool-value)
+        (println "test-bool-value: PASS")
+        (do (println "test-bool-value: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-struct-value)
+        (println "test-struct-value: PASS")
+        (do (println "test-struct-value: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-string-value)
+        (println "test-string-value: PASS")
+        (do (println "test-string-value: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-nested-map-value)
+        (println "test-nested-map-value: PASS")
+        (do (println "test-nested-map-value: FAIL")
+            (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))
