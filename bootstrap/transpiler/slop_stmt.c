@@ -28,8 +28,6 @@ void stmt_transpile_with_arena(context_TranspileContext* ctx, types_SExpr* expr,
 void stmt_transpile_cond(context_TranspileContext* ctx, types_SExpr* expr, uint8_t is_return);
 void stmt_transpile_cond_body(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start, uint8_t is_return);
 void stmt_transpile_for(context_TranspileContext* ctx, types_SExpr* expr);
-uint8_t stmt_is_set_type(slop_string slop_type);
-uint8_t stmt_is_map_type(slop_string slop_type);
 void stmt_transpile_for_each_set(context_TranspileContext* ctx, slop_string var_name, types_SExprSymbol var_sym, slop_string coll_c, slop_string resolved_type, slop_list_types_SExpr_ptr items, int64_t len);
 void stmt_transpile_for_each_map_keys(context_TranspileContext* ctx, slop_string var_name, types_SExprSymbol var_sym, slop_string coll_c, slop_string resolved_type, slop_list_types_SExpr_ptr items, int64_t len);
 void stmt_transpile_for_each_map_kv(context_TranspileContext* ctx, slop_list_types_SExpr_ptr binding_items, slop_list_types_SExpr_ptr items, int64_t len);
@@ -1449,14 +1447,6 @@ void stmt_transpile_for(context_TranspileContext* ctx, types_SExpr* expr) {
     }
 }
 
-uint8_t stmt_is_set_type(slop_string slop_type) {
-    return (strlib_starts_with(slop_type, SLOP_STR("(Set ")) || strlib_starts_with(slop_type, SLOP_STR("(Ptr (Set ")));
-}
-
-uint8_t stmt_is_map_type(slop_string slop_type) {
-    return (strlib_starts_with(slop_type, SLOP_STR("(Map ")) || strlib_starts_with(slop_type, SLOP_STR("(Ptr (Map ")));
-}
-
 void stmt_transpile_for_each_set(context_TranspileContext* ctx, slop_string var_name, types_SExprSymbol var_sym, slop_string coll_c, slop_string resolved_type, slop_list_types_SExpr_ptr items, int64_t len) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
@@ -1465,7 +1455,7 @@ void stmt_transpile_for_each_set(context_TranspileContext* ctx, slop_string var_
         __auto_type elem_c_type = expr_slop_value_type_to_c_type(ctx, elem_slop_type);
         context_ctx_emit(ctx, SLOP_STR("{"));
         context_ctx_indent(ctx);
-        context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), coll_c, SLOP_STR(";")));
+        context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), expr_deref_container_c(ctx, coll_c, resolved_type), SLOP_STR(";")));
         context_ctx_emit(ctx, SLOP_STR("for (size_t _i = 0; _i < _coll->cap; _i++) {"));
         context_ctx_indent(ctx);
         context_ctx_emit(ctx, SLOP_STR("if (_coll->entries[_i].occupied) {"));
@@ -1508,7 +1498,7 @@ void stmt_transpile_for_each_map_keys(context_TranspileContext* ctx, slop_string
         __auto_type key_c_type = expr_slop_value_type_to_c_type(ctx, key_slop_type);
         context_ctx_emit(ctx, SLOP_STR("{"));
         context_ctx_indent(ctx);
-        context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), coll_c, SLOP_STR(";")));
+        context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), expr_deref_container_c(ctx, coll_c, resolved_type), SLOP_STR(";")));
         context_ctx_emit(ctx, SLOP_STR("for (size_t _i = 0; _i < _coll->cap; _i++) {"));
         context_ctx_indent(ctx);
         context_ctx_emit(ctx, SLOP_STR("if (_coll->entries[_i].occupied) {"));
@@ -1591,7 +1581,7 @@ void stmt_transpile_for_each_map_kv(context_TranspileContext* ctx, slop_list_typ
                                                             __auto_type val_c_type = expr_slop_value_type_to_c_type(ctx, val_slop_type);
                                                             context_ctx_emit(ctx, SLOP_STR("{"));
                                                             context_ctx_indent(ctx);
-                                                            context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), map_c, SLOP_STR(";")));
+                                                            context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), expr_deref_container_c(ctx, map_c, resolved_type), SLOP_STR(";")));
                                                             context_ctx_emit(ctx, SLOP_STR("for (size_t _i = 0; _i < _coll->cap; _i++) {"));
                                                             context_ctx_indent(ctx);
                                                             context_ctx_emit(ctx, SLOP_STR("if (_coll->entries[_i].occupied) {"));
@@ -1721,12 +1711,12 @@ void stmt_transpile_for_each(context_TranspileContext* ctx, types_SExpr* expr) {
                                                                 {
                                                                     __auto_type coll_slop_type = expr_infer_expr_slop_type(ctx, coll_expr);
                                                                     __auto_type resolved_type = expr_resolve_type_alias(ctx, coll_slop_type);
-                                                                    if (stmt_is_set_type(resolved_type)) {
+                                                                    if (expr_is_set_type(resolved_type)) {
                                                                         {
                                                                             __auto_type coll_c = expr_transpile_expr(ctx, coll_expr);
                                                                             stmt_transpile_for_each_set(ctx, var_name, var_sym, coll_c, resolved_type, items, len);
                                                                         }
-                                                                    } else if (stmt_is_map_type(resolved_type)) {
+                                                                    } else if (expr_is_map_type(resolved_type)) {
                                                                         {
                                                                             __auto_type coll_c = expr_transpile_expr(ctx, coll_expr);
                                                                             stmt_transpile_for_each_map_keys(ctx, var_name, var_sym, coll_c, resolved_type, items, len);

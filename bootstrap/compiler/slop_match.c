@@ -2233,7 +2233,7 @@ void match_emit_inline_for_each_set(context_TranspileContext* ctx, slop_string v
         __auto_type elem_c_type = expr_slop_value_type_to_c_type(ctx, elem_slop_type);
         context_ctx_emit(ctx, SLOP_STR("{"));
         context_ctx_indent(ctx);
-        context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), coll_c, SLOP_STR(";")));
+        context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), expr_deref_container_c(ctx, coll_c, resolved_type), SLOP_STR(";")));
         context_ctx_emit(ctx, SLOP_STR("for (size_t _i = 0; _i < _coll->cap; _i++) {"));
         context_ctx_indent(ctx);
         context_ctx_emit(ctx, SLOP_STR("if (_coll->entries[_i].occupied) {"));
@@ -2265,7 +2265,7 @@ void match_emit_inline_for_each_map_keys(context_TranspileContext* ctx, slop_str
         __auto_type key_c_type = expr_slop_value_type_to_c_type(ctx, key_slop_type);
         context_ctx_emit(ctx, SLOP_STR("{"));
         context_ctx_indent(ctx);
-        context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), coll_c, SLOP_STR(";")));
+        context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), expr_deref_container_c(ctx, coll_c, resolved_type), SLOP_STR(";")));
         context_ctx_emit(ctx, SLOP_STR("for (size_t _i = 0; _i < _coll->cap; _i++) {"));
         context_ctx_indent(ctx);
         context_ctx_emit(ctx, SLOP_STR("if (_coll->entries[_i].occupied) {"));
@@ -2337,7 +2337,7 @@ void match_emit_inline_for_each_map_kv(context_TranspileContext* ctx, slop_list_
                                                             __auto_type val_c_type = expr_slop_value_type_to_c_type(ctx, val_slop_type);
                                                             context_ctx_emit(ctx, SLOP_STR("{"));
                                                             context_ctx_indent(ctx);
-                                                            context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), map_c, SLOP_STR(";")));
+                                                            context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map* _coll = (slop_map*)"), expr_deref_container_c(ctx, map_c, resolved_type), SLOP_STR(";")));
                                                             context_ctx_emit(ctx, SLOP_STR("for (size_t _i = 0; _i < _coll->cap; _i++) {"));
                                                             context_ctx_indent(ctx);
                                                             context_ctx_emit(ctx, SLOP_STR("if (_coll->entries[_i].occupied) {"));

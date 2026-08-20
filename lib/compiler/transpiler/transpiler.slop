@@ -1566,6 +1566,8 @@
                 (emit-module-functions ctx items body-start)
                 ;; Emit any late-registered option types to header (discovered during function transpilation)
                 (emit-late-registered-option-types-header ctx)
+                ;; Same, for List types (set-elements / map-keys on an inferred local)
+                (emit-late-registered-list-types-header ctx)
                 ;; Now close the header guard
                 (emit-header-guard-close ctx)))))
         (else (ctx-emit ctx "/* invalid module */")))))
@@ -2782,6 +2784,27 @@
           ((none) (do)))
         (set! i (+ i 1)))))
 
+  (fn emit-late-registered-list-types-header ((ctx (Ptr TranspileContext)))
+    (@intent "Emit List types registered during function transpilation (e.g. by set-elements / map-keys)")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    ;; The header is emitted before emit-module-functions runs, so a list type first
+    ;; discovered while transpiling a body -- a set built by an inferred let-binding
+    ;; never appears in a type annotation, so the prescan cannot see it -- would
+    ;; otherwise be referenced without ever being defined. Mirrors
+    ;; emit-late-registered-option-types-header. emit-single-list-type-header skips
+    ;; runtime-provided names and already-emitted ones, so re-walking the whole list
+    ;; is idempotent.
+    (let ((list-types (ctx-get-list-types ctx))
+          (len (list-len list-types))
+          (mut i 0))
+      (while (< i len)
+        (match (list-get list-types i)
+          ((some lt)
+            (emit-single-list-type-header ctx lt))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
   (fn emit-late-registered-option-types-header ((ctx (Ptr TranspileContext)))
     (@intent "Emit option types registered during function transpilation (e.g. set_* types)")
     (@spec (((Ptr TranspileContext)) -> Unit))
@@ -3296,7 +3319,7 @@
         (match (list-get struct-key-types i)
           ((some c-type)
             (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" ""))
-                  (list-c-name (ctx-str ctx "slop_list_" c-type)))
+                  (list-c-name (ctx-str ctx "slop_list_" (type-to-identifier (. (deref ctx) arena) c-type))))
               ;; #ifndef GUARD_DEFINED
               (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
               ;; #define GUARD_DEFINED

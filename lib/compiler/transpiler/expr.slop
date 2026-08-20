@@ -24,6 +24,8 @@
     slop-value-type-to-c-type
     ;; Set/Map type detection
     is-set-type is-map-type
+    ;; Pointer-to-container operand handling
+    resolve-container-c deref-container-c
     ;; Pointer detection
     is-pointer-expr
     ;; set! helpers
@@ -35,6 +37,7 @@
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
+                   ctx-register-list-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-register-chan-type
                    ctx-add-error ctx-add-error-at ctx-strict-unknown-symbols
                    ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
@@ -43,7 +46,7 @@
                    ctx-add-warning ctx-warn-fallback ctx-has-trampoline ctx-add-trampoline ctx-skip-trampoline-generation
                    ctx-register-generic-instantiation ctx-has-generic-instantiation mangle-generic-fn-name
                    ends-with-star))
-  (import ctype (to-c-type to-c-name type-to-identifier sexpr-to-type-string
+  (import ctype (to-c-type to-c-name type-to-identifier unwrap-ptr-container-type sexpr-to-type-string
                  get-node-resolved-type resolved-type-to-c))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
 
@@ -1253,42 +1256,46 @@
   ;; Map Type Helpers (for map-get Option type inference)
   ;; ============================================================
 
-  (fn extract-map-value-from-slop-type ((arena Arena) (slop-type String))
+  (fn extract-map-value-from-slop-type ((arena Arena) (raw-slop-type String))
     (@intent "Extract value type from '(Map K V)' SLOP type string")
     (@spec ((Arena String) -> String))
     ;; Handle cases like "(Map String Int)" -> "Int" or "(Map Term (Set Term))" -> "(Set Term)"
     ;; Returns "" if cannot parse
-    (let ((len (string-len slop-type)))
-      (if (< len 10)
-        ""
-        ;; Check for "(Map " prefix (5 chars)
-        (if (not (starts-with slop-type "(Map "))
+    ;; A (Ptr (Map K V)) / (Ptr (Set T)) names the same value type as the
+    ;; container it points at, but the offsets below assume a bare prefix, so
+    ;; unwrap first rather than answering "" for every pointer-to-container.
+    (let ((slop-type (unwrap-ptr-container-type arena raw-slop-type)))
+      (let ((len (string-len slop-type)))
+        (if (< len 10)
           ""
-          ;; Find the space between K and V at nesting level 1
-          ;; This handles compound value types like (Set Term)
-          (let ((mut i 5)
-                (mut nesting 1)
-                (mut key-space 0)
-                (mut found-key false)
-                (end-idx (- len 1)))
-            ;; Skip past key type to find space at level 1
-            (while (and (< i end-idx) (not found-key))
-              (let ((c (char-at slop-type (cast (Int 0 ..) i))))
-                (cond
-                  ((== c 40) (set! nesting (+ nesting 1)))
-                  ((== c 41) (set! nesting (- nesting 1)))
-                  ((and (== c 32) (== nesting 1))
-                    (set! key-space i)
-                    (set! found-key true))
-                  (else (do))))
-              (set! i (+ i 1)))
-            (if (not found-key)
-              ""
-              (let ((value-start (+ key-space 1))
-                    (value-len (- end-idx value-start)))
-                (if (> value-len 0)
-                  (substring arena slop-type (cast (Int 0 ..) value-start) (cast (Int 0 ..) value-len))
-                  ""))))))))
+          ;; Check for "(Map " prefix (5 chars)
+          (if (not (starts-with slop-type "(Map "))
+            ""
+            ;; Find the space between K and V at nesting level 1
+            ;; This handles compound value types like (Set Term)
+            (let ((mut i 5)
+                  (mut nesting 1)
+                  (mut key-space 0)
+                  (mut found-key false)
+                  (end-idx (- len 1)))
+              ;; Skip past key type to find space at level 1
+              (while (and (< i end-idx) (not found-key))
+                (let ((c (char-at slop-type (cast (Int 0 ..) i))))
+                  (cond
+                    ((== c 40) (set! nesting (+ nesting 1)))
+                    ((== c 41) (set! nesting (- nesting 1)))
+                    ((and (== c 32) (== nesting 1))
+                      (set! key-space i)
+                      (set! found-key true))
+                    (else (do))))
+                (set! i (+ i 1)))
+              (if (not found-key)
+                ""
+                (let ((value-start (+ key-space 1))
+                      (value-len (- end-idx value-start)))
+                  (if (> value-len 0)
+                    (substring arena slop-type (cast (Int 0 ..) value-start) (cast (Int 0 ..) value-len))
+                    "")))))))))
 
   (fn slop-value-type-to-c-type ((ctx (Ptr TranspileContext)) (slop-type String))
     (@intent "Convert SLOP value type name to C type with proper module prefix")
@@ -1320,42 +1327,46 @@
       ((sym sym) (. sym name))
       (_ "")))
 
-  (fn extract-map-key-from-slop-type ((arena Arena) (slop-type String))
+  (fn extract-map-key-from-slop-type ((arena Arena) (raw-slop-type String))
     (@intent "Extract key type from '(Map K V)' SLOP type string")
     (@spec ((Arena String) -> String))
     ;; Handle cases like "(Map String Int)" -> "String"
     ;; Returns "" if cannot parse
-    (let ((len (string-len slop-type)))
-      (if (< len 10)
-        ""
-        ;; Check for "(Map " prefix (5 chars)
-        (if (not (starts-with slop-type "(Map "))
+    ;; A (Ptr (Map K V)) / (Ptr (Set T)) names the same key type as the
+    ;; container it points at, but the offsets below assume a bare prefix, so
+    ;; unwrap first rather than answering "" for every pointer-to-container.
+    (let ((slop-type (unwrap-ptr-container-type arena raw-slop-type)))
+      (let ((len (string-len slop-type)))
+        (if (< len 10)
           ""
-          ;; Find the space between K and V at nesting level 1
-          (let ((mut i 5)
-                (mut nesting 1)
-                (mut key-space 0)
-                (mut found-key false)
-                (end-idx (- len 1)))
-            ;; Skip past key type to find space at level 1
-            (while (and (< i end-idx) (not found-key))
-              (let ((c (char-at slop-type (cast (Int 0 ..) i))))
-                (cond
-                  ((== c 40) (set! nesting (+ nesting 1)))
-                  ((== c 41) (set! nesting (- nesting 1)))
-                  ((and (== c 32) (== nesting 1))
-                    (set! key-space i)
-                    (set! found-key true))
-                  (else (do))))
-              (set! i (+ i 1)))
-            (if (not found-key)
-              ""
-              ;; Key starts at position 5 and ends at key-space
-              (let ((key-start 5)
-                    (key-len (- key-space key-start)))
-                (if (> key-len 0)
-                  (substring arena slop-type (cast (Int 0 ..) key-start) (cast (Int 0 ..) key-len))
-                  ""))))))))
+          ;; Check for "(Map " prefix (5 chars)
+          (if (not (starts-with slop-type "(Map "))
+            ""
+            ;; Find the space between K and V at nesting level 1
+            (let ((mut i 5)
+                  (mut nesting 1)
+                  (mut key-space 0)
+                  (mut found-key false)
+                  (end-idx (- len 1)))
+              ;; Skip past key type to find space at level 1
+              (while (and (< i end-idx) (not found-key))
+                (let ((c (char-at slop-type (cast (Int 0 ..) i))))
+                  (cond
+                    ((== c 40) (set! nesting (+ nesting 1)))
+                    ((== c 41) (set! nesting (- nesting 1)))
+                    ((and (== c 32) (== nesting 1))
+                      (set! key-space i)
+                      (set! found-key true))
+                    (else (do))))
+                (set! i (+ i 1)))
+              (if (not found-key)
+                ""
+                ;; Key starts at position 5 and ends at key-space
+                (let ((key-start 5)
+                      (key-len (- key-space key-start)))
+                  (if (> key-len 0)
+                    (substring arena slop-type (cast (Int 0 ..) key-start) (cast (Int 0 ..) key-len))
+                    "")))))))))
 
   (fn resolve-type-alias ((ctx (Ptr TranspileContext)) (slop-type String))
     (@intent "Resolve a type alias to its underlying type")
@@ -1611,23 +1622,27 @@
     (or (starts-with slop-type "(Map ")
         (starts-with slop-type "(Ptr (Map ")))
 
-  (fn extract-set-elem-from-slop-type ((arena Arena) (slop-type String))
+  (fn extract-set-elem-from-slop-type ((arena Arena) (raw-slop-type String))
     (@intent "Extract element type from '(Set T)' SLOP type string")
     (@spec ((Arena String) -> String))
     ;; Handle cases like "(Set Int)" -> "Int" or "(Set Term)" -> "Term"
     ;; Returns "" if cannot parse
-    (let ((len (string-len slop-type)))
-      (if (< len 7)
-        ""
-        ;; Check for "(Set " prefix (5 chars)
-        (if (not (starts-with slop-type "(Set "))
+    ;; A (Ptr (Map K V)) / (Ptr (Set T)) names the same element type as the
+    ;; container it points at, but the offsets below assume a bare prefix, so
+    ;; unwrap first rather than answering "" for every pointer-to-container.
+    (let ((slop-type (unwrap-ptr-container-type arena raw-slop-type)))
+      (let ((len (string-len slop-type)))
+        (if (< len 7)
           ""
-          ;; Element type starts at position 5 and goes to the closing paren
-          (let ((elem-start 5)
-                (elem-len (- (- len 1) elem-start)))  ;; len - 1 to skip closing paren
-            (if (> elem-len 0)
-              (substring arena slop-type (cast (Int 0 ..) elem-start) (cast (Int 0 ..) elem-len))
-              ""))))))
+          ;; Check for "(Set " prefix (5 chars)
+          (if (not (starts-with slop-type "(Set "))
+            ""
+            ;; Element type starts at position 5 and goes to the closing paren
+            (let ((elem-start 5)
+                  (elem-len (- (- len 1) elem-start)))  ;; len - 1 to skip closing paren
+              (if (> elem-len 0)
+                (substring arena slop-type (cast (Int 0 ..) elem-start) (cast (Int 0 ..) elem-len))
+                "")))))))
 
   (fn infer-set-elem-c-type ((ctx (Ptr TranspileContext)) (set-expr (Ptr SExpr)))
     (@intent "Infer the C type of a set's element type from variable lookup")
@@ -3827,11 +3842,11 @@
             ;; List types -> need to generate list type name
             ((starts-with slop-type "(List ")
               (let ((inner (substring arena slop-type 6 (max 0 (- (cast Int (string-len slop-type)) 7)))))
-                (ctx-str ctx "slop_list_" (slop-type-to-c-type ctx inner))))
+                (ctx-str ctx "slop_list_" (type-to-identifier arena (slop-type-to-c-type ctx inner)))))
             ;; Option types
             ((starts-with slop-type "(Option ")
               (let ((inner (substring arena slop-type 8 (max 0 (- (cast Int (string-len slop-type)) 9)))))
-                (ctx-str ctx "slop_option_" (slop-type-to-c-type ctx inner))))
+                (ctx-str ctx "slop_option_" (type-to-identifier arena (slop-type-to-c-type ctx inner)))))
             ;; Chan types -> slop_chan_<inner>
             ((starts-with slop-type "(Chan ")
               (let ((inner (substring arena slop-type 6 (max 0 (- (cast Int (string-len slop-type)) 7)))))
@@ -5035,12 +5050,12 @@
   ;; ============================================================
 
   (fn is-ptr-to-ptr-map ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
-    (@intent "Check if expression is a pointer-to-pointer map (Ptr (Map ...)) -> slop_map**")
+    (@intent "Check if expression is a pointer to a Map or Set ((Ptr (Map ...)) / (Ptr (Set ...)) -> slop_map**)")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Bool))
     (@pre {ctx != nil})
     (@pre {expr != nil})
-    ;; Check if expr is a symbol with type ending in **
     (match (deref expr)
+      ;; A plain variable: the var table already carries the C type.
       ((sym sym)
         (let ((name (. sym name)))
           (match (ctx-lookup-var ctx name)
@@ -5048,7 +5063,44 @@
               (let ((c-type (. entry c-type)))
                 (ends-with c-type "**")))
             ((none) false))))
-      (else false)))
+      ;; Field access, deref, a call returning a map... none of which the var table
+      ;; can answer, so fall back to the inferred SLOP type.
+      ;; This is strictly about expressions whose OWN type is (Ptr (Map/Set ...)).
+      ;; A plain (Map K V) field reached through a (Ptr Record) -- (. store items) --
+      ;; is already slop_map* and must not be dereferenced; only a field declared
+      ;; (Ptr (Map K V)) is slop_map**. tests/test_ptr_map_ops.slop pins both shapes
+      ;; so neither can be fixed by breaking the other.
+      (else
+        (let ((slop-type (resolve-type-alias ctx (infer-expr-slop-type ctx expr))))
+          (or (starts-with slop-type "(Ptr (Map ")
+              (starts-with slop-type "(Ptr (Set "))))))
+
+  (fn deref-container-c ((ctx (Ptr TranspileContext)) (container-c String) (slop-type String))
+    (@intent "Dereference an already-transpiled map/set operand when its SLOP type is a pointer to a container")
+    (@spec (((Ptr TranspileContext) String String) -> String))
+    (@pre {ctx != nil})
+    ;; Every runtime entry point -- slop_map_get, slop_map_put, slop_map_remove,
+    ;; slop_map_keys, slop_set_elements_raw -- takes a slop_map*, but (Ptr (Map K V))
+    ;; and (Ptr (Set T)) are slop_map**. Handing over the double pointer is merely a C
+    ;; warning, and slop build discards cc output; at the for-each sites it is not even
+    ;; a warning, because those cast explicitly. Either way the read is garbage.
+    ;; For callers holding the SExpr rather than a type string, see resolve-container-c.
+    (if (or (starts-with slop-type "(Ptr (Map ")
+            (starts-with slop-type "(Ptr (Set "))
+      (ctx-str3 ctx "(*" container-c ")")
+      container-c))
+
+  (fn resolve-container-c ((ctx (Ptr TranspileContext)) (container-expr (Ptr SExpr)))
+    (@intent "Transpile a map/set container operand, dereferencing it when it is a (Ptr (Map ...)) / (Ptr (Set ...))")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {container-expr != nil})
+    ;; The SExpr-shaped counterpart of deref-container-c. Every builtin that takes a
+    ;; map or set operand routes its container through here.
+    (let ((c (transpile-expr ctx container-expr)))
+      (if (is-ptr-to-ptr-map ctx container-expr)
+        (ctx-str3 ctx "(*" c ")")
+        c)))
 
   ;; ============================================================
   ;; Record-new, List Literal, and Map Operations
@@ -5520,13 +5572,11 @@
               ((some key-expr)
                 (match (list-get items 3)
                   ((some val-expr)
-                    (let ((map-c (transpile-expr ctx map-expr))
+                    (let ((map-c (resolve-container-c ctx map-expr))
                           (key-c (transpile-expr ctx key-expr))
                           (val-c (transpile-expr ctx val-expr))
                           ;; Wrap key as pointer for generic map API
                           (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr))
-                          ;; Check if map is a pointer-to-pointer (Ptr Map -> slop_map**)
-                          (needs-deref (is-ptr-to-ptr-map ctx map-expr))
                           ;; Declare _val with the map's declared value type when that is
                           ;; provably safe, so sizeof(_val) matches what map-get and map
                           ;; for-each dereference. Falls back to "__auto_type".
@@ -5534,24 +5584,16 @@
                           ;; slop_arena_alloc and slop_map_put both take the arena in
                           ;; scope, which is not always the identifier "arena".
                           (arena-c (resolve-arena-c-name ctx "map-put" items)))
-                      ;; slop_map_put expects arena, slop_map* and key as const void*
-                      ;; Allocate value on arena so it persists beyond the statement
-                      ;; If we have slop_map**, dereference once
-                      (if needs-deref
-                        (let ((s1 (ctx-str4 ctx "({ " val-decl-type " _val = " val-c))
-                              (s2 (ctx-str ctx s1 (ctx-str5 ctx "; void* _vptr = slop_arena_alloc(" arena-c ", sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(" arena-c ", (*")))
-                              (s3 (ctx-str ctx s2 map-c))
-                              (s4 (ctx-str ctx s3 "), "))
-                              (s5 (ctx-str ctx s4 key-ptr))
-                              (s6 (ctx-str ctx s5 ", _vptr); })")))
-                          s6)
-                        (let ((s1 (ctx-str4 ctx "({ " val-decl-type " _val = " val-c))
-                              (s2 (ctx-str ctx s1 (ctx-str5 ctx "; void* _vptr = slop_arena_alloc(" arena-c ", sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(" arena-c ", ")))
-                              (s3 (ctx-str ctx s2 map-c))
-                              (s4 (ctx-str ctx s3 ", "))
-                              (s5 (ctx-str ctx s4 key-ptr))
-                              (s6 (ctx-str ctx s5 ", _vptr); })")))
-                          s6))))
+                      ;; slop_map_put expects arena, slop_map* and key as const void*.
+                      ;; Allocate value on arena so it persists beyond the statement.
+                      ;; map-c is already dereferenced when the map is a (Ptr (Map ...)).
+                      (let ((s1 (ctx-str4 ctx "({ " val-decl-type " _val = " val-c))
+                            (s2 (ctx-str ctx s1 (ctx-str5 ctx "; void* _vptr = slop_arena_alloc(" arena-c ", sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(" arena-c ", ")))
+                            (s3 (ctx-str ctx s2 map-c))
+                            (s4 (ctx-str ctx s3 ", "))
+                            (s5 (ctx-str ctx s4 key-ptr))
+                            (s6 (ctx-str ctx s5 ", _vptr); })")))
+                        s6)))
                   ((none)
                     (do
                       (ctx-add-error-at ctx "map-put: missing val" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -5579,7 +5621,7 @@
           ((some map-expr)
             (match (list-get items 2)
               ((some key-expr)
-                (let ((map-c (transpile-expr ctx map-expr))
+                (let ((map-c (resolve-container-c ctx map-expr))
                       (key-c (transpile-expr ctx key-expr))
                       ;; Wrap key as pointer for generic map API
                       (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr))
@@ -5631,7 +5673,7 @@
           ((some map-expr)
             (match (list-get items 2)
               ((some key-expr)
-                (let ((map-c (transpile-expr ctx map-expr))
+                (let ((map-c (resolve-container-c ctx map-expr))
                       (key-c (transpile-expr ctx key-expr))
                       ;; Wrap key as pointer for generic map API
                       (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr)))
@@ -5659,17 +5701,14 @@
           ((some map-expr)
             (match (list-get items 2)
               ((some key-expr)
-                (let ((map-c (transpile-expr ctx map-expr))
+                (let ((map-c (resolve-container-c ctx map-expr))
                       (key-c (transpile-expr ctx key-expr))
                       ;; wrap-map-key-as-ptr tries the map key type first and only then
                       ;; the set element type, so passing the map expression is correct.
-                      (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr))
-                      ;; (Ptr (Map K V)) is slop_map**; deref once, as map-put does.
-                      (needs-deref (is-ptr-to-ptr-map ctx map-expr)))
+                      (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr)))
                   ;; slop_map_remove takes no arena, unlike map-put and map-keys.
-                  (if needs-deref
-                    (ctx-str ctx "slop_map_remove((*" (ctx-str ctx map-c (ctx-str ctx "), " (ctx-str ctx key-ptr ")"))))
-                    (ctx-str ctx "slop_map_remove(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-ptr ")")))))))
+                  ;; map-c is already dereferenced when the map is a (Ptr (Map ...)).
+                  (ctx-str ctx "slop_map_remove(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-ptr ")"))))))
               ((none)
                 (do
                   (ctx-add-error-at ctx "map-remove: missing key" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -5691,31 +5730,46 @@
           "NULL")
         (match (list-get items 1)
           ((some map-expr)
-            (let ((map-c (transpile-expr ctx map-expr))
+            (let ((map-c (resolve-container-c ctx map-expr))
                   (key-c-type (infer-map-key-c-type ctx map-expr))
-                  ;; Debug: get variable name and slop-type
-                  (debug-var-name (get-var-name-from-expr map-expr))
-                  (debug-slop-type (match (ctx-lookup-var ctx debug-var-name)
-                                     ((some entry) (. entry slop-type))
-                                     ((none) "VAR_NOT_FOUND")))
                   ;; NB: the `arena` binding above is the compiler's own allocator.
                   ;; This is the arena in the *transpiled program's* scope.
                   (arena-c (resolve-arena-c-name ctx "map-keys" items)))
-              ;; Check if key type is string - use legacy slop_map_keys
-              (if (or (string-eq key-c-type "slop_string") (== (string-len key-c-type) 0))
-                ;; Generate: slop_map_keys(ARENA, MAP) with debug info
-                (ctx-str ctx "/* DEBUG: var=" (ctx-str ctx debug-var-name (ctx-str ctx " slop=" (ctx-str ctx debug-slop-type (ctx-str ctx " key=" (ctx-str ctx key-c-type (ctx-str ctx (ctx-str3 ctx " */ slop_map_keys(" arena-c ", ") (ctx-str ctx map-c ")"))))))))
+              (cond
+                ;; String keys: the runtime carries a dedicated slop_map_keys returning
+                ;; slop_list_string, so no typed list has to be generated at all.
+                ((string-eq key-c-type "slop_string")
+                  (ctx-str ctx (ctx-str3 ctx "slop_map_keys(" arena-c ", ") (ctx-str ctx map-c ")")))
+                ;; An uninferable key type used to fall through to the String path above,
+                ;; emitting a slop_string read for a map of some entirely other type.
+                ((== (string-len key-c-type) 0)
+                  (do
+                    (ctx-add-error-at ctx "map-keys: cannot infer key type" (ctx-list-first-line items) (ctx-list-first-col items))
+                    "NULL"))
                 ;; Generate typed list from raw elements:
                 ;; ({ slop_set_elements_result _r = slop_set_elements_raw(ARENA, MAP);
                 ;;    (slop_list_KeyType){.data = (KeyType*)_r.data, .len = _r.len, .cap = _r.cap}; })
-                (let ((list-type (ctx-str ctx "slop_list_" key-c-type)))
-                  (ctx-str ctx (ctx-str3 ctx "({ slop_set_elements_result _r = slop_set_elements_raw(" arena-c ", ")
-                    (ctx-str ctx map-c
-                      (ctx-str ctx "); ("
-                        (ctx-str ctx list-type
-                          (ctx-str ctx "){.data = ("
-                            (ctx-str ctx key-c-type
-                              (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))
+                (else
+                  ;; The typedef is named after the SLOP type (slop_list_int), not the C
+                  ;; type (slop_list_int64_t); type-to-identifier is what bridges the two.
+                  ;; Register it as well: the prescan only sees Map/Set inside type
+                  ;; annotations, so a map bound by an inferred let is never registered.
+                  (let ((key-id (type-to-identifier arena key-c-type))
+                        (list-type (ctx-str ctx "slop_list_" (type-to-identifier arena key-c-type))))
+                    (do
+                      (ctx-register-list-type ctx key-c-type list-type)
+                      ;; Pair the Option type with it, exactly as the prescan does for a
+                      ;; (Map K V) / (Set T) annotation: list-get over the returned list
+                      ;; needs slop_option_<id>, and only slop_option_{int,float,string,
+                      ;; ptr,bool} come from the runtime.
+                      (ctx-register-option-type ctx key-c-type (ctx-str ctx "slop_option_" key-id))
+                      (ctx-str ctx (ctx-str3 ctx "({ slop_set_elements_result _r = slop_set_elements_raw(" arena-c ", ")
+                        (ctx-str ctx map-c
+                          (ctx-str ctx "); ("
+                            (ctx-str ctx list-type
+                              (ctx-str ctx "){.data = ("
+                                (ctx-str ctx key-c-type
+                                  (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))))
           ((none)
             (do
               (ctx-add-error-at ctx "map-keys: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -5767,7 +5821,7 @@
           ((some set-expr)
             (match (list-get items 2)
               ((some elem-expr)
-                (let ((set-c (transpile-expr ctx set-expr))
+                (let ((set-c (resolve-container-c ctx set-expr))
                       (elem-c (transpile-expr ctx elem-expr))
                       (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr set-expr))
                       (arena-c (resolve-arena-c-name ctx "set-put" items)))
@@ -5798,7 +5852,7 @@
           ((some set-expr)
             (match (list-get items 2)
               ((some elem-expr)
-                (let ((set-c (transpile-expr ctx set-expr))
+                (let ((set-c (resolve-container-c ctx set-expr))
                       (elem-c (transpile-expr ctx elem-expr))
                       (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr set-expr)))
                   (ctx-str ctx "(slop_map_get(" (ctx-str ctx set-c (ctx-str ctx ", " (ctx-str ctx elem-ptr ") != NULL)"))))))
@@ -5824,7 +5878,7 @@
           ((some set-expr)
             (match (list-get items 2)
               ((some elem-expr)
-                (let ((set-c (transpile-expr ctx set-expr))
+                (let ((set-c (resolve-container-c ctx set-expr))
                       (elem-c (transpile-expr ctx elem-expr))
                       (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr set-expr)))
                   (ctx-str ctx "slop_map_remove(" (ctx-str ctx set-c (ctx-str ctx ", " (ctx-str ctx elem-ptr ")"))))))
@@ -5841,31 +5895,52 @@
     (@intent "Transpile set-elements to properly typed list")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
-    (let ((len (list-len items)))
+    (let ((len (list-len items))
+          (arena (. (deref ctx) arena)))
       (if (< len 2)
         (do
           (ctx-add-error-at ctx "set-elements: needs set" (ctx-list-first-line items) (ctx-list-first-col items))
           "NULL")
         (match (list-get items 1)
           ((some set-expr)
-            (let ((set-c (transpile-expr ctx set-expr))
+            (let ((set-c (resolve-container-c ctx set-expr))
                   (elem-c-type (infer-set-elem-c-type ctx set-expr))
                   (arena-c (resolve-arena-c-name ctx "set-elements" items)))
-              ;; Check if element type is string - use legacy slop_map_keys
-              (if (or (string-eq elem-c-type "slop_string") (== (string-len elem-c-type) 0))
-                ;; Generate: slop_map_keys(ARENA, SET)
-                (ctx-str ctx (ctx-str3 ctx "slop_map_keys(" arena-c ", ") (ctx-str ctx set-c ")"))
+              (cond
+                ;; String elements: the runtime carries slop_map_keys, which already
+                ;; returns slop_list_string, so no typed list has to be generated.
+                ((string-eq elem-c-type "slop_string")
+                  (ctx-str ctx (ctx-str3 ctx "slop_map_keys(" arena-c ", ") (ctx-str ctx set-c ")")))
+                ;; An uninferable element type used to fall through to the String path
+                ;; above, emitting a slop_string read for a set of some other type.
+                ((== (string-len elem-c-type) 0)
+                  (do
+                    (ctx-add-error-at ctx "set-elements: cannot infer element type" (ctx-list-first-line items) (ctx-list-first-col items))
+                    "NULL"))
                 ;; Generate typed list from raw elements:
                 ;; ({ slop_set_elements_result _r = slop_set_elements_raw(ARENA, SET);
                 ;;    (slop_list_ElemType){.data = (ElemType*)_r.data, .len = _r.len, .cap = _r.cap}; })
-                (let ((list-type (ctx-str ctx "slop_list_" elem-c-type)))
-                  (ctx-str ctx (ctx-str3 ctx "({ slop_set_elements_result _r = slop_set_elements_raw(" arena-c ", ")
-                    (ctx-str ctx set-c
-                      (ctx-str ctx "); ("
-                        (ctx-str ctx list-type
-                          (ctx-str ctx "){.data = ("
-                            (ctx-str ctx elem-c-type
-                              (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))
+                (else
+                  ;; The typedef is named after the SLOP type (slop_list_int), not the C
+                  ;; type (slop_list_int64_t); type-to-identifier is what bridges the two.
+                  ;; Register it as well: the prescan only sees Map/Set inside type
+                  ;; annotations, so a set bound by an inferred let is never registered.
+                  (let ((elem-id (type-to-identifier arena elem-c-type))
+                        (list-type (ctx-str ctx "slop_list_" (type-to-identifier arena elem-c-type))))
+                    (do
+                      (ctx-register-list-type ctx elem-c-type list-type)
+                      ;; Pair the Option type with it, exactly as the prescan does for a
+                      ;; (Map K V) / (Set T) annotation: list-get over the returned list
+                      ;; needs slop_option_<id>, and only slop_option_{int,float,string,
+                      ;; ptr,bool} come from the runtime.
+                      (ctx-register-option-type ctx elem-c-type (ctx-str ctx "slop_option_" elem-id))
+                      (ctx-str ctx (ctx-str3 ctx "({ slop_set_elements_result _r = slop_set_elements_raw(" arena-c ", ")
+                        (ctx-str ctx set-c
+                          (ctx-str ctx "); ("
+                            (ctx-str ctx list-type
+                              (ctx-str ctx "){.data = ("
+                                (ctx-str ctx elem-c-type
+                                  (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))))
           ((none)
             (do
               (ctx-add-error-at ctx "set-elements: missing set" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6079,7 +6154,7 @@
           (elem-slop-type (extract-set-elem-from-slop-type arena resolved-type))
           (elem-c-type (slop-value-type-to-c-type ctx elem-slop-type)))
       ;; Build: ({ slop_map* _coll = (slop_map*)coll; for (size_t _i = 0; _i < _coll->cap; _i++) { if (_coll->entries[_i].occupied) { ElementType var = *(ElementType*)_coll->entries[_i].key;
-      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" coll-c "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
+      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" (deref-container-c ctx coll-c resolved-type) "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
             (if-part "if (_coll->entries[_i].occupied) { ")
             (cast-part (ctx-str ctx elem-c-type "*)_coll->entries[_i].key"))
             (assign-prefix (ctx-str4 ctx elem-c-type " " var-name " = *("))
@@ -6121,7 +6196,7 @@
           (key-slop-type (extract-map-key-from-slop-type arena resolved-type))
           (key-c-type (slop-value-type-to-c-type ctx key-slop-type)))
       ;; Build: ({ slop_map* _coll = (slop_map*)coll; for (size_t _i = 0; _i < _coll->cap; _i++) { if (_coll->entries[_i].occupied) { KeyType var = *(KeyType*)_coll->entries[_i].key;
-      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" coll-c "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
+      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" (deref-container-c ctx coll-c resolved-type) "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
             (if-part "if (_coll->entries[_i].occupied) { ")
             (cast-part (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
             (assign-prefix (ctx-str4 ctx key-c-type " " var-name " = *("))
@@ -6184,7 +6259,7 @@
                                             (val-c-type (slop-value-type-to-c-type ctx val-slop-type)))
                                         ;; Build: ({ slop_map* _coll = (slop_map*)map; for (size_t _i = 0; _i < _coll->cap; _i++) { if (_coll->entries[_i].occupied) {
                                         ;;         KeyType k = *(KeyType*)_coll->entries[_i].key; ValueType v = *(ValueType*)_coll->entries[_i].value;
-                                        (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" map-c "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
+                                        (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" (deref-container-c ctx map-c resolved-type) "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
                                               (if-part "if (_coll->entries[_i].occupied) { ")
                                               (k-cast (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
                                               (k-prefix (ctx-str4 ctx key-c-type " " k-name " = *("))
@@ -7607,9 +7682,13 @@
                 (if (> elem-len 0)
                   (substring arena resolved-type 6 (cast (Int 0 ..) elem-len))
                   "")))
-            ((starts-with resolved-type "(Set ")
+            ;; is-set-type / is-map-type rather than a bare prefix test: iterating a
+            ;; (Ptr (Set T)) yields the same element type as iterating a (Set T).
+            ;; (compound-slop-type-to-id deliberately keeps the bare test -- there the
+            ;; two must NOT collide, since slop_map* and slop_map** are distinct types.)
+            ((is-set-type resolved-type)
               (extract-set-elem-from-slop-type arena resolved-type))
-            ((starts-with resolved-type "(Map ")
+            ((is-map-type resolved-type)
               ;; For maps, return the key type (used for iteration)
               (extract-map-key-from-slop-type arena resolved-type))
             (else ""))))))
