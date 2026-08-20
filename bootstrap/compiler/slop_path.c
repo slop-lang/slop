@@ -12,15 +12,15 @@ slop_string path_path_dirname(slop_arena* arena, slop_string path) {
         if (len == 0) {
             return SLOP_STR(".");
         } else {
-            __auto_type _mv_1244 = strlib_last_index_of(path, SLOP_STR("/"));
-            if (_mv_1244.has_value) {
-                __auto_type idx = _mv_1244.value;
+            __auto_type _mv_1246 = strlib_last_index_of(path, SLOP_STR("/"));
+            if (_mv_1246.has_value) {
+                __auto_type idx = _mv_1246.value;
                 if (idx == 0) {
                     return SLOP_STR("/");
                 } else {
                     return strlib_substring(arena, path, 0, ((int64_t)(idx)));
                 }
-            } else if (!_mv_1244.has_value) {
+            } else if (!_mv_1246.has_value) {
                 return SLOP_STR(".");
             }
         }
@@ -50,9 +50,9 @@ slop_string path_path_basename(slop_arena* arena, slop_string path) {
         if (len == 0) {
             return SLOP_STR("");
         } else {
-            __auto_type _mv_1245 = strlib_last_index_of(path, SLOP_STR("/"));
-            if (_mv_1245.has_value) {
-                __auto_type idx = _mv_1245.value;
+            __auto_type _mv_1247 = strlib_last_index_of(path, SLOP_STR("/"));
+            if (_mv_1247.has_value) {
+                __auto_type idx = _mv_1247.value;
                 {
                     __auto_type start = (idx + 1);
                     __auto_type remaining = (len - start);
@@ -62,7 +62,7 @@ slop_string path_path_basename(slop_arena* arena, slop_string path) {
                         return strlib_substring(arena, path, ((int64_t)(start)), ((int64_t)(remaining)));
                     }
                 }
-            } else if (!_mv_1245.has_value) {
+            } else if (!_mv_1247.has_value) {
                 return path;
             }
         }
@@ -75,9 +75,9 @@ slop_string path_path_extension(slop_arena* arena, slop_string path) {
         if (len == 0) {
             return SLOP_STR("");
         } else {
-            __auto_type _mv_1246 = strlib_last_index_of(path, SLOP_STR("."));
-            if (_mv_1246.has_value) {
-                __auto_type idx = _mv_1246.value;
+            __auto_type _mv_1248 = strlib_last_index_of(path, SLOP_STR("."));
+            if (_mv_1248.has_value) {
+                __auto_type idx = _mv_1248.value;
                 {
                     __auto_type ext_len = (len - idx);
                     if (ext_len <= 0) {
@@ -86,7 +86,7 @@ slop_string path_path_extension(slop_arena* arena, slop_string path) {
                         return strlib_substring(arena, path, ((int64_t)(idx)), ((int64_t)(ext_len)));
                     }
                 }
-            } else if (!_mv_1246.has_value) {
+            } else if (!_mv_1248.has_value) {
                 return SLOP_STR("");
             }
         }

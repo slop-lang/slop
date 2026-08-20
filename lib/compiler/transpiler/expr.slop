@@ -4863,8 +4863,30 @@
           ((none) "({ (void)0; })"))))))
 
   ;; ============================================================
-  ;; Arena Detection for list-push
+  ;; Arena Detection for collection builtins
   ;; ============================================================
+
+  (fn resolve-arena-c-name ((ctx (Ptr TranspileContext)) (op String) (items (List (Ptr SExpr))))
+    (@intent "Resolve the arena's C identifier, or record a transpiler error")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; Tier 1: a variable literally named "arena" - the unnamed with-arena form
+    ;; and the conventional (arena Arena) parameter both bind one.
+    ;; Tier 2: any slop_arena*-typed variable in scope, innermost first - this
+    ;; is what resolves (with-arena :as myname ...) and arena params under
+    ;; another name.
+    ;; Tier 3: no arena at all. Emitting the bare identifier here would defer
+    ;; the failure to the C compiler, so report it against the source instead.
+    (match (ctx-lookup-var ctx "arena")
+      ((some entry) (. entry c-name))
+      ((none)
+        (match (ctx-find-arena-var ctx)
+          ((some entry) (. entry c-name))
+          ((none)
+            (do
+              (ctx-add-error-at ctx (ctx-str ctx op ": no arena in scope")
+                (ctx-list-first-line items) (ctx-list-first-col items))
+              "arena"))))))
 
   (fn get-arena-for-list-push-expr ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)) (list-c String))
     (@intent "Get arena source for list-push by analyzing list expression")
@@ -5472,21 +5494,23 @@
                           ;; Declare _val with the map's declared value type when that is
                           ;; provably safe, so sizeof(_val) matches what map-get and map
                           ;; for-each dereference. Falls back to "__auto_type".
-                          (val-decl-type (map-put-value-decl-type ctx map-expr)))
+                          (val-decl-type (map-put-value-decl-type ctx map-expr))
+                          ;; slop_arena_alloc and slop_map_put both take the arena in
+                          ;; scope, which is not always the identifier "arena".
+                          (arena-c (resolve-arena-c-name ctx "map-put" items)))
                       ;; slop_map_put expects arena, slop_map* and key as const void*
-                      ;; Arena is assumed to be in scope from with-arena
                       ;; Allocate value on arena so it persists beyond the statement
                       ;; If we have slop_map**, dereference once
                       (if needs-deref
                         (let ((s1 (ctx-str4 ctx "({ " val-decl-type " _val = " val-c))
-                              (s2 (ctx-str ctx s1 "; void* _vptr = slop_arena_alloc(arena, sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(arena, (*"))
+                              (s2 (ctx-str ctx s1 (ctx-str5 ctx "; void* _vptr = slop_arena_alloc(" arena-c ", sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(" arena-c ", (*")))
                               (s3 (ctx-str ctx s2 map-c))
                               (s4 (ctx-str ctx s3 "), "))
                               (s5 (ctx-str ctx s4 key-ptr))
                               (s6 (ctx-str ctx s5 ", _vptr); })")))
                           s6)
                         (let ((s1 (ctx-str4 ctx "({ " val-decl-type " _val = " val-c))
-                              (s2 (ctx-str ctx s1 "; void* _vptr = slop_arena_alloc(arena, sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(arena, "))
+                              (s2 (ctx-str ctx s1 (ctx-str5 ctx "; void* _vptr = slop_arena_alloc(" arena-c ", sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(" arena-c ", ")))
                               (s3 (ctx-str ctx s2 map-c))
                               (s4 (ctx-str ctx s3 ", "))
                               (s5 (ctx-str ctx s4 key-ptr))
@@ -5604,16 +5628,19 @@
                   (debug-var-name (get-var-name-from-expr map-expr))
                   (debug-slop-type (match (ctx-lookup-var ctx debug-var-name)
                                      ((some entry) (. entry slop-type))
-                                     ((none) "VAR_NOT_FOUND"))))
+                                     ((none) "VAR_NOT_FOUND")))
+                  ;; NB: the `arena` binding above is the compiler's own allocator.
+                  ;; This is the arena in the *transpiled program's* scope.
+                  (arena-c (resolve-arena-c-name ctx "map-keys" items)))
               ;; Check if key type is string - use legacy slop_map_keys
               (if (or (string-eq key-c-type "slop_string") (== (string-len key-c-type) 0))
-                ;; Generate: slop_map_keys(arena, MAP) with debug info
-                (ctx-str ctx "/* DEBUG: var=" (ctx-str ctx debug-var-name (ctx-str ctx " slop=" (ctx-str ctx debug-slop-type (ctx-str ctx " key=" (ctx-str ctx key-c-type (ctx-str ctx " */ slop_map_keys(arena, " (ctx-str ctx map-c ")"))))))))
+                ;; Generate: slop_map_keys(ARENA, MAP) with debug info
+                (ctx-str ctx "/* DEBUG: var=" (ctx-str ctx debug-var-name (ctx-str ctx " slop=" (ctx-str ctx debug-slop-type (ctx-str ctx " key=" (ctx-str ctx key-c-type (ctx-str ctx (ctx-str3 ctx " */ slop_map_keys(" arena-c ", ") (ctx-str ctx map-c ")"))))))))
                 ;; Generate typed list from raw elements:
-                ;; ({ slop_set_elements_result _r = slop_set_elements_raw(arena, MAP);
+                ;; ({ slop_set_elements_result _r = slop_set_elements_raw(ARENA, MAP);
                 ;;    (slop_list_KeyType){.data = (KeyType*)_r.data, .len = _r.len, .cap = _r.cap}; })
                 (let ((list-type (ctx-str ctx "slop_list_" key-c-type)))
-                  (ctx-str ctx "({ slop_set_elements_result _r = slop_set_elements_raw(arena, "
+                  (ctx-str ctx (ctx-str3 ctx "({ slop_set_elements_result _r = slop_set_elements_raw(" arena-c ", ")
                     (ctx-str ctx map-c
                       (ctx-str ctx "); ("
                         (ctx-str ctx list-type
@@ -5673,9 +5700,10 @@
               ((some elem-expr)
                 (let ((set-c (transpile-expr ctx set-expr))
                       (elem-c (transpile-expr ctx elem-expr))
-                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr set-expr)))
+                      (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr set-expr))
+                      (arena-c (resolve-arena-c-name ctx "set-put" items)))
                   ;; Use a dummy 1-byte value for set membership
-                  (ctx-str ctx "({ uint8_t _dummy = 1; slop_map_put(arena, "
+                  (ctx-str ctx (ctx-str3 ctx "({ uint8_t _dummy = 1; slop_map_put(" arena-c ", ")
                     (ctx-str ctx set-c
                       (ctx-str ctx ", "
                         (ctx-str ctx elem-ptr ", &_dummy); })"))))))
@@ -5752,16 +5780,17 @@
         (match (list-get items 1)
           ((some set-expr)
             (let ((set-c (transpile-expr ctx set-expr))
-                  (elem-c-type (infer-set-elem-c-type ctx set-expr)))
+                  (elem-c-type (infer-set-elem-c-type ctx set-expr))
+                  (arena-c (resolve-arena-c-name ctx "set-elements" items)))
               ;; Check if element type is string - use legacy slop_map_keys
               (if (or (string-eq elem-c-type "slop_string") (== (string-len elem-c-type) 0))
-                ;; Generate: slop_map_keys(arena, SET)
-                (ctx-str ctx "slop_map_keys(arena, " (ctx-str ctx set-c ")"))
+                ;; Generate: slop_map_keys(ARENA, SET)
+                (ctx-str ctx (ctx-str3 ctx "slop_map_keys(" arena-c ", ") (ctx-str ctx set-c ")"))
                 ;; Generate typed list from raw elements:
-                ;; ({ slop_set_elements_result _r = slop_set_elements_raw(arena, SET);
+                ;; ({ slop_set_elements_result _r = slop_set_elements_raw(ARENA, SET);
                 ;;    (slop_list_ElemType){.data = (ElemType*)_r.data, .len = _r.len, .cap = _r.cap}; })
                 (let ((list-type (ctx-str ctx "slop_list_" elem-c-type)))
-                  (ctx-str ctx "({ slop_set_elements_result _r = slop_set_elements_raw(arena, "
+                  (ctx-str ctx (ctx-str3 ctx "({ slop_set_elements_result _r = slop_set_elements_raw(" arena-c ", ")
                     (ctx-str ctx set-c
                       (ctx-str ctx "); ("
                         (ctx-str ctx list-type
@@ -5786,14 +5815,17 @@
         (match (list-get items 1)
           ((some type-expr)
             (let ((elem-info (get-map-key-c-info ctx type-expr))
-                  ;; Build: ({ slop_map* _s = slop_map_new_ptr(arena, N, elem_info);
+                  ;; NB: the `arena` binding above is the compiler's own allocator.
+                  ;; This is the arena in the *transpiled program's* scope.
+                  (arena-c (resolve-arena-c-name ctx "set" items))
+                  ;; Build: ({ slop_map* _s = slop_map_new_ptr(ARENA, N, elem_info);
                   (num-elems (- len 2))
                   (init-cap (if (> num-elems 16) num-elems 16))
-                  (mut result (ctx-str ctx "({ slop_map* _s = slop_map_new_ptr(arena, "
+                  (mut result (ctx-str ctx (ctx-str3 ctx "({ slop_map* _s = slop_map_new_ptr(" arena-c ", ")
                                 (ctx-str ctx (int-to-string arena init-cap)
                                   (ctx-str ctx ", "
                                     (ctx-str ctx elem-info "); "))))))
-              ;; Add each element: slop_map_put(arena, _s, &elem, &(uint8_t){1});
+              ;; Add each element: slop_map_put(ARENA, _s, &elem, &(uint8_t){1});
               (let ((mut i 2))
                 (while (< i len)
                   (match (list-get items i)
@@ -5801,7 +5833,7 @@
                       (let ((elem-c (transpile-expr ctx elem-expr))
                             (elem-ptr (wrap-map-key-as-ptr ctx elem-c elem-expr nil)))
                         (set! result (ctx-str ctx result
-                          (ctx-str ctx "slop_map_put(arena, _s, "
+                          (ctx-str ctx (ctx-str3 ctx "slop_map_put(" arena-c ", _s, ")
                             (ctx-str ctx elem-ptr ", &(uint8_t){1}); "))))))
                     ((none) (do)))
                   (set! i (+ i 1))))

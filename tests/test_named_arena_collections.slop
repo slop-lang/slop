@@ -1,0 +1,152 @@
+;; ============================================================
+;; Test: collection builtins inside a named (with-arena :as ...)
+;;
+;; Regression for issue #68. set-put, map-put, map-keys,
+;; set-elements and the (set Type ...) literal emitted the bare C
+;; identifier `arena` instead of resolving the arena in scope, so
+;; any use inside (with-arena :as name ...) failed to compile with
+;; "use of undeclared identifier 'arena'".
+;;
+;; These are regression guards largely by compiling at all: each
+;; case exercises one builtin that previously hardcoded `arena`.
+;; The last two pin the resolution order — an inner unnamed
+;; with-arena must still win, and an arena parameter under another
+;; name must still be found.
+;; ============================================================
+
+(module test-named-arena-collections
+
+  ;; ============================================================
+  ;; Test 1: set-put inside a named arena
+  ;; ============================================================
+  (fn test-named-arena-set-put ()
+    (@intent "set-put must resolve the named arena")
+    (@spec (() -> Bool))
+    (with-arena :as myarena 65536
+      (let ((s (set-new myarena Int)))
+        (set-put s 1)
+        (set-put s 2)
+        (and (set-has s 1) (and (set-has s 2) (not (set-has s 3)))))))
+
+  ;; ============================================================
+  ;; Test 2: map-put inside a named arena
+  ;; ============================================================
+  (fn test-named-arena-map-put ()
+    (@intent "map-put must resolve the named arena")
+    (@spec (() -> Bool))
+    (with-arena :as myarena 65536
+      (let ((m (map-new myarena String Int)))
+        (map-put m "a" 10)
+        (map-put m "b" 20)
+        (match (map-get m "a")
+          ((some v) (== v 10))
+          ((none) false)))))
+
+  ;; ============================================================
+  ;; Test 3: map-keys inside a named arena
+  ;; ============================================================
+  (fn test-named-arena-map-keys ()
+    (@intent "map-keys must resolve the named arena")
+    (@spec (() -> Bool))
+    (with-arena :as myarena 65536
+      (let ((m (map-new myarena String Int)))
+        (map-put m "a" 1)
+        (map-put m "b" 2)
+        (== (list-len (map-keys m)) 2))))
+
+  ;; ============================================================
+  ;; Test 4: set-elements inside a named arena
+  ;; ============================================================
+  (fn test-named-arena-set-elements ()
+    (@intent "set-elements must resolve the named arena")
+    (@spec (() -> Bool))
+    (with-arena :as myarena 65536
+      (let ((s (set-new myarena String)))
+        (set-put s "x")
+        (set-put s "y")
+        (== (list-len (set-elements s)) 2))))
+
+  ;; ============================================================
+  ;; Test 5: set literal inside a named arena
+  ;; ============================================================
+  (fn test-named-arena-set-literal ()
+    (@intent "(set Type ...) must resolve the named arena")
+    (@spec (() -> Bool))
+    (with-arena :as myarena 65536
+      (let ((s (set String "a" "b" "c")))
+        (and (set-has s "a") (not (set-has s "z"))))))
+
+  ;; ============================================================
+  ;; Test 6: unnamed with-arena nested inside a named one
+  ;;
+  ;; The inner ops must bind to the inner `arena`, not to `outer`.
+  ;; ============================================================
+  (fn test-unnamed-inside-named ()
+    (@intent "The innermost arena binding still wins inside a named arena")
+    (@spec (() -> Bool))
+    (with-arena :as outer 65536
+      (let ((o (set-new outer Int)))
+        (set-put o 1)
+        (with-arena 8192
+          (let ((inner (set-new arena Int)))
+            (set-put inner 2)
+            (and (set-has o 1) (set-has inner 2)))))))
+
+  ;; ============================================================
+  ;; Test 7: arena parameter under a name other than `arena`
+  ;; ============================================================
+  (fn fill-via-named-param ((scratch Arena))
+    (@intent "Helper whose arena parameter is not called arena")
+    (@spec ((Arena) -> Bool))
+    (let ((s (set-new scratch Int)))
+      (set-put s 7)
+      (set-has s 7)))
+
+  (fn test-arena-param-other-name ()
+    (@intent "set-put must resolve an arena param declared under another name")
+    (@spec (() -> Bool))
+    (with-arena :as myarena 65536
+      (fill-via-named-param myarena)))
+
+  ;; ============================================================
+  ;; Main test runner
+  ;; ============================================================
+  (fn main ()
+    (@intent "Run all named-arena collection tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-named-arena-set-put)
+        (println "test-named-arena-set-put: PASS")
+        (do (println "test-named-arena-set-put: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-named-arena-map-put)
+        (println "test-named-arena-map-put: PASS")
+        (do (println "test-named-arena-map-put: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-named-arena-map-keys)
+        (println "test-named-arena-map-keys: PASS")
+        (do (println "test-named-arena-map-keys: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-named-arena-set-elements)
+        (println "test-named-arena-set-elements: PASS")
+        (do (println "test-named-arena-set-elements: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-named-arena-set-literal)
+        (println "test-named-arena-set-literal: PASS")
+        (do (println "test-named-arena-set-literal: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-unnamed-inside-named)
+        (println "test-unnamed-inside-named: PASS")
+        (do (println "test-unnamed-inside-named: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-arena-param-other-name)
+        (println "test-arena-param-other-name: PASS")
+        (do (println "test-arena-param-other-name: FAIL")
+            (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))
