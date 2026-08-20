@@ -206,7 +206,7 @@
     ;; Check arguments
     (when (>= argc 2)
       (when (string-eq (cstring-to-string (@ argv 1)) "--version")
-        (print-str (cast (Ptr Char) "slop-tester 0.1.1\n"))
+        (print-str (cast (Ptr Char) "slop-tester 0.1.2\n"))
         (return 0)))
     (if (< argc 2)
       (do

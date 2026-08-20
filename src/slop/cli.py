@@ -24,7 +24,7 @@ from slop.providers import (
     load_project_config, ProjectConfig, BuildConfig, TestConfig, VerifyConfig
 )
 from slop.resolver import ModuleResolver, ResolverError
-from slop import paths
+from slop import __version__, paths
 
 
 def extract_requires_blocks(ast):
@@ -4461,7 +4461,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument('-v', '--verbose', action='store_true')
-    parser.add_argument('--version', action='version', version='slop 0.1.1')
+    parser.add_argument('--version', action='version', version=f'slop {__version__}')
 
     subparsers = parser.add_subparsers(dest='command')
 

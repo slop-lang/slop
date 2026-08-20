@@ -54,3 +54,6 @@ launch_reviewer.sh
 bin/backup/
 
 lib/compiler/checker/slop-checker
+
+.moosedev/
+!.moosedev/kg.nq

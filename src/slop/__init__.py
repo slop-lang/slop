@@ -8,7 +8,7 @@ A language designed for hybrid human-machine code generation where:
 - Machines compile to efficient native code via C
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 from slop.parser import parse, parse_file
 from slop.hole_filler import check_hole_impl, CheckResult

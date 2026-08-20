@@ -68,6 +68,14 @@ jobs:
       - name: Two-stage self-host build
         run: make selfhost
 
+      - name: Check command versions
+        run: |
+          EXPECTED_VERSION="$(cat VERSION)"
+          test "$(PYTHONPATH=src python3 -m slop.cli --version)" = "slop $EXPECTED_VERSION"
+          for tool in parser checker compiler tester; do
+            test "$(bin/slop-$tool --version)" = "slop-$tool $EXPECTED_VERSION"
+          done
+
       - name: Verify bootstrap C is in sync with SLOP source
         run: make check-sync
 
