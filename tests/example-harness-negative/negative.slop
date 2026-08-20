@@ -1,0 +1,41 @@
+;; ============================================================
+;; Test: @example failures and un-runnable examples must fail the run
+;;
+;; Regression for issue #71. `slop test` used to report a skipped @example as
+;; PASSED, so a suite could read "N passed, 0 failed" having asserted nothing.
+;; A fixture that merely passes cannot tell a real pass from a skip counted as
+;; one, so this file is expected to FAIL: scripts/run_native_tests.sh asserts a
+;; non-zero exit and checks each outcome is reported in its own bucket.
+;;
+;; This directory is deliberately separate from tests/example-harness so that
+;; `slop test` on either one has a single expected outcome.
+;; ============================================================
+
+(module example-harness-negative
+
+  (fn double ((n Int))
+    (@intent "Double n")
+    (@spec ((Int) -> Int))
+    (@pure)
+    ;; Deliberately wrong: a failing assertion must be counted as failed
+    (@example (2) -> 5)
+    (* n 2))
+
+  (fn identity ((n Int))
+    (@intent "Return n unchanged")
+    (@spec ((Int) -> Int))
+    (@pure)
+    ;; Deliberately unresolvable: an @example that cannot be compiled must be
+    ;; reported as unrunnable, never folded into the passed count
+    (@example ((no-such-fixture 1)) -> 1)
+    n)
+
+  (fn only-positive ((n Int))
+    (@intent "Return n, which must be positive")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (@pre {n > 0})
+    ;; Deliberately contradictory: the example asserts something the contract forbids.
+    ;; It must be reported as a failure, not run anyway and reported as a pass.
+    (@example (-5) -> -5)
+    n))

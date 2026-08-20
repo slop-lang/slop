@@ -217,7 +217,8 @@
             ((some source)
               ;; Read import file contents from additional arguments
               (let ((import-sources (read-import-files arena argc argv))
-                    (result (generate-tests-with-imports arena source import-sources)))
+                    (result (generate-tests-with-imports arena source import-sources
+                              (cstring-to-string (@ argv 1)))))
                 (if (. result success)
                   (do
                     ;; Output JSON: {"test_harness": "...", "test_count": N, "module_name": "..."}

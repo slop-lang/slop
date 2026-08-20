@@ -272,9 +272,9 @@
   (fn to-c-type ((arena Arena) (expr (Ptr SExpr)))
     (@intent "Convert SLOP type expression to C type string")
     (@spec ((Arena (Ptr SExpr)) -> String))
-    (@example (arena (parse-type "Int")) -> "int64_t")
-    (@example (arena (parse-type "(Ptr Int)")) -> "int64_t*")
-    (@example (arena (parse-type "(Option String)")) -> "slop_option_string")
+    ;; Int -> int64_t, (Ptr Int) -> int64_t*, (Option String) -> slop_option_string.
+    ;; Not an @example: the argument is a parsed type expression, and this module
+    ;; cannot depend on the parser to build one.
     (@pre {expr != nil})
     (match (deref expr)
       ;; Symbol: builtin type or user-defined type name

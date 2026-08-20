@@ -62,6 +62,49 @@ run_unit_tests "lib/std/os" "os"
 run_unit_tests "lib/std/path" "path"
 run_unit_tests "lib/std/json" "json"
 run_unit_tests "lib/std/xml" "xml"
+run_unit_tests "tests/example-harness" "example-harness"
+# The test-harness generator, covered by the mechanism it implements. Meaningful only
+# alongside the negative fixture below, which independently proves the harness still
+# tells a pass from a skip from a failure.
+run_unit_tests "lib/compiler/tester" "tester"
+
+# A run whose @examples fail or cannot be compiled must exit non-zero and account
+# for each outcome separately. Before issue #71 was fixed an un-runnable @example
+# incremented tests_passed, so a suite could read "N passed, 0 failed" having
+# asserted nothing at all - which a fixture that merely passes cannot detect.
+run_negative_unit_tests() {
+    local dir="$1"
+    local name="$2"
+
+    if [ -d "$REPO_ROOT/$dir" ]; then
+        echo -n "Testing $name (expected to fail)... "
+        local output
+        output=$(uv run slop test "$REPO_ROOT/$dir" 2>&1)
+        local exit_code=$?
+        local problem=""
+
+        if [ $exit_code -eq 0 ]; then
+            problem="expected a non-zero exit"
+        elif ! echo "$output" | grep -q "0 passed, 2 failed, 1 unrunnable"; then
+            problem="expected '0 passed, 2 failed, 1 unrunnable' in the summary"
+        elif ! echo "$output" | grep -q "undefined function 'no-such-fixture'"; then
+            problem="expected the unresolved fixture to be named"
+        elif ! echo "$output" | grep -q "precondition violated: (> n 0)"; then
+            problem="expected the violated @pre to be named"
+        fi
+
+        if [ -z "$problem" ]; then
+            echo -e "${GREEN}PASS${NC}"
+            PASS_COUNT=$((PASS_COUNT + 1))
+        else
+            echo -e "${RED}FAIL${NC} ($problem)"
+            echo "$output"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+        fi
+    fi
+}
+
+run_negative_unit_tests "tests/example-harness-negative" "example-harness-negative"
 
 echo ""
 

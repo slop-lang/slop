@@ -68,6 +68,7 @@
     ;; Function trampoline tracking
     ctx-has-trampoline ctx-add-trampoline ctx-set-single-output-mode
     ctx-set-skip-trampoline-generation ctx-skip-trampoline-generation
+    ctx-set-strict-unknown-symbols ctx-strict-unknown-symbols
     ;; Current function C name (for FFI shadowing prevention)
     ctx-set-current-fn-c-name ctx-clear-current-fn-c-name
     ;; Last lambda info (for closure variable binding)
@@ -97,7 +98,7 @@
     ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col)
 
   (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type))
+  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type is-type-variable))
   (import strlib (index-of substring char-at))
 
   ;; FFI for error handling
@@ -319,6 +320,9 @@
       (single-output-mode Bool)
       ;; When true, don't generate trampoline code (assume it exists elsewhere, e.g., in module code)
       (skip-trampoline-generation Bool)
+      ;; When true, record an error instead of inventing a C name for a symbol or
+      ;; call the context never registered (used by the test harness generator)
+      (strict-unknown-symbols Bool)
       ;; Current function C name (to detect FFI shadowing in lookup)
       (current-fn-c-name String)))
 
@@ -329,7 +333,7 @@
   (fn context-new ((arena Arena))
     (@intent "Create a new transpiler context")
     (@spec ((Arena) -> (Ptr TranspileContext)))
-    (@example (arena) -> ctx)
+    ;; Returns a context with empty scopes, types, funcs and error lists.
     ;; TranspileContext is ~750 bytes with all fields, allocate 1024 for safety
     (let ((ctx (cast (Ptr TranspileContext) (arena-alloc arena (sizeof TranspileContext))))
           (initial-scope (cast (Ptr Scope) (arena-alloc arena (sizeof Scope))))
@@ -386,6 +390,8 @@
       (set! (deref ctx) single-output-mode false)
       ;; Initialize skip-trampoline-generation (disabled by default)
       (set! (deref ctx) skip-trampoline-generation false)
+      ;; Initialize strict-unknown-symbols (disabled by default)
+      (set! (deref ctx) strict-unknown-symbols false)
       ;; Initialize current-fn-c-name (empty = not inside a function)
       (set! (deref ctx) current-fn-c-name "")
       ;; NOTE: String and Bytes have special constructor handling in
@@ -1695,18 +1701,27 @@
       (match (deref type-expr)
         ;; Symbol: builtin type or user-defined type name
         ((sym sym)
-          (let ((name (. sym name))
-                (base-c-type (to-c-type arena type-expr)))
-            ;; If it's a builtin, use as-is
-            (if (is-builtin-c-type base-c-type)
-              base-c-type
-              ;; Check if this type is registered (e.g., from an import)
+          (let ((name (. sym name)))
+            ;; to-c-type answers int64_t for any single uppercase letter, assuming it
+            ;; is a @generic type variable, and is-builtin-c-type then short-circuits
+            ;; the registry lookup below. For a real (type P ...) that assumption is
+            ;; wrong: the declaration came out int64_t while record-new emitted
+            ;; (mod_P){...}. A registered type is a fact, so it wins over the guess.
+            (if (is-type-variable name)
               (match (ctx-lookup-type ctx name)
-                ((some entry)
-                  ;; Use the registered c-name (which has the correct module prefix)
-                  (. entry c-name))
-                ;; Not registered - use current module prefix (local type)
-                ((none) (ctx-prefix-type ctx base-c-type))))))
+                ((some entry) (. entry c-name))
+                ((none) "int64_t"))
+              (let ((base-c-type (to-c-type arena type-expr)))
+                ;; If it's a builtin, use as-is
+                (if (is-builtin-c-type base-c-type)
+                  base-c-type
+                  ;; Check if this type is registered (e.g., from an import)
+                  (match (ctx-lookup-type ctx name)
+                    ((some entry)
+                      ;; Use the registered c-name (which has the correct module prefix)
+                      (. entry c-name))
+                    ;; Not registered - use current module prefix (local type)
+                    ((none) (ctx-prefix-type ctx base-c-type))))))))
         ;; List: compound type like (Ptr T), (Option T), etc.
         ((lst lst)
           (to-c-type-prefixed-compound ctx (. lst items)))
@@ -2115,6 +2130,18 @@
     (@spec (((Ptr TranspileContext)) -> Bool))
     (@pre {ctx != nil})
     (. (deref ctx) skip-trampoline-generation))
+
+  (fn ctx-set-strict-unknown-symbols ((ctx (Ptr TranspileContext)) (enabled Bool))
+    (@intent "Record an error for symbols and calls the context cannot resolve")
+    (@spec (((Ptr TranspileContext) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) strict-unknown-symbols enabled))
+
+  (fn ctx-strict-unknown-symbols ((ctx (Ptr TranspileContext)))
+    (@intent "Check if unresolvable symbols should be reported as errors")
+    (@spec (((Ptr TranspileContext)) -> Bool))
+    (@pre {ctx != nil})
+    (. (deref ctx) strict-unknown-symbols))
 
   ;; ============================================================
   ;; Current Function C Name Tracking (FFI shadowing prevention)

@@ -213,6 +213,10 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 ; Use prefix for function calls: {(len arr) > 0}
 (@example (args...) -> result)   ; Example for testing
 (@example :eq eq-fn (args...) -> result)  ; Use custom equality function
+; Arguments and the expected result are ordinary expressions, not just literals:
+; a call to another function in the module or one of its imports is allowed.
+;   (@example ((make-node arena) "href") -> (some "http://example.com"))
+; `_` in the expected result means "do not compare this position".
 (@property (forall (x T) expr))  ; Property that should hold
 (@deprecated "message")          ; Mark as deprecated with migration hint
 (@doc "Extended documentation")  ; Detailed docs, emits as C comment
@@ -660,7 +664,38 @@ SLOP                    C
    - Null checks
 ```
 
-### 7.1 SMT Contract Verification
+### 7.1 Executable Examples
+
+`slop test` compiles every `@example` into a test alongside the module's own
+compiled code, so an argument may be any expression the module can evaluate —
+a literal, a call to one of its functions, or a call to an imported one. The
+harness supplies `arena` where the example names it.
+
+Each example produces exactly one of four outcomes, counted separately:
+
+| Outcome | Meaning |
+|---|---|
+| `PASS` | Ran, and the result matched. |
+| `FAIL` | Ran, and the result did not match. |
+| `ERROR` | Could not be compiled into a test — an unresolved name, or `...` in an argument. |
+| `RAN (no assertion)` | Ran, but the expected value was a bare `_`, so nothing was compared. |
+
+`slop test` exits non-zero if any example failed **or** could not be run. An
+example that cannot be compiled is a defect in the example: fix it or delete it.
+It is never reported as a pass.
+
+`_` inside the expected value means "do not compare this position", so a result
+whose fields are not all reproducible can still be pinned:
+
+```lisp
+(@example (3) -> (some (Node 3 _)))   ; asserts presence and the first field only
+```
+
+A bare `_` as the whole expected value asserts nothing at all; the call still
+runs, which catches a crash, but the outcome is reported as `RAN (no assertion)`
+rather than as a pass.
+
+### 7.2 SMT Contract Verification
 
 SLOP uses Z3 for compile-time contract verification. The verifier automatically:
 - Checks contract consistency (pre doesn't contradict post)

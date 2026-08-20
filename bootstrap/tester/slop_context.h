@@ -425,6 +425,7 @@ struct context_TranspileContext {
     slop_list_context_GenericFuncInstantiation generic_func_instantiations;
     uint8_t single_output_mode;
     uint8_t skip_trampoline_generation;
+    uint8_t strict_unknown_symbols;
     slop_string current_fn_c_name;
 };
 typedef struct context_TranspileContext context_TranspileContext;
@@ -565,6 +566,8 @@ void context_ctx_add_trampoline(context_TranspileContext* ctx, slop_string fn_c_
 void context_ctx_set_single_output_mode(context_TranspileContext* ctx, uint8_t enabled);
 void context_ctx_set_skip_trampoline_generation(context_TranspileContext* ctx, uint8_t skip);
 uint8_t context_ctx_skip_trampoline_generation(context_TranspileContext* ctx);
+void context_ctx_set_strict_unknown_symbols(context_TranspileContext* ctx, uint8_t enabled);
+uint8_t context_ctx_strict_unknown_symbols(context_TranspileContext* ctx);
 void context_ctx_set_current_fn_c_name(context_TranspileContext* ctx, slop_string name);
 void context_ctx_clear_current_fn_c_name(context_TranspileContext* ctx);
 void context_ctx_set_last_lambda_info(context_TranspileContext* ctx, uint8_t is_closure, slop_string env_type, slop_string lambda_name);

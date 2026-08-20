@@ -36,7 +36,8 @@
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-register-chan-type
-                   ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
+                   ctx-add-error ctx-add-error-at ctx-strict-unknown-symbols
+                   ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
                    ctx-add-warning ctx-warn-fallback ctx-has-trampoline ctx-add-trampoline ctx-skip-trampoline-generation
@@ -272,7 +273,14 @@
                       ((some func-entry)
                         ;; Use the registered c-name which includes module prefix
                         (. func-entry c-name))
-                      ((none) c-name)))))))))))
+                      ((none)
+                        ;; Nothing in the context matches. Ordinary builds emit the
+                        ;; name anyway and let C resolve it; under strict mode that
+                        ;; silence is the defect, so record it.
+                        (do
+                          (when (ctx-strict-unknown-symbols ctx)
+                            (ctx-add-error ctx (ctx-str3 ctx "unknown symbol '" name "'")))
+                          c-name))))))))))))
 
   (fn get-prefixed-enum-value ((ctx (Ptr TranspileContext)) (enum-name String) (variant-name String))
     (@intent "Get fully qualified enum value - enum-name already has module prefix")
@@ -561,7 +569,10 @@
                 (let ((c-name (match (ctx-lookup-func ctx base-name)
                                 ((some func-entry)
                                   (. func-entry c-name))
-                                ;; Not found - generate C name
+                                ;; Not found - generate C name.
+                                ;; No strict-mode check here: transpile-list-expr
+                                ;; already rejects an undefined callee with a
+                                ;; positioned error before reaching this point.
                                 ((none)
                                   (if (> (string-len mod-name) 0)
                                     ;; Cross-module call - convert qualified name to C name (mod_func)
@@ -3005,18 +3016,40 @@
                   ;; Union variant constructor: (variant-name value) -> inline struct init
                   (let ((c-variant (to-c-name arena fn-name))
                         (c-tag-enum (ctx-str3 ctx type-name "_" c-variant)))
-                    (if (>= len 2)
-                      (match (list-get items 1)
-                        ((some value-expr)
-                          (let ((value-c (transpile-expr ctx value-expr)))
-                            (ctx-str3 ctx "((" type-name
-                              (ctx-str3 ctx "){ .tag = " c-tag-enum
-                                (ctx-str5 ctx ", .data." c-variant " = " value-c " })")))))
-                        ((none)
+                    (cond
+                      ;; Several payload values: either a multi-payload variant,
+                      ;; whose payload is an anonymous struct, or a record payload
+                      ;; written positionally. Both are brace initializers, so every
+                      ;; argument has to be emitted - taking only the first silently
+                      ;; dropped the rest.
+                      ((> len 2)
+                        (let ((mut vals "")
+                              (mut vi 1))
+                          (while (< vi len)
+                            (match (list-get items vi)
+                              ((some v)
+                                (let ((v-c (transpile-expr ctx v)))
+                                  (if (string-eq vals "")
+                                    (set! vals v-c)
+                                    (set! vals (ctx-str3 ctx vals ", " v-c)))))
+                              ((none) (do)))
+                            (set! vi (+ vi 1)))
                           (ctx-str3 ctx "((" type-name
-                            (ctx-str3 ctx "){ .tag = " c-tag-enum " })"))))
-                      (ctx-str3 ctx "((" type-name
-                        (ctx-str3 ctx "){ .tag = " c-tag-enum " })")))))
+                            (ctx-str3 ctx "){ .tag = " c-tag-enum
+                              (ctx-str5 ctx ", .data." c-variant " = { " vals " } })")))))
+                      ((== len 2)
+                        (match (list-get items 1)
+                          ((some value-expr)
+                            (let ((value-c (transpile-expr ctx value-expr)))
+                              (ctx-str3 ctx "((" type-name
+                                (ctx-str3 ctx "){ .tag = " c-tag-enum
+                                  (ctx-str5 ctx ", .data." c-variant " = " value-c " })")))))
+                          ((none)
+                            (ctx-str3 ctx "((" type-name
+                              (ctx-str3 ctx "){ .tag = " c-tag-enum " })")))))
+                      (else
+                        (ctx-str3 ctx "((" type-name
+                          (ctx-str3 ctx "){ .tag = " c-tag-enum " })"))))))
                 ((none)
                   ;; Regular function call - look up param types for typed none handling
                   (let ((func-opt (ctx-lookup-func ctx fn-name))

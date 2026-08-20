@@ -324,6 +324,12 @@ Runtime still checks it.
 Examples serve as documentation AND executable tests. Provide multiple
 examples covering normal cases, edge cases, and error paths.
 
+`slop test` compiles each example against the module's own compiled code, so
+arguments and expected values are ordinary expressions — a literal, or a call
+to any function in the module or its imports. An example that cannot be
+compiled (an unresolved name, or `...` in an argument) is reported as an
+ERROR and fails the run; it is never counted as a pass.
+
 ; Basic: args match function params (skip arena params)
 (fn abs ((n Int))
   (@intent "Return absolute value of integer")
@@ -371,9 +377,29 @@ examples covering normal cases, edge cases, and error paths.
   ->
   (term-iri (IRI "http://example.org/foo")))
 
+; Calls as arguments — build whatever the function needs
+(fn xml-get-attribute ((n (Ptr XmlNode)) (name String))
+  (@intent "Get an attribute value by local name")
+  (@spec (((Ptr XmlNode) String) -> (Option String)))
+  (@example ((example-elem-with-href arena) "href") -> (some "http://example.com"))
+  (@example ((example-elem-with-href arena) "missing") -> none)
+  ...)
+; Note the doubled parens: the outer pair is the argument list, so a single
+; argument that is itself a call needs both.
+
 ; Custom equality function (for types without built-in ==)
 (@example :eq triple-eq
-  (arena g delta) -> expected-triples)
+  (arena (fixture-graph arena) (fixture-delta arena)) -> expected-triples)
+
+; `_` means "do not compare this position" — for fields that are not
+; reproducible, or that this example is not about
+(@example (3) -> (some (Node 3 _)))     ; asserts presence and the first field
+(@example ("bad") -> (error (ParseError "unexpected token" _)))
+
+; A bare _ as the whole expected value asserts nothing. The call still runs, so
+; a crash is caught, but the outcome is reported as RAN (no assertion) rather
+; than as a pass.
+(@example (arena "" "div" "") -> _)
 
 ### Deprecation
 

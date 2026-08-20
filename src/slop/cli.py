@@ -3420,10 +3420,12 @@ def cmd_test(args):
                 print("No @example annotations found")
                 return 0
             else:
-                # Native tester failed
-                if test_harness:  # Contains error message
-                    print(f"  Native tester failed: {test_harness}", file=sys.stderr)
-                print("  Falling back to Python test extraction")
+                # Native tester failed. Falling through to the Python extractor below
+                # would run the dead Python transpiler and bury the real diagnostic,
+                # so report it and stop.
+                print(f"  Native tester failed: {test_harness or 'unknown error'}",
+                      file=sys.stderr)
+                return 1
 
         ast = parse_file(str(input_path))
 

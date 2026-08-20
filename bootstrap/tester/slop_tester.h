@@ -50,8 +50,8 @@ SLOP_OPTION_DEFINE(tester_TestResult, slop_option_tester_TestResult)
 
 slop_string tester_extract_module_name(slop_list_types_SExpr_ptr exprs);
 slop_list_type_extract_ImportEntry tester_extract_imports(slop_arena* arena, slop_list_types_SExpr_ptr exprs);
-tester_TestResult tester_generate_tests(slop_arena* arena, slop_string source);
-tester_TestResult tester_generate_tests_with_imports(slop_arena* arena, slop_string source, slop_list_string import_sources);
+tester_TestResult tester_generate_tests(slop_arena* arena, slop_string source, slop_string file_name);
+tester_TestResult tester_generate_tests_with_imports(slop_arena* arena, slop_string source, slop_list_string import_sources, slop_string file_name);
 void tester_extract_types_from_module_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast, type_extract_TypeRegistry* types, slop_string prefix);
 void tester_extract_types_from_module_form(slop_arena* arena, types_SExpr* module_form, type_extract_TypeRegistry* types, slop_string prefix);
 void tester_extract_single_type_def(slop_arena* arena, types_SExpr* type_form, type_extract_TypeRegistry* types, slop_string prefix);

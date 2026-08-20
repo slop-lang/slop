@@ -33,7 +33,9 @@
     (return-type (Option String))     ;; Return type from @spec
     (needs-arena Bool)                ;; Whether function needs arena param
     (arena-position Int)              ;; Position of arena param (0-indexed)
-    (eq-fn (Option String))))         ;; Custom equality function for comparison
+    (eq-fn (Option String))           ;; Custom equality function for comparison
+    (params (Ptr SExpr))              ;; The function's parameter list, for binding names
+    (preconditions (List (Ptr SExpr))))) ;; @pre forms, checked before the call
 
   ;; ============================================================
   ;; Test Case Constructor
@@ -42,12 +44,13 @@
   (fn test-case-new ((arena Arena) (fn-name String) (module-name (Option String))
                      (args (List (Ptr SExpr))) (expected (Ptr SExpr))
                      (return-type (Option String)) (needs-arena Bool) (arena-position Int)
-                     (eq-fn (Option String)))
+                     (eq-fn (Option String)) (params (Ptr SExpr))
+                     (preconditions (List (Ptr SExpr))))
     (@intent "Create a new TestCase record")
-    (@spec ((Arena String (Option String) (List (Ptr SExpr)) (Ptr SExpr) (Option String) Bool Int (Option String)) -> (Ptr TestCase)))
+    (@spec ((Arena String (Option String) (List (Ptr SExpr)) (Ptr SExpr) (Option String) Bool Int (Option String) (Ptr SExpr) (List (Ptr SExpr))) -> (Ptr TestCase)))
     (@alloc arena)
     (let ((tc (cast (Ptr TestCase) (arena-alloc arena (sizeof TestCase)))))
-      (set! (deref tc) (TestCase fn-name module-name args expected return-type needs-arena arena-position eq-fn))
+      (set! (deref tc) (TestCase fn-name module-name args expected return-type needs-arena arena-position eq-fn params preconditions))
       tc))
 
   ;; ============================================================
@@ -152,6 +155,31 @@
         ((none) (none)))))
 
   ;; ============================================================
+  ;; Precondition Collection
+  ;; ============================================================
+
+  (fn collect-preconditions ((arena Arena) (fn-form (Ptr SExpr)))
+    (@intent "Collect the @pre condition expressions of a function definition")
+    (@spec ((Arena (Ptr SExpr)) -> (List (Ptr SExpr))))
+    (@alloc arena)
+    (@pre {fn-form != nil})
+    (let ((result (list-new arena (Ptr SExpr)))
+          (form-len (sexpr-list-len fn-form))
+          (mut i 3))
+      (while (< i form-len)
+        (match (sexpr-list-get fn-form i)
+          ((some item)
+            (when (is-form item "@pre")
+              ;; (@pre expr) - take the condition, ignoring the optional name form
+              (when (>= (sexpr-list-len item) 2)
+                (match (sexpr-list-get item 1)
+                  ((some cond-expr) (list-push result cond-expr))
+                  ((none) (do))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  ;; ============================================================
   ;; Example Extraction from Single Function
   ;; ============================================================
 
@@ -179,6 +207,9 @@
                         ((some params)
                           (let ((arena-pos (detect-arena-param params))
                                 (needs-arena (>= arena-pos 0))
+                                ;; Collected up front: @pre precedes @example in the
+                                ;; canonical ordering, but nothing enforces that.
+                                (preconditions (collect-preconditions arena fn-form))
                                 (mut return-type (Option String) (none)))
                             ;; Scan body for @spec and @example
                             (let ((form-len (sexpr-list-len fn-form))
@@ -192,7 +223,8 @@
                                     ;; Check for @example
                                     (when (is-form item "@example")
                                       (let ((example-tc (parse-example arena item fn-name module-name
-                                                                       return-type needs-arena arena-pos)))
+                                                                       return-type needs-arena arena-pos
+                                                                       params preconditions)))
                                         (match example-tc
                                           ((some tc) (list-push result tc))
                                           ((none) (do))))))
@@ -206,9 +238,10 @@
 
   (fn parse-example ((arena Arena) (example-form (Ptr SExpr)) (fn-name String)
                      (module-name (Option String)) (return-type (Option String))
-                     (needs-arena Bool) (arena-pos Int))
+                     (needs-arena Bool) (arena-pos Int) (params (Ptr SExpr))
+                     (preconditions (List (Ptr SExpr))))
     (@intent "Parse @example form into TestCase")
-    (@spec ((Arena (Ptr SExpr) String (Option String) (Option String) Bool Int) -> (Option (Ptr TestCase))))
+    (@spec ((Arena (Ptr SExpr) String (Option String) (Option String) Bool Int (Ptr SExpr) (List (Ptr SExpr))) -> (Option (Ptr TestCase))))
     (@alloc arena)
     ;; @example form: (@example arg1 arg2 ... -> expected)
     ;; or: (@example :eq eq-fn arg1 arg2 ... -> expected) for custom equality
@@ -263,7 +296,8 @@
                       (match (list-get items (+ arrow-idx 1))
                         ((some expected)
                           (some (test-case-new arena fn-name module-name final-args
-                                               expected return-type needs-arena arena-pos eq-fn)))
+                                               expected return-type needs-arena arena-pos eq-fn
+                                               params preconditions)))
                         ((none) (none)))))))))))))
 
   ;; ============================================================

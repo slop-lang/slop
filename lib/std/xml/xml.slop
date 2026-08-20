@@ -230,8 +230,8 @@
     (@pure)
     (@pre (!= n nil))
     (@pre (> (. name len) 0))
-    (@example (elem-with-href "href") -> (some "http://example.com"))
-    (@example (elem-with-href "missing") -> none)
+    (@example ((example-elem-with-href arena) "href") -> (some "http://example.com"))
+    (@example ((example-elem-with-href arena) "missing") -> none)
     (match n
       ((xml-elem elem)
         (let ((mut result (Option String) (none)))
@@ -321,8 +321,8 @@
     (@spec ((Arena (Ptr XmlNode)) -> String))
     (@alloc arena)
     (@pre (!= n nil))
-    (@example (text-node-hello arena) -> "hello")
-    (@example (elem-with-mixed-content arena) -> "hello world")
+    (@example (example-text-hello arena) -> "hello")
+    (@example (example-elem-mixed-content arena) -> "hello world")
     (let ((wrapper (cast (Ptr StringParts) (arena-alloc arena (sizeof StringParts)))))
       (set! (deref wrapper) (record-new StringParts (items (list-new arena String))))
       (collect-text-content arena n wrapper)
@@ -463,7 +463,7 @@
   (fn parser-expect ((p (Ptr XmlParser)) (expected Int))
     (@intent "Consume expected character or return error")
     (@spec (((Ptr XmlParser) Int) -> (Result Unit XmlError)))
-    (@example (p 62) -> (ok unit))
+    (@example ((parser-new arena ">") 62) -> (ok unit))
     (if (parser-at-end p)
       (error (parser-make-error p 'unexpected-end "unexpected end of input"))
       (if (== (parser-peek p) expected)
@@ -475,8 +475,8 @@
       "Check if input matches a string at current position without consuming")
     (@spec (((Ptr XmlParser) String) -> Bool))
     (@pure)
-    (@example (p "?>") -> true)
-    (@example (p "-->") -> false)
+    (@example ((parser-new arena "?>") "?>") -> true)
+    (@example ((parser-new arena "?>") "-->") -> false)
     (let ((s-len (string-len s))
           (p-pos (. p pos))
           (p-len (. p len)))
@@ -551,8 +551,8 @@
   (fn parse-char-ref ((p (Ptr XmlParser)))
     (@intent "Parse a character reference &#N; or &#xHH; (position after &#)")
     (@spec (((Ptr XmlParser)) -> (Result Int XmlError)))
-    (@example (parser-at-65-semicolon) -> (ok 65))
-    (@example (parser-at-x41-semicolon) -> (ok 65))
+    (@example (parser-new arena "65;") -> (ok 65))
+    (@example (parser-new arena "x41;") -> (ok 65))
     (do
       (let ((is-hex (== (parser-peek p) 120)))
         (if is-hex
@@ -802,10 +802,10 @@
     (@spec (((Ptr XmlNsScope) String) -> (Option String)))
     (@pure)
     (@example
-      (scope-with-xml "xml")
+      ((example-ns-scope-xml arena) "xml")
       ->
       (some "http://www.w3.org/XML/1998/namespace"))
-    (@example (nil-scope "foo") -> none)
+    (@example ((cast (Ptr XmlNsScope) nil) "foo") -> none)
     (if (== scope nil)
       (none)
       (do
@@ -1486,4 +1486,55 @@
     (let ((wrapper (cast (Ptr StringParts) (arena-alloc arena (sizeof StringParts)))))
       (set! (deref wrapper) (record-new StringParts (items (list-new arena String))))
       (stringify-node-pretty arena n wrapper 0 indent-size)
-      (string-build arena (. wrapper items)))))
+      (string-build arena (. wrapper items))))
+
+  ;; ============================================================
+  ;; Fixtures for @example blocks
+  ;;
+  ;; @example arguments are ordinary expressions, so a case that needs a
+  ;; constructed node builds it here instead of naming a symbol that does not
+  ;; exist. Module-local on purpose: this is test data, not API.
+  ;; ============================================================
+
+  (fn example-elem-with-href ((arena Arena))
+    (@intent "Fixture: an <a> element carrying href=\"http://example.com\"")
+    (@spec ((Arena) -> (Ptr XmlNode)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((n (xml-element arena (xml-qname arena "" "a" ""))))
+      (match (deref n)
+        ((xml-elem elem)
+          (xml-set-attribute arena elem (xml-qname arena "" "href" "") "http://example.com"))
+        (_ unit))
+      n))
+
+  (fn example-text-hello ((arena Arena))
+    (@intent "Fixture: a bare text node containing \"hello\"")
+    (@spec ((Arena) -> (Ptr XmlNode)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (xml-text arena "hello"))
+
+  (fn example-elem-mixed-content ((arena Arena))
+    (@intent "Fixture: a <p> element whose text is split across two children")
+    (@spec ((Arena) -> (Ptr XmlNode)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((n (xml-element arena (xml-qname arena "" "p" ""))))
+      (match (deref n)
+        ((xml-elem elem)
+          (do
+            (xml-add-child arena elem (xml-text arena "hello"))
+            (xml-add-child arena elem (xml-text arena " world"))))
+        (_ unit))
+      n))
+
+  (fn example-ns-scope-xml ((arena Arena))
+    (@intent "Fixture: a namespace scope binding the reserved xml prefix")
+    (@spec ((Arena) -> (Ptr XmlNsScope)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((scope (ns-scope-new arena nil)))
+      (ns-scope-add arena scope "xml" "http://www.w3.org/XML/1998/namespace")
+      scope))
+)
