@@ -141,6 +141,7 @@ slop_string expr_transpile_do_expr(context_TranspileContext* ctx, slop_list_type
 slop_string expr_transpile_when_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 uint8_t expr_set_is_self_assign(slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_set_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
+slop_string expr_resolve_arena_c_name(context_TranspileContext* ctx, slop_string op, slop_list_types_SExpr_ptr items);
 slop_string expr_get_arena_for_list_push_expr(context_TranspileContext* ctx, types_SExpr* list_expr, slop_string list_c);
 slop_string expr_get_arena_from_field_access(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string expr_get_arena_from_base(context_TranspileContext* ctx, types_SExpr* base_expr);

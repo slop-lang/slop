@@ -756,16 +756,43 @@ static inline bool slop_map_has(slop_map* map, const void* key) {
 static inline bool slop_map_remove(slop_map* map, const void* key) {
     uint64_t hash = map->hash(key);
     size_t idx = hash % map->cap;
-    for (size_t i = 0; i < map->cap; i++) {
-        size_t probe = (idx + i) % map->cap;
+
+    /* Locate the entry. */
+    size_t hole = map->cap;                 /* cap == "not found" sentinel */
+    for (size_t n = 0; n < map->cap; n++) {
+        size_t probe = (idx + n) % map->cap;
         if (!map->entries[probe].occupied) return false;
-        if (map->eq(map->entries[probe].key, key)) {
-            map->entries[probe].occupied = false;
-            map->len--;
-            return true;
-        }
+        if (map->eq(map->entries[probe].key, key)) { hole = probe; break; }
     }
-    return false;
+    if (hole == map->cap) return false;
+
+    /* Backward-shift deletion (Knuth 6.4R, adapted to forward probing).
+     * Clearing `occupied` on its own would truncate every probe chain that
+     * ran through this slot, so slop_map_get would stop early and report
+     * still-present keys as missing, and slop_map_put would insert a
+     * duplicate into the gap. Shifting later entries back preserves the
+     * invariant both rely on: every chain is contiguous from its home slot.
+     * slop_map_put grows at a 75% load factor, so an unoccupied slot always
+     * exists and the scan below always terminates. */
+    size_t i = hole;
+    for (;;) {
+        map->entries[i].occupied = false;
+        size_t j = i;
+        for (;;) {
+            j = (j + 1) % map->cap;
+            if (!map->entries[j].occupied) {
+                map->len--;
+                return true;
+            }
+            size_t k = map->hash(map->entries[j].key) % map->cap;
+            /* Entry j may fill the hole at i only if its home slot k does
+             * not lie cyclically within (i, j]. */
+            if (i <= j ? (i < k && k <= j) : (i < k || k <= j)) continue;
+            break;
+        }
+        map->entries[i] = map->entries[j];
+        i = j;
+    }
 }
 
 /* Get all keys - returns generic list of pointers to keys */

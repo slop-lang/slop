@@ -1,0 +1,184 @@
+;; ============================================================
+;; Test: set-remove preserves unrelated entries
+;;
+;; Regression for issue #67. slop_map_remove cleared an entry's
+;; `occupied` flag without closing the gap it left in the probe
+;; chain. Since slop_map_get stops at the first unoccupied slot,
+;; removing one key truncated every chain that ran through that
+;; slot, so still-present keys became unreachable. slop_map_put
+;; stops at the first unoccupied slot too, so a later put could
+;; also insert a duplicate into the freed slot.
+;;
+;; The pre-existing set-remove test used a single key with no
+;; collisions, which cannot expose either failure. These use
+;; enough keys that collisions are guaranteed by pigeonhole,
+;; independent of the hash function.
+;;
+;; Sets and Maps share one runtime table, so slop_map_remove is
+;; covered here entirely through set-remove. There is no direct
+;; map-remove coverage because map-remove has no transpiler
+;; codegen: it is documented (spec/LANGUAGE.md:711) and accepted
+;; by the checker (lib/compiler/checker/infer.slop:1321), but
+;; there is no case for it in the builtin dispatch table in
+;; lib/compiler/transpiler/expr.slop, so it fails to transpile.
+;; ============================================================
+
+(module test-map-set-remove
+
+  ;; ============================================================
+  ;; Test 1: keys that were NOT removed must still be findable
+  ;; ============================================================
+  (fn test-set-remove-preserves-others ()
+    (@intent "Every key not removed must still be found after removals")
+    (@spec (() -> Bool))
+    (with-arena 262144
+      (let ((s (set-new arena Int))
+            (mut i 0)
+            (mut lost 0))
+        (while (< i 200)
+          (do (set-put s i) (set! i (+ i 1))))
+        ;; remove every 10th key
+        (set! i 0)
+        (while (< i 200)
+          (do (set-remove s i) (set! i (+ i 10))))
+        (set! i 0)
+        (while (< i 200)
+          (do
+            (when (not (== (% i 10) 0))
+              (when (not (set-has s i)) (set! lost (+ lost 1))))
+            (set! i (+ i 1))))
+        (== lost 0))))
+
+  ;; ============================================================
+  ;; Test 2: keys that WERE removed must be gone
+  ;; ============================================================
+  (fn test-set-remove-removes ()
+    (@intent "Keys that were removed must not be found afterwards")
+    (@spec (() -> Bool))
+    (with-arena 262144
+      (let ((s (set-new arena Int))
+            (mut i 0)
+            (mut ghosts 0))
+        (while (< i 200)
+          (do (set-put s i) (set! i (+ i 1))))
+        (set! i 0)
+        (while (< i 200)
+          (do (set-remove s i) (set! i (+ i 10))))
+        (set! i 0)
+        (while (< i 200)
+          (do
+            (when (== (% i 10) 0)
+              (when (set-has s i) (set! ghosts (+ ghosts 1))))
+            (set! i (+ i 1))))
+        (== ghosts 0))))
+
+  ;; ============================================================
+  ;; Test 3: re-inserting a removed key must not duplicate it
+  ;; ============================================================
+  (fn test-set-remove-reinsert-no-duplicates ()
+    (@intent "remove then re-put must leave exactly one copy of each key")
+    (@spec (() -> Bool))
+    (with-arena 262144
+      (let ((s (set-new arena Int))
+            (mut i 0)
+            (mut n 0))
+        (while (< i 100)
+          (do (set-put s i) (set! i (+ i 1))))
+        ;; remove every other key, ascending
+        (set! i 0)
+        (while (< i 100)
+          (do (set-remove s i) (set! i (+ i 2))))
+        ;; re-insert them descending, so each probe runs into a fresh gap
+        (set! i 98)
+        (while (>= i 0)
+          (do (set-put s i) (set! i (- i 2))))
+        ;; for-each walks the raw table, so a duplicated key shows up twice
+        (for-each (item s)
+          (set! n (+ n 1)))
+        (== n 100))))
+
+  ;; ============================================================
+  ;; Test 4: iteration yields exactly the live keys after removal
+  ;; ============================================================
+  (fn test-set-iteration-after-remove ()
+    (@intent "for-each must yield exactly the entries that remain")
+    (@spec (() -> Bool))
+    (with-arena 262144
+      (let ((s (set-new arena Int))
+            (mut i 0)
+            (mut n 0)
+            (mut sum 0))
+        (while (< i 200)
+          (do (set-put s i) (set! i (+ i 1))))
+        (set! i 0)
+        (while (< i 200)
+          (do (set-remove s i) (set! i (+ i 10))))
+        (for-each (item s)
+          (do (set! n (+ n 1))
+              (set! sum (+ sum item))))
+        ;; 180 survivors; 0+1+..+199 = 19900, removed 0,10,..,190 = 1900
+        (and (== n 180) (== sum 18000)))))
+
+  ;; ============================================================
+  ;; Test 5: removal survives a table growth (rehash) afterwards
+  ;; ============================================================
+  (fn test-remove-then-grow ()
+    (@intent "Entries removed before a rehash must stay removed, others findable")
+    (@spec (() -> Bool))
+    (with-arena 262144
+      (let ((s (set-new arena Int))
+            (mut i 0)
+            (mut bad 0))
+        (while (< i 50)
+          (do (set-put s i) (set! i (+ i 1))))
+        ;; drop half, then push well past the growth threshold
+        (set! i 0)
+        (while (< i 50)
+          (do (set-remove s i) (set! i (+ i 2))))
+        (set! i 50)
+        (while (< i 400)
+          (do (set-put s i) (set! i (+ i 1))))
+        ;; evens below 50 gone, odds below 50 present, 50..399 present
+        (set! i 0)
+        (while (< i 400)
+          (do
+            (if (and (< i 50) (== (% i 2) 0))
+              (when (set-has s i) (set! bad (+ bad 1)))
+              (when (not (set-has s i)) (set! bad (+ bad 1))))
+            (set! i (+ i 1))))
+        (== bad 0))))
+
+  ;; ============================================================
+  ;; Main test runner
+  ;; ============================================================
+  (fn main ()
+    (@intent "Run all set-remove regression tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-set-remove-preserves-others)
+        (println "test-set-remove-preserves-others: PASS")
+        (do (println "test-set-remove-preserves-others: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-set-remove-removes)
+        (println "test-set-remove-removes: PASS")
+        (do (println "test-set-remove-removes: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-set-remove-reinsert-no-duplicates)
+        (println "test-set-remove-reinsert-no-duplicates: PASS")
+        (do (println "test-set-remove-reinsert-no-duplicates: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-set-iteration-after-remove)
+        (println "test-set-iteration-after-remove: PASS")
+        (do (println "test-set-iteration-after-remove: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-remove-then-grow)
+        (println "test-remove-then-grow: PASS")
+        (do (println "test-remove-then-grow: FAIL")
+            (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))
