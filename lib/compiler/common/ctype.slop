@@ -9,6 +9,8 @@
   (export
     ;; Type conversion
     to-c-type to-c-name type-to-identifier sexpr-to-type-string
+    ;; Pointer-to-container unwrapping
+    unwrap-ptr-container-type
     ;; Builtin type lookup
     builtin-type-c is-builtin-type is-builtin-c-type
     ;; Type category predicates
@@ -252,6 +254,37 @@
       (when (string-eq result "double")
         (set! result "float"))
       result))
+
+  ;; ============================================================
+  ;; Pointer-to-container Unwrapping
+  ;; ============================================================
+
+  (fn unwrap-ptr-container-type ((arena Arena) (slop-type String))
+    (@intent "Strip one (Ptr ...) layer from a Map or Set SLOP type, leaving every other type untouched")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (@post (<= (string-len $result) (string-len slop-type)))
+    (@example (arena "(Ptr (Map String Int))") -> "(Map String Int)")
+    (@example (arena "(Ptr (Set Int))") -> "(Set Int)")
+    (@example (arena "(Ptr (Map Term (Set Term)))") -> "(Map Term (Set Term))")
+    (@example (arena "(Map String Int)") -> "(Map String Int)")
+    (@example (arena "(Set Int)") -> "(Set Int)")
+    (@example (arena "(Ptr Node)") -> "(Ptr Node)")
+    (@example (arena "Int") -> "Int")
+    (@example (arena "") -> "")
+    ;; A (Ptr (Map K V)) / (Ptr (Set T)) is slop_map** and names exactly the same key
+    ;; and element types as the container it points at. The extractors that read those
+    ;; types match a literal "(Map " / "(Set " prefix, so without this they answer ""
+    ;; for the pointer form and every inference downstream silently degrades.
+    ;; Only Map and Set are unwrapped: for any other (Ptr T) the pointer is part of the
+    ;; value's own type, not an indirection to a container.
+    (if (or (starts-with slop-type "(Ptr (Map ")
+            (starts-with slop-type "(Ptr (Set "))
+      ;; Drop the leading "(Ptr " (5 chars) and its matching trailing ")" (1 char).
+      ;; Both guards above are 10 chars, so the length can never go negative.
+      (let ((inner-len (cast (Int 0 ..) (- (string-len slop-type) 6))))
+        (substring arena slop-type 5 inner-len))
+      slop-type))
 
   ;; ============================================================
   ;; Type Variable Detection

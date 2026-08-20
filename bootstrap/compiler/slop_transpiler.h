@@ -182,6 +182,7 @@ void transpiler_emit_primitive_option_types_header(context_TranspileContext* ctx
 uint8_t transpiler_is_primitive_or_runtime_type(slop_string type_name);
 void transpiler_emit_imported_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_imported_option_types_header(context_TranspileContext* ctx);
+void transpiler_emit_late_registered_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_late_registered_option_types_header(context_TranspileContext* ctx);
 void transpiler_emit_value_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_complex_value_list_types_header(context_TranspileContext* ctx);

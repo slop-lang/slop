@@ -47,10 +47,10 @@ slop_string expr_infer_field_access_list_type(context_TranspileContext* ctx, typ
 slop_string expr_list_type_to_option_type(context_TranspileContext* ctx, slop_string c_type);
 slop_string expr_prefix_list_element_type(context_TranspileContext* ctx, slop_string elem_type);
 slop_string expr_substring_after_prefix(slop_arena* arena, slop_string s, slop_string prefix);
-slop_string expr_extract_map_value_from_slop_type(slop_arena* arena, slop_string slop_type);
+slop_string expr_extract_map_value_from_slop_type(slop_arena* arena, slop_string raw_slop_type);
 slop_string expr_slop_value_type_to_c_type(context_TranspileContext* ctx, slop_string slop_type);
 slop_string expr_get_var_name_from_expr(types_SExpr* expr);
-slop_string expr_extract_map_key_from_slop_type(slop_arena* arena, slop_string slop_type);
+slop_string expr_extract_map_key_from_slop_type(slop_arena* arena, slop_string raw_slop_type);
 slop_string expr_resolve_type_alias(context_TranspileContext* ctx, slop_string slop_type);
 slop_string expr_infer_expr_slop_type(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string expr_infer_map_key_c_type_from_slop_type(context_TranspileContext* ctx, slop_string slop_type);
@@ -60,7 +60,7 @@ slop_string expr_extract_list_elem_from_inferred(context_TranspileContext* ctx, 
 slop_string expr_infer_map_key_c_type(context_TranspileContext* ctx, types_SExpr* map_expr);
 uint8_t expr_is_set_type(slop_string slop_type);
 uint8_t expr_is_map_type(slop_string slop_type);
-slop_string expr_extract_set_elem_from_slop_type(slop_arena* arena, slop_string slop_type);
+slop_string expr_extract_set_elem_from_slop_type(slop_arena* arena, slop_string raw_slop_type);
 slop_string expr_infer_set_elem_c_type(context_TranspileContext* ctx, types_SExpr* set_expr);
 slop_string expr_compound_slop_type_to_id(slop_arena* arena, slop_string slop_type);
 slop_string expr_slop_value_type_to_option_id(slop_arena* arena, slop_string slop_type);
@@ -129,6 +129,8 @@ slop_string expr_get_arena_from_field_access(context_TranspileContext* ctx, type
 slop_string expr_get_arena_from_base(context_TranspileContext* ctx, types_SExpr* base_expr);
 slop_string expr_get_arena_for_list_push(context_TranspileContext* ctx, slop_string list_c);
 uint8_t expr_is_ptr_to_ptr_map(context_TranspileContext* ctx, types_SExpr* expr);
+slop_string expr_deref_container_c(context_TranspileContext* ctx, slop_string container_c, slop_string slop_type);
+slop_string expr_resolve_container_c(context_TranspileContext* ctx, types_SExpr* container_expr);
 slop_string expr_transpile_record_new(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_record_fields(context_TranspileContext* ctx, slop_string type_name, slop_list_types_SExpr_ptr items, int64_t start_idx);
 slop_string expr_build_inline_struct_type(context_TranspileContext* ctx, slop_list_types_SExpr_ptr type_items);
@@ -1756,46 +1758,49 @@ slop_string expr_substring_after_prefix(slop_arena* arena, slop_string s, slop_s
     }
 }
 
-slop_string expr_extract_map_value_from_slop_type(slop_arena* arena, slop_string slop_type) {
+slop_string expr_extract_map_value_from_slop_type(slop_arena* arena, slop_string raw_slop_type) {
     {
-        __auto_type len = string_len(slop_type);
-        if (len < 10) {
-            return SLOP_STR("");
-        } else {
-            if (!(strlib_starts_with(slop_type, SLOP_STR("(Map ")))) {
+        __auto_type slop_type = ctype_unwrap_ptr_container_type(arena, raw_slop_type);
+        {
+            __auto_type len = string_len(slop_type);
+            if (len < 10) {
                 return SLOP_STR("");
             } else {
-                {
-                    int64_t i = 5;
-                    int64_t nesting = 1;
-                    int64_t key_space = 0;
-                    uint8_t found_key = 0;
-                    __auto_type end_idx = (len - 1);
-                    while ((i < end_idx) && !(found_key)) {
-                        {
-                            __auto_type c = strlib_char_at(slop_type, ((int64_t)(i)));
-                            if (c == 40) {
-                                nesting = (nesting + 1);
-                            } else if (c == 41) {
-                                nesting = (nesting - 1);
-                            } else if ((c == 32) && (nesting == 1)) {
-                                key_space = i;
-                                found_key = 1;
-                            } else {
+                if (!(strlib_starts_with(slop_type, SLOP_STR("(Map ")))) {
+                    return SLOP_STR("");
+                } else {
+                    {
+                        int64_t i = 5;
+                        int64_t nesting = 1;
+                        int64_t key_space = 0;
+                        uint8_t found_key = 0;
+                        __auto_type end_idx = (len - 1);
+                        while ((i < end_idx) && !(found_key)) {
+                            {
+                                __auto_type c = strlib_char_at(slop_type, ((int64_t)(i)));
+                                if (c == 40) {
+                                    nesting = (nesting + 1);
+                                } else if (c == 41) {
+                                    nesting = (nesting - 1);
+                                } else if ((c == 32) && (nesting == 1)) {
+                                    key_space = i;
+                                    found_key = 1;
+                                } else {
+                                }
                             }
+                            i = (i + 1);
                         }
-                        i = (i + 1);
-                    }
-                    if (!(found_key)) {
-                        return SLOP_STR("");
-                    } else {
-                        {
-                            __auto_type value_start = (key_space + 1);
-                            __auto_type value_len = (end_idx - value_start);
-                            if (value_len > 0) {
-                                return strlib_substring(arena, slop_type, ((int64_t)(value_start)), ((int64_t)(value_len)));
-                            } else {
-                                return SLOP_STR("");
+                        if (!(found_key)) {
+                            return SLOP_STR("");
+                        } else {
+                            {
+                                __auto_type value_start = (key_space + 1);
+                                __auto_type value_len = (end_idx - value_start);
+                                if (value_len > 0) {
+                                    return strlib_substring(arena, slop_type, ((int64_t)(value_start)), ((int64_t)(value_len)));
+                                } else {
+                                    return SLOP_STR("");
+                                }
                             }
                         }
                     }
@@ -1851,46 +1856,49 @@ slop_string expr_get_var_name_from_expr(types_SExpr* expr) {
     }
 }
 
-slop_string expr_extract_map_key_from_slop_type(slop_arena* arena, slop_string slop_type) {
+slop_string expr_extract_map_key_from_slop_type(slop_arena* arena, slop_string raw_slop_type) {
     {
-        __auto_type len = string_len(slop_type);
-        if (len < 10) {
-            return SLOP_STR("");
-        } else {
-            if (!(strlib_starts_with(slop_type, SLOP_STR("(Map ")))) {
+        __auto_type slop_type = ctype_unwrap_ptr_container_type(arena, raw_slop_type);
+        {
+            __auto_type len = string_len(slop_type);
+            if (len < 10) {
                 return SLOP_STR("");
             } else {
-                {
-                    int64_t i = 5;
-                    int64_t nesting = 1;
-                    int64_t key_space = 0;
-                    uint8_t found_key = 0;
-                    __auto_type end_idx = (len - 1);
-                    while ((i < end_idx) && !(found_key)) {
-                        {
-                            __auto_type c = strlib_char_at(slop_type, ((int64_t)(i)));
-                            if (c == 40) {
-                                nesting = (nesting + 1);
-                            } else if (c == 41) {
-                                nesting = (nesting - 1);
-                            } else if ((c == 32) && (nesting == 1)) {
-                                key_space = i;
-                                found_key = 1;
-                            } else {
+                if (!(strlib_starts_with(slop_type, SLOP_STR("(Map ")))) {
+                    return SLOP_STR("");
+                } else {
+                    {
+                        int64_t i = 5;
+                        int64_t nesting = 1;
+                        int64_t key_space = 0;
+                        uint8_t found_key = 0;
+                        __auto_type end_idx = (len - 1);
+                        while ((i < end_idx) && !(found_key)) {
+                            {
+                                __auto_type c = strlib_char_at(slop_type, ((int64_t)(i)));
+                                if (c == 40) {
+                                    nesting = (nesting + 1);
+                                } else if (c == 41) {
+                                    nesting = (nesting - 1);
+                                } else if ((c == 32) && (nesting == 1)) {
+                                    key_space = i;
+                                    found_key = 1;
+                                } else {
+                                }
                             }
+                            i = (i + 1);
                         }
-                        i = (i + 1);
-                    }
-                    if (!(found_key)) {
-                        return SLOP_STR("");
-                    } else {
-                        {
-                            __auto_type key_start = 5;
-                            __auto_type key_len = (key_space - key_start);
-                            if (key_len > 0) {
-                                return strlib_substring(arena, slop_type, ((int64_t)(key_start)), ((int64_t)(key_len)));
-                            } else {
-                                return SLOP_STR("");
+                        if (!(found_key)) {
+                            return SLOP_STR("");
+                        } else {
+                            {
+                                __auto_type key_start = 5;
+                                __auto_type key_len = (key_space - key_start);
+                                if (key_len > 0) {
+                                    return strlib_substring(arena, slop_type, ((int64_t)(key_start)), ((int64_t)(key_len)));
+                                } else {
+                                    return SLOP_STR("");
+                                }
                             }
                         }
                     }
@@ -2293,22 +2301,25 @@ uint8_t expr_is_map_type(slop_string slop_type) {
     return (strlib_starts_with(slop_type, SLOP_STR("(Map ")) || strlib_starts_with(slop_type, SLOP_STR("(Ptr (Map ")));
 }
 
-slop_string expr_extract_set_elem_from_slop_type(slop_arena* arena, slop_string slop_type) {
+slop_string expr_extract_set_elem_from_slop_type(slop_arena* arena, slop_string raw_slop_type) {
     {
-        __auto_type len = string_len(slop_type);
-        if (len < 7) {
-            return SLOP_STR("");
-        } else {
-            if (!(strlib_starts_with(slop_type, SLOP_STR("(Set ")))) {
+        __auto_type slop_type = ctype_unwrap_ptr_container_type(arena, raw_slop_type);
+        {
+            __auto_type len = string_len(slop_type);
+            if (len < 7) {
                 return SLOP_STR("");
             } else {
-                {
-                    __auto_type elem_start = 5;
-                    __auto_type elem_len = ((len - 1) - elem_start);
-                    if (elem_len > 0) {
-                        return strlib_substring(arena, slop_type, ((int64_t)(elem_start)), ((int64_t)(elem_len)));
-                    } else {
-                        return SLOP_STR("");
+                if (!(strlib_starts_with(slop_type, SLOP_STR("(Set ")))) {
+                    return SLOP_STR("");
+                } else {
+                    {
+                        __auto_type elem_start = 5;
+                        __auto_type elem_len = ((len - 1) - elem_start);
+                        if (elem_len > 0) {
+                            return strlib_substring(arena, slop_type, ((int64_t)(elem_start)), ((int64_t)(elem_len)));
+                        } else {
+                            return SLOP_STR("");
+                        }
                     }
                 }
             }
@@ -5171,12 +5182,12 @@ slop_string expr_slop_type_to_c_type(context_TranspileContext* ctx, slop_string 
             } else if (strlib_starts_with(slop_type, SLOP_STR("(List "))) {
                 {
                     __auto_type inner = strlib_substring(arena, slop_type, 6, ((0) > ((((int64_t)(string_len(slop_type))) - 7)) ? (0) : ((((int64_t)(string_len(slop_type))) - 7))));
-                    return context_ctx_str(ctx, SLOP_STR("slop_list_"), expr_slop_type_to_c_type(ctx, inner));
+                    return context_ctx_str(ctx, SLOP_STR("slop_list_"), ctype_type_to_identifier(arena, expr_slop_type_to_c_type(ctx, inner)));
                 }
             } else if (strlib_starts_with(slop_type, SLOP_STR("(Option "))) {
                 {
                     __auto_type inner = strlib_substring(arena, slop_type, 8, ((0) > ((((int64_t)(string_len(slop_type))) - 9)) ? (0) : ((((int64_t)(string_len(slop_type))) - 9))));
-                    return context_ctx_str(ctx, SLOP_STR("slop_option_"), expr_slop_type_to_c_type(ctx, inner));
+                    return context_ctx_str(ctx, SLOP_STR("slop_option_"), ctype_type_to_identifier(arena, expr_slop_type_to_c_type(ctx, inner)));
                 }
             } else if (strlib_starts_with(slop_type, SLOP_STR("(Chan "))) {
                 {
@@ -6853,7 +6864,32 @@ uint8_t expr_is_ptr_to_ptr_map(context_TranspileContext* ctx, types_SExpr* expr)
             }
         }
         default: {
-            return 0;
+            {
+                __auto_type slop_type = expr_resolve_type_alias(ctx, expr_infer_expr_slop_type(ctx, expr));
+                return (strlib_starts_with(slop_type, SLOP_STR("(Ptr (Map ")) || strlib_starts_with(slop_type, SLOP_STR("(Ptr (Set ")));
+            }
+        }
+    }
+}
+
+slop_string expr_deref_container_c(context_TranspileContext* ctx, slop_string container_c, slop_string slop_type) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    if (strlib_starts_with(slop_type, SLOP_STR("(Ptr (Map ")) || strlib_starts_with(slop_type, SLOP_STR("(Ptr (Set "))) {
+        return context_ctx_str3(ctx, SLOP_STR("(*"), container_c, SLOP_STR(")"));
+    } else {
+        return container_c;
+    }
+}
+
+slop_string expr_resolve_container_c(context_TranspileContext* ctx, types_SExpr* container_expr) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    SLOP_PRE(((container_expr != NULL)), "(!= container-expr nil)");
+    {
+        __auto_type c = expr_transpile_expr(ctx, container_expr);
+        if (expr_is_ptr_to_ptr_map(ctx, container_expr)) {
+            return context_ctx_str3(ctx, SLOP_STR("(*"), c, SLOP_STR(")"));
+        } else {
+            return c;
         }
     }
 }
@@ -7471,33 +7507,20 @@ slop_string expr_transpile_map_put(context_TranspileContext* ctx, slop_list_type
                     if (_mv_489.has_value) {
                         __auto_type val_expr = _mv_489.value;
                         {
-                            __auto_type map_c = expr_transpile_expr(ctx, map_expr);
+                            __auto_type map_c = expr_resolve_container_c(ctx, map_expr);
                             __auto_type key_c = expr_transpile_expr(ctx, key_expr);
                             __auto_type val_c = expr_transpile_expr(ctx, val_expr);
                             __auto_type key_ptr = expr_wrap_map_key_as_ptr(ctx, key_c, key_expr, map_expr);
-                            __auto_type needs_deref = expr_is_ptr_to_ptr_map(ctx, map_expr);
                             __auto_type val_decl_type = expr_map_put_value_decl_type(ctx, map_expr);
                             __auto_type arena_c = expr_resolve_arena_c_name(ctx, SLOP_STR("map-put"), items);
-                            if (needs_deref) {
-                                {
-                                    __auto_type s1 = context_ctx_str4(ctx, SLOP_STR("({ "), val_decl_type, SLOP_STR(" _val = "), val_c);
-                                    __auto_type s2 = context_ctx_str(ctx, s1, context_ctx_str5(ctx, SLOP_STR("; void* _vptr = slop_arena_alloc("), arena_c, SLOP_STR(", sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put("), arena_c, SLOP_STR(", (*")));
-                                    __auto_type s3 = context_ctx_str(ctx, s2, map_c);
-                                    __auto_type s4 = context_ctx_str(ctx, s3, SLOP_STR("), "));
-                                    __auto_type s5 = context_ctx_str(ctx, s4, key_ptr);
-                                    __auto_type s6 = context_ctx_str(ctx, s5, SLOP_STR(", _vptr); })"));
-                                    return s6;
-                                }
-                            } else {
-                                {
-                                    __auto_type s1 = context_ctx_str4(ctx, SLOP_STR("({ "), val_decl_type, SLOP_STR(" _val = "), val_c);
-                                    __auto_type s2 = context_ctx_str(ctx, s1, context_ctx_str5(ctx, SLOP_STR("; void* _vptr = slop_arena_alloc("), arena_c, SLOP_STR(", sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put("), arena_c, SLOP_STR(", ")));
-                                    __auto_type s3 = context_ctx_str(ctx, s2, map_c);
-                                    __auto_type s4 = context_ctx_str(ctx, s3, SLOP_STR(", "));
-                                    __auto_type s5 = context_ctx_str(ctx, s4, key_ptr);
-                                    __auto_type s6 = context_ctx_str(ctx, s5, SLOP_STR(", _vptr); })"));
-                                    return s6;
-                                }
+                            {
+                                __auto_type s1 = context_ctx_str4(ctx, SLOP_STR("({ "), val_decl_type, SLOP_STR(" _val = "), val_c);
+                                __auto_type s2 = context_ctx_str(ctx, s1, context_ctx_str5(ctx, SLOP_STR("; void* _vptr = slop_arena_alloc("), arena_c, SLOP_STR(", sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put("), arena_c, SLOP_STR(", ")));
+                                __auto_type s3 = context_ctx_str(ctx, s2, map_c);
+                                __auto_type s4 = context_ctx_str(ctx, s3, SLOP_STR(", "));
+                                __auto_type s5 = context_ctx_str(ctx, s4, key_ptr);
+                                __auto_type s6 = context_ctx_str(ctx, s5, SLOP_STR(", _vptr); })"));
+                                return s6;
                             }
                         }
                     } else if (!_mv_489.has_value) {
@@ -7532,7 +7555,7 @@ slop_string expr_transpile_map_get(context_TranspileContext* ctx, slop_list_type
                 if (_mv_491.has_value) {
                     __auto_type key_expr = _mv_491.value;
                     {
-                        __auto_type map_c = expr_transpile_expr(ctx, map_expr);
+                        __auto_type map_c = expr_resolve_container_c(ctx, map_expr);
                         __auto_type key_c = expr_transpile_expr(ctx, key_expr);
                         __auto_type key_ptr = expr_wrap_map_key_as_ptr(ctx, key_c, key_expr, map_expr);
                         __auto_type option_type = expr_infer_map_value_option_type(ctx, map_expr);
@@ -7574,7 +7597,7 @@ slop_string expr_transpile_map_has(context_TranspileContext* ctx, slop_list_type
                 if (_mv_493.has_value) {
                     __auto_type key_expr = _mv_493.value;
                     {
-                        __auto_type map_c = expr_transpile_expr(ctx, map_expr);
+                        __auto_type map_c = expr_resolve_container_c(ctx, map_expr);
                         __auto_type key_c = expr_transpile_expr(ctx, key_expr);
                         __auto_type key_ptr = expr_wrap_map_key_as_ptr(ctx, key_c, key_expr, map_expr);
                         return context_ctx_str(ctx, SLOP_STR("(slop_map_get("), context_ctx_str(ctx, map_c, context_ctx_str(ctx, SLOP_STR(", "), context_ctx_str(ctx, key_ptr, SLOP_STR(") != NULL)")))));
@@ -7606,15 +7629,10 @@ slop_string expr_transpile_map_remove(context_TranspileContext* ctx, slop_list_t
                 if (_mv_495.has_value) {
                     __auto_type key_expr = _mv_495.value;
                     {
-                        __auto_type map_c = expr_transpile_expr(ctx, map_expr);
+                        __auto_type map_c = expr_resolve_container_c(ctx, map_expr);
                         __auto_type key_c = expr_transpile_expr(ctx, key_expr);
                         __auto_type key_ptr = expr_wrap_map_key_as_ptr(ctx, key_c, key_expr, map_expr);
-                        __auto_type needs_deref = expr_is_ptr_to_ptr_map(ctx, map_expr);
-                        if (needs_deref) {
-                            return context_ctx_str(ctx, SLOP_STR("slop_map_remove((*"), context_ctx_str(ctx, map_c, context_ctx_str(ctx, SLOP_STR("), "), context_ctx_str(ctx, key_ptr, SLOP_STR(")")))));
-                        } else {
-                            return context_ctx_str(ctx, SLOP_STR("slop_map_remove("), context_ctx_str(ctx, map_c, context_ctx_str(ctx, SLOP_STR(", "), context_ctx_str(ctx, key_ptr, SLOP_STR(")")))));
-                        }
+                        return context_ctx_str(ctx, SLOP_STR("slop_map_remove("), context_ctx_str(ctx, map_c, context_ctx_str(ctx, SLOP_STR(", "), context_ctx_str(ctx, key_ptr, SLOP_STR(")")))));
                     }
                 } else if (!_mv_495.has_value) {
                     context_ctx_add_error_at(ctx, SLOP_STR("map-remove: missing key"), context_ctx_list_first_line(items), context_ctx_list_first_col(items));
@@ -7641,16 +7659,20 @@ slop_string expr_transpile_map_keys(context_TranspileContext* ctx, slop_list_typ
             if (_mv_496.has_value) {
                 __auto_type map_expr = _mv_496.value;
                 {
-                    __auto_type map_c = expr_transpile_expr(ctx, map_expr);
+                    __auto_type map_c = expr_resolve_container_c(ctx, map_expr);
                     __auto_type key_c_type = expr_infer_map_key_c_type(ctx, map_expr);
-                    __auto_type debug_var_name = expr_get_var_name_from_expr(map_expr);
-                    __auto_type debug_slop_type = ({ __auto_type _mv = context_ctx_lookup_var(ctx, debug_var_name); _mv.has_value ? ({ __auto_type entry = _mv.value; entry.slop_type; }) : (SLOP_STR("VAR_NOT_FOUND")); });
                     __auto_type arena_c = expr_resolve_arena_c_name(ctx, SLOP_STR("map-keys"), items);
-                    if (string_eq(key_c_type, SLOP_STR("slop_string")) || (string_len(key_c_type) == 0)) {
-                        return context_ctx_str(ctx, SLOP_STR("/* DEBUG: var="), context_ctx_str(ctx, debug_var_name, context_ctx_str(ctx, SLOP_STR(" slop="), context_ctx_str(ctx, debug_slop_type, context_ctx_str(ctx, SLOP_STR(" key="), context_ctx_str(ctx, key_c_type, context_ctx_str(ctx, context_ctx_str3(ctx, SLOP_STR(" */ slop_map_keys("), arena_c, SLOP_STR(", ")), context_ctx_str(ctx, map_c, SLOP_STR(")")))))))));
+                    if (string_eq(key_c_type, SLOP_STR("slop_string"))) {
+                        return context_ctx_str(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map_keys("), arena_c, SLOP_STR(", ")), context_ctx_str(ctx, map_c, SLOP_STR(")")));
+                    } else if (string_len(key_c_type) == 0) {
+                        context_ctx_add_error_at(ctx, SLOP_STR("map-keys: cannot infer key type"), context_ctx_list_first_line(items), context_ctx_list_first_col(items));
+                        return SLOP_STR("NULL");
                     } else {
                         {
-                            __auto_type list_type = context_ctx_str(ctx, SLOP_STR("slop_list_"), key_c_type);
+                            __auto_type key_id = ctype_type_to_identifier(arena, key_c_type);
+                            __auto_type list_type = context_ctx_str(ctx, SLOP_STR("slop_list_"), ctype_type_to_identifier(arena, key_c_type));
+                            context_ctx_register_list_type(ctx, key_c_type, list_type);
+                            context_ctx_register_option_type(ctx, key_c_type, context_ctx_str(ctx, SLOP_STR("slop_option_"), key_id));
                             return context_ctx_str(ctx, context_ctx_str3(ctx, SLOP_STR("({ slop_set_elements_result _r = slop_set_elements_raw("), arena_c, SLOP_STR(", ")), context_ctx_str(ctx, map_c, context_ctx_str(ctx, SLOP_STR("); ("), context_ctx_str(ctx, list_type, context_ctx_str(ctx, SLOP_STR("){.data = ("), context_ctx_str(ctx, key_c_type, context_ctx_str(ctx, SLOP_STR("*)_r.data, .len = _r.len, .cap = _r.cap}; })"), SLOP_STR(""))))))));
                         }
                     }
@@ -7709,7 +7731,7 @@ slop_string expr_transpile_set_put(context_TranspileContext* ctx, slop_list_type
                 if (_mv_500.has_value) {
                     __auto_type elem_expr = _mv_500.value;
                     {
-                        __auto_type set_c = expr_transpile_expr(ctx, set_expr);
+                        __auto_type set_c = expr_resolve_container_c(ctx, set_expr);
                         __auto_type elem_c = expr_transpile_expr(ctx, elem_expr);
                         __auto_type elem_ptr = expr_wrap_map_key_as_ptr(ctx, elem_c, elem_expr, set_expr);
                         __auto_type arena_c = expr_resolve_arena_c_name(ctx, SLOP_STR("set-put"), items);
@@ -7742,7 +7764,7 @@ slop_string expr_transpile_set_has(context_TranspileContext* ctx, slop_list_type
                 if (_mv_502.has_value) {
                     __auto_type elem_expr = _mv_502.value;
                     {
-                        __auto_type set_c = expr_transpile_expr(ctx, set_expr);
+                        __auto_type set_c = expr_resolve_container_c(ctx, set_expr);
                         __auto_type elem_c = expr_transpile_expr(ctx, elem_expr);
                         __auto_type elem_ptr = expr_wrap_map_key_as_ptr(ctx, elem_c, elem_expr, set_expr);
                         return context_ctx_str(ctx, SLOP_STR("(slop_map_get("), context_ctx_str(ctx, set_c, context_ctx_str(ctx, SLOP_STR(", "), context_ctx_str(ctx, elem_ptr, SLOP_STR(") != NULL)")))));
@@ -7774,7 +7796,7 @@ slop_string expr_transpile_set_remove(context_TranspileContext* ctx, slop_list_t
                 if (_mv_504.has_value) {
                     __auto_type elem_expr = _mv_504.value;
                     {
-                        __auto_type set_c = expr_transpile_expr(ctx, set_expr);
+                        __auto_type set_c = expr_resolve_container_c(ctx, set_expr);
                         __auto_type elem_c = expr_transpile_expr(ctx, elem_expr);
                         __auto_type elem_ptr = expr_wrap_map_key_as_ptr(ctx, elem_c, elem_expr, set_expr);
                         return context_ctx_str(ctx, SLOP_STR("slop_map_remove("), context_ctx_str(ctx, set_c, context_ctx_str(ctx, SLOP_STR(", "), context_ctx_str(ctx, elem_ptr, SLOP_STR(")")))));
@@ -7795,6 +7817,7 @@ slop_string expr_transpile_set_elements(context_TranspileContext* ctx, slop_list
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
         __auto_type len = ((int64_t)((items).len));
+        __auto_type arena = (*ctx).arena;
         if (len < 2) {
             context_ctx_add_error_at(ctx, SLOP_STR("set-elements: needs set"), context_ctx_list_first_line(items), context_ctx_list_first_col(items));
             return SLOP_STR("NULL");
@@ -7803,14 +7826,20 @@ slop_string expr_transpile_set_elements(context_TranspileContext* ctx, slop_list
             if (_mv_505.has_value) {
                 __auto_type set_expr = _mv_505.value;
                 {
-                    __auto_type set_c = expr_transpile_expr(ctx, set_expr);
+                    __auto_type set_c = expr_resolve_container_c(ctx, set_expr);
                     __auto_type elem_c_type = expr_infer_set_elem_c_type(ctx, set_expr);
                     __auto_type arena_c = expr_resolve_arena_c_name(ctx, SLOP_STR("set-elements"), items);
-                    if (string_eq(elem_c_type, SLOP_STR("slop_string")) || (string_len(elem_c_type) == 0)) {
+                    if (string_eq(elem_c_type, SLOP_STR("slop_string"))) {
                         return context_ctx_str(ctx, context_ctx_str3(ctx, SLOP_STR("slop_map_keys("), arena_c, SLOP_STR(", ")), context_ctx_str(ctx, set_c, SLOP_STR(")")));
+                    } else if (string_len(elem_c_type) == 0) {
+                        context_ctx_add_error_at(ctx, SLOP_STR("set-elements: cannot infer element type"), context_ctx_list_first_line(items), context_ctx_list_first_col(items));
+                        return SLOP_STR("NULL");
                     } else {
                         {
-                            __auto_type list_type = context_ctx_str(ctx, SLOP_STR("slop_list_"), elem_c_type);
+                            __auto_type elem_id = ctype_type_to_identifier(arena, elem_c_type);
+                            __auto_type list_type = context_ctx_str(ctx, SLOP_STR("slop_list_"), ctype_type_to_identifier(arena, elem_c_type));
+                            context_ctx_register_list_type(ctx, elem_c_type, list_type);
+                            context_ctx_register_option_type(ctx, elem_c_type, context_ctx_str(ctx, SLOP_STR("slop_option_"), elem_id));
                             return context_ctx_str(ctx, context_ctx_str3(ctx, SLOP_STR("({ slop_set_elements_result _r = slop_set_elements_raw("), arena_c, SLOP_STR(", ")), context_ctx_str(ctx, set_c, context_ctx_str(ctx, SLOP_STR("); ("), context_ctx_str(ctx, list_type, context_ctx_str(ctx, SLOP_STR("){.data = ("), context_ctx_str(ctx, elem_c_type, context_ctx_str(ctx, SLOP_STR("*)_r.data, .len = _r.len, .cap = _r.cap}; })"), SLOP_STR(""))))))));
                         }
                     }
@@ -8077,7 +8106,7 @@ slop_string expr_transpile_for_each_set_as_expr(context_TranspileContext* ctx, s
         __auto_type elem_slop_type = expr_extract_set_elem_from_slop_type(arena, resolved_type);
         __auto_type elem_c_type = expr_slop_value_type_to_c_type(ctx, elem_slop_type);
         {
-            __auto_type result = context_ctx_str3(ctx, SLOP_STR("({ slop_map* _coll = (slop_map*)"), coll_c, SLOP_STR("; for (size_t _i = 0; _i < _coll->cap; _i++) { "));
+            __auto_type result = context_ctx_str3(ctx, SLOP_STR("({ slop_map* _coll = (slop_map*)"), expr_deref_container_c(ctx, coll_c, resolved_type), SLOP_STR("; for (size_t _i = 0; _i < _coll->cap; _i++) { "));
             __auto_type if_part = SLOP_STR("if (_coll->entries[_i].occupied) { ");
             __auto_type cast_part = context_ctx_str(ctx, elem_c_type, SLOP_STR("*)_coll->entries[_i].key"));
             __auto_type assign_prefix = context_ctx_str4(ctx, elem_c_type, SLOP_STR(" "), var_name, SLOP_STR(" = *("));
@@ -8115,7 +8144,7 @@ slop_string expr_transpile_for_each_map_keys_as_expr(context_TranspileContext* c
         __auto_type key_slop_type = expr_extract_map_key_from_slop_type(arena, resolved_type);
         __auto_type key_c_type = expr_slop_value_type_to_c_type(ctx, key_slop_type);
         {
-            __auto_type result = context_ctx_str3(ctx, SLOP_STR("({ slop_map* _coll = (slop_map*)"), coll_c, SLOP_STR("; for (size_t _i = 0; _i < _coll->cap; _i++) { "));
+            __auto_type result = context_ctx_str3(ctx, SLOP_STR("({ slop_map* _coll = (slop_map*)"), expr_deref_container_c(ctx, coll_c, resolved_type), SLOP_STR("; for (size_t _i = 0; _i < _coll->cap; _i++) { "));
             __auto_type if_part = SLOP_STR("if (_coll->entries[_i].occupied) { ");
             __auto_type cast_part = context_ctx_str(ctx, key_c_type, SLOP_STR("*)_coll->entries[_i].key"));
             __auto_type assign_prefix = context_ctx_str4(ctx, key_c_type, SLOP_STR(" "), var_name, SLOP_STR(" = *("));
@@ -8191,7 +8220,7 @@ slop_string expr_transpile_for_each_map_kv_as_expr(context_TranspileContext* ctx
                                                             __auto_type key_c_type = expr_slop_value_type_to_c_type(ctx, key_slop_type);
                                                             __auto_type val_c_type = expr_slop_value_type_to_c_type(ctx, val_slop_type);
                                                             {
-                                                                __auto_type result = context_ctx_str3(ctx, SLOP_STR("({ slop_map* _coll = (slop_map*)"), map_c, SLOP_STR("; for (size_t _i = 0; _i < _coll->cap; _i++) { "));
+                                                                __auto_type result = context_ctx_str3(ctx, SLOP_STR("({ slop_map* _coll = (slop_map*)"), expr_deref_container_c(ctx, map_c, resolved_type), SLOP_STR("; for (size_t _i = 0; _i < _coll->cap; _i++) { "));
                                                                 __auto_type if_part = SLOP_STR("if (_coll->entries[_i].occupied) { ");
                                                                 __auto_type k_cast = context_ctx_str(ctx, key_c_type, SLOP_STR("*)_coll->entries[_i].key"));
                                                                 __auto_type k_prefix = context_ctx_str4(ctx, key_c_type, SLOP_STR(" "), k_name, SLOP_STR(" = *("));
@@ -9926,9 +9955,9 @@ slop_string expr_infer_elem_from_type(context_TranspileContext* ctx, types_SExpr
                             return SLOP_STR("");
                         }
                     }
-                } else if (strlib_starts_with(resolved_type, SLOP_STR("(Set "))) {
+                } else if (expr_is_set_type(resolved_type)) {
                     return expr_extract_set_elem_from_slop_type(arena, resolved_type);
-                } else if (strlib_starts_with(resolved_type, SLOP_STR("(Map "))) {
+                } else if (expr_is_map_type(resolved_type)) {
                     return expr_extract_map_key_from_slop_type(arena, resolved_type);
                 } else {
                     return SLOP_STR("");

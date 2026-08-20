@@ -1,0 +1,327 @@
+;; ============================================================
+;; Test: every container builtin through a (Ptr (Map ...)) / (Ptr (Set ...))
+;;
+;; Regression for issue #82. A (Ptr (Map K V)) / (Ptr (Set T)) is
+;; slop_map** in C, but every runtime entry point takes slop_map*.
+;; Only map-put derefed; the other eight builtins handed over the
+;; double pointer. Passing slop_map** where slop_map* is expected
+;; is merely a warning in C, and slop build discards cc output, so
+;; the build reported success and the program read a bad pointer.
+;;
+;; The for-each family was worse still: it emitted (slop_map*)coll,
+;; an EXPLICIT cast, which silences the warning entirely.
+;;
+;; Independently, the three extract-*-from-slop-type helpers matched
+;; a literal "(Map " / "(Set " prefix and so answered "" for the
+;; pointer form. That is why map-get fell back to an anonymous
+;; struct returning void*, and why for-each emitted bindings with no
+;; element type at all -- both hard C errors rather than warnings.
+;;
+;; Every helper below therefore has to be exercised through (addr x),
+;; and the assertions run against the plain binding. tests/multimod
+;; had two (Ptr (Map ...)) functions but is run by nothing, and
+;; (Ptr (Set T)) had no coverage anywhere in the repo.
+;; ============================================================
+
+(module test-ptr-map-ops
+
+  ;; ============================================================
+  ;; Helpers taking a pointer-to-container
+  ;; ============================================================
+
+  (fn p-map-put ((arena Arena) (m (Ptr (Map String Int))) (k String) (v Int))
+    (@intent "map-put through a Ptr Map")
+    (@spec ((Arena (Ptr (Map String Int)) String Int) -> Bool))
+    (@pre {m != nil})
+    (do (map-put m k v) true))
+
+  (fn p-map-get ((m (Ptr (Map String Int))) (k String))
+    (@intent "map-get through a Ptr Map; -1 when absent")
+    (@spec (((Ptr (Map String Int)) String) -> Int))
+    (@pre {m != nil})
+    (match (map-get m k)
+      ((some v) v)
+      ((none) -1)))
+
+  (fn p-map-has ((m (Ptr (Map String Int))) (k String))
+    (@intent "map-has through a Ptr Map")
+    (@spec (((Ptr (Map String Int)) String) -> Bool))
+    (@pre {m != nil})
+    (map-has m k))
+
+  (fn p-map-remove ((m (Ptr (Map String Int))) (k String))
+    (@intent "map-remove through a Ptr Map")
+    (@spec (((Ptr (Map String Int)) String) -> Bool))
+    (@pre {m != nil})
+    (do (map-remove m k) true))
+
+  (fn p-map-key-count ((arena Arena) (m (Ptr (Map String Int))))
+    (@intent "map-keys through a Ptr Map")
+    (@spec ((Arena (Ptr (Map String Int))) -> Int))
+    (@pre {m != nil})
+    (list-len (map-keys m)))
+
+  (fn p-map-value-sum ((m (Ptr (Map String Int))))
+    (@intent "for-each over a Ptr Map in statement position")
+    (@spec (((Ptr (Map String Int))) -> Int))
+    (@pre {m != nil})
+    (let ((mut total 0))
+      (for-each ((k v) m)
+        (set! total (+ total v)))
+      total))
+
+  (fn p-set-put ((arena Arena) (s (Ptr (Set Int))) (e Int))
+    (@intent "set-put through a Ptr Set")
+    (@spec ((Arena (Ptr (Set Int)) Int) -> Bool))
+    (@pre {s != nil})
+    (do (set-put s e) true))
+
+  (fn p-set-has ((s (Ptr (Set Int))) (e Int))
+    (@intent "set-has through a Ptr Set")
+    (@spec (((Ptr (Set Int)) Int) -> Bool))
+    (@pre {s != nil})
+    (set-has s e))
+
+  (fn p-set-remove ((s (Ptr (Set Int))) (e Int))
+    (@intent "set-remove through a Ptr Set")
+    (@spec (((Ptr (Set Int)) Int) -> Bool))
+    (@pre {s != nil})
+    (do (set-remove s e) true))
+
+  (fn p-set-elem-count ((arena Arena) (s (Ptr (Set Int))))
+    (@intent "set-elements through a Ptr Set")
+    (@spec ((Arena (Ptr (Set Int))) -> Int))
+    (@pre {s != nil})
+    (list-len (set-elements s)))
+
+  (fn p-set-sum ((s (Ptr (Set Int))))
+    (@intent "for-each over a Ptr Set in statement position")
+    (@spec (((Ptr (Set Int))) -> Int))
+    (@pre {s != nil})
+    (let ((mut total 0))
+      (for-each (e s)
+        (set! total (+ total e)))
+      total))
+
+  (fn p-map-sum-as-expr ((m (Ptr (Map String Int))))
+    (@intent "for-each over a Ptr Map in expression position")
+    (@spec (((Ptr (Map String Int))) -> Int))
+    (@pre {m != nil})
+    (let ((mut total 0))
+      ;; Binding the for-each inside a let routes it through the
+      ;; expression-position emitter, a separate copy of the same code.
+      (let ((result (do (for-each ((k v) m) (set! total (+ total v))) total)))
+        result)))
+
+  (fn p-set-sum-in-match ((m (Ptr (Map String Int))) (s (Ptr (Set Int))) (k String))
+    (@intent "for-each over a Ptr Set inside a match arm")
+    (@spec (((Ptr (Map String Int)) (Ptr (Set Int)) String) -> Int))
+    (@pre {m != nil})
+    (@pre {s != nil})
+    (let ((mut total 0))
+      ;; A for-each in a match branch goes through yet a third copy,
+      ;; the inline emitter in match.slop.
+      (match (map-get m k)
+        ((some base)
+          (do
+            (for-each (e s)
+              (set! total (+ total e)))
+            (+ total base)))
+        ((none) -1))))
+
+  ;; ============================================================
+  ;; Test 1: map builtins through a pointer
+  ;; ============================================================
+  (fn test-ptr-map-builtins ()
+    (@intent "map-put/get/has/remove/keys must all deref a Ptr Map")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((m (map-new arena String Int))
+            (mut ok true))
+        (map-put m "a" 1)
+        (map-put m "b" 2)
+        ;; write through the pointer, read through the plain binding
+        (when (not (p-map-put arena (addr m) "c" 3)) (set! ok false))
+        (when (not (map-has m "c")) (set! ok false))
+        (match (map-get m "c")
+          ((some v) (when (not (== v 3)) (set! ok false)))
+          ((none) (set! ok false)))
+        ;; read through the pointer
+        (when (not (== (p-map-get (addr m) "b") 2)) (set! ok false))
+        (when (not (== (p-map-get (addr m) "zz") -1)) (set! ok false))
+        (when (not (p-map-has (addr m) "a")) (set! ok false))
+        (when (p-map-has (addr m) "zz") (set! ok false))
+        (when (not (== (p-map-key-count arena (addr m)) 3)) (set! ok false))
+        ;; remove through the pointer
+        (when (not (p-map-remove (addr m) "b")) (set! ok false))
+        (when (map-has m "b") (set! ok false))
+        (when (not (== (p-map-key-count arena (addr m)) 2)) (set! ok false))
+        ok)))
+
+  ;; ============================================================
+  ;; Test 2: set builtins through a pointer
+  ;; ============================================================
+  (fn test-ptr-set-builtins ()
+    (@intent "set-put/has/remove/elements must all deref a Ptr Set")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((s (set-new arena Int))
+            (mut ok true))
+        (set-put s 10)
+        (set-put s 20)
+        (when (not (p-set-put arena (addr s) 30)) (set! ok false))
+        (when (not (set-has s 30)) (set! ok false))
+        (when (not (p-set-has (addr s) 10)) (set! ok false))
+        (when (p-set-has (addr s) 99) (set! ok false))
+        (when (not (== (p-set-elem-count arena (addr s)) 3)) (set! ok false))
+        (when (not (p-set-remove (addr s) 20)) (set! ok false))
+        (when (set-has s 20) (set! ok false))
+        (when (not (== (p-set-elem-count arena (addr s)) 2)) (set! ok false))
+        ok)))
+
+  ;; ============================================================
+  ;; Test 3: for-each in all three emitter positions
+  ;;
+  ;; The set/map-keys/map-kv for-each emitters are triplicated
+  ;; across stmt.slop, match.slop and expr.slop -- nine functions,
+  ;; nine identical casts. Statement position alone would leave six
+  ;; of them unexercised.
+  ;; ============================================================
+  (fn test-ptr-foreach-positions ()
+    (@intent "for-each over a Ptr container must deref in statement, expression and match positions")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((m (map-new arena String Int))
+            (s (set-new arena Int))
+            (mut ok true))
+        (map-put m "a" 1)
+        (map-put m "b" 2)
+        (map-put m "c" 4)
+        (set-put s 100)
+        (set-put s 200)
+        ;; statement position
+        (when (not (== (p-map-value-sum (addr m)) 7)) (set! ok false))
+        (when (not (== (p-set-sum (addr s)) 300)) (set! ok false))
+        ;; expression position
+        (when (not (== (p-map-sum-as-expr (addr m)) 7)) (set! ok false))
+        ;; inside a match arm: 100 + 200 + m["b"]
+        (when (not (== (p-set-sum-in-match (addr m) (addr s) "b") 302)) (set! ok false))
+        (when (not (== (p-set-sum-in-match (addr m) (addr s) "zz") -1)) (set! ok false))
+        ok)))
+
+  ;; ============================================================
+  ;; Test 4: containers reached by field access rather than a bare symbol
+  ;;
+  ;; Two different shapes, and the distinction matters:
+  ;;
+  ;;   (. st items) where items is a (Map K V)       -> slop_map*,
+  ;;       already correct, and must NOT gain a deref.
+  ;;   (. st mref)  where mref  is a (Ptr (Map K V)) -> slop_map**,
+  ;;       and needs one.
+  ;;
+  ;; is-ptr-to-ptr-map only matched a bare symbol whose C type ended
+  ;; in **, so the second shape took the broken path. Both are here
+  ;; so a future change cannot fix one by breaking the other.
+  ;; ============================================================
+  (type Store (record (items (Map String Int))))
+  (type StoreRef (record (mref (Ptr (Map String Int))) (tag Int)))
+
+  (fn ref-count ((arena Arena) (sr (Ptr StoreRef)))
+    (@intent "map-keys on a map reached through a Ptr-Map field")
+    (@spec ((Arena (Ptr StoreRef)) -> Int))
+    (@pre {sr != nil})
+    (list-len (map-keys (. sr mref))))
+
+  (fn ref-lookup ((sr (Ptr StoreRef)) (k String))
+    (@intent "map-get on a map reached through a Ptr-Map field")
+    (@spec (((Ptr StoreRef) String) -> Int))
+    (@pre {sr != nil})
+    (match (map-get (. sr mref) k)
+      ((some v) v)
+      ((none) -1)))
+
+  (fn ref-sum ((sr (Ptr StoreRef)))
+    (@intent "for-each over a map reached through a Ptr-Map field")
+    (@spec (((Ptr StoreRef)) -> Int))
+    (@pre {sr != nil})
+    (let ((mut total 0))
+      (for-each ((k v) (. sr mref))
+        (set! total (+ total v)))
+      total))
+
+  (fn store-count ((arena Arena) (st (Ptr Store)))
+    (@intent "map-keys on a map reached through a field of a Ptr record")
+    (@spec ((Arena (Ptr Store)) -> Int))
+    (@pre {st != nil})
+    (list-len (map-keys (. st items))))
+
+  (fn store-lookup ((st (Ptr Store)) (k String))
+    (@intent "map-get on a map reached through a field of a Ptr record")
+    (@spec (((Ptr Store) String) -> Int))
+    (@pre {st != nil})
+    (match (map-get (. st items) k)
+      ((some v) v)
+      ((none) -1)))
+
+  (fn test-ptr-map-via-field ()
+    (@intent "Container builtins must work on a map reached by field access")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((st (record-new Store (items (map-new arena String Int))))
+            (mut ok true))
+        (map-put (. st items) "x" 41)
+        (map-put (. st items) "y" 42)
+        (when (not (== (store-count arena (addr st)) 2)) (set! ok false))
+        (when (not (== (store-lookup (addr st) "y") 42)) (set! ok false))
+        (when (not (== (store-lookup (addr st) "nope") -1)) (set! ok false))
+        ok)))
+
+  (fn test-ptr-map-field-is-ptr ()
+    (@intent "A record field that is itself a (Ptr (Map ...)) must be dereferenced")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((m (map-new arena String Int))
+            (mut ok true))
+        (map-put m "p" 5)
+        (map-put m "q" 7)
+        (let ((sr (record-new StoreRef (mref (addr m)) (tag 1))))
+          (when (not (== (ref-count arena (addr sr)) 2)) (set! ok false))
+          (when (not (== (ref-lookup (addr sr) "q") 7)) (set! ok false))
+          (when (not (== (ref-lookup (addr sr) "nope") -1)) (set! ok false))
+          (when (not (== (ref-sum (addr sr)) 12)) (set! ok false)))
+        ok)))
+
+  ;; ============================================================
+  ;; Main test runner
+  ;; ============================================================
+  (fn main ()
+    (@intent "Run all pointer-to-container regression tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-ptr-map-builtins)
+        (println "test-ptr-map-builtins: PASS")
+        (do (println "test-ptr-map-builtins: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-ptr-set-builtins)
+        (println "test-ptr-set-builtins: PASS")
+        (do (println "test-ptr-set-builtins: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-ptr-foreach-positions)
+        (println "test-ptr-foreach-positions: PASS")
+        (do (println "test-ptr-foreach-positions: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-ptr-map-via-field)
+        (println "test-ptr-map-via-field: PASS")
+        (do (println "test-ptr-map-via-field: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-ptr-map-field-is-ptr)
+        (println "test-ptr-map-field-is-ptr: PASS")
+        (do (println "test-ptr-map-field-is-ptr: FAIL")
+            (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))

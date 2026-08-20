@@ -1,0 +1,255 @@
+;; ============================================================
+;; Test: set-elements / map-keys across element types
+;;
+;; Regression for issue #72. Both builtins named the generated C
+;; list type by concatenating the raw C type -- "slop_list_" +
+;; "int64_t" -- while the runtime's typedefs are named after the
+;; SLOP type (slop_list_int). Every other slop_list_ construction
+;; in the compiler routes through type-to-identifier, which maps
+;; int64_t -> int; these two were the only sites that did not, so
+;; they emitted an identifier that is never declared.
+;;
+;; In practice that meant set-elements only worked for (Set String),
+;; which short-circuits to slop_map_keys and never names a typed
+;; list at all. There were zero non-String call sites anywhere in
+;; the repo, so the typed branch was dead code.
+;;
+;; Element types are chosen to cover the three distinct outcomes:
+;;   Int / a record key -> a name the runtime already provides, or
+;;                         one the prescan registers
+;;   Bool               -> slop_list_u8, which the runtime does NOT
+;;                         predefine and no type annotation mentions,
+;;                         so it only exists if set-elements itself
+;;                         registers it and the late header pass
+;;                         emits SLOP_LIST_DEFINE(uint8_t, ...)
+;;   String             -> the legacy slop_map_keys path
+;;
+;; Iteration order of a hash table is unspecified, so every check
+;; below is over a sum or a count, never a position.
+;; ============================================================
+
+(module test-set-elements
+
+  (type Point (record (x Int) (y Int)))
+
+  ;; ============================================================
+  ;; A plain (List Int) consumer.
+  ;;
+  ;; This is what actually pins the naming rule. Registering the list
+  ;; type on demand is enough to make ANY name compile -- a wrong name
+  ;; just gets its own redundant SLOP_LIST_DEFINE -- so a test that only
+  ;; builds and counts cannot tell slop_list_int from slop_list_int64_t.
+  ;; Passing the result to a function declared to take (List Int), whose
+  ;; C type is slop_list_int, forces the two to be the same type.
+  ;; ============================================================
+  (fn sum-int-list ((xs (List Int)))
+    (@intent "Sum a (List Int), whatever produced it")
+    (@spec (((List Int)) -> Int))
+    (let ((n (list-len xs))
+          (mut i 0)
+          (mut total 0))
+      (while (< i n)
+        (do
+          (match (list-get xs i)
+            ((some v) (set! total (+ total v)))
+            ((none) (do)))
+          (set! i (+ i 1))))
+      total))
+
+  ;; ============================================================
+  ;; Test 1: (Set Int) -- was slop_list_int64_t, undeclared
+  ;; ============================================================
+  (fn test-set-elements-int ()
+    (@intent "set-elements on a (Set Int) must return every element")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((s (set-new arena Int))
+            (mut i 0)
+            (mut n 0)
+            (mut sum 0))
+        (while (< i 10)
+          (do (set-put s (* i i)) (set! i (+ i 1))))
+        (let ((elems (set-elements s)))
+          (set! n (list-len elems))
+          (set! i 0)
+          (while (< i n)
+            (do
+              (match (list-get elems i)
+                ((some v) (set! sum (+ sum v)))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        ;; 0+1+4+9+16+25+36+49+64+81 = 285
+        ;; The third clause is the type-identity check: sum-int-list takes a
+        ;; (List Int), so this only compiles if set-elements produced exactly
+        ;; slop_list_int and not a parallel type of its own.
+        (and (== n 10)
+             (and (== sum 285)
+                  (== (sum-int-list (set-elements s)) 285))))))
+
+  ;; ============================================================
+  ;; Test 2: (Set Bool) -- needs an on-demand SLOP_LIST_DEFINE
+  ;;
+  ;; Bool is uint8_t, so the list type is slop_list_u8, which the
+  ;; runtime does not predefine. Nothing in this function carries a
+  ;; (Set Bool) type annotation, so the prescan never sees it --
+  ;; the typedef exists only if set-elements registers it itself.
+  ;; ============================================================
+  (fn test-set-elements-bool ()
+    (@intent "set-elements on a (Set Bool) must emit and use slop_list_u8")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((s (set-new arena Bool))
+            (mut n 0)
+            (mut trues 0)
+            (mut i 0))
+        (set-put s true)
+        (set-put s false)
+        (set-put s true)
+        (let ((elems (set-elements s)))
+          (set! n (list-len elems))
+          (while (< i n)
+            (do
+              (match (list-get elems i)
+                ((some v) (when v (set! trues (+ trues 1))))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        ;; true was inserted twice, so the set holds exactly {true, false}
+        (and (== n 2) (== trues 1)))))
+
+  ;; ============================================================
+  ;; Test 3: (Set String) -- the legacy slop_map_keys path
+  ;; ============================================================
+  (fn test-set-elements-string ()
+    (@intent "set-elements on a (Set String) must keep working via slop_map_keys")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((s (set-new arena String))
+            (mut n 0)
+            (mut chars 0)
+            (mut i 0))
+        (set-put s "alpha")
+        (set-put s "be")
+        (set-put s "gamma")
+        (let ((elems (set-elements s)))
+          (set! n (list-len elems))
+          (while (< i n)
+            (do
+              (match (list-get elems i)
+                ((some v) (set! chars (+ chars (string-len v))))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        ;; 5 + 2 + 5
+        (and (== n 3) (== chars 12)))))
+
+  ;; ============================================================
+  ;; Test 4: (Set Point) -- a record element type
+  ;; ============================================================
+  (fn test-set-elements-record ()
+    (@intent "set-elements on a set of records must return whole records")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((s (set-new arena Point))
+            (mut n 0)
+            (mut total 0)
+            (mut i 0))
+        (set-put s (Point 1 2))
+        (set-put s (Point 10 20))
+        (let ((elems (set-elements s)))
+          (set! n (list-len elems))
+          (while (< i n)
+            (do
+              (match (list-get elems i)
+                ((some p) (set! total (+ total (+ (. p x) (. p y)))))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        ;; (1+2) + (10+20)
+        (and (== n 2) (== total 33)))))
+
+  ;; ============================================================
+  ;; Test 5: map-keys on an Int-keyed map -- the same typed path
+  ;; ============================================================
+  (fn test-map-keys-int ()
+    (@intent "map-keys on a (Map Int V) must return every key")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((m (map-new arena Int String))
+            (mut n 0)
+            (mut sum 0)
+            (mut i 0))
+        (map-put m 3 "three")
+        (map-put m 5 "five")
+        (map-put m 11 "eleven")
+        (let ((ks (map-keys m)))
+          (set! n (list-len ks))
+          (while (< i n)
+            (do
+              (match (list-get ks i)
+                ((some k) (set! sum (+ sum k)))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        (and (== n 3)
+             (and (== sum 19)
+                  ;; same type-identity check on the map-keys path
+                  (== (sum-int-list (map-keys m)) 19))))))
+
+  ;; ============================================================
+  ;; Test 6: map-keys on a String-keyed map -- the legacy path
+  ;; ============================================================
+  (fn test-map-keys-string ()
+    (@intent "map-keys on a (Map String V) must keep working via slop_map_keys")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((m (map-new arena String Int))
+            (mut n 0)
+            (mut chars 0)
+            (mut i 0))
+        (map-put m "aa" 1)
+        (map-put m "bbb" 2)
+        (let ((ks (map-keys m)))
+          (set! n (list-len ks))
+          (while (< i n)
+            (do
+              (match (list-get ks i)
+                ((some k) (set! chars (+ chars (string-len k))))
+                ((none) (do)))
+              (set! i (+ i 1)))))
+        (and (== n 2) (== chars 5)))))
+
+  ;; ============================================================
+  ;; Main test runner
+  ;; ============================================================
+  (fn main ()
+    (@intent "Run all set-elements / map-keys element-type tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-set-elements-int)
+        (println "test-set-elements-int: PASS")
+        (do (println "test-set-elements-int: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-set-elements-bool)
+        (println "test-set-elements-bool: PASS")
+        (do (println "test-set-elements-bool: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-set-elements-string)
+        (println "test-set-elements-string: PASS")
+        (do (println "test-set-elements-string: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-set-elements-record)
+        (println "test-set-elements-record: PASS")
+        (do (println "test-set-elements-record: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-keys-int)
+        (println "test-map-keys-int: PASS")
+        (do (println "test-map-keys-int: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-keys-string)
+        (println "test-map-keys-string: PASS")
+        (do (println "test-map-keys-string: FAIL")
+            (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))

@@ -65,10 +65,10 @@ slop_string expr_infer_field_access_list_type(context_TranspileContext* ctx, typ
 slop_string expr_list_type_to_option_type(context_TranspileContext* ctx, slop_string c_type);
 slop_string expr_prefix_list_element_type(context_TranspileContext* ctx, slop_string elem_type);
 slop_string expr_substring_after_prefix(slop_arena* arena, slop_string s, slop_string prefix);
-slop_string expr_extract_map_value_from_slop_type(slop_arena* arena, slop_string slop_type);
+slop_string expr_extract_map_value_from_slop_type(slop_arena* arena, slop_string raw_slop_type);
 slop_string expr_slop_value_type_to_c_type(context_TranspileContext* ctx, slop_string slop_type);
 slop_string expr_get_var_name_from_expr(types_SExpr* expr);
-slop_string expr_extract_map_key_from_slop_type(slop_arena* arena, slop_string slop_type);
+slop_string expr_extract_map_key_from_slop_type(slop_arena* arena, slop_string raw_slop_type);
 slop_string expr_resolve_type_alias(context_TranspileContext* ctx, slop_string slop_type);
 slop_string expr_infer_expr_slop_type(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string expr_infer_map_key_c_type_from_slop_type(context_TranspileContext* ctx, slop_string slop_type);
@@ -78,7 +78,7 @@ slop_string expr_extract_list_elem_from_inferred(context_TranspileContext* ctx, 
 slop_string expr_infer_map_key_c_type(context_TranspileContext* ctx, types_SExpr* map_expr);
 uint8_t expr_is_set_type(slop_string slop_type);
 uint8_t expr_is_map_type(slop_string slop_type);
-slop_string expr_extract_set_elem_from_slop_type(slop_arena* arena, slop_string slop_type);
+slop_string expr_extract_set_elem_from_slop_type(slop_arena* arena, slop_string raw_slop_type);
 slop_string expr_infer_set_elem_c_type(context_TranspileContext* ctx, types_SExpr* set_expr);
 slop_string expr_compound_slop_type_to_id(slop_arena* arena, slop_string slop_type);
 slop_string expr_slop_value_type_to_option_id(slop_arena* arena, slop_string slop_type);
@@ -147,6 +147,8 @@ slop_string expr_get_arena_from_field_access(context_TranspileContext* ctx, type
 slop_string expr_get_arena_from_base(context_TranspileContext* ctx, types_SExpr* base_expr);
 slop_string expr_get_arena_for_list_push(context_TranspileContext* ctx, slop_string list_c);
 uint8_t expr_is_ptr_to_ptr_map(context_TranspileContext* ctx, types_SExpr* expr);
+slop_string expr_deref_container_c(context_TranspileContext* ctx, slop_string container_c, slop_string slop_type);
+slop_string expr_resolve_container_c(context_TranspileContext* ctx, types_SExpr* container_expr);
 slop_string expr_transpile_record_new(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_record_fields(context_TranspileContext* ctx, slop_string type_name, slop_list_types_SExpr_ptr items, int64_t start_idx);
 slop_string expr_build_inline_struct_type(context_TranspileContext* ctx, slop_list_types_SExpr_ptr type_items);

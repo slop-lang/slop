@@ -67,6 +67,10 @@ run_unit_tests "tests/example-harness" "example-harness"
 # alongside the negative fixture below, which independently proves the harness still
 # tells a pass from a skip from a failure.
 run_unit_tests "lib/compiler/tester" "tester"
+# Shared C-type/identifier helpers. These @example blocks predate this entry and were
+# never run by anything; the naming rules they pin (type-to-identifier, and the
+# Ptr-container unwrapping) are what issues #72 and #82 turned on.
+run_unit_tests "lib/compiler/common" "ctype"
 
 # A run whose @examples fail or cannot be compiled must exit non-zero and account
 # for each outcome separately. Before issue #71 was fixed an un-runnable @example
