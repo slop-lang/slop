@@ -23,6 +23,7 @@ slop_string expr_escape_c_string(context_TranspileContext* ctx, slop_string s);
 slop_string expr_wrap_arena_alloc_checked(context_TranspileContext* ctx, slop_string alloc_expr);
 uint8_t expr_is_binop(slop_string op);
 uint8_t expr_is_comparison_op(slop_string op);
+uint8_t expr_is_equality_op(slop_string op);
 uint8_t expr_is_unop(slop_string op);
 slop_option_string expr_extract_symbol_name(types_SExpr* expr);
 slop_string expr_transpile_literal(context_TranspileContext* ctx, types_SExpr* expr);
@@ -30,6 +31,9 @@ slop_string expr_transpile_symbol(context_TranspileContext* ctx, slop_string nam
 slop_string expr_get_prefixed_enum_value(context_TranspileContext* ctx, slop_string enum_name, slop_string variant_name);
 slop_string expr_binop_to_c(slop_string op);
 slop_string expr_transpile_binop(context_TranspileContext* ctx, slop_string op, slop_string left, slop_string right);
+uint8_t expr_is_aggregate_c_type(context_TranspileContext* ctx, slop_string c_type);
+slop_string expr_record_container_field(context_TranspileContext* ctx, slop_string c_type);
+slop_string expr_transpile_aggregate_eq(context_TranspileContext* ctx, slop_string op, slop_string left_c, slop_string right_c, slop_string c_type, types_SExpr* site);
 slop_string expr_transpile_variadic_binop(context_TranspileContext* ctx, slop_string op, slop_list_types_SExpr_ptr items, int64_t start_idx);
 slop_string expr_get_builtin_type_c_name(slop_string type_name);
 uint8_t expr_is_pointer_type_expr(types_SExpr* type_expr);

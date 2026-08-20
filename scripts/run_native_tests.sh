@@ -71,6 +71,11 @@ run_unit_tests "lib/compiler/tester" "tester"
 # never run by anything; the naming rules they pin (type-to-identifier, and the
 # Ptr-container unwrapping) are what issues #72 and #82 turned on.
 run_unit_tests "lib/compiler/common" "ctype"
+# Transpiler-side pure predicates. The directory had no @example blocks at all
+# until #89/#66, so nothing here was ever run; the classification rules these
+# pin -- which C types are containers, which payload types need a widening cast
+# before hashing -- are what those two issues turned on.
+run_unit_tests "lib/compiler/transpiler" "transpiler"
 
 # A run whose @examples fail or cannot be compiled must exit non-zero and account
 # for each outcome separately. Before issue #71 was fixed an un-runnable @example

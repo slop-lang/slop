@@ -1,0 +1,23 @@
+;; Fixture for #89: `==` on a record that has a container field.
+;;
+;; The generated slop_eq_ compares a (List T) / (Map K V) / (Set T) /
+;; (Option T) / (Result T E) field with memcmp over the struct header --
+;; data pointer, len, cap -- so two containers holding identical contents
+;; come back unequal. That is long-standing map/set-key behaviour and is
+;; deliberately unchanged, but == makes it reachable from ordinary code,
+;; so the site warns rather than silently answering by identity.
+;;
+;; This one must transpile cleanly; only the warning is asserted.
+(module eq-container-field
+
+  (type Bag (record (label String) (items (List Int))))
+
+  (fn bag-eq ((a Bag) (b Bag))
+    (@intent "== on a record with a container field - warns, still compiles")
+    (@spec ((Bag Bag) -> Bool))
+    (== a b))
+
+  (fn main ()
+    (@intent "Unused entry point; the fixture is never run")
+    (@spec (() -> Int))
+    0))

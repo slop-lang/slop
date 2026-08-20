@@ -1,0 +1,21 @@
+;; Fixture for #89: `==` on a generated container struct.
+;;
+;; (Option T), (List T) and (Result T E) are C structs with no
+;; meaningful structural comparison, so the transpiler must reject the
+;; operand outright. Before #89 this type-checked and emitted `a == b`,
+;; which only cc rejected -- and `slop build` discards cc output, so the
+;; user saw a compile failure with no link back to this line.
+;;
+;; Lives under fixtures/ rather than tests/ because it MUST fail, and
+;; run_native_tests.sh builds every top-level tests/*.slop.
+(module eq-container-operand
+
+  (fn opt-eq ((a (Option Int)) (b (Option Int)))
+    (@intent "== on two Options - must be a positioned transpiler error")
+    (@spec (((Option Int) (Option Int)) -> Bool))
+    (== a b))
+
+  (fn main ()
+    (@intent "Unused entry point; the fixture is never run")
+    (@spec (() -> Int))
+    0))

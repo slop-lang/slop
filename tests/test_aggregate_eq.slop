@@ -1,0 +1,261 @@
+;; ============================================================
+;; Test: structural equality for records and unions
+;;
+;; Regression for issues #89 and #66, which are one defect seen from
+;; two sides.
+;;
+;; #89 -- `(== a b)` on a record or union type-checked cleanly and
+;; emitted a bare `a == b`. Those are C structs, so that is not valid
+;; C at all: the checker passed and cc rejected it. A correct
+;; field-wise slop_eq_<T> was already being generated for exactly
+;; these types -- it was just only ever emitted for map/set keys, and
+;; `==` never called it.
+;;
+;; #66 -- that generated function was itself wrong for a variant with
+;; two or more payloads. Such a payload is laid out as an anonymous
+;; `struct { T0 f0; T1 f1; }`, but only payload 0 was ever recorded,
+;; so eq compared two anonymous structs (another hard C error) and
+;; hash silently hashed f0 alone -- two values differing only in f1
+;; both collided and compared equal.
+;;
+;; Most of what follows fails to BUILD without the fix rather than
+;; failing an assertion, which is the honest shape for a codegen bug.
+;; The two that fail at runtime instead are the ones that matter most:
+;; test-union-multi-payload distinguishes f1, and
+;; test-multi-payload-set-key exercises the hash half through a Set.
+;; ============================================================
+
+(module test-aggregate-eq
+
+  (type Point (record (x Int) (y Int)))
+  (type Named (record (name String) (id Int)))
+  (type Boxed (record (inner Point) (tag Int)))
+
+  ;; Single-payload variants that share a payload type across tags.
+  ;; Equality must be tag-sensitive: this is OWL punning, where the
+  ;; same IRI naming a class and an individual must NOT compare equal.
+  (type Node (union
+    (class-node String)
+    (individual-node String)
+    (fresh-node Int)))
+
+  ;; A union whose variants carry NO payload. The prescan registers a
+  ;; payload variant as a field of the union type, so a union with
+  ;; payloads is discoverable either way -- this one is only reachable
+  ;; through the union-variant registry, and is what keeps that lookup
+  ;; from silently becoming dead code.
+  (type Flag (union on off unknown))
+
+  ;; A multi-payload variant with MIXED payload types, so the generated
+  ;; eq has to pick slop_eq_string for f1 and a direct compare for f0
+  ;; rather than applying one rule to the whole slot.
+  (type Edge (union
+    (loop-at Int)
+    (link Int String)))
+
+  ;; ============================================================
+  ;; Test 1: flat record, both directions
+  ;; ============================================================
+  (fn test-record-eq ()
+    (@intent "== and != on a flat record compare field by field")
+    (@spec (() -> Bool))
+    (let ((a (record-new Point (x 1) (y 2)))
+          (b (record-new Point (x 1) (y 2)))
+          (c (record-new Point (x 1) (y 3))))
+      (and (== a b)
+           (not (== a c))
+           (!= a c)
+           (not (!= a b)))))
+
+  ;; ============================================================
+  ;; Test 2: String field -- must be slop_eq_string, not a pointer
+  ;; compare. Both names are built at runtime from different pieces,
+  ;; so they are equal in contents and distinct in storage.
+  ;; ============================================================
+  (fn test-record-string-field ()
+    (@intent "A String field compares by contents, not by pointer")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((n1 (string-concat arena "ab" "cd"))
+            (n2 (string-concat arena "abc" "d"))
+            (a (record-new Named (name n1) (id 7)))
+            (b (record-new Named (name n2) (id 7)))
+            (c (record-new Named (name n1) (id 8))))
+        (and (== a b)
+             (not (== a c))))))
+
+  ;; ============================================================
+  ;; Test 3: record nested in a record -- the generated eq has to
+  ;; recurse into slop_eq_Point rather than compare the inner struct.
+  ;; ============================================================
+  (fn test-record-nested ()
+    (@intent "A record-typed field recurses into that record's eq")
+    (@spec (() -> Bool))
+    (let ((p (record-new Point (x 4) (y 5)))
+          (q (record-new Point (x 4) (y 6)))
+          (a (record-new Boxed (inner p) (tag 1)))
+          (b (record-new Boxed (inner (record-new Point (x 4) (y 5))) (tag 1)))
+          (c (record-new Boxed (inner q) (tag 1))))
+      (and (== a b)
+           (not (== a c)))))
+
+  ;; ============================================================
+  ;; Test 4: single-payload union, including the cross-tag case
+  ;; ============================================================
+  (fn test-union-single-payload ()
+    (@intent "Union equality checks the tag first, so punning stays disjoint")
+    (@spec (() -> Bool))
+    (let ((a (union-new Node class-node "http://example.org/X"))
+          (b (union-new Node class-node "http://example.org/X"))
+          (c (union-new Node class-node "http://example.org/Y"))
+          (d (union-new Node individual-node "http://example.org/X")))
+      (and (== a b)
+           (not (== a c))
+           ;; Same payload, different tag. If the tag check is dropped
+           ;; this is the one that still catches it.
+           (not (== a d)))))
+
+  ;; ============================================================
+  ;; Test 4b: payload-less union -- tag comparison only
+  ;; ============================================================
+  (fn test-union-no-payload ()
+    (@intent "== on a union with no payloads compares tags")
+    (@spec (() -> Bool))
+    (let ((a (union-new Flag on))
+          (b (union-new Flag on))
+          (c (union-new Flag off)))
+      (and (== a b)
+           (not (== a c))
+           (!= a c))))
+
+  ;; ============================================================
+  ;; Test 5: multi-payload union -- THE #66 regression
+  ;;
+  ;; Every pair below shares f0 and differs only in f1, which is
+  ;; exactly what the old single-slot comparison could not see.
+  ;; ============================================================
+  (fn test-union-multi-payload ()
+    (@intent "A second payload is compared, not ignored")
+    (@spec (() -> Bool))
+    (let ((a (union-new Edge link 1 "a"))
+          (b (union-new Edge link 1 "a"))
+          (c (union-new Edge link 1 "b"))
+          (d (union-new Edge link 2 "a"))
+          (e (union-new Edge loop-at 1)))
+      (and (== a b)
+           (not (== a c))
+           (not (== a d))
+           (not (== a e)))))
+
+  ;; ============================================================
+  ;; Test 6: rvalue operands
+  ;;
+  ;; slop_eq_ takes const void*, so a lowering that wrote &(operand)
+  ;; would compile for a variable and fail here -- a compound literal
+  ;; and a call result are not addressable.
+  ;; ============================================================
+  (fn make-point ((x Int) (y Int))
+    (@intent "Return a Point by value so == has a non-addressable operand")
+    (@spec ((Int Int) -> Point))
+    (record-new Point (x x) (y y)))
+
+  (fn test-rvalue-operands ()
+    (@intent "== accepts operands that have no address")
+    (@spec (() -> Bool))
+    (let ((p (record-new Point (x 8) (y 9))))
+      (and (== (record-new Point (x 8) (y 9)) p)
+           (== (make-point 8 9) p)
+           (== (make-point 8 9) (record-new Point (x 8) (y 9))))))
+
+  ;; ============================================================
+  ;; Test 7: multi-payload union as a Set key -- the hash half of #66
+  ;;
+  ;; The old hash read f0 alone, so (link 1 "a") and (link 1 "b")
+  ;; landed in the same bucket AND compared equal. A Set is the only
+  ;; way to exercise the generated hash from SLOP.
+  ;; ============================================================
+  (fn test-multi-payload-set-key ()
+    (@intent "A Set keyed on a multi-payload union distinguishes the second payload")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((s (set-new arena Edge)))
+        (set-put s (union-new Edge link 1 "a"))
+        (set-put s (union-new Edge link 1 "b"))
+        (and (set-has s (union-new Edge link 1 "a"))
+             (set-has s (union-new Edge link 1 "b"))
+             (not (set-has s (union-new Edge link 1 "c")))
+             (not (set-has s (union-new Edge link 2 "a")))))))
+
+  ;; ============================================================
+  ;; Test 8: == inside a @post
+  ;;
+  ;; This is the shape that blocked HOWL: a postcondition relating a
+  ;; record-typed field of $result to the argument it came from.
+  ;; Contracts compile to ((void)0) without -DSLOP_DEBUG (#78), so what
+  ;; this pins is that the emitted C is VALID -- it used to be
+  ;; `_retval.inner == p`, which does not compile.
+  ;; ============================================================
+  (fn box-point ((p Point) (tag Int))
+    (@intent "Box a Point, asserting the payload survives unchanged")
+    (@spec ((Point Int) -> Boxed))
+    (@post (== (. $result inner) p))
+    (record-new Boxed (inner p) (tag tag)))
+
+  (fn test-post-contract ()
+    (@intent "A @post comparing a record field builds and runs")
+    (@spec (() -> Bool))
+    (let ((p (record-new Point (x 2) (y 3)))
+          (boxed (box-point (record-new Point (x 2) (y 3)) 11)))
+      (and (== (. boxed inner) p)
+           (== (. boxed tag) 11))))
+
+  ;; ============================================================
+  ;; Main test runner
+  ;; ============================================================
+  (fn main ()
+    (@intent "Run all structural-equality tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-record-eq)
+        (println "test-record-eq: PASS")
+        (do (println "test-record-eq: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-record-string-field)
+        (println "test-record-string-field: PASS")
+        (do (println "test-record-string-field: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-record-nested)
+        (println "test-record-nested: PASS")
+        (do (println "test-record-nested: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-union-single-payload)
+        (println "test-union-single-payload: PASS")
+        (do (println "test-union-single-payload: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-union-no-payload)
+        (println "test-union-no-payload: PASS")
+        (do (println "test-union-no-payload: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-union-multi-payload)
+        (println "test-union-multi-payload: PASS")
+        (do (println "test-union-multi-payload: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-rvalue-operands)
+        (println "test-rvalue-operands: PASS")
+        (do (println "test-rvalue-operands: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-multi-payload-set-key)
+        (println "test-multi-payload-set-key: PASS")
+        (do (println "test-multi-payload-set-key: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-post-contract)
+        (println "test-post-contract: PASS")
+        (do (println "test-post-contract: FAIL")
+            (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))

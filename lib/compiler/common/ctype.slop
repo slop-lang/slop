@@ -11,6 +11,8 @@
     to-c-type to-c-name type-to-identifier sexpr-to-type-string
     ;; Pointer-to-container unwrapping
     unwrap-ptr-container-type
+    ;; Generated-container detection
+    is-container-c-type
     ;; Builtin type lookup
     builtin-type-c is-builtin-type is-builtin-c-type
     ;; Type category predicates
@@ -26,7 +28,7 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType ResolvedTypeKind))
-  (import strlib (replace replace-all starts-with substring))
+  (import strlib (replace replace-all starts-with ends-with substring))
 
   ;; ============================================================
   ;; C Keywords (must be escaped in identifiers)
@@ -258,6 +260,26 @@
   ;; ============================================================
   ;; Pointer-to-container Unwrapping
   ;; ============================================================
+
+  (fn is-container-c-type ((c-type String))
+    (@intent "Check if a C type is a generated container struct that == cannot meaningfully compare")
+    (@spec ((String) -> Bool))
+    (@pure)
+    ;; These three prefixes are compiler-generated and unambiguous, so an enum, a
+    ;; range alias, an FFI scalar or a pointer cannot be caught by mistake. A
+    ;; slop_map* ends in * and stays pointer identity.
+    (@example ("slop_option_int") -> true)
+    (@example ("slop_list_string") -> true)
+    (@example ("slop_result_int_MyErr") -> true)
+    (@example ("slop_list_MyRec_ptr*") -> false)
+    (@example ("slop_map*") -> false)
+    (@example ("int64_t") -> false)
+    (@example ("mymod_Colour") -> false)
+    (@example ("slop_string") -> false)
+    (and (not (ends-with c-type "*"))
+         (or (starts-with c-type "slop_option_")
+             (starts-with c-type "slop_list_")
+             (starts-with c-type "slop_result_"))))
 
   (fn unwrap-ptr-container-type ((arena Arena) (slop-type String))
     (@intent "Strip one (Ptr ...) layer from a Map or Set SLOP type, leaving every other type untouched")

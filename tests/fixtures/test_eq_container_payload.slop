@@ -1,0 +1,26 @@
+;; Fixture for #66/#89: a union variant whose payload is a container.
+;;
+;; The generated slop_eq_/slop_hash_ fall through to slop_eq_<payload>
+;; for any payload that is not a scalar or a String, which for a
+;; (List Int) payload names slop_eq_slop_list_int -- a function that has
+;; never existed. That predates #89 (it broke for a Map/Set key too),
+;; but == makes it far easier to reach, so the transpiler now says so
+;; instead of emitting a call to an undeclared function.
+;;
+;; Lives under fixtures/ because it MUST fail, and run_native_tests.sh
+;; builds every top-level tests/*.slop.
+(module eq-container-payload
+
+  (type Payload (union
+    (nums (List Int))
+    (count Int)))
+
+  (fn same ((a Payload) (b Payload))
+    (@intent "== on a union carrying a List payload - must be a transpiler error")
+    (@spec ((Payload Payload) -> Bool))
+    (== a b))
+
+  (fn main ()
+    (@intent "Unused entry point; the fixture is never run")
+    (@spec (() -> Int))
+    0))
