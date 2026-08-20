@@ -11,6 +11,7 @@ uint8_t ctype_is_numeric_type(slop_string name);
 slop_option_string ctype_builtin_type_c(slop_arena* arena, slop_string name);
 slop_string ctype_to_c_name(slop_arena* arena, slop_string name);
 slop_string ctype_type_to_identifier(slop_arena* arena, slop_string c_type);
+uint8_t ctype_is_container_c_type(slop_string c_type);
 slop_string ctype_unwrap_ptr_container_type(slop_arena* arena, slop_string slop_type);
 uint8_t ctype_is_type_variable(slop_string name);
 slop_string ctype_to_c_type(slop_arena* arena, types_SExpr* expr);
@@ -149,6 +150,10 @@ slop_string ctype_type_to_identifier(slop_arena* arena, slop_string c_type) {
         }
         return result;
     }
+}
+
+uint8_t ctype_is_container_c_type(slop_string c_type) {
+    return (!(strlib_ends_with(c_type, SLOP_STR("*"))) && ((strlib_starts_with(c_type, SLOP_STR("slop_option_"))) || (strlib_starts_with(c_type, SLOP_STR("slop_list_"))) || (strlib_starts_with(c_type, SLOP_STR("slop_result_")))));
 }
 
 slop_string ctype_unwrap_ptr_container_type(slop_arena* arena, slop_string slop_type) {

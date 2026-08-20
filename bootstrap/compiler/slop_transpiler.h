@@ -17,6 +17,7 @@
 
 typedef struct transpiler_GenericInfo transpiler_GenericInfo;
 typedef struct transpiler_RangeBoundsHeader transpiler_RangeBoundsHeader;
+typedef struct transpiler_PayloadSlot transpiler_PayloadSlot;
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
@@ -80,6 +81,22 @@ typedef struct transpiler_RangeBoundsHeader transpiler_RangeBoundsHeader;
 #ifndef SLOP_OPTION_TRANSPILER_RANGEBOUNDSHEADER_DEFINED
 #define SLOP_OPTION_TRANSPILER_RANGEBOUNDSHEADER_DEFINED
 SLOP_OPTION_DEFINE(transpiler_RangeBoundsHeader, slop_option_transpiler_RangeBoundsHeader)
+#endif
+
+struct transpiler_PayloadSlot {
+    slop_string slop_type;
+    slop_string c_type;
+};
+typedef struct transpiler_PayloadSlot transpiler_PayloadSlot;
+
+#ifndef SLOP_OPTION_TRANSPILER_PAYLOADSLOT_DEFINED
+#define SLOP_OPTION_TRANSPILER_PAYLOADSLOT_DEFINED
+SLOP_OPTION_DEFINE(transpiler_PayloadSlot, slop_option_transpiler_PayloadSlot)
+#endif
+
+#ifndef SLOP_LIST_TRANSPILER_PAYLOADSLOT_DEFINED
+#define SLOP_LIST_TRANSPILER_PAYLOADSLOT_DEFINED
+SLOP_LIST_DEFINE(transpiler_PayloadSlot, slop_list_transpiler_PayloadSlot)
 #endif
 
 transpiler_GenericInfo transpiler_extract_generic_info(slop_arena* arena, slop_list_types_SExpr_ptr items);
@@ -191,15 +208,25 @@ void transpiler_emit_union_payload_hash_eq(context_TranspileContext* ctx, slop_l
 void transpiler_emit_record_field_dependencies(context_TranspileContext* ctx, slop_list_context_FieldEntry fields);
 uint8_t transpiler_is_primitive_slop_type(slop_string slop_type);
 uint8_t transpiler_is_range_type_alias(context_TranspileContext* ctx, slop_string slop_type);
+uint8_t transpiler_is_unsigned_payload_type(slop_string slop_type);
+uint8_t transpiler_is_narrow_signed_payload_type(slop_string slop_type);
+slop_string transpiler_resolve_payload_slop_type(context_TranspileContext* ctx, slop_string slop_type);
+void transpiler_container_payload_error(context_TranspileContext* ctx, slop_string slop_type, slop_string c_payload_type);
+slop_string transpiler_payload_hash_expr(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string c_payload_type, slop_string access);
+slop_string transpiler_payload_eq_expr(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string c_payload_type, slop_string a_access, slop_string b_access);
+slop_list_transpiler_PayloadSlot transpiler_union_variant_payloads(context_TranspileContext* ctx, slop_string union_name, slop_string variant_name);
 void transpiler_emit_union_hash_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_UnionVariantEntry variants);
 void transpiler_emit_union_variant_hash(context_TranspileContext* ctx, slop_string union_name, context_UnionVariantEntry variant);
+void transpiler_emit_multi_payload_hash(context_TranspileContext* ctx, slop_string c_variant_name, slop_list_transpiler_PayloadSlot payloads);
 void transpiler_emit_union_eq_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_UnionVariantEntry variants);
 void transpiler_emit_union_variant_eq(context_TranspileContext* ctx, slop_string union_name, context_UnionVariantEntry variant);
+void transpiler_emit_multi_payload_eq(context_TranspileContext* ctx, slop_string c_variant_name, slop_list_transpiler_PayloadSlot payloads);
 void transpiler_emit_struct_hash_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_FieldEntry fields);
 void transpiler_emit_field_hash(context_TranspileContext* ctx, context_FieldEntry field);
 void transpiler_emit_struct_eq_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_FieldEntry fields);
 void transpiler_emit_field_eq(context_TranspileContext* ctx, context_FieldEntry field);
 void transpiler_emit_struct_key_types_header(context_TranspileContext* ctx);
+void transpiler_emit_late_registered_struct_key_types_header(context_TranspileContext* ctx);
 uint8_t transpiler_is_pointer_elem_type(slop_string elem_type);
 void transpiler_emit_single_list_type_header(context_TranspileContext* ctx, context_ListType lt);
 void transpiler_emit_list_type_declare_only(context_TranspileContext* ctx, context_ListType lt);
@@ -304,6 +331,11 @@ SLOP_OPTION_DEFINE(context_UnionVariantEntry, slop_option_context_UnionVariantEn
 #ifndef SLOP_OPTION_CONTEXT_FIELDENTRY_DEFINED
 #define SLOP_OPTION_CONTEXT_FIELDENTRY_DEFINED
 SLOP_OPTION_DEFINE(context_FieldEntry, slop_option_context_FieldEntry)
+#endif
+
+#ifndef SLOP_OPTION_TRANSPILER_PAYLOADSLOT_DEFINED
+#define SLOP_OPTION_TRANSPILER_PAYLOADSLOT_DEFINED
+SLOP_OPTION_DEFINE(transpiler_PayloadSlot, slop_option_transpiler_PayloadSlot)
 #endif
 
 

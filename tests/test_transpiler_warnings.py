@@ -144,3 +144,66 @@ class TestCleanCodegen:
         # discarded value does not trip -Wunused-value.
         assert "(void)0; })" in c_src, c_src
         assert "} 0; })" not in c_src, c_src
+
+
+class TestAggregateEquality:
+    """`==` on a record or union lowers to the generated structural eq (#89)."""
+
+    def test_container_operand_is_a_transpiler_error(self, tmp_path):
+        """`(== opt1 opt2)` must be diagnosed by the transpiler, not by cc.
+
+        (Option T) is a C struct, so a bare `a == b` is invalid C. Before #89
+        that reached the C compiler, and `slop build` discards cc output --
+        so the failure surfaced with no line number and no mention of `==`.
+        """
+        output = str(tmp_path / "test_eq_container_operand.c")
+        rc, stdout, stderr = slop_transpile("fixtures/test_eq_container_operand.slop", output)
+
+        assert rc != 0, f"Expected a transpiler error, got rc=0. stdout={stdout!r}"
+        combined = stdout + stderr
+        assert "is not defined on 'slop_option_int'" in combined, combined
+        # Positioned at the comparison, not at the module.
+        assert re.search(r"test_eq_container_operand\.slop:\d+:\d+: error:", combined), combined
+
+    def test_container_field_warns_but_compiles(self, tmp_path):
+        """A record with a (List T) field is comparable, but by identity.
+
+        emit-field-eq compares such a field with memcmp over {data, len, cap},
+        so two lists with identical contents are unequal. That is unchanged
+        map/set-key behaviour; the warning is what makes it visible now that
+        `==` reaches it from ordinary code.
+        """
+        output = str(tmp_path / "test_eq_container_field.c")
+        rc, stdout, stderr = slop_transpile("fixtures/test_eq_container_field.slop", output)
+
+        assert rc == 0, f"Transpile failed: {stderr}"
+        combined = stdout + stderr
+        assert "by identity, not contents" in combined, combined
+        # The offending field is named, so the warning is actionable.
+        assert "'items'" in combined, combined
+
+        c_src = Path(output).read_text()
+        # The comparison went through the generated structural eq, and both
+        # operands were bound first -- slop_eq_ takes const void*, so an
+        # rvalue operand has no address to take.
+        assert "slop_eq_eq_container_field_Bag(&" in c_src, c_src
+
+    def test_container_union_payload_is_a_transpiler_error(self, tmp_path):
+        """A union variant carrying a (List T) has no structural equality.
+
+        The generated eq/hash fall through to slop_eq_slop_list_int, which does
+        not exist. That predates #89 -- it broke for a Map/Set key too -- but ==
+        makes it easy to reach, so it is diagnosed rather than emitted.
+        """
+        output = str(tmp_path / "test_eq_container_payload.c")
+        rc, stdout, stderr = slop_transpile("fixtures/test_eq_container_payload.slop", output)
+
+        assert rc != 0, f"Expected a transpiler error, got rc=0. stdout={stdout!r}"
+        combined = stdout + stderr
+        assert "has no structural equality" in combined, combined
+        assert "'(List Int)'" in combined, combined
+        # hash and eq are generated as a pair, so the transpiler must report the
+        # payload once, not twice. The CLI echoes its whole diagnostic block a
+        # second time under "Transpilation failed:", so count only the first copy.
+        first_copy = combined.split("Transpilation failed:")[0]
+        assert first_copy.count("has no structural equality") == 1, first_copy

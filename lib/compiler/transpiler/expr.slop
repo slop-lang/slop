@@ -37,16 +37,17 @@
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
+                   ctx-get-fields-for-type ctx-get-union-variants FieldEntry
                    ctx-register-list-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-register-chan-type
                    ctx-add-error ctx-add-error-at ctx-strict-unknown-symbols
                    ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
-                   ctx-add-warning ctx-warn-fallback ctx-has-trampoline ctx-add-trampoline ctx-skip-trampoline-generation
+                   ctx-add-warning ctx-add-warning-at ctx-warn-fallback ctx-has-trampoline ctx-add-trampoline ctx-skip-trampoline-generation
                    ctx-register-generic-instantiation ctx-has-generic-instantiation mangle-generic-fn-name
                    ends-with-star))
-  (import ctype (to-c-type to-c-name type-to-identifier unwrap-ptr-container-type sexpr-to-type-string
+  (import ctype (to-c-type to-c-name type-to-identifier unwrap-ptr-container-type is-container-c-type sexpr-to-type-string
                  get-node-resolved-type resolved-type-to-c))
   (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
 
@@ -144,6 +145,14 @@
         (string-eq op ">")
         (string-eq op "<=")
         (string-eq op ">=")))
+
+  (fn is-equality-op ((op String))
+    (@intent "Check if operator is an equality test - the subset structural comparison applies to")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq op "==")
+        (string-eq op "=")
+        (string-eq op "!=")))
 
   (fn is-unop ((op String))
     (@intent "Check if operator is a unary operator")
@@ -332,6 +341,82 @@
     (@pre {ctx != nil})
     (let ((c-op (binop-to-c op)))
       (ctx-str5 ctx "(" left " " c-op (ctx-str3 ctx " " right ")"))))
+
+  ;; ============================================================
+  ;; Structural Equality for Records and Unions (#89)
+  ;;
+  ;; A record or union is a C struct, so `(== a b)` cannot lower to a
+  ;; bare `a == b` -- that is not valid C and the checker never said so.
+  ;; The transpiler already generates a correct field-wise
+  ;; slop_eq_<T> / slop_hash_<T> pair for exactly these types
+  ;; (transpiler.slop emit-struct-hash-eq); it was only ever emitted for
+  ;; map/set keys. These route == and != to it and register the type so
+  ;; the function gets emitted.
+  ;; ============================================================
+
+  (fn is-aggregate-c-type ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Check if a C type names a user record or union that has a generated structural eq")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    ;; The trailing-* guard keeps (Ptr Node) -- types_Node* -- on pointer
+    ;; identity, which is what a pointer comparison should mean.
+    (and (not (ends-with c-type "*"))
+         (or (> (list-len (ctx-get-union-variants ctx c-type)) 0)
+             (> (list-len (ctx-get-fields-for-type ctx c-type)) 0))))
+
+  (fn record-container-field ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Name the first field of a record that generated eq compares by identity, or \"\" if none")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; emit-field-eq compares a (List T) / (Map K V) / (Set T) / (Option T) /
+    ;; (Result T E) field with memcmp over the struct header -- data pointer, len,
+    ;; cap -- so two containers holding identical contents come back unequal.
+    ;; That is long-standing map/set-key behaviour and is deliberately not changed
+    ;; here, but == makes it reachable from ordinary code, so the site warns.
+    (let ((fields (ctx-get-fields-for-type ctx c-type))
+          (len (list-len fields))
+          (mut i 0)
+          (mut found ""))
+      (while (and (< i len) (string-eq found ""))
+        (match (list-get fields i)
+          ((some field)
+            (let ((st (. field slop-type)))
+              (when (or (starts-with st "(List")
+                        (starts-with st "(Map")
+                        (starts-with st "(Set")
+                        (starts-with st "(Option")
+                        (starts-with st "(Result"))
+                (set! found (. field field-name)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn transpile-aggregate-eq ((ctx (Ptr TranspileContext)) (op String) (left-c String) (right-c String)
+                              (c-type String) (site (Ptr SExpr)))
+    (@intent "Lower == / != on a record or union to the generated structural slop_eq_ function")
+    (@spec (((Ptr TranspileContext) String String String String (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {site != nil})
+    ;; slop_eq_ takes const void*, and either operand may be an rvalue -- a
+    ;; (record-new ...) literal, a call result, a match arm -- so &(operand) is
+    ;; not valid C. Bind both to temporaries inside a statement expression, which
+    ;; also keeps each operand evaluated exactly once, as a plain == would.
+    (let ((l (ctx-gensym ctx "_eq_l"))
+          (r (ctx-gensym ctx "_eq_r"))
+          (container-field (record-container-field ctx c-type)))
+      (ctx-register-struct-key-type ctx c-type)
+      (when (not (string-eq container-field ""))
+        (ctx-add-warning-at ctx
+          (ctx-str5 ctx "== on '" c-type "' compares field '" container-field
+                    "' by identity, not contents")
+          (ctx-sexpr-line site) (ctx-sexpr-col site)))
+      (let ((decl-l (ctx-str5 ctx c-type " " l " = (" (ctx-str ctx left-c "); ")))
+            (decl-r (ctx-str5 ctx c-type " " r " = (" (ctx-str ctx right-c "); ")))
+            (call (ctx-str5 ctx "slop_eq_" c-type "(&" l (ctx-str3 ctx ", &" r "); })"))))
+        (let ((stmt-expr (ctx-str4 ctx "({ " decl-l decl-r call)))
+          (if (string-eq op "!=")
+            (ctx-str3 ctx "(!" stmt-expr ")")
+            stmt-expr)))))
 
   (fn transpile-variadic-binop ((ctx (Ptr TranspileContext)) (op String) (items (List (Ptr SExpr))) (start-idx Int))
     (@intent "Transpile a variadic binary operation (and/or) by chaining all arguments")
@@ -2145,15 +2230,28 @@
                             ((some right)
                               (let ((left-c (transpile-expr ctx left))
                                     (right-c (transpile-expr ctx right))
-                                    (left-type (infer-expr-c-type ctx left)))
-                                (if (and (string-eq left-type "slop_string")
-                                         (or (string-eq op "==")
-                                             (or (string-eq op "=")
-                                                 (string-eq op "!="))))
-                                  (if (string-eq op "!=")
-                                    (ctx-str5 ctx "(!slop_string_eq(" left-c ", " right-c "))")
-                                    (ctx-str5 ctx "slop_string_eq(" left-c ", " right-c ")"))
-                                  (transpile-binop ctx op left-c right-c))))
+                                    (left-type (infer-expr-c-type ctx left))
+                                    (is-eq-op (is-equality-op op)))
+                                (cond
+                                  ((and is-eq-op (string-eq left-type "slop_string"))
+                                    (if (string-eq op "!=")
+                                      (ctx-str5 ctx "(!slop_string_eq(" left-c ", " right-c "))")
+                                      (ctx-str5 ctx "slop_string_eq(" left-c ", " right-c ")")))
+                                  ;; #89: a record or union is a C struct, so a bare == is not
+                                  ;; valid C. Route to the generated structural equality.
+                                  ((and is-eq-op (is-aggregate-c-type ctx left-type))
+                                    (transpile-aggregate-eq ctx op left-c right-c left-type left))
+                                  ;; A generated container struct has no structural answer to
+                                  ;; give. Diagnose it here rather than leaving it to cc.
+                                  ((and is-eq-op (is-container-c-type left-type))
+                                    (do
+                                      (ctx-add-error-at ctx
+                                        (ctx-str5 ctx "'" op "' is not defined on '" left-type
+                                                  "' - match on the variants or compare fields")
+                                        (ctx-list-first-line items) (ctx-list-first-col items))
+                                      "0"))
+                                  (else
+                                    (transpile-binop ctx op left-c right-c)))))
                             ((none)
                               (do
                                 (ctx-add-error-at ctx "missing right operand" (ctx-list-first-line items) (ctx-list-first-col items))
