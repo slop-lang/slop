@@ -113,9 +113,9 @@
     (module-name String)
     (error-message String)))
 
-  (fn generate-tests ((arena Arena) (source String))
+  (fn generate-tests ((arena Arena) (source String) (file-name String))
     (@intent "Generate test harness from SLOP source code")
-    (@spec ((Arena String) -> TestResult))
+    (@spec ((Arena String String) -> TestResult))
     (@alloc arena)
     ;; Step 1: Parse the source
     (match (parse arena source)
@@ -136,7 +136,7 @@
                     (types (extract-types-from-ast-with-imports arena exprs mod-name imports))
                     (tctx (init-transpile-context arena exprs mod-name)))
                 ;; Step 5: Generate test harness (type-aware)
-                (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types imports tctx)))
+                (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types imports tctx file-name)))
                   (TestResult true harness-lines test-count mod-name "")))))))
 
       ((error err)
@@ -152,9 +152,10 @@
   ;; Test Generation with Import Type Extraction
   ;; ============================================================
 
-  (fn generate-tests-with-imports ((arena Arena) (source String) (import-sources (List String)))
+  (fn generate-tests-with-imports ((arena Arena) (source String) (import-sources (List String))
+                                    (file-name String))
     (@intent "Generate test harness with types from import files")
-    (@spec ((Arena String (List String)) -> TestResult))
+    (@spec ((Arena String (List String) String) -> TestResult))
     (@alloc arena)
     ;; Step 1: Parse the main source
     (match (parse arena source)
@@ -200,7 +201,7 @@
                 (ctx-set-module tctx (some mod-name))
                 (re-prescan-main-module arena tctx exprs)
                 ;; Step 6: Generate test harness
-                (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types imports tctx)))
+                (let ((harness-lines (emit-test-harness-typed arena test-cases prefix types imports tctx file-name)))
                   (TestResult true harness-lines test-count mod-name "")))))))
 
       ((error err)

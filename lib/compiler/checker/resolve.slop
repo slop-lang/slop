@@ -138,7 +138,10 @@
     (@intent "Resolve module name to file path, returning the resolved path or none")
     (@spec ((Arena String (Option String)) -> (Option String)))
     (@pure)
-    (@example (arena "utils/helper" (some "src/main.slop")) -> (some "src/utils/helper.slop"))
+    ;; A sibling module resolves relative to the importing file:
+    ;;   ("utils/helper", from "src/main.slop") -> (some "src/utils/helper.slop")
+    ;; Not an @example: the answer depends on which files exist on disk, so it is
+    ;; not reproducible from the source alone.
     (@example (arena "strlib" (some "src/main.slop")) -> none)
     ;; Only resolve path-style imports (containing '/')
     ;; Regular imports like 'strlib' are handled by build orchestration

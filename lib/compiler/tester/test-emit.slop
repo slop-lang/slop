@@ -29,7 +29,9 @@
   (import context (TranspileContext context-new ctx-set-module ctx-get-module ctx-set-prefixing
                    ctx-push-scope ctx-bind-var VarEntry ctx-register-field-type
                    ctx-prefixing-enabled ctx-prefix-type to-c-type-prefixed
-                   ctx-set-single-output-mode ctx-set-skip-trampoline-generation))
+                   ctx-set-single-output-mode ctx-set-skip-trampoline-generation
+                   ctx-set-strict-unknown-symbols ctx-get-errors TranspileError
+                   ctx-sexpr-line ctx-sexpr-col))
   (import expr (transpile-expr))
   (import transpiler (prescan-module))
 
@@ -65,36 +67,13 @@
   ;; Wildcard Handling
   ;; ============================================================
 
-  (fn is-wildcard-like-symbol ((name String))
-    (@intent "Check if a bare symbol looks like a wildcard variable reference in @example")
-    (@spec ((String) -> Bool))
-    (@pure)
-    (if (< (string-len name) 1)
-      false
-      (let ((first-char (char-at name 0)))
-        (if (not (and (>= first-char 97) (<= first-char 122)))
-          false
-          (cond
-            ((string-eq name "true") false)
-            ((string-eq name "false") false)
-            ((string-eq name "none") false)
-            ((string-eq name "some") false)
-            ((string-eq name "ok") false)
-            ((string-eq name "error") false)
-            ((string-eq name "list") false)
-            ((string-eq name "arena") false)
-            ((string-eq name "record") false)
-            ((string-eq name "record-new") false)
-            ((string-eq name "union-new") false)
-            ((string-eq name "quote") false)
-            ((string-eq name "cast") false)
-            ((contains name "-") false)
-            (else true))))))
-
   (fn has-ellipsis ((expr (Ptr SExpr)))
     (@intent "Check if expression contains .. (parsed from ...) indicating a splat wildcard")
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
+    (@pre {expr != nil})
+    (@example ((make-sexpr-sym arena "..")) -> true)
+    (@example ((make-sexpr-sym arena "x")) -> false)
     (match (deref expr)
       ((sym s) (string-eq (. s name) ".."))
       ((lst l)
@@ -129,51 +108,6 @@
         (set! i (+ i 1)))
       found))
 
-  (fn is-call-operator ((name String))
-    (@intent "Check if name is a known SLOP call form that should not be treated as fixture ref")
-    (@spec ((String) -> Bool))
-    (@pure)
-    (or (string-eq name "some") (string-eq name "ok") (string-eq name "error")
-        (string-eq name "none") (string-eq name "record-new") (string-eq name "union-new")
-        (string-eq name "cast") (string-eq name "list") (string-eq name "list-new")
-        (string-eq name "match") (string-eq name "if") (string-eq name "cond")
-        (string-eq name "let") (string-eq name "do") (string-eq name "begin")
-        (string-eq name "quote") (string-eq name "deref")))
-
-  (fn args-have-fixture-refs ((args (List (Ptr SExpr))))
-    (@intent "Check if any argument references a fixture variable")
-    (@spec (((List (Ptr SExpr))) -> Bool))
-    (@pure)
-    (let ((len (list-len args))
-          (mut i 0)
-          (mut found false))
-      (while (and (< i len) (not found))
-        (match (list-get args i)
-          ((some arg)
-            (match (deref arg)
-              ((sym s)
-                (let ((name (. s name)))
-                  (when (and (contains name "-")
-                             (not (is-call-operator name)))
-                    (set! found true))))
-              ((lst l)
-                (when (> (list-len (. l items)) 0)
-                  (match (list-get (. l items) 0)
-                    ((some first-elem)
-                      (when (sexpr-is-symbol first-elem)
-                        (let ((name (sexpr-get-symbol-name first-elem)))
-                          ;; Fixture if: contains - and not a call operator,
-                          ;; OR is a wildcard-like symbol (e.g. single letter var like p)
-                          (when (or (and (not (is-call-operator name))
-                                        (contains name "-"))
-                                    (is-wildcard-like-symbol name))
-                            (set! found true)))))
-                    ((none) (do)))))
-              (_ (do))))
-          ((none) (do)))
-        (set! i (+ i 1)))
-      found))
-
   (fn is-type-constructor-name ((name String))
     (@intent "Check if name starts with uppercase (type constructor)")
     (@spec ((String) -> Bool))
@@ -187,9 +121,12 @@
     (@intent "Check if expression contains _ or ... wildcards")
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
+    (@pre {expr != nil})
+    ;; Unlike is-wildcard-expr this looks inside a constructor
+    (@example ((make-sexpr-list arena (list (Ptr SExpr) (make-sexpr-sym arena "_")))) -> true)
+    (@example ((make-sexpr-list arena (list (Ptr SExpr) (make-sexpr-sym arena "x")))) -> false)
     (match (deref expr)
-      ((sym s) (or (string-eq (. s name) "_") (string-eq (. s name) "..") (string-eq (. s name) ".")
-                    (is-wildcard-like-symbol (. s name))))
+      ((sym s) (or (string-eq (. s name) "_") (string-eq (. s name) "..") (string-eq (. s name) ".")))
       ((lst l)
         (let ((items (. l items))
               (len (list-len items))
@@ -210,6 +147,7 @@
     (@intent "Recursively replace wildcards with __SLOP_WILDCARD__ for later string replacement")
     (@spec ((Arena (Ptr SExpr)) -> (Ptr SExpr)))
     (@alloc arena)
+    (@pre {expr != nil})
     (match (deref expr)
       ((sym s)
         (if (or (string-eq (. s name) "_") (string-eq (. s name) "..") (string-eq (. s name) "."))
@@ -245,8 +183,7 @@
                                     (_ false)))
                                 ((none) false)))
                           (do))
-                        ((or (string-eq (. s name) "_") (string-eq (. s name) "..") (string-eq (. s name) ".")
-                              (is-wildcard-like-symbol (. s name)))
+                        ((or (string-eq (. s name) "_") (string-eq (. s name) "..") (string-eq (. s name) "."))
                           (list-push new-items (make-sexpr-sym arena "__SLOP_WILDCARD__")))
                         (else
                           (list-push new-items (replace-wildcards arena item)))))
@@ -258,39 +195,15 @@
       ((num _) expr)
       ((str _) expr)))
 
-  (fn replace-wildcard-tokens ((arena Arena) (s String))
-    (@intent "Replace __SLOP_WILDCARD__ tokens in C string with {0}")
-    (@spec ((Arena String) -> String))
-    (@alloc arena)
-    (if (not (contains s "__SLOP_WILDCARD__"))
-      s
-      (let ((needle-len 17)
-            (src-len (cast Int (. s len)))
-            (buf (cast (Ptr U8) (arena-alloc arena (+ src-len 1))))
-            (mut src-pos 0)
-            (mut dst-pos 0))
-        (while (< src-pos src-len)
-          (if (and (<= (+ src-pos needle-len) src-len)
-                   (== (@ (. s data) src-pos) 95)
-                   (== (@ (. s data) (+ src-pos 1)) 95)
-                   (string-eq (substring arena s src-pos needle-len) "__SLOP_WILDCARD__"))
-            (do
-              (set! (@ buf dst-pos) 123)
-              (set! (@ buf (+ dst-pos 1)) 48)
-              (set! (@ buf (+ dst-pos 2)) 125)
-              (set! dst-pos (+ dst-pos 3))
-              (set! src-pos (+ src-pos needle-len)))
-            (do
-              (set! (@ buf dst-pos) (@ (. s data) src-pos))
-              (set! dst-pos (+ dst-pos 1))
-              (set! src-pos (+ src-pos 1)))))
-        (set! (@ buf dst-pos) 0)
-        (String buf (cast U64 dst-pos)))))
-
   (fn transpile-expr-safe ((arena Arena) (tctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
-    (@intent "Transpile expression with wildcard replacement")
+    (@intent "Transpile expression, rendering _ as a zero initializer")
     (@spec ((Arena (Ptr TranspileContext) (Ptr SExpr)) -> String))
-    (replace-wildcard-tokens arena (transpile-expr tctx (replace-wildcards arena expr))))
+    ;; replace-wildcards rewrites each _ to the marker symbol __SLOP_WILDCARD__, which
+    ;; init-transpile-context binds to the C initializer {0}. Materializing the expected
+    ;; value needs *some* value in a wildcard position even though the comparison then
+    ;; skips that field, and going through a bound variable keeps the marker resolvable -
+    ;; strict mode would otherwise report it as an unknown symbol.
+    (transpile-expr tctx (replace-wildcards arena expr)))
 
   ;; ============================================================
   ;; Symbol Prefixing for Test Harness
@@ -339,12 +252,14 @@
   (fn emit ((ctx (Ptr EmitContext)) (line String))
     (@intent "Emit a line to the context")
     (@spec (((Ptr EmitContext) String) -> Unit))
+    (@pre {ctx != nil})
     (list-push (. (deref ctx) lines) line)
     (do))
 
   (fn emit-ctx-get-lines ((ctx (Ptr EmitContext)))
     (@intent "Get the accumulated lines")
     (@spec (((Ptr EmitContext)) -> (List String)))
+    (@pre {ctx != nil})
     (. (deref ctx) lines))
 
   ;; FFI for string length
@@ -443,10 +358,12 @@
 
   (fn emit-test-harness-typed ((arena Arena) (tests (List (Ptr TestCase)))
                                 (module-prefix String) (types (Ptr TypeRegistry))
-                                (imports (List ImportEntry)) (tctx (Ptr TranspileContext)))
+                                (imports (List ImportEntry)) (tctx (Ptr TranspileContext))
+                                (file-name String))
     (@intent "Generate complete C test harness code with type awareness")
-    (@spec ((Arena (List (Ptr TestCase)) String (Ptr TypeRegistry) (List ImportEntry) (Ptr TranspileContext)) -> (List String)))
+    (@spec ((Arena (List (Ptr TestCase)) String (Ptr TypeRegistry) (List ImportEntry) (Ptr TranspileContext) String) -> (List String)))
     (@alloc arena)
+    (@pre {types != nil})
     (let ((ctx (emit-ctx-new-typed arena types tctx)))
       (emit ctx "// ===== SLOP Test Harness (Native Generated - Type Aware) =====")
       (let ((type-count (list-len (. (deref types) types))))
@@ -470,6 +387,10 @@
 
       (emit ctx "static int tests_passed = 0;")
       (emit ctx "static int tests_failed = 0;")
+      ;; An @example that could not be compiled into a test, and one that ran but
+      ;; asserted nothing, are each their own outcome. Neither is a pass.
+      (emit ctx "static int tests_errored = 0;")
+      (emit ctx "static int tests_unchecked = 0;")
       (emit ctx "")
 
       (let ((any-needs-arena (any-test-needs-arena tests)))
@@ -484,13 +405,61 @@
           (while (< i test-count)
             (match (list-get tests i)
               ((some tc)
-                (emit-test-function-typed ctx (deref tc) i module-prefix types tctx))
+                (emit-test-function-typed ctx (deref tc) i module-prefix types tctx file-name))
               ((none) (do)))
             (set! i (+ i 1)))
 
           (emit-main-function ctx test-count any-needs-arena)))
 
       (emit-ctx-get-lines ctx)))
+
+  (fn expr-mentions-arena ((expr (Ptr SExpr)))
+    (@intent "Check whether an expression references the arena symbol")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pure)
+    (@pre {expr != nil})
+    (@example ((make-sexpr-sym arena "arena")) -> true)
+    (@example ((make-sexpr-sym arena "other")) -> false)
+    (match (deref expr)
+      ((sym s) (string-eq (. s name) "arena"))
+      ((lst l)
+        (let ((items (. l items))
+              (len (list-len items))
+              (mut i 0)
+              (mut found false))
+          (while (and (< i len) (not found))
+            (match (list-get items i)
+              ((some item)
+                (when (expr-mentions-arena item)
+                  (set! found true)))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          found))
+      ((num _) false)
+      ((str _) false)))
+
+  (fn test-mentions-arena ((tc TestCase))
+    (@intent "Check whether a test case needs the harness arena")
+    (@spec ((TestCase) -> Bool))
+    (@pure)
+    (@pre {(. tc expected) != nil})
+    ;; needs-arena only covers an Arena parameter on the function under test. An
+    ;; argument like (fixture-node arena) needs test_arena declared just as much,
+    ;; even when the function itself takes no arena.
+    (if (. tc needs-arena)
+      true
+      (let ((args (. tc args))
+            (len (list-len args))
+            (mut i 0)
+            (mut found (expr-mentions-arena (. tc expected))))
+        (while (and (< i len) (not found))
+          (match (list-get args i)
+            ((some arg)
+              (when (expr-mentions-arena arg)
+                (set! found true)))
+            ((none) (do)))
+          (set! i (+ i 1)))
+        found)))
 
   (fn any-test-needs-arena ((tests (List (Ptr TestCase))))
     (@intent "Check if any test needs arena allocation")
@@ -502,7 +471,7 @@
       (while (and (< i len) (not found))
         (match (list-get tests i)
           ((some tc)
-            (when (. (deref tc) needs-arena)
+            (when (test-mentions-arena (deref tc))
               (set! found true)))
           ((none) (do)))
         (set! i (+ i 1)))
@@ -512,18 +481,208 @@
   ;; Individual Test Function Generation
   ;; ============================================================
 
+  (fn format-error-position ((arena Arena) (file-name String) (line Int) (col Int))
+    (@intent "Format a file:line:col suffix for a diagnostic")
+    (@spec ((Arena String Int Int) -> String))
+    (@alloc arena)
+    (string-concat arena file-name
+      (string-concat arena ":"
+        (string-concat arena (int-to-string arena line)
+          (string-concat arena ":" (int-to-string arena col))))))
+
+  (fn param-name-at ((params (Ptr SExpr)) (idx Int))
+    (@intent "Name of the idx-th declared parameter, or empty if absent")
+    (@spec (((Ptr SExpr) Int) -> String))
+    (@pure)
+    (@pre {params != nil})
+    ;; A parameter is (name Type) or (mode name Type)
+    (match (sexpr-list-get params idx)
+      ((some param)
+        (let ((plen (sexpr-list-len param)))
+          (if (< plen 2)
+            ""
+            (match (sexpr-list-get param (if (== plen 2) 0 1))
+              ((some name-expr)
+                (if (sexpr-is-symbol name-expr) (sexpr-get-symbol-name name-expr) ""))
+              ((none) "")))))
+      ((none) "")))
+
+  (fn substitute-symbol ((arena Arena) (expr (Ptr SExpr)) (name String) (replacement (Ptr SExpr)))
+    (@intent "Replace every occurrence of a bare symbol with another expression")
+    (@spec ((Arena (Ptr SExpr) String (Ptr SExpr)) -> (Ptr SExpr)))
+    (@alloc arena)
+    (@pre {expr != nil})
+    (@pre {replacement != nil})
+    (match (deref expr)
+      ((sym s) (if (string-eq (. s name) name) replacement expr))
+      ((lst l)
+        (let ((items (. l items))
+              (len (list-len items))
+              (new-items (list-new arena (Ptr SExpr)))
+              ;; In (. obj field) the field name is not a variable reference. strlib's
+              ;; substring declares a parameter named `len` and its @pre reads
+              ;; (. s len) - substituting there would rewrite the field, not the value.
+              (is-field-access (and (>= len 3)
+                                    (match (list-get items 0)
+                                      ((some head)
+                                        (match (deref head)
+                                          ((sym hs) (string-eq (. hs name) "."))
+                                          (_ false)))
+                                      ((none) false))))
+              (mut i 0))
+          (while (< i len)
+            (match (list-get items i)
+              ((some item)
+                (if (and is-field-access (>= i 2))
+                  (list-push new-items item)
+                  (list-push new-items (substitute-symbol arena item name replacement))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          (make-sexpr-list arena new-items)))
+      ((num _) expr)
+      ((str _) expr)))
+
+  (fn bind-precondition-args ((arena Arena) (tc TestCase) (cond-expr (Ptr SExpr)))
+    (@intent "Rewrite a precondition in terms of this example's argument expressions")
+    (@spec ((Arena TestCase (Ptr SExpr)) -> (Ptr SExpr)))
+    (@alloc arena)
+    (@pre {cond-expr != nil})
+    ;; Each declared parameter is replaced by the argument the example supplies for it.
+    ;; The arena parameter has no argument - build-call-sexpr splices it in - so it maps
+    ;; to the `arena` symbol, which the context binds to test_arena.
+    (let ((params (. tc params))
+          (args (. tc args))
+          (needs-arena (. tc needs-arena))
+          (arena-pos (. tc arena-position))
+          (param-count (sexpr-list-len params))
+          (mut result cond-expr)
+          (mut i 0))
+      (while (< i param-count)
+        (let ((pname (param-name-at params i)))
+          (when (> (string-len pname) 0)
+            (if (and needs-arena (== i arena-pos))
+              (set! result (substitute-symbol arena result pname (make-sexpr-sym arena "arena")))
+              (let ((arg-idx (if (and needs-arena (> i arena-pos)) (- i 1) i)))
+                (match (list-get args arg-idx)
+                  ((some arg) (set! result (substitute-symbol arena result pname arg)))
+                  ((none) (do)))))))
+        (set! i (+ i 1)))
+      result))
+
+  (fn build-precondition-check ((arena Arena) (tctx (Ptr TranspileContext)) (tc TestCase))
+    (@intent "Build the C condition asserting every @pre holds for this example")
+    (@spec ((Arena (Ptr TranspileContext) TestCase) -> String))
+    (@alloc arena)
+    ;; NOTE: the argument expressions appear both here and in the call, so they are
+    ;; evaluated twice. @example arguments are reproducible test data by definition,
+    ;; so this costs time, not correctness.
+    (let ((pres (. tc preconditions))
+          (len (list-len pres))
+          (mut result "")
+          (mut i 0))
+      (while (< i len)
+        (match (list-get pres i)
+          ((some cond-expr)
+            ;; transpile-expr directly, not transpile-expr-safe: replace-wildcards
+            ;; rewrites the symbol "." (the tail of a parsed "...") and would mangle
+            ;; the field-access operator in a condition like (> (. s len) 0).
+            (let ((c (transpile-expr tctx (bind-precondition-args arena tc cond-expr))))
+              (if (string-eq result "")
+                (set! result (string-concat arena "(" (string-concat arena c ")")))
+                (set! result (string-concat arena result
+                               (string-concat arena " && ("
+                                 (string-concat arena c ")")))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  (fn describe-preconditions ((arena Arena) (tc TestCase))
+    (@intent "Render the @pre conditions for a diagnostic message")
+    (@spec ((Arena TestCase) -> String))
+    (@alloc arena)
+    (let ((pres (. tc preconditions))
+          (len (list-len pres))
+          (mut result "")
+          (mut i 0))
+      (while (< i len)
+        (match (list-get pres i)
+          ((some cond-expr)
+            (let ((txt (pretty-print arena cond-expr)))
+              (if (string-eq result "")
+                (set! result txt)
+                (set! result (string-concat arena result (string-concat arena " and " txt))))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
+  (fn first-error-since ((arena Arena) (tctx (Ptr TranspileContext)) (before Int)
+                          (file-name String) (fallback-line Int) (fallback-col Int))
+    (@intent "Return the first transpiler error recorded since the given error count")
+    (@spec ((Arena (Ptr TranspileContext) Int String Int Int) -> (Option String)))
+    (@alloc arena)
+    (@pre {tctx != nil})
+    (@pre {before >= 0})
+    (let ((errors (ctx-get-errors tctx)))
+      (if (> (list-len errors) before)
+        (match (list-get errors (cast (Int 0 ..) before))
+          ((some e)
+            ;; ctx-add-error-at carries its own position; ctx-add-error records 0,
+            ;; in which case the example's first argument is the best anchor we have.
+            (let ((line (if (> (. e line) 0) (. e line) fallback-line))
+                  (col (if (> (. e line) 0) (. e col) fallback-col)))
+              (some (string-concat arena (. e message)
+                      (string-concat arena " at "
+                        (format-error-position arena file-name line col))))))
+          ((none) (none)))
+        (none))))
+
+  (fn example-anchor ((tc TestCase))
+    (@intent "Pick the SExpr that best locates an @example in the source")
+    (@spec ((TestCase) -> (Ptr SExpr)))
+    (@pure)
+    (@pre {(. tc expected) != nil})
+    (@post {$result != nil})
+    ;; The first argument is the closest thing to the example's own position; an
+    ;; example with no arguments falls back to its expected value.
+    (match (list-get (. tc args) 0)
+      ((some a) a)
+      ((none) (. tc expected))))
+
   (fn emit-test-function-typed ((ctx (Ptr EmitContext)) (tc TestCase) (index Int)
                                  (prefix String) (types (Ptr TypeRegistry))
-                                 (tctx (Ptr TranspileContext)))
+                                 (tctx (Ptr TranspileContext)) (file-name String))
     (@intent "Generate a single test function with type awareness")
-    (@spec (((Ptr EmitContext) TestCase Int String (Ptr TypeRegistry) (Ptr TranspileContext)) -> Unit))
+    (@spec (((Ptr EmitContext) TestCase Int String (Ptr TypeRegistry) (Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {types != nil})
     (let ((arena (. (deref ctx) arena))
           (fn-name (. tc fn-name))
           (c-fn-name (make-c-fn-name arena fn-name (. tc module-name) prefix))
           (args-display (build-args-display-typed arena (. tc args) (deref types)))
           (call-sexpr (build-call-sexpr arena fn-name (. tc args)
                         (. tc needs-arena) (. tc arena-position)))
-          (call-expr (transpile-expr-safe arena tctx call-sexpr)))
+          (errors-before (list-len (ctx-get-errors tctx)))
+          (call-expr (transpile-expr-safe arena tctx call-sexpr))
+          ;; A bare _ as the whole expected value asserts nothing at all.
+          (unchecked (is-wildcard-expr (. tc expected)))
+          ;; Building the comparison is what transpiles the expected value, so it has
+          ;; to happen before we decide what to emit: an unresolvable symbol in there
+          ;; is this example's problem, not the next one's.
+          (compare-info (if unchecked
+                          (CompareInfo "1" "%s" "\"<unchecked>\"" "%s" "\"<unchecked>\"")
+                          (build-comparison-typed arena (. tc expected)
+                            (. tc return-type) prefix (deref types) (. tc eq-fn) tctx)))
+          (anchor (example-anchor tc))
+          (anchor-line (ctx-sexpr-line anchor))
+          (anchor-col (ctx-sexpr-col anchor))
+          ;; Computed before `problem` so an unresolvable symbol inside a @pre is
+          ;; attributed to this example rather than leaking into the next one.
+          (pre-check (build-precondition-check arena tctx tc))
+          (problem (if (args-have-ellipsis (. tc args))
+                     (some (string-concat arena "'...' is not a value at "
+                             (format-error-position arena file-name anchor-line anchor-col)))
+                     (first-error-since arena tctx errors-before file-name
+                       anchor-line anchor-col))))
       ;; Function declaration
       (emit ctx
         (string-concat arena "void test_"
@@ -534,49 +693,71 @@
           (string-concat arena fn-name
             (string-concat arena "("
               (string-concat arena (escape-string arena args-display) ") -> \");")))))
-      ;; Check if call expression still has unresolved wildcards or args had ellipsis
-      (if (or (contains call-expr "__SLOP_WILDCARD__")
-              (or (args-have-ellipsis (. tc args))
-                  (args-have-fixture-refs (. tc args))))
-        ;; Can't generate valid C — skip
-        (do
-          (emit ctx "    printf(\"SKIP (wildcard args)\\n\");")
-          (emit ctx "    tests_passed++;")
-          (emit ctx "}")
-          (emit ctx ""))
-        (do
-        ;; Declare result
-        (emit ctx
-          (string-concat arena "    typeof("
-            (string-concat arena call-expr
-              (string-concat arena ") result = "
-                (string-concat arena call-expr ";")))))
-        ;; Generate comparison
-        (let ((compare-info (build-comparison-typed arena (. tc expected)
-                             (. tc return-type) prefix (deref types) (. tc eq-fn) tctx)))
-          ;; If statement
-          (emit ctx
-            (string-concat arena "    if ("
-              (string-concat arena (. compare-info compare-expr) ") {")))
-          ;; Pass branch
-          (emit ctx "        printf(\"PASS\\n\");")
-          (emit ctx "        tests_passed++;")
-          (emit ctx "    } else {")
-          ;; Fail branch
-          (let ((fail-str (string-concat arena "        printf(\"FAIL (got "
-                            (string-concat arena (. compare-info result-fmt)
-                              (string-concat arena ", expected "
-                                (string-concat arena (. compare-info expected-fmt)
-                                  (string-concat arena ")\\n\", "
-                                    (string-concat arena (. compare-info result-args)
-                                      (string-concat arena ", "
-                                        (string-concat arena (. compare-info expected-args) ");"))))))))))
-            (emit ctx fail-str))
-          (emit ctx "        tests_failed++;")
-          (emit ctx "    }")
-          (emit ctx "}")
-          (emit ctx "")
-          (do))))))
+      (match problem
+        ;; An @example we cannot compile is a defect in the example. Report it and
+        ;; fail the run; emitting the broken C would only move the failure to cc.
+        ((some reason)
+          (do
+            (emit ctx
+              (string-concat arena "    printf(\"ERROR: "
+                (string-concat arena (escape-string arena reason) "\\n\");")))
+            (emit ctx "    tests_errored++;")
+            (emit ctx "}")
+            (emit ctx "")))
+        ((none)
+          (do
+            ;; An @example whose arguments break the function's own @pre is a
+            ;; contradiction in the source: the example asserts something the contract
+            ;; forbids. Report it as a failure rather than calling the function anyway.
+            (when (> (string-len pre-check) 0)
+              (do
+                (emit ctx (string-concat arena "    if (!(" (string-concat arena pre-check ")) {")))
+                (emit ctx
+                  (string-concat arena "        printf(\"FAIL (precondition violated: "
+                    (string-concat arena (escape-string arena (describe-preconditions arena tc))
+                      ")\\n\");")))
+                (emit ctx "        tests_failed++;")
+                (emit ctx "        return;")
+                (emit ctx "    }")))
+            ;; Declare result
+            (emit ctx
+              (string-concat arena "    typeof("
+                (string-concat arena call-expr
+                  (string-concat arena ") result = "
+                    (string-concat arena call-expr ";")))))
+            (if unchecked
+              ;; The call runs, which still catches a crash, but nothing is asserted.
+              ;; That is a legitimate smoke test and it is not a pass.
+              (do
+                (emit ctx "    (void)result;")
+                (emit ctx "    printf(\"RAN (no assertion)\\n\");")
+                (emit ctx "    tests_unchecked++;")
+                (emit ctx "}")
+                (emit ctx ""))
+              (do
+                ;; If statement
+                (emit ctx
+                  (string-concat arena "    if ("
+                    (string-concat arena (. compare-info compare-expr) ") {")))
+                ;; Pass branch
+                (emit ctx "        printf(\"PASS\\n\");")
+                (emit ctx "        tests_passed++;")
+                (emit ctx "    } else {")
+                ;; Fail branch
+                (let ((fail-str (string-concat arena "        printf(\"FAIL (got "
+                                  (string-concat arena (. compare-info result-fmt)
+                                    (string-concat arena ", expected "
+                                      (string-concat arena (. compare-info expected-fmt)
+                                        (string-concat arena ")\\n\", "
+                                          (string-concat arena (. compare-info result-args)
+                                            (string-concat arena ", "
+                                              (string-concat arena (. compare-info expected-args) ");"))))))))))
+                  (emit ctx fail-str))
+                (emit ctx "        tests_failed++;")
+                (emit ctx "    }")
+                (emit ctx "}")
+                (emit ctx "")))
+            (do))))))
 
   ;; ============================================================
   ;; Main Function Generation
@@ -585,6 +766,7 @@
   (fn emit-main-function ((ctx (Ptr EmitContext)) (test-count Int) (needs-arena Bool))
     (@intent "Generate main() function that runs all tests")
     (@spec (((Ptr EmitContext) Int Bool) -> Unit))
+    (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena)))
       (emit ctx "int main(void) {")
       (when needs-arena
@@ -601,10 +783,10 @@
                         (string-concat arena (int-to-string arena i) "();"))))
             (emit ctx call))
           (set! i (+ i 1))))
-      (emit ctx "    printf(\"\\n%d passed, %d failed\\n\", tests_passed, tests_failed);")
+      (emit ctx "    printf(\"\\n%d passed, %d failed, %d unrunnable, %d unchecked\\n\", tests_passed, tests_failed, tests_errored, tests_unchecked);")
       (when needs-arena
         (emit ctx "    slop_arena_free(test_arena);"))
-      (emit ctx "    return tests_failed > 0 ? 1 : 0;")
+      (emit ctx "    return (tests_failed + tests_errored) > 0 ? 1 : 0;")
       (emit ctx "}")
       (do)))
 
@@ -659,10 +841,12 @@
     (@spec ((Arena (Ptr SExpr) (Option String) String TypeRegistry (Option String) (Ptr TranspileContext)) -> CompareInfo))
     (@alloc arena)
     (let ((ret-type-str (match return-type ((some s) s) ((none) "Int"))))
-      ;; Wildcard expected value (contains _ or ..) — comparison is "1" (always true)
-      ;; so the test only verifies the function call doesn't crash, not its return value
-      (if (contains-wildcard expected)
-        (CompareInfo "1" "%s" "\"<wildcard>\"" "%s" "\"<wildcard>\"")
+      ;; A bare wildcard asserts nothing; emit-test-function-typed reports that case
+      ;; separately, so this is only a defensive fallback. A wildcard *inside* a
+      ;; constructor must not land here - it means "don't compare this one field",
+      ;; and the builders below skip those fields individually.
+      (if (is-wildcard-expr expected)
+        (CompareInfo "1" "%s" "\"<unchecked>\"" "%s" "\"<unchecked>\"")
       ;; Check for user-defined union types first
       (if (is-union-constructor-typed expected types)
         (build-union-comparison-typed arena expected prefix types ret-type-str tctx)
@@ -679,6 +863,14 @@
               (let ((inner-expected (get-some-inner-typed arena expected tctx))
                     (inner-expr (get-some-inner-expr expected)))
                 (cond
+                  ;; (some _) asserts that a value is present, nothing about it
+                  ((is-wildcard-expr inner-expr)
+                   (CompareInfo
+                     "result.has_value"
+                     "%s"
+                     "result.has_value ? \"some(...)\" : \"none\""
+                     "%s"
+                     "\"some(...)\""))
                   ((contains ret-type-str "String")
                    (CompareInfo
                      (string-concat arena "result.has_value && slop_string_eq(result.value, "
@@ -828,8 +1020,18 @@
                           "%s"
                           "\"ok(...)\"" ))))))))
               (if (is-error-value expected)
-                (let ((inner-expected (get-error-inner-typed arena expected tctx))
-                      (inner-expr (get-ok-inner-expr expected)))
+                (let ((inner-expr (get-ok-inner-expr expected)))
+                  ;; A wildcard payload means "some error", so only the tag is
+                  ;; asserted. Materializing the payload would compare a real value
+                  ;; against a zero initializer and fail for the wrong reason.
+                  (if (contains-wildcard inner-expr)
+                  (CompareInfo
+                    "!result.is_ok"
+                    "%s"
+                    "result.is_ok ? \"ok(...)\" : \"error(...)\""
+                    "%s"
+                    "\"error(...)\"")
+                (let ((inner-expected (get-error-inner-typed arena expected tctx)))
                   ;; Check if inner value is a union constructor
                   (if (is-union-constructor-typed inner-expr types)
                     (let ((expected-var "expected_err")
@@ -873,7 +1075,7 @@
                       "%s"
                       "result.is_ok ? \"ok(...)\" : \"error(...)\""
                       "%s"
-                      "\"error(...)\"")))
+                      "\"error(...)\"")))))
                 (let ((c-expected (transpile-expr-safe arena tctx expected)))
                   (CompareInfo
                     (string-concat arena "result == " c-expected)
@@ -998,6 +1200,7 @@
     (@intent "Extract record type name from a record constructor expression")
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
+    (@pre {expr != nil})
     (match (deref expr)
       ((lst lst)
         (let ((items (. lst items)))
@@ -1015,6 +1218,7 @@
     (@intent "Extract field values from record constructor (RecordType val1 val2 ...)")
     (@spec ((Arena (Ptr SExpr)) -> (List (Ptr SExpr))))
     (@alloc arena)
+    (@pre {expr != nil})
     (match (deref expr)
       ((lst lst)
         (let ((items (. lst items))
@@ -1032,12 +1236,48 @@
       (_ (list-new arena (Ptr SExpr)))))
 
   (fn is-wildcard-expr ((expr (Ptr SExpr)))
-    (@intent "Check if expression is the wildcard symbol _")
+    (@intent "Check if expression is a wildcard placeholder")
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
+    (@pre {expr != nil})
+    ;; These examples are meaningful only because tests/example-harness-negative/
+    ;; independently proves the harness still tells a pass from a skip from a
+    ;; failure - the tester cannot be the sole witness to its own correctness.
+    (@example ((make-sexpr-sym arena "_")) -> true)
+    (@example ((make-sexpr-sym arena "..")) -> true)
+    (@example ((make-sexpr-sym arena "mk")) -> false)
+    (@example ((make-sexpr-num arena "3")) -> false)
+    ;; The set must match replace-wildcards: anything rewritten to the marker has no
+    ;; value to compare against, so every such position has to be skipped. The parser
+    ;; renders ... as the two symbols .. and .
     (match (deref expr)
-      ((sym sym) (string-eq (. sym name) "_"))
+      ((sym sym) (or (string-eq (. sym name) "_")
+                     (string-eq (. sym name) "..")
+                     (string-eq (. sym name) ".")))
       (_ false)))
+
+  (fn count-wildcard-values ((field-values (List (Ptr SExpr))))
+    (@intent "Count how many constructor arguments are wildcards")
+    (@spec (((List (Ptr SExpr))) -> Int))
+    (@pure)
+    ;; The bound is the only postcondition statable here, and `return 0` satisfies it -
+    ;; which is exactly the failure that matters, since under-counting wildcards means
+    ;; fields get compared that should have been skipped. The @example blocks below are
+    ;; what actually pin the count.
+    (@post {$result <= (list-len field-values)})
+    (@example ((list (Ptr SExpr) (make-sexpr-sym arena "_")
+                     (make-sexpr-num arena "3")
+                     (make-sexpr-sym arena "_"))) -> 2)
+    (@example ((list (Ptr SExpr) (make-sexpr-num arena "3"))) -> 0)
+    (let ((len (list-len field-values))
+          (mut i 0)
+          (mut n 0))
+      (while (< i len)
+        (match (list-get field-values i)
+          ((some v) (when (is-wildcard-expr v) (set! n (+ n 1))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      n))
 
   (fn build-record-field-comparisons-with-values ((arena Arena) (fields (List TstFieldEntry))
                                                    (field-values (List (Ptr SExpr)))
@@ -1130,6 +1370,7 @@
     (@intent "Get the first symbol name from an expression (for type detection)")
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
+    (@pre {expr != nil})
     (match (deref expr)
       ((sym s) (. s name))
       ((lst l)
@@ -1159,14 +1400,20 @@
     (let ((c-expected (transpile-expr-safe arena tctx expected))
           (expected-var-name "expected_value")
           (variant-name (get-union-variant-name expected))
+          ;; The constructor's arguments, positionally matching the payload fields
+          (field-values (get-record-field-values arena expected))
           (c-variant (to-c-name arena variant-name)))
       (let ((payload-cmp (match (registry-get-variant-info types variant-name)
                            ((some ve)
                              (let ((payload-type (. ve payload-type)))
-                               (build-union-payload-comparison arena payload-type c-variant expected-var-name types)))
+                               (build-union-payload-comparison arena payload-type c-variant expected-var-name types field-values)))
                            ((none)
-                             (string-concat arena "memcmp(&result.data, &"
-                               (string-concat arena expected-var-name ".data, sizeof(result.data)) == 0"))))))
+                             (if (> (count-wildcard-values field-values) 0)
+                               ;; memcmp cannot skip a field, so a wildcard anywhere
+                               ;; in an unregistered payload means tag-only
+                               "1"
+                               (string-concat arena "memcmp(&result.data, &"
+                                 (string-concat arena expected-var-name ".data, sizeof(result.data)) == 0")))))))
         (CompareInfo
           (let ((parts (list-new arena String)))
             (list-push parts "({ typeof(result) ")
@@ -1185,12 +1432,18 @@
           "\"<expected>\""))))
 
   (fn build-union-payload-comparison ((arena Arena) (payload-type String) (c-variant String)
-                                       (expected-var String) (types TypeRegistry))
+                                       (expected-var String) (types TypeRegistry)
+                                       (field-values (List (Ptr SExpr))))
     (@intent "Build comparison expression for union payload based on type")
-    (@spec ((Arena String String String TypeRegistry) -> String))
+    (@spec ((Arena String String String TypeRegistry (List (Ptr SExpr))) -> String))
     (@alloc arena)
+    (let ((value-count (list-len field-values))
+          (wildcard-count (count-wildcard-values field-values)))
     (cond
       ((string-eq payload-type "")
+        "1")
+      ;; Every payload position is a wildcard: assert the tag and nothing else
+      ((and (> value-count 0) (== wildcard-count value-count))
         "1")
       ((string-eq payload-type "String")
         (string-concat arena "slop_string_eq(result.data."
@@ -1201,20 +1454,25 @@
       (else
         (match (registry-get-record-fields types payload-type)
           ((some fields)
-            (build-union-record-payload-comparison arena fields c-variant expected-var))
+            (build-union-record-payload-comparison arena fields field-values c-variant expected-var))
           ((none)
-            (string-concat arena "memcmp(&result.data."
-              (string-concat arena c-variant
-                (string-concat arena ", &"
-                  (string-concat arena expected-var
-                    (string-concat arena ".data."
-                      (string-concat arena c-variant
-                        (string-concat arena ", sizeof(result.data." (string-concat arena c-variant "))")))))))))))))
+            (if (> wildcard-count 0)
+              ;; memcmp compares the whole payload, including the zero initializer
+              ;; standing in for the wildcard, so fall back to tag-only
+              "1"
+              (string-concat arena "memcmp(&result.data."
+                (string-concat arena c-variant
+                  (string-concat arena ", &"
+                    (string-concat arena expected-var
+                      (string-concat arena ".data."
+                        (string-concat arena c-variant
+                          (string-concat arena ", sizeof(result.data." (string-concat arena c-variant "))")))))))))))))))
 
   (fn build-union-record-payload-comparison ((arena Arena) (fields (List TstFieldEntry))
+                                              (field-values (List (Ptr SExpr)))
                                               (c-variant String) (expected-var String))
-    (@intent "Build comparison for a record payload, comparing each field")
-    (@spec ((Arena (List TstFieldEntry) String String) -> String))
+    (@intent "Build comparison for a record payload, skipping wildcard fields")
+    (@spec ((Arena (List TstFieldEntry) (List (Ptr SExpr)) String String) -> String))
     (@alloc arena)
     (let ((len (list-len fields))
           (mut result "1")
@@ -1222,11 +1480,17 @@
       (while (< i len)
         (match (list-get fields i)
           ((some field)
-            (let ((fname (to-c-name arena (. field name)))
-                  (ftype (. field type-name))
-                  (field-cmp (build-union-field-comparison arena fname ftype c-variant expected-var)))
-              (set! result (string-concat arena result
-                             (string-concat arena " && " field-cmp)))))
+            ;; A wildcard in this position was materialized as a zero initializer,
+            ;; so comparing it would fail for the wrong reason.
+            (let ((is-wildcard (match (list-get field-values i)
+                                 ((some val) (is-wildcard-expr val))
+                                 ((none) false))))
+              (when (not is-wildcard)
+                (let ((fname (to-c-name arena (. field name)))
+                      (ftype (. field type-name))
+                      (field-cmp (build-union-field-comparison arena fname ftype c-variant expected-var)))
+                  (set! result (string-concat arena result
+                                 (string-concat arena " && " field-cmp)))))))
           ((none) (do)))
         (set! i (+ i 1)))
       result))
@@ -1277,6 +1541,7 @@
     (@intent "Check if expression is a union constructor using type registry")
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
+    (@pre {expr != nil})
     (match (deref expr)
       ((lst lst)
         (let ((items (. lst items)))
@@ -1304,6 +1569,7 @@
     (@intent "Get the variant name from a union constructor expression")
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
+    (@pre {expr != nil})
     (match (deref expr)
       ((lst lst)
         (let ((items (. lst items)))
@@ -1329,6 +1595,7 @@
     (@intent "Check if expression is an enum value using type registry")
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
+    (@pre {expr != nil})
     (match (deref expr)
       ((sym sym)
         (let ((name (. sym name)))
@@ -1362,6 +1629,7 @@
     (@intent "Check if expression is a record constructor using type registry")
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
+    (@pre {expr != nil})
     (match (deref expr)
       ((lst lst)
         (let ((items (. lst items)))
@@ -1424,6 +1692,7 @@
     (@intent "Get inner expression from (some val) for type checking")
     (@spec (((Ptr SExpr)) -> (Ptr SExpr)))
     (@pure)
+    (@pre {expected != nil})
     (match (deref expected)
       ((lst lst)
         (let ((items (. lst items)))
@@ -1438,6 +1707,7 @@
     (@intent "Get inner expression from (ok val) for type checking")
     (@spec (((Ptr SExpr)) -> (Ptr SExpr)))
     (@pure)
+    (@pre {expected != nil})
     (match (deref expected)
       ((lst lst)
         (let ((items (. lst items)))
@@ -1456,6 +1726,7 @@
     (@intent "Check if expression is (none) or bare none symbol")
     (@spec (((Ptr SExpr)) -> Bool))
     (@pure)
+    (@pre {expr != nil})
     (match (deref expr)
       ((sym sym) (string-eq (. sym name) "none"))
       ((lst lst)
@@ -1493,8 +1764,9 @@
   (fn extract-list-element-type ((arena Arena) (list-type-str String))
     (@intent "Extract element type from '(List ElementType)' string")
     (@spec ((Arena String) -> String))
+    ;; Not @pure: this allocates via substring. It is the only function here that
+    ;; takes an Arena, and carrying both @alloc and @pure was a contradiction.
     (@alloc arena)
-    (@pure)
     (let ((len (cast Int (. list-type-str len))))
       (if (< len 7)
         ""
@@ -1548,6 +1820,7 @@
     (@intent "Build comparison info for List types with type awareness")
     (@spec ((Arena (Ptr SExpr) String TypeRegistry String (Option String) (Ptr TranspileContext)) -> CompareInfo))
     (@alloc arena)
+    (@pre {expected != nil})
     (match (deref expected)
       ((lst lst)
         (let ((elements (. lst items))
@@ -1684,6 +1957,13 @@
         (ctx-set-module tctx (some module-name))
         (ctx-set-prefixing tctx true))
       (ctx-bind-var tctx (VarEntry "arena" "test_arena" "slop_arena*" "Arena" true false false "" ""))
+      ;; replace-wildcards rewrites _ to this marker; binding it here makes it resolve
+      ;; to a zero initializer instead of tripping the strict-unknown-symbol check.
+      (ctx-bind-var tctx (VarEntry "__SLOP_WILDCARD__" "{0}" "int64_t" "Int" false false false "" ""))
+      ;; @example arguments must resolve against the module and its imports. Without
+      ;; this, an unknown fixture name is silently emitted as a plausible C identifier
+      ;; and the failure surfaces as a link error - or, worse, as a passing test.
+      (ctx-set-strict-unknown-symbols tctx true)
       (when (> (list-len ast) 0)
         (match (list-get ast 0)
           ((some first-expr)
@@ -1788,6 +2068,7 @@
   (fn register-type-fields ((tctx (Ptr TranspileContext)) (type-form (Ptr SExpr)))
     (@intent "Register field types for a single type definition")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {tctx != nil})
     (when (>= (sexpr-list-len type-form) 3)
       (match (sexpr-list-get type-form 1)
         ((some name-expr)

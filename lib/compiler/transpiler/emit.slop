@@ -52,7 +52,7 @@
   (fn emit-forward-decl ((ctx (Ptr TranspileContext)) (return-type String) (name String) (params String))
     (@intent "Emit a function forward declaration")
     (@spec (((Ptr TranspileContext) String String String) -> Unit))
-    (@example (ctx "int" "foo" "int x, int y") -> "int foo(int x, int y);")
+    ;; Emits: int foo(int x, int y);
     (@pre {ctx != nil})
     (let ((param-str (if (string-eq params "")
                         "void"
@@ -62,21 +62,21 @@
   (fn emit-var-decl ((ctx (Ptr TranspileContext)) (c-type String) (name String))
     (@intent "Emit a variable declaration without initializer")
     (@spec (((Ptr TranspileContext) String String) -> Unit))
-    (@example (ctx "int64_t" "x") -> "int64_t x;")
+    ;; Emits: int64_t x;
     (@pre {ctx != nil})
     (ctx-emit ctx (ctx-str4 ctx c-type " " name ";")))
 
   (fn emit-var-decl-init ((ctx (Ptr TranspileContext)) (c-type String) (name String) (init String))
     (@intent "Emit a variable declaration with initializer")
     (@spec (((Ptr TranspileContext) String String String) -> Unit))
-    (@example (ctx "int64_t" "x" "42") -> "int64_t x = 42;")
+    ;; Emits: int64_t x = 42;
     (@pre {ctx != nil})
     (ctx-emit ctx (ctx-str5 ctx c-type " " name " = " (ctx-str ctx init ";"))))
 
   (fn emit-const-decl ((ctx (Ptr TranspileContext)) (c-type String) (name String) (value String) (is-int Bool))
     (@intent "Emit a constant declaration")
     (@spec (((Ptr TranspileContext) String String String Bool) -> Unit))
-    (@example (ctx "int64_t" "MAX_SIZE" "1024" true) -> "#define MAX_SIZE (1024)")
+    ;; Emits: #define MAX_SIZE (1024)
     (@pre {ctx != nil})
     (if is-int
       ;; Integer constants use #define
@@ -105,7 +105,7 @@
   (fn emit-if-open ((ctx (Ptr TranspileContext)) (condition String))
     (@intent "Emit if statement opening")
     (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@example (ctx "x > 0") -> "if (x > 0) {")
+    ;; Emits: if (x > 0) {
     (@pre {ctx != nil})
     (ctx-emit ctx (ctx-str3 ctx "if (" (ctx-strip-cond-parens ctx condition) ") {"))
     (ctx-indent ctx))
@@ -129,7 +129,7 @@
   (fn emit-while-open ((ctx (Ptr TranspileContext)) (condition String))
     (@intent "Emit while loop opening")
     (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@example (ctx "i < n") -> "while (i < n) {")
+    ;; Emits: while (i < n) {
     (@pre {ctx != nil})
     (ctx-emit ctx (ctx-str3 ctx "while (" (ctx-strip-cond-parens ctx condition) ") {"))
     (ctx-indent ctx))
@@ -148,14 +148,14 @@
   (fn emit-typedef ((ctx (Ptr TranspileContext)) (c-type String) (name String))
     (@intent "Emit a typedef")
     (@spec (((Ptr TranspileContext) String String) -> Unit))
-    (@example (ctx "struct Foo" "Foo") -> "typedef struct Foo Foo;")
+    ;; Emits: typedef struct Foo Foo;
     (@pre {ctx != nil})
     (ctx-emit ctx (ctx-str4 ctx "typedef " c-type " " (ctx-str ctx name ";"))))
 
   (fn emit-struct-open ((ctx (Ptr TranspileContext)) (name String))
     (@intent "Emit struct definition opening")
     (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@example (ctx "MyRecord") -> "struct MyRecord {")
+    ;; Emits: struct MyRecord {
     (@pre {ctx != nil})
     (ctx-emit ctx (ctx-str3 ctx "struct " name " {"))
     (ctx-indent ctx))
@@ -170,14 +170,14 @@
   (fn emit-struct-field ((ctx (Ptr TranspileContext)) (c-type String) (name String))
     (@intent "Emit a struct field")
     (@spec (((Ptr TranspileContext) String String) -> Unit))
-    (@example (ctx "int64_t" "value") -> "int64_t value;")
+    ;; Emits: int64_t value;
     (@pre {ctx != nil})
     (ctx-emit ctx (ctx-str4 ctx "    " c-type " " (ctx-str ctx name ";"))))
 
   (fn emit-enum-open ((ctx (Ptr TranspileContext)) (name String))
     (@intent "Emit enum definition opening")
     (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@example (ctx "Color") -> "typedef enum {")
+    ;; Emits: typedef enum {
     (@pre {ctx != nil})
     (ctx-emit ctx "typedef enum {")
     (ctx-indent ctx))
@@ -193,7 +193,7 @@
   (fn emit-enum-close ((ctx (Ptr TranspileContext)) (type-name String))
     (@intent "Emit enum definition closing with typedef")
     (@spec (((Ptr TranspileContext) String) -> Unit))
-    (@example (ctx "Color") -> "} Color;")
+    ;; Emits: } Color;
     (@pre {ctx != nil})
     (ctx-dedent ctx)
     (ctx-emit ctx (ctx-str3 ctx "} " type-name ";")))

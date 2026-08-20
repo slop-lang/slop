@@ -1,0 +1,110 @@
+;; ============================================================
+;; Test: @example blocks whose values are not scalar literals
+;;
+;; Regression for issue #71. Every case below was previously reported as
+;; "SKIP (wildcard args)" and counted as a pass, so this file would have gone
+;; green no matter what these functions returned.
+;;
+;; Run by scripts/run_native_tests.sh through `slop test`, not `slop build`:
+;; the assertions live in the @example blocks, so there is no main.
+;; ============================================================
+
+(module example-harness
+
+  ;; P is deliberately a single uppercase letter. to-c-type reads such a name as
+  ;; a generic type variable and answers int64_t, which used to make every
+  ;; declaration disagree with the call site.
+  (type P (record (v Int) (tag String)))
+
+  (fn make-p ((n Int))
+    (@intent "Build a P from an integer")
+    (@spec ((Int) -> P))
+    (@pure)
+    (record-new P (v n) (tag "p")))
+
+  (fn p-value ((p P))
+    (@intent "Read the v field of a P")
+    (@spec ((P) -> Int))
+    (@pure)
+    ;; The argument is a call, and its type is a record
+    (@example ((make-p 4)) -> 4)
+    (@example ((make-p 0)) -> 0)
+    (. p v))
+
+  (fn make-p-in ((arena Arena) (n Int))
+    (@intent "Allocate a P in the arena")
+    (@spec ((Arena Int) -> (Ptr P)))
+    (@alloc arena)
+    (@post (!= $result nil))
+    (let ((p (cast (Ptr P) (arena-alloc arena (sizeof P)))))
+      (set! (deref p) (record-new P (v n) (tag "boxed")))
+      p))
+
+  (fn boxed-value ((b (Ptr P)))
+    (@intent "Read the v field through a pointer")
+    (@spec (((Ptr P)) -> Int))
+    (@pre (!= b nil))
+    ;; boxed-value takes no Arena of its own, but its argument needs the
+    ;; harness arena, so test_arena has to be declared on its account
+    (@example ((make-p-in arena 7)) -> 7)
+    (. (deref b) v))
+
+  (fn find-p ((n Int))
+    (@intent "Return a P for a positive n")
+    (@spec ((Int) -> (Option P)))
+    (@pure)
+    ;; _ inside a constructor means "do not compare this one field"
+    (@example (3) -> (some (P 3 _)))
+    (@example (0) -> none)
+    (if (> n 0)
+      (some (record-new P (v n) (tag "found")))
+      (none)))
+
+  (fn describe ((n Int))
+    (@intent "Return a label for n")
+    (@spec ((Int) -> String))
+    (@pure)
+    ;; Nested calls in argument position
+    (@example ((p-value (make-p 1))) -> "one")
+    (@example ((p-value (make-p 9))) -> "many")
+    (if (== n 1) "one" "many"))
+
+  (fn halve ((n Int))
+    (@intent "Halve an even, positive n")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (@pre {n > 0})
+    (@pre {(% n 2) == 0})
+    ;; Both @pre hold for these arguments, so the guard must stay out of the way
+    (@example (8) -> 4)
+    (@example (2) -> 1)
+    (/ n 2))
+
+  ;; A union whose variant payload is a multi-field record. The expected value
+  ;; names the payload fields positionally, and _ skips one of them.
+  (type Detail (record (code Int) (note String)))
+  (type Failure (union (bad-input Detail) (missing String)))
+
+  (fn classify ((n Int))
+    (@intent "Return a failure value describing n")
+    (@spec ((Int) -> Failure))
+    (@pure)
+    (@example (0) -> (bad-input 7 "zero"))
+    (@example (0) -> (bad-input 7 _))
+    (@example (0) -> (bad-input _ "zero"))
+    (@example (1) -> (missing _))
+    (if (== n 0)
+      (union-new Failure bad-input (record-new Detail (code 7) (note "zero")))
+      (union-new Failure missing "absent")))
+
+  (fn run ((n Int))
+    (@intent "Succeed for a positive n, fail otherwise")
+    (@spec ((Int) -> (Result Int Failure)))
+    (@pure)
+    ;; (error _) and (ok _) assert the tag and nothing about the payload
+    (@example (0) -> (error _))
+    (@example (5) -> (ok _))
+    (@example (5) -> (ok 5))
+    (if (> n 0)
+      (ok n)
+      (error (union-new Failure bad-input (record-new Detail (code 7) (note "too small")))))))
