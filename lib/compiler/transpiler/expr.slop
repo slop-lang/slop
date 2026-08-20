@@ -2465,6 +2465,9 @@
                     ;; map-keys: (map-keys map) -> slop_map_keys(map)
                     ((and (string-eq op "map-keys") (>= len 2))
                       (transpile-map-keys ctx items))
+                    ;; map-remove: (map-remove map key) -> slop_map_remove(map, key)
+                    ((and (string-eq op "map-remove") (>= len 3))
+                      (transpile-map-remove ctx items))
                     ;; set: (set Type e1 e2...) -> set literal
                     ((and (string-eq op "set") (>= len 2))
                       (transpile-set-literal ctx items))
@@ -5642,6 +5645,39 @@
             (do
               (ctx-add-error-at ctx "map-has: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
               "false"))))))
+
+  (fn transpile-map-remove ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Transpile map-remove to slop_map_remove with proper key pointer wrapping")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    (let ((len (list-len items)))
+      (if (< len 3)
+        (do
+          (ctx-add-error-at ctx "map-remove: needs map, key" (ctx-list-first-line items) (ctx-list-first-col items))
+          "0")
+        (match (list-get items 1)
+          ((some map-expr)
+            (match (list-get items 2)
+              ((some key-expr)
+                (let ((map-c (transpile-expr ctx map-expr))
+                      (key-c (transpile-expr ctx key-expr))
+                      ;; wrap-map-key-as-ptr tries the map key type first and only then
+                      ;; the set element type, so passing the map expression is correct.
+                      (key-ptr (wrap-map-key-as-ptr ctx key-c key-expr map-expr))
+                      ;; (Ptr (Map K V)) is slop_map**; deref once, as map-put does.
+                      (needs-deref (is-ptr-to-ptr-map ctx map-expr)))
+                  ;; slop_map_remove takes no arena, unlike map-put and map-keys.
+                  (if needs-deref
+                    (ctx-str ctx "slop_map_remove((*" (ctx-str ctx map-c (ctx-str ctx "), " (ctx-str ctx key-ptr ")"))))
+                    (ctx-str ctx "slop_map_remove(" (ctx-str ctx map-c (ctx-str ctx ", " (ctx-str ctx key-ptr ")")))))))
+              ((none)
+                (do
+                  (ctx-add-error-at ctx "map-remove: missing key" (ctx-list-first-line items) (ctx-list-first-col items))
+                  "0"))))
+          ((none)
+            (do
+              (ctx-add-error-at ctx "map-remove: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
+              "0"))))))
 
   (fn transpile-map-keys ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile map-keys to properly typed list")

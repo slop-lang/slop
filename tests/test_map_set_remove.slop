@@ -1,5 +1,5 @@
 ;; ============================================================
-;; Test: set-remove preserves unrelated entries
+;; Test: set-remove / map-remove preserve unrelated entries
 ;;
 ;; Regression for issue #67. slop_map_remove cleared an entry's
 ;; `occupied` flag without closing the gap it left in the probe
@@ -14,13 +14,14 @@
 ;; enough keys that collisions are guaranteed by pigeonhole,
 ;; independent of the hash function.
 ;;
-;; Sets and Maps share one runtime table, so slop_map_remove is
-;; covered here entirely through set-remove. There is no direct
-;; map-remove coverage because map-remove has no transpiler
-;; codegen: it is documented (spec/LANGUAGE.md:711) and accepted
-;; by the checker (lib/compiler/checker/infer.slop:1321), but
-;; there is no case for it in the builtin dispatch table in
-;; lib/compiler/transpiler/expr.slop, so it fails to transpile.
+;; Sets and Maps share one runtime table, so both halves below
+;; exercise the same slop_map_remove. The set-remove tests came
+;; first because map-remove had no transpiler codegen at the
+;; time -- it was documented and accepted by the checker, but
+;; had no case in the builtin dispatch table, so it failed to
+;; transpile (issue #73). The map-remove tests were added with
+;; that codegen, and additionally check that surviving keys
+;; still map to their original VALUES, which set-remove cannot.
 ;; ============================================================
 
 (module test-map-set-remove
@@ -149,10 +150,211 @@
         (== bad 0))))
 
   ;; ============================================================
+  ;; Test 6: map-remove preserves unrelated entries AND their values
+  ;;
+  ;; The set tests can only show that a surviving key is still
+  ;; reachable. A map can also lose the association, so this checks
+  ;; the value each survivor maps to, not just its presence.
+  ;; ============================================================
+  (fn test-map-remove-preserves-others ()
+    (@intent "Every key not removed must still map to its original value")
+    (@spec (() -> Bool))
+    (with-arena 262144
+      (let ((m (map-new arena Int Int))
+            (mut i 0)
+            (mut bad 0))
+        (while (< i 200)
+          (do (map-put m i (* i 10)) (set! i (+ i 1))))
+        ;; remove every 10th key
+        (set! i 0)
+        (while (< i 200)
+          (do (map-remove m i) (set! i (+ i 10))))
+        (set! i 0)
+        (while (< i 200)
+          (do
+            (when (not (== (% i 10) 0))
+              (match (map-get m i)
+                ((some v) (when (not (== v (* i 10))) (set! bad (+ bad 1))))
+                ((none) (set! bad (+ bad 1)))))
+            (set! i (+ i 1))))
+        (== bad 0))))
+
+  ;; ============================================================
+  ;; Test 7: keys that WERE removed must miss both lookups
+  ;; ============================================================
+  (fn test-map-remove-removes ()
+    (@intent "Removed keys must fail both map-has and map-get")
+    (@spec (() -> Bool))
+    (with-arena 262144
+      (let ((m (map-new arena Int Int))
+            (mut i 0)
+            (mut ghosts 0))
+        (while (< i 200)
+          (do (map-put m i (* i 10)) (set! i (+ i 1))))
+        (set! i 0)
+        (while (< i 200)
+          (do (map-remove m i) (set! i (+ i 10))))
+        (set! i 0)
+        (while (< i 200)
+          (do
+            (when (== (% i 10) 0)
+              (do
+                (when (map-has m i) (set! ghosts (+ ghosts 1)))
+                (match (map-get m i)
+                  ((some _) (set! ghosts (+ ghosts 1)))
+                  ((none) (do)))))
+            (set! i (+ i 1))))
+        (== ghosts 0))))
+
+  ;; ============================================================
+  ;; Test 8: re-inserting a removed key must not duplicate it
+  ;;
+  ;; Re-inserted keys get a distinct value (+1000) so a duplicate
+  ;; left behind by the old entry is visible as a wrong value, not
+  ;; only as a wrong count.
+  ;; ============================================================
+  (fn test-map-remove-reinsert-no-duplicates ()
+    (@intent "remove then re-put must leave exactly one entry per key, holding the new value")
+    (@spec (() -> Bool))
+    (with-arena 262144
+      (let ((m (map-new arena Int Int))
+            (mut i 0)
+            (mut n 0)
+            (mut bad 0))
+        (while (< i 100)
+          (do (map-put m i i) (set! i (+ i 1))))
+        ;; remove every other key, ascending
+        (set! i 0)
+        (while (< i 100)
+          (do (map-remove m i) (set! i (+ i 2))))
+        ;; re-insert them descending, so each probe runs into a fresh gap
+        (set! i 98)
+        (while (>= i 0)
+          (do (map-put m i (+ i 1000)) (set! i (- i 2))))
+        ;; for-each walks the raw table, so a duplicated key shows up twice
+        (for-each ((k v) m)
+          (do
+            (set! n (+ n 1))
+            (if (== (% k 2) 0)
+              (when (not (== v (+ k 1000))) (set! bad (+ bad 1)))
+              (when (not (== v k)) (set! bad (+ bad 1))))))
+        (and (== n 100) (== bad 0)))))
+
+  ;; ============================================================
+  ;; Test 9: removal survives a table growth (rehash) afterwards
+  ;; ============================================================
+  (fn test-map-remove-then-grow ()
+    (@intent "Entries removed before a rehash must stay removed, others keep their values")
+    (@spec (() -> Bool))
+    (with-arena 262144
+      (let ((m (map-new arena Int Int))
+            (mut i 0)
+            (mut bad 0))
+        (while (< i 50)
+          (do (map-put m i (* i 10)) (set! i (+ i 1))))
+        ;; drop half, then push well past the growth threshold
+        (set! i 0)
+        (while (< i 50)
+          (do (map-remove m i) (set! i (+ i 2))))
+        (set! i 50)
+        (while (< i 400)
+          (do (map-put m i (* i 10)) (set! i (+ i 1))))
+        ;; evens below 50 gone, odds below 50 present, 50..399 present
+        (set! i 0)
+        (while (< i 400)
+          (do
+            (if (and (< i 50) (== (% i 2) 0))
+              (when (map-has m i) (set! bad (+ bad 1)))
+              (match (map-get m i)
+                ((some v) (when (not (== v (* i 10))) (set! bad (+ bad 1))))
+                ((none) (set! bad (+ bad 1)))))
+            (set! i (+ i 1))))
+        (== bad 0))))
+
+  ;; ============================================================
+  ;; Test 10: String keys
+  ;;
+  ;; wrap-map-key-as-ptr wraps a slop_string key as &(k) but an Int
+  ;; key as &(int64_t){k}, so the Int tests above never reach this
+  ;; branch.
+  ;; ============================================================
+  (fn test-map-remove-string-keys ()
+    (@intent "map-remove must work for String keys, which take a different key-wrapping branch")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((m (map-new arena String Int))
+            (mut ok true))
+        (map-put m "alpha" 1)
+        (map-put m "beta" 2)
+        (map-put m "gamma" 3)
+        (map-remove m "beta")
+        (when (map-has m "beta") (set! ok false))
+        (match (map-get m "alpha")
+          ((some v) (when (not (== v 1)) (set! ok false)))
+          ((none) (set! ok false)))
+        (match (map-get m "gamma")
+          ((some v) (when (not (== v 3)) (set! ok false)))
+          ((none) (set! ok false)))
+        ok)))
+
+  ;; ============================================================
+  ;; Test 11: removing an absent key is a no-op
+  ;; ============================================================
+  (fn test-map-remove-absent-key ()
+    (@intent "Removing a key that is not present must leave the map untouched")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((m (map-new arena Int Int))
+            (mut keysum 0)
+            (mut ok true))
+        (map-put m 1 10)
+        (map-put m 2 20)
+        (map-remove m 99)
+        (map-remove m 99)
+        (for-each (k m)
+          (set! keysum (+ keysum k)))
+        (when (not (== keysum 3)) (set! ok false))
+        (match (map-get m 1)
+          ((some v) (when (not (== v 10)) (set! ok false)))
+          ((none) (set! ok false)))
+        (match (map-get m 2)
+          ((some v) (when (not (== v 20)) (set! ok false)))
+          ((none) (set! ok false)))
+        ok)))
+
+  ;; ============================================================
+  ;; Test 12: map-remove through a (Ptr (Map K V))
+  ;;
+  ;; A (Ptr (Map K V)) is slop_map**, so the emitter has to deref
+  ;; once. Without that it passes slop_map** where slop_map* is
+  ;; expected and only the C compiler notices. map-has and map-get
+  ;; do NOT deref, so the checks run against m directly.
+  ;; ============================================================
+  (fn remove-via-ptr ((m (Ptr (Map String Int))) (k String))
+    (@intent "Remove through a Ptr Map, exercising the slop_map** deref")
+    (@spec (((Ptr (Map String Int)) String) -> Bool))
+    (do (map-remove m k) true))
+
+  (fn test-map-remove-via-ptr ()
+    (@intent "map-remove must deref a Ptr Map rather than emit slop_map**")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((m (map-new arena String Int))
+            (mut ok true))
+        (map-put m "a" 1)
+        (map-put m "b" 2)
+        (map-put m "c" 3)
+        (when (not (remove-via-ptr (addr m) "b")) (set! ok false))
+        (when (map-has m "b") (set! ok false))
+        (when (not (map-has m "a")) (set! ok false))
+        (when (not (map-has m "c")) (set! ok false))
+        ok)))
+
+  ;; ============================================================
   ;; Main test runner
   ;; ============================================================
   (fn main ()
-    (@intent "Run all set-remove regression tests")
+    (@intent "Run all set-remove and map-remove regression tests")
     (@spec (() -> Int))
     (let ((mut failures 0))
       (if (test-set-remove-preserves-others)
@@ -174,6 +376,34 @@
       (if (test-remove-then-grow)
         (println "test-remove-then-grow: PASS")
         (do (println "test-remove-then-grow: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-remove-preserves-others)
+        (println "test-map-remove-preserves-others: PASS")
+        (do (println "test-map-remove-preserves-others: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-remove-removes)
+        (println "test-map-remove-removes: PASS")
+        (do (println "test-map-remove-removes: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-remove-reinsert-no-duplicates)
+        (println "test-map-remove-reinsert-no-duplicates: PASS")
+        (do (println "test-map-remove-reinsert-no-duplicates: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-remove-then-grow)
+        (println "test-map-remove-then-grow: PASS")
+        (do (println "test-map-remove-then-grow: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-remove-string-keys)
+        (println "test-map-remove-string-keys: PASS")
+        (do (println "test-map-remove-string-keys: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-remove-absent-key)
+        (println "test-map-remove-absent-key: PASS")
+        (do (println "test-map-remove-absent-key: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-remove-via-ptr)
+        (println "test-map-remove-via-ptr: PASS")
+        (do (println "test-map-remove-via-ptr: FAIL")
             (set! failures (+ failures 1))))
       (println "")
       (if (== failures 0)
