@@ -1375,6 +1375,9 @@ void collect_collect_ffi_function(env_TypeEnv* env, slop_arena* arena, types_SEx
                                 __auto_type sig = types_fn_signature_new(arena, qualified_name, fn_name, params, ret_type);
                                 (*sig).module_name = mod_opt;
                                 (*sig).is_variadic = collect_ffi_has_variadic(func_decl);
+                                if (collect_is_reserved_builtin_name(fn_name)) {
+                                    collect_report_reserved_name(env, fn_name, SLOP_STR("foreign function"), parser_sexpr_line(func_decl), parser_sexpr_col(func_decl));
+                                }
                                 env_env_register_function(env, sig);
                             }
                         }

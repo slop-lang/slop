@@ -1021,6 +1021,13 @@
                       (set! (. (deref sig) module-name) mod-opt)
                       ;; Check for variadic marker (...) in params list
                       (set! (. (deref sig) is-variadic) (ffi-has-variadic func-decl))
+                      ;; An FFI declaration registers a signature directly, so it
+                      ;; needs the same refusal the (fn ...) path gets -- otherwise
+                      ;; it is the one remaining way to make the checker and the
+                      ;; transpiler disagree about one of these names.
+                      (when (is-reserved-builtin-name fn-name)
+                        (report-reserved-name env fn-name "foreign function"
+                          (sexpr-line func-decl) (sexpr-col func-decl)))
                       (env-register-function env sig)))))
               ((none) (do))))
           ;; Constant declaration: 2 elements (name Type)

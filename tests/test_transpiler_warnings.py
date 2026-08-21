@@ -549,6 +549,11 @@ class TestOptionPredicates:
         assert (
             "'is-some' is a builtin predicate and cannot be redefined as a type"
         ) in combined, combined
+        # An FFI declaration registers its signature directly, bypassing the
+        # (fn ...) path, so it needs the same refusal.
+        assert (
+            "'is-some' is a builtin predicate and cannot be redefined as a foreign function"
+        ) in combined, combined
 
     def test_lowering_is_a_tag_test(self):
         """No payload access, and no call into a generated equality function."""

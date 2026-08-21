@@ -13,6 +13,11 @@
 
 (module test-option-predicate-reserved
 
+  ;; An FFI declaration registers its signature directly, bypassing the (fn ...)
+  ;; path, so it is the one remaining way to make the checker and the transpiler
+  ;; disagree about one of these names.
+  (ffi "stdlib.h" (is-some ((n Int)) Bool))
+
   (type is-some (record (w Int)))
 
   (fn is-none ((n Int))
