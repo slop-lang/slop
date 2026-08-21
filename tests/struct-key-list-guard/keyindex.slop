@@ -1,0 +1,43 @@
+;; Shape B, which is what slop-rdf actually hit: an importer that uses Term BOTH
+;; as a set key and in a (List Term). Both paths can emit the list here, and
+;; which one wins decides whether the bug shows.
+;;
+;; The (List Term) has to appear in a TYPE ANNOTATION, not just in a body. The
+;; prescan walks annotations only, so a signature-level (List Term) is emitted by
+;; the ordinary list header pass, which runs before the struct-key pass and
+;; therefore claims the correct guard. A body-only (list-new arena Term) is
+;; registered late, the struct-key pass emits it first under the hash/eq guard,
+;; and the two modules then agree on the WRONG guard and interlock by accident --
+;; which is exactly how an earlier draft of this test passed against the bug.
+
+(module keyindex
+  (import keyterm (Term make-iri make-blank))
+  (export term-list distinct-terms)
+
+  (fn term-list ((arena Arena))
+    (@intent "(List Term) in a signature, so the ordinary list path runs first")
+    (@spec ((Arena) -> (List Term)))
+    (@alloc arena)
+    (let ((xs (list-new arena Term))
+          (a (make-iri "a"))
+          (b (make-blank 1)))
+      (list-push xs a)
+      (list-push xs b)
+      xs))
+
+  (fn distinct-terms ((arena Arena))
+    (@intent "(Set Term) registers Term as a struct-key type in this module too")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    ;; Bound to locals rather than passed inline: set-put on a struct key emits
+    ;; &(operand), so an rvalue key is invalid C. That is a separate transpiler
+    ;; bug, present in v0.2.0 as well, and keeping it out keeps this file pinned
+    ;; to the include guard.
+    (let ((s (set-new arena Term))
+          (a (make-iri "a"))
+          (a-again (make-iri "a"))
+          (b (make-blank 1)))
+      (set-put s a)
+      (set-put s a-again)
+      (set-put s b)
+      (list-len (set-elements s)))))

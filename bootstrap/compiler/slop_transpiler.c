@@ -4884,7 +4884,13 @@ void transpiler_emit_struct_key_types_header(context_TranspileContext* ctx) {
                             context_ctx_emit_header(ctx, context_ctx_str(ctx, SLOP_STR("#define "), guard_name));
                             transpiler_emit_struct_hash_eq(ctx, c_type);
                             if (!(context_ctx_is_type_emitted(ctx, list_c_name))) {
-                                context_ctx_emit_header(ctx, context_ctx_str5(ctx, SLOP_STR("SLOP_LIST_DEFINE("), c_type, SLOP_STR(", "), list_c_name, SLOP_STR(")")));
+                                {
+                                    __auto_type list_guard = context_ctx_str3(ctx, transpiler_uppercase_name(ctx, list_c_name), SLOP_STR("_DEFINED"), SLOP_STR(""));
+                                    context_ctx_emit_header(ctx, context_ctx_str(ctx, SLOP_STR("#ifndef "), list_guard));
+                                    context_ctx_emit_header(ctx, context_ctx_str(ctx, SLOP_STR("#define "), list_guard));
+                                    context_ctx_emit_header(ctx, context_ctx_str5(ctx, SLOP_STR("SLOP_LIST_DEFINE("), c_type, SLOP_STR(", "), list_c_name, SLOP_STR(")")));
+                                    context_ctx_emit_header(ctx, SLOP_STR("#endif"));
+                                }
                                 context_ctx_mark_type_emitted(ctx, list_c_name);
                             }
                             context_ctx_emit_header(ctx, SLOP_STR("#endif"));

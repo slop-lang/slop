@@ -3530,9 +3530,20 @@
                   (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
                   ;; Generate field-by-field hash/eq functions (or fallback to macro)
                   (emit-struct-hash-eq ctx c-type)
-                  ;; Only emit SLOP_LIST_DEFINE if list type wasn't already emitted
+                  ;; Only emit SLOP_LIST_DEFINE if list type wasn't already emitted.
+                  ;; Guard it under the list's OWN name rather than leaving it to the
+                  ;; enclosing hash/eq guard. emit-single-list-type-header emits the
+                  ;; identical macro under SLOP_LIST_<T>_DEFINED, and an importing
+                  ;; module reaches that path independently -- ctx-is-type-emitted only
+                  ;; interlocks the two within a single module, so once both headers
+                  ;; land in one translation unit the C preprocessor is the only thing
+                  ;; left holding them apart and the guard names have to agree.
                   (when (not (ctx-is-type-emitted ctx list-c-name))
-                    (ctx-emit-header ctx (ctx-str5 ctx "SLOP_LIST_DEFINE(" c-type ", " list-c-name ")"))
+                    (let ((list-guard (ctx-str3 ctx (uppercase-name ctx list-c-name) "_DEFINED" "")))
+                      (ctx-emit-header ctx (ctx-str ctx "#ifndef " list-guard))
+                      (ctx-emit-header ctx (ctx-str ctx "#define " list-guard))
+                      (ctx-emit-header ctx (ctx-str5 ctx "SLOP_LIST_DEFINE(" c-type ", " list-c-name ")"))
+                      (ctx-emit-header ctx "#endif"))
                     (ctx-mark-type-emitted ctx list-c-name))
                   ;; #endif
                   (ctx-emit-header ctx "#endif")
