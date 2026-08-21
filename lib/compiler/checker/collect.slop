@@ -98,6 +98,9 @@
                 (match (deref name-expr)
                   ((sym sym)
                     (let ((type-name (. sym name)))
+                      (when (is-reserved-builtin-name type-name)
+                        (report-reserved-name env type-name "type"
+                          (sexpr-line name-expr) (sexpr-col name-expr)))
                       (match (list-get items 2)
                         ((some type-expr)
                           (cond
@@ -1123,8 +1126,46 @@
                   ;; Validate main function parameters
                   (when (string-eq fn-name "main")
                     (validate-main-params env fn-form concrete-params))
+                  (when (is-reserved-builtin-name fn-name)
+                    (report-reserved-name env fn-name "function"
+                      (sexpr-line fn-form) (sexpr-col fn-form)))
                   (env-register-function env sig)))))
           ((none) (do))))))
+
+  (fn is-reserved-builtin-name ((name String))
+    (@intent "Names the transpiler lowers by name, which a definition cannot override")
+    (@spec ((String) -> Bool))
+    (@pure)
+    ;; is-none / is-some are dispatched on the name in transpile-expr, the same
+    ;; way every other builtin there is. The checker resolves a user function or
+    ;; type FIRST, so a definition of one of these names type-checks against the
+    ;; definition and then lowers to the builtin -- an error that surfaces in cc.
+    ;;
+    ;; The transpiler cannot tell the two apart on its own: its FuncEntry carries
+    ;; no module, so a lookup finds definitions from every module in the build,
+    ;; including ones the current module never imported. A dependency defining
+    ;; the name would silently disable the builtin somewhere else entirely.
+    ;;
+    ;; So the definition is refused here instead, where module-name is known and
+    ;; the message can be precise. Every other builtin has the same conflict and
+    ;; resolves it nowhere at all; that is #110.
+    (@example ("is-none") -> true)
+    (@example ("is-some") -> true)
+    (@example ("is-empty") -> false)
+    (or (string-eq name "is-none") (string-eq name "is-some")))
+
+  (fn report-reserved-name ((env (Ptr TypeEnv)) (name String) (what String)
+                            (line Int) (col Int))
+    (@intent "Report that a definition collides with a builtin of the same name")
+    (@spec (((Ptr TypeEnv) String String Int Int) -> Unit))
+    (@pre (!= env nil))
+    (let ((arena (env-arena env))
+          (msg (string-concat arena "'"
+                 (string-concat arena name
+                   (string-concat arena "' is a builtin predicate and cannot be redefined as a "
+                     (string-concat arena what
+                       " - rename it, or use match if you want the payload"))))))
+      (env-add-error env msg line col)))
 
   (fn is-integer-type-name ((name String))
     (@intent "Check if type name is an integer type suitable for argc")

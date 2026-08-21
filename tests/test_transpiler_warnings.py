@@ -527,6 +527,29 @@ class TestOptionPredicates:
         assert ": error:" not in combined, combined
         assert ": warning:" not in combined, combined
 
+    def test_the_names_are_reserved(self):
+        """A definition of either name is refused, as a function and as a type.
+
+        Both spellings matter: infer-expr tries env-lookup-function and then
+        env-lookup-type before reaching its builtins, so either would resolve to
+        the definition and then lower to the builtin.
+
+        Gating the lowering on a transpiler lookup was tried instead and is
+        wrong: FuncEntry carries no module, so the lookup sees every module in
+        the build and a dependency defining the name would disable the builtin
+        in an unrelated module that never imported it.
+        """
+        rc, stdout, stderr = slop_check("fixtures/test_option_predicate_reserved.slop")
+        combined = stdout + stderr
+
+        assert rc != 0, combined
+        assert (
+            "'is-none' is a builtin predicate and cannot be redefined as a function"
+        ) in combined, combined
+        assert (
+            "'is-some' is a builtin predicate and cannot be redefined as a type"
+        ) in combined, combined
+
     def test_lowering_is_a_tag_test(self):
         """No payload access, and no call into a generated equality function."""
         with tempfile.TemporaryDirectory() as tmp:

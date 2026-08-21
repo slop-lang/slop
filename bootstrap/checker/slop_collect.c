@@ -42,6 +42,8 @@ uint8_t collect_ffi_has_variadic(types_SExpr* func_decl);
 slop_list_types_ParamInfo collect_collect_ffi_params(env_TypeEnv* env, slop_arena* arena, types_SExpr* func_decl);
 types_ResolvedType* collect_get_ffi_return_type(env_TypeEnv* env, slop_arena* arena, types_SExpr* func_decl);
 void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_SExpr* fn_form);
+uint8_t collect_is_reserved_builtin_name(slop_string name);
+void collect_report_reserved_name(env_TypeEnv* env, slop_string name, slop_string what, int64_t line, int64_t col);
 uint8_t collect_is_integer_type_name(slop_string name);
 void collect_validate_main_params(env_TypeEnv* env, types_SExpr* fn_form, slop_list_types_ParamInfo params);
 slop_list_types_ParamInfo collect_collect_fn_params(env_TypeEnv* env, slop_arena* arena, types_SExpr* fn_form);
@@ -112,6 +114,9 @@ void collect_register_type_name(env_TypeEnv* env, slop_arena* arena, types_SExpr
                                 __auto_type sym = _mv_103.data.sym;
                                 {
                                     __auto_type type_name = sym.name;
+                                    if (collect_is_reserved_builtin_name(type_name)) {
+                                        collect_report_reserved_name(env, type_name, SLOP_STR("type"), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
+                                    }
                                     __auto_type _mv_104 = ({ __auto_type _lst = items; size_t _idx = (size_t)2; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                     if (_mv_104.has_value) {
                                         __auto_type type_expr = _mv_104.value;
@@ -1509,6 +1514,9 @@ void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_
                             if (string_eq(fn_name, SLOP_STR("main"))) {
                                 collect_validate_main_params(env, fn_form, concrete_params);
                             }
+                            if (collect_is_reserved_builtin_name(fn_name)) {
+                                collect_report_reserved_name(env, fn_name, SLOP_STR("function"), parser_sexpr_line(fn_form), parser_sexpr_col(fn_form));
+                            }
                             env_env_register_function(env, sig);
                         }
                     }
@@ -1516,6 +1524,19 @@ void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_
             } else if (!_mv_181.has_value) {
             }
         }
+    }
+}
+
+uint8_t collect_is_reserved_builtin_name(slop_string name) {
+    return (string_eq(name, SLOP_STR("is-none")) || string_eq(name, SLOP_STR("is-some")));
+}
+
+void collect_report_reserved_name(env_TypeEnv* env, slop_string name, slop_string what, int64_t line, int64_t col) {
+    SLOP_PRE(((env != NULL)), "(!= env nil)");
+    {
+        __auto_type arena = env_env_arena(env);
+        __auto_type msg = string_concat(arena, SLOP_STR("'"), string_concat(arena, name, string_concat(arena, SLOP_STR("' is a builtin predicate and cannot be redefined as a "), string_concat(arena, what, SLOP_STR(" - rename it, or use match if you want the payload")))));
+        env_env_add_error(env, msg, line, col);
     }
 }
 

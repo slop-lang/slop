@@ -83,6 +83,8 @@ uint8_t collect_ffi_has_variadic(types_SExpr* func_decl);
 slop_list_types_ParamInfo collect_collect_ffi_params(env_TypeEnv* env, slop_arena* arena, types_SExpr* func_decl);
 types_ResolvedType* collect_get_ffi_return_type(env_TypeEnv* env, slop_arena* arena, types_SExpr* func_decl);
 void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_SExpr* fn_form);
+uint8_t collect_is_reserved_builtin_name(slop_string name);
+void collect_report_reserved_name(env_TypeEnv* env, slop_string name, slop_string what, int64_t line, int64_t col);
 uint8_t collect_is_integer_type_name(slop_string name);
 void collect_validate_main_params(env_TypeEnv* env, types_SExpr* fn_form, slop_list_types_ParamInfo params);
 slop_list_types_ParamInfo collect_collect_fn_params(env_TypeEnv* env, slop_arena* arena, types_SExpr* fn_form);

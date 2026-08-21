@@ -1,0 +1,21 @@
+;; is-none and is-some are builtins dispatched on the name in transpile-expr,
+;; so a definition of either cannot take effect: the checker would resolve the
+;; definition, the transpiler would emit the tag test, and cc would report the
+;; difference.
+;;
+;; The transpiler cannot resolve that on its own -- its FuncEntry carries no
+;; module, so a lookup sees every module in the build, and a dependency defining
+;; the name would disable the builtin in an unrelated module that never imported
+;; it. So the definition is refused here, where module-name is known.
+;;
+;; Both spellings must be named: a function and a type, since infer-expr tries
+;; env-lookup-function and then env-lookup-type before reaching its builtins.
+
+(module test-option-predicate-reserved
+
+  (type is-some (record (w Int)))
+
+  (fn is-none ((n Int))
+    (@intent "A function of a reserved name")
+    (@spec ((Int) -> Bool))
+    (== n 0)))

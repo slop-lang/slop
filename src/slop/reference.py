@@ -755,6 +755,9 @@ is-some/is-none read the tag only, never the payload, so they work for any T.
 Use match when you need the value. == on an (Option T) is an error -- it is a
 container, like (List T).
 
+Both names are reserved; defining a function or type called is-none or is-some
+is a compile error.
+
 ### Results
 (ok val) -> (Result T E)
 (error e) -> (Result T E)

@@ -766,6 +766,9 @@ Minimal runtime (~500 lines of C):
 ; (Option T) -- including one whose T has no structural equality and so could
 ; not be compared even in principle. Use match when you need the value; these
 ; are for the case where you do not.
+;
+; Both names are reserved: a function or type of either name is a compile error.
+; They are lowered by name, so a definition could not take effect anyway.
 
 ; Sets (homogeneous, type-safe)
 (set-new arena ElementType) -> (Set ElementType)  ; Create empty set
