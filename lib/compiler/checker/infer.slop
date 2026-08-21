@@ -30,6 +30,7 @@
                env-add-warning env-add-error
                env-set-fn-type-params env-clear-fn-type-params env-is-type-param))
   (import strlib (starts-with ends-with string-build join))
+  (import ctype (is-builtin-type))
   (import collect (find-fn-type-params))
 
   ;; ============================================================
@@ -1134,6 +1135,20 @@
                     ((string-eq op "list-len")
                       (do (check-builtin-args env "list-len" 1 (- len 1) line col)
                           (env-get-int-type env)))
+                    ;; (is-none opt) / (is-some opt) -> Bool. Tag predicates, so
+                    ;; they hold for any T -- including one whose payload has no
+                    ;; structural equality and therefore cannot be compared at all.
+                    ;; A local of that name wins: a (Fn ...) parameter or a let
+                    ;; binding called is-none is an ordinary callable, and the
+                    ;; cond's own env-lookup-var fallback further down handles it.
+                    ;; Locals are module-scoped, so unlike the function and type
+                    ;; cases this can be resolved by lookup -- there is no other
+                    ;; module whose binding could reach in here.
+                    ((and (or (string-eq op "is-none") (string-eq op "is-some"))
+                          (match (env-lookup-var env op) ((some v) false) ((none) true)))
+                      (do (check-builtin-args env op 1 (- len 1) line col)
+                          (check-option-predicate-arg env op items len line col)
+                          (env-get-bool-type env)))
                     ;; (arena-alloc arena Type) - return (Ptr Type)
                     ;; Also supports (arena-alloc arena size-expr) for raw byte allocation
                     ((string-eq op "arena-alloc")
@@ -1581,6 +1596,106 @@
                          (string-concat arena " argument(s), got "
                            (int-to-string arena actual))))))))
         (env-add-error env msg line col))))
+
+  (fn resolve-alias-chain ((t (Ptr ResolvedType)))
+    (@intent "Follow a symbol type alias to the builtin it stands for")
+    (@spec (((Ptr ResolvedType)) -> (Ptr ResolvedType)))
+    (@pre (!= t nil))
+    ;; (type MyInt Int) is recorded by collect.slop's generic alias branch as an
+    ;; rk-primitive named "MyInt" carrying Int as its inner, so the alias has to
+    ;; be followed before asking whether the type is a builtin scalar.
+    ;;
+    ;; A FORM alias -- (type MaybeInt (Option Int)) -- gets no inner at all: that
+    ;; same branch asks sexpr-get-symbol-name for a name and a form has none. So
+    ;; this stops on MaybeInt with nothing to follow, which is why the caller
+    ;; still has to treat an unresolved rk-primitive as possibly an Option.
+    ;; Modelling those properly is #101.
+    ;;
+    ;; The bound is a cycle guard, not a depth limit: a malformed chain must not
+    ;; hang the checker, but no real alias chain approaches it, so stopping early
+    ;; on a legitimate one -- which would silently exempt it and hand the error to
+    ;; cc -- is not a tradeoff worth making to keep the number small.
+    (let ((mut cur t)
+          (mut steps 0)
+          (mut done false))
+      (while (and (not done) (< steps 64))
+        ;; A pointer c-name means this is a container registered under
+        ;; rk-primitive -- (Set T) is, with the element type as its inner -- not
+        ;; an alias standing for something else. Following it would walk into the
+        ;; element type and answer a question about the wrong type.
+        (if (and (== (. (deref cur) kind) 'rk-primitive)
+                 (not (ends-with (. (deref cur) c-name) "*")))
+          (match (. (deref cur) inner-type)
+            ((some next)
+              (do (set! cur next)
+                  (set! steps (+ steps 1))))
+            ((none) (set! done true)))
+          (set! done true)))
+      cur))
+
+  (fn check-option-predicate-arg ((env (Ptr TypeEnv)) (op String) (items (List (Ptr SExpr)))
+                                  (len Int) (line Int) (col Int))
+    (@intent "Reject is-none / is-some on an argument that is not an (Option T)")
+    (@spec (((Ptr TypeEnv) String (List (Ptr SExpr)) Int Int Int) -> Unit))
+    (@pre (!= env nil))
+    ;; The whole point of these two is that they need nothing from the payload, so
+    ;; the only thing to check is that the argument is an Option at all. Without
+    ;; this the transpiler would emit `.has_value` on some unrelated struct and
+    ;; leave cc to complain about a missing member.
+    (when (>= len 2)
+      (match (list-get items 1)
+        ((some arg)
+          (let ((raw-type (infer-expr env arg))
+                (arg-type (resolve-alias-chain raw-type))
+                (kind (. (deref arg-type) kind))
+                (reported-name (. (deref raw-type) name))
+                (resolved-name (. (deref arg-type) name))
+                (resolved-c-name (. (deref arg-type) c-name))
+                (arena (env-arena env)))
+            (cond
+              ;; Already an Option. Nothing to say.
+              ((== kind 'rk-option) (do))
+              ;; A declared type parameter. SLOP has no way to constrain one to be
+              ;; an Option, so this can never be valid however it is instantiated
+              ;; -- and left alone it reaches cc as "member reference base type
+              ;; 'int64_t' is not a structure or union". Name the fix.
+              ((== kind 'rk-typevar)
+                (env-add-error env
+                  (string-concat arena "'"
+                    (string-concat arena op
+                      (string-concat arena "' expects an (Option T), got type parameter "
+                        (string-concat arena reported-name
+                          " - declare the parameter as (Option T)"))))
+                  line col))
+              ;; Whatever the checker gave up on. Saying nothing is right: a
+              ;; diagnostic on an unresolved type is a false positive by
+              ;; construction, and one that fires on working code is one that gets
+              ;; suppressed and then ignored.
+              ((string-eq resolved-name "Unknown") (do))
+              ;; An rk-primitive that is not a builtin scalar is usually a form
+              ;; alias whose target was never recorded (#101) -- it may well be an
+              ;; Option, so stay quiet rather than reject a legitimate one.
+              ;;
+              ;; Except when its C type is a pointer. rk-primitive is overloaded:
+              ;; collect.slop registers (Set T) under it too, with c-name
+              ;; "slop_map*" and the ELEMENT type as its inner -- so a Set is not
+              ;; an unresolved alias, it is a resolved container, and following
+              ;; that inner would walk into the element and conclude a
+              ;; (Set (Option Int)) was an Option. Left alone it reached cc as
+              ;; "no member named 'has_value' in 'slop_map'". A pointer c-name
+              ;; also catches an alias to (Ptr T), which has the same problem for
+              ;; the same reason.
+              ((and (== kind 'rk-primitive)
+                    (not (is-builtin-type resolved-name))
+                    (not (ends-with resolved-c-name "*"))) (do))
+              (else
+                (env-add-error env
+                  (string-concat arena "'"
+                    (string-concat arena op
+                      (string-concat arena "' expects an (Option T), got "
+                        reported-name)))
+                  line col)))))
+        ((none) (do)))))
 
   (fn infer-builtin-args ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
     (@intent "Infer types of all arguments in a builtin call to catch nested errors")

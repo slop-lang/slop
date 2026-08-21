@@ -9,6 +9,7 @@ Verifies that:
 
 import re
 import subprocess
+import tempfile
 import pytest
 from pathlib import Path
 
@@ -466,3 +467,111 @@ class TestWithArenaAsClosure:
         assert "slop_arena_alloc(arena" in c_src, c_src
         # And the warning that used to accompany the malloc must be gone.
         assert "no arena in scope" not in (stdout + stderr), stdout + stderr
+
+
+class TestOptionPredicates:
+    """`is-none` / `is-some` (#107).
+
+    There was no way to ask whether an Option was empty without a full `match`.
+    `==` is not that way: spec/LANGUAGE.md classes (Option T) as a container and
+    rejects `==` on one, deliberately.
+
+    These are tag predicates, so they never touch the payload -- which is the
+    property that matters. They hold for a T whose payload has no structural
+    equality at all, where any comparison-based test would be impossible rather
+    than merely awkward.
+    """
+
+    def test_non_option_argument_is_named(self):
+        rc, stdout, stderr = slop_check("fixtures/test_option_predicate_bad_arg.slop")
+        combined = stdout + stderr
+
+        assert rc != 0, combined
+        # Each bad argument must be reported with its own type named, so the
+        # message points at the mistake rather than just refusing.
+        assert "'is-none' expects an (Option T), got Int" in combined, combined
+        assert "'is-some' expects an (Option T), got Point" in combined, combined
+        # A List is a container too, but it is not an Option.
+        assert "'is-none' expects an (Option T), got List" in combined, combined
+        # A range alias is a resolved, definitely-not-Option type.
+        assert "'is-none' expects an (Option T), got Meters" in combined, combined
+        # A symbol alias, reached by following the chain collect.slop records.
+        assert "'is-none' expects an (Option T), got MyInt" in combined, combined
+        # Ten deep: the chain guard is a cycle guard, not a depth cliff. Stopping
+        # early lands on a non-builtin primitive, which is exempt, so the miss
+        # would be silent and the error would land in cc instead.
+        assert "'is-none' expects an (Option T), got D10" in combined, combined
+        # A Set is registered under rk-primitive with the element type as its
+        # inner, so it is a resolved container rather than an unresolved alias.
+        assert "'is-none' expects an (Option T), got Set" in combined, combined
+        # A declared type parameter. Left alone this reached cc as "member
+        # reference base type 'int64_t' is not a structure or union", which
+        # CLAUDE.md calls a failure outright. The message must name the fix.
+        assert (
+            "'is-some' expects an (Option T), got type parameter T"
+            " - declare the parameter as (Option T)"
+        ) in combined, combined
+        assert "'is-some' expects 1 argument(s), got 2" in combined, combined
+
+    def test_valid_uses_are_silent(self):
+        """The bail-outs, which are what keep the new check from becoming noise.
+
+        Covers an Option in parameter position, over a record payload, built
+        inline from (some ...) / (none), the two inferred Options that list-get
+        and map-get return, and -- the one that caught a real false positive --
+        an Option reached through a type alias. collect.slop records no inner for
+        a form alias, so (type MaybeInt (Option Int)) arrives as a bare
+        rk-primitive with nothing marking it as an Option.
+        """
+        rc, stdout, stderr = slop_check("fixtures/test_option_predicate_ok.slop")
+        combined = stdout + stderr
+
+        assert rc == 0, combined
+        assert ": error:" not in combined, combined
+        assert ": warning:" not in combined, combined
+
+    def test_the_names_are_reserved(self):
+        """A definition of either name is refused, as a function and as a type.
+
+        Both spellings matter: infer-expr tries env-lookup-function and then
+        env-lookup-type before reaching its builtins, so either would resolve to
+        the definition and then lower to the builtin.
+
+        Gating the lowering on a transpiler lookup was tried instead and is
+        wrong: FuncEntry carries no module, so the lookup sees every module in
+        the build and a dependency defining the name would disable the builtin
+        in an unrelated module that never imported it.
+        """
+        rc, stdout, stderr = slop_check("fixtures/test_option_predicate_reserved.slop")
+        combined = stdout + stderr
+
+        assert rc != 0, combined
+        assert (
+            "'is-none' is a builtin predicate and cannot be redefined as a function"
+        ) in combined, combined
+        assert (
+            "'is-some' is a builtin predicate and cannot be redefined as a type"
+        ) in combined, combined
+        # An FFI declaration registers its signature directly, bypassing the
+        # (fn ...) path, so it needs the same refusal.
+        assert (
+            "'is-some' is a builtin predicate and cannot be redefined as a foreign function"
+        ) in combined, combined
+        # ffi-struct declares a type and the checker registers nothing for it,
+        # so it was the last declaration form that could claim one of the names.
+        assert (
+            "'is-none' is a builtin predicate and cannot be redefined as a foreign struct"
+        ) in combined, combined
+
+    def test_lowering_is_a_tag_test(self):
+        """No payload access, and no call into a generated equality function."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = str(Path(tmp) / "opt.c")
+            rc, stdout, stderr = slop_transpile("test_option_predicates.slop", out)
+            assert rc == 0, stdout + stderr
+            c_src = Path(out).read_text()
+
+        assert ".has_value" in c_src, "expected a tag test in the generated C"
+        # A tag predicate must not reach for structural equality; that is exactly
+        # what it exists to avoid, since the payload may have none.
+        assert "slop_eq_test_option_predicates_UnComparable" not in c_src, c_src

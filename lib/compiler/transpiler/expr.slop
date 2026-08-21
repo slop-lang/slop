@@ -2734,6 +2734,38 @@
                           (do
                             (ctx-add-error-at ctx "missing ? argument" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
+                    ;; is-none / is-some: a tag test, the same one match.slop emits
+                    ;; for an Option scrutinee. No payload is touched, so these work
+                    ;; for any T, including one that == could never compare.
+                    ;;
+                    ;; Dispatched on the name, like every other builtin here. That
+                    ;; is safe only because collect.slop refuses a function or type
+                    ;; of either name, so there is nothing for this to shadow.
+                    ;;
+                    ;; Gating on ctx-lookup-func/ctx-lookup-type instead was tried
+                    ;; and is wrong: FuncEntry carries no module, so those lookups
+                    ;; see every module in the build. A dependency defining the name
+                    ;; would disable the builtin in an unrelated module that never
+                    ;; imported it, and the call -- type-checked as the builtin --
+                    ;; would lower to a call into the dependency. Refusing the
+                    ;; definition removes the disagreement rather than tracking it.
+                    ;; A local of that name wins, matching the checker. Locals are
+                    ;; module-scoped, so ctx-lookup-var is safe here in a way that
+                    ;; ctx-lookup-func and ctx-lookup-type are not -- those see
+                    ;; every module in the build.
+                    ((and (or (string-eq op "is-none") (string-eq op "is-some"))
+                          (>= len 2)
+                          (match (ctx-lookup-var ctx op) ((some v) false) ((none) true)))
+                      (match (list-get items 1)
+                        ((some opt-expr)
+                          (let ((opt-c (transpile-expr ctx opt-expr))
+                                (bang (if (string-eq op "is-none") "!" "")))
+                            (ctx-str5 ctx "(" bang "((" opt-c ").has_value))")))
+                        ((none)
+                          (do
+                            (ctx-add-error-at ctx (ctx-str3 ctx "missing " op " argument")
+                              (ctx-list-first-line items) (ctx-list-first-col items))
+                            "0"))))
                     ;; list-len: (list-len list) -> ((int64_t)(list.len))
                     ((and (string-eq op "list-len") (>= len 2))
                       (match (list-get items 1)
@@ -4146,6 +4178,7 @@
                         ((string-eq op "string-concat") "slop_string")
                         ;; list-len returns int64_t
                         ((string-eq op "list-len") "int64_t")
+                        ((or (string-eq op "is-none") (string-eq op "is-some")) "bool")
                         ;; string-len returns int64_t
                         ((string-eq op "string-len") "int64_t")
                         ;; string-eq returns uint8_t (Bool)

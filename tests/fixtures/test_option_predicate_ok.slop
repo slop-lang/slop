@@ -1,0 +1,50 @@
+;; Positive fixture for #107: every form here is valid and must draw no
+;; diagnostic at all. This is what keeps the new check honest -- a rule that
+;; fires on a generic or an inferred Option would be worse than no rule.
+
+(module test-option-predicate-ok
+
+  (type Point (record (x Int) (y Int)))
+
+  ;; A form alias. collect.slop records no inner for one -- its generic alias
+  ;; branch asks sexpr-get-symbol-name for a name and a form has none -- so this
+  ;; arrives as a bare rk-primitive called "MaybeInt" with nothing marking it as
+  ;; an Option. The check must not fire on it. (Passing (none) to a MaybeInt
+  ;; parameter is separately broken, #101, so there is deliberately no call.)
+  (type MaybeInt (Option Int))
+
+  (fn from-alias ((m MaybeInt))
+    (@intent "An Option reached through a type alias")
+    (@spec ((MaybeInt) -> Bool))
+    (is-none m))
+
+  (fn from-param ((o (Option Int)))
+    (@intent "An Option in parameter position")
+    (@spec (((Option Int)) -> Bool))
+    (is-none o))
+
+  (fn from-record-payload ((o (Option Point)))
+    (@intent "An Option over a record")
+    (@spec (((Option Point)) -> Bool))
+    (is-some o))
+
+  (fn from-constructor ((flag Bool))
+    (@intent "An Option built inline")
+    (@spec ((Bool) -> Bool))
+    (is-none (if flag (some 1) (none))))
+
+  (fn from-list-get ()
+    (@intent "The inferred Option that list-get returns")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((xs (list-new arena Int)))
+        (list-push xs 1)
+        (is-some (list-get xs 0)))))
+
+  (fn from-map-get ()
+    (@intent "The inferred Option that map-get returns")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((m (map-new arena String Int)))
+        (map-put m "a" 1)
+        (is-none (map-get m "b"))))))

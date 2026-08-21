@@ -1,0 +1,30 @@
+;; is-none and is-some are builtins dispatched on the name in transpile-expr,
+;; so a definition of either cannot take effect: the checker would resolve the
+;; definition, the transpiler would emit the tag test, and cc would report the
+;; difference.
+;;
+;; The transpiler cannot resolve that on its own -- its FuncEntry carries no
+;; module, so a lookup sees every module in the build, and a dependency defining
+;; the name would disable the builtin in an unrelated module that never imported
+;; it. So the definition is refused here, where module-name is known.
+;;
+;; Both spellings must be named: a function and a type, since infer-expr tries
+;; env-lookup-function and then env-lookup-type before reaching its builtins.
+
+(module test-option-predicate-reserved
+
+  ;; An FFI declaration registers its signature directly, bypassing the (fn ...)
+  ;; path, so it is the one remaining way to make the checker and the transpiler
+  ;; disagree about one of these names.
+  (ffi "stdlib.h" (is-some ((n Int)) Bool))
+
+  (type is-some (record (w Int)))
+
+  ;; ffi-struct declares a type and the checker registers nothing for it, so it
+  ;; was the last declaration form that could claim one of these names.
+  (ffi-struct "stddef.h" is-none (x Int))
+
+  (fn is-none ((n Int))
+    (@intent "A function of a reserved name")
+    (@spec ((Int) -> Bool))
+    (== n 0)))
