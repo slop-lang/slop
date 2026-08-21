@@ -292,24 +292,18 @@ identifier               ; Variable reference
 
 ; Data construction
 (array e1 e2...)                         ; Fixed array literal
-(list [Type] e1 e2...)                   ; Dynamic list (Type optional)
-(map [KeyType ValueType] (k1 v1)...)     ; Map literal (types optional)
+(list Type e1 e2...)                     ; Dynamic list (Type required)
 (record-new Type (f1 v1) (f2 v2)...)     ; Struct construction (named fields)
 (TypeName v1 v2 ...)                     ; Struct construction (positional)
 (union-new Type Tag value)               ; Tagged union construction (single payload)
 (Tag v1 v2 ...)                          ; Tagged union construction (multi-field, inferred)
 
-; Collection Literal Type Inference:
-; When explicit type is provided, it is used directly:
+; Collection literals carry their element type explicitly:
 ;   (list Int 1 2 3)              → (List Int)
-;   (map String Int ("a" 1))      → (Map String Int)
+;   (set Int 1 2 3)               → (Set Int)
 ;
-; When type is omitted, inference follows these rules:
-;   1. Binding with annotation: (let ((x (List Int) (list 1 2))) ...) → infer from binding
-;   2. Passed to typed param: (fn ((lst (List Int))) ...) called with (list 1 2) → infer from param
-;   3. Return with @spec: function returns (List Int), (list 1 2) → infer from spec
-;   4. Non-empty, no context: (list 1 2 3) → infer from first element
-;   5. Empty, no context: (list) → ERROR: explicit type required
+; The type is not optional and is not inferred from context. There is no map
+; literal -- build one with map-new and map-put.
 
 ; Data access
 (. expr field)                   ; Field access (see semantics below)
@@ -336,6 +330,21 @@ identifier               ; Variable reference
 
 ; Comparison  
 (== a b) (!= a b) (< a b) (<= a b) (> a b) (>= a b)
+
+; == and != are structural on aggregates:
+;   String            compared by contents, not by pointer
+;   (record ...)      field by field, recursing into nested records and unions
+;   (union ...)       tag first, then every payload of the matching variant
+;   scalars, (Ptr T)  the C == you would expect; a pointer compares by identity
+;
+; Two caveats:
+;   - A container field -- (List T), (Map K V), (Set T), (Option T), (Result T E)
+;     -- inside a record is compared by identity, not contents. The transpiler
+;     warns and names the field. Two lists holding equal elements are NOT equal.
+;   - == on a container itself is a transpiler error. Match on the variants or
+;     compare the fields you mean. So is a union variant whose payload is a
+;     container: there is no structural answer for it, and the transpiler says
+;     so rather than emitting a comparison that cannot work.
 
 ; Boolean
 (and a b) (or a b) (not a)

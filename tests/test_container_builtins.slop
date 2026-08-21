@@ -1,0 +1,78 @@
+;; ============================================================
+;; Test: every container builtin the references document
+;;
+;; #84 is really about drift: spec/LANGUAGE.md, spec/REFERENCE.md and
+;; src/slop/reference.py are three hand-kept copies of the same table,
+;; and nothing compares them to the implementation. #73 was a builtin
+;; documented in two of them, present in the checker, and missing from
+;; the transpiler -- unnoticed for months.
+;;
+;; This exercises one call of every container builtin the references
+;; list, so a documented form that stops working, or was never
+;; implemented, fails here rather than in someone's editor. Three were
+;; found this way while writing it and removed from the docs:
+;; (map K V ...) literal, map-len and list-set do not exist.
+;;
+;; It is a conformance check, not a semantics check -- each builtin is
+;; used once and its result inspected just enough to prove it ran.
+;; ============================================================
+
+(module test-container-builtins
+
+  (fn lists ()
+    (@intent "every documented list builtin")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((xs (list-new arena Int))
+            (lit (list Int 4 5 6)))
+        (list-push xs 1)
+        (list-push xs 2)
+        (and (== (list-len xs) 2)
+             (== (list-len lit) 3)
+             (match (list-get lit 1) ((some v) (== v 5)) ((none) false))
+             (match (list-pop xs) ((some v) (== v 2)) ((none) false))
+             (== (list-len xs) 1)))))
+
+  (fn maps ()
+    (@intent "every documented map builtin")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((m (map-new arena String Int)))
+        (map-put m "a" 1)
+        (map-put m "b" 2)
+        (and (map-has m "a")
+             (match (map-get m "b") ((some v) (== v 2)) ((none) false))
+             (== (list-len (map-keys m)) 2)
+             (do (map-remove m "a") (not (map-has m "a")))))))
+
+  (fn sets ()
+    (@intent "every documented set builtin")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((s (set-new arena Int))
+            (lit (set Int 7 8 9)))
+        (set-put s 1)
+        (set-put s 2)
+        (and (set-has s 1)
+             (set-has lit 8)
+             (== (list-len (set-elements s)) 2)
+             (== (list-len (set-elements lit)) 3)
+             (do (set-remove s 1) (not (set-has s 1)))))))
+
+  (fn main ()
+    (@intent "Run the container conformance checks")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (lists)
+        (println "lists: PASS")
+        (do (println "lists: FAIL") (set! failures (+ failures 1))))
+      (if (maps)
+        (println "maps: PASS")
+        (do (println "maps: FAIL") (set! failures (+ failures 1))))
+      (if (sets)
+        (println "sets: PASS")
+        (do (println "sets: FAIL") (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (print failures) (println " test(s) failed") 1)))))

@@ -96,22 +96,33 @@ All definitions must be inside the module form:
 (some val)               ; Option some
 (none)                   ; Option none
 (record-new Type (field1 val1) ...)  ; create record
-(list elem1 elem2 ...)   ; create list literal
+(list Type elem1 ...)    ; create list literal (type required)
 (array elem1 elem2 ...)  ; create array literal
 ```
 
 ### Collections
 
 ```lisp
-(list-new arena)         ; create empty list
+(list-new arena Type)    ; create empty list (type parameter required)
+(list Type e1 e2...)     ; list literal
 (list-push list elem)    ; append element to list
+(list-pop list)          ; remove and return last element -> Option
 (list-get list idx)      ; get element at index -> Option
 (list-len list)          ; get list length
 
-(map-new arena)          ; create empty map
+(map-new arena K V)      ; create empty map (type parameters required)
 (map-put map key val)    ; insert/update key-value pair
 (map-get map key)        ; get value -> Option
 (map-has map key)        ; check if key exists -> Bool
+(map-keys map)           ; all keys -> (List K)
+(map-remove map key)     ; remove key (requires mutable map)
+
+(set-new arena Type)     ; create empty set (type parameter required)
+(set Type e1 e2...)      ; set literal
+(set-put set elem)       ; add element
+(set-has set elem)       ; check membership -> Bool
+(set-remove set elem)    ; remove element
+(set-elements set)       ; all elements -> (List T)
 ```
 
 ### Field Access
