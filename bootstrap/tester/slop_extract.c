@@ -133,11 +133,13 @@ slop_option_string extract_extract_return_type(slop_arena* arena, types_SExpr* s
                     } else if (!_mv_1515.has_value) {
                         return (slop_option_string){.has_value = false};
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         } else if (!_mv_1514.has_value) {
             return (slop_option_string){.has_value = false};
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -228,10 +230,12 @@ slop_list_extract_TestCase_ptr extract_extract_fn_examples(slop_arena* arena, ty
                                         return result;
                                     }
                                 }
+                                SLOP_UNREACHABLE();
                             }
                         }
                     }
                 }
+                SLOP_UNREACHABLE();
             }
         }
     }
@@ -307,6 +311,7 @@ slop_option_extract_TestCase_ptr extract_parse_example(slop_arena* arena, types_
                                         } else if (!_mv_1526.has_value) {
                                             return (slop_option_extract_TestCase_ptr){.has_value = false};
                                         }
+                                        SLOP_UNREACHABLE();
                                     }
                                 }
                             }
@@ -428,6 +433,7 @@ slop_list_extract_TestCase_ptr extract_extract_examples_from_module(slop_arena* 
                         return result;
                     }
                 }
+                SLOP_UNREACHABLE();
             }
         }
     }

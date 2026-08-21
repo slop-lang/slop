@@ -207,3 +207,86 @@ class TestAggregateEquality:
         # second time under "Transpilation failed:", so count only the first copy.
         first_copy = combined.split("Transpilation failed:")[0]
         assert first_copy.count("has no structural equality") == 1, first_copy
+
+
+def slop_check(test_file: str):
+    """Type check a .slop file and return (returncode, stdout, stderr)."""
+    result = subprocess.run(
+        ["uv", "run", "slop", "check", str(TESTS_DIR / test_file)],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+class TestMatchExhaustiveness:
+    """The checker reports a match that cannot be shown to cover every variant.
+
+    Root cause of #86: the C compiler's -Wswitch was the only thing catching a
+    missing arm, and only for enum/union matches. An Option match compiles to an
+    if-chain, so a missing (none) arm was invisible at every stage.
+    """
+
+    def test_missing_variants_are_named(self):
+        """The message must name what is missing, not just say 'non-exhaustive'."""
+        rc, stdout, stderr = slop_check("fixtures/test_match_nonexhaustive.slop")
+        combined = stdout + stderr
+
+        assert "non-exhaustive match on Colour: missing blue" in combined, combined
+        # Multi-payload variant, named by its SLOP name not its C name.
+        assert "non-exhaustive match on Fault: missing parse-fault" in combined, combined
+        # The case C cannot see: an Option match is an if-chain, never a switch.
+        assert "non-exhaustive match on Option_Int: missing none" in combined, combined
+        assert "non-exhaustive match on Result: missing error" in combined, combined
+
+        # Positioned at the match, not at the module.
+        assert re.search(r"test_match_nonexhaustive\.slop:\d+:\d+: warning:", combined), combined
+
+    def test_exhaustive_forms_are_silent(self):
+        """The check is conservative by design; this pins that it stays that way.
+
+        A false positive on a new diagnostic is what gets it suppressed and then
+        ignored -- exactly how the -Wreturn-type noise it replaces was ignored.
+        Covers: all arms named, `_`, `else`, complete Option, complete Result,
+        and a literal match (no finite variant set, so never reportable).
+        """
+        rc, stdout, stderr = slop_check("fixtures/test_match_exhaustive_ok.slop")
+        combined = stdout + stderr
+        assert "non-exhaustive" not in combined, combined
+
+
+class TestMatchFallthroughTrap:
+    """A return-position match emits SLOP_UNREACHABLE() after the construct (#86)."""
+
+    def test_trap_after_chain_and_switch_preserves_wswitch(self, tmp_path):
+        """The trap goes AFTER the closed construct, never as `else` / `default:`.
+
+        A `default:` would silence -Wswitch, and a plain `else` would run the last
+        arm's body for an unmatched value -- which the checker cannot yet rule out.
+        -Wswitch is the only exhaustiveness signal C gives us, so it stays live.
+        """
+        output = str(tmp_path / "test_match_exhaustive_ok.c")
+        rc, stdout, stderr = slop_transpile("fixtures/test_match_exhaustive_ok.slop", output)
+        assert rc == 0, f"Transpile failed: {stderr}"
+        c_src = Path(output).read_text()
+
+        # all-arms is a return-position union match with no else: gets the trap.
+        assert "SLOP_UNREACHABLE();" in c_src, c_src
+        # The switch must NOT have grown a default: arm.
+        switch_body = c_src[c_src.index("switch ("):]
+        assert "default:" not in switch_body.split("SLOP_UNREACHABLE")[0], switch_body[:400]
+
+    def test_no_trap_when_an_else_arm_exists(self, tmp_path):
+        """`else` / `_` already makes the chain total; a trap there would be dead code."""
+        output = str(tmp_path / "test_match_exhaustive_ok2.c")
+        rc, stdout, stderr = slop_transpile("fixtures/test_match_exhaustive_ok.slop", output)
+        assert rc == 0, f"Transpile failed: {stderr}"
+        c_src = Path(output).read_text()
+
+        # wildcard/else arms compile to `default:`; those functions end with a
+        # closing brace and no trap.
+        for fn in ("match_exhaustive_ok_wildcard", "match_exhaustive_ok_else_arm"):
+            body = c_src.split(f"{fn}(")[-1]
+            body = body[:body.index("\n}\n")]
+            assert "SLOP_UNREACHABLE" not in body, f"{fn} should not be trapped:\n{body}"

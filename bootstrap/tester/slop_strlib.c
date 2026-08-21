@@ -183,6 +183,7 @@ uint8_t strlib_contains(slop_string haystack, slop_string needle) {
     } else if (!_mv_0.has_value) {
         return 0;
     }
+    SLOP_UNREACHABLE();
 }
 
 uint8_t strlib_starts_with(slop_string s, slop_string prefix) {
@@ -602,6 +603,7 @@ slop_string strlib_join(slop_arena* arena, slop_list_string strings, slop_string
                 } else if (!_mv_1.has_value) {
                     return (slop_string){.len = ((uint64_t)(0)), .data = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 1); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })))};
                 }
+                SLOP_UNREACHABLE();
             } else {
                 {
                     int64_t total_len = 0;
@@ -679,6 +681,7 @@ slop_string strlib_replace(slop_arena* arena, slop_string s, slop_string old, sl
             return (slop_string){.len = ((uint64_t)(result_len)), .data = ((uint8_t*)(buf))};
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old, slop_string new) {

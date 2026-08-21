@@ -75,6 +75,23 @@ _Atomic size_t slop_global_allocated __attribute__((weak)) = 0;
     #define SLOP_ASSERT(cond, msg) ((void)0)
 #endif
 
+/* Reached when a match in return position matched none of its arms.
+ *
+ * Deliberately NOT gated on SLOP_DEBUG, unlike the contracts above. The checker
+ * warns about a non-exhaustive match but does not yet reject one, so this path is
+ * genuinely reachable -- and __builtin_unreachable() on a path that actually runs
+ * licenses the optimiser to do considerably worse than the fall-off-the-end this
+ * replaces. One cold branch at the tail of a match is the cheaper mistake.
+ *
+ * Emitted AFTER the closed if-chain or switch rather than as a final else/default,
+ * so -Wswitch still fires on a missing enum case. */
+#define SLOP_UNREACHABLE() \
+    do { \
+        fprintf(stderr, "SLOP: non-exhaustive match reached\n  at %s:%d\n", \
+                __FILE__, __LINE__); \
+        abort(); \
+    } while(0)
+
 /* Expression-form range check - returns value after checking bounds.
  * Unlike SLOP_PRE, this can be used in expression contexts like return statements. */
 #ifdef SLOP_DEBUG

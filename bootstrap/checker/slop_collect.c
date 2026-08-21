@@ -380,6 +380,7 @@ types_SExpr* collect_get_type_arg(types_SExpr* type_expr, int64_t idx) {
             } else if (!_mv_123.has_value) {
                 return type_expr;
             }
+            SLOP_UNREACHABLE();
         }
         default: {
             return type_expr;
@@ -413,6 +414,7 @@ types_ResolvedType* collect_get_field_type(env_TypeEnv* env, slop_arena* arena, 
                         return types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, type_name, ((slop_option_string){.has_value = false}), type_name);
                     }
                 }
+                SLOP_UNREACHABLE();
             }
         }
         case types_SExpr_lst:
@@ -489,6 +491,7 @@ types_ResolvedType* collect_get_field_type(env_TypeEnv* env, slop_arena* arena, 
                 } else if (!_mv_126.has_value) {
                     return env_env_get_unit_type(env);
                 }
+                SLOP_UNREACHABLE();
             }
         }
         default: {
@@ -544,6 +547,7 @@ types_ResolvedType* collect_get_field_type_generic(env_TypeEnv* env, slop_arena*
                             return types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, type_name, ((slop_option_string){.has_value = false}), type_name);
                         }
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -621,6 +625,7 @@ types_ResolvedType* collect_get_field_type_generic(env_TypeEnv* env, slop_arena*
                 } else if (!_mv_130.has_value) {
                     return env_env_get_unit_type(env);
                 }
+                SLOP_UNREACHABLE();
             }
         }
         default: {
@@ -711,6 +716,7 @@ types_ResolvedType* collect_extract_spec_return_type_generic(env_TypeEnv* env, t
                     } else if (!_mv_136.has_value) {
                         return env_env_get_unit_type(env);
                     }
+                    SLOP_UNREACHABLE();
                 }
             } else {
                 return env_env_get_unit_type(env);
@@ -718,6 +724,7 @@ types_ResolvedType* collect_extract_spec_return_type_generic(env_TypeEnv* env, t
         } else if (!_mv_135.has_value) {
             return env_env_get_unit_type(env);
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -850,6 +857,7 @@ slop_option_types_ResolvedType_ptr collect_lookup_payload_type(env_TypeEnv* env,
                 return (slop_option_types_ResolvedType_ptr){.has_value = false};
             }
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -870,6 +878,7 @@ uint8_t collect_is_range_type_expr(types_SExpr* type_expr) {
             } else if (!_mv_145.has_value) {
                 return 0;
             }
+            SLOP_UNREACHABLE();
         }
     }
 }
@@ -891,6 +900,7 @@ types_ResolvedType* collect_get_range_base_type(env_TypeEnv* env, slop_arena* ar
                 } else if (!_mv_147.has_value) {
                     return env_env_get_int_type(env);
                 }
+                SLOP_UNREACHABLE();
             } else {
                 return env_env_get_int_type(env);
             }
@@ -898,6 +908,7 @@ types_ResolvedType* collect_get_range_base_type(env_TypeEnv* env, slop_arena* ar
     } else if (!_mv_146.has_value) {
         return env_env_get_int_type(env);
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_string collect_get_type_name_from_expr(types_SExpr* expr) {
@@ -969,6 +980,7 @@ slop_option_types_ResolvedType_ptr collect_get_variant_payload_type(env_TypeEnv*
         } else if (!_mv_151.has_value) {
             return (slop_option_types_ResolvedType_ptr){.has_value = false};
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -984,6 +996,7 @@ slop_string collect_checker_get_variant_name(types_SExpr* variant_form) {
             } else if (!_mv_152.has_value) {
                 return SLOP_STR("");
             }
+            SLOP_UNREACHABLE();
         }
     } else {
         __auto_type _mv_153 = (*variant_form);
@@ -1033,6 +1046,7 @@ uint8_t collect_check_type_expr_recursive(types_SExpr* type_expr, slop_string un
                                     } else if (!_mv_157.has_value) {
                                         return 0;
                                     }
+                                    SLOP_UNREACHABLE();
                                 } else {
                                     return 0;
                                 }
@@ -1044,6 +1058,7 @@ uint8_t collect_check_type_expr_recursive(types_SExpr* type_expr, slop_string un
                     } else if (!_mv_155.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -1249,6 +1264,7 @@ types_ResolvedType* collect_get_const_type(env_TypeEnv* env, slop_arena* arena, 
                         return types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, type_name, ((slop_option_string){.has_value = false}), type_name);
                     }
                 }
+                SLOP_UNREACHABLE();
             }
         }
         default: {
@@ -1398,6 +1414,7 @@ uint8_t collect_ffi_has_variadic(types_SExpr* func_decl) {
             } else if (!_mv_175.has_value) {
                 return 0;
             }
+            SLOP_UNREACHABLE();
         } else {
             return 0;
         }
@@ -1462,6 +1479,7 @@ types_ResolvedType* collect_get_ffi_return_type(env_TypeEnv* env, slop_arena* ar
     } else if (!_mv_180.has_value) {
         return env_env_get_unit_type(env);
     }
+    SLOP_UNREACHABLE();
 }
 
 void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_SExpr* fn_form) {
@@ -1736,6 +1754,7 @@ types_ResolvedType* collect_checker_extract_spec_return_type(env_TypeEnv* env, t
                     } else if (!_mv_198.has_value) {
                         return env_env_get_unit_type(env);
                     }
+                    SLOP_UNREACHABLE();
                 }
             } else {
                 return env_env_get_unit_type(env);
@@ -1743,6 +1762,7 @@ types_ResolvedType* collect_checker_extract_spec_return_type(env_TypeEnv* env, t
         } else if (!_mv_197.has_value) {
             return env_env_get_unit_type(env);
         }
+        SLOP_UNREACHABLE();
     }
 }
 

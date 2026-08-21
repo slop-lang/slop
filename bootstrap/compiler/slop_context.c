@@ -464,6 +464,7 @@ int64_t context_ctx_sexpr_line(types_SExpr* expr) {
                 return ((int64_t)(l.line));
             }
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -494,6 +495,7 @@ int64_t context_ctx_sexpr_col(types_SExpr* expr) {
                 return ((int64_t)(l.col));
             }
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -505,6 +507,7 @@ int64_t context_ctx_list_first_line(slop_list_types_SExpr_ptr items) {
     } else if (!_mv_53.has_value) {
         return 0;
     }
+    SLOP_UNREACHABLE();
 }
 
 int64_t context_ctx_list_first_col(slop_list_types_SExpr_ptr items) {
@@ -515,6 +518,7 @@ int64_t context_ctx_list_first_col(slop_list_types_SExpr_ptr items) {
     } else if (!_mv_54.has_value) {
         return 0;
     }
+    SLOP_UNREACHABLE();
 }
 
 void context_ctx_push_scope(context_TranspileContext* ctx) {
@@ -598,7 +602,9 @@ slop_option_context_VarEntry context_lookup_var_in_scope_chain(context_Scope* sc
                 } else if (!_mv_58.has_value) {
                     return (slop_option_context_VarEntry){.has_value = false};
                 }
+                SLOP_UNREACHABLE();
             }
+            SLOP_UNREACHABLE();
         }
     }
 }
@@ -650,7 +656,9 @@ slop_option_context_VarEntry context_find_arena_in_scope_chain(context_Scope* sc
                 } else if (!_mv_61.has_value) {
                     return (slop_option_context_VarEntry){.has_value = false};
                 }
+                SLOP_UNREACHABLE();
             }
+            SLOP_UNREACHABLE();
         }
     }
 }
@@ -723,6 +731,7 @@ slop_option_context_FuncEntry context_ctx_lookup_func(context_TranspileContext* 
         } else if (!_mv_64.has_value) {
             return self_entry;
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -789,6 +798,7 @@ slop_string context_strip_module_prefix(slop_arena* arena, slop_string type_name
     } else if (!_mv_67.has_value) {
         return type_name;
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_option_string context_ctx_lookup_field_slop_type(context_TranspileContext* ctx, slop_string type_name, slop_string field_name) {
@@ -946,6 +956,7 @@ slop_string context_ctx_prefix_type(context_TranspileContext* ctx, slop_string t
             } else if (!_mv_73.has_value) {
                 return type_name;
             }
+            SLOP_UNREACHABLE();
         } else {
             return type_name;
         }
@@ -1548,6 +1559,7 @@ slop_string context_to_c_type_prefixed(context_TranspileContext* ctx, types_SExp
                         } else if (!_mv_91.has_value) {
                             return SLOP_STR("int64_t");
                         }
+                        SLOP_UNREACHABLE();
                     } else {
                         {
                             __auto_type base_c_type = ctype_to_c_type(arena, type_expr);
@@ -1561,6 +1573,7 @@ slop_string context_to_c_type_prefixed(context_TranspileContext* ctx, types_SExp
                                 } else if (!_mv_92.has_value) {
                                     return context_ctx_prefix_type(ctx, base_c_type);
                                 }
+                                SLOP_UNREACHABLE();
                             }
                         }
                     }
@@ -1582,6 +1595,7 @@ slop_string context_to_c_type_prefixed(context_TranspileContext* ctx, types_SExp
                 return SLOP_STR("void*");
             }
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -1610,6 +1624,7 @@ slop_option_string context_get_array_pointer_type(context_TranspileContext* ctx,
                 } else if (!_mv_94.has_value) {
                     return (slop_option_string){.has_value = false};
                 }
+                SLOP_UNREACHABLE();
             }
         }
         default: {

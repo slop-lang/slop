@@ -347,6 +347,7 @@ slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_Resolved
                 } else if (!_mv_11.has_value) {
                     return SLOP_STR("Option");
                 }
+                SLOP_UNREACHABLE();
             } else if (_mv_10 == types_ResolvedTypeKind_rk_ptr) {
                 __auto_type _mv_12 = (*t).inner_type;
                 if (_mv_12.has_value) {
@@ -355,6 +356,7 @@ slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_Resolved
                 } else if (!_mv_12.has_value) {
                     return SLOP_STR("Ptr");
                 }
+                SLOP_UNREACHABLE();
             } else if (_mv_10 == types_ResolvedTypeKind_rk_list) {
                 __auto_type _mv_13 = (*t).inner_type;
                 if (_mv_13.has_value) {
@@ -363,6 +365,7 @@ slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_Resolved
                 } else if (!_mv_13.has_value) {
                     return SLOP_STR("List");
                 }
+                SLOP_UNREACHABLE();
             } else if (_mv_10 == types_ResolvedTypeKind_rk_map) {
                 __auto_type _mv_14 = (*t).inner_type;
                 if (_mv_14.has_value) {
@@ -374,9 +377,11 @@ slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_Resolved
                     } else if (!_mv_15.has_value) {
                         return string_concat(arena, SLOP_STR("(Map "), string_concat(arena, types_resolved_type_to_slop_string(arena, key_type), SLOP_STR(")")));
                     }
+                    SLOP_UNREACHABLE();
                 } else if (!_mv_14.has_value) {
                     return SLOP_STR("Map");
                 }
+                SLOP_UNREACHABLE();
             } else if (_mv_10 == types_ResolvedTypeKind_rk_result) {
                 __auto_type _mv_16 = (*t).inner_type;
                 if (_mv_16.has_value) {
@@ -388,9 +393,11 @@ slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_Resolved
                     } else if (!_mv_17.has_value) {
                         return string_concat(arena, SLOP_STR("(Result "), string_concat(arena, types_resolved_type_to_slop_string(arena, ok_type), SLOP_STR(")")));
                     }
+                    SLOP_UNREACHABLE();
                 } else if (!_mv_16.has_value) {
                     return SLOP_STR("Result");
                 }
+                SLOP_UNREACHABLE();
             } else if (_mv_10 == types_ResolvedTypeKind_rk_array) {
                 __auto_type _mv_18 = (*t).inner_type;
                 if (_mv_18.has_value) {
@@ -399,6 +406,7 @@ slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_Resolved
                 } else if (!_mv_18.has_value) {
                     return SLOP_STR("Array");
                 }
+                SLOP_UNREACHABLE();
             } else if (_mv_10 == types_ResolvedTypeKind_rk_typevar) {
                 return name;
             } else {

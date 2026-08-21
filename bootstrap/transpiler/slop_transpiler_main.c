@@ -186,6 +186,7 @@ slop_string transpiler_main_extract_module_name(slop_list_types_SExpr_ptr exprs)
                                             } else if (!_mv_1492.has_value) {
                                                 return SLOP_STR("unknown");
                                             }
+                                            SLOP_UNREACHABLE();
                                         } else {
                                             return SLOP_STR("unknown");
                                         }
@@ -197,6 +198,7 @@ slop_string transpiler_main_extract_module_name(slop_list_types_SExpr_ptr exprs)
                             } else if (!_mv_1490.has_value) {
                                 return SLOP_STR("unknown");
                             }
+                            SLOP_UNREACHABLE();
                         }
                     }
                 }
@@ -207,6 +209,7 @@ slop_string transpiler_main_extract_module_name(slop_list_types_SExpr_ptr exprs)
         } else if (!_mv_1488.has_value) {
             return SLOP_STR("unknown");
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -294,6 +297,7 @@ int64_t transpiler_main_transpile_single_file_with_ctx(context_TranspileContext*
             putchar(10);
             return 1;
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -330,6 +334,7 @@ int64_t transpiler_main_transpile_single_file(slop_arena* arena, slop_string sou
             putchar(10);
             return 1;
         }
+        SLOP_UNREACHABLE();
     }
 }
 

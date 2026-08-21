@@ -29,7 +29,7 @@
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
                env-add-warning env-add-error
                env-set-fn-type-params env-clear-fn-type-params env-is-type-param))
-  (import strlib (starts-with ends-with string-build))
+  (import strlib (starts-with ends-with string-build join))
   (import collect (find-fn-type-params))
 
   ;; ============================================================
@@ -1783,6 +1783,132 @@
                     ((none) (do)))))))
           ((none) (do))))))
 
+  ;; ============================================================
+  ;; Match Exhaustiveness (te-non-exhaustive)
+  ;;
+  ;; spec/LANGUAGE.md says a match must be exhaustive and types.slop
+  ;; reserves te-non-exhaustive for it, but nothing ever emitted the
+  ;; diagnostic. The only thing catching a missing arm was the C
+  ;; compiler's -Wswitch, and only for enum/union matches -- an Option
+  ;; match compiles to an if-chain, so a missing (none) arm was
+  ;; invisible at every single stage.
+  ;;
+  ;; This is deliberately conservative and stays silent whenever it
+  ;; cannot reason about a pattern. A false positive on a brand-new
+  ;; diagnostic is what gets it suppressed and then ignored, which is
+  ;; exactly how the -Wreturn-type noise it replaces got ignored.
+  ;; ============================================================
+
+  (fn match-pattern-head ((pattern (Ptr SExpr)))
+    (@intent "Name the variant a match pattern selects, or the bare symbol for _ / else")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pre (!= pattern nil))
+    (if (sexpr-is-list pattern)
+      (if (> (sexpr-list-len pattern) 0)
+        (match (sexpr-list-get pattern 0)
+          ((some head) (sexpr-get-symbol-name head))
+          ((none) ""))
+        "")
+      (sexpr-get-symbol-name pattern)))
+
+  (fn is-wildcard-head ((head String))
+    (@intent "Check if a pattern head covers every variant not already named")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq head "_")
+        (string-eq head "else")))
+
+  (fn string-list-contains ((names (List String)) (name String))
+    (@intent "Check if a list of names contains the given name")
+    (@spec (((List String) String) -> Bool))
+    (@pure)
+    (let ((n (list-len names))
+          (mut i 0)
+          (mut found false))
+      (while (and (< i n) (not found))
+        (match (list-get names i)
+          ((some existing)
+            (when (string-eq existing name) (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn match-expected-variants ((arena Arena) (scrutinee-type (Ptr ResolvedType)))
+    (@intent "Every variant an exhaustive match must cover; empty when exhaustiveness is undecidable")
+    (@spec ((Arena (Ptr ResolvedType)) -> (List String)))
+    (@pre (!= scrutinee-type nil))
+    (let ((kind (. (deref scrutinee-type) kind))
+          (result (list-new arena String)))
+      (cond
+        ((or (== kind 'rk-union) (== kind 'rk-enum))
+          (let ((variants (. (deref scrutinee-type) variants))
+                (n (list-len variants))
+                (mut i 0))
+            (while (< i n)
+              (match (list-get variants i)
+                ((some v) (list-push result (. v name)))
+                ((none) (do)))
+              (set! i (+ i 1)))
+            result))
+        ((== kind 'rk-option)
+          (do (list-push result "some")
+              (list-push result "none")
+              result))
+        ((== kind 'rk-result)
+          (do (list-push result "ok")
+              (list-push result "error")
+              result))
+        ;; Primitives, ranges, lists, type variables: no finite variant set, so
+        ;; nothing here can be shown exhaustive. Say nothing.
+        (else result))))
+
+  (fn check-match-exhaustive ((env (Ptr TypeEnv)) (scrutinee-type (Ptr ResolvedType))
+                              (covered (List String)) (has-wildcard Bool) (line Int) (col Int))
+    (@intent "Report a match that cannot be shown to cover every variant of its scrutinee")
+    (@spec (((Ptr TypeEnv) (Ptr ResolvedType) (List String) Bool Int Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= scrutinee-type nil))
+    (when (not has-wildcard)
+      (let ((arena (env-arena env))
+            (type-name (. (deref scrutinee-type) name))
+            (expected (match-expected-variants arena scrutinee-type)))
+        ;; A bare generic scrutinee has no variant list worth reasoning about;
+        ;; bind-match-pattern skips it for the same reason. Option_T is NOT skipped:
+        ;; genericity affects the payload, not the some/none variant set.
+        (when (and (> (list-len expected) 0)
+                   (not (string-eq type-name "T")))
+          (let ((n (list-len covered))
+                (mut i 0)
+                (mut all-known true)
+                (missing (list-new arena String)))
+            ;; Guard, record and array patterns produce heads that are not variant
+            ;; names. One unrecognised head means coverage cannot be reasoned about
+            ;; at all, so the whole match is left alone.
+            (while (< i n)
+              (match (list-get covered i)
+                ((some head)
+                  (when (not (string-list-contains expected head))
+                    (set! all-known false)))
+                ((none) (do)))
+              (set! i (+ i 1)))
+            (when all-known
+              (let ((e-len (list-len expected))
+                    (mut j 0))
+                (while (< j e-len)
+                  (match (list-get expected j)
+                    ((some want)
+                      (when (not (string-list-contains covered want))
+                        (list-push missing want)))
+                    ((none) (do)))
+                  (set! j (+ j 1)))
+                (when (> (list-len missing) 0)
+                  (let ((parts (list-new arena String)))
+                    (list-push parts "non-exhaustive match on ")
+                    (list-push parts type-name)
+                    (list-push parts ": missing ")
+                    (list-push parts (join arena missing ", "))
+                    (env-add-warning env (string-build arena parts) line col)))))))))) 
+
   (fn infer-match-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of match expression, checking branch types")
     (@spec (((Ptr TypeEnv) (Ptr SExpr) SExprList) -> (Ptr ResolvedType)))
@@ -1792,6 +1918,9 @@
           (line (sexpr-line expr))
           (col (sexpr-col expr))
           (mut has-result Bool false)
+          (mut has-wildcard false)
+          (match-arena (env-arena env))
+          (covered (list-new match-arena String))
           (mut result-type (Ptr ResolvedType) (env-get-unit-type env))
           ;; Get scrutinee type for pattern binding
           (scrutinee-type (if (>= len 2)
@@ -1808,6 +1937,17 @@
               ((lst clause-lst)
                 (let ((clause-items (. clause-lst items))
                       (clause-len (list-len clause-items)))
+                  ;; Record coverage before the body check, and outside the
+                  ;; clause-len guard: a bodiless clause such as ((none)) still
+                  ;; covers its variant.
+                  (when (> clause-len 0)
+                    (match (list-get clause-items 0)
+                      ((some pattern)
+                        (let ((head (match-pattern-head pattern)))
+                          (if (is-wildcard-head head)
+                            (set! has-wildcard true)
+                            (list-push covered head))))
+                      ((none) (do))))
                   (when (> clause-len 1)
                     ;; Push scope for this clause's pattern bindings
                     (env-push-scope env)
@@ -1836,6 +1976,7 @@
               (_ (do))))
           ((none) (do)))
         (set! i (+ i 1)))
+      (check-match-exhaustive env scrutinee-type covered has-wildcard line col)
       result-type))
 
   (fn check-return-type ((env (Ptr TypeEnv)) (fn-form (Ptr SExpr))

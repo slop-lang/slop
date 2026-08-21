@@ -273,7 +273,8 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut i 2)
-          (mut first true))
+          (mut first true)
+          (mut has-else false))
       (while (< i len)
         (match (list-get items i)
           ((some branch)
@@ -293,6 +294,7 @@
                               (set! first false))
                             ((string-eq tag "else")
                               (emit-else-branch ctx branch-items is-return first)
+                              (set! has-else true)
                               (set! first false))
                             (else (do)))))
                       ((none) (do))))))
@@ -301,7 +303,8 @@
         (set! i (+ i 1)))
       ;; Close the if chain
       (when (not first)
-        (ctx-emit ctx "}"))))
+        (ctx-emit ctx "}"))
+      (emit-match-fallthrough-trap ctx is-return has-else)))
 
   (fn emit-option-some-branch ((ctx (Ptr TranspileContext)) (scrutinee-c String)
                                (scrutinee-expr (Ptr SExpr))
@@ -359,7 +362,8 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut i 2)
-          (mut first true))
+          (mut first true)
+          (mut has-else false))
       (while (< i len)
         (match (list-get items i)
           ((some branch)
@@ -379,6 +383,7 @@
                               (set! first false))
                             ((string-eq tag "else")
                               (emit-else-branch ctx branch-items is-return first)
+                              (set! has-else true)
                               (set! first false))
                             (else (do)))))
                       ((none) (do))))))
@@ -386,7 +391,8 @@
           ((none) (do)))
         (set! i (+ i 1)))
       (when (not first)
-        (ctx-emit ctx "}"))))
+        (ctx-emit ctx "}"))
+      (emit-match-fallthrough-trap ctx is-return has-else)))
 
   (fn emit-result-ok-branch ((ctx (Ptr TranspileContext)) (scrutinee-c String)
                              (scrutinee-expr (Ptr SExpr))
@@ -453,7 +459,8 @@
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
-          (mut i 2))
+          (mut i 2)
+          (mut has-else false))
       ;; Emit switch
       (ctx-emit ctx (ctx-str3 ctx "switch (" scrutinee-c ") {"))
       (ctx-indent ctx)
@@ -466,13 +473,17 @@
                   (when (>= (list-len branch-items) 2)
                     (match (list-get branch-items 0)
                       ((some pattern)
+                        (let ((tag (get-pattern-tag pattern)))
+                          (when (or (string-eq tag "else") (string-eq tag "_"))
+                            (set! has-else true)))
                         (emit-enum-case ctx pattern branch-items is-return))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
         (set! i (+ i 1)))
       (ctx-dedent ctx)
-      (ctx-emit ctx "}")))
+      (ctx-emit ctx "}")
+      (emit-match-fallthrough-trap ctx is-return has-else)))
 
   (fn emit-enum-case ((ctx (Ptr TranspileContext)) (pattern (Ptr SExpr))
                       (branch-items (List (Ptr SExpr))) (is-return Bool))
@@ -516,7 +527,8 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut i 2)
-          (mut first true))
+          (mut first true)
+          (mut has-else false))
       (while (< i len)
         (match (list-get items i)
           ((some branch)
@@ -526,6 +538,8 @@
                   (when (>= (list-len branch-items) 2)
                     (match (list-get branch-items 0)
                       ((some pattern)
+                        (when (string-eq (get-pattern-tag pattern) "else")
+                          (set! has-else true))
                         (emit-literal-case ctx scrutinee-c pattern branch-items is-return first)
                         (set! first false))
                       ((none) (do))))))
@@ -533,7 +547,8 @@
           ((none) (do)))
         (set! i (+ i 1)))
       (when (not first)
-        (ctx-emit ctx "}"))))
+        (ctx-emit ctx "}"))
+      (emit-match-fallthrough-trap ctx is-return has-else)))
 
   (fn emit-literal-case ((ctx (Ptr TranspileContext)) (scrutinee-c String) (pattern (Ptr SExpr))
                          (branch-items (List (Ptr SExpr))) (is-return Bool) (first Bool))
@@ -575,7 +590,8 @@
       (let ((arena (. (deref ctx) arena))
             (len (list-len items))
             (mut i 2)
-            (mut first true))
+            (mut first true)
+            (mut has-else false))
         ;; Emit switch on the tag
         (ctx-emit ctx (ctx-str3 ctx "switch (" scrutinee-c ".tag) {"))
         (ctx-indent ctx)
@@ -592,6 +608,7 @@
                             (cond
                               ((or (string-eq tag "else") (string-eq tag "_"))
                                 ;; Default case
+                                (set! has-else true)
                                 (ctx-emit ctx "default: {")
                                 (ctx-indent ctx)
                                 (emit-branch-body ctx branch-items is-return)
@@ -611,7 +628,8 @@
             ((none) (do)))
           (set! i (+ i 1)))
         (ctx-dedent ctx)
-        (ctx-emit ctx "}"))))
+        (ctx-emit ctx "}")
+        (emit-match-fallthrough-trap ctx is-return has-else))))
 
   (fn emit-union-case ((ctx (Ptr TranspileContext)) (scrutinee-c String)
                        (pattern (Ptr SExpr)) (tag String) (union-type-name String)
@@ -697,6 +715,23 @@
   ;; ============================================================
   ;; Else Branch
   ;; ============================================================
+
+  (fn emit-match-fallthrough-trap ((ctx (Ptr TranspileContext)) (is-return Bool) (has-else Bool))
+    (@intent "Trap the path where a return-position match matched none of its arms (#86)")
+    (@spec (((Ptr TranspileContext) Bool Bool) -> Unit))
+    (@pre {ctx != nil})
+    ;; Only in return position. There every arm returns, so falling past the
+    ;; construct runs off the end of a non-void function -- undefined behaviour,
+    ;; and the -Wreturn-type noise issue #86 is about. In statement position the
+    ;; fallthrough is ordinary control flow and must be left alone; trapping it
+    ;; would turn working code into an abort.
+    ;;
+    ;; Emitted AFTER the closed chain or switch, never as a final else or
+    ;; `default:`. A `default:` silences -Wswitch, and a plain `else` would run the
+    ;; last arm's body for an unmatched value. -Wswitch is currently the only
+    ;; exhaustiveness signal C gives us, so it stays live.
+    (when (and is-return (not has-else))
+      (ctx-emit ctx "SLOP_UNREACHABLE();")))
 
   (fn emit-else-branch ((ctx (Ptr TranspileContext)) (branch-items (List (Ptr SExpr))) (is-return Bool) (first Bool))
     (@intent "Emit an else branch")
@@ -1385,7 +1420,8 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut i 1)
-          (mut first true))
+          (mut first true)
+          (mut has-else false))
       (while (< i len)
         (match (list-get items i)
           ((some clause-expr)
@@ -1403,6 +1439,7 @@
                             (if (string-eq (. sym name) "else")
                               (do
                                 ;; else clause
+                                (set! has-else true)
                                 (ctx-emit ctx "} else {")
                                 (ctx-indent ctx)
                                 (emit-inline-cond-body ctx clause-items 1 is-return is-last)
@@ -1435,7 +1472,8 @@
         (set! i (+ i 1)))
       ;; Close final brace
       (when (not first)
-        (ctx-emit ctx "}"))))
+        (ctx-emit ctx "}"))
+      (emit-match-fallthrough-trap ctx is-return has-else)))
 
   (fn emit-inline-cond-body ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start Int) (is-return Bool) (is-last Bool))
     (@intent "Emit body statements of a cond clause inline")
@@ -2047,7 +2085,8 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (mut i 2)
-          (mut first true))
+          (mut first true)
+          (mut has-else false))
       (while (< i len)
         (match (list-get items i)
           ((some branch)
@@ -2061,6 +2100,7 @@
                           (if (or (string-eq tag "else") (string-eq tag "_"))
                             ;; Else/wildcard arm
                             (do
+                              (set! has-else true)
                               (if first
                                 (ctx-emit ctx "{")
                                 (ctx-emit ctx "} else {"))
@@ -2096,6 +2136,7 @@
           ((none) (do)))
         (set! i (+ i 1)))
       (when (not first)
-        (ctx-emit ctx "}"))))
+        (ctx-emit ctx "}"))
+      (emit-match-fallthrough-trap ctx is-return has-else)))
 
 ) ;; end module
