@@ -65,6 +65,11 @@ types_ResolvedType* infer_infer_field_access(env_TypeEnv* env, types_SExpr* expr
 types_ResolvedType* infer_check_field_exists(env_TypeEnv* env, types_ResolvedType* obj_type, slop_string field_name, int64_t line, int64_t col);
 types_ResolvedType* infer_infer_cond_expr(env_TypeEnv* env, types_SExpr* expr, types_SExprList lst);
 void infer_bind_match_pattern(env_TypeEnv* env, types_ResolvedType* scrutinee_type, types_SExpr* pattern);
+slop_string infer_match_pattern_head(types_SExpr* pattern);
+uint8_t infer_is_wildcard_head(slop_string head);
+uint8_t infer_string_list_contains(slop_list_string names, slop_string name);
+slop_list_string infer_match_expected_variants(slop_arena* arena, types_ResolvedType* scrutinee_type);
+void infer_check_match_exhaustive(env_TypeEnv* env, types_ResolvedType* scrutinee_type, slop_list_string covered, uint8_t has_wildcard, int64_t line, int64_t col);
 types_ResolvedType* infer_infer_match_expr(env_TypeEnv* env, types_SExpr* expr, types_SExprList lst);
 void infer_check_return_type(env_TypeEnv* env, types_SExpr* fn_form, slop_string fn_name, types_ResolvedType* inferred_type, int64_t fn_line, int64_t fn_col);
 void infer_check_spec_return_type(env_TypeEnv* env, types_SExpr* spec_form, slop_string fn_name, types_ResolvedType* inferred_type, int64_t fn_line, int64_t fn_col);

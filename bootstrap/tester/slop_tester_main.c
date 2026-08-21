@@ -229,6 +229,7 @@ int main(int argc, char** _c_argv) {
                 tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"Could not read file\"}\n").data)));
                 return 1;
             }
+            SLOP_UNREACHABLE();
             slop_arena_free(arena);
         }
     }

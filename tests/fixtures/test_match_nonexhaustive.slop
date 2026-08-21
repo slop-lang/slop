@@ -1,0 +1,41 @@
+;; Fixture for the match-exhaustiveness diagnostic (root cause of #86).
+;;
+;; spec/LANGUAGE.md says a match must be exhaustive and types.slop has
+;; reserved te-non-exhaustive for it since the beginning, but nothing
+;; ever emitted the diagnostic. The only thing catching a missing arm
+;; was the C compiler's -Wswitch, and only for enum/union matches --
+;; an Option match compiles to an if-chain, so a missing (none) arm was
+;; invisible at every single stage.
+;;
+;; Lives under fixtures/ because it must produce diagnostics, and
+;; run_native_tests.sh builds every top-level tests/*.slop.
+(module match-nonexhaustive
+
+  (type Colour (union red green blue))
+  (type Fault (union (io-fault String) (parse-fault String Int)))
+
+  (fn union-partial ((c Colour))
+    (@intent "two of three arms - the third must be named in the message")
+    (@spec ((Colour) -> Int))
+    (match c ((red) 1) ((green) 2)))
+
+  (fn multi-payload-partial ((f Fault))
+    (@intent "multi-payload variant missing - must be named")
+    (@spec ((Fault) -> Int))
+    (match f ((io-fault m) 1)))
+
+  (fn option-partial ((xs (List Int)))
+    (@intent "some with no none - the case C cannot see at all")
+    (@spec (((List Int)) -> Unit))
+    (match (list-get xs 0)
+      ((some v) (println "got"))))
+
+  (fn result-partial ((r (Result Int String)))
+    (@intent "ok with no error arm")
+    (@spec (((Result Int String)) -> Int))
+    (match r ((ok v) v)))
+
+  (fn main ()
+    (@intent "Unused entry point; the fixture is never run")
+    (@spec (() -> Int))
+    0))

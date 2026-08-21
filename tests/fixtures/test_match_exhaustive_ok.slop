@@ -1,0 +1,46 @@
+;; Companion to test_match_nonexhaustive.slop: every shape here is
+;; exhaustive, or is one the check deliberately refuses to reason about.
+;;
+;; This is the half that matters most. The diagnostic is conservative by
+;; design -- a false positive on a new warning is what gets it suppressed
+;; and then ignored, which is exactly how the -Wreturn-type noise it
+;; replaces came to be ignored. Without this fixture that conservatism is
+;; untested and will erode.
+(module match-exhaustive-ok
+
+  (type Colour (union red green blue))
+
+  (fn all-arms ((c Colour))
+    (@intent "every variant named")
+    (@spec ((Colour) -> Int))
+    (match c ((red) 1) ((green) 2) ((blue) 3)))
+
+  (fn wildcard ((c Colour))
+    (@intent "_ covers the rest")
+    (@spec ((Colour) -> Int))
+    (match c ((red) 1) (_ 0)))
+
+  (fn else-arm ((c Colour))
+    (@intent "else covers the rest")
+    (@spec ((Colour) -> Int))
+    (match c ((red) 1) ((else) 0)))
+
+  (fn option-complete ((xs (List Int)))
+    (@intent "both Option arms")
+    (@spec (((List Int)) -> Int))
+    (match (list-get xs 0) ((some v) v) ((none) -1)))
+
+  (fn result-complete ((r (Result Int String)))
+    (@intent "both Result arms")
+    (@spec (((Result Int String)) -> Int))
+    (match r ((ok v) v) ((error e) -1)))
+
+  (fn int-scrutinee ((n Int))
+    (@intent "a literal match has no finite variant set, so it is never reported")
+    (@spec ((Int) -> Int))
+    (match n (1 10) (2 20) (else 0)))
+
+  (fn main ()
+    (@intent "Unused entry point; the fixture is never run")
+    (@spec (() -> Int))
+    0))

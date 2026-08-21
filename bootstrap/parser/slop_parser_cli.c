@@ -128,8 +128,11 @@ int main(int argc, char** _c_argv) {
                                     return 0;
                                 }
                             }
+                            SLOP_UNREACHABLE();
                         }
+                        SLOP_UNREACHABLE();
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
             slop_arena_free(arena);

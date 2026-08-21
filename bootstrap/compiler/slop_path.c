@@ -23,6 +23,7 @@ slop_string path_path_dirname(slop_arena* arena, slop_string path) {
             } else if (!_mv_1251.has_value) {
                 return SLOP_STR(".");
             }
+            SLOP_UNREACHABLE();
         }
     }
 }
@@ -65,6 +66,7 @@ slop_string path_path_basename(slop_arena* arena, slop_string path) {
             } else if (!_mv_1252.has_value) {
                 return path;
             }
+            SLOP_UNREACHABLE();
         }
     }
 }
@@ -89,6 +91,7 @@ slop_string path_path_extension(slop_arena* arena, slop_string path) {
             } else if (!_mv_1253.has_value) {
                 return SLOP_STR("");
             }
+            SLOP_UNREACHABLE();
         }
     }
 }

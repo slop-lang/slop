@@ -1025,6 +1025,7 @@ slop_string transpiler_prescan_get_param_c_type(context_TranspileContext* ctx, t
                             } else if (!_mv_1313.has_value) {
                                 return SLOP_STR("void*");
                             }
+                            SLOP_UNREACHABLE();
                         }
                     }
                 }
@@ -1070,6 +1071,7 @@ uint8_t transpiler_prescan_is_param_mode(slop_list_types_SExpr_ptr items) {
         } else if (!_mv_1314.has_value) {
             return 0;
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -1122,6 +1124,7 @@ uint8_t transpiler_is_spec_annotation(types_SExpr* expr) {
                     } else if (!_mv_1318.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -1947,6 +1950,7 @@ slop_string transpiler_get_ffi_struct_c_name(slop_arena* arena, slop_list_types_
                             } else if (!_mv_1375.has_value) {
                                 return transpiler_apply_struct_prefix_heuristic(arena, default_name);
                             }
+                            SLOP_UNREACHABLE();
                         } else {
                             return transpiler_apply_struct_prefix_heuristic(arena, default_name);
                         }
@@ -1958,6 +1962,7 @@ slop_string transpiler_get_ffi_struct_c_name(slop_arena* arena, slop_list_types_
             } else if (!_mv_1373.has_value) {
                 return transpiler_apply_struct_prefix_heuristic(arena, default_name);
             }
+            SLOP_UNREACHABLE();
         } else {
             return transpiler_apply_struct_prefix_heuristic(arena, default_name);
         }
@@ -2017,6 +2022,7 @@ uint8_t transpiler_is_ffi_string_item(slop_list_types_SExpr_ptr items, int64_t i
     } else if (!_mv_1377.has_value) {
         return 0;
     }
+    SLOP_UNREACHABLE();
 }
 
 uint8_t transpiler_is_enum_def(slop_list_types_SExpr_ptr items) {
@@ -2053,6 +2059,7 @@ uint8_t transpiler_is_enum_def(slop_list_types_SExpr_ptr items) {
                             } else if (!_mv_1381.has_value) {
                                 return 0;
                             }
+                            SLOP_UNREACHABLE();
                         }
                     }
                 }
@@ -2063,6 +2070,7 @@ uint8_t transpiler_is_enum_def(slop_list_types_SExpr_ptr items) {
         } else if (!_mv_1379.has_value) {
             return 0;
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -2100,6 +2108,7 @@ uint8_t transpiler_is_record_def(slop_list_types_SExpr_ptr items) {
                             } else if (!_mv_1385.has_value) {
                                 return 0;
                             }
+                            SLOP_UNREACHABLE();
                         }
                     }
                 }
@@ -2110,6 +2119,7 @@ uint8_t transpiler_is_record_def(slop_list_types_SExpr_ptr items) {
         } else if (!_mv_1383.has_value) {
             return 0;
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -2147,6 +2157,7 @@ uint8_t transpiler_is_union_def(slop_list_types_SExpr_ptr items) {
                             } else if (!_mv_1389.has_value) {
                                 return 0;
                             }
+                            SLOP_UNREACHABLE();
                         }
                     }
                 }
@@ -2157,6 +2168,7 @@ uint8_t transpiler_is_union_def(slop_list_types_SExpr_ptr items) {
         } else if (!_mv_1387.has_value) {
             return 0;
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -2197,6 +2209,7 @@ slop_string transpiler_get_array_c_type(context_TranspileContext* ctx, slop_list
                                             } else if (!_mv_1395.has_value) {
                                                 return default_c_type;
                                             }
+                                            SLOP_UNREACHABLE();
                                         } else {
                                             return default_c_type;
                                         }
@@ -2208,6 +2221,7 @@ slop_string transpiler_get_array_c_type(context_TranspileContext* ctx, slop_list
                             } else if (!_mv_1393.has_value) {
                                 return default_c_type;
                             }
+                            SLOP_UNREACHABLE();
                         }
                     }
                 }
@@ -2218,6 +2232,7 @@ slop_string transpiler_get_array_c_type(context_TranspileContext* ctx, slop_list
         } else if (!_mv_1391.has_value) {
             return default_c_type;
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -2305,6 +2320,7 @@ uint8_t transpiler_is_union_type_def(types_SExpr* item) {
                                         } else if (!_mv_1401.has_value) {
                                             return 0;
                                         }
+                                        SLOP_UNREACHABLE();
                                     }
                                 }
                             }
@@ -2315,6 +2331,7 @@ uint8_t transpiler_is_union_type_def(types_SExpr* item) {
                     } else if (!_mv_1399.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -2353,6 +2370,7 @@ uint8_t transpiler_is_type_def(types_SExpr* item) {
                     } else if (!_mv_1404.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -2410,6 +2428,7 @@ uint8_t transpiler_is_fn_def(types_SExpr* item) {
                     } else if (!_mv_1408.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -2539,6 +2558,7 @@ int64_t transpiler_get_body_start(slop_list_types_SExpr_ptr items) {
                             } else if (!_mv_1415.has_value) {
                                 return 2;
                             }
+                            SLOP_UNREACHABLE();
                         }
                     }
                 }
@@ -2549,6 +2569,7 @@ int64_t transpiler_get_body_start(slop_list_types_SExpr_ptr items) {
         } else if (!_mv_1413.has_value) {
             return 2;
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -3059,6 +3080,7 @@ uint8_t transpiler_is_struct_type_def(types_SExpr* item) {
                                         } else if (!_mv_1450.has_value) {
                                             return 0;
                                         }
+                                        SLOP_UNREACHABLE();
                                     }
                                 }
                             }
@@ -3069,6 +3091,7 @@ uint8_t transpiler_is_struct_type_def(types_SExpr* item) {
                     } else if (!_mv_1448.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -3157,6 +3180,7 @@ uint8_t transpiler_is_type_alias_def(types_SExpr* item) {
                                         } else if (!_mv_1457.has_value) {
                                             return 0;
                                         }
+                                        SLOP_UNREACHABLE();
                                     }
                                 }
                             }
@@ -3167,6 +3191,7 @@ uint8_t transpiler_is_type_alias_def(types_SExpr* item) {
                     } else if (!_mv_1455.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -3218,6 +3243,7 @@ uint8_t transpiler_is_result_type_alias_def(types_SExpr* item) {
                                         } else if (!_mv_1462.has_value) {
                                             return 0;
                                         }
+                                        SLOP_UNREACHABLE();
                                     }
                                 }
                             }
@@ -3228,6 +3254,7 @@ uint8_t transpiler_is_result_type_alias_def(types_SExpr* item) {
                     } else if (!_mv_1460.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -3328,6 +3355,7 @@ uint8_t transpiler_is_array_type_body(types_SExpr* body_expr) {
                     } else if (!_mv_1469.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -3785,6 +3813,7 @@ slop_option_string transpiler_get_type_name(types_SExpr* item) {
                     } else if (!_mv_1491.has_value) {
                         return (slop_option_string){.has_value = false};
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -4444,6 +4473,7 @@ uint8_t transpiler_is_range_type_alias(context_TranspileContext* ctx, slop_strin
     } else if (!_mv_1514.has_value) {
         return 0;
     }
+    SLOP_UNREACHABLE();
 }
 
 uint8_t transpiler_is_unsigned_payload_type(slop_string slop_type) {
@@ -4464,6 +4494,7 @@ slop_string transpiler_resolve_payload_slop_type(context_TranspileContext* ctx, 
         } else if (!_mv_1515.has_value) {
             return slop_type;
         }
+        SLOP_UNREACHABLE();
     } else {
         return slop_type;
     }
@@ -5268,6 +5299,7 @@ uint8_t transpiler_is_simple_enum_def(types_SExpr* item) {
                                         } else if (!_mv_1531.has_value) {
                                             return 0;
                                         }
+                                        SLOP_UNREACHABLE();
                                     }
                                 }
                             }
@@ -5278,6 +5310,7 @@ uint8_t transpiler_is_simple_enum_def(types_SExpr* item) {
                     } else if (!_mv_1529.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -5872,6 +5905,7 @@ slop_string transpiler_get_field_type_string(context_TranspileContext* ctx, type
                     } else if (!_mv_1563.has_value) {
                         return ctype_to_c_type(arena, type_expr);
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
             case types_SExpr_lst:
@@ -5910,6 +5944,7 @@ slop_string transpiler_get_field_type_string(context_TranspileContext* ctx, type
                                                 } else if (!_mv_1566.has_value) {
                                                     return SLOP_STR("");
                                                 }
+                                                SLOP_UNREACHABLE();
                                             } else {
                                                 return SLOP_STR("");
                                             }
@@ -5929,6 +5964,7 @@ slop_string transpiler_get_field_type_string(context_TranspileContext* ctx, type
                                                 } else if (!_mv_1567.has_value) {
                                                     return SLOP_STR("");
                                                 }
+                                                SLOP_UNREACHABLE();
                                             } else {
                                                 return SLOP_STR("");
                                             }
@@ -5944,6 +5980,7 @@ slop_string transpiler_get_field_type_string(context_TranspileContext* ctx, type
                         } else if (!_mv_1564.has_value) {
                             return SLOP_STR("");
                         }
+                        SLOP_UNREACHABLE();
                     }
                 }
             }
@@ -5996,6 +6033,7 @@ slop_string transpiler_get_type_c_name(context_TranspileContext* ctx, types_SExp
                                     } else if (!_mv_1571.has_value) {
                                         return SLOP_STR("");
                                     }
+                                    SLOP_UNREACHABLE();
                                 }
                             }
                             default: {
@@ -6005,6 +6043,7 @@ slop_string transpiler_get_type_c_name(context_TranspileContext* ctx, types_SExp
                     } else if (!_mv_1569.has_value) {
                         return SLOP_STR("");
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -6225,6 +6264,7 @@ uint8_t transpiler_is_imported_type(context_TranspileContext* ctx, slop_string t
         } else if (!_mv_1580.has_value) {
             return 0;
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -6311,6 +6351,7 @@ uint8_t transpiler_struct_uses_list_type(context_TranspileContext* ctx, types_SE
                         } else if (!_mv_1584.has_value) {
                             return 0;
                         }
+                        SLOP_UNREACHABLE();
                     }
                 }
             }
@@ -6386,6 +6427,7 @@ uint8_t transpiler_field_uses_typename(context_TranspileContext* ctx, types_SExp
                     } else if (!_mv_1588.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -6650,6 +6692,7 @@ uint8_t transpiler_is_pointer_type_expr_header(types_SExpr* type_expr) {
                     } else if (!_mv_1604.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -6745,6 +6788,7 @@ slop_string transpiler_get_variant_name(types_SExpr* variant_expr) {
                     } else if (!_mv_1609.has_value) {
                         return SLOP_STR("unknown");
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -6894,6 +6938,7 @@ slop_string transpiler_get_const_name(types_SExpr* item) {
                     } else if (!_mv_1618.has_value) {
                         return SLOP_STR("");
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -6962,6 +7007,7 @@ uint8_t transpiler_emit_const_header_if_exported(context_TranspileContext* ctx, 
                                         } else if (!_mv_1624.has_value) {
                                             return 0;
                                         }
+                                        SLOP_UNREACHABLE();
                                     }
                                 }
                             }
@@ -6972,6 +7018,7 @@ uint8_t transpiler_emit_const_header_if_exported(context_TranspileContext* ctx, 
                     } else if (!_mv_1622.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -7134,6 +7181,7 @@ uint8_t transpiler_is_module_expr(slop_list_types_SExpr_ptr exprs) {
                             } else if (!_mv_1631.has_value) {
                                 return 0;
                             }
+                            SLOP_UNREACHABLE();
                         }
                     }
                 }
@@ -7144,6 +7192,7 @@ uint8_t transpiler_is_module_expr(slop_list_types_SExpr_ptr exprs) {
         } else if (!_mv_1629.has_value) {
             return 0;
         }
+        SLOP_UNREACHABLE();
     }
 }
 

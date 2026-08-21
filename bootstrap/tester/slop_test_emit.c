@@ -137,6 +137,7 @@ uint8_t test_emit_has_ellipsis(types_SExpr* expr) {
             return 0;
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 uint8_t test_emit_args_have_ellipsis(slop_list_types_SExpr_ptr args) {
@@ -212,6 +213,7 @@ uint8_t test_emit_contains_wildcard(types_SExpr* expr) {
             return 0;
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 types_SExpr* test_emit_replace_wildcards(slop_arena* arena, types_SExpr* expr) {
@@ -280,6 +282,7 @@ types_SExpr* test_emit_replace_wildcards(slop_arena* arena, types_SExpr* expr) {
             return expr;
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_string test_emit_transpile_expr_safe(slop_arena* arena, context_TranspileContext* tctx, types_SExpr* expr) {
@@ -301,6 +304,7 @@ slop_string test_emit_prefix_symbol(slop_arena* arena, slop_string name, slop_st
                 return ctype_to_c_name(arena, name);
             }
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -495,6 +499,7 @@ uint8_t test_emit_expr_mentions_arena(types_SExpr* expr) {
             return 0;
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 uint8_t test_emit_test_mentions_arena(extract_TestCase tc) {
@@ -568,11 +573,13 @@ slop_string test_emit_param_name_at(types_SExpr* params, int64_t idx) {
                 } else if (!_mv_1554.has_value) {
                     return SLOP_STR("");
                 }
+                SLOP_UNREACHABLE();
             }
         }
     } else if (!_mv_1553.has_value) {
         return SLOP_STR("");
     }
+    SLOP_UNREACHABLE();
 }
 
 types_SExpr* test_emit_substitute_symbol(slop_arena* arena, types_SExpr* expr, slop_string name, types_SExpr* replacement) {
@@ -625,6 +632,7 @@ types_SExpr* test_emit_substitute_symbol(slop_arena* arena, types_SExpr* expr, s
             return expr;
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 types_SExpr* test_emit_bind_precondition_args(slop_arena* arena, extract_TestCase tc, types_SExpr* cond_expr) {
@@ -731,6 +739,7 @@ slop_option_string test_emit_first_error_since(slop_arena* arena, context_Transp
             } else if (!_mv_1560.has_value) {
                 return (slop_option_string){.has_value = false};
             }
+            SLOP_UNREACHABLE();
         } else {
             return (slop_option_string){.has_value = false};
         }
@@ -747,6 +756,7 @@ types_SExpr* test_emit_example_anchor(extract_TestCase tc) {
     } else if (!_mv_1561.has_value) {
         return tc.expected;
     }
+    SLOP_UNREACHABLE();
     SLOP_POST(((_retval != NULL)), "(!= $result nil)");
     return _retval;
 }
@@ -859,6 +869,7 @@ slop_string test_emit_make_c_fn_name(slop_arena* arena, slop_string fn_name, slo
                 return c_name;
             }
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -925,6 +936,7 @@ test_emit_CompareInfo test_emit_build_comparison_typed(slop_arena* arena, types_
                                         } else if (!_mv_1565.has_value) {
                                             return (test_emit_CompareInfo){string_concat(arena, SLOP_STR("({ typeof(result.value) expected_value = "), string_concat(arena, inner_expected, SLOP_STR("; result.has_value && memcmp(&result.value, &expected_value, sizeof(result.value)) == 0; })"))), SLOP_STR("%s"), SLOP_STR("result.has_value ? \"some(...)\" : \"none\""), SLOP_STR("%s"), SLOP_STR("\"some(...)\"")};
                                         }
+                                        SLOP_UNREACHABLE();
                                     }
                                 } else {
                                     return (test_emit_CompareInfo){string_concat(arena, SLOP_STR("result.has_value && result.value == "), inner_expected), SLOP_STR("%s"), SLOP_STR("result.has_value ? \"some(...)\" : \"none\""), SLOP_STR("%s"), SLOP_STR("\"some(...)\"")};
@@ -971,6 +983,7 @@ test_emit_CompareInfo test_emit_build_comparison_typed(slop_arena* arena, types_
                                                     } else if (!_mv_1566.has_value) {
                                                         return (test_emit_CompareInfo){string_concat(arena, SLOP_STR("({ typeof(result.data.ok) expected_ok = "), string_concat(arena, inner_expected, SLOP_STR("; result.is_ok && memcmp(&result.data.ok, &expected_ok, sizeof(result.data.ok)) == 0; })"))), SLOP_STR("%s"), SLOP_STR("result.is_ok ? \"ok(...)\" : \"error(...)\""), SLOP_STR("%s"), SLOP_STR("\"ok(...)\"")};
                                                     }
+                                                    SLOP_UNREACHABLE();
                                                 }
                                             } else {
                                                 {
@@ -1095,6 +1108,7 @@ test_emit_CompareInfo test_emit_build_record_comparison_inner(slop_arena* arena,
             return (test_emit_CompareInfo){string_concat(arena, SLOP_STR("({ typeof(result) "), string_concat(arena, expected_var_name, string_concat(arena, SLOP_STR(" = "), string_concat(arena, c_expected, string_concat(arena, SLOP_STR("; memcmp(&result, &"), string_concat(arena, expected_var_name, SLOP_STR(", sizeof(result)) == 0; })"))))))), SLOP_STR("%s"), SLOP_STR("\"<record>\""), SLOP_STR("%s"), SLOP_STR("\"<expected>\"")};
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_string test_emit_get_record_decl_type(slop_arena* arena, type_extract_TypeRegistry types, slop_string record_name) {
@@ -1105,6 +1119,7 @@ slop_string test_emit_get_record_decl_type(slop_arena* arena, type_extract_TypeR
     } else if (!_mv_1568.has_value) {
         return SLOP_STR("");
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_string test_emit_get_record_name_from_expr(types_SExpr* expr) {
@@ -1130,6 +1145,7 @@ slop_string test_emit_get_record_name_from_expr(types_SExpr* expr) {
                     } else if (!_mv_1570.has_value) {
                         return SLOP_STR("");
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -1357,9 +1373,11 @@ slop_string test_emit_get_first_symbol_name(types_SExpr* expr) {
                             return SLOP_STR("");
                         }
                     }
+                    SLOP_UNREACHABLE();
                 } else if (!_mv_1577.has_value) {
                     return SLOP_STR("");
                 }
+                SLOP_UNREACHABLE();
             } else {
                 return SLOP_STR("");
             }
@@ -1375,6 +1393,7 @@ slop_string test_emit_get_first_symbol_name(types_SExpr* expr) {
             return SLOP_STR("");
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 test_emit_CompareInfo test_emit_build_union_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_string prefix, type_extract_TypeRegistry types, slop_string ret_type_str, context_TranspileContext* tctx) {
@@ -1413,6 +1432,7 @@ slop_string test_emit_build_union_payload_comparison(slop_arena* arena, slop_str
                     return string_concat(arena, SLOP_STR("memcmp(&result.data."), string_concat(arena, c_variant, string_concat(arena, SLOP_STR(", &"), string_concat(arena, expected_var, string_concat(arena, SLOP_STR(".data."), string_concat(arena, c_variant, string_concat(arena, SLOP_STR(", sizeof(result.data."), string_concat(arena, c_variant, SLOP_STR("))")))))))));
                 }
             }
+            SLOP_UNREACHABLE();
         }
     }
 }
@@ -1506,6 +1526,7 @@ uint8_t test_emit_is_union_constructor_typed(types_SExpr* expr, type_extract_Typ
                                         } else if (!_mv_1583.has_value) {
                                             return 0;
                                         }
+                                        SLOP_UNREACHABLE();
                                     }
                                 }
                             }
@@ -1515,6 +1536,7 @@ uint8_t test_emit_is_union_constructor_typed(types_SExpr* expr, type_extract_Typ
                     } else if (!_mv_1582.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -1554,6 +1576,7 @@ slop_string test_emit_get_union_variant_name(types_SExpr* expr) {
                                     } else if (!_mv_1586.has_value) {
                                         return SLOP_STR("");
                                     }
+                                    SLOP_UNREACHABLE();
                                 } else {
                                     return name;
                                 }
@@ -1564,6 +1587,7 @@ slop_string test_emit_get_union_variant_name(types_SExpr* expr) {
                     } else if (!_mv_1585.has_value) {
                         return SLOP_STR("");
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -1592,6 +1616,7 @@ uint8_t test_emit_is_enum_value_typed(types_SExpr* expr, type_extract_TypeRegist
                         } else if (!_mv_1588.has_value) {
                             return 0;
                         }
+                        SLOP_UNREACHABLE();
                     }
                 } else {
                     return 0;
@@ -1621,18 +1646,21 @@ uint8_t test_emit_is_enum_value_typed(types_SExpr* expr, type_extract_TypeRegist
                                     } else if (!_mv_1591.has_value) {
                                         return 0;
                                     }
+                                    SLOP_UNREACHABLE();
                                 } else {
                                     return 0;
                                 }
                             } else if (!_mv_1590.has_value) {
                                 return 0;
                             }
+                            SLOP_UNREACHABLE();
                         } else {
                             return 0;
                         }
                     } else if (!_mv_1589.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -1670,6 +1698,7 @@ uint8_t test_emit_is_record_constructor_typed(types_SExpr* expr, type_extract_Ty
                                     } else if (!_mv_1594.has_value) {
                                         return 0;
                                     }
+                                    SLOP_UNREACHABLE();
                                 }
                             }
                         } else {
@@ -1678,6 +1707,7 @@ uint8_t test_emit_is_record_constructor_typed(types_SExpr* expr, type_extract_Ty
                     } else if (!_mv_1593.has_value) {
                         return 0;
                     }
+                    SLOP_UNREACHABLE();
                 }
             }
         }
@@ -1704,6 +1734,7 @@ slop_string test_emit_get_some_inner_typed(slop_arena* arena, types_SExpr* expr,
         } else if (!_mv_1595.has_value) {
             return SLOP_STR("0");
         }
+        SLOP_UNREACHABLE();
     } else {
         return SLOP_STR("0");
     }
@@ -1734,6 +1765,7 @@ types_SExpr* test_emit_get_some_inner_expr(types_SExpr* expected) {
                     } else if (!_mv_1597.has_value) {
                         return expected;
                     }
+                    SLOP_UNREACHABLE();
                 } else {
                     return expected;
                 }
@@ -1762,6 +1794,7 @@ types_SExpr* test_emit_get_ok_inner_expr(types_SExpr* expected) {
                     } else if (!_mv_1599.has_value) {
                         return expected;
                     }
+                    SLOP_UNREACHABLE();
                 } else {
                     return expected;
                 }
@@ -1872,6 +1905,7 @@ slop_string test_emit_build_eq_function_name(slop_arena* arena, slop_string type
                 }
             }
         }
+        SLOP_UNREACHABLE();
     }
 }
 

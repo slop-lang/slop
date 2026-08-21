@@ -398,6 +398,7 @@ uint8_t type_extract_registry_is_union(type_extract_TypeRegistry reg, slop_strin
     } else if (!_mv_1503.has_value) {
         return 0;
     }
+    SLOP_UNREACHABLE();
 }
 
 uint8_t type_extract_registry_is_record(type_extract_TypeRegistry reg, slop_string name) {
@@ -408,6 +409,7 @@ uint8_t type_extract_registry_is_record(type_extract_TypeRegistry reg, slop_stri
     } else if (!_mv_1504.has_value) {
         return 0;
     }
+    SLOP_UNREACHABLE();
 }
 
 uint8_t type_extract_registry_is_enum(type_extract_TypeRegistry reg, slop_string name) {
@@ -418,6 +420,7 @@ uint8_t type_extract_registry_is_enum(type_extract_TypeRegistry reg, slop_string
     } else if (!_mv_1505.has_value) {
         return 0;
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_option_type_extract_VariantEntry type_extract_registry_get_variant_info(type_extract_TypeRegistry reg, slop_string variant_name) {
@@ -445,6 +448,7 @@ slop_option_type_extract_VariantEntry type_extract_registry_get_variant_info(typ
     } else if (!_mv_1506.has_value) {
         return (slop_option_type_extract_VariantEntry){.has_value = false};
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_option_list_type_extract_TstFieldEntry type_extract_registry_get_record_fields(type_extract_TypeRegistry reg, slop_string name) {
@@ -459,6 +463,7 @@ slop_option_list_type_extract_TstFieldEntry type_extract_registry_get_record_fie
     } else if (!_mv_1508.has_value) {
         return (slop_option_list_type_extract_TstFieldEntry){.has_value = false};
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_string type_extract_make_c_type_name(slop_arena* arena, slop_string prefix, slop_string name) {

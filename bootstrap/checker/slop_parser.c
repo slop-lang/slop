@@ -383,6 +383,7 @@ parser_Token parser_parser_peek(parser_ParserState* state) {
     } else if (!_mv_64.has_value) {
         return (parser_Token){parser_TokenType_tok_eof, SLOP_STR(""), 1, 1};
     }
+    SLOP_UNREACHABLE();
 }
 
 void parser_parser_advance(parser_ParserState* state) {
@@ -447,6 +448,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
                 __auto_type e = _mv_65.data.err;
                 return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
             }
+            SLOP_UNREACHABLE();
         } else if (tok.kind == parser_TokenType_tok_symbol) {
             parser_parser_advance(state);
             {
@@ -592,7 +594,9 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_paren_group(slo
             __auto_type _ = _mv_68.data.ok;
             return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = expr });
         }
+        SLOP_UNREACHABLE();
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_arena* arena, parser_ParserState* state) {
@@ -629,6 +633,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                         return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
                     }
                 }
+                SLOP_UNREACHABLE();
             } else {
                 parser_parser_advance(state);
                 {
@@ -659,6 +664,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                     return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
                 }
             }
+            SLOP_UNREACHABLE();
         } else if (tok.kind == parser_TokenType_tok_operator) {
             return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Unexpected operator in expression"), tok.line, tok.col} });
         } else if (tok.kind == parser_TokenType_tok_lparen) {
@@ -683,6 +689,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                         }
                     }
                 }
+                SLOP_UNREACHABLE();
             }
         } else if (tok.kind == parser_TokenType_tok_quote) {
             parser_parser_advance(state);
@@ -703,6 +710,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                     return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = true, .data.ok = node });
                 }
             }
+            SLOP_UNREACHABLE();
         } else {
             return ((slop_result_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Expected expression in infix"), tok.line, tok.col} });
         }
@@ -767,6 +775,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_prec(slop_arena
             }
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix(slop_arena* arena, parser_ParserState* state) {
@@ -794,6 +803,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix(slop_arena* are
                     }
                 }
             }
+            SLOP_UNREACHABLE();
         }
     }
 }
@@ -836,6 +846,7 @@ slop_result_list_types_SExpr_ptr_parser_ParseError parser_parse(slop_arena* aren
         __auto_type e = _mv_76.data.err;
         return ((slop_result_list_types_SExpr_ptr_parser_ParseError){ .is_ok = false, .data.err = e });
     }
+    SLOP_UNREACHABLE();
 }
 
 int64_t parser_sexpr_line(types_SExpr* expr) {
@@ -862,6 +873,7 @@ int64_t parser_sexpr_line(types_SExpr* expr) {
             return l.line;
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 int64_t parser_sexpr_col(types_SExpr* expr) {
@@ -888,6 +900,7 @@ int64_t parser_sexpr_col(types_SExpr* expr) {
             return l.col;
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 uint8_t parser_sexpr_is_symbol_with_name(types_SExpr* expr, slop_string name) {
@@ -920,6 +933,7 @@ uint8_t parser_is_form(types_SExpr* expr, slop_string keyword) {
                 } else if (!_mv_82.has_value) {
                     return 0;
                 }
+                SLOP_UNREACHABLE();
             }
         }
         default: {
@@ -1197,6 +1211,7 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
             }
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 slop_string parser_json_escape_string(slop_arena* arena, slop_string s) {
@@ -1324,5 +1339,6 @@ slop_string parser_json_print(slop_arena* arena, types_SExpr* expr) {
             }
         }
     }
+    SLOP_UNREACHABLE();
 }
 

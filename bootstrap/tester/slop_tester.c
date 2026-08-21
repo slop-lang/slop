@@ -36,6 +36,7 @@ slop_string tester_extract_module_name(slop_list_types_SExpr_ptr exprs) {
                     } else if (!_mv_1621.has_value) {
                         return SLOP_STR("");
                     }
+                    SLOP_UNREACHABLE();
                 } else {
                     return SLOP_STR("");
                 }
@@ -45,6 +46,7 @@ slop_string tester_extract_module_name(slop_list_types_SExpr_ptr exprs) {
         } else if (!_mv_1620.has_value) {
             return SLOP_STR("");
         }
+        SLOP_UNREACHABLE();
     }
 }
 
@@ -144,6 +146,7 @@ tester_TestResult tester_generate_tests(slop_arena* arena, slop_string source, s
             return (tester_TestResult){0, ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 }), 0, SLOP_STR(""), error_msg};
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 tester_TestResult tester_generate_tests_with_imports(slop_arena* arena, slop_string source, slop_list_string import_sources, slop_string file_name) {
@@ -205,6 +208,7 @@ tester_TestResult tester_generate_tests_with_imports(slop_arena* arena, slop_str
             return (tester_TestResult){0, ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 }), 0, SLOP_STR(""), error_msg};
         }
     }
+    SLOP_UNREACHABLE();
 }
 
 void tester_extract_types_from_module_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast, type_extract_TypeRegistry* types, slop_string prefix) {
@@ -475,5 +479,6 @@ slop_string tester_sexpr_to_string_simple(slop_arena* arena, types_SExpr* expr) 
             }
         }
     }
+    SLOP_UNREACHABLE();
 }
 
