@@ -1,0 +1,33 @@
+;; A TYPE may shadow is-none / is-some too (#107, #110).
+;;
+;; infer-expr tries env-lookup-function, then env-lookup-type, and only then its
+;; builtin cond -- so a type of that name resolves as a constructor. The
+;; transpiler has to mirror both lookups, not just the function one.
+;;
+;; This module builds on v0.2.0, which is what makes it a regression test rather
+;; than a new-feature test: gating the lowering on the function lookup alone
+;; broke it.
+
+(module test-option-predicate-type-shadow
+
+  (type is-none (record (v Int)))
+
+  (type is-some (record (w Int)))
+
+  (fn test-type-constructors ()
+    (@intent "Both names construct records, not tag tests")
+    (@spec (() -> Bool))
+    (let ((a (is-none 7))
+          (b (is-some 9)))
+      (and (== (. a v) 7) (== (. b w) 9))))
+
+  (fn main ()
+    (@intent "Run the type-shadowing test")
+    (@spec (() -> Int))
+    (if (test-type-constructors)
+      (do (println "test-type-constructors: PASS")
+          (println "")
+          (println "All tests passed!")
+          0)
+      (do (println "test-type-constructors: FAIL")
+          1))))

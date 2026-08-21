@@ -497,6 +497,10 @@ class TestOptionPredicates:
         assert "'is-none' expects an (Option T), got Meters" in combined, combined
         # A symbol alias, reached by following the chain collect.slop records.
         assert "'is-none' expects an (Option T), got MyInt" in combined, combined
+        # Ten deep: the chain guard is a cycle guard, not a depth cliff. Stopping
+        # early lands on a non-builtin primitive, which is exempt, so the miss
+        # would be silent and the error would land in cc instead.
+        assert "'is-none' expects an (Option T), got D10" in combined, combined
         # A declared type parameter. Left alone this reached cc as "member
         # reference base type 'int64_t' is not a structure or union", which
         # CLAUDE.md calls a failure outright. The message must name the fix.

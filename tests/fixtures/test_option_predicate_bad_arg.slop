@@ -13,6 +13,12 @@
   ;; from an exemption into a rejection.
   (type MyInt Int)
 
+  ;; Ten deep, to prove the chain guard is a cycle guard and not a depth cliff.
+  ;; A chain that stops early lands on a non-builtin primitive, which is exempt,
+  ;; so the miss would be silent and the error would surface in cc instead.
+  (type D1 Int) (type D2 D1) (type D3 D2) (type D4 D3) (type D5 D4)
+  (type D6 D5) (type D7 D6) (type D8 D7) (type D9 D8) (type D10 D9)
+
   (fn bad-int ()
     (@intent "An Int is not an Option")
     (@spec (() -> Bool))
@@ -47,6 +53,11 @@
     (@spec ((T) -> Bool))
     (@generic (T))
     (is-some x))
+
+  (fn bad-deep-alias ((x D10))
+    (@intent "A ten-deep alias still resolves to a builtin scalar")
+    (@spec ((D10) -> Bool))
+    (is-none x))
 
   (fn bad-arity ()
     (@intent "One argument, not two")

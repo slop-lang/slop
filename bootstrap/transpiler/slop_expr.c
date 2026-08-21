@@ -3786,7 +3786,7 @@ slop_string expr_transpile_list_expr(context_TranspileContext* ctx, slop_list_ty
                                     return SLOP_STR("0");
                                 }
                                 SLOP_UNREACHABLE();
-                            } else if (((string_eq(op, SLOP_STR("is-none")) || string_eq(op, SLOP_STR("is-some")))) && ((len >= 2)) && (({ __auto_type _mv = context_ctx_lookup_func(ctx, op); _mv.has_value ? ({ __auto_type f = _mv.value; 0; }) : (1); }))) {
+                            } else if (((string_eq(op, SLOP_STR("is-none")) || string_eq(op, SLOP_STR("is-some")))) && ((len >= 2)) && (({ __auto_type _mv = context_ctx_lookup_func(ctx, op); _mv.has_value ? ({ __auto_type f = _mv.value; 0; }) : (1); })) && (({ __auto_type _mv = context_ctx_lookup_type(ctx, op); _mv.has_value ? ({ __auto_type t = _mv.value; 0; }) : (1); }))) {
                                 __auto_type _mv_273 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                 if (_mv_273.has_value) {
                                     __auto_type opt_expr = _mv_273.value;

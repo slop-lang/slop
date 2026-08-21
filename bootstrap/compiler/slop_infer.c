@@ -1963,7 +1963,7 @@ types_ResolvedType* infer_resolve_alias_chain(types_ResolvedType* t) {
         __auto_type cur = t;
         int64_t steps = 0;
         uint8_t done = 0;
-        while (!(done) && (steps < 8)) {
+        while (!(done) && (steps < 64)) {
             if ((*cur).kind == types_ResolvedTypeKind_rk_primitive) {
                 __auto_type _mv_1742 = (*cur).inner_type;
                 if (_mv_1742.has_value) {

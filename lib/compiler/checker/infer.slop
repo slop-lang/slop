@@ -1604,11 +1604,14 @@
     ;; still has to treat an unresolved rk-primitive as possibly an Option.
     ;; Modelling those properly is #101.
     ;;
-    ;; Bounded rather than unbounded: a malformed chain must not hang the checker.
+    ;; The bound is a cycle guard, not a depth limit: a malformed chain must not
+    ;; hang the checker, but no real alias chain approaches it, so stopping early
+    ;; on a legitimate one -- which would silently exempt it and hand the error to
+    ;; cc -- is not a tradeoff worth making to keep the number small.
     (let ((mut cur t)
           (mut steps 0)
           (mut done false))
-      (while (and (not done) (< steps 8))
+      (while (and (not done) (< steps 64))
         (if (== (. (deref cur) kind) 'rk-primitive)
           (match (. (deref cur) inner-type)
             ((some next)
