@@ -2060,6 +2060,62 @@
               ((none) false)))))
       (else false)))
 
+  (fn alias-target-c-type ((ctx (Ptr TranspileContext)) (type-def (Ptr SExpr)))
+    (@intent "The C type an alias body names, or empty when there is none to compute")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {type-def != nil})
+    (match (deref type-def)
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (< (list-len items) 3)
+            ""
+            (match (list-get items 2)
+              ((some body-expr) (to-c-type-prefixed ctx body-expr))
+              ((none) "")))))
+      (else "")))
+
+  (fn alias-own-c-name ((ctx (Ptr TranspileContext)) (type-def (Ptr SExpr)))
+    (@intent "The C name an alias declares, matching what emit-type-alias-to-header marks")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {type-def != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (match (deref type-def)
+        ((lst lst)
+          (let ((items (. lst items)))
+            (if (< (list-len items) 2)
+              ""
+              (match (list-get items 1)
+                ((some name-expr)
+                  (match (deref name-expr)
+                    ((sym name-sym) (ctx-prefix-type ctx (to-c-name arena (. name-sym name))))
+                    (else "")))
+                ((none) "")))))
+        (else ""))))
+
+  (fn container-alias-ready ((ctx (Ptr TranspileContext)) (type-def (Ptr SExpr)))
+    (@intent "Can a container alias be emitted in the early pass, or must it wait?")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Bool))
+    (@pre {ctx != nil})
+    (@pre {type-def != nil})
+    ;; A container alias must follow the container it names, but a RECORD FIELD
+    ;; may in turn name the alias, and records are emitted by the sorted pass in
+    ;; between. Holding every container alias back breaks
+    ;;
+    ;;   (type MaybeString (Option String))
+    ;;   (type Holder (record (value MaybeString)))
+    ;;
+    ;; which needs no waiting at all: slop_option_string is predefined by the
+    ;; runtime. So emit as early as the dependency actually allows -- when the
+    ;; target is runtime-provided or already emitted -- and defer only the rest.
+    ;; A Result alias is never ready here, since emit-result-types-header runs
+    ;; later, so those keep the behaviour they had.
+    (let ((c-type (alias-target-c-type ctx type-def)))
+      (or (is-runtime-option-type c-type)
+          (is-runtime-list-type c-type)
+          (ctx-is-type-emitted ctx c-type))))
+
   (fn emit-type-alias-to-header ((ctx (Ptr TranspileContext)) (type-def (Ptr SExpr)))
     (@intent "Emit a type alias definition to header as typedef")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
@@ -4009,10 +4065,12 @@
       (while (< i len)
         (match (list-get items i)
           ((some item)
-            ;; Emit type aliases that do NOT name a generated container
+            ;; Aliases that name no generated container, plus those whose
+            ;; container is already available -- see container-alias-ready.
             (when (and (is-type-def item)
                        (is-type-alias-def item)
-                       (not (is-result-type-alias-def item)))
+                       (or (not (is-result-type-alias-def item))
+                           (container-alias-ready ctx item)))
               (emit-type-alias-to-header ctx item)))
           ((none) (do)))
         (set! i (+ i 1)))))
@@ -4026,10 +4084,12 @@
       (while (< i len)
         (match (list-get items i)
           ((some item)
-            ;; Only container aliases here; the rest were emitted early
+            ;; The container aliases the early pass had to defer. It marks each
+            ;; c-name it emits, so the ones it did take are skipped here.
             (when (and (is-type-def item)
                        (is-type-alias-def item)
-                       (is-result-type-alias-def item))
+                       (is-result-type-alias-def item)
+                       (not (ctx-is-type-emitted ctx (alias-own-c-name ctx item))))
               (emit-type-alias-to-header ctx item)))
           ((none) (do)))
         (set! i (+ i 1)))))

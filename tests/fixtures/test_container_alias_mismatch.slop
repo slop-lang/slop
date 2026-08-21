@@ -1,0 +1,37 @@
+;; Negative fixture for #101: relating an alias to the container it names must
+;; not relate it to a DIFFERENT container. Comparing by element type is what
+;; keeps those apart -- an earlier draft accepted any anonymous list because its
+;; resolved name is the bare "List", so a (List String) satisfied a (List Int)
+;; alias and cc reported the mismatch instead.
+;;
+;; Unlike Option_T, "List" is not a generic sentinel: it is the name of an
+;; ordinary anonymous list that carries a real element type.
+
+(module test-container-alias-mismatch
+
+  (type Ints (List Int))
+
+  (type MaybeInt (Option Int))
+
+  (fn total ((xs Ints))
+    (@intent "Expects a (List Int)")
+    (@spec ((Ints) -> Int))
+    (list-len xs))
+
+  (fn unwrap ((m MaybeInt))
+    (@intent "Expects an (Option Int)")
+    (@spec ((MaybeInt) -> Bool))
+    (is-none m))
+
+  (fn bad-list-element ()
+    (@intent "A (List String) is not a (List Int)")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((ss (list-new arena String)))
+        (list-push ss "a")
+        (total ss))))
+
+  (fn bad-option-payload ()
+    (@intent "An (Option String) is not an (Option Int)")
+    (@spec (() -> Bool))
+    (unwrap (some "a"))))

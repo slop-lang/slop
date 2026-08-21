@@ -30,6 +30,15 @@
 
   (type MaybePoint (Option Point))
 
+  ;; A record whose field is a container alias. This is why container aliases
+  ;; cannot simply all be deferred: the sorted struct pass runs between the two
+  ;; alias passes, so Holder needs MaybeString already emitted. It does not have
+  ;; to wait for anything -- slop_option_string is predefined by the runtime --
+  ;; which is what container-alias-ready checks.
+  (type MaybeString (Option String))
+
+  (type Holder (record (label String) (value MaybeString)))
+
   (type Tally (Map String Int))
 
   (type Names (Set String))
@@ -124,6 +133,18 @@
       (set-put s "y")
       (list-len (set-elements s))))
 
+  (fn hold ((s String))
+    (@intent "Build a record whose field is a container alias")
+    (@spec ((String) -> Holder))
+    (Holder "h" (some s)))
+
+  (fn test-record-field-alias ()
+    (@intent "A record field typed by a container alias round-trips")
+    (@spec (() -> Bool))
+    (match (. (hold "x") value)
+      ((some v) (string-eq v "x"))
+      ((none) false)))
+
   (fn test-map-set-aliases ()
     (@intent "Map and Set aliases still work")
     (@spec (() -> Bool))
@@ -150,6 +171,10 @@
       (if (test-option-alias-record-payload)
         (println "test-option-alias-record-payload: PASS")
         (do (println "test-option-alias-record-payload: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-record-field-alias)
+        (println "test-record-field-alias: PASS")
+        (do (println "test-record-field-alias: FAIL")
             (set! failures (+ failures 1))))
       (if (test-map-set-aliases)
         (println "test-map-set-aliases: PASS")

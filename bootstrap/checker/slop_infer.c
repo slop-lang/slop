@@ -580,7 +580,7 @@ uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b) {
         } else if ((a_kind == types_ResolvedTypeKind_rk_option) && (b_kind == types_ResolvedTypeKind_rk_option)) {
             return ((string_eq(a_name, SLOP_STR("Option_T"))) || (string_eq(b_name, SLOP_STR("Option_T"))) || (infer_container_inners_equal(a, b)));
         } else if ((a_kind == types_ResolvedTypeKind_rk_list) && (b_kind == types_ResolvedTypeKind_rk_list)) {
-            return ((string_eq(a_name, SLOP_STR("List"))) || (string_eq(b_name, SLOP_STR("List"))) || (infer_container_inners_equal(a, b)));
+            return infer_container_inners_equal(a, b);
         } else if ((a_kind == types_ResolvedTypeKind_rk_result) && (b_kind == types_ResolvedTypeKind_rk_result)) {
             return (string_eq(a_name, SLOP_STR("Result")) || string_eq(b_name, SLOP_STR("Result")));
         } else if ((a_kind == types_ResolvedTypeKind_rk_range) || (b_kind == types_ResolvedTypeKind_rk_range)) {

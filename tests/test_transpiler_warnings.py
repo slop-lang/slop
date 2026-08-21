@@ -575,3 +575,32 @@ class TestOptionPredicates:
         # A tag predicate must not reach for structural equality; that is exactly
         # what it exists to avoid, since the payload may have none.
         assert "slop_eq_test_option_predicates_UnComparable" not in c_src, c_src
+
+
+class TestContainerTypeAliases:
+    """Type aliases to containers (#101).
+
+    `(type PointList (List Point))` could be declared and then not used, for
+    three independent reasons across three passes: the container was never
+    registered when the alias was its only mention, the alias typedef was
+    emitted before the container it names, and the checker related neither a
+    List nor an Option alias to what it stands for.
+
+    The positive cases run in tests/test_container_type_aliases.slop. What can
+    only be asserted here is the other half: relating an alias to its container
+    must not relate it to a *different* container.
+    """
+
+    def test_element_type_mismatch_is_rejected(self):
+        """The bare name "List" is not a generic sentinel.
+
+        Unlike Option_T it names an ordinary anonymous list carrying a real
+        element type, so accepting on the name alone let a (List String) satisfy
+        a (List Int) alias -- checked clean, then rejected by cc.
+        """
+        rc, stdout, stderr = slop_check("fixtures/test_container_alias_mismatch.slop")
+        combined = stdout + stderr
+
+        assert rc != 0, combined
+        assert "to 'test-container-alias-mismatch:total'" in combined, combined
+        assert "to 'test-container-alias-mismatch:unwrap'" in combined, combined
