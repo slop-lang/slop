@@ -724,16 +724,26 @@ Language primitives that are always available without imports.
 (list-pop list) -> (Option T)
 (list-get list idx) -> (Option T)
 (list-len list) -> (Int 0 ..)
-(list-set list idx val) -> Unit
 
 ### Maps
-(map-new arena K V) -> (Map K V)
-(map K V (k1 v1)...) -> (Map K V)       ; Literal
+(map-new arena K V) -> (Map K V)        ; Type parameters required
 (map-put map k v) -> Unit
 (map-get map k) -> (Option V)
 (map-has map k) -> Bool
 (map-keys map) -> (List K)
 (map-remove map k) -> Unit              ; Requires mutable map
+
+There is no map literal and no map-len.
+
+### Sets
+(set-new arena T) -> (Set T)            ; Type parameter required
+(set T e1 e2...) -> (Set T)             ; Literal
+(set-put set e) -> Unit
+(set-has set e) -> Bool
+(set-remove set e) -> Unit
+(set-elements set) -> (List T)
+
+There is no set-len; use (list-len (set-elements s)).
 
 ### Results
 (ok val) -> (Result T E)
@@ -812,7 +822,7 @@ Use `slop ref <module>` for detailed documentation, or `slop doc <path>`.
 ### Data Construction
 (array e1 e2...)                         ; Array literal
 (list Type e1 e2...)                     ; List literal
-(map K V (k1 v1)...)                     ; Map literal
+(set Type e1 e2...)                      ; Set literal
 (record-new Type (f1 v1) (f2 v2)...)     ; Record constructor
 (TypeName v1 v2...)                      ; Positional constructor
 
@@ -827,6 +837,16 @@ expr.field                               ; Shorthand
 (+ - * / %)                              ; Arithmetic
 (== != < <= > >=)                        ; Comparison
 (and or not)                             ; Boolean
+
+== and != are structural: String compares by contents, a record compares
+field by field, a union compares its tag then the payloads of the matching
+variant. Both recurse into nested records and unions. A (Ptr T) compares by
+identity, as in C.
+
+Two caveats. A container field -- (List T), (Map K V), (Set T), (Option T),
+(Result T E) -- inside a record is compared by identity rather than contents;
+the transpiler warns and names the field. And == on a container itself is a
+transpiler error: match on the variants, or compare the fields you mean.
 (& | ^ << >> ~)                          ; Bitwise
 (min a b) (max a b)                      ; Min/max
 
