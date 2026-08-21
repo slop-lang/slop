@@ -30,6 +30,7 @@
                env-add-warning env-add-error
                env-set-fn-type-params env-clear-fn-type-params env-is-type-param))
   (import strlib (starts-with ends-with string-build join))
+  (import ctype (is-builtin-type))
   (import collect (find-fn-type-params))
 
   ;; ============================================================
@@ -1607,9 +1608,20 @@
             ;; Stay quiet on anything the checker could not pin down: a bare type
             ;; variable, or the Unknown it falls back to. A new diagnostic that
             ;; fires on working code is one that gets suppressed and then ignored.
+            ;;
+            ;; An unrecognised rk-primitive is the case that matters. collect.slop
+            ;; has branches for Map, Set, List and range aliases but none for
+            ;; Option, and its generic alias branch calls sexpr-get-symbol-name on
+            ;; the aliased expression -- which returns "" for a form -- so
+            ;; (type MaybeInt (Option Int)) is recorded as a bare rk-primitive
+            ;; named "MaybeInt" with nothing to say it stands for an Option.
+            ;; Firing on that would reject (is-none m) inside a function taking a
+            ;; MaybeInt, where m really is an Option. So an rk-primitive is only
+            ;; rejected when it is a builtin scalar, which no alias can be.
             (when (and (!= kind 'rk-option)
                        (!= kind 'rk-typevar)
-                       (not (string-eq type-name "Unknown")))
+                       (not (string-eq type-name "Unknown"))
+                       (or (!= kind 'rk-primitive) (is-builtin-type type-name)))
               (let ((arena (env-arena env))
                     (msg (string-concat arena "'"
                            (string-concat arena op

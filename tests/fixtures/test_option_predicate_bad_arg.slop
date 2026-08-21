@@ -6,6 +6,8 @@
 
   (type Point (record (x Int) (y Int)))
 
+  (type Meters (Int 0 .. 100))
+
   (fn bad-int ()
     (@intent "An Int is not an Option")
     (@spec (() -> Bool))
@@ -21,6 +23,11 @@
     (@spec (() -> Bool))
     (with-arena 4096
       (is-none (list-new arena Int))))
+
+  (fn bad-range ((m Meters))
+    (@intent "A range alias is definitely not an Option")
+    (@spec ((Meters) -> Bool))
+    (is-none m))
 
   (fn bad-arity ()
     (@intent "One argument, not two")

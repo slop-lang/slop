@@ -493,14 +493,19 @@ class TestOptionPredicates:
         assert "'is-some' expects an (Option T), got Point" in combined, combined
         # A List is a container too, but it is not an Option.
         assert "'is-none' expects an (Option T), got List" in combined, combined
+        # A range alias is a resolved, definitely-not-Option type.
+        assert "'is-none' expects an (Option T), got Meters" in combined, combined
         assert "'is-some' expects 1 argument(s), got 2" in combined, combined
 
     def test_valid_uses_are_silent(self):
         """The bail-outs, which are what keep the new check from becoming noise.
 
         Covers an Option in parameter position, over a record payload, built
-        inline from (some ...) / (none), and the two inferred Options that
-        list-get and map-get return.
+        inline from (some ...) / (none), the two inferred Options that list-get
+        and map-get return, and -- the one that caught a real false positive --
+        an Option reached through a type alias. collect.slop records no inner for
+        a form alias, so (type MaybeInt (Option Int)) arrives as a bare
+        rk-primitive with nothing marking it as an Option.
         """
         rc, stdout, stderr = slop_check("fixtures/test_option_predicate_ok.slop")
         combined = stdout + stderr

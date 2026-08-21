@@ -1966,7 +1966,7 @@ void infer_check_option_predicate_arg(env_TypeEnv* env, slop_string op, slop_lis
                 __auto_type arg_type = infer_infer_expr(env, arg);
                 __auto_type kind = (*arg_type).kind;
                 __auto_type type_name = (*arg_type).name;
-                if (((kind != types_ResolvedTypeKind_rk_option)) && ((kind != types_ResolvedTypeKind_rk_typevar)) && (!(string_eq(type_name, SLOP_STR("Unknown"))))) {
+                if (((kind != types_ResolvedTypeKind_rk_option)) && ((kind != types_ResolvedTypeKind_rk_typevar)) && (!(string_eq(type_name, SLOP_STR("Unknown")))) && (((kind != types_ResolvedTypeKind_rk_primitive) || ctype_is_builtin_type(type_name)))) {
                     {
                         __auto_type arena = env_env_arena(env);
                         __auto_type msg = string_concat(arena, SLOP_STR("'"), string_concat(arena, op, string_concat(arena, SLOP_STR("' expects an (Option T), got "), type_name)));

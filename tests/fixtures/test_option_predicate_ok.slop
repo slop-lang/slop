@@ -6,6 +6,18 @@
 
   (type Point (record (x Int) (y Int)))
 
+  ;; A form alias. collect.slop records no inner for one -- its generic alias
+  ;; branch asks sexpr-get-symbol-name for a name and a form has none -- so this
+  ;; arrives as a bare rk-primitive called "MaybeInt" with nothing marking it as
+  ;; an Option. The check must not fire on it. (Passing (none) to a MaybeInt
+  ;; parameter is separately broken, #101, so there is deliberately no call.)
+  (type MaybeInt (Option Int))
+
+  (fn from-alias ((m MaybeInt))
+    (@intent "An Option reached through a type alias")
+    (@spec ((MaybeInt) -> Bool))
+    (is-none m))
+
   (fn from-param ((o (Option Int)))
     (@intent "An Option in parameter position")
     (@spec (((Option Int)) -> Bool))
