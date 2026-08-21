@@ -442,3 +442,27 @@ class TestNilPointerType:
         )
         combined = result.stdout + result.stderr
         assert "expected Int, got <nil>" in combined, combined
+
+
+class TestWithArenaAsClosure:
+    """A closure inside a named arena allocates from it, not malloc (#75)."""
+
+    def test_named_arena_closure_uses_the_arena(self, tmp_path):
+        """`(with-arena :as myarena ...)` binds neither "arena" nor "_arena".
+
+        The env fell back to malloc and was never freed -- a working program
+        that leaks, announced only by a warning with no source location. Not
+        observable from inside the program, so assert on the emitted C.
+        """
+        output = str(tmp_path / "with_arena_as_closure.c")
+        rc, stdout, stderr = slop_transpile("fixtures/test_with_arena_as_closure.slop", output)
+        assert rc == 0, f"Transpile failed: {stderr}"
+        c_src = Path(output).read_text()
+
+        assert "malloc(" not in c_src, c_src
+        # The named form must allocate from that arena specifically, not merely
+        # from whichever arena happened to be findable.
+        assert "slop_arena_alloc(myarena" in c_src, c_src
+        assert "slop_arena_alloc(arena" in c_src, c_src
+        # And the warning that used to accompany the malloc must be gone.
+        assert "no arena in scope" not in (stdout + stderr), stdout + stderr

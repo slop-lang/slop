@@ -1,0 +1,101 @@
+;; ============================================================
+;; Test: (with-arena :as name size body)
+;;
+;; Two regressions, both in the named form only -- the unnamed
+;; (with-arena size body) was always fine, which is what kept these
+;; hidden.
+;;
+;; #74: the name went straight into the generated C without passing
+;; through to-c-name, the way every other binder in the compiler does.
+;; An ordinary kebab-case arena name emitted
+;;
+;;     slop_arena* my-scratch = &_arena_my-scratch;
+;;
+;; which is not valid C. The three emitters -- statement, expression and
+;; match-arm position -- each had their own copy of the bug.
+;;
+;; #75: a capturing closure looked for a variable literally named
+;; "arena" or "_arena" to allocate its environment from. A named arena
+;; binds neither, so the env fell back to malloc and was never freed.
+;; The only signal was a warning with no source location, and the
+;; program worked -- it just leaked.
+;;
+;; The malloc half cannot be observed from inside the program; it is
+;; asserted against the generated C in tests/test_transpiler_warnings.py.
+;; What runs here is that the named form works at all.
+;; ============================================================
+
+(module test-with-arena-as
+
+  (fn kebab-name ()
+    (@intent "A hyphenated arena name must survive into valid C")
+    (@spec (() -> Int))
+    (with-arena :as my-scratch 4096
+      (let ((p (arena-alloc my-scratch 16)))
+        (if (!= p nil) 1 0))))
+
+  (fn closure-in-named-arena ()
+    (@intent "A capturing closure inside a named arena")
+    (@spec (() -> Int))
+    (with-arena :as my-scratch 65536
+      (let ((base 10)
+            (f (fn ((x Int)) (+ x base))))
+        (f 5))))
+
+  (fn closure-in-unnamed-arena ()
+    (@intent "The same closure unnamed, which always worked")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((base 10)
+            (f (fn ((x Int)) (+ x base))))
+        (f 5))))
+
+  (fn nested-named ()
+    (@intent "A named arena inside a named arena, both hyphenated")
+    (@spec (() -> Int))
+    (with-arena :as outer-pool 4096
+      (with-arena :as inner-pool 4096
+        (let ((a (arena-alloc outer-pool 8))
+              (b (arena-alloc inner-pool 8)))
+          (if (and (!= a nil) (!= b nil)) 1 0)))))
+
+  (fn test-kebab ()
+    (@intent "kebab-case arena name allocates")
+    (@spec (() -> Bool))
+    (== (kebab-name) 1))
+
+  (fn test-closure-named ()
+    (@intent "closure captures correctly inside a named arena")
+    (@spec (() -> Bool))
+    (== (closure-in-named-arena) 15))
+
+  (fn test-closure-unnamed ()
+    (@intent "closure captures correctly inside an unnamed arena")
+    (@spec (() -> Bool))
+    (== (closure-in-unnamed-arena) 15))
+
+  (fn test-nested ()
+    (@intent "nested named arenas do not collide")
+    (@spec (() -> Bool))
+    (== (nested-named) 1))
+
+  (fn main ()
+    (@intent "Run the with-arena :as tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-kebab)
+        (println "test-kebab: PASS")
+        (do (println "test-kebab: FAIL") (set! failures (+ failures 1))))
+      (if (test-closure-named)
+        (println "test-closure-named: PASS")
+        (do (println "test-closure-named: FAIL") (set! failures (+ failures 1))))
+      (if (test-closure-unnamed)
+        (println "test-closure-unnamed: PASS")
+        (do (println "test-closure-unnamed: FAIL") (set! failures (+ failures 1))))
+      (if (test-nested)
+        (println "test-nested: PASS")
+        (do (println "test-nested: FAIL") (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (print failures) (println " test(s) failed") 1)))))

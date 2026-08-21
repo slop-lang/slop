@@ -81,6 +81,8 @@
     ends-with-star
     ;; Struct key type tracking
     ctx-register-struct-key-type ctx-has-struct-key-type ctx-get-struct-key-types
+    ;; Arena discovery (any arena-typed variable, not just one literally named 'arena')
+    ctx-find-arena-var
     ;; Type alias tracking for resolving Map/Set types
     TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias
     ;; Generic function support

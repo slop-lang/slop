@@ -1,0 +1,34 @@
+;; Fixture for #75: a capturing closure inside a NAMED with-arena.
+;;
+;; The closure emitter looked for a variable literally called "arena" or
+;; "_arena" to allocate its environment from. (with-arena :as myarena ...)
+;; binds neither, so the env fell back to malloc and was never freed --
+;; a working program that leaks, announced only by a warning with no
+;; source location.
+;;
+;; "Did not malloc" cannot be observed from inside the program, so this
+;; is asserted against the generated C. Both forms are here so the
+;; assertion can require the named one to allocate from myarena
+;; specifically, not merely from some arena.
+(module with-arena-as-closure
+
+  (fn named ()
+    (@intent "capturing closure inside a named arena")
+    (@spec (() -> Int))
+    (with-arena :as myarena 65536
+      (let ((base 10)
+            (f (fn ((x Int)) (+ x base))))
+        (f 5))))
+
+  (fn unnamed ()
+    (@intent "the same closure inside an unnamed arena")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((base 10)
+            (f (fn ((x Int)) (+ x base))))
+        (f 5))))
+
+  (fn main ()
+    (@intent "Unused entry point; the fixture is never run")
+    (@spec (() -> Int))
+    0))

@@ -1523,8 +1523,9 @@
               (size-idx (if is-named 3 1))
               (body-start (if is-named 4 2))
               ;; C local var: _arena for unnamed (backward compat), _arena_<name> for named
+              (c-arena-name (to-c-name ctx-arena arena-name))
               (c-local (if is-named
-                         (string-concat ctx-arena "_arena_" arena-name)
+                         (string-concat ctx-arena "_arena_" c-arena-name)
                          "_arena")))
           ;; Validate minimum length for named form
           (if (and is-named (< len 4))
@@ -1540,10 +1541,10 @@
                   (let ((size-c (transpile-expr ctx size-expr)))
                     ;; Emit arena creation
                     (ctx-emit ctx (ctx-str5 ctx "slop_arena " c-local " = slop_arena_new(" size-c ");"))
-                    (ctx-emit ctx (ctx-str5 ctx "slop_arena* " arena-name " = &" c-local ";"))))
+                    (ctx-emit ctx (ctx-str5 ctx "slop_arena* " c-arena-name " = &" c-local ";"))))
                 ((none) (ctx-add-error-at ctx "missing size" (ctx-list-first-line items) (ctx-list-first-col items))))
               ;; Bind arena variable in scope
-              (ctx-bind-var ctx (VarEntry arena-name arena-name "slop_arena*" "" true false false "" ""))
+              (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" ""))
               ;; Process body statements
               (let ((mut i body-start))
                 (while (< i len)
@@ -1554,7 +1555,7 @@
                     ((none) (do)))
                   (set! i (+ i 1))))
               ;; Free arena
-              (ctx-emit ctx (ctx-str3 ctx "slop_arena_free(" arena-name ");"))
+              (ctx-emit ctx (ctx-str3 ctx "slop_arena_free(" c-arena-name ");"))
               ;; Close scope
               (ctx-pop-scope ctx)
               (ctx-dedent ctx)
