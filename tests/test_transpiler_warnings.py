@@ -557,6 +557,11 @@ class TestOptionPredicates:
         assert (
             "'is-some' is a builtin predicate and cannot be redefined as a foreign function"
         ) in combined, combined
+        # ffi-struct declares a type and the checker registers nothing for it,
+        # so it was the last declaration form that could claim one of the names.
+        assert (
+            "'is-none' is a builtin predicate and cannot be redefined as a foreign struct"
+        ) in combined, combined
 
     def test_lowering_is_a_tag_test(self):
         """No payload access, and no call into a generated equality function."""

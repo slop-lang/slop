@@ -971,6 +971,18 @@
                     (collect-single-function env arena item))
                   ((is-form item "ffi")
                     (collect-ffi-functions env arena item))
+                  ;; ffi-struct declares a type and the checker registers nothing
+                  ;; for it, so it was the last declaration form that could claim
+                  ;; one of the reserved names. Only the name is checked here;
+                  ;; everything else about the form stays the transpiler's.
+                  ((is-form item "ffi-struct")
+                    (match (sexpr-list-get item 2)
+                      ((some name-expr)
+                        (let ((struct-name (sexpr-get-symbol-name name-expr)))
+                          (when (is-reserved-builtin-name struct-name)
+                            (report-reserved-name env struct-name "foreign struct"
+                              (sexpr-line name-expr) (sexpr-col name-expr)))))
+                      ((none) (do))))
                   (else (do))))
               ((none) (do))))))))
 

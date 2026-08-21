@@ -20,6 +20,10 @@
 
   (type is-some (record (w Int)))
 
+  ;; ffi-struct declares a type and the checker registers nothing for it, so it
+  ;; was the last declaration form that could claim one of these names.
+  (ffi-struct "stddef.h" is-none (x Int))
+
   (fn is-none ((n Int))
     (@intent "A function of a reserved name")
     (@spec ((Int) -> Bool))
