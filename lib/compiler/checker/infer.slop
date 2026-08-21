@@ -471,6 +471,19 @@
           (a-name (. (deref a) name))
           (b-name (. (deref b) name)))
       (cond
+        ;; Containers are compared by element type FIRST, ahead of the same-name
+        ;; shortcut below. Every anonymous list resolves to the bare name "List",
+        ;; so two of them comparing equal on the name alone is exactly the
+        ;; mistake: it accepted a (List (List String)) for a (List (List Int)),
+        ;; since the recursion landed back on the shortcut one level down.
+        ((and (== a-kind 'rk-option) (== b-kind 'rk-option))
+          (or (string-eq a-name "Option_T")
+              (string-eq b-name "Option_T")
+              (container-inners-equal a b)))
+
+        ((and (== a-kind 'rk-list) (== b-kind 'rk-list))
+          (container-inners-equal a b))
+
         ;; Same name - definitely equal
         ((string-eq a-name b-name) true)
 
@@ -484,26 +497,10 @@
         ;; Generic type variable "T" matches anything (legacy)
         ((or (string-eq a-name "T") (string-eq b-name "T")) true)
 
-        ;; Both Option types - one generic (Option_T), or the same element type.
-        ;; The element comparison is what relates a named alias to the concrete
-        ;; container: (type MaybeInt (Option Int)) against Option_Int, where
-        ;; neither name is the generic sentinel.
-        ((and (== a-kind 'rk-option) (== b-kind 'rk-option))
-          (or (string-eq a-name "Option_T")
-              (string-eq b-name "Option_T")
-              (container-inners-equal a b)))
-
         ;; Both List types - a named alias against the anonymous (List T), whose
         ;; resolved name is the bare "List". Same shape as the Option_T rule above:
         ;; (type PointList (List Point)) could be declared and then not be passed a
         ;; (List Point), because the names differ and nothing else related them.
-        ;; Both List types - compare element types. The bare name "List" is NOT
-        ;; a shortcut here: unlike Option_T it is the name of an ordinary
-        ;; anonymous list with a real element type, so accepting on the name
-        ;; alone let a (List String) satisfy a (List Int) alias.
-        ((and (== a-kind 'rk-list) (== b-kind 'rk-list))
-          (container-inners-equal a b))
-
         ;; Both Result types - generic "Result" matches any Result_X_Y
         ((and (== a-kind 'rk-result) (== b-kind 'rk-result))
           (or (string-eq a-name "Result")

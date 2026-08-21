@@ -145,6 +145,23 @@
       ((some v) (string-eq v "x"))
       ((none) false)))
 
+  ;; An explicit (return (none)) inside a match arm. match.slop carries its own
+  ;; copy of the "is this an Option" test, so fixing the one in stmt.slop was not
+  ;; enough: this emitted a bare `return none;` and cc rejected
+  ;; _slop_option_generic against the alias.
+  (fn pick ((n Int))
+    (@intent "Explicit returns of an Option alias from inside match arms")
+    (@spec ((Int) -> MaybeInt))
+    (match (if (> n 0) (some n) (none))
+      ((some v) (return (some v)))
+      ((none) (return (none)))))
+
+  (fn test-match-arm-return ()
+    (@intent "Both arms return the alias type correctly")
+    (@spec (() -> Bool))
+    (and (not (opt-alias-empty (pick 3)))
+         (opt-alias-empty (pick 0))))
+
   (fn test-map-set-aliases ()
     (@intent "Map and Set aliases still work")
     (@spec (() -> Bool))
@@ -175,6 +192,10 @@
       (if (test-record-field-alias)
         (println "test-record-field-alias: PASS")
         (do (println "test-record-field-alias: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-match-arm-return)
+        (println "test-match-arm-return: PASS")
+        (do (println "test-match-arm-return: FAIL")
             (set! failures (+ failures 1))))
       (if (test-map-set-aliases)
         (println "test-map-set-aliases: PASS")

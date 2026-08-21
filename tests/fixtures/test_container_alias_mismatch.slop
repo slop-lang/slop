@@ -13,6 +13,10 @@
 
   (type MaybeInt (Option Int))
 
+  ;; Nested. Both element types resolve to the bare name "List", so a recursion
+  ;; that fell back to the same-name shortcut one level down accepted this.
+  (type NestedInts (List (List Int)))
+
   (fn total ((xs Ints))
     (@intent "Expects a (List Int)")
     (@spec ((Ints) -> Int))
@@ -30,6 +34,18 @@
       (let ((ss (list-new arena String)))
         (list-push ss "a")
         (total ss))))
+
+  (fn nested-total ((xs NestedInts))
+    (@intent "Expects a (List (List Int))")
+    (@spec ((NestedInts) -> Int))
+    (list-len xs))
+
+  (fn bad-nested-element ()
+    (@intent "A (List (List String)) is not a (List (List Int))")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((outer (list-new arena (List String))))
+        (nested-total outer))))
 
   (fn bad-option-payload ()
     (@intent "An (Option String) is not an (Option Int)")

@@ -567,7 +567,11 @@ uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b) {
         __auto_type b_kind = (*b).kind;
         __auto_type a_name = (*a).name;
         __auto_type b_name = (*b).name;
-        if (string_eq(a_name, b_name)) {
+        if ((a_kind == types_ResolvedTypeKind_rk_option) && (b_kind == types_ResolvedTypeKind_rk_option)) {
+            return ((string_eq(a_name, SLOP_STR("Option_T"))) || (string_eq(b_name, SLOP_STR("Option_T"))) || (infer_container_inners_equal(a, b)));
+        } else if ((a_kind == types_ResolvedTypeKind_rk_list) && (b_kind == types_ResolvedTypeKind_rk_list)) {
+            return infer_container_inners_equal(a, b);
+        } else if (string_eq(a_name, b_name)) {
             return 1;
         } else if ((a_kind == types_ResolvedTypeKind_rk_typevar) || (b_kind == types_ResolvedTypeKind_rk_typevar)) {
             return 1;
@@ -577,10 +581,6 @@ uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b) {
             return 1;
         } else if (string_eq(a_name, SLOP_STR("T")) || string_eq(b_name, SLOP_STR("T"))) {
             return 1;
-        } else if ((a_kind == types_ResolvedTypeKind_rk_option) && (b_kind == types_ResolvedTypeKind_rk_option)) {
-            return ((string_eq(a_name, SLOP_STR("Option_T"))) || (string_eq(b_name, SLOP_STR("Option_T"))) || (infer_container_inners_equal(a, b)));
-        } else if ((a_kind == types_ResolvedTypeKind_rk_list) && (b_kind == types_ResolvedTypeKind_rk_list)) {
-            return infer_container_inners_equal(a, b);
         } else if ((a_kind == types_ResolvedTypeKind_rk_result) && (b_kind == types_ResolvedTypeKind_rk_result)) {
             return (string_eq(a_name, SLOP_STR("Result")) || string_eq(b_name, SLOP_STR("Result")));
         } else if ((a_kind == types_ResolvedTypeKind_rk_range) || (b_kind == types_ResolvedTypeKind_rk_range)) {

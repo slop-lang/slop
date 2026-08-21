@@ -604,3 +604,7 @@ class TestContainerTypeAliases:
         assert rc != 0, combined
         assert "to 'test-container-alias-mismatch:total'" in combined, combined
         assert "to 'test-container-alias-mismatch:unwrap'" in combined, combined
+        # Nested: both element types resolve to the bare name "List", so a
+        # recursion falling back to the same-name shortcut one level down
+        # accepted a (List (List String)) for a (List (List Int)).
+        assert "to 'test-container-alias-mismatch:nested-total'" in combined, combined
