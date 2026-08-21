@@ -39,7 +39,7 @@
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
                    ctx-get-fields-for-type ctx-get-union-variants FieldEntry
                    ctx-register-list-type
-                   ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-register-chan-type
+                   ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-is-option-c-type ctx-register-chan-type
                    ctx-find-arena-var
                    ctx-add-error ctx-add-error-at ctx-strict-unknown-symbols
                    ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
@@ -4511,7 +4511,7 @@
     (@spec (((Ptr TranspileContext) String String) -> String))
     (@pre {ctx != nil})
     (if (and (string-eq body "none")
-             (starts-with result-type "slop_option_"))
+             (ctx-is-option-c-type ctx result-type))
       (ctx-str3 ctx "(" result-type "){.has_value = false}")
       body))
 
@@ -4522,7 +4522,7 @@
     ;; If arg is "none" and expected type starts with "slop_option_",
     ;; generate: ((slop_option_T){.has_value = false})
     (if (and (string-eq arg-c "none")
-             (starts-with expected-type "slop_option_"))
+             (ctx-is-option-c-type ctx expected-type))
       (ctx-str3 ctx "((" expected-type "){.has_value = false})")
       arg-c))
 

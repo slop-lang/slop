@@ -221,11 +221,25 @@
                             ;; Register type aliases during prescan and scan for generics
                             (let ((slop-type-str (pretty-print arena body-expr)))
                               (when (is-generic-type-alias slop-type-str)
-                                (ctx-register-type-alias ctx type-name slop-type-str))
-                              (when (or (starts-with slop-type-str "(Map ")
-                                        (starts-with slop-type-str "(Set "))
-                                ;; Scan Map/Set body to register list types for key/element
-                                (scan-type-for-generics ctx body-expr)))))
+                                (ctx-register-type-alias ctx type-name slop-type-str)
+                                ;; Also under the C name. Several places downstream
+                                ;; hold only the C type -- FuncParamType carries
+                                ;; nothing else -- and need to ask what the alias
+                                ;; stands for. Without this, a bare (none) passed to
+                                ;; a parameter typed by an Option alias could not be
+                                ;; given a type and stayed _slop_option_generic.
+                                ;; When prefixing is off the two names coincide and
+                                ;; this registers the same mapping twice, harmlessly.
+                                (when (not (string-eq c-name type-name))
+                                  (ctx-register-type-alias ctx c-name slop-type-str)))
+                              ;; Register whatever containers the alias body names.
+                              ;; This used to run only for (Map ...) and (Set ...),
+                              ;; so (type PointList (List Point)) declared the alias
+                              ;; and never registered slop_list_<mod>_Point, leaving
+                              ;; cc to report "unknown type name". scan-type-for-generics
+                              ;; is a no-op on a non-list body, so a plain symbol alias
+                              ;; like (type MyInt Int) is unaffected.
+                              (scan-type-for-generics ctx body-expr))))
                         ((none) (do)))))))
               (else (do))))
           ((none) (do))))))
@@ -2007,10 +2021,19 @@
       (else false)))
 
   (fn is-result-type-alias-def ((item (Ptr SExpr)))
-    (@intent "Check if type definition is a Result type alias")
+    (@intent "Check if a type definition aliases a compiler-generated container")
     (@spec (((Ptr SExpr)) -> Bool))
     (@pre {item != nil})
-    ;; Result type alias is: (type Name (Result ...))
+    ;; (type Name (Result ...)), (type Name (List ...)), (type Name (Option ...)).
+    ;;
+    ;; These three name a type the compiler generates -- slop_result_*,
+    ;; slop_list_*, slop_option_* -- so the alias typedef cannot be emitted until
+    ;; that type exists. Everything else an alias can name is either a builtin or
+    ;; a struct emitted earlier, which is why the split exists at all.
+    ;;
+    ;; Map and Set are deliberately NOT here: both alias slop_map*, which the
+    ;; runtime defines, so they are safe in the early pass and moving them would
+    ;; be a change with no reason behind it.
     (match (deref item)
       ((lst lst)
         (let ((items (. lst items)))
@@ -2027,7 +2050,10 @@
                           ((some head)
                             (match (deref head)
                               ((sym sym)
-                                (string-eq (. sym name) "Result"))
+                                (let ((head-name (. sym name)))
+                                  (or (string-eq head-name "Result")
+                                      (string-eq head-name "List")
+                                      (string-eq head-name "Option"))))
                               (else false)))
                           ((none) false)))))
                   (else false)))
@@ -3983,7 +4009,7 @@
       (while (< i len)
         (match (list-get items i)
           ((some item)
-            ;; Emit type aliases that are NOT Result aliases
+            ;; Emit type aliases that do NOT name a generated container
             (when (and (is-type-def item)
                        (is-type-alias-def item)
                        (not (is-result-type-alias-def item)))
@@ -4000,7 +4026,7 @@
       (while (< i len)
         (match (list-get items i)
           ((some item)
-            ;; Only emit Result type aliases here (simple aliases already emitted)
+            ;; Only container aliases here; the rest were emitted early
             (when (and (is-type-def item)
                        (is-type-alias-def item)
                        (is-result-type-alias-def item))

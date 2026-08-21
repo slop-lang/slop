@@ -125,6 +125,15 @@
                             ((is-form type-expr "List")
                               (let ((resolved (resolved-type-new arena 'rk-list type-name mod-name "slop_list_t*")))
                                 (env-register-type env resolved)))
+                            ;; Without this an Option alias fell to the else below and
+                            ;; was registered as a bare rk-primitive, so it matched
+                            ;; nothing: (type MaybeInt (Option Int)) could be declared
+                            ;; and then not passed an (Option Int). Registered as
+                            ;; rk-option it is picked up by the existing Option_T rule
+                            ;; in types-equal, with no change needed there.
+                            ((is-form type-expr "Option")
+                              (let ((resolved (resolved-type-new arena 'rk-option type-name mod-name type-name)))
+                                (env-register-type env resolved)))
                             (else
                               (let ((resolved (resolved-type-new arena 'rk-primitive type-name mod-name type-name)))
                                 (env-register-type env resolved)))))
@@ -187,6 +196,12 @@
                               ((some resolved)
                                 (let ((elem-type (get-field-type env arena (get-type-arg type-expr 1))))
                                   (resolved-type-set-inner resolved elem-type)))
+                              ((none) (do))))
+                          ((is-form type-expr "Option")
+                            (match (env-lookup-type-direct env type-name)
+                              ((some resolved)
+                                (let ((inner-type (get-field-type env arena (get-type-arg type-expr 1))))
+                                  (resolved-type-set-inner resolved inner-type)))
                               ((none) (do))))
                           (else
                             (let ((alias-name (sexpr-get-symbol-name type-expr)))

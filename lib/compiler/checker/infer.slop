@@ -444,6 +444,22 @@
   ;; Type Comparison
   ;; ============================================================
 
+  (fn container-inners-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
+    (@intent "Compare two containers by element type, permissively when one is unrecorded")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
+    (@pre (!= a nil))
+    (@pre (!= b nil))
+    ;; An absent inner means the checker never recorded one, not that the element
+    ;; type differs -- several alias and generic paths leave it unset. Answering
+    ;; true there keeps this from rejecting calls that are fine, which is the same
+    ;; side the generic sentinels above err on.
+    (match (. (deref a) inner-type)
+      ((some a-inner)
+        (match (. (deref b) inner-type)
+          ((some b-inner) (types-equal a-inner b-inner))
+          ((none) true)))
+      ((none) true)))
+
   (fn types-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
     (@intent "Check if two types are equal, handling generics and aliases")
     (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
@@ -468,10 +484,23 @@
         ;; Generic type variable "T" matches anything (legacy)
         ((or (string-eq a-name "T") (string-eq b-name "T")) true)
 
-        ;; Both Option types - check if one is generic (Option_T)
+        ;; Both Option types - one generic (Option_T), or the same element type.
+        ;; The element comparison is what relates a named alias to the concrete
+        ;; container: (type MaybeInt (Option Int)) against Option_Int, where
+        ;; neither name is the generic sentinel.
         ((and (== a-kind 'rk-option) (== b-kind 'rk-option))
           (or (string-eq a-name "Option_T")
-              (string-eq b-name "Option_T")))
+              (string-eq b-name "Option_T")
+              (container-inners-equal a b)))
+
+        ;; Both List types - a named alias against the anonymous (List T), whose
+        ;; resolved name is the bare "List". Same shape as the Option_T rule above:
+        ;; (type PointList (List Point)) could be declared and then not be passed a
+        ;; (List Point), because the names differ and nothing else related them.
+        ((and (== a-kind 'rk-list) (== b-kind 'rk-list))
+          (or (string-eq a-name "List")
+              (string-eq b-name "List")
+              (container-inners-equal a b)))
 
         ;; Both Result types - generic "Result" matches any Result_X_Y
         ((and (== a-kind 'rk-result) (== b-kind 'rk-result))
@@ -1527,10 +1556,15 @@
                 (let ((actual-type (infer-expr env arg-expr))
                       (expected-name (. (deref expected-type) name))
                       (actual-name (. (deref actual-type) name)))
-                  ;; Catch Option passed to non-Option parameter
+                  ;; Catch Option passed to non-Option parameter.
+                  ;; The kind, not just the name: an Option ALIAS is named whatever
+                  ;; the user called it, so (type MaybeInt (Option Int)) failed a
+                  ;; test that only looked for an "Option_" prefix and reported
+                  ;; "expected MaybeInt, got Option_T" for a correct call.
                   (when (and (or (string-eq actual-name "Option_T")
                                  (starts-with actual-name "Option_"))
-                             (not (starts-with expected-name "Option_")))
+                             (not (starts-with expected-name "Option_"))
+                             (!= (. (deref expected-type) kind) 'rk-option))
                     (let ((parts (list-new arena String)))
                       (list-push parts "argument ")
                       (list-push parts (int-to-string arena (+ arg-idx 1)))
