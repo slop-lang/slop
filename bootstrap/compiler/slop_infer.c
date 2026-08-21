@@ -21,6 +21,7 @@ types_ResolvedType* infer_substitute_type_vars(slop_arena* arena, types_Resolved
 types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t line, int64_t col);
 uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_types_compatible_with_range(types_ResolvedType* a, types_ResolvedType* b);
+uint8_t infer_type_is_null_pointer(types_ResolvedType* t);
 types_ResolvedType* infer_unify_branch_types(env_TypeEnv* env, types_ResolvedType* a, types_ResolvedType* b, int64_t line, int64_t col);
 void infer_sexpr_set_resolved_type(types_SExpr* expr, types_ResolvedType* t);
 types_ResolvedType* infer_infer_expr(env_TypeEnv* env, types_SExpr* expr);
@@ -547,6 +548,10 @@ uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b) {
             return 1;
         } else if ((a_kind == types_ResolvedTypeKind_rk_typevar) || (b_kind == types_ResolvedTypeKind_rk_typevar)) {
             return 1;
+        } else if (string_eq(a_name, SLOP_STR("<nil>")) && (b_kind == types_ResolvedTypeKind_rk_ptr)) {
+            return 1;
+        } else if (string_eq(b_name, SLOP_STR("<nil>")) && (a_kind == types_ResolvedTypeKind_rk_ptr)) {
+            return 1;
         } else if (string_eq(a_name, SLOP_STR("T")) || string_eq(b_name, SLOP_STR("T"))) {
             return 1;
         } else if ((a_kind == types_ResolvedTypeKind_rk_option) && (b_kind == types_ResolvedTypeKind_rk_option)) {
@@ -595,6 +600,11 @@ uint8_t infer_types_compatible_with_range(types_ResolvedType* a, types_ResolvedT
     }
 }
 
+uint8_t infer_type_is_null_pointer(types_ResolvedType* t) {
+    SLOP_PRE(((t != NULL)), "(!= t nil)");
+    return string_eq((*t).name, SLOP_STR("<nil>"));
+}
+
 types_ResolvedType* infer_unify_branch_types(env_TypeEnv* env, types_ResolvedType* a, types_ResolvedType* b, int64_t line, int64_t col) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((a != NULL)), "(!= a nil)");
@@ -605,14 +615,22 @@ types_ResolvedType* infer_unify_branch_types(env_TypeEnv* env, types_ResolvedTyp
         if ((*b).kind == types_ResolvedTypeKind_rk_never) {
             return a;
         } else {
-            if (infer_types_equal(a, b)) {
-                return a;
+            if (infer_type_is_null_pointer(a) && ((*b).kind == types_ResolvedTypeKind_rk_ptr)) {
+                return b;
             } else {
-                {
-                    __auto_type arena = env_env_arena(env);
-                    __auto_type msg = string_concat(arena, SLOP_STR("Branch types differ: "), string_concat(arena, (*a).name, string_concat(arena, SLOP_STR(" vs "), (*b).name)));
-                    env_env_add_warning(env, msg, line, col);
+                if (infer_type_is_null_pointer(b) && ((*a).kind == types_ResolvedTypeKind_rk_ptr)) {
                     return a;
+                } else {
+                    if (infer_types_equal(a, b)) {
+                        return a;
+                    } else {
+                        {
+                            __auto_type arena = env_env_arena(env);
+                            __auto_type msg = string_concat(arena, SLOP_STR("Branch types differ: "), string_concat(arena, (*a).name, string_concat(arena, SLOP_STR(" vs "), (*b).name)));
+                            env_env_add_warning(env, msg, line, col);
+                            return a;
+                        }
+                    }
                 }
             }
         }
@@ -677,7 +695,9 @@ types_ResolvedType* infer_infer_expr_inner(env_TypeEnv* env, types_SExpr* expr) 
                     __auto_type name = sym.name;
                     if (string_eq(name, SLOP_STR("true")) || string_eq(name, SLOP_STR("false"))) {
                         return env_env_get_bool_type(env);
-                    } else if (string_eq(name, SLOP_STR("nil")) || string_eq(name, SLOP_STR("unit"))) {
+                    } else if (string_eq(name, SLOP_STR("nil"))) {
+                        return env_env_get_null_type(env);
+                    } else if (string_eq(name, SLOP_STR("unit"))) {
                         return env_env_get_unit_type(env);
                     } else if (string_eq(name, SLOP_STR("none"))) {
                         return env_env_make_option_type(env, NULL);
@@ -2020,52 +2040,60 @@ types_ResolvedType* infer_check_field_exists(env_TypeEnv* env, types_ResolvedTyp
     {
         __auto_type type_name = (*obj_type).name;
         __auto_type arena = env_env_arena(env);
-        if (types_resolved_type_is_record(obj_type)) {
-            __auto_type _mv_1743 = types_resolved_type_get_field_type(obj_type, field_name);
-            if (_mv_1743.has_value) {
-                __auto_type field_type = _mv_1743.value;
-                return field_type;
-            } else if (!_mv_1743.has_value) {
-                {
-                    __auto_type msg = string_concat(arena, SLOP_STR("Record '"), string_concat(arena, type_name, string_concat(arena, SLOP_STR("' has no field '"), string_concat(arena, field_name, SLOP_STR("'")))));
-                    env_env_add_error(env, msg, line, col);
-                    return env_env_get_unit_type(env);
-                }
+        if (infer_type_is_null_pointer(obj_type)) {
+            {
+                __auto_type msg = string_concat(arena, SLOP_STR("cannot access field '"), string_concat(arena, field_name, SLOP_STR("' on nil")));
+                env_env_add_error(env, msg, line, col);
+                return env_env_get_unknown_type(env);
             }
-            SLOP_UNREACHABLE();
         } else {
-            if (string_eq(type_name, SLOP_STR("T"))) {
-                return env_env_get_generic_type(env);
-            } else {
-                if (string_eq(type_name, SLOP_STR("String"))) {
-                    if (string_eq(field_name, SLOP_STR("data"))) {
-                        return env_env_get_int_type(env);
-                    } else if (string_eq(field_name, SLOP_STR("len"))) {
-                        return env_env_get_int_type(env);
-                    } else {
-                        return env_env_get_unknown_type(env);
+            if (types_resolved_type_is_record(obj_type)) {
+                __auto_type _mv_1743 = types_resolved_type_get_field_type(obj_type, field_name);
+                if (_mv_1743.has_value) {
+                    __auto_type field_type = _mv_1743.value;
+                    return field_type;
+                } else if (!_mv_1743.has_value) {
+                    {
+                        __auto_type msg = string_concat(arena, SLOP_STR("Record '"), string_concat(arena, type_name, string_concat(arena, SLOP_STR("' has no field '"), string_concat(arena, field_name, SLOP_STR("'")))));
+                        env_env_add_error(env, msg, line, col);
+                        return env_env_get_unit_type(env);
                     }
+                }
+                SLOP_UNREACHABLE();
+            } else {
+                if (string_eq(type_name, SLOP_STR("T"))) {
+                    return env_env_get_generic_type(env);
                 } else {
-                    if (string_eq(type_name, SLOP_STR("Unknown"))) {
-                        return env_env_get_unknown_type(env);
-                    } else {
-                        if (types_resolved_type_is_pointer(obj_type)) {
-                            __auto_type _mv_1744 = (*obj_type).inner_type;
-                            if (_mv_1744.has_value) {
-                                __auto_type inner_type = _mv_1744.value;
-                                return infer_check_field_exists(env, inner_type, field_name, line, col);
-                            } else if (!_mv_1744.has_value) {
-                                return env_env_get_unknown_type(env);
-                            }
-                            SLOP_UNREACHABLE();
+                    if (string_eq(type_name, SLOP_STR("String"))) {
+                        if (string_eq(field_name, SLOP_STR("data"))) {
+                            return env_env_get_int_type(env);
+                        } else if (string_eq(field_name, SLOP_STR("len"))) {
+                            return env_env_get_int_type(env);
                         } else {
-                            if (string_eq(type_name, SLOP_STR("Chan")) || string_eq(type_name, SLOP_STR("Thread"))) {
-                                return env_env_get_unknown_type(env);
-                            } else {
-                                {
-                                    __auto_type msg = string_concat(arena, SLOP_STR("Cannot access field '"), string_concat(arena, field_name, string_concat(arena, SLOP_STR("' on non-record type '"), string_concat(arena, type_name, SLOP_STR("'")))));
-                                    env_env_add_error(env, msg, line, col);
+                            return env_env_get_unknown_type(env);
+                        }
+                    } else {
+                        if (string_eq(type_name, SLOP_STR("Unknown"))) {
+                            return env_env_get_unknown_type(env);
+                        } else {
+                            if (types_resolved_type_is_pointer(obj_type)) {
+                                __auto_type _mv_1744 = (*obj_type).inner_type;
+                                if (_mv_1744.has_value) {
+                                    __auto_type inner_type = _mv_1744.value;
+                                    return infer_check_field_exists(env, inner_type, field_name, line, col);
+                                } else if (!_mv_1744.has_value) {
                                     return env_env_get_unknown_type(env);
+                                }
+                                SLOP_UNREACHABLE();
+                            } else {
+                                if (string_eq(type_name, SLOP_STR("Chan")) || string_eq(type_name, SLOP_STR("Thread"))) {
+                                    return env_env_get_unknown_type(env);
+                                } else {
+                                    {
+                                        __auto_type msg = string_concat(arena, SLOP_STR("Cannot access field '"), string_concat(arena, field_name, string_concat(arena, SLOP_STR("' on non-record type '"), string_concat(arena, type_name, SLOP_STR("'")))));
+                                        env_env_add_error(env, msg, line, col);
+                                        return env_env_get_unknown_type(env);
+                                    }
                                 }
                             }
                         }
@@ -2590,7 +2618,7 @@ void infer_check_return_expr(env_TypeEnv* env, types_SExpr* ret_expr, slop_strin
             {
                 __auto_type declared_name = ret_sym.name;
                 __auto_type inferred_name = (*inferred_type).name;
-                if (!(string_eq(declared_name, inferred_name)) && (infer_checker_is_primitive_type(declared_name) && infer_checker_is_primitive_type(inferred_name))) {
+                if (!(string_eq(declared_name, inferred_name)) && ((infer_checker_is_primitive_type(declared_name) && infer_checker_is_primitive_type(inferred_name)) || (string_eq(inferred_name, SLOP_STR("<nil>")) && infer_checker_is_primitive_type(declared_name)))) {
                     {
                         __auto_type arena = env_env_arena(env);
                         __auto_type msg = string_concat(arena, SLOP_STR("return value of '"), string_concat(arena, fn_name, string_concat(arena, SLOP_STR("': expected "), string_concat(arena, declared_name, string_concat(arena, SLOP_STR(", got "), inferred_name)))));

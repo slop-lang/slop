@@ -1,0 +1,48 @@
+;; Fixture for the `nil` literal's type.
+;;
+;; infer-expr typed `nil` and `unit` identically, both as Unit. `nil` is
+;; the null pointer, so every `((none) nil)` arm read as Unit and
+;; collided with the pointer the other arm produced:
+;;
+;;   Branch types differ: Ptr_ResolvedType vs Unit
+;;
+;; That was the bulk of the checker's warning noise, and it was noise
+;; rather than signal -- which matters, because a diagnostic channel
+;; that cries wolf is one everybody learns to scroll past.
+;;
+;; `nil` now has its own type (NullPtr, kind rk-ptr, no pointee) and
+;; types-equal lets it stand in for any (Ptr T), the same way it already
+;; lets a type variable stand in for anything.
+;;
+;; Every form here is valid and must check CLEAN.
+(module nil-pointer-type
+
+  (type Node (record (value Int)))
+
+  (fn maybe-node ((flag Bool) (n (Ptr Node)))
+    (@intent "a pointer-returning if with a nil arm - the shape that was noisy")
+    (@spec ((Bool (Ptr Node)) -> (Ptr Node)))
+    (if flag n nil))
+
+  (fn from-match ((flag Bool) (n (Ptr Node)))
+    (@intent "a nil arm in a match, the shape lib/ writes everywhere")
+    (@spec ((Bool (Ptr Node)) -> (Ptr Node)))
+    (match flag
+      (true n)
+      (false nil)))
+
+  ;; NOT covered here: `(match o ((some p) p) ((none) nil))` where o is a
+  ;; parameter of type (Option (Ptr Node)). That shape still warns, but for an
+  ;; unrelated reason -- binding `some`'s payload from a parameter-typed Option
+  ;; yields Unknown, which warns identically with no nil involved at all. Filed
+  ;; separately; asserting silence on it here would be testing someone else's bug.
+
+  (fn compares ((n (Ptr Node)))
+    (@intent "nil in a comparison, the other place it appears constantly")
+    (@spec (((Ptr Node)) -> Bool))
+    (!= n nil))
+
+  (fn main ()
+    (@intent "Unused entry point; the fixture is never run")
+    (@spec (() -> Int))
+    0))

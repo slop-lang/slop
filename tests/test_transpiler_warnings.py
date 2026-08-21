@@ -310,3 +310,135 @@ class TestFloatLiteralTyping:
         # Nothing else should fire either -- every form in the fixture is valid.
         assert ": error:" not in combined, combined
         assert ": warning:" not in combined, combined
+
+
+class TestNilPointerType:
+    """`nil` is the null pointer, not Unit.
+
+    infer-expr typed `nil` and `unit` identically, so every `((none) nil)` arm
+    read as Unit and collided with the pointer the sibling arm produced. That
+    was the bulk of the checker's warning volume, and it was noise rather than
+    signal -- which matters, because a channel that cries wolf gets ignored.
+    """
+
+    def test_nil_in_pointer_position_checks_clean(self):
+        rc, stdout, stderr = slop_check("fixtures/test_nil_pointer_type.slop")
+        combined = stdout + stderr
+        assert "Branch types differ" not in combined, combined
+        assert ": error:" not in combined, combined
+        assert ": warning:" not in combined, combined
+
+    def test_a_real_branch_mismatch_still_warns(self, tmp_path):
+        """A Unit arm in value position is a real bug and must keep warning.
+
+        `(if flag 1 (println "x"))` in an Int-returning function emits
+        `return printf(...)` as the result. Most `Branch types differ: * vs Unit`
+        warnings are benign statement-position noise, so quieting the class by
+        ignoring any Unit arm is tempting -- and would hide exactly this. Left
+        as a guard against that shortcut.
+        """
+        src = tmp_path / "unitbranch.slop"
+        src.write_text(
+            "(module unitbranch\n"
+            "  (fn bad ((flag Bool))\n"
+            '    (@intent "value position with a Unit arm")\n'
+            "    (@spec ((Bool) -> Int))\n"
+            '    (if flag 1 (println "x")))\n'
+            "  (fn main () (@spec (() -> Int)) :c-name \"main\" (bad true)))\n"
+        )
+        result = subprocess.run(
+            ["uv", "run", "slop", "check", str(src)],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        combined = result.stdout + result.stderr
+        assert "Branch types differ" in combined, combined
+
+    def test_nil_arm_first_keeps_the_pointee(self, tmp_path):
+        """Unifying nil with a pointer must keep the pointer, whichever arm is first.
+
+        Returning the NullPtr side erases the pointee, so a later `(. p field)`
+        infers Unknown and passes unchecked -- an order-dependent blind spot.
+        """
+        src = tmp_path / "nilfirst.slop"
+        src.write_text(
+            "(module nilfirst\n"
+            "  (type Node (record (value Int)))\n"
+            "  (fn nil-first ((flag Bool) (n (Ptr Node)))\n"
+            '    (@intent "nil arm first")\n'
+            "    (@spec ((Bool (Ptr Node)) -> Int))\n"
+            "    (let ((p (if flag nil n)))\n"
+            "      (. p missing)))\n"
+            "  (fn nil-second ((flag Bool) (n (Ptr Node)))\n"
+            '    (@intent "nil arm second")\n'
+            "    (@spec ((Bool (Ptr Node)) -> Int))\n"
+            "    (let ((p (if flag n nil)))\n"
+            "      (. p missing)))\n"
+            "  (fn main () (@spec (() -> Int)) :c-name \"main\" 0))\n"
+        )
+        result = subprocess.run(
+            ["uv", "run", "slop", "check", str(src)],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        combined = result.stdout + result.stderr
+        # Both orderings must report the bad field, not just one.
+        assert combined.count("has no field 'missing'") == 2, combined
+
+    def test_field_access_on_nil_is_rejected(self, tmp_path):
+        """nil has no pointee, so it has no fields -- catch it before C does."""
+        src = tmp_path / "nilfield.slop"
+        src.write_text(
+            "(module nilfield\n"
+            "  (fn bad () (@intent \"field on nil\") (@spec (() -> Int)) (. nil value))\n"
+            "  (fn main () (@spec (() -> Int)) :c-name \"main\" 0))\n"
+        )
+        result = subprocess.run(
+            ["uv", "run", "slop", "check", str(src)],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        combined = result.stdout + result.stderr
+        assert "cannot access field 'value' on nil" in combined, combined
+
+    def test_nil_against_a_non_pointer_still_warns(self, tmp_path):
+        """nil only stands in for a pointer, never for an arbitrary type.
+
+        `(if flag nil 1)` must not be silently inferred as Int -- the generated
+        C would then fail on a pointer-to-integer conversion.
+        """
+        src = tmp_path / "nilint.slop"
+        src.write_text(
+            "(module nilint\n"
+            "  (fn f ((flag Bool))\n"
+            '    (@intent "nil against a non-pointer")\n'
+            "    (@spec ((Bool) -> Int))\n"
+            "    (if flag nil 1))\n"
+            "  (fn main () (@spec (() -> Int)) :c-name \"main\" 0))\n"
+        )
+        result = subprocess.run(
+            ["uv", "run", "slop", "check", str(src)],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        combined = result.stdout + result.stderr
+        assert "Branch types differ" in combined, combined
+
+    def test_nil_body_against_a_non_pointer_return_is_rejected(self, tmp_path):
+        """A `nil` body must not satisfy a non-pointer @spec.
+
+        The null type is not a primitive, so the return check -- which fires only
+        when both sides are -- skipped it entirely and let `return NULL;` reach
+        Clang's pointer-to-integer error.
+        """
+        src = tmp_path / "nilret.slop"
+        src.write_text(
+            "(module nilret\n"
+            "  (fn bad ()\n"
+            '    (@intent "returns nil but declares Int")\n'
+            "    (@spec (() -> Int))\n"
+            "    nil)\n"
+            "  (fn main () (@spec (() -> Int)) :c-name \"main\" 0))\n"
+        )
+        result = subprocess.run(
+            ["uv", "run", "slop", "check", str(src)],
+            capture_output=True, text=True, cwd=str(REPO_ROOT),
+        )
+        combined = result.stdout + result.stderr
+        assert "expected Int, got <nil>" in combined, combined
