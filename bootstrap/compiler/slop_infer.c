@@ -548,7 +548,11 @@ uint8_t infer_container_inners_equal(types_ResolvedType* a, types_ResolvedType* 
         __auto_type _mv_1671 = (*b).inner_type;
         if (_mv_1671.has_value) {
             __auto_type b_inner = _mv_1671.value;
-            return infer_types_equal(a_inner, b_inner);
+            if ((a_inner == a) || (b_inner == b)) {
+                return string_eq((*a).name, (*b).name);
+            } else {
+                return infer_types_equal(a_inner, b_inner);
+            }
         } else if (!_mv_1671.has_value) {
             return 1;
         }
@@ -567,7 +571,9 @@ uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b) {
         __auto_type b_kind = (*b).kind;
         __auto_type a_name = (*a).name;
         __auto_type b_name = (*b).name;
-        if ((a_kind == types_ResolvedTypeKind_rk_option) && (b_kind == types_ResolvedTypeKind_rk_option)) {
+        if (a == b) {
+            return 1;
+        } else if ((a_kind == types_ResolvedTypeKind_rk_option) && (b_kind == types_ResolvedTypeKind_rk_option)) {
             return ((string_eq(a_name, SLOP_STR("Option_T"))) || (string_eq(b_name, SLOP_STR("Option_T"))) || (infer_container_inners_equal(a, b)));
         } else if ((a_kind == types_ResolvedTypeKind_rk_list) && (b_kind == types_ResolvedTypeKind_rk_list)) {
             return infer_container_inners_equal(a, b);

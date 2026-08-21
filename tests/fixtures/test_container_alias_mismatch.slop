@@ -17,6 +17,12 @@
   ;; that fell back to the same-name shortcut one level down accepted this.
   (type NestedInts (List (List Int)))
 
+  ;; Self-referential. Its element type IS itself, so comparing it with anything
+  ;; that reaches the container rule descends forever unless the cycle is caught
+  ;; -- the checker hung rather than answering. The value of this case is that it
+  ;; TERMINATES; the diagnostic it produces is the same one v0.2.0 produces.
+  (type Recursive (List Recursive))
+
   (fn total ((xs Ints))
     (@intent "Expects a (List Int)")
     (@spec ((Ints) -> Int))
@@ -46,6 +52,18 @@
     (with-arena 4096
       (let ((outer (list-new arena (List String))))
         (nested-total outer))))
+
+  (fn recursive-size ((r Recursive))
+    (@intent "A self-referential container alias must not hang the checker")
+    (@spec ((Recursive) -> Int))
+    (list-len r))
+
+  (fn touch-recursive ()
+    (@intent "Force the comparison that used to recurse forever")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((xs (list-new arena Recursive)))
+        (recursive-size xs))))
 
   (fn bad-option-payload ()
     (@intent "An (Option String) is not an (Option Int)")

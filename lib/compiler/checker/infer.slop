@@ -456,7 +456,15 @@
     (match (. (deref a) inner-type)
       ((some a-inner)
         (match (. (deref b) inner-type)
-          ((some b-inner) (types-equal a-inner b-inner))
+          ((some b-inner)
+            ;; Second half of the same cycle guard. The identity check in
+            ;; types-equal catches a type compared with itself; this catches two
+            ;; distinct objects that are each self-referential, which is what a
+            ;; cross-module (type Recursive (List Recursive)) produces. Compare
+            ;; them by name at that point rather than descending again.
+            (if (or (== a-inner a) (== b-inner b))
+              (string-eq (. (deref a) name) (. (deref b) name))
+              (types-equal a-inner b-inner)))
           ((none) true)))
       ((none) true)))
 
@@ -471,6 +479,12 @@
           (a-name (. (deref a) name))
           (b-name (. (deref b) name)))
       (cond
+        ;; The same type object. Cheap, but load-bearing: a self-referential
+        ;; alias like (type Recursive (List Recursive)) has itself as its element,
+        ;; so without this the container rule below descends into it forever and
+        ;; the checker hangs rather than answering.
+        ((== a b) true)
+
         ;; Containers are compared by element type FIRST, ahead of the same-name
         ;; shortcut below. Every anonymous list resolves to the bare name "List",
         ;; so two of them comparing equal on the name alone is exactly the

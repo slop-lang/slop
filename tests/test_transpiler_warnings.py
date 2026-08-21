@@ -608,3 +608,16 @@ class TestContainerTypeAliases:
         # recursion falling back to the same-name shortcut one level down
         # accepted a (List (List String)) for a (List (List Int)).
         assert "to 'test-container-alias-mismatch:nested-total'" in combined, combined
+
+    def test_self_referential_alias_terminates(self):
+        """(type Recursive (List Recursive)) must not hang the checker.
+
+        Its element type is itself, so comparing it with anything that reaches
+        the container rule descends forever without a cycle guard. What matters
+        here is that the check returns at all -- the diagnostic it produces is
+        the same one v0.2.0 produces. If the guard regresses this test hangs
+        rather than failing, which is itself the signal.
+        """
+        rc, stdout, stderr = slop_check("fixtures/test_container_alias_mismatch.slop")
+        combined = stdout + stderr
+        assert "to 'test-container-alias-mismatch:recursive-size'" in combined, combined
