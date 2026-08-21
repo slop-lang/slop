@@ -2,6 +2,14 @@
 
 `slop.rb` is the **canonical** Homebrew formula. The live tap is a **separate
 repo** — `slop-lang/homebrew-slop` — that mirrors this file at `Formula/slop.rb`.
+
+Nothing enforces that, and the two have drifted before: this copy sat at v0.1.1
+through the entire v0.1.2 release. Update the tap by **copying** this file, never
+by editing both, and check before releasing:
+
+```bash
+diff packaging/homebrew/slop.rb ../homebrew-slop/Formula/slop.rb
+```
 A build-from-source formula compiles on the user's machine, so the binaries are
 never quarantined: **no Developer ID signing or notarization is required.**
 
@@ -19,13 +27,13 @@ brew install slop
    GitHub source tarball; no GitHub Release or notarization needed):
 
    ```bash
-   git tag v0.1.1 && git push origin v0.1.1
+   git tag v0.2.0 && git push origin v0.2.0
    ```
 
 2. **Compute the source tarball sha256** (only valid after the tag is pushed):
 
    ```bash
-   curl -sL https://github.com/slop-lang/slop/archive/refs/tags/v0.1.1.tar.gz | shasum -a 256
+   curl -sL https://github.com/slop-lang/slop/archive/refs/tags/v0.2.0.tar.gz | shasum -a 256
    ```
 
    Put the digest in `slop.rb` (`sha256 "..."` under `url`), and bump the `url`
@@ -49,12 +57,12 @@ brew install slop
    git clone https://github.com/slop-lang/homebrew-slop.git
    mkdir -p homebrew-slop/Formula
    cp packaging/homebrew/slop.rb homebrew-slop/Formula/slop.rb   # with real digests
-   cd homebrew-slop && git add Formula/slop.rb && git commit -m "slop 0.1.1" && git push
+   cd homebrew-slop && git add Formula/slop.rb && git commit -m "slop 0.2.0" && git push
    ```
 
 ## Local testing before publishing
 
-Requires the `v0.1.1` tag + correct `sha256` (the build downloads `url`).
+Requires the `v0.2.0` tag + correct `sha256` (the build downloads `url`).
 
 `brew style` runs on the file directly, but **Homebrew 6.0+ refuses to install a
 bare formula path** — formulae must live in a tap. Use a throwaway local tap (a
@@ -69,8 +77,8 @@ cp packaging/homebrew/slop.rb \
 
 brew install --build-from-source localtest/slop/slop
 brew test localtest/slop/slop
-slop --version            # slop 0.1.1
-slop-compiler --version   # slop-compiler 0.1.1
+slop --version            # slop 0.2.0
+slop-compiler --version   # slop-compiler 0.2.0
 slop paths                # SLOP_HOME / stdlib_dir / bin_dir resolve under the keg
 
 # cleanup
