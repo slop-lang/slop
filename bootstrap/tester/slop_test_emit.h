@@ -20,11 +20,13 @@ typedef struct test_emit_CompareInfo test_emit_CompareInfo;
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
 #ifndef SLOP_LIST_EXTRACT_TESTCASE_PTR_DEFINED
 #define SLOP_LIST_EXTRACT_TESTCASE_PTR_DEFINED
+#define SLOP_LIST_EXTRACT_TESTCASE_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(extract_TestCase*, slop_list_extract_TestCase_ptr)
 #endif
 
@@ -40,11 +42,13 @@ SLOP_OPTION_DEFINE(extract_TestCase*, slop_option_extract_TestCase_ptr)
 
 #ifndef SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
 #endif
 
 #ifndef SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(type_extract_TstFieldEntry, slop_list_type_extract_TstFieldEntry)
 #endif
 

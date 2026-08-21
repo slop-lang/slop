@@ -11,11 +11,13 @@
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
 #ifndef SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_DEFINED
 #define SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_DEFINED
+#define SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_ResolvedType*, slop_list_types_ResolvedType_ptr)
 #endif
 
@@ -31,6 +33,7 @@ SLOP_OPTION_DEFINE(types_ResolvedType*, slop_option_types_ResolvedType_ptr)
 
 #ifndef SLOP_LIST_TYPES_PARAMINFO_DEFINED
 #define SLOP_LIST_TYPES_PARAMINFO_DEFINED
+#define SLOP_LIST_TYPES_PARAMINFO_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_ParamInfo, slop_list_types_ParamInfo)
 #endif
 

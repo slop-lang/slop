@@ -21,11 +21,13 @@ typedef struct transpiler_PayloadSlot transpiler_PayloadSlot;
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
 #ifndef SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
 #define SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
+#define SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_FuncParamType*, slop_list_context_FuncParamType_ptr)
 #endif
 
@@ -41,11 +43,13 @@ SLOP_OPTION_DEFINE(context_FuncParamType*, slop_option_context_FuncParamType_ptr
 
 #ifndef SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
 #define SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_UnionVariantEntry, slop_list_context_UnionVariantEntry)
 #endif
 
 #ifndef SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
 #define SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_FIELDENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_FieldEntry, slop_list_context_FieldEntry)
 #endif
 
@@ -96,6 +100,7 @@ SLOP_OPTION_DEFINE(transpiler_PayloadSlot, slop_option_transpiler_PayloadSlot)
 
 #ifndef SLOP_LIST_TRANSPILER_PAYLOADSLOT_DEFINED
 #define SLOP_LIST_TRANSPILER_PAYLOADSLOT_DEFINED
+#define SLOP_LIST_TRANSPILER_PAYLOADSLOT_IMPL_DEFINED
 SLOP_LIST_DEFINE(transpiler_PayloadSlot, slop_list_transpiler_PayloadSlot)
 #endif
 

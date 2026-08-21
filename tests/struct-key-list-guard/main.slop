@@ -6,6 +6,7 @@
   (import keyterm (Term Tag make-iri make-blank term-eq tag-eq tag-list-len))
   (import keylist (count-terms))
   (import keyindex (term-list distinct-terms))
+  (import keynest (nested-total))
 
   (fn main ()
     (@intent "Entry point")
@@ -38,6 +39,10 @@
         (if (== (distinct-terms arena) 2)
           (println "shape B cross-module set: PASS")
           (do (println "shape B cross-module set: FAIL")
+              (set! failures (+ failures 1))))
+        (if (== (nested-total arena) 2)
+          (println "nested (List (List Term)): PASS")
+          (do (println "nested (List (List Term)): FAIL")
               (set! failures (+ failures 1))))
         (if (== (tag-list-len arena) 2)
           (println "in-module list control: PASS")

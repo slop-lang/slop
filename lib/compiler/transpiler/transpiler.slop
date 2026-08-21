@@ -3539,9 +3539,15 @@
                   ;; land in one translation unit the C preprocessor is the only thing
                   ;; left holding them apart and the guard names have to agree.
                   (when (not (ctx-is-type-emitted ctx list-c-name))
-                    (let ((list-guard (ctx-str3 ctx (uppercase-name ctx list-c-name) "_DEFINED" "")))
+                    (let ((list-guard (ctx-str3 ctx (uppercase-name ctx list-c-name) "_DEFINED" ""))
+                          (impl-guard (ctx-str3 ctx (uppercase-name ctx list-c-name) "_IMPL_DEFINED" "")))
                       (ctx-emit-header ctx (ctx-str ctx "#ifndef " list-guard))
                       (ctx-emit-header ctx (ctx-str ctx "#define " list-guard))
+                      ;; SLOP_LIST_DEFINE expands to DECLARE + IMPL, so it satisfies the
+                      ;; IMPL-only guard too. Claiming it keeps a cycle-broken module --
+                      ;; which emits DECLARE and IMPL under separate guards -- from adding
+                      ;; a second IMPL when its header happens to follow this one.
+                      (ctx-emit-header ctx (ctx-str ctx "#define " impl-guard))
                       (ctx-emit-header ctx (ctx-str5 ctx "SLOP_LIST_DEFINE(" c-type ", " list-c-name ")"))
                       (ctx-emit-header ctx "#endif"))
                     (ctx-mark-type-emitted ctx list-c-name))
@@ -3595,9 +3601,14 @@
               (do))
             ;; Not emitted at all — full define (struct + impl)
             (else
-              (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-name) "_DEFINED" "")))
+              (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-name) "_DEFINED" ""))
+                    (impl-guard (ctx-str3 ctx (uppercase-name ctx c-name) "_IMPL_DEFINED" "")))
                 (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
                 (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+                ;; Same reasoning as the struct-key pass: DEFINE covers IMPL, so claim the
+                ;; IMPL guard here too rather than depending on this header being included
+                ;; before a cycle-broken one.
+                (ctx-emit-header ctx (ctx-str ctx "#define " impl-guard))
                 (ctx-emit-header ctx (ctx-str5 ctx "SLOP_LIST_DEFINE(" elem-type ", " c-name ")"))
                 (ctx-emit-header ctx "#endif")
                 (ctx-emit-header ctx "")

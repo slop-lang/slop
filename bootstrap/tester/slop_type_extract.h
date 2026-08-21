@@ -24,11 +24,13 @@ typedef enum {
 
 #ifndef SLOP_LIST_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_TSTTYPEENTRY_PTR_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_TSTTYPEENTRY_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(type_extract_TstTypeEntry*, slop_list_type_extract_TstTypeEntry_ptr)
 #endif
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
@@ -55,6 +57,7 @@ SLOP_OPTION_DEFINE(type_extract_TstFieldEntry, slop_option_type_extract_TstField
 
 #ifndef SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(type_extract_TstFieldEntry, slop_list_type_extract_TstFieldEntry)
 #endif
 
@@ -77,6 +80,7 @@ SLOP_OPTION_DEFINE(type_extract_VariantEntry, slop_option_type_extract_VariantEn
 
 #ifndef SLOP_LIST_TYPE_EXTRACT_VARIANTENTRY_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_VARIANTENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_VARIANTENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(type_extract_VariantEntry, slop_list_type_extract_VariantEntry)
 #endif
 
@@ -93,6 +97,7 @@ SLOP_OPTION_DEFINE(type_extract_EnumValueEntry, slop_option_type_extract_EnumVal
 
 #ifndef SLOP_LIST_TYPE_EXTRACT_ENUMVALUEENTRY_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_ENUMVALUEENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_ENUMVALUEENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(type_extract_EnumValueEntry, slop_list_type_extract_EnumValueEntry)
 #endif
 
@@ -109,6 +114,7 @@ SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntr
 
 #ifndef SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
 #define SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_IMPORTENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(type_extract_ImportEntry, slop_list_type_extract_ImportEntry)
 #endif
 

@@ -11,11 +11,13 @@ typedef struct extract_TestCase extract_TestCase;
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
 #ifndef SLOP_LIST_EXTRACT_TESTCASE_PTR_DEFINED
 #define SLOP_LIST_EXTRACT_TESTCASE_PTR_DEFINED
+#define SLOP_LIST_EXTRACT_TESTCASE_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(extract_TestCase*, slop_list_extract_TestCase_ptr)
 #endif
 
