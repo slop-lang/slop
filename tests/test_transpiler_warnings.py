@@ -621,3 +621,7 @@ class TestContainerTypeAliases:
         rc, stdout, stderr = slop_check("fixtures/test_container_alias_mismatch.slop")
         combined = stdout + stderr
         assert "to 'test-container-alias-mismatch:recursive-size'" in combined, combined
+        # Mutually recursive, which a self-reference check does not catch:
+        # comparing MutA with MutB alternates between the two pairs and neither
+        # side is ever its own element.
+        assert "to 'test-container-alias-mismatch:mut-size'" in combined, combined

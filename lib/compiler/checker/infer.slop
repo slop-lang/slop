@@ -444,29 +444,64 @@
   ;; Type Comparison
   ;; ============================================================
 
+  (fn is-unwrappable-container ((t (Ptr ResolvedType)))
+    (@intent "A container whose element type this comparison walks into")
+    (@spec (((Ptr ResolvedType)) -> Bool))
+    (@pure)
+    (@pre (!= t nil))
+    (let ((kind (. (deref t) kind)))
+      (or (== kind 'rk-list) (== kind 'rk-option))))
+
   (fn container-inners-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
-    (@intent "Compare two containers by element type, permissively when one is unrecorded")
+    (@intent "Compare two containers by element type, without recursing on a cycle")
     (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
     (@pre (!= a nil))
     (@pre (!= b nil))
-    ;; An absent inner means the checker never recorded one, not that the element
-    ;; type differs -- several alias and generic paths leave it unset. Answering
-    ;; true there keeps this from rejecting calls that are fine, which is the same
-    ;; side the generic sentinels above err on.
-    (match (. (deref a) inner-type)
-      ((some a-inner)
-        (match (. (deref b) inner-type)
-          ((some b-inner)
-            ;; Second half of the same cycle guard. The identity check in
-            ;; types-equal catches a type compared with itself; this catches two
-            ;; distinct objects that are each self-referential, which is what a
-            ;; cross-module (type Recursive (List Recursive)) produces. Compare
-            ;; them by name at that point rather than descending again.
-            (if (or (== a-inner a) (== b-inner b))
-              (string-eq (. (deref a) name) (. (deref b) name))
-              (types-equal a-inner b-inner)))
-          ((none) true)))
-      ((none) true)))
+    ;; Iterative rather than recursive, and that is the point. Container aliases
+    ;; can form cycles of any length -- (type A (List B)) with (type B (List A))
+    ;; alternates between the two pairs forever -- so a self-reference check
+    ;; catches only the one-node case and mutual recursion still hangs the
+    ;; checker. Unwrapping in a loop bounds the whole family at once.
+    ;;
+    ;; Only nested containers are unwrapped here. Once the element types are
+    ;; something else, types-equal settles them and cannot come back through this
+    ;; function, so that call is not part of any cycle.
+    ;;
+    ;; An absent element type means the checker never recorded one, not that the
+    ;; types differ -- several alias and generic paths leave it unset. Answering
+    ;; true there errs the same way the generic sentinels in types-equal do.
+    (let ((mut ca a)
+          (mut cb b)
+          (mut steps 0)
+          (mut done false)
+          (mut result true))
+      (while (and (not done) (< steps 32))
+        (match (. (deref ca) inner-type)
+          ((some a-inner)
+            (match (. (deref cb) inner-type)
+              ((some b-inner)
+                (if (and (is-unwrappable-container a-inner)
+                         (is-unwrappable-container b-inner)
+                         (== (. (deref a-inner) kind) (. (deref b-inner) kind))
+                         (!= a-inner ca)
+                         (!= b-inner cb))
+                  ;; Both sides nest another container of the same kind: step in.
+                  (do (set! ca a-inner)
+                      (set! cb b-inner)
+                      (set! steps (+ steps 1)))
+                  (do (set! result (if (or (== a-inner ca) (== b-inner cb))
+                                     ;; Self-referential: settle it by name here
+                                     ;; rather than descend into itself.
+                                     (string-eq (. (deref ca) name) (. (deref cb) name))
+                                     (types-equal a-inner b-inner)))
+                      (set! done true))))
+              ((none) (do (set! result true) (set! done true)))))
+          ((none) (do (set! result true) (set! done true)))))
+      ;; Ran out of steps, so the two are cycling past each other. Fall back to
+      ;; the names, which for a genuine cycle is the only finite answer.
+      (if done
+        result
+        (string-eq (. (deref ca) name) (. (deref cb) name)))))
 
   (fn types-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
     (@intent "Check if two types are equal, handling generics and aliases")

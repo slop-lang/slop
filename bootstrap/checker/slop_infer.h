@@ -51,6 +51,7 @@ slop_option_types_ResolvedType_ptr infer_find_binding(slop_list_string bind_name
 void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
 types_ResolvedType* infer_substitute_type_vars(slop_arena* arena, types_ResolvedType* t, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
 types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t line, int64_t col);
+uint8_t infer_is_unwrappable_container(types_ResolvedType* t);
 uint8_t infer_container_inners_equal(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_types_compatible_with_range(types_ResolvedType* a, types_ResolvedType* b);

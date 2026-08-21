@@ -19,6 +19,7 @@ slop_option_types_ResolvedType_ptr infer_find_binding(slop_list_string bind_name
 void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
 types_ResolvedType* infer_substitute_type_vars(slop_arena* arena, types_ResolvedType* t, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
 types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t line, int64_t col);
+uint8_t infer_is_unwrappable_container(types_ResolvedType* t);
 uint8_t infer_container_inners_equal(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_types_compatible_with_range(types_ResolvedType* a, types_ResolvedType* b);
@@ -539,28 +540,53 @@ types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature
     }
 }
 
+uint8_t infer_is_unwrappable_container(types_ResolvedType* t) {
+    SLOP_PRE(((t != NULL)), "(!= t nil)");
+    {
+        __auto_type kind = (*t).kind;
+        return ((kind == types_ResolvedTypeKind_rk_list) || (kind == types_ResolvedTypeKind_rk_option));
+    }
+}
+
 uint8_t infer_container_inners_equal(types_ResolvedType* a, types_ResolvedType* b) {
     SLOP_PRE(((a != NULL)), "(!= a nil)");
     SLOP_PRE(((b != NULL)), "(!= b nil)");
-    __auto_type _mv_258 = (*a).inner_type;
-    if (_mv_258.has_value) {
-        __auto_type a_inner = _mv_258.value;
-        __auto_type _mv_259 = (*b).inner_type;
-        if (_mv_259.has_value) {
-            __auto_type b_inner = _mv_259.value;
-            if ((a_inner == a) || (b_inner == b)) {
-                return string_eq((*a).name, (*b).name);
-            } else {
-                return infer_types_equal(a_inner, b_inner);
+    {
+        __auto_type ca = a;
+        __auto_type cb = b;
+        int64_t steps = 0;
+        uint8_t done = 0;
+        uint8_t result = 1;
+        while (!(done) && (steps < 32)) {
+            __auto_type _mv_258 = (*ca).inner_type;
+            if (_mv_258.has_value) {
+                __auto_type a_inner = _mv_258.value;
+                __auto_type _mv_259 = (*cb).inner_type;
+                if (_mv_259.has_value) {
+                    __auto_type b_inner = _mv_259.value;
+                    if ((infer_is_unwrappable_container(a_inner)) && (infer_is_unwrappable_container(b_inner)) && (((*a_inner).kind == (*b_inner).kind)) && ((a_inner != ca)) && ((b_inner != cb))) {
+                        ca = a_inner;
+                        cb = b_inner;
+                        steps = (steps + 1);
+                    } else {
+                        result = ((((a_inner == ca) || (b_inner == cb))) ? string_eq((*ca).name, (*cb).name) : infer_types_equal(a_inner, b_inner));
+                        done = 1;
+                    }
+                } else if (!_mv_259.has_value) {
+                    result = 1;
+                    done = 1;
+                }
+            } else if (!_mv_258.has_value) {
+                result = 1;
+                done = 1;
             }
-        } else if (!_mv_259.has_value) {
-            return 1;
         }
-        SLOP_UNREACHABLE();
-    } else if (!_mv_258.has_value) {
-        return 1;
+        if (done) {
+            return result;
+        } else {
+            return string_eq((*ca).name, (*cb).name);
+        }
     }
-    SLOP_UNREACHABLE();
 }
 
 uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b) {

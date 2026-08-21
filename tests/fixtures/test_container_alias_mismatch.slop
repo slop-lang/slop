@@ -23,6 +23,14 @@
   ;; TERMINATES; the diagnostic it produces is the same one v0.2.0 produces.
   (type Recursive (List Recursive))
 
+  ;; Mutually recursive, which a self-reference check does not catch: comparing
+  ;; MutA with MutB alternates between the two pairs, and neither side is ever
+  ;; its own element. This is why the comparison unwraps in a bounded loop rather
+  ;; than recursing.
+  (type MutA (List MutB))
+
+  (type MutB (List MutA))
+
   (fn total ((xs Ints))
     (@intent "Expects a (List Int)")
     (@spec ((Ints) -> Int))
@@ -64,6 +72,18 @@
     (with-arena 4096
       (let ((xs (list-new arena Recursive)))
         (recursive-size xs))))
+
+  (fn mut-size ((x MutA))
+    (@intent "A mutually recursive alias cycle must not hang the checker either")
+    (@spec ((MutA) -> Int))
+    (list-len x))
+
+  (fn touch-mutual ()
+    (@intent "Force the comparison that alternates between the pair")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((xs (list-new arena MutA)))
+        (mut-size xs))))
 
   (fn bad-option-payload ()
     (@intent "An (Option String) is not an (Option Int)")
