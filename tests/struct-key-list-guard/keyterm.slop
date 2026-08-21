@@ -1,0 +1,69 @@
+;; ============================================================
+;; Regression: a type registered as a struct-key type must emit its
+;; SLOP_LIST_DEFINE under the list's OWN include guard.
+;;
+;; emit-struct-key-types-header emits hash/eq and SLOP_LIST_DEFINE for every
+;; struct-key type. emit-single-list-type-header emits that same
+;; SLOP_LIST_DEFINE for any (List T). Within one module ctx-is-type-emitted
+;; stops the second one. Across modules it cannot -- each module gets a fresh
+;; context -- so once both headers reach one translation unit the #ifndef guard
+;; is the only thing holding them apart, and the struct-key path was relying on
+;; the enclosing <T>_HASH_EQ_DEFINED rather than SLOP_LIST_<T>_DEFINED.
+;;
+;; Since #89 an `==` on a record or union registers a struct-key type. So this
+;; module -- which has no Map, no Set and no (List Term) -- emits a list type
+;; for Term purely because term-eq compares two of them, and the importing
+;; module emits it again under the other name:
+;;
+;;   error: redefinition of 'slop_list_keyterm_Term_push'
+;;
+;; Three conditions have to coincide, which is why this takes three files: the
+;; struct-key registration here, NO (List Term) here (that would emit the
+;; correctly-guarded copy first and mask it), and a (List Term) in an importer.
+;; Found via slop-rdf, whose Term hit all three.
+;; ============================================================
+
+(module keyterm
+  (export IRI BlankNode Term Tag make-iri make-blank term-eq tag-eq tag-list-len)
+
+  (type IRI (record (value String)))
+
+  (type BlankNode (record (id Int)))
+
+  (type Term (union (term-iri IRI) (term-blank BlankNode)))
+
+  ;; Control case. Tag is registered as a struct-key type too, but it also has a
+  ;; (List Tag) right here, so the ordinary list path emits it first and the
+  ;; struct-key pass must skip it via ctx-is-type-emitted. This is the shape that
+  ;; kept working throughout, and it breaks this module on its own if the
+  ;; in-module interlock ever regresses into a double emission.
+  (type Tag (record (name String)))
+
+  (fn make-iri ((v String))
+    (@intent "Build an IRI term")
+    (@spec ((String) -> Term))
+    (term-iri (IRI v)))
+
+  (fn make-blank ((n Int))
+    (@intent "Build a blank node term")
+    (@spec ((Int) -> Term))
+    (term-blank (BlankNode n)))
+
+  (fn term-eq ((a Term) (b Term))
+    (@intent "Structural equality, which is what registers Term as a struct-key type")
+    (@spec ((Term Term) -> Bool))
+    (== a b))
+
+  (fn tag-eq ((a Tag) (b Tag))
+    (@intent "Same registration for the control type")
+    (@spec ((Tag Tag) -> Bool))
+    (== a b))
+
+  (fn tag-list-len ((arena Arena))
+    (@intent "A (List Tag) in the same module that registers Tag")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((xs (list-new arena Tag)))
+      (list-push xs (Tag "a"))
+      (list-push xs (Tag "b"))
+      (list-len xs))))

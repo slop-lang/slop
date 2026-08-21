@@ -81,11 +81,13 @@ typedef enum {
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
 #ifndef SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_DEFINED
 #define SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_DEFINED
+#define SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_ResolvedType*, slop_list_types_ResolvedType_ptr)
 #endif
 
@@ -208,6 +210,7 @@ SLOP_OPTION_DEFINE(types_FieldDef, slop_option_types_FieldDef)
 
 #ifndef SLOP_LIST_TYPES_FIELDDEF_DEFINED
 #define SLOP_LIST_TYPES_FIELDDEF_DEFINED
+#define SLOP_LIST_TYPES_FIELDDEF_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_FieldDef, slop_list_types_FieldDef)
 #endif
 
@@ -229,6 +232,7 @@ SLOP_OPTION_DEFINE(types_VariantDef, slop_option_types_VariantDef)
 
 #ifndef SLOP_LIST_TYPES_VARIANTDEF_DEFINED
 #define SLOP_LIST_TYPES_VARIANTDEF_DEFINED
+#define SLOP_LIST_TYPES_VARIANTDEF_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_VariantDef, slop_list_types_VariantDef)
 #endif
 
@@ -269,6 +273,7 @@ SLOP_OPTION_DEFINE(types_ResolvedVariant, slop_option_types_ResolvedVariant)
 
 #ifndef SLOP_LIST_TYPES_RESOLVEDVARIANT_DEFINED
 #define SLOP_LIST_TYPES_RESOLVEDVARIANT_DEFINED
+#define SLOP_LIST_TYPES_RESOLVEDVARIANT_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_ResolvedVariant, slop_list_types_ResolvedVariant)
 #endif
 
@@ -286,6 +291,7 @@ SLOP_OPTION_DEFINE(types_ResolvedField, slop_option_types_ResolvedField)
 
 #ifndef SLOP_LIST_TYPES_RESOLVEDFIELD_DEFINED
 #define SLOP_LIST_TYPES_RESOLVEDFIELD_DEFINED
+#define SLOP_LIST_TYPES_RESOLVEDFIELD_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_ResolvedField, slop_list_types_ResolvedField)
 #endif
 
@@ -322,6 +328,7 @@ SLOP_OPTION_DEFINE(types_ParamInfo, slop_option_types_ParamInfo)
 
 #ifndef SLOP_LIST_TYPES_PARAMINFO_DEFINED
 #define SLOP_LIST_TYPES_PARAMINFO_DEFINED
+#define SLOP_LIST_TYPES_PARAMINFO_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_ParamInfo, slop_list_types_ParamInfo)
 #endif
 

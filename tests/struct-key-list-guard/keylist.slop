@@ -1,0 +1,24 @@
+;; Shape A: an importer that uses (List Term) and never uses Term as a key, so
+;; the ordinary list path is the only one that runs here. It emits
+;; SLOP_LIST_DEFINE under SLOP_LIST_KEYTERM_TERM_DEFINED, while keyterm.h emits
+;; the identical macro under KEYTERM_TERM_HASH_EQ_DEFINED. Two guards, one
+;; translation unit, one redefinition.
+
+(module keylist
+  (import keyterm (Term make-iri make-blank))
+  (export make-terms count-terms)
+
+  (fn make-terms ((arena Arena))
+    (@intent "(List Term) in the signature, so the prescan registers it")
+    (@spec ((Arena) -> (List Term)))
+    (@alloc arena)
+    (let ((xs (list-new arena Term)))
+      (list-push xs (make-iri "a"))
+      (list-push xs (make-blank 1))
+      xs))
+
+  (fn count-terms ((arena Arena))
+    (@intent "Length of that list")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (list-len (make-terms arena))))

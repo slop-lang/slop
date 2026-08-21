@@ -1,0 +1,36 @@
+;; A nested (List (List Term)). The inner (List Term) is the same C type that
+;; keyterm.h emits from the struct-key pass, so this is the same collision
+;; reached through the nested-element registration path rather than a direct
+;; (List Term). It fails on v0.2.0 the same way.
+
+(module keynest
+  (import keyterm (Term make-iri make-blank))
+  (export nested-total)
+
+  (fn build-nested ((arena Arena))
+    (@intent "(List (List Term)) in a signature")
+    (@spec ((Arena) -> (List (List Term))))
+    (@alloc arena)
+    (let ((outer (list-new arena (List Term)))
+          (inner (list-new arena Term))
+          (a (make-iri "a"))
+          (b (make-blank 1)))
+      (list-push inner a)
+      (list-push inner b)
+      (list-push outer inner)
+      outer))
+
+  (fn nested-total ((arena Arena))
+    (@intent "Total the elements of every inner list")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((outer (build-nested arena))
+          (mut total 0)
+          (mut i 0))
+      (while (< i (list-len outer))
+        (do
+          (match (list-get outer i)
+            ((some inner) (set! total (+ total (list-len inner))))
+            ((none) (do)))
+          (set! i (+ i 1))))
+      total)))
