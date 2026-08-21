@@ -4284,6 +4284,8 @@
         (string-eq type-name "I32")
         (string-eq type-name "I64")
         (string-eq type-name "Float")
+        (string-eq type-name "F32")
+        (string-eq type-name "F64")
         (string-eq type-name "Double")
         (string-eq type-name "Char")
         (string-eq type-name "Arena")
@@ -4297,6 +4299,12 @@
         (string-eq type-name "int16_t")
         (string-eq type-name "int32_t")
         (string-eq type-name "bool")
+        ;; Both float widths. Their absence went unnoticed while F32 and Float
+        ;; shared slop_option_float, which the runtime predefines and so never
+        ;; needed emitting; once F32 got its own name, (Option F32) in a
+        ;; signature referenced slop_option_f32 before the late pass defined it.
+        (string-eq type-name "float")
+        (string-eq type-name "double")
         (string-eq type-name "void")))
 
   (fn get-type-field-types ((ctx (Ptr TranspileContext)) (type-def (Ptr SExpr)))

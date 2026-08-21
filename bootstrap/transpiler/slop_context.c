@@ -201,6 +201,7 @@ context_TranspileContext* context_context_new(slop_arena* arena) {
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("Char"), SLOP_STR("char"), SLOP_STR("char"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("Float"), SLOP_STR("double"), SLOP_STR("double"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("F32"), SLOP_STR("float"), SLOP_STR("float"), 0, 0, 0});
+        context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("F64"), SLOP_STR("double"), SLOP_STR("double"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("Bool"), SLOP_STR("uint8_t"), SLOP_STR("uint8_t"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("String"), SLOP_STR("slop_string"), SLOP_STR("slop_string"), 0, 0, 0});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("Bytes"), SLOP_STR("slop_bytes"), SLOP_STR("slop_bytes"), 0, 0, 0});

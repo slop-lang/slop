@@ -1,0 +1,65 @@
+;; ============================================================
+;; Test: F32 containers that exist ONLY as inferred locals
+;;
+;; Companion to test_float_width.slop, and deliberately a separate
+;; module. The prescan that registers generated container types walks
+;; type annotations only -- signatures, record fields, (type X ...)
+;; aliases. So a single mention of (Option F32) or (List F32) anywhere
+;; in a module registers the type for the whole module and masks a
+;; missing registration at the point of use.
+;;
+;; That is exactly what happened on the first attempt at this coverage:
+;; the inferred-local case sat in the same file as a function declaring
+;; (Option F32), passed, and proved nothing. Nothing here may name an
+;; F32 container in an annotation.
+;;
+;; Both cases fail to BUILD without registration at the construction
+;; site -- "use of undeclared identifier 'slop_option_f32'" and
+;; "'slop_list_f32'" -- rather than failing an assertion.
+;; ============================================================
+
+(module test-float-inferred-locals
+
+  (fn some-f32-local ((x F32))
+    (@intent "An Option F32 that only ever exists as a local binding")
+    (@spec ((F32) -> Int))
+    (let ((o (some x)))
+      (match o
+        ((some v) (cast Int v))
+        ((none) 0))))
+
+  (fn f32-literal-local ()
+    (@intent "An F32 list literal bound to an inferred local")
+    (@spec (() -> Int))
+    (with-arena 16384
+      (let ((xs (list F32 (cast F32 4) (cast F32 5) (cast F32 6))))
+        (match (list-get xs 2)
+          ((some v) (cast Int v))
+          ((none) 0)))))
+
+  (fn test-some-local ()
+    (@intent "(some x) over an F32 round-trips without any annotation")
+    (@spec (() -> Bool))
+    (== (some-f32-local (cast F32 9)) 9))
+
+  (fn test-literal-local ()
+    (@intent "An F32 list literal round-trips without any annotation")
+    (@spec (() -> Bool))
+    (== (f32-literal-local) 6))
+
+  (fn main ()
+    (@intent "Run the inferred-local tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-some-local)
+        (println "test-some-local: PASS")
+        (do (println "test-some-local: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-literal-local)
+        (println "test-literal-local: PASS")
+        (do (println "test-literal-local: FAIL")
+            (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (print failures) (println " test(s) failed") 1)))))

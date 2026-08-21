@@ -11,7 +11,7 @@ TOPICS = {
 (Int)                   ; int64_t, any value
 (I8) (I16) (I32) (I64)  ; Signed integers
 (U8) (U16) (U32) (U64)  ; Unsigned integers
-(Float) (F32)           ; double / float
+(Float) (F32) (F64)     ; double / float / double
 (Bool)                  ; Boolean
 (String)                ; slop_string
 (Bytes)                 ; Byte buffer

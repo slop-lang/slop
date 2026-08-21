@@ -95,6 +95,7 @@
         (string-eq name "Char")
         (string-eq name "Float")
         (string-eq name "F32")
+        (string-eq name "F64")
         (string-eq name "Bool")
         (string-eq name "String")
         (string-eq name "Bytes")
@@ -151,7 +152,7 @@
     (@intent "Check if SLOP or C type name is a floating point type")
     (@spec ((String) -> Bool))
     (@pure)
-    (or (string-eq name "Float") (string-eq name "F32")
+    (or (string-eq name "Float") (string-eq name "F32") (string-eq name "F64")
         (string-eq name "double") (string-eq name "float")))
 
   (fn is-bool-type ((name String))
@@ -189,6 +190,8 @@
       ((string-eq name "Char") (some "char"))
       ((string-eq name "Float") (some "double"))
       ((string-eq name "F32") (some "float"))
+      ;; F64 is the explicit-width spelling of Float; both are a C double.
+      ((string-eq name "F64") (some "double"))
       ((string-eq name "Bool") (some "uint8_t"))
       ((string-eq name "String") (some "slop_string"))
       ((string-eq name "Bytes") (some "slop_bytes"))
@@ -229,6 +232,10 @@
     (@example (arena "slop_string") -> "string")
     (@example (arena "MyRecord*") -> "MyRecord_ptr")
     (@example (arena "void*") -> "void_ptr")
+    ;; Float and F32 are distinct C types and must not share an identifier:
+    ;; the runtime defines slop_list_float over double.
+    (@example (arena "double") -> "float")
+    (@example (arena "float") -> "f32")
     ;; Replace pointer with _ptr suffix
     (let ((mut result (replace arena c-type "*" "_ptr")))
       (set! result (replace arena result " " "_"))
@@ -253,6 +260,14 @@
         (set! result "i32"))
       (when (string-eq result "uint64_t")
         (set! result "u64"))
+      ;; float BEFORE double, and the order is load-bearing: double normalises to
+      ;; "float" for runtime compatibility (slop_list_float holds a double), so
+      ;; running that rule first would rewrite it again and put F32 and Float
+      ;; back on the same name. That collision meant (List F32) was silently
+      ;; backed by slop_list_float -- a double list -- initialised from a buffer
+      ;; sized for floats.
+      (when (string-eq result "float")
+        (set! result "f32"))
       (when (string-eq result "double")
         (set! result "float"))
       result))
