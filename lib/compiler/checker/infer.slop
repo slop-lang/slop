@@ -1619,7 +1619,12 @@
           (mut steps 0)
           (mut done false))
       (while (and (not done) (< steps 64))
-        (if (== (. (deref cur) kind) 'rk-primitive)
+        ;; A pointer c-name means this is a container registered under
+        ;; rk-primitive -- (Set T) is, with the element type as its inner -- not
+        ;; an alias standing for something else. Following it would walk into the
+        ;; element type and answer a question about the wrong type.
+        (if (and (== (. (deref cur) kind) 'rk-primitive)
+                 (not (ends-with (. (deref cur) c-name) "*")))
           (match (. (deref cur) inner-type)
             ((some next)
               (do (set! cur next)
@@ -1645,6 +1650,7 @@
                 (kind (. (deref arg-type) kind))
                 (reported-name (. (deref raw-type) name))
                 (resolved-name (. (deref arg-type) name))
+                (resolved-c-name (. (deref arg-type) c-name))
                 (arena (env-arena env)))
             (cond
               ;; Already an Option. Nothing to say.
@@ -1666,11 +1672,22 @@
               ;; construction, and one that fires on working code is one that gets
               ;; suppressed and then ignored.
               ((string-eq resolved-name "Unknown") (do))
-              ;; An rk-primitive that is not a builtin scalar is a form alias whose
-              ;; target was never recorded (#101) -- it may well be an Option, so
-              ;; stay quiet. Anything else here is a resolved type that definitely
-              ;; is not one: record, list, map, set, enum, union, result, range.
-              ((and (== kind 'rk-primitive) (not (is-builtin-type resolved-name))) (do))
+              ;; An rk-primitive that is not a builtin scalar is usually a form
+              ;; alias whose target was never recorded (#101) -- it may well be an
+              ;; Option, so stay quiet rather than reject a legitimate one.
+              ;;
+              ;; Except when its C type is a pointer. rk-primitive is overloaded:
+              ;; collect.slop registers (Set T) under it too, with c-name
+              ;; "slop_map*" and the ELEMENT type as its inner -- so a Set is not
+              ;; an unresolved alias, it is a resolved container, and following
+              ;; that inner would walk into the element and conclude a
+              ;; (Set (Option Int)) was an Option. Left alone it reached cc as
+              ;; "no member named 'has_value' in 'slop_map'". A pointer c-name
+              ;; also catches an alias to (Ptr T), which has the same problem for
+              ;; the same reason.
+              ((and (== kind 'rk-primitive)
+                    (not (is-builtin-type resolved-name))
+                    (not (ends-with resolved-c-name "*"))) (do))
               (else
                 (env-add-error env
                   (string-concat arena "'"

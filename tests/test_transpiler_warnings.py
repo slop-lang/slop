@@ -501,6 +501,9 @@ class TestOptionPredicates:
         # early lands on a non-builtin primitive, which is exempt, so the miss
         # would be silent and the error would land in cc instead.
         assert "'is-none' expects an (Option T), got D10" in combined, combined
+        # A Set is registered under rk-primitive with the element type as its
+        # inner, so it is a resolved container rather than an unresolved alias.
+        assert "'is-none' expects an (Option T), got Set" in combined, combined
         # A declared type parameter. Left alone this reached cc as "member
         # reference base type 'int64_t' is not a structure or union", which
         # CLAUDE.md calls a failure outright. The message must name the fix.

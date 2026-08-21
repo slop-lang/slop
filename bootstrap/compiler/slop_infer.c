@@ -1964,7 +1964,7 @@ types_ResolvedType* infer_resolve_alias_chain(types_ResolvedType* t) {
         int64_t steps = 0;
         uint8_t done = 0;
         while (!(done) && (steps < 64)) {
-            if ((*cur).kind == types_ResolvedTypeKind_rk_primitive) {
+            if (((*cur).kind == types_ResolvedTypeKind_rk_primitive) && !(strlib_ends_with((*cur).c_name, SLOP_STR("*")))) {
                 __auto_type _mv_1742 = (*cur).inner_type;
                 if (_mv_1742.has_value) {
                     __auto_type next = _mv_1742.value;
@@ -1993,12 +1993,13 @@ void infer_check_option_predicate_arg(env_TypeEnv* env, slop_string op, slop_lis
                 __auto_type kind = (*arg_type).kind;
                 __auto_type reported_name = (*raw_type).name;
                 __auto_type resolved_name = (*arg_type).name;
+                __auto_type resolved_c_name = (*arg_type).c_name;
                 __auto_type arena = env_env_arena(env);
                 if (kind == types_ResolvedTypeKind_rk_option) {
                 } else if (kind == types_ResolvedTypeKind_rk_typevar) {
                     env_env_add_error(env, string_concat(arena, SLOP_STR("'"), string_concat(arena, op, string_concat(arena, SLOP_STR("' expects an (Option T), got type parameter "), string_concat(arena, reported_name, SLOP_STR(" - declare the parameter as (Option T)"))))), line, col);
                 } else if (string_eq(resolved_name, SLOP_STR("Unknown"))) {
-                } else if ((kind == types_ResolvedTypeKind_rk_primitive) && !(ctype_is_builtin_type(resolved_name))) {
+                } else if (((kind == types_ResolvedTypeKind_rk_primitive)) && (!(ctype_is_builtin_type(resolved_name))) && (!(strlib_ends_with(resolved_c_name, SLOP_STR("*"))))) {
                 } else {
                     env_env_add_error(env, string_concat(arena, SLOP_STR("'"), string_concat(arena, op, string_concat(arena, SLOP_STR("' expects an (Option T), got "), reported_name))), line, col);
                 }

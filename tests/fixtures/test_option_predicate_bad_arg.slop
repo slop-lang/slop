@@ -59,6 +59,17 @@
     (@spec ((D10) -> Bool))
     (is-none x))
 
+  ;; rk-primitive is overloaded: collect.slop registers (Set T) under it too,
+  ;; with c-name "slop_map*" and the ELEMENT type as its inner. So a Set is a
+  ;; resolved container, not an unresolved alias, and following that inner would
+  ;; walk into the element and call a (Set (Option Int)) an Option. Left alone
+  ;; this reached cc as "no member named 'has_value' in 'slop_map'".
+  (fn bad-set-of-option ()
+    (@intent "A Set whose element type is an Option is still a Set")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (is-none (set-new arena (Option Int)))))
+
   (fn bad-arity ()
     (@intent "One argument, not two")
     (@spec (() -> Bool))
