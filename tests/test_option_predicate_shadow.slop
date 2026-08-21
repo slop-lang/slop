@@ -1,0 +1,59 @@
+;; ============================================================
+;; A user function may shadow is-none / is-some (#107, #110).
+;;
+;; The checker resolves a user function before it considers builtins --
+;; infer-expr only reaches its builtin cond after env-lookup-function and
+;; env-lookup-type have both missed. So a call here type-checks against the
+;; signature below, and the transpiler has to agree and emit the call rather
+;; than a tag test, or the program fails in cc with
+;;
+;;   error: member reference base type 'int64_t' is not a structure or union
+;;
+;; Most builtins do NOT agree -- shadowing list-len fails exactly that way, on
+;; v0.2.0 as well as here. That is #110. These two names are gated so they do
+;; not add to it.
+;;
+;; The shadowing definitions take an Int and mean something a tag test could
+;; never produce, so if the builtin were reached this would not merely fail to
+;; compile, it would compute the wrong answer.
+;; ============================================================
+
+(module test-option-predicate-shadow
+
+  (fn is-none ((n Int))
+    (@intent "Shadows the builtin: true when the Int is zero")
+    (@spec ((Int) -> Bool))
+    (== n 0))
+
+  (fn is-some ((n Int))
+    (@intent "Shadows the builtin: true when the Int is non-zero")
+    (@spec ((Int) -> Bool))
+    (!= n 0))
+
+  (fn test-shadowed-is-none ()
+    (@intent "The user's is-none runs, over an Int")
+    (@spec (() -> Bool))
+    (and (is-none 0) (not (is-none 7))))
+
+  (fn test-shadowed-is-some ()
+    (@intent "The user's is-some runs, over an Int")
+    (@spec (() -> Bool))
+    (and (is-some 7) (not (is-some 0))))
+
+  (fn main ()
+    (@intent "Run the shadowing tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-shadowed-is-none)
+        (println "test-shadowed-is-none: PASS")
+        (do (println "test-shadowed-is-none: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-shadowed-is-some)
+        (println "test-shadowed-is-some: PASS")
+        (do (println "test-shadowed-is-some: FAIL")
+            (set! failures (+ failures 1))))
+
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (print failures) (println " test(s) failed") 1)))))

@@ -2737,7 +2737,19 @@
                     ;; is-none / is-some: a tag test, the same one match.slop emits
                     ;; for an Option scrutinee. No payload is touched, so these work
                     ;; for any T, including one that == could never compare.
-                    ((and (or (string-eq op "is-none") (string-eq op "is-some")) (>= len 2))
+                    ;;
+                    ;; Gated on there being no function of that name, because the
+                    ;; checker resolves a user function BEFORE it considers builtins
+                    ;; -- so intercepting on the name alone would type-check against
+                    ;; the user's signature and then emit a tag test instead of the
+                    ;; call. Every other builtin here does intercept by name and has
+                    ;; that disagreement; shadowing list-len fails the same way on
+                    ;; v0.2.0 as it does here. Filed as #110 rather than fixed
+                    ;; wholesale, but the two names this change introduces should not
+                    ;; add to it.
+                    ((and (or (string-eq op "is-none") (string-eq op "is-some"))
+                          (>= len 2)
+                          (match (ctx-lookup-func ctx op) ((some f) false) ((none) true)))
                       (match (list-get items 1)
                         ((some opt-expr)
                           (let ((opt-c (transpile-expr ctx opt-expr))
