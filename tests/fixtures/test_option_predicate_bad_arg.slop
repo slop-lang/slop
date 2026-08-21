@@ -1,0 +1,30 @@
+;; Negative fixture for #107: is-none / is-some on something that is not an
+;; (Option T). Each call must be named by the checker rather than reaching cc,
+;; where it would surface as a missing struct member on `.has_value`.
+
+(module test-option-predicate-bad-arg
+
+  (type Point (record (x Int) (y Int)))
+
+  (fn bad-int ()
+    (@intent "An Int is not an Option")
+    (@spec (() -> Bool))
+    (is-none 5))
+
+  (fn bad-record ()
+    (@intent "A record is not an Option")
+    (@spec (() -> Bool))
+    (is-some (Point 1 2)))
+
+  (fn bad-list ()
+    (@intent "A List is not an Option, despite also being a container")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (is-none (list-new arena Int))))
+
+  (fn bad-arity ()
+    (@intent "One argument, not two")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((xs (list-new arena Int)))
+        (is-some (list-get xs 0) 3)))))

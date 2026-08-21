@@ -1,0 +1,134 @@
+;; ============================================================
+;; is-none / is-some (#107)
+;;
+;; The language had no way to ask whether an Option was empty without
+;; spelling out a full match. `==` is not that way: spec/LANGUAGE.md
+;; classes (Option T) as a container and rejects == on one.
+;;
+;; These are tag predicates, so the payload is never touched. That is the
+;; property worth pinning: they hold for a T that == could not compare
+;; even in principle, which is why UnComparable below carries a (List Int).
+;; ============================================================
+
+(module test-option-predicates
+
+  (type Point (record (x Int) (y Int)))
+
+  ;; A payload with no structural equality: a container field. slop_eq_ can
+  ;; never be generated for this, so a comparison-based test for emptiness
+  ;; would be impossible here. A tag test is not.
+  (type UnComparable (record (label String) (xs (List Int))))
+
+  (fn maybe-int ((n Int))
+    (@intent "Some for positives, none otherwise")
+    (@spec ((Int) -> (Option Int)))
+    (if (> n 0) (some n) (none)))
+
+  (fn maybe-point ((flag Bool))
+    (@intent "An Option over a record")
+    (@spec ((Bool) -> (Option Point)))
+    (if flag (some (Point 3 4)) (none)))
+
+  (fn maybe-uncomparable ((arena Arena) (flag Bool))
+    (@intent "An Option whose payload has no structural equality")
+    (@spec ((Arena Bool) -> (Option UnComparable)))
+    (@alloc arena)
+    (if flag
+      (some (UnComparable "u" (list-new arena Int)))
+      (none)))
+
+  (fn test-int-some ()
+    (@intent "is-some is true and is-none false for a present Int")
+    (@spec (() -> Bool))
+    (and (is-some (maybe-int 5))
+         (not (is-none (maybe-int 5)))))
+
+  (fn test-int-none ()
+    (@intent "is-none is true and is-some false for an absent Int")
+    (@spec (() -> Bool))
+    (and (is-none (maybe-int 0))
+         (not (is-some (maybe-int 0)))))
+
+  (fn test-record-payload ()
+    (@intent "Works over a record payload")
+    (@spec (() -> Bool))
+    (and (is-some (maybe-point true))
+         (is-none (maybe-point false))))
+
+  ;; The case that distinguishes a tag predicate from anything comparison-based.
+  (fn test-uncomparable-payload ()
+    (@intent "Works when the payload could never be compared")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (and (is-some (maybe-uncomparable arena true))
+           (is-none (maybe-uncomparable arena false)))))
+
+  ;; list-get is the most common source of an Option, and the arm that made
+  ;; these worth having: a bounds check with no interest in the element.
+  (fn test-list-get ()
+    (@intent "is-none as a bounds check on list-get")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (let ((xs (list-new arena Int)))
+        (list-push xs 10)
+        (and (is-some (list-get xs 0))
+             (is-none (list-get xs 7))))))
+
+  (fn test-map-get ()
+    (@intent "is-none as a membership check on map-get")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (let ((m (map-new arena String Int)))
+        (map-put m "a" 1)
+        (and (is-some (map-get m "a"))
+             (is-none (map-get m "zz"))))))
+
+  ;; Used as a value, not just a condition: the lowering has to be an
+  ;; expression, since a @post is one.
+  (fn empty-count ((a (Option Int)) (b (Option Int)))
+    (@intent "Count how many of two Options are empty")
+    (@spec (((Option Int) (Option Int)) -> Int))
+    (+ (if (is-none a) 1 0) (if (is-none b) 1 0)))
+
+  (fn test-as-value ()
+    (@intent "The result composes as an ordinary Bool expression")
+    (@spec (() -> Bool))
+    (== (empty-count (maybe-int 0) (maybe-int 3)) 1))
+
+  (fn main ()
+    (@intent "Run the Option predicate tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-int-some)
+        (println "test-int-some: PASS")
+        (do (println "test-int-some: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-int-none)
+        (println "test-int-none: PASS")
+        (do (println "test-int-none: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-record-payload)
+        (println "test-record-payload: PASS")
+        (do (println "test-record-payload: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-uncomparable-payload)
+        (println "test-uncomparable-payload: PASS")
+        (do (println "test-uncomparable-payload: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-list-get)
+        (println "test-list-get: PASS")
+        (do (println "test-list-get: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-get)
+        (println "test-map-get: PASS")
+        (do (println "test-map-get: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-as-value)
+        (println "test-as-value: PASS")
+        (do (println "test-as-value: FAIL")
+            (set! failures (+ failures 1))))
+
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (print failures) (println " test(s) failed") 1)))))

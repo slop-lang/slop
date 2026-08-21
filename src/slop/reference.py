@@ -745,6 +745,16 @@ There is no map literal and no map-len.
 
 There is no set-len; use (list-len (set-elements s)).
 
+### Options
+(some val) -> (Option T)
+(none) -> (Option T)
+(is-some opt) -> Bool                   ; Does it hold a value?
+(is-none opt) -> Bool                   ; Is it empty?
+
+is-some/is-none read the tag only, never the payload, so they work for any T.
+Use match when you need the value. == on an (Option T) is an error -- it is a
+container, like (List T).
+
 ### Results
 (ok val) -> (Result T E)
 (error e) -> (Result T E)
@@ -916,6 +926,8 @@ These DO NOT exist in SLOP - use the alternatives:
 | `list-append` | `(list-push list elem)` |
 | `map-set` | `(map-put map key val)` |
 | `hash-get` | `(map-get map key)` |
+| `(== opt (none))` | `(is-none opt)` -- `==` on an Option is an error |
+| `(!= opt (none))` | `(is-some opt)` |
 | Deeply nested `(or (or ...))` | `(cond ...)` for multi-way conditionals |
 | Nested `(string-concat ...)` | `(string-build arena ...)` from strlib |
 | Definitions outside module | All `(type)`, `(fn)`, `(const)` inside `(module ...)` |

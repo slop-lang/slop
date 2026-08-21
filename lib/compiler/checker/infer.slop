@@ -1134,6 +1134,13 @@
                     ((string-eq op "list-len")
                       (do (check-builtin-args env "list-len" 1 (- len 1) line col)
                           (env-get-int-type env)))
+                    ;; (is-none opt) / (is-some opt) -> Bool. Tag predicates, so
+                    ;; they hold for any T -- including one whose payload has no
+                    ;; structural equality and therefore cannot be compared at all.
+                    ((or (string-eq op "is-none") (string-eq op "is-some"))
+                      (do (check-builtin-args env op 1 (- len 1) line col)
+                          (check-option-predicate-arg env op items len line col)
+                          (env-get-bool-type env)))
                     ;; (arena-alloc arena Type) - return (Ptr Type)
                     ;; Also supports (arena-alloc arena size-expr) for raw byte allocation
                     ((string-eq op "arena-alloc")
@@ -1581,6 +1588,35 @@
                          (string-concat arena " argument(s), got "
                            (int-to-string arena actual))))))))
         (env-add-error env msg line col))))
+
+  (fn check-option-predicate-arg ((env (Ptr TypeEnv)) (op String) (items (List (Ptr SExpr)))
+                                  (len Int) (line Int) (col Int))
+    (@intent "Reject is-none / is-some on an argument that is not an (Option T)")
+    (@spec (((Ptr TypeEnv) String (List (Ptr SExpr)) Int Int Int) -> Unit))
+    (@pre (!= env nil))
+    ;; The whole point of these two is that they need nothing from the payload, so
+    ;; the only thing to check is that the argument is an Option at all. Without
+    ;; this the transpiler would emit `.has_value` on some unrelated struct and
+    ;; leave cc to complain about a missing member.
+    (when (>= len 2)
+      (match (list-get items 1)
+        ((some arg)
+          (let ((arg-type (infer-expr env arg))
+                (kind (. (deref arg-type) kind))
+                (type-name (. (deref arg-type) name)))
+            ;; Stay quiet on anything the checker could not pin down: a bare type
+            ;; variable, or the Unknown it falls back to. A new diagnostic that
+            ;; fires on working code is one that gets suppressed and then ignored.
+            (when (and (!= kind 'rk-option)
+                       (!= kind 'rk-typevar)
+                       (not (string-eq type-name "Unknown")))
+              (let ((arena (env-arena env))
+                    (msg (string-concat arena "'"
+                           (string-concat arena op
+                             (string-concat arena "' expects an (Option T), got "
+                               type-name)))))
+                (env-add-error env msg line col)))))
+        ((none) (do)))))
 
   (fn infer-builtin-args ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
     (@intent "Infer types of all arguments in a builtin call to catch nested errors")

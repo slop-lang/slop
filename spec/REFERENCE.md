@@ -25,6 +25,8 @@ These functions/patterns do NOT exist in SLOP - use the alternatives:
 | `list-add` | `(list-push list elem)` |
 | `map-set` | `(map-put map key val)` |
 | `hash-get` | `(map-get map key)` |
+| `(== opt (none))` | `(is-none opt)` -- `==` on an Option is an error |
+| `(!= opt (none))` | `(is-some opt)` |
 | `parse-int` | Implement manually or FFI |
 | `json-parse` | Implement manually or FFI |
 | `string-find` | Iterate with for-each |

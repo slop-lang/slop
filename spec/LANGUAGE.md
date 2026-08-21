@@ -756,6 +756,17 @@ Minimal runtime (~500 lines of C):
 (map-keys map) -> (List K)               ; Return list of all keys
 (map-remove map key) -> Unit             ; Remove key from mutable map
 
+; Options
+(some val) -> (Option T)
+(none) -> (Option T)
+(is-some opt) -> Bool                    ; Tag test: does it hold a value?
+(is-none opt) -> Bool                    ; Tag test: is it empty?
+;
+; is-some / is-none read only the tag, never the payload, so they apply to any
+; (Option T) -- including one whose T has no structural equality and so could
+; not be compared even in principle. Use match when you need the value; these
+; are for the case where you do not.
+
 ; Sets (homogeneous, type-safe)
 (set-new arena ElementType) -> (Set ElementType)  ; Create empty set
 (set Type e1 e2...)                               ; Set literal

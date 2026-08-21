@@ -9,6 +9,7 @@ Verifies that:
 
 import re
 import subprocess
+import tempfile
 import pytest
 from pathlib import Path
 
@@ -466,3 +467,57 @@ class TestWithArenaAsClosure:
         assert "slop_arena_alloc(arena" in c_src, c_src
         # And the warning that used to accompany the malloc must be gone.
         assert "no arena in scope" not in (stdout + stderr), stdout + stderr
+
+
+class TestOptionPredicates:
+    """`is-none` / `is-some` (#107).
+
+    There was no way to ask whether an Option was empty without a full `match`.
+    `==` is not that way: spec/LANGUAGE.md classes (Option T) as a container and
+    rejects `==` on one, deliberately.
+
+    These are tag predicates, so they never touch the payload -- which is the
+    property that matters. They hold for a T whose payload has no structural
+    equality at all, where any comparison-based test would be impossible rather
+    than merely awkward.
+    """
+
+    def test_non_option_argument_is_named(self):
+        rc, stdout, stderr = slop_check("fixtures/test_option_predicate_bad_arg.slop")
+        combined = stdout + stderr
+
+        assert rc != 0, combined
+        # Each bad argument must be reported with its own type named, so the
+        # message points at the mistake rather than just refusing.
+        assert "'is-none' expects an (Option T), got Int" in combined, combined
+        assert "'is-some' expects an (Option T), got Point" in combined, combined
+        # A List is a container too, but it is not an Option.
+        assert "'is-none' expects an (Option T), got List" in combined, combined
+        assert "'is-some' expects 1 argument(s), got 2" in combined, combined
+
+    def test_valid_uses_are_silent(self):
+        """The bail-outs, which are what keep the new check from becoming noise.
+
+        Covers an Option in parameter position, over a record payload, built
+        inline from (some ...) / (none), and the two inferred Options that
+        list-get and map-get return.
+        """
+        rc, stdout, stderr = slop_check("fixtures/test_option_predicate_ok.slop")
+        combined = stdout + stderr
+
+        assert rc == 0, combined
+        assert ": error:" not in combined, combined
+        assert ": warning:" not in combined, combined
+
+    def test_lowering_is_a_tag_test(self):
+        """No payload access, and no call into a generated equality function."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = str(Path(tmp) / "opt.c")
+            rc, stdout, stderr = slop_transpile("test_option_predicates.slop", out)
+            assert rc == 0, stdout + stderr
+            c_src = Path(out).read_text()
+
+        assert ".has_value" in c_src, "expected a tag test in the generated C"
+        # A tag predicate must not reach for structural equality; that is exactly
+        # what it exists to avoid, since the payload may have none.
+        assert "slop_eq_test_option_predicates_UnComparable" not in c_src, c_src
