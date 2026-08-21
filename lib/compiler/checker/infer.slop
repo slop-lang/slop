@@ -1590,6 +1590,34 @@
                            (int-to-string arena actual))))))))
         (env-add-error env msg line col))))
 
+  (fn resolve-alias-chain ((t (Ptr ResolvedType)))
+    (@intent "Follow a symbol type alias to the builtin it stands for")
+    (@spec (((Ptr ResolvedType)) -> (Ptr ResolvedType)))
+    (@pre (!= t nil))
+    ;; (type MyInt Int) is recorded by collect.slop's generic alias branch as an
+    ;; rk-primitive named "MyInt" carrying Int as its inner, so the alias has to
+    ;; be followed before asking whether the type is a builtin scalar.
+    ;;
+    ;; A FORM alias -- (type MaybeInt (Option Int)) -- gets no inner at all: that
+    ;; same branch asks sexpr-get-symbol-name for a name and a form has none. So
+    ;; this stops on MaybeInt with nothing to follow, which is why the caller
+    ;; still has to treat an unresolved rk-primitive as possibly an Option.
+    ;; Modelling those properly is #101.
+    ;;
+    ;; Bounded rather than unbounded: a malformed chain must not hang the checker.
+    (let ((mut cur t)
+          (mut steps 0)
+          (mut done false))
+      (while (and (not done) (< steps 8))
+        (if (== (. (deref cur) kind) 'rk-primitive)
+          (match (. (deref cur) inner-type)
+            ((some next)
+              (do (set! cur next)
+                  (set! steps (+ steps 1))))
+            ((none) (set! done true)))
+          (set! done true)))
+      cur))
+
   (fn check-option-predicate-arg ((env (Ptr TypeEnv)) (op String) (items (List (Ptr SExpr)))
                                   (len Int) (line Int) (col Int))
     (@intent "Reject is-none / is-some on an argument that is not an (Option T)")
@@ -1602,32 +1630,44 @@
     (when (>= len 2)
       (match (list-get items 1)
         ((some arg)
-          (let ((arg-type (infer-expr env arg))
+          (let ((raw-type (infer-expr env arg))
+                (arg-type (resolve-alias-chain raw-type))
                 (kind (. (deref arg-type) kind))
-                (type-name (. (deref arg-type) name)))
-            ;; Stay quiet on anything the checker could not pin down: a bare type
-            ;; variable, or the Unknown it falls back to. A new diagnostic that
-            ;; fires on working code is one that gets suppressed and then ignored.
-            ;;
-            ;; An unrecognised rk-primitive is the case that matters. collect.slop
-            ;; has branches for Map, Set, List and range aliases but none for
-            ;; Option, and its generic alias branch calls sexpr-get-symbol-name on
-            ;; the aliased expression -- which returns "" for a form -- so
-            ;; (type MaybeInt (Option Int)) is recorded as a bare rk-primitive
-            ;; named "MaybeInt" with nothing to say it stands for an Option.
-            ;; Firing on that would reject (is-none m) inside a function taking a
-            ;; MaybeInt, where m really is an Option. So an rk-primitive is only
-            ;; rejected when it is a builtin scalar, which no alias can be.
-            (when (and (!= kind 'rk-option)
-                       (!= kind 'rk-typevar)
-                       (not (string-eq type-name "Unknown"))
-                       (or (!= kind 'rk-primitive) (is-builtin-type type-name)))
-              (let ((arena (env-arena env))
-                    (msg (string-concat arena "'"
-                           (string-concat arena op
-                             (string-concat arena "' expects an (Option T), got "
-                               type-name)))))
-                (env-add-error env msg line col)))))
+                (reported-name (. (deref raw-type) name))
+                (resolved-name (. (deref arg-type) name))
+                (arena (env-arena env)))
+            (cond
+              ;; Already an Option. Nothing to say.
+              ((== kind 'rk-option) (do))
+              ;; A declared type parameter. SLOP has no way to constrain one to be
+              ;; an Option, so this can never be valid however it is instantiated
+              ;; -- and left alone it reaches cc as "member reference base type
+              ;; 'int64_t' is not a structure or union". Name the fix.
+              ((== kind 'rk-typevar)
+                (env-add-error env
+                  (string-concat arena "'"
+                    (string-concat arena op
+                      (string-concat arena "' expects an (Option T), got type parameter "
+                        (string-concat arena reported-name
+                          " - declare the parameter as (Option T)"))))
+                  line col))
+              ;; Whatever the checker gave up on. Saying nothing is right: a
+              ;; diagnostic on an unresolved type is a false positive by
+              ;; construction, and one that fires on working code is one that gets
+              ;; suppressed and then ignored.
+              ((string-eq resolved-name "Unknown") (do))
+              ;; An rk-primitive that is not a builtin scalar is a form alias whose
+              ;; target was never recorded (#101) -- it may well be an Option, so
+              ;; stay quiet. Anything else here is a resolved type that definitely
+              ;; is not one: record, list, map, set, enum, union, result, range.
+              ((and (== kind 'rk-primitive) (not (is-builtin-type resolved-name))) (do))
+              (else
+                (env-add-error env
+                  (string-concat arena "'"
+                    (string-concat arena op
+                      (string-concat arena "' expects an (Option T), got "
+                        reported-name)))
+                  line col)))))
         ((none) (do)))))
 
   (fn infer-builtin-args ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))

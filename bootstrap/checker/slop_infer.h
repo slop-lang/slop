@@ -63,6 +63,7 @@ types_ResolvedType* infer_infer_special_form(env_TypeEnv* env, types_SExpr* expr
 void infer_check_fn_call_args(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t line, int64_t col);
 void infer_check_single_arg(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t arg_idx, int64_t line, int64_t col);
 void infer_check_builtin_args(env_TypeEnv* env, slop_string op, int64_t expected, int64_t actual, int64_t line, int64_t col);
+types_ResolvedType* infer_resolve_alias_chain(types_ResolvedType* t);
 void infer_check_option_predicate_arg(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t len, int64_t line, int64_t col);
 void infer_infer_builtin_args(env_TypeEnv* env, types_SExpr* expr);
 void infer_infer_body_exprs(env_TypeEnv* env, types_SExpr* expr, int64_t start_idx);

@@ -495,6 +495,15 @@ class TestOptionPredicates:
         assert "'is-none' expects an (Option T), got List" in combined, combined
         # A range alias is a resolved, definitely-not-Option type.
         assert "'is-none' expects an (Option T), got Meters" in combined, combined
+        # A symbol alias, reached by following the chain collect.slop records.
+        assert "'is-none' expects an (Option T), got MyInt" in combined, combined
+        # A declared type parameter. Left alone this reached cc as "member
+        # reference base type 'int64_t' is not a structure or union", which
+        # CLAUDE.md calls a failure outright. The message must name the fix.
+        assert (
+            "'is-some' expects an (Option T), got type parameter T"
+            " - declare the parameter as (Option T)"
+        ) in combined, combined
         assert "'is-some' expects 1 argument(s), got 2" in combined, combined
 
     def test_valid_uses_are_silent(self):

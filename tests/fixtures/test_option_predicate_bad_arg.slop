@@ -8,6 +8,11 @@
 
   (type Meters (Int 0 .. 100))
 
+  ;; A symbol alias, which collect.slop DOES record an inner for -- unlike the
+  ;; form alias in the positive fixture. Following that chain is what turns this
+  ;; from an exemption into a rejection.
+  (type MyInt Int)
+
   (fn bad-int ()
     (@intent "An Int is not an Option")
     (@spec (() -> Bool))
@@ -28,6 +33,20 @@
     (@intent "A range alias is definitely not an Option")
     (@spec ((Meters) -> Bool))
     (is-none m))
+
+  (fn bad-symbol-alias ((x MyInt))
+    (@intent "An alias to a builtin scalar is not an Option")
+    (@spec ((MyInt) -> Bool))
+    (is-none x))
+
+  ;; Left alone this one reaches cc as "member reference base type 'int64_t' is
+  ;; not a structure or union", which CLAUDE.md calls a failure outright. SLOP
+  ;; cannot constrain a type parameter to be an Option, so this is never valid.
+  (fn bad-typevar ((x T))
+    (@intent "A bare type parameter cannot be known to be an Option")
+    (@spec ((T) -> Bool))
+    (@generic (T))
+    (is-some x))
 
   (fn bad-arity ()
     (@intent "One argument, not two")
