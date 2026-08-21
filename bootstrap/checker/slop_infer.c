@@ -764,7 +764,11 @@ types_ResolvedType* infer_infer_expr_inner(env_TypeEnv* env, types_SExpr* expr) 
             case types_SExpr_num:
             {
                 __auto_type num = _mv_230.data.num;
-                return env_env_get_int_type(env);
+                if (num.is_float) {
+                    return env_env_get_float_type(env);
+                } else {
+                    return env_env_get_int_type(env);
+                }
             }
             case types_SExpr_str:
             {
