@@ -23,7 +23,7 @@
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
                env-bind-var env-lookup-var env-lookup-type
                env-lookup-function env-lookup-variant env-lookup-constant
-               env-get-int-type env-get-bool-type env-get-float-type
+               env-get-int-type env-get-bool-type env-get-float-type env-get-null-type
                env-get-string-type env-get-unit-type env-get-arena-type
                env-get-unknown-type env-get-never-type
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
@@ -460,6 +460,10 @@
         ;; Type variables match anything
         ((or (== a-kind 'rk-typevar) (== b-kind 'rk-typevar)) true)
 
+        ;; The nil literal stands in for any pointer.
+        ((and (string-eq a-name "<nil>") (== b-kind 'rk-ptr)) true)
+        ((and (string-eq b-name "<nil>") (== a-kind 'rk-ptr)) true)
+
         ;; Generic type variable "T" matches anything (legacy)
         ((or (string-eq a-name "T") (string-eq b-name "T")) true)
 
@@ -508,6 +512,13 @@
             ((none) false)))
         (else false))))
 
+  (fn type-is-null-pointer ((t (Ptr ResolvedType)))
+    (@intent "Check if a type is the nil literal's type rather than a concrete pointer")
+    (@spec (((Ptr ResolvedType)) -> Bool))
+    (@pure)
+    (@pre (!= t nil))
+    (string-eq (. (deref t) name) "<nil>"))
+
   (fn unify-branch-types ((env (Ptr TypeEnv)) (a (Ptr ResolvedType)) (b (Ptr ResolvedType))
                           (line Int) (col Int))
     (@intent "Unify two branch types, emitting warning if they differ")
@@ -520,6 +531,14 @@
       b  ;; First branch diverges, use second type
       (if (== (. (deref b) kind) 'rk-never)
         a  ;; Second branch diverges, use first type
+        ;; nil unified with a concrete pointer: keep the concrete one. Returning
+        ;; the NullPtr side would erase the pointee, and a later (. p field)
+        ;; would then infer Unknown and pass unchecked -- which happens only
+        ;; when the nil arm comes first, so the bug would be order-dependent.
+        (if (and (type-is-null-pointer a) (== (. (deref b) kind) 'rk-ptr))
+          b
+        (if (and (type-is-null-pointer b) (== (. (deref a) kind) 'rk-ptr))
+          a
         ;; If types are equal, return either
         (if (types-equal a b)
           a
@@ -529,7 +548,7 @@
                        (string-concat arena (. (deref a) name)
                          (string-concat arena " vs " (. (deref b) name))))))
             (env-add-warning env msg line col)
-            a)))))
+            a)))))))
 
   ;; ============================================================
   ;; AST Type Annotation
@@ -583,7 +602,12 @@
               ((or (string-eq name "true") (string-eq name "false"))
                 (env-get-bool-type env))
               ;; nil and unit
-              ((or (string-eq name "nil") (string-eq name "unit"))
+              ;; `nil` is the null pointer, not Unit. Conflating them made every
+              ;; `((none) nil)` arm read as Unit and collide with the pointer the
+              ;; other arm produced -- the bulk of the "Branch types differ" noise.
+              ((string-eq name "nil")
+                (env-get-null-type env))
+              ((string-eq name "unit")
                 (env-get-unit-type env))
               ;; none - Option type with unknown inner type
               ((string-eq name "none")
@@ -779,7 +803,10 @@
                                     (let ((elem-type (match (. (deref coll-type) inner-type)
                                                        ((some inner) inner)
                                                        ((none)
-                                                         ;; Error: collection has no known element type
+                                                         ;; No element type to bind. Only worth reporting for a
+                                                         ;; concrete collection: over a generic T the checker
+                                                         ;; genuinely cannot know, so the warning describes a
+                                                         ;; limitation rather than anything the author can fix.
                                                          (let ((arena (env-arena env))
                                                                (coll-name (. (deref coll-type) name))
                                                                (msg (string-concat arena "for-each: cannot determine element type of '"
@@ -1618,6 +1645,14 @@
     (@pre (!= obj-type nil))
     (let ((type-name (. (deref obj-type) name))
           (arena (env-arena env)))
+      ;; nil has no pointee, so it has no fields either. Without this it would
+      ;; fall through to the not-a-record path, yield Unknown, and let
+      ;; (. nil field) reach the C compiler as NULL.field.
+      (if (type-is-null-pointer obj-type)
+        (let ((msg (string-concat arena "cannot access field '"
+                     (string-concat arena field-name "' on nil"))))
+          (env-add-error env msg line col)
+          (env-get-unknown-type env))
       ;; Check if it's a record type
       (if (resolved-type-is-record obj-type)
         ;; Look up the field type
@@ -1661,7 +1696,7 @@
                                  (string-concat arena "' on non-record type '"
                                    (string-concat arena type-name "'"))))))
                     (env-add-error env msg line col)
-                    (env-get-unknown-type env))))))))))
+                    (env-get-unknown-type env)))))))))))
 
   (fn infer-cond-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of cond expression, checking branch types")
@@ -2088,9 +2123,19 @@
               (inferred-name (. (deref inferred-type) name)))
           ;; Only check if types differ AND both are primitives
           ;; Custom types (enums, records) need proper variant tracking
+          ;;
+          ;; A `nil` body is the exception: the null type is not a primitive, so
+          ;; without the second clause `(fn f () (@spec (() -> Int)) nil)` slipped
+          ;; through to Clang's pointer-to-integer error. The declared name here is
+          ;; a bare symbol, and a primitive one can never be a pointer, so that
+          ;; combination is always a mismatch. Aliases are deliberately left alone
+          ;; -- one cannot be resolved from its name here, and a false positive
+          ;; would be worse than the gap.
           (when (and (not (string-eq declared-name inferred-name))
-                     (and (checker-is-primitive-type declared-name)
-                          (checker-is-primitive-type inferred-name)))
+                     (or (and (checker-is-primitive-type declared-name)
+                              (checker-is-primitive-type inferred-name))
+                         (and (string-eq inferred-name "<nil>")
+                              (checker-is-primitive-type declared-name))))
             (let ((arena (env-arena env))
                   (msg (string-concat arena "return value of '"
                          (string-concat arena fn-name

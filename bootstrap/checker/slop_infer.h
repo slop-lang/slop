@@ -50,6 +50,7 @@ types_ResolvedType* infer_substitute_type_vars(slop_arena* arena, types_Resolved
 types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t line, int64_t col);
 uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_types_compatible_with_range(types_ResolvedType* a, types_ResolvedType* b);
+uint8_t infer_type_is_null_pointer(types_ResolvedType* t);
 types_ResolvedType* infer_unify_branch_types(env_TypeEnv* env, types_ResolvedType* a, types_ResolvedType* b, int64_t line, int64_t col);
 void infer_sexpr_set_resolved_type(types_SExpr* expr, types_ResolvedType* t);
 types_ResolvedType* infer_infer_expr(env_TypeEnv* env, types_SExpr* expr);
