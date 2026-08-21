@@ -35,11 +35,13 @@ typedef struct context_LastLambdaInfo context_LastLambdaInfo;
 
 #ifndef SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
 #define SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
+#define SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_FuncParamType*, slop_list_context_FuncParamType_ptr)
 #endif
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
@@ -72,6 +74,7 @@ SLOP_OPTION_DEFINE(context_TranspileError, slop_option_context_TranspileError)
 
 #ifndef SLOP_LIST_CONTEXT_TRANSPILEERROR_DEFINED
 #define SLOP_LIST_CONTEXT_TRANSPILEERROR_DEFINED
+#define SLOP_LIST_CONTEXT_TRANSPILEERROR_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_TranspileError, slop_list_context_TranspileError)
 #endif
 
@@ -95,6 +98,7 @@ SLOP_OPTION_DEFINE(context_VarEntry, slop_option_context_VarEntry)
 
 #ifndef SLOP_LIST_CONTEXT_VARENTRY_DEFINED
 #define SLOP_LIST_CONTEXT_VARENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_VARENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_VarEntry, slop_list_context_VarEntry)
 #endif
 
@@ -115,6 +119,7 @@ SLOP_OPTION_DEFINE(context_TypeEntry, slop_option_context_TypeEntry)
 
 #ifndef SLOP_LIST_CONTEXT_TYPEENTRY_DEFINED
 #define SLOP_LIST_CONTEXT_TYPEENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_TYPEENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_TypeEntry, slop_list_context_TypeEntry)
 #endif
 
@@ -149,6 +154,7 @@ SLOP_OPTION_DEFINE(context_FuncEntry, slop_option_context_FuncEntry)
 
 #ifndef SLOP_LIST_CONTEXT_FUNCENTRY_DEFINED
 #define SLOP_LIST_CONTEXT_FUNCENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_FUNCENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_FuncEntry, slop_list_context_FuncEntry)
 #endif
 
@@ -168,6 +174,7 @@ SLOP_OPTION_DEFINE(context_FieldEntry, slop_option_context_FieldEntry)
 
 #ifndef SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
 #define SLOP_LIST_CONTEXT_FIELDENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_FIELDENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_FieldEntry, slop_list_context_FieldEntry)
 #endif
 
@@ -195,6 +202,7 @@ SLOP_OPTION_DEFINE(context_EnumVariant, slop_option_context_EnumVariant)
 
 #ifndef SLOP_LIST_CONTEXT_ENUMVARIANT_DEFINED
 #define SLOP_LIST_CONTEXT_ENUMVARIANT_DEFINED
+#define SLOP_LIST_CONTEXT_ENUMVARIANT_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_EnumVariant, slop_list_context_EnumVariant)
 #endif
 
@@ -214,6 +222,7 @@ SLOP_OPTION_DEFINE(context_UnionVariantEntry, slop_option_context_UnionVariantEn
 
 #ifndef SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
 #define SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_UNIONVARIANTENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_UnionVariantEntry, slop_list_context_UnionVariantEntry)
 #endif
 
@@ -231,6 +240,7 @@ SLOP_OPTION_DEFINE(context_ResultType, slop_option_context_ResultType)
 
 #ifndef SLOP_LIST_CONTEXT_RESULTTYPE_DEFINED
 #define SLOP_LIST_CONTEXT_RESULTTYPE_DEFINED
+#define SLOP_LIST_CONTEXT_RESULTTYPE_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_ResultType, slop_list_context_ResultType)
 #endif
 
@@ -247,6 +257,7 @@ SLOP_OPTION_DEFINE(context_OptionType, slop_option_context_OptionType)
 
 #ifndef SLOP_LIST_CONTEXT_OPTIONTYPE_DEFINED
 #define SLOP_LIST_CONTEXT_OPTIONTYPE_DEFINED
+#define SLOP_LIST_CONTEXT_OPTIONTYPE_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_OptionType, slop_list_context_OptionType)
 #endif
 
@@ -263,6 +274,7 @@ SLOP_OPTION_DEFINE(context_ListType, slop_option_context_ListType)
 
 #ifndef SLOP_LIST_CONTEXT_LISTTYPE_DEFINED
 #define SLOP_LIST_CONTEXT_LISTTYPE_DEFINED
+#define SLOP_LIST_CONTEXT_LISTTYPE_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_ListType, slop_list_context_ListType)
 #endif
 
@@ -279,6 +291,7 @@ SLOP_OPTION_DEFINE(context_ChanType, slop_option_context_ChanType)
 
 #ifndef SLOP_LIST_CONTEXT_CHANTYPE_DEFINED
 #define SLOP_LIST_CONTEXT_CHANTYPE_DEFINED
+#define SLOP_LIST_CONTEXT_CHANTYPE_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_ChanType, slop_list_context_ChanType)
 #endif
 
@@ -295,6 +308,7 @@ SLOP_OPTION_DEFINE(context_ThreadType, slop_option_context_ThreadType)
 
 #ifndef SLOP_LIST_CONTEXT_THREADTYPE_DEFINED
 #define SLOP_LIST_CONTEXT_THREADTYPE_DEFINED
+#define SLOP_LIST_CONTEXT_THREADTYPE_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_ThreadType, slop_list_context_ThreadType)
 #endif
 
@@ -311,6 +325,7 @@ SLOP_OPTION_DEFINE(context_ResultTypeAlias, slop_option_context_ResultTypeAlias)
 
 #ifndef SLOP_LIST_CONTEXT_RESULTTYPEALIAS_DEFINED
 #define SLOP_LIST_CONTEXT_RESULTTYPEALIAS_DEFINED
+#define SLOP_LIST_CONTEXT_RESULTTYPEALIAS_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_ResultTypeAlias, slop_list_context_ResultTypeAlias)
 #endif
 
@@ -328,6 +343,7 @@ SLOP_OPTION_DEFINE(context_FuncCNameAlias, slop_option_context_FuncCNameAlias)
 
 #ifndef SLOP_LIST_CONTEXT_FUNCCNAMEALIAS_DEFINED
 #define SLOP_LIST_CONTEXT_FUNCCNAMEALIAS_DEFINED
+#define SLOP_LIST_CONTEXT_FUNCCNAMEALIAS_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_FuncCNameAlias, slop_list_context_FuncCNameAlias)
 #endif
 
@@ -344,6 +360,7 @@ SLOP_OPTION_DEFINE(context_TypeAliasEntry, slop_option_context_TypeAliasEntry)
 
 #ifndef SLOP_LIST_CONTEXT_TYPEALIASENTRY_DEFINED
 #define SLOP_LIST_CONTEXT_TYPEALIASENTRY_DEFINED
+#define SLOP_LIST_CONTEXT_TYPEALIASENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_TypeAliasEntry, slop_list_context_TypeAliasEntry)
 #endif
 
@@ -360,6 +377,7 @@ SLOP_OPTION_DEFINE(context_InlineRecord, slop_option_context_InlineRecord)
 
 #ifndef SLOP_LIST_CONTEXT_INLINERECORD_DEFINED
 #define SLOP_LIST_CONTEXT_INLINERECORD_DEFINED
+#define SLOP_LIST_CONTEXT_INLINERECORD_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_InlineRecord, slop_list_context_InlineRecord)
 #endif
 
@@ -378,6 +396,7 @@ SLOP_OPTION_DEFINE(context_GenericFuncInstantiation, slop_option_context_Generic
 
 #ifndef SLOP_LIST_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
 #define SLOP_LIST_CONTEXT_GENERICFUNCINSTANTIATION_DEFINED
+#define SLOP_LIST_CONTEXT_GENERICFUNCINSTANTIATION_IMPL_DEFINED
 SLOP_LIST_DEFINE(context_GenericFuncInstantiation, slop_list_context_GenericFuncInstantiation)
 #endif
 

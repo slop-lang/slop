@@ -1,0 +1,54 @@
+;; Building this at all is most of the test -- the bug was a C redefinition
+;; error, so a broken toolchain never reaches the assertions. The checks below
+;; then confirm the de-duplicated list and the shared hash/eq actually behave.
+
+(module main
+  (import keyterm (Term Tag make-iri make-blank term-eq tag-eq tag-list-len))
+  (import keylist (count-terms))
+  (import keyindex (term-list distinct-terms))
+  (import keynest (nested-total))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((mut failures 0))
+        (if (term-eq (make-iri "a") (make-iri "a"))
+          (println "term-eq same: PASS")
+          (do (println "term-eq same: FAIL")
+              (set! failures (+ failures 1))))
+        (if (not (term-eq (make-iri "a") (make-blank 1)))
+          (println "term-eq differing variants: PASS")
+          (do (println "term-eq differing variants: FAIL")
+              (set! failures (+ failures 1))))
+        (if (tag-eq (Tag "a") (Tag "a"))
+          (println "tag-eq: PASS")
+          (do (println "tag-eq: FAIL")
+              (set! failures (+ failures 1))))
+        (if (== (count-terms arena) 2)
+          (println "shape A cross-module list: PASS")
+          (do (println "shape A cross-module list: FAIL")
+              (set! failures (+ failures 1))))
+        (if (== (list-len (term-list arena)) 2)
+          (println "shape B cross-module list: PASS")
+          (do (println "shape B cross-module list: FAIL")
+              (set! failures (+ failures 1))))
+        ;; Two distinct terms out of three inserts: the duplicate IRI must
+        ;; collapse, which only happens if the shared hash/eq is the one the
+        ;; struct-key pass emitted.
+        (if (== (distinct-terms arena) 2)
+          (println "shape B cross-module set: PASS")
+          (do (println "shape B cross-module set: FAIL")
+              (set! failures (+ failures 1))))
+        (if (== (nested-total arena) 2)
+          (println "nested (List (List Term)): PASS")
+          (do (println "nested (List (List Term)): FAIL")
+              (set! failures (+ failures 1))))
+        (if (== (tag-list-len arena) 2)
+          (println "in-module list control: PASS")
+          (do (println "in-module list control: FAIL")
+              (set! failures (+ failures 1))))
+        (println "")
+        (if (== failures 0)
+          (do (println "All tests passed!") 0)
+          (do (println "test(s) failed") 1))))))

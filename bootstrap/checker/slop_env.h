@@ -16,16 +16,19 @@ typedef struct env_TypeEnv env_TypeEnv;
 
 #ifndef SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_DEFINED
 #define SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_DEFINED
+#define SLOP_LIST_TYPES_RESOLVEDTYPE_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_ResolvedType*, slop_list_types_ResolvedType_ptr)
 #endif
 
 #ifndef SLOP_LIST_TYPES_FNSIGNATURE_PTR_DEFINED
 #define SLOP_LIST_TYPES_FNSIGNATURE_PTR_DEFINED
+#define SLOP_LIST_TYPES_FNSIGNATURE_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_FnSignature*, slop_list_types_FnSignature_ptr)
 #endif
 
 #ifndef SLOP_LIST_ENV_CHECKERSCOPE_PTR_DEFINED
 #define SLOP_LIST_ENV_CHECKERSCOPE_PTR_DEFINED
+#define SLOP_LIST_ENV_CHECKERSCOPE_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(env_CheckerScope*, slop_list_env_CheckerScope_ptr)
 #endif
 
@@ -46,11 +49,13 @@ SLOP_OPTION_DEFINE(env_CheckerScope*, slop_option_env_CheckerScope_ptr)
 
 #ifndef SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
 #define SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
+#define SLOP_LIST_TYPES_DIAGNOSTIC_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_Diagnostic, slop_list_types_Diagnostic)
 #endif
 
 #ifndef SLOP_LIST_TYPES_PARAMINFO_DEFINED
 #define SLOP_LIST_TYPES_PARAMINFO_DEFINED
+#define SLOP_LIST_TYPES_PARAMINFO_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_ParamInfo, slop_list_types_ParamInfo)
 #endif
 
@@ -77,6 +82,7 @@ SLOP_OPTION_DEFINE(env_VarBinding, slop_option_env_VarBinding)
 
 #ifndef SLOP_LIST_ENV_VARBINDING_DEFINED
 #define SLOP_LIST_ENV_VARBINDING_DEFINED
+#define SLOP_LIST_ENV_VARBINDING_IMPL_DEFINED
 SLOP_LIST_DEFINE(env_VarBinding, slop_list_env_VarBinding)
 #endif
 
@@ -94,6 +100,7 @@ SLOP_OPTION_DEFINE(env_ConstBinding, slop_option_env_ConstBinding)
 
 #ifndef SLOP_LIST_ENV_CONSTBINDING_DEFINED
 #define SLOP_LIST_ENV_CONSTBINDING_DEFINED
+#define SLOP_LIST_ENV_CONSTBINDING_IMPL_DEFINED
 SLOP_LIST_DEFINE(env_ConstBinding, slop_list_env_ConstBinding)
 #endif
 
@@ -110,6 +117,7 @@ SLOP_OPTION_DEFINE(env_ImportEntry, slop_option_env_ImportEntry)
 
 #ifndef SLOP_LIST_ENV_IMPORTENTRY_DEFINED
 #define SLOP_LIST_ENV_IMPORTENTRY_DEFINED
+#define SLOP_LIST_ENV_IMPORTENTRY_IMPL_DEFINED
 SLOP_LIST_DEFINE(env_ImportEntry, slop_list_env_ImportEntry)
 #endif
 
@@ -137,6 +145,7 @@ SLOP_OPTION_DEFINE(env_VariantMapping, slop_option_env_VariantMapping)
 
 #ifndef SLOP_LIST_ENV_VARIANTMAPPING_DEFINED
 #define SLOP_LIST_ENV_VARIANTMAPPING_DEFINED
+#define SLOP_LIST_ENV_VARIANTMAPPING_IMPL_DEFINED
 SLOP_LIST_DEFINE(env_VariantMapping, slop_list_env_VariantMapping)
 #endif
 
@@ -155,6 +164,7 @@ SLOP_OPTION_DEFINE(env_BindingAnnotation, slop_option_env_BindingAnnotation)
 
 #ifndef SLOP_LIST_ENV_BINDINGANNOTATION_DEFINED
 #define SLOP_LIST_ENV_BINDINGANNOTATION_DEFINED
+#define SLOP_LIST_ENV_BINDINGANNOTATION_IMPL_DEFINED
 SLOP_LIST_DEFINE(env_BindingAnnotation, slop_list_env_BindingAnnotation)
 #endif
 

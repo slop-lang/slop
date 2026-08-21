@@ -22,6 +22,7 @@ typedef enum {
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #endif
 
@@ -32,6 +33,7 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 
 #ifndef SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
 #define SLOP_LIST_TYPES_DIAGNOSTIC_DEFINED
+#define SLOP_LIST_TYPES_DIAGNOSTIC_IMPL_DEFINED
 SLOP_LIST_DEFINE(types_Diagnostic, slop_list_types_Diagnostic)
 #endif
 

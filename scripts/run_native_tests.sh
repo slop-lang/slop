@@ -191,6 +191,14 @@ run_lib_test "$REPO_ROOT/lib/std/json/tests/json_test.slop" "json" \
 run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml" \
     -I "$REPO_ROOT/lib/std/xml" -I "$REPO_ROOT/lib/std/strlib"
 
+# A multi-module build. Two header passes emit SLOP_LIST_DEFINE for the same type
+# -- the struct-key pass and the ordinary list pass -- and ctx-is-type-emitted
+# only interlocks them within one module. Across modules the #ifndef guard is all
+# that is left, so the guard names have to agree. Nothing in tests/*.slop can
+# reach this: it needs one module to register the type and another to import it.
+run_lib_test "$REPO_ROOT/tests/struct-key-list-guard/main.slop" "struct-key-list-guard" \
+    -I "$REPO_ROOT/tests/struct-key-list-guard"
+
 echo ""
 
 # ============================================================
