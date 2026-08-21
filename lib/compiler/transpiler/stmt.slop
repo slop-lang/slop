@@ -817,8 +817,13 @@
                   (size-idx (if is-named 3 1))
                   (body-start (if is-named 4 2))
                   ;; C local var: _arena for unnamed (backward compat), _arena_<name> for named
+                  ;; Mangle for C. Every other binder in the compiler runs its name
+                  ;; through to-c-name; this one did not, so an ordinary kebab-case
+                  ;; arena name emitted `slop_arena* my-scratch = ...` and failed to
+                  ;; parse. The SLOP name stays raw for scope lookup.
+                  (c-arena-name (to-c-name (. (deref ctx) arena) arena-name))
                   (c-local (if is-named
-                             (string-concat (. (deref ctx) arena) "_arena_" arena-name)
+                             (string-concat (. (deref ctx) arena) "_arena_" c-arena-name)
                              "_arena")))
               ;; Validate minimum length for named form
               (if (and is-named (< len 4))
@@ -842,10 +847,10 @@
                         (ctx-emit ctx "#ifdef SLOP_DEBUG")
                         (ctx-emit ctx (ctx-str3 ctx "SLOP_PRE(" c-local ".base != NULL, \"arena allocation failed\");"))
                         (ctx-emit ctx "#endif")
-                        (ctx-emit ctx (ctx-str5 ctx "slop_arena* " arena-name " = &" c-local ";"))))
+                        (ctx-emit ctx (ctx-str5 ctx "slop_arena* " c-arena-name " = &" c-local ";"))))
                     ((none) (ctx-add-error-at ctx "missing size" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))
                   ;; Bind arena variable in scope
-                  (ctx-bind-var ctx (VarEntry arena-name arena-name "slop_arena*" "" true false false "" ""))
+                  (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" ""))
                   ;; Process body statements
                   (let ((mut i body-start))
                     (while (< i len)
@@ -856,7 +861,7 @@
                         ((none) (do)))
                       (set! i (+ i 1))))
                   ;; Free arena
-                  (ctx-emit ctx (ctx-str3 ctx "slop_arena_free(" arena-name ");"))
+                  (ctx-emit ctx (ctx-str3 ctx "slop_arena_free(" c-arena-name ");"))
                   ;; Close scope
                   (ctx-pop-scope ctx)
                   (ctx-dedent ctx)

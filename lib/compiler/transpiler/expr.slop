@@ -40,6 +40,7 @@
                    ctx-get-fields-for-type ctx-get-union-variants FieldEntry
                    ctx-register-list-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-register-chan-type
+                   ctx-find-arena-var
                    ctx-add-error ctx-add-error-at ctx-strict-unknown-symbols
                    ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
@@ -6447,8 +6448,9 @@
                             "arena"))
               (size-idx (if is-named 3 1))
               (body-start (if is-named 4 2))
+              (c-arena-name (to-c-name arena arena-name))
               (c-local (if is-named
-                         (string-concat arena "_arena_" arena-name)
+                         (string-concat arena "_arena_" c-arena-name)
                          "_arena")))
           ;; Validate minimum length for named form
           (if (and is-named (< len 5))
@@ -6465,9 +6467,9 @@
                           ;; ({ slop_arena _arena = slop_arena_new(size);
                           (mut result (ctx-str5 ctx "({ slop_arena " c-local " = slop_arena_new(" size-c "); ")))
                       ;; slop_arena* arena = &_arena;
-                      (set! result (ctx-str5 ctx result "slop_arena* " arena-name " = &" (ctx-str ctx c-local "; ")))
+                      (set! result (ctx-str5 ctx result "slop_arena* " c-arena-name " = &" (ctx-str ctx c-local "; ")))
                       ;; Bind arena variable in scope
-                      (ctx-bind-var ctx (VarEntry arena-name arena-name "slop_arena*" "" true false false "" ""))
+                      (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" ""))
                       ;; Process body expressions - all but last are side-effects
                       (let ((mut i body-start))
                         (while (< i (- len 1))
@@ -6481,11 +6483,11 @@
                       (match (list-get items (- len 1))
                         ((some last-expr)
                           (let ((last-c (transpile-expr ctx last-expr))
-                                (free-part (ctx-str3 ctx "slop_arena_free(" arena-name "); ")))
+                                (free-part (ctx-str3 ctx "slop_arena_free(" c-arena-name "); ")))
                             (set! result (ctx-str5 ctx result "__auto_type _wa_result = " last-c "; " free-part))
                             (set! result (ctx-str ctx result "_wa_result; })"))))
                         ((none)
-                          (let ((free-part (ctx-str3 ctx "slop_arena_free(" arena-name "); ")))
+                          (let ((free-part (ctx-str3 ctx "slop_arena_free(" c-arena-name "); ")))
                             (set! result (ctx-str3 ctx result free-part "0; })")))))
                       result))
                   ((none)
@@ -6798,8 +6800,15 @@
             ;; Found arena variable, use it directly (it's already a pointer)
             (. entry c-name))
           ((none)
-            ;; No arena in scope - signal to caller to use malloc
-            "")))))
+            ;; Neither of the two conventional names. A named arena --
+            ;; (with-arena :as myarena ...) -- binds something else entirely, and
+            ;; without this the closure env fell back to malloc and was never
+            ;; freed. Search the scope chain for any arena-typed variable.
+            (match (ctx-find-arena-var ctx)
+              ((some entry) (. entry c-name))
+              ((none)
+                ;; Genuinely no arena in scope - signal to caller to use malloc
+                "")))))))
 
   (fn build-closure-instance ((ctx (Ptr TranspileContext)) (lambda-name String) (env-name String) (env-type String) (free-vars (List String)) (captured-accesses (List String)))
     (@intent "Build expression that creates closure instance")
