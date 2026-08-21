@@ -1129,6 +1129,8 @@ slop_string expr_closure_type_to_c(context_TranspileContext* ctx, slop_string sl
         return SLOP_STR("double");
     } else if (string_eq(slop_type, SLOP_STR("F32"))) {
         return SLOP_STR("float");
+    } else if (string_eq(slop_type, SLOP_STR("F64"))) {
+        return SLOP_STR("double");
     } else if (string_eq(slop_type, SLOP_STR("Bool"))) {
         return SLOP_STR("uint8_t");
     } else if (string_eq(slop_type, SLOP_STR("String"))) {
@@ -2600,6 +2602,8 @@ slop_string expr_slop_value_type_to_option_id(slop_arena* arena, slop_string slo
         return SLOP_STR("float");
     } else if (string_eq(slop_type, SLOP_STR("F32"))) {
         return SLOP_STR("float");
+    } else if (string_eq(slop_type, SLOP_STR("F64"))) {
+        return SLOP_STR("double");
     } else if (string_eq(slop_type, SLOP_STR("Bool"))) {
         return SLOP_STR("uint8_t");
     } else if (string_eq(slop_type, SLOP_STR("String"))) {
@@ -2703,6 +2707,8 @@ slop_string expr_option_type_to_value_c_type(slop_arena* arena, slop_string opti
         return SLOP_STR("uint8_t");
     } else if (string_eq(option_type, SLOP_STR("slop_option_float"))) {
         return SLOP_STR("double");
+    } else if (string_eq(option_type, SLOP_STR("slop_option_f32"))) {
+        return SLOP_STR("float");
     } else if (string_eq(option_type, SLOP_STR("slop_option_char"))) {
         return SLOP_STR("char");
     } else if (string_eq(option_type, SLOP_STR("slop_option_u8"))) {
@@ -3442,6 +3448,7 @@ slop_string expr_transpile_list_expr(context_TranspileContext* ctx, slop_list_ty
                                             }
                                             return SLOP_STR("(slop_option_int){.has_value = 0}");
                                         } else {
+                                            context_ctx_register_option_type(ctx, expr_option_type_to_value_c_type(arena, option_type), option_type);
                                             return context_ctx_str5(ctx, SLOP_STR("("), option_type, SLOP_STR("){.has_value = 1, .value = "), val_c, SLOP_STR("}"));
                                         }
                                     }
@@ -3817,6 +3824,8 @@ slop_string expr_transpile_list_expr(context_TranspileContext* ctx, slop_list_ty
                                             __auto_type elem_c_type = context_to_c_type_prefixed(ctx, type_expr);
                                             __auto_type elem_id = ctype_type_to_identifier(arena, elem_c_type);
                                             __auto_type list_type = context_ctx_str(ctx, SLOP_STR("slop_list_"), elem_id);
+                                            context_ctx_register_list_type(ctx, elem_c_type, list_type);
+                                            context_ctx_register_option_type(ctx, elem_c_type, context_ctx_str(ctx, SLOP_STR("slop_option_"), elem_id));
                                             return context_ctx_str(ctx, SLOP_STR("(("), context_ctx_str(ctx, list_type, context_ctx_str(ctx, SLOP_STR("){ .data = ("), context_ctx_str(ctx, elem_c_type, context_ctx_str(ctx, SLOP_STR("*)slop_arena_alloc("), context_ctx_str(ctx, arena_c, context_ctx_str(ctx, SLOP_STR(", 16 * sizeof("), context_ctx_str(ctx, elem_c_type, SLOP_STR(")), .len = 0, .cap = 16 })")))))))));
                                         }
                                     } else if (!_mv_276.has_value) {
@@ -7460,6 +7469,8 @@ slop_string expr_transpile_list_literal(context_TranspileContext* ctx, slop_list
                         __auto_type count_str = int_to_string(arena, elem_count);
                         __auto_type elem_codes = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
                         __auto_type i = 2;
+                        context_ctx_register_list_type(ctx, elem_type, context_ctx_str(ctx, SLOP_STR("slop_list_"), type_id));
+                        context_ctx_register_option_type(ctx, elem_type, context_ctx_str(ctx, SLOP_STR("slop_option_"), type_id));
                         while (i < len) {
                             __auto_type _mv_475 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_475.has_value) {

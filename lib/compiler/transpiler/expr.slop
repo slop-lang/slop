@@ -823,6 +823,7 @@
       ((string-eq slop-type "U64") "uint64_t")
       ((string-eq slop-type "Float") "double")
       ((string-eq slop-type "F32") "float")
+      ((string-eq slop-type "F64") "double")
       ((string-eq slop-type "Bool") "uint8_t")
       ((string-eq slop-type "String") "slop_string")
       ((string-eq slop-type "Unit") "void")
@@ -1829,6 +1830,7 @@
       ((string-eq slop-type "Char") "char")
       ((string-eq slop-type "Float") "float")
       ((string-eq slop-type "F32") "float")
+      ((string-eq slop-type "F64") "double")
       ((string-eq slop-type "Bool") "uint8_t")
       ((string-eq slop-type "String") "string")
       ((string-eq slop-type "Bytes") "bytes")
@@ -1897,6 +1899,10 @@
       ((string-eq option-type "slop_option_string") "slop_string")
       ((string-eq option-type "slop_option_bool") "uint8_t")
       ((string-eq option-type "slop_option_float") "double")
+      ;; f32 is the identifier fragment for the C type float; without the
+      ;; reverse mapping the fallback below reads the suffix literally and
+      ;; emits *(f32*), which is not a C type.
+      ((string-eq option-type "slop_option_f32") "float")
       ((string-eq option-type "slop_option_char") "char")
       ((string-eq option-type "slop_option_u8") "uint8_t")
       ((string-eq option-type "slop_option_ptr") "void*")
@@ -2441,8 +2447,14 @@
                                 (when (starts-with option-type "/*")
                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for value '" val-c "'") (ctx-sexpr-line val-expr) (ctx-sexpr-col val-expr)))
                                 "(slop_option_int){.has_value = 0}")
-                              ;; Typed option construction
-                              (ctx-str5 ctx "(" option-type "){.has_value = 1, .value = " val-c "}"))))
+                              ;; Typed option construction. Register at the point of
+                              ;; use: an Option that exists only as an inferred local
+                              ;; is never seen by the prescan, which walks annotations
+                              ;; only. Harmless for the runtime-provided names --
+                              ;; emit-single-option-type-header skips those.
+                              (do
+                                (ctx-register-option-type ctx (option-type-to-value-c-type arena option-type) option-type)
+                                (ctx-str5 ctx "(" option-type "){.has_value = 1, .value = " val-c "}")))))
                         ((none)
                           (do
                             (ctx-add-error-at ctx "missing some value" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -2769,6 +2781,14 @@
                                     (elem-c-type (to-c-type-prefixed ctx type-expr))
                                     (elem-id (type-to-identifier arena elem-c-type))
                                     (list-type (ctx-str ctx "slop_list_" elem-id)))
+                                ;; Register the type at the point of use. The prescan only
+                                ;; walks type annotations, so a list bound by an inferred let
+                                ;; is never seen -- and the paired Option type is needed too,
+                                ;; because list-get over the result names slop_option_<id>.
+                                ;; This was masked while F32 and Float shared slop_list_float,
+                                ;; which the runtime predefines.
+                                (ctx-register-list-type ctx elem-c-type list-type)
+                                (ctx-register-option-type ctx elem-c-type (ctx-str ctx "slop_option_" elem-id))
                                 ;; ((slop_list_Type){ .data = (Type*)slop_arena_alloc(arena, 16 * sizeof(Type)), .len = 0, .cap = 16 })
                                 (ctx-str ctx "(("
                                   (ctx-str ctx list-type
@@ -5386,6 +5406,12 @@
                     ;; Collect transpiled element expressions
                     (mut elem-codes (list-new arena String))
                     (mut i 2))
+                ;; Register at the point of use, as list-new does. A literal bound
+                ;; to an inferred local is never seen by the prescan, which walks
+                ;; annotations only, and list-get over the result names
+                ;; slop_option_<id>, so the paired Option type is needed too.
+                (ctx-register-list-type ctx elem-type (ctx-str ctx "slop_list_" type-id))
+                (ctx-register-option-type ctx elem-type (ctx-str ctx "slop_option_" type-id))
                 (while (< i len)
                   (match (list-get items i)
                     ((some elem-expr)

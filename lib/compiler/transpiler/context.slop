@@ -412,6 +412,7 @@
       (ctx-register-type ctx (TypeEntry "Char" "char" "char" false false false))
       (ctx-register-type ctx (TypeEntry "Float" "double" "double" false false false))
       (ctx-register-type ctx (TypeEntry "F32" "float" "float" false false false))
+      (ctx-register-type ctx (TypeEntry "F64" "double" "double" false false false))
       (ctx-register-type ctx (TypeEntry "Bool" "uint8_t" "uint8_t" false false false))
       (ctx-register-type ctx (TypeEntry "String" "slop_string" "slop_string" false false false))
       (ctx-register-type ctx (TypeEntry "Bytes" "slop_bytes" "slop_bytes" false false false))

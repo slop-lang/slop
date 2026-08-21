@@ -78,5 +78,35 @@ SLOP_OPTION_DEFINE(type_extract_ImportEntry, slop_option_type_extract_ImportEntr
 SLOP_OPTION_DEFINE(tester_TestResult, slop_option_tester_TestResult)
 #endif
 
+#ifndef SLOP_OPTION_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_TstFieldEntry, slop_option_type_extract_TstFieldEntry)
+#endif
+
+#ifndef SLOP_OPTION_TYPE_EXTRACT_VARIANTENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_VARIANTENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_VariantEntry, slop_option_type_extract_VariantEntry)
+#endif
+
+#ifndef SLOP_OPTION_TYPE_EXTRACT_ENUMVALUEENTRY_DEFINED
+#define SLOP_OPTION_TYPE_EXTRACT_ENUMVALUEENTRY_DEFINED
+SLOP_OPTION_DEFINE(type_extract_EnumValueEntry, slop_option_type_extract_EnumValueEntry)
+#endif
+
+#ifndef SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_TSTFIELDENTRY_DEFINED
+SLOP_LIST_DEFINE(type_extract_TstFieldEntry, slop_list_type_extract_TstFieldEntry)
+#endif
+
+#ifndef SLOP_LIST_TYPE_EXTRACT_VARIANTENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_VARIANTENTRY_DEFINED
+SLOP_LIST_DEFINE(type_extract_VariantEntry, slop_list_type_extract_VariantEntry)
+#endif
+
+#ifndef SLOP_LIST_TYPE_EXTRACT_ENUMVALUEENTRY_DEFINED
+#define SLOP_LIST_TYPE_EXTRACT_ENUMVALUEENTRY_DEFINED
+SLOP_LIST_DEFINE(type_extract_EnumValueEntry, slop_list_type_extract_EnumValueEntry)
+#endif
+
 
 #endif

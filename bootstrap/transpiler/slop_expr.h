@@ -240,5 +240,10 @@ slop_string expr_infer_elem_from_type(context_TranspileContext* ctx, types_SExpr
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #endif
 
+#ifndef SLOP_OPTION_CONTEXT_VARENTRY_DEFINED
+#define SLOP_OPTION_CONTEXT_VARENTRY_DEFINED
+SLOP_OPTION_DEFINE(context_VarEntry, slop_option_context_VarEntry)
+#endif
+
 
 #endif

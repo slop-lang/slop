@@ -87,6 +87,7 @@ literal     = number | string | 'true | 'false | 'nil
 
 (Float)                  ; 64-bit float (double)
 (F32)                    ; 32-bit float
+(F64)                    ; 64-bit float, explicit-width spelling of Float
 
 (Bool)                   ; true or false (uint8_t)
 
@@ -592,6 +593,7 @@ SLOP                    C
 (U64)                   uint64_t
 (Float)                 double
 (F32)                   float
+(F64)                   double
 (Bool)                  uint8_t
 (String)                slop_string
 (Bytes)                 slop_bytes

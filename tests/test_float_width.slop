@@ -1,0 +1,211 @@
+;; ============================================================
+;; Test: F32 and Float are distinct container element types
+;;
+;; Regression for issue #87. type-to-identifier normalised the C type
+;; "double" to the fragment "float" -- correct, because the runtime
+;; predefines slop_list_float over double -- and left the C type
+;; "float" alone, which produced the same fragment. So (List F32) and
+;; (List Float) named the same C type, and that type holds doubles.
+;;
+;; The generated C said it plainly:
+;;
+;;   slop_list_float xs = { .data = (float*)slop_arena_alloc(a, 16 * sizeof(float)), ... }
+;;
+;; a double-element list pointed at a buffer sized for 16 floats. Reading
+;; past element 7 walks off the allocation. `slop build` discards cc
+;; output, so the -Wincompatible-pointer-types warning never surfaced.
+;;
+;; Element counts here deliberately exceed the initial capacity of 16, so
+;; the test walks past the point where the undersized buffer ran out.
+;; ============================================================
+
+(module test-float-width
+
+  (fn sum-f32 ((n Int))
+    (@intent "Build a (List F32) of n elements and total them")
+    (@spec ((Int) -> Int))
+    (with-arena 65536
+      (let ((xs (list-new arena F32))
+            (mut i 0)
+            (mut total 0))
+        (while (< i n)
+          (do
+            (list-push xs (cast F32 (+ i 1)))
+            (set! i (+ i 1))))
+        (set! i 0)
+        (while (< i n)
+          (do
+            (match (list-get xs i)
+              ((some v) (set! total (+ total (cast Int v))))
+              ((none) (do)))
+            (set! i (+ i 1))))
+        total)))
+
+  (fn sum-float ((n Int))
+    (@intent "Same over a (List Float), which must stay the double-backed list")
+    (@spec ((Int) -> Int))
+    (with-arena 65536
+      (let ((ys (list-new arena Float))
+            (mut i 0)
+            (mut total 0))
+        (while (< i n)
+          (do
+            (list-push ys (cast Float (+ i 1)))
+            (set! i (+ i 1))))
+        (set! i 0)
+        (while (< i n)
+          (do
+            (match (list-get ys i)
+              ((some v) (set! total (+ total (cast Int v))))
+              ((none) (do)))
+            (set! i (+ i 1))))
+        total)))
+
+  (fn test-f32-list ()
+    (@intent "40 elements of F32 read back exactly: 1+2+...+40 = 820")
+    (@spec (() -> Bool))
+    (== (sum-f32 40) 820))
+
+  ;; ============================================================
+  ;; The check that actually discriminates.
+  ;;
+  ;; Summing one list in isolation is not enough: the arena is a bump
+  ;; allocator, so a list that writes past its own buffer just scribbles
+  ;; on unclaimed arena space and reads the same bytes straight back.
+  ;; Every value survives and the sum comes out right.
+  ;;
+  ;; So allocate a second list IMMEDIATELY after the F32 one and check it
+  ;; afterwards. With F32 and Float sharing slop_list_float, xs holds
+  ;; 8-byte doubles in a buffer sized for 16 4-byte floats, so pushing
+  ;; past element 7 runs into whatever was allocated next -- this list.
+  ;; It grows at element 16 and moves elsewhere, so elements 8..15 are
+  ;; the damage window, which is why 12 is pushed below.
+  ;; ============================================================
+  (fn test-neighbour-survives ()
+    (@intent "An F32 list must not write past its buffer into the next allocation")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((xs (list-new arena F32))
+            (canary (list-new arena Int))
+            (mut i 0)
+            (mut total 0))
+        (while (< i 16)
+          (do
+            (list-push canary (+ i 1))
+            (set! i (+ i 1))))
+        (set! i 0)
+        (while (< i 12)
+          (do
+            (list-push xs (cast F32 (+ i 100)))
+            (set! i (+ i 1))))
+        (set! i 0)
+        (while (< i 16)
+          (do
+            (match (list-get canary i)
+              ((some v) (set! total (+ total v)))
+              ((none) (do)))
+            (set! i (+ i 1))))
+        ;; 1+2+...+16 = 136
+        (== total 136))))
+
+  (fn test-float-list ()
+    (@intent "40 elements of Float read back exactly: 1+2+...+40 = 820")
+    (@spec (() -> Bool))
+    (== (sum-float 40) 820))
+
+  ;; (Option F32) in a signature. Splitting the identifier meant this needed
+  ;; slop_option_f32 emitted with the other primitive options, before function
+  ;; prototypes -- the late pass runs after them. It went unnoticed while F32
+  ;; and Float shared slop_option_float, which the runtime predefines.
+  (fn maybe-f32 ((flag Bool) (x F32))
+    (@intent "An (Option F32) parameter and return type must compile")
+    (@spec ((Bool F32) -> (Option F32)))
+    (if flag (some x) (none)))
+
+  (fn test-option-f32 ()
+    (@intent "(Option F32) round-trips through a signature")
+    (@spec (() -> Bool))
+    (match (maybe-f32 true (cast F32 7))
+      ((some v) (== (cast Int v) 7))
+      ((none) false)))
+
+  ;; The identifier fragment has to survive the round trip back to a C type.
+  ;; option-type-to-value-c-type maps slop_option_int -> int64_t and so on,
+  ;; falling through to the suffix verbatim for anything unlisted -- which for
+  ;; slop_option_f32 meant emitting *(f32*), not a C type. A (Map K F32) read
+  ;; is the path that hits it.
+  (fn map-f32-roundtrip ((arena Arena))
+    (@intent "Read an F32 back out of a Map")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((m (map-new arena String F32)))
+      (map-put m "a" (cast F32 3))
+      (match (map-get m "a")
+        ((some v) (cast Int v))
+        ((none) 0))))
+
+  (fn test-map-f32 ()
+    (@intent "(Map K F32) round-trips through map-get")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (== (map-f32-roundtrip arena) 3)))
+
+  ;; F64 is the explicit-width spelling of Float, so both are a C double and
+  ;; both land on slop_list_float. That is correct -- unlike the F32 case, they
+  ;; ARE the same C type. It is covered because F64 was registered as a checker
+  ;; builtin with no ctype mapping, so it type-checked and then failed in C with
+  ;; "unknown type name 'mod_F64'".
+  (fn f64-containers ((arena Arena))
+    (@intent "F64 through list-new, a literal, and a Map value")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((xs (list-new arena F64))
+          (m (map-new arena String F64))
+          (lit (list F64 (cast F64 7))))
+      (do
+        (list-push xs (cast F64 5))
+        (map-put m "k" (cast F64 6))
+        (+ (match (list-get xs 0) ((some v) (cast Int v)) ((none) 0))
+           (+ (match (map-get m "k") ((some v) (cast Int v)) ((none) 0))
+              (match (list-get lit 0) ((some v) (cast Int v)) ((none) 0)))))))
+
+  (fn test-f64 ()
+    (@intent "F64 works as a type and through the container paths")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (and (== (sizeof F64) 8)
+           (== (f64-containers arena) 18))))
+
+  (fn main ()
+    (@intent "Run the element-width tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-f32-list)
+        (println "test-f32-list: PASS")
+        (do (println "test-f32-list: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-float-list)
+        (println "test-float-list: PASS")
+        (do (println "test-float-list: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-neighbour-survives)
+        (println "test-neighbour-survives: PASS")
+        (do (println "test-neighbour-survives: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-option-f32)
+        (println "test-option-f32: PASS")
+        (do (println "test-option-f32: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-f32)
+        (println "test-map-f32: PASS")
+        (do (println "test-map-f32: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-f64)
+        (println "test-f64: PASS")
+        (do (println "test-f64: FAIL")
+            (set! failures (+ failures 1))))
+
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (print failures) (println " test(s) failed") 1)))))
