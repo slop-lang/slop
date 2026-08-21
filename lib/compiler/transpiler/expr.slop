@@ -2749,7 +2749,13 @@
                     ;; imported it, and the call -- type-checked as the builtin --
                     ;; would lower to a call into the dependency. Refusing the
                     ;; definition removes the disagreement rather than tracking it.
-                    ((and (or (string-eq op "is-none") (string-eq op "is-some")) (>= len 2))
+                    ;; A local of that name wins, matching the checker. Locals are
+                    ;; module-scoped, so ctx-lookup-var is safe here in a way that
+                    ;; ctx-lookup-func and ctx-lookup-type are not -- those see
+                    ;; every module in the build.
+                    ((and (or (string-eq op "is-none") (string-eq op "is-some"))
+                          (>= len 2)
+                          (match (ctx-lookup-var ctx op) ((some v) false) ((none) true)))
                       (match (list-get items 1)
                         ((some opt-expr)
                           (let ((opt-c (transpile-expr ctx opt-expr))

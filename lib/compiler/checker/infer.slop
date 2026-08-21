@@ -1138,7 +1138,14 @@
                     ;; (is-none opt) / (is-some opt) -> Bool. Tag predicates, so
                     ;; they hold for any T -- including one whose payload has no
                     ;; structural equality and therefore cannot be compared at all.
-                    ((or (string-eq op "is-none") (string-eq op "is-some"))
+                    ;; A local of that name wins: a (Fn ...) parameter or a let
+                    ;; binding called is-none is an ordinary callable, and the
+                    ;; cond's own env-lookup-var fallback further down handles it.
+                    ;; Locals are module-scoped, so unlike the function and type
+                    ;; cases this can be resolved by lookup -- there is no other
+                    ;; module whose binding could reach in here.
+                    ((and (or (string-eq op "is-none") (string-eq op "is-some"))
+                          (match (env-lookup-var env op) ((some v) false) ((none) true)))
                       (do (check-builtin-args env op 1 (- len 1) line col)
                           (check-option-predicate-arg env op items len line col)
                           (env-get-bool-type env)))

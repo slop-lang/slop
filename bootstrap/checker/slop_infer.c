@@ -1417,7 +1417,7 @@ types_ResolvedType* infer_infer_special_form(env_TypeEnv* env, types_SExpr* expr
                     } else if (string_eq(op, SLOP_STR("list-len"))) {
                         infer_check_builtin_args(env, SLOP_STR("list-len"), 1, (len - 1), line, col);
                         return env_env_get_int_type(env);
-                    } else if (string_eq(op, SLOP_STR("is-none")) || string_eq(op, SLOP_STR("is-some"))) {
+                    } else if ((string_eq(op, SLOP_STR("is-none")) || string_eq(op, SLOP_STR("is-some"))) && ({ __auto_type _mv = env_env_lookup_var(env, op); _mv.has_value ? ({ __auto_type v = _mv.value; 0; }) : (1); })) {
                         infer_check_builtin_args(env, op, 1, (len - 1), line, col);
                         infer_check_option_predicate_arg(env, op, items, len, line, col);
                         return env_env_get_bool_type(env);

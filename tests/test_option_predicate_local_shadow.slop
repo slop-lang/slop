@@ -1,0 +1,73 @@
+;; A LOCAL of either name wins over the builtin (#107).
+;;
+;; A (Fn ...) parameter or a let binding called is-none is an ordinary callable.
+;; The shadowing functions below compile on v0.2.0 -- the name was free there --
+;; and dispatching on the name alone rejected them with
+;; "'is-none' expects an (Option T), got Int". So that half is a regression test.
+;; The module as a whole cannot build on v0.2.0, because the last test uses the
+;; builtin that does not exist there.
+;;
+;; Locals are why this is resolvable by lookup at all. A function or type of
+;; these names is refused outright instead, because the transpiler's FuncEntry
+;; carries no module and its lookups see every module in the build -- a
+;; dependency could disable the builtin somewhere that never imported it. A
+;; local cannot reach out of its own module, so env-lookup-var and ctx-lookup-var
+;; answer the question exactly.
+
+(module test-option-predicate-local-shadow
+
+  (fn zero? ((n Int))
+    (@intent "An ordinary predicate to pass around")
+    (@spec ((Int) -> Bool))
+    (== n 0))
+
+  (fn positive? ((n Int))
+    (@intent "Another one")
+    (@spec ((Int) -> Bool))
+    (> n 0))
+
+  (fn apply-none ((is-none (Fn (Int) Bool)) (n Int))
+    (@intent "A (Fn ...) parameter named is-none shadows the builtin")
+    (@spec (((Fn (Int) Bool) Int) -> Bool))
+    (is-none n))
+
+  (fn apply-some ((is-some (Fn (Int) Bool)) (n Int))
+    (@intent "Same for is-some")
+    (@spec (((Fn (Int) Bool) Int) -> Bool))
+    (is-some n))
+
+  (fn test-fn-param-shadow ()
+    (@intent "The parameter is called, over an Int the builtin could not accept")
+    (@spec (() -> Bool))
+    (and (apply-none zero? 0)
+         (not (apply-none zero? 4))
+         (apply-some positive? 4)
+         (not (apply-some positive? 0))))
+
+  ;; The builtin must still be reachable from a function that does not shadow it.
+  (fn test-builtin-still-available ()
+    (@intent "No local of that name here, so the builtin applies")
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((xs (list-new arena Int)))
+        (list-push xs 1)
+        (and (is-some (list-get xs 0))
+             (is-none (list-get xs 9))))))
+
+  (fn main ()
+    (@intent "Run the local-shadowing tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-fn-param-shadow)
+        (println "test-fn-param-shadow: PASS")
+        (do (println "test-fn-param-shadow: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-builtin-still-available)
+        (println "test-builtin-still-available: PASS")
+        (do (println "test-builtin-still-available: FAIL")
+            (set! failures (+ failures 1))))
+
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (print failures) (println " test(s) failed") 1)))))
