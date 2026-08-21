@@ -290,3 +290,23 @@ class TestMatchFallthroughTrap:
             body = c_src.split(f"{fn}(")[-1]
             body = body[:body.index("\n}\n")]
             assert "SLOP_UNREACHABLE" not in body, f"{fn} should not be trapped:\n{body}"
+
+
+class TestFloatLiteralTyping:
+    """A float literal types as Float, not Int (#94).
+
+    `Float` was the one primitive with no entry in `env-new`: the parameter side
+    built it on demand via resolve-simple-type, but nothing cached it, so the
+    literal side had nothing to be given and fell through to Int. Correct code
+    that transpiles fine was reported as a type error.
+    """
+
+    def test_float_literals_check_clean(self):
+        output = slop_check("fixtures/test_float_literal.slop")
+        combined = output[1] + output[2]
+
+        # The exact shape #94 reported.
+        assert "expected Float, got Int" not in combined, combined
+        # Nothing else should fire either -- every form in the fixture is valid.
+        assert ": error:" not in combined, combined
+        assert ": warning:" not in combined, combined

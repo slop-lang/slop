@@ -170,6 +170,7 @@ struct env_TypeEnv {
     types_ResolvedType* int_type;
     types_ResolvedType* bool_type;
     types_ResolvedType* string_type;
+    types_ResolvedType* float_type;
     types_ResolvedType* unit_type;
     types_ResolvedType* arena_type;
     types_ResolvedType* unknown_type;
@@ -226,6 +227,7 @@ slop_option_string env_env_get_module(env_TypeEnv* env);
 types_ResolvedType* env_env_get_int_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_bool_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_string_type(env_TypeEnv* env);
+types_ResolvedType* env_env_get_float_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_unit_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_arena_type(env_TypeEnv* env);
 types_ResolvedType* env_env_get_unknown_type(env_TypeEnv* env);

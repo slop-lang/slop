@@ -1,0 +1,43 @@
+;; Fixture for #94: the checker typed every number literal as Int, so a
+;; float literal reaching a Float parameter was reported as
+;; "expected Float, got Int" on code that is correct and transpiles fine.
+;;
+;; Float was the one primitive with no builtin entry in env-new --
+;; resolve-simple-type built it on demand for the parameter side, and
+;; nothing cached it, so the literal side had nothing to be given.
+;;
+;; Every form here is valid and must check CLEAN. Lives under fixtures/
+;; because it is asserted via `slop check` output, not by running it.
+(module float-literal
+
+  (type Point (record (x Float) (y Float)))
+
+  (fn takes-float ((f Float))
+    (@intent "float literal passed to a Float parameter")
+    (@spec ((Float) -> Float))
+    f)
+
+  (fn literal-arg ()
+    (@intent "the exact shape #94 reported")
+    (@spec (() -> Float))
+    (takes-float 3.14))
+
+  (fn negative-and-zero ()
+    (@intent "sign and zero must type the same way")
+    (@spec (() -> Float))
+    (takes-float 0.0))
+
+  (fn float-record ()
+    (@intent "float literals in record fields")
+    (@spec (() -> Point))
+    (record-new Point (x 1.5) (y 2.5)))
+
+  (fn float-in-option ()
+    (@intent "a float literal inside an Option")
+    (@spec (() -> (Option Float)))
+    (some 2.718))
+
+  (fn main ()
+    (@intent "Unused entry point; the fixture is never run")
+    (@spec (() -> Int))
+    0))
