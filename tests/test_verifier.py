@@ -8793,3 +8793,72 @@ class TestLoopVariableVersions:
                 (set! i (+ i 1)))
               k)))
         ''').status == 'verified'
+
+    def test_a_loop_inside_a_branch_says_nothing_about_after(self):
+        """It may not run, so neither its exit condition nor the direction of
+        its counters describes the state that follows."""
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (flag Bool))
+            (@spec ((Arena Bool) -> Int))
+            (@pre (not flag))
+            (@post (>= $result 5))
+            (let ((mut i 0))
+              (if flag (while (< i 5) (set! i (+ i 1))) 0)
+              i)))
+        ''').status != 'verified'
+
+    def test_an_assignment_after_the_loop_replaces_its_result(self):
+        assert self._result('''
+        (module m
+          (fn g ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (>= $result 5))
+            (let ((mut i 0))
+              (while (< i 5) (set! i (+ i 1)))
+              (set! i 0)
+              i)))
+        ''').status != 'verified'
+
+    def test_an_assignment_after_the_loop_is_what_the_result_is(self):
+        assert self._result('''
+        (module m
+          (fn g ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 0))
+            (let ((mut i 0))
+              (while (< i 5) (set! i (+ i 1)))
+              (set! i 0)
+              i)))
+        ''').status == 'verified'
+
+    def test_a_binding_made_before_the_loop_keeps_its_value(self):
+        """`(j (ident i))` was called with i's starting value. Re-translating
+        that argument later reads the version the loop produced."""
+        from slop.verifier import verify_source
+        results = verify_source('''
+        (module m
+          (fn ident ((x Int)) (@spec ((Int) -> Int)) (@post (== $result x)) x)
+          (fn h ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (>= $result 5))
+            (let ((mut i 0)
+                  (j (ident i)))
+              (while (< i 5) (set! i (+ i 1)))
+              j)))
+        ''', filename="probe.slop")
+        h = [r for r in results if r.name == 'h']
+        assert len(h) == 1
+        assert h[0].status != 'verified'
+
+    def test_a_parameter_cannot_be_mistaken_for_a_loop_constant(self):
+        assert self._result('''
+        (module m
+          (fn k ((arena Arena) (i_after_loop_1 Int))
+            (@spec ((Arena Int) -> Int))
+            (@pre (== i_after_loop_1 42))
+            (@post (== $result i_after_loop_1))
+            (let ((mut i 0))
+              (while (< i 5) (set! i (+ i 1)))
+              i)))
+        ''').status != 'verified'

@@ -67,6 +67,11 @@ class Z3Translator:
         self._loop_version_counter = 0
         self._pre_loop_variables: Dict[str, z3.ExprRef] = {}
         self.versioned_loops: Set[int] = set()
+        # Loops that run whenever the function body does. Empty until
+        # note_body() says otherwise, so a loop nobody has placed is treated as
+        # conditional and gets no facts attached to it.
+        self._unconditional_loops: Set[int] = set()
+        self._in_loop_body = False
         self._record_new_counter = 0  # Counter for unique record-new values
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
         self._build_enum_map()
@@ -1353,6 +1358,9 @@ class Z3Translator:
                 if op in ('while', 'for-each') and len(expr) >= 2:
                     return self._translate_loop(expr)
 
+                if op == 'set!' and len(expr) >= 3:
+                    return self._translate_assignment(expr)
+
                 # Option constructors with semantic axioms
                 if op == 'some' and len(expr) == 2:
                     inner = self.translate_expr(expr[1])
@@ -1857,7 +1865,8 @@ class Z3Translator:
         however many times it runs - including none - so i_after >= i_before.
         """
         loop_id = id(expr)
-        body_items = expr.items[2:] if is_form(expr, 'while') else expr.items[2:]
+        unconditional = loop_id in self._unconditional_loops
+        body_items = expr.items[2:]
 
         assigned: Dict[str, List['SExpr']] = {}
         self._collect_assignments(body_items, assigned)
@@ -1870,34 +1879,68 @@ class Z3Translator:
             key = (loop_id, name)
             after = self._loop_versions.get(key)
             if after is None:
-                self._loop_version_counter += 1
-                fresh_name = f"{name}_after_loop_{self._loop_version_counter}"
+                # Fresh rather than a name of our own construction:
+                # `i_after_loop_1` is a legal SLOP identifier, and colliding
+                # with a parameter of that name would tie the loop's result to
+                # an unrelated input.
+                prefix = f"{name}_after_loop"
                 if z3.is_bool(before):
-                    after = z3.Bool(fresh_name)
+                    after = z3.FreshBool(prefix)
                 elif z3.is_real(before):
-                    after = z3.Real(fresh_name)
+                    after = z3.FreshReal(prefix)
                 else:
-                    after = z3.Int(fresh_name)
+                    after = z3.FreshInt(prefix)
                 self._loop_versions[key] = after
-                direction = self._assignment_direction(name, values)
-                if direction > 0:
-                    self.constraints.append(after >= before)
-                elif direction < 0:
-                    self.constraints.append(after <= before)
+                if unconditional:
+                    direction = self._assignment_direction(name, values)
+                    if direction > 0:
+                        self.constraints.append(after >= before)
+                    elif direction < 0:
+                        self.constraints.append(after <= before)
             self.variables[name] = after
 
         # The exit condition constrains the post-loop values, so it is stated
         # here rather than by a later pass that would not know which version of
         # each name a given loop ended with.
-        if is_form(expr, 'while') and len(expr) >= 2:
+        if unconditional and is_form(expr, 'while') and len(expr) >= 2:
             cond_z3 = self.translate_expr(expr[1])
             if cond_z3 is not None and z3.is_bool(cond_z3):
                 self.constraints.append(z3.Not(cond_z3))
         self.versioned_loops.add(loop_id)
 
-        for item in body_items:
-            self.translate_expr(item)
+        # The body still gets walked so its inner bindings are declared, but its
+        # assignments have already been accounted for by the havoc above and
+        # must not version anything again.
+        was_in_loop = self._in_loop_body
+        self._in_loop_body = True
+        try:
+            for item in body_items:
+                self.translate_expr(item)
+        finally:
+            self._in_loop_body = was_in_loop
         return None
+
+    def note_body(self, body: 'SExpr') -> None:
+        """Record which loops in `body` run unconditionally.
+
+        A loop inside an `if` arm may not run at all, so its exit condition and
+        the direction of its counters say nothing about the state afterwards.
+        Only a loop on the body's own statement path can contribute those.
+        """
+        node = body
+        while True:
+            if is_form(node, 'let') and len(node) >= 3:
+                statements = node.items[2:]
+            elif is_form(node, 'do') and len(node) >= 2:
+                statements = node.items[1:]
+            else:
+                statements = [node]
+            for statement in statements:
+                if is_form(statement, 'while') or is_form(statement, 'for-each'):
+                    self._unconditional_loops.add(id(statement))
+            if len(statements) <= 1 and statements and statements[0] is node:
+                return
+            node = statements[-1]
 
     def initial_variable(self, name: str):
         """The constant `name` held before any loop gave it a new one.
@@ -1912,6 +1955,37 @@ class Z3Translator:
     def is_loop_versioned(self, name: str) -> bool:
         """True if a loop assigned `name`, so its value after differs from before."""
         return name in self._pre_loop_variables
+
+    def _translate_assignment(self, expr: SList) -> Optional[z3.ExprRef]:
+        """`(set! name value)` outside a loop: the name takes a new value.
+
+        Without this the name keeps whatever constant it had, so a `set!` after
+        a loop left the loop's facts attached to a variable the program has
+        since overwritten. Inside a loop body nothing is done - the loop already
+        gave every name it assigns a fresh constant, and one more here would
+        replace it.
+        """
+        if self._in_loop_body:
+            return None
+        target = expr[1]
+        if not isinstance(target, Symbol):
+            return None
+        name = target.name
+        before = self.variables.get(name)
+        value_z3 = self.translate_expr(expr[2])
+        if before is None or not z3.is_expr(before):
+            return None
+        prefix = f"{name}_after_set"
+        if z3.is_bool(before):
+            after = z3.FreshBool(prefix)
+        elif z3.is_real(before):
+            after = z3.FreshReal(prefix)
+        else:
+            after = z3.FreshInt(prefix)
+        self.variables[name] = after
+        if value_z3 is not None and value_z3.sort() == after.sort():
+            self.constraints.append(after == value_z3)
+        return None
 
     def _collect_assignments(self, stmts, assigned: Dict[str, List]):
         """Every `(set! name value)` under `stmts`, grouped by name.

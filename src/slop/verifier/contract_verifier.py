@@ -695,6 +695,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if not var_name:
             return
 
+        # Evaluated where the binding is, but this runs long after the body was
+        # translated. If the initializer mentions a name some loop reassigned,
+        # re-translating it reads the value the loop produced rather than the
+        # one the binding was given (issue #116).
+        if self._mentions_loop_versioned(init_expr, translator):
+            return
+
         # Handle simple expression bindings (not function calls)
         # Add axiom: var == init_expr
         if not isinstance(init_expr, SList) or len(init_expr) < 1:
@@ -754,6 +761,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if z3_axiom is not None:
                 axioms.append(z3_axiom)
 
+    def _mentions_loop_versioned(self, expr: SExpr, translator: Z3Translator) -> bool:
+        """True if `expr` names a variable some loop reassigned."""
+        if isinstance(expr, Symbol):
+            return translator.is_loop_versioned(expr.name)
+        if isinstance(expr, SList):
+            return any(self._mentions_loop_versioned(item, translator)
+                       for item in expr.items)
+        return False
+
     def _add_binding_axiom(self, var_name: str, expr: SExpr, translator: Z3Translator, axioms: List):
         """Add axiom: var == expr for simple let bindings.
 
@@ -771,6 +787,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # version the loop produced instead (issue #116).
         var_z3 = translator.initial_variable(var_name)
         if var_z3 is None:
+            return
+
+        # This runs long after the body was translated, so re-translating the
+        # initializer reads whatever version of each name is current. If it
+        # mentions one a loop reassigned, the value it produces is not the one
+        # the binding was given.
+        if self._mentions_loop_versioned(expr, translator):
             return
 
         expr_z3 = translator.translate_expr(expr)
@@ -3083,6 +3106,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # from let bindings, which are declared during body translation
         body_z3: Optional[z3.ExprRef] = None
         body_constraint_start = len(translator.constraints)
+        if fn_body is not None:
+            # Which loops run whenever the body does. Without this every loop is
+            # taken as conditional and contributes no facts. The last form is
+            # fn_body rather than all_body_exprs[-1]: the same form, but
+            # _desugar_callback_iterations rebuilt it, and this is keyed on
+            # node identity.
+            for form in (list(all_body_exprs[:-1]) + [fn_body]
+                         if all_body_exprs else [fn_body]):
+                translator.note_body(form)
         if fn_body is not None and postconditions:
             body_z3 = translator.translate_expr(fn_body)
         body_constraint_end = len(translator.constraints)
