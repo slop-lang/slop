@@ -1168,6 +1168,96 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return self._get_return_expr(expr.items[-1])
         return expr
 
+    def _inconsistent_context_result(
+        self, solver, translator, fn_name, fn_form,
+        pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
+        pre_constraint_count,
+    ):
+        """A result to report when the axioms contradict each other, else None.
+
+        Issue #115. Every contract is discharged by asking whether
+        (axioms AND NOT contract) is satisfiable, so if the axioms alone are
+        unsatisfiable that answers "no" for any contract and it reports verified
+        having proved nothing.
+
+        Only worth asking once a contract has come back proved: a counterexample
+        is itself a model of the axioms, so a sat result has already shown them
+        consistent.
+
+        Four things can make the context unsat and they are not the same
+        problem, so the layers are added one at a time and the first one that
+        tips it over names the cause. Three of them are the author's contract;
+        only what survives all three is ours.
+        """
+        if solver.check() != z3.unsat:
+            return None
+
+        layer = z3.Solver()
+        layer.set("timeout", self.timeout_ms)
+        for c in translator.constraints[:pre_constraint_count]:
+            layer.add(c)
+
+        if layer.check() == z3.unsat:
+            # Unsat before any @pre was added: the parameter or result types
+            # themselves admit no value, e.g. an empty range (Int 5 .. 3).
+            return VerificationResult(
+                name=fn_name,
+                verified=False,
+                status="failed",
+                message=(
+                    "Parameter or result types admit no value: their constraints "
+                    "cannot all hold, so the function can never be called. An "
+                    "empty range type such as (Int 5 .. 3) does this."
+                ),
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+            )
+
+        authored = [
+            (self._unsatisfiable_precondition_message(preconditions), pre_z3),
+            (
+                "Type invariants are contradictory: no value of the parameter "
+                "types can satisfy them together with the preconditions, so the "
+                "function has no legal input.",
+                invariant_z3 + range_field_axioms,
+            ),
+            (
+                "Assumptions are contradictory: the @assume set cannot hold "
+                "together with the preconditions, so it would discharge any "
+                "postcondition. @assume is trusted, not checked - narrow it.",
+                assume_z3,
+            ),
+            (
+                "A contract or body expression cannot be well-defined: the side "
+                "conditions from translating them cannot all hold. A division by "
+                "a zero denominator or a value outside its range type does this.",
+                translator.constraints[pre_constraint_count:],
+            ),
+        ]
+        for message, extra in authored:
+            for a in extra:
+                layer.add(a)
+            if layer.check() == z3.unsat:
+                return VerificationResult(
+                    name=fn_name,
+                    verified=False,
+                    status="failed",
+                    message=message,
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                )
+
+        return VerificationResult(
+            name=fn_name,
+            verified=False,
+            status="unknown",
+            message=(
+                "Verification context is inconsistent: the axioms generated for this "
+                "function contradict each other, so nothing can be proved from them. "
+                "This is a verifier defect, not a problem with the contract - please "
+                "report it with the function body."
+            ),
+            location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+        )
+
     def _unsatisfiable_precondition_message(
         self, preconditions: List[Tuple[Optional[str], SExpr]]
     ) -> str:
@@ -3069,85 +3159,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for equality in self._result_sequence_equality(fn_body, translator):
                 solver.add(equality)
 
-        # Vacuity guard (issue #115)
-        #
-        # Every postcondition below is discharged by asking whether
-        # (axioms AND NOT post) is satisfiable. If the axioms alone are already
-        # unsatisfiable that question answers "no" for *any* post, so every
-        # contract on this function reports verified without having been proved.
-        # Two different things make the base context unsat and they need
-        # different messages: an unsatisfiable @pre, which is the caller
-        # contract being impossible, and axioms we generated that contradict
-        # each other, which is a defect in this verifier.
-        if solver.check() == z3.unsat:
-            # Narrow it down, adding one authored layer at a time: the @pre set,
-            # then the parameters' type invariants, then @assume. Each of those
-            # is the author's own contract being impossible and is reported as
-            # such; only a contradiction that survives all three is ours.
-            layer = z3.Solver()
-            layer.set("timeout", self.timeout_ms)
-            for c in translator.constraints[:pre_constraint_count]:
-                layer.add(c)
-            if layer.check() == z3.unsat and not pre_z3:
-                # Unsat before any @pre was added: the parameter or result types
-                # themselves admit no value, e.g. an empty range (Int 5 .. 3).
-                return VerificationResult(
-                    name=fn_name,
-                    verified=False,
-                    status="failed",
-                    message=(
-                        "Parameter or result types admit no value: their constraints "
-                        "cannot all hold, so the function can never be called. An "
-                        "empty range type such as (Int 5 .. 3) does this."
-                    ),
-                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
-                )
-
-            authored = [
-                (self._unsatisfiable_precondition_message(preconditions), pre_z3),
-                (
-                    "Type invariants are contradictory: no value of the parameter "
-                    "types can satisfy them together with the preconditions, so the "
-                    "function has no legal input.",
-                    invariant_z3,
-                ),
-                (
-                    "Assumptions are contradictory: the @assume set cannot hold "
-                    "together with the preconditions, so it would discharge any "
-                    "postcondition. @assume is trusted, not checked - narrow it.",
-                    assume_z3,
-                ),
-                (
-                    "A contract or body expression cannot be well-defined: the side "
-                    "conditions from translating them cannot all hold. A division by "
-                    "a zero denominator or a value outside its range type does this.",
-                    translator.constraints[pre_constraint_count:],
-                ),
-            ]
-            for message, extra in authored:
-                for a in extra:
-                    layer.add(a)
-                if layer.check() == z3.unsat:
-                    return VerificationResult(
-                        name=fn_name,
-                        verified=False,
-                        status="failed",
-                        message=message,
-                        location=SourceLocation(self.filename, fn_form.line, fn_form.col)
-                    )
-            return VerificationResult(
-                name=fn_name,
-                verified=False,
-                status="unknown",
-                message=(
-                    "Verification context is inconsistent: the axioms generated for this "
-                    "function contradict each other, so nothing can be proved from them. "
-                    "This is a verifier defect, not a problem with the contract - please "
-                    "report it with the function body."
-                ),
-                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
-            )
-
         # First try all postconditions together (fast path)
         solver.push()
         solver.add(z3.Not(z3.And(*post_z3)))
@@ -3155,6 +3166,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         solver.pop()
 
         if result == z3.unsat:
+            # Proved - but check the axioms were consistent before believing it.
+            inconsistent = self._inconsistent_context_result(
+                solver, translator, fn_name, fn_form,
+                pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
+                pre_constraint_count,
+            )
+            if inconsistent is not None:
+                return inconsistent
+
             # Postconditions always hold when preconditions are met
             # Now verify properties (universal assertions - independent of preconditions)
             if prop_z3:
@@ -3223,29 +3243,45 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
                     prop_str = pretty_print(prop_expr)
 
-                    # Vacuity guard (issue #115): the property solver carries a
+                    # Vacuity guard (issue #115). The property solver carries a
                     # different axiom subset from the postcondition solver, so it
-                    # needs its own consistency check. An unsat base context here
-                    # would make every property "hold" without being proved.
+                    # needs its own consistency check.
                     #
                     # Ahead of the emptiness short-circuit below: that path
                     # reports verified without consulting Z3 at all, so a
                     # property matching an emptiness axiom would otherwise be the
                     # one thing that can still pass on a contradictory context.
-                    if prop_solver.check() == z3.unsat:
-                        unknown_properties.append((prop_name, prop_str,
-                            "verification context is inconsistent (verifier defect)"))
-                        continue
+                    # Everything asserted so far is the axiom set; Not(prop)
+                    # goes on next. Kept aside so the consistency check below
+                    # can be run on the axioms alone without disturbing the
+                    # solver, whose stack the structural-vacuity branch reuses.
+                    prop_axioms = list(prop_solver.assertions())
 
-                    # Short-circuit: if pattern analysis already proves this property
-                    # (the axiom is structurally identical to the property), skip Z3.
+                    def _axioms_are_inconsistent():
+                        consistency = z3.Solver()
+                        consistency.set("timeout", self.timeout_ms)
+                        for a in prop_axioms:
+                            consistency.add(a)
+                        return consistency.check() == z3.unsat
+
                     if emptiness_verified:
+                        if _axioms_are_inconsistent():
+                            unknown_properties.append((prop_name, prop_str,
+                                "verification context is inconsistent (verifier defect)"))
                         continue
 
                     # Check if NOT property is satisfiable
                     prop_solver.add(z3.Not(prop_z3_expr))
 
                     prop_result = prop_solver.check()
+
+                    if prop_result == z3.unsat and _axioms_are_inconsistent():
+                        # Proved only because the axioms contradict each other.
+                        # Asked only of a proof: a sat result is itself a model
+                        # of the axioms, so it has already shown them consistent.
+                        unknown_properties.append((prop_name, prop_str,
+                            "verification context is inconsistent (verifier defect)"))
+                        continue
 
                     if prop_result == z3.sat:
                         model = prop_solver.model()
@@ -3375,18 +3411,26 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             else:
                 message = "Contract may be violated"
 
-            # Get counterexample from one more check
+            # Get counterexample from one more check.
+            #
+            # The same query said sat above, but this is a fresh solve on a
+            # solver that has since learned from other checks, and it can time
+            # out where the first did not. Asking an unknown solver for its
+            # model raises, which took down the whole file rather than one
+            # function - so a failure that cannot be illustrated is reported
+            # without an illustration.
             solver.push()
             solver.add(z3.Not(z3.And(*post_z3)))
-            solver.check()
-            model = solver.model()
+            counterexample_result = solver.check()
+            model = solver.model() if counterexample_result == z3.sat else None
             solver.pop()
 
             counterexample = {}
-            for decl in model.decls():
-                name = decl.name()
-                if not name.startswith('field_'):  # Skip internal functions
-                    counterexample[name] = str(model[decl])
+            if model is not None:
+                for decl in model.decls():
+                    name = decl.name()
+                    if not name.startswith('field_'):  # Skip internal functions
+                        counterexample[name] = str(model[decl])
 
             # Generate actionable suggestions for failed verification
             suggestions = self._generate_failure_suggestion(fn_form, fn_body)
@@ -3404,7 +3448,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 verified=False,
                 status="failed",
                 message=message,
-                counterexample=counterexample,
+                counterexample=counterexample or None,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col),
                 suggestions=suggestions if suggestions else None
             )

@@ -55,11 +55,11 @@ class AxiomGenerationMixin:
                 count += self._count_bindings_of(item, name)
         return count
 
-    def _uses_outside(self, body: 'SExpr', target: str, allowed) -> bool:
+    def _uses_outside(self, body: 'SExpr', target: 'SExpr', allowed) -> bool:
         """True if `target` appears anywhere in `body` in a context `allowed` rejects.
 
-        `target` is a printed expression, so this works for a plain variable and
-        for something like `(. report results)` alike. `allowed` is called with
+        `target` is an expression, so this works for a plain variable and for
+        something like `(. report results)` alike. `allowed` is called with
         (parent_head, index, returns_value) for each occurrence and says whether
         that use leaves the list's length knowable; returns_value is true only
         for the value the function actually yields, which means the trailing
@@ -68,8 +68,23 @@ class AxiomGenerationMixin:
         """
         from slop.parser import pretty_print
 
+        # Printing every node to compare it is quadratic on a large body, and
+        # the rule files this runs over are large. Compare structurally, and
+        # print only for a compound target against a node that could match it.
+        target_is_symbol = isinstance(target, Symbol)
+        target_name = target.name if target_is_symbol else None
+        target_str = None if target_is_symbol else pretty_print(target)
+        target_len = None if target_is_symbol else len(target)
+
+        def matches(node):
+            if target_is_symbol:
+                return isinstance(node, Symbol) and node.name == target_name
+            if not isinstance(node, SList) or len(node) != target_len:
+                return False
+            return pretty_print(node) == target_str
+
         def walk(node, parent_head, index, returns_value):
-            if pretty_print(node) == target:
+            if matches(node):
                 return not allowed(parent_head, index, returns_value)
             if not isinstance(node, SList):
                 return False
@@ -123,9 +138,9 @@ class AxiomGenerationMixin:
             return True
         return parent_head in ('list-len', 'list-get') and index == 1
 
-    def _list_escapes(self, expr: 'SExpr', name: str) -> bool:
-        """True if the returned list `name` is used in a way that hides its length."""
-        return self._uses_outside(expr, name, self._accumulator_use_is_safe)
+    def _list_escapes(self, expr: 'SExpr', target: 'SExpr') -> bool:
+        """True if the returned list is used in a way that hides its length."""
+        return self._uses_outside(expr, target, self._accumulator_use_is_safe)
 
     @staticmethod
     def _owner_use_is_safe(parent_head, index, returns_value) -> bool:
@@ -140,24 +155,21 @@ class AxiomGenerationMixin:
 
     def _source_escapes(self, fn_body: 'SExpr', coll: 'SExpr') -> bool:
         """True if the loop's source collection is anything but read in this body."""
-        from slop.parser import pretty_print
-        if self._uses_outside(fn_body, pretty_print(coll), self._source_use_is_safe):
+        if self._uses_outside(fn_body, coll, self._source_use_is_safe):
             return True
         # A field access is only as stable as the value it reads from.
-        if is_form(coll, '.') and len(coll) >= 2:
-            for owner in self._owner_expressions(coll):
-                if self._uses_outside(fn_body, owner, self._owner_use_is_safe):
-                    return True
+        for owner in self._owner_expressions(coll):
+            if self._uses_outside(fn_body, owner, self._owner_use_is_safe):
+                return True
         return False
 
-    def _owner_expressions(self, coll: 'SExpr') -> List[str]:
-        """The printed sub-expressions a field-access source depends on."""
-        from slop.parser import pretty_print
-        owners: List[str] = []
+    def _owner_expressions(self, coll: 'SExpr') -> List['SExpr']:
+        """The sub-expressions a field-access source depends on."""
+        owners: List['SExpr'] = []
         node = coll
         while is_form(node, '.') and len(node) >= 2:
             node = node[1]
-            owners.append(pretty_print(node))
+            owners.append(node)
         return owners
 
     def _contains_any_form(self, expr: 'SExpr', heads) -> bool:
@@ -277,7 +289,7 @@ class AxiomGenerationMixin:
         # Pushes are the only mutation modelled. A list-pop, a set! or a call
         # that receives the list and appends to it all change the length in ways
         # the count does not see.
-        if self._list_escapes(fn_body, name):
+        if self._list_escapes(fn_body, return_expr):
             return axioms
 
         if any(site.loop_depth > 0 for site in sites):

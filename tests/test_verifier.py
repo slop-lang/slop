@@ -7548,3 +7548,85 @@ class TestBaselineTypeContradiction:
         assert r.status == 'failed'
         assert 'admit no value' in r.message
         assert 'Precondition' not in r.message
+
+    def test_empty_range_type_is_found_even_with_a_precondition(self):
+        """The contradiction predates the @pre, so a @pre that is true of
+        nothing in particular must not take the blame for it."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Empty (Int 5 .. 3))
+          (fn f ((n Empty))
+            (@spec ((Empty) -> Int))
+            (@pre (> n 0))
+            (@post (== $result 1))
+            1))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'admit no value' in r.message
+
+    def test_range_field_conflicting_with_an_invariant(self):
+        """The range axioms for record fields are part of what makes the main
+        solver unsat, so the layer that names invariants has to carry them."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Weird (record (x (Int 0 ..)))
+            (@invariant (< x 0)))
+          (fn f ((w Weird))
+            (@spec ((Weird) -> Int))
+            (@post (== $result 1))
+            1))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'Type invariants are contradictory' in r.message
+        assert 'verifier defect' not in r.message
+
+
+class TestVacuityGuardCost:
+    """The guard asks whether the axioms are consistent. That question only
+    needs asking of a proof: a counterexample is itself a model of the axioms,
+    so a sat result has already answered it. Running it up front instead cost a
+    full satisfiability check on every function, which on a large rule file is
+    the expensive direction - Z3 has to find a model rather than refute one, and
+    it took growl's rule files from seconds to minutes.
+    """
+
+    SRC = (
+        '(fn f ((arena Arena))\n'
+        '  (@spec ((Arena) -> (List Int)))\n'
+        '  (@post (== (list-len $result) %d))\n'
+        '  (let ((mut r (list-new arena Int)))\n'
+        '    (do (list-push r 1) r)))\n'
+    )
+
+    @staticmethod
+    def _guard_calls(src):
+        import slop.verifier.contract_verifier as cv
+        from slop.verifier import verify_source
+
+        calls = {"n": 0}
+        orig = cv.ContractVerifier._inconsistent_context_result
+
+        def counted(self, *a, **k):
+            calls["n"] += 1
+            return orig(self, *a, **k)
+
+        cv.ContractVerifier._inconsistent_context_result = counted
+        try:
+            status = verify_source(src)[0].status
+        finally:
+            cv.ContractVerifier._inconsistent_context_result = orig
+        return status, calls["n"]
+
+    def test_the_guard_runs_on_a_proof(self):
+        status, calls = self._guard_calls(self.SRC % 1)
+        assert status == 'verified'
+        assert calls == 1
+
+    def test_the_guard_does_not_run_on_a_counterexample(self):
+        status, calls = self._guard_calls(self.SRC % 5)
+        assert status == 'failed'
+        assert calls == 0
