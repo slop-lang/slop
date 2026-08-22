@@ -8707,3 +8707,89 @@ class TestEarlyExits:
               (record-new F (xs e)))))
         '''
         assert verify_source(src, filename="probe.slop")[0].status == 'verified'
+
+
+class TestLoopVariableVersions:
+    """Issue #116: one Z3 constant per name cannot hold both what a counter
+    started at and what it ended at.
+
+    `(let ((mut i 0)) (while (< i 10) (set! i (+ i 1))) i)` asserted i == 0 and,
+    from the loop's exit, not(i < 10) - a contradiction, so every contract on
+    the function discharged without being proved.
+    """
+
+    @staticmethod
+    def _result(src):
+        from slop.verifier import verify_source
+        return verify_source(src, filename="probe.slop")[0]
+
+    COUNTER = '''
+        (module m
+          (fn f ((arena Arena)%s)
+            (@spec ((Arena%s) -> Int))
+            %s
+            (@post %s)
+            (let ((mut i 0))
+              (while (< i %s)
+                (set! i (+ i 1)))
+              i)))
+        '''
+
+    def _counter(self, post, bound="10", params="", spec="", pre=""):
+        return self._result(self.COUNTER % (params, spec, pre, post, bound))
+
+    def test_the_context_is_no_longer_contradictory(self):
+        result = self._counter("(== $result 42)")
+        assert result.status == 'failed'
+        assert 'inconsistent' not in result.message
+
+    def test_the_exit_condition_describes_the_value_after_the_loop(self):
+        assert self._counter("(>= $result 10)").status == 'verified'
+
+    def test_a_counter_that_only_rises_cannot_end_below_its_start(self):
+        """The loop may run zero times, so this is >= rather than >."""
+        assert self._counter("(>= $result 0)", bound="n",
+                             params=" (n Int)", spec=" Int").status == 'verified'
+
+    def test_the_starting_value_is_not_the_ending_value(self):
+        result = self._counter("(== $result 0)", bound="n", params=" (n Int)",
+                               spec=" Int", pre="(@pre (> n 5))")
+        assert result.status == 'failed'
+        assert 'inconsistent' not in result.message
+
+    def test_a_counter_that_only_falls(self):
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (<= $result 100))
+            (let ((mut i 100))
+              (while (> i n)
+                (set! i (- i 1)))
+              i)))
+        ''').status == 'verified'
+
+    def test_a_counter_moving_both_ways_keeps_no_direction(self):
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (n Int) (c Bool))
+            (@spec ((Arena Int Bool) -> Int))
+            (@post (>= $result 0))
+            (let ((mut i 0))
+              (while (< i n)
+                (if c (set! i (+ i 1)) (set! i (- i 1))))
+              i)))
+        ''').status != 'verified'
+
+    def test_a_variable_the_loop_does_not_touch_keeps_its_value(self):
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (== $result 5))
+            (let ((k 5)
+                  (mut i 0))
+              (while (< i n)
+                (set! i (+ i 1)))
+              k)))
+        ''').status == 'verified'

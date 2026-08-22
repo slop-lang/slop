@@ -2002,20 +2002,14 @@ class PatternDetectionMixin:
         # Axiom 1: Count is non-negative
         axioms.append(result_var >= 0)
 
-        # Axiom 2: Count is bounded by collection size
-        # Translate the collection to get its Z3 representation
-        collection_z3 = translator.translate_expr(pattern.collection)
-        if collection_z3 is not None:
-            # Get or create list-len function
-            list_len_func_name = "fn_list-len_1"
-            if list_len_func_name not in translator.variables:
-                list_len_func = z3.Function(list_len_func_name, z3.IntSort(), z3.IntSort())
-                translator.variables[list_len_func_name] = list_len_func
-            else:
-                list_len_func = translator.variables[list_len_func_name]
-
-            collection_len = list_len_func(collection_z3)
-            axioms.append(result_var <= collection_len)
+        # Axiom 2: Count is bounded by collection size.
+        # Stated with the same length terms `(list-len collection)` translates
+        # to in a contract - fn_list-len_1 was a fourth spelling that no goal
+        # ever mentioned, so the bound was unusable (see #115's length bridge).
+        length_terms, links = self._length_terms_for(pattern.collection, translator)
+        axioms.extend(links)
+        for term in length_terms:
+            axioms.append(result_var <= term)
 
         return axioms
 

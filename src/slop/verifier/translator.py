@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
-from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, Tuple, Any, TYPE_CHECKING
 
 from slop.parser import SList, Symbol, String, Number, is_form
 from slop.types import (
@@ -61,6 +61,12 @@ class Z3Translator:
         self.use_seq_encoding = use_seq_encoding
         self.list_seqs: Dict[str, z3.SeqRef] = {}
         self._seq_counter = 0  # Counter for unique seq names
+        # Post-loop versions of the names a loop assigns, keyed by (loop, name),
+        # so re-translating the same loop reuses them.
+        self._loop_versions: Dict[Tuple[int, str], z3.ExprRef] = {}
+        self._loop_version_counter = 0
+        self._pre_loop_variables: Dict[str, z3.ExprRef] = {}
+        self.versioned_loops: Set[int] = set()
         self._record_new_counter = 0  # Counter for unique record-new values
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
         self._build_enum_map()
@@ -1343,6 +1349,10 @@ class Z3Translator:
                 if op == 'let' and len(expr) >= 3:
                     return self._translate_let(expr)
 
+                # A loop gives the variables it assigns a new value
+                if op in ('while', 'for-each') and len(expr) >= 2:
+                    return self._translate_loop(expr)
+
                 # Option constructors with semantic axioms
                 if op == 'some' and len(expr) == 2:
                     inner = self.translate_expr(expr[1])
@@ -1827,6 +1837,117 @@ class Z3Translator:
             result = self.translate_expr(body_expr)
 
         return result
+
+    def _translate_loop(self, expr: SList) -> Optional[z3.ExprRef]:
+        """Give the variables a loop assigns a value of their own after it.
+
+        One Z3 constant per name cannot hold both what a counter started at and
+        what it ended at. `(let ((mut i 0)) (while (< i 10) (set! i (+ i 1))) i)`
+        asserted i == 0 and, from the loop's exit, not(i < 10) - a contradiction,
+        which discharges every contract on the function (issue #116).
+
+        So the assigned names are re-bound to fresh constants here, at the point
+        in the body where the loop runs. Reads before the loop keep the old
+        constant, reads after see the new one, and the exit condition is stated
+        about the new one because that is what it constrains.
+
+        Nothing is claimed about what the loop computed, with one exception: a
+        counter every assignment moves the same way keeps its direction. A body
+        that only ever does `(set! i (+ i k))` for non-negative k cannot lower i,
+        however many times it runs - including none - so i_after >= i_before.
+        """
+        loop_id = id(expr)
+        body_items = expr.items[2:] if is_form(expr, 'while') else expr.items[2:]
+
+        assigned: Dict[str, List['SExpr']] = {}
+        self._collect_assignments(body_items, assigned)
+
+        for name, values in assigned.items():
+            before = self.variables.get(name)
+            if before is None or not z3.is_expr(before):
+                continue
+            self._pre_loop_variables.setdefault(name, before)
+            key = (loop_id, name)
+            after = self._loop_versions.get(key)
+            if after is None:
+                self._loop_version_counter += 1
+                fresh_name = f"{name}_after_loop_{self._loop_version_counter}"
+                if z3.is_bool(before):
+                    after = z3.Bool(fresh_name)
+                elif z3.is_real(before):
+                    after = z3.Real(fresh_name)
+                else:
+                    after = z3.Int(fresh_name)
+                self._loop_versions[key] = after
+                direction = self._assignment_direction(name, values)
+                if direction > 0:
+                    self.constraints.append(after >= before)
+                elif direction < 0:
+                    self.constraints.append(after <= before)
+            self.variables[name] = after
+
+        # The exit condition constrains the post-loop values, so it is stated
+        # here rather than by a later pass that would not know which version of
+        # each name a given loop ended with.
+        if is_form(expr, 'while') and len(expr) >= 2:
+            cond_z3 = self.translate_expr(expr[1])
+            if cond_z3 is not None and z3.is_bool(cond_z3):
+                self.constraints.append(z3.Not(cond_z3))
+        self.versioned_loops.add(loop_id)
+
+        for item in body_items:
+            self.translate_expr(item)
+        return None
+
+    def initial_variable(self, name: str):
+        """The constant `name` held before any loop gave it a new one.
+
+        A phase that re-derives a binding's *initial* value has to attach it to
+        that constant. Reading `variables` instead picks up whatever version is
+        current, which after a loop means asserting the starting value of the
+        thing the loop produced.
+        """
+        return self._pre_loop_variables.get(name, self.variables.get(name))
+
+    def is_loop_versioned(self, name: str) -> bool:
+        """True if a loop assigned `name`, so its value after differs from before."""
+        return name in self._pre_loop_variables
+
+    def _collect_assignments(self, stmts, assigned: Dict[str, List]):
+        """Every `(set! name value)` under `stmts`, grouped by name.
+
+        Stops at a nested `(fn ...)`: a callback's assignments are its own.
+        """
+        for stmt in stmts:
+            if not isinstance(stmt, SList) or len(stmt) < 1:
+                continue
+            head = stmt[0]
+            if isinstance(head, Symbol):
+                if head.name == 'fn':
+                    continue
+                if head.name == 'set!' and len(stmt) >= 3 and isinstance(stmt[1], Symbol):
+                    assigned.setdefault(stmt[1].name, []).append(stmt[2])
+                    continue
+            self._collect_assignments(stmt.items, assigned)
+
+    def _assignment_direction(self, name: str, values) -> int:
+        """+1 if every assignment to `name` can only raise it, -1 to lower, else 0."""
+        directions = set()
+        for value in values:
+            if not (isinstance(value, SList) and len(value) == 3):
+                return 0
+            head = value[0]
+            if not (isinstance(head, Symbol) and head.name in ('+', '-')):
+                return 0
+            left, right = value[1], value[2]
+            if not (isinstance(left, Symbol) and left.name == name):
+                return 0
+            if not isinstance(right, Number) or right.value < 0:
+                return 0
+            directions.add(1 if head.name == '+' else -1)
+        if len(directions) != 1:
+            return 0
+        return directions.pop()
 
     def _translate_match(self, expr: SList) -> Optional[z3.ExprRef]:
         """Translate match expression for union and enum types.

@@ -766,7 +766,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             # Infer type from expression - default to Int
             translator.declare_variable(var_name, PrimitiveType('Int'))
 
-        var_z3 = translator.variables.get(var_name)
+        # The constant the name held before any loop reassigned it: this is the
+        # binding's *initial* value, and after a loop `variables` holds the
+        # version the loop produced instead (issue #116).
+        var_z3 = translator.initial_variable(var_name)
         if var_z3 is None:
             return
 
