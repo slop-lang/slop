@@ -74,6 +74,7 @@ class Z3Translator:
         self._unconditional_assignments: Set[int] = set()
         self._in_loop_body = False
         self._in_quoted_form = False
+        self._versions_frozen = False
         self._record_new_counter = 0  # Counter for unique record-new values
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
         self._build_enum_map()
@@ -1432,6 +1433,15 @@ class Z3Translator:
         """Translate a symbol reference"""
         name = sym.name
 
+        # Once the body has been walked, `variables` holds each name's final
+        # version, and the pattern phases that run afterwards re-translate
+        # expressions from anywhere in it. A name a loop or an assignment
+        # replaced has no single value to give them - the filter that excluded
+        # `target` did so before `(set! target 999)`, not after - so it is
+        # refused rather than answered with the wrong one (issue #116).
+        if self._versions_frozen and name in self._pre_loop_variables:
+            return None
+
         # Quoted enum variant: 'Fizz -> IntVal(0)
         if name.startswith("'"):
             if name in self.enum_values:
@@ -1965,6 +1975,13 @@ class Z3Translator:
             if len(statements) <= 1 and statements and statements[0] is node:
                 return
             node = statements[-1]
+
+    def freeze_versions(self) -> None:
+        """Stop answering for names that have more than one version.
+
+        Called once the body has been walked. See _translate_symbol.
+        """
+        self._versions_frozen = True
 
     def initial_variable(self, name: str):
         """The constant `name` held before any loop or assignment replaced it.

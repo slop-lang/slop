@@ -9060,3 +9060,60 @@ class TestLoopVariableVersions:
               (for-each (x items) (if true (set! count (+ count 1))))
               count)))
         ''').status == 'verified'
+
+    def test_a_pattern_axiom_does_not_read_a_later_assignment(self):
+        """The filter excluded `target` before `(set! target 999)`, but the
+        pattern phases run afterwards, when the name holds its final version."""
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (items (List Int)) (mut target Int))
+            (@spec ((Arena (List Int) Int) -> (List Int)))
+            (@alloc arena)
+            (@post (forall (x $result) (!= x 999)))
+            (let ((mut r (list-new arena Int)))
+              (for-each (x items) (when (!= x target) (list-push r x)))
+              (set! target 999)
+              r)))
+        ''').status != 'verified'
+
+    def test_a_loop_invariant_still_sees_the_value_the_loop_left(self):
+        """Contracts are translated before the freeze: a @loop-invariant is
+        about the value the loop leaves behind, so it wants the final version."""
+        assert self._result('''
+        (module test
+          (fn filter-positive ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (>= $result 0))
+            (let ((mut count 0))
+              (for-each (x items)
+                (@loop-invariant (>= count 0))
+                (when (> x 0)
+                  (set! count (+ count 1))))
+              count)))
+        ''').status == 'verified'
+
+    def test_a_trailing_return_of_the_counter(self):
+        """`(return count)` at the end is how the function ends, not an early
+        exit - rejecting every return denied this its bound."""
+        assert self._result('''
+        (module m
+          (fn c ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              (return count))))
+        ''').status == 'verified'
+
+    def test_an_early_return_alongside_a_trailing_one(self):
+        assert self._result('''
+        (module m
+          (fn c ((items (List Int)) (flag Bool))
+            (@spec (((List Int) Bool) -> Int))
+            (@pre flag)
+            (@post (<= $result (list-len items)))
+            (when flag (return 100))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              (return count))))
+        ''').status != 'verified'

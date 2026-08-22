@@ -3285,6 +3285,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if early_exits:
             reached_guard = z3.And(*[z3.Not(guard) for guard, _ in early_exits])
 
+        # Contracts have been translated by now - a @loop-invariant is about the
+        # value the loop leaves behind, so it wants the final version. The
+        # pattern phases below re-translate expressions from anywhere in the
+        # body instead, where a name with more than one version has no single
+        # value to give, so from here it stops answering.
+        translator.freeze_versions()
+
         # The tail's own side conditions - a non-zero divisor, a string length -
         # only hold because the tail ran. An early return bypasses it, so they
         # travel under the same guard as everything else derived from it.

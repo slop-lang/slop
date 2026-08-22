@@ -2830,6 +2830,18 @@ class AxiomGenerationMixin:
 
         return walk(body) and found
 
+    def _count_returns(self, expr: 'SExpr') -> int:
+        """How many `(return ...)` forms this function body has of its own."""
+        if not isinstance(expr, SList) or len(expr) < 1:
+            return 0
+        head = expr[0]
+        if isinstance(head, Symbol):
+            if head.name in ('fn', 'quote'):
+                return 0
+            if head.name == 'return':
+                return 1 + sum(self._count_returns(item) for item in expr.items[1:])
+        return sum(self._count_returns(item) for item in expr.items)
+
     def _generate_count_axioms(self, pattern: CountPatternInfo,
                                translator: Z3Translator,
                                body: Optional['SExpr'] = None) -> List:
@@ -2851,11 +2863,17 @@ class AxiomGenerationMixin:
         if not (z3.is_expr(counted) and counted.sort() == z3.IntSort()):
             return axioms
         if body is not None:
-            # An early return yields something the loop never counted, and the
-            # bound is asserted about $result on every path.
-            if self._contains_any_form(body, ('return',)):
-                return axioms
             returned = self._get_return_expr(body)
+            # A trailing `(return count)` is not an early exit - it is how the
+            # function ends. Unwrap it, then require that nothing else returns:
+            # any other exit yields something the loop never counted, and this
+            # bound is asserted about $result on every path.
+            trailing_return = is_form(returned, 'return') and len(returned) >= 2
+            if trailing_return:
+                returned = returned[1]
+            other_returns = self._count_returns(body) > (1 if trailing_return else 0)
+            if other_returns:
+                return axioms
             if not (isinstance(returned, Symbol) and returned.name == pattern.count_var):
                 return axioms
             # The bound is one element at most, so the counter has to be raised
