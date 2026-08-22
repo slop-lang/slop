@@ -8584,3 +8584,39 @@ class TestEarlyExits:
             (for-each (x xs) (when flag (return g)))
             (record-new G (size 1))))
         ''') != 'verified'
+
+    def test_a_record_returned_early_gets_its_fields(self):
+        """The equality alone ties $result to a fresh identifier nothing else
+        describes, so the early path had no field facts at all."""
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool))
+            (@spec ((G Bool) -> G))
+            (@post (== (. $result size) 1))
+            (when flag (return (record-new G (size 1))))
+            (record-new G (size 1))))
+        ''') == 'verified'
+
+    def test_an_early_record_that_differs(self):
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool))
+            (@spec ((G Bool) -> G))
+            (@post (== (. $result size) 1))
+            (when flag (return (record-new G (size 2))))
+            (record-new G (size 1))))
+        ''') != 'verified'
+
+    def test_side_conditions_of_an_early_value_reach_the_solver(self):
+        """translator.constraints is copied into the solver before the exit
+        values are translated, so anything they append arrives too late."""
+        assert self._status('''
+        (fn a ((arena Arena) (flag Bool))
+          (@spec ((Arena Bool) -> Int))
+          (@alloc arena)
+          (@post (!= $result 0))
+          (when flag (return (arena-alloc arena 8)))
+          1)
+        ''') == 'verified'

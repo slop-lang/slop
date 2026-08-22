@@ -3282,12 +3282,32 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 for guard, value in early_exits:
                     if value is None:
                         continue
+                    # Translating a value can append side conditions - a
+                    # non-zero allocation, a string's length - and everything in
+                    # translator.constraints was copied to the solver before
+                    # this point, so the new ones have to be carried over.
+                    before = len(translator.constraints)
                     value_z3 = translator.translate_expr(value)
+                    for constraint in translator.constraints[before:]:
+                        solver.add(constraint)
                     if value_z3 is None or value_z3.sort() != result_var.sort():
                         continue
                     exit_equality = z3.Implies(guard, result_var == value_z3)
                     body_equality.append(exit_equality)
                     solver.add(exit_equality)
+
+                    # A record returned early needs its fields too: the
+                    # equality alone ties $result to a fresh identifier that
+                    # nothing else says anything about.
+                    exit_form = self._get_return_expr(value)
+                    if is_form(exit_form, 'record-new'):
+                        for axiom in self._extract_record_field_axioms(
+                                exit_form, translator, base_accessor=result_var,
+                                path_cond=guard,
+                                bindings=self._tail_bindings(
+                                    combined_body, declared_param_names,
+                                    result_forms=self._nested_record_forms(exit_form))):
+                            solver.add(axiom)
 
         # Phase 2: Add reflexivity axioms for equality functions
         # For any function ending in -eq, add axiom: fn_eq(x, x) == true
