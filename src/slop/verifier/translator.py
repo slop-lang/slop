@@ -263,7 +263,13 @@ class Z3Translator:
     # ------------------------------------------------------------------
 
     def field_len_term(self, name: str) -> Optional[z3.ArithRef]:
-        """field_len(x) for the variable `name`, if that variable exists."""
+        """field_len(x) for the variable `name`, if that variable exists.
+
+        `variables` holds user bindings and the verifier's own accessors in one
+        namespace, so "field_len" may have been claimed by a parameter of that
+        name. Calling a Z3 constant raises, which would take down the whole
+        file, so an occupied slot means no term rather than a crash.
+        """
         var = self.variables.get(name)
         if var is None or not z3.is_expr(var) or var.sort() != z3.IntSort():
             return None
@@ -271,6 +277,8 @@ class Z3Translator:
         if func is None:
             func = z3.Function("field_len", z3.IntSort(), z3.IntSort())
             self.variables["field_len"] = func
+        elif not isinstance(func, z3.FuncDeclRef) or func.arity() != 1:
+            return None
         return func(var)
 
     def list_length_terms(self, name: str) -> List[z3.ArithRef]:

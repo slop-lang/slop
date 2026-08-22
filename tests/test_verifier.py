@@ -7478,6 +7478,20 @@ class TestInconsistencyAttribution:
         assert r.status == 'failed'
         assert 'Assumptions are contradictory' in r.message
 
+    def test_ill_defined_assumption_names_the_assumption(self):
+        """An @assume's own side conditions live in the same growing list as a
+        postcondition's, so without their own marks they fall through to the
+        generic layer and the assumption escapes the blame."""
+        r = self._verify('''
+        (fn f ((n Int))
+          (@spec ((Int) -> Int))
+          (@assume (== (/ 1 0) n))
+          (@post (== $result n))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'Assumptions are contradictory' in r.message
+
     def test_ill_defined_contract_expression(self):
         """A postcondition's own side conditions, not the preconditions.
 
@@ -7824,3 +7838,36 @@ class TestInconsistencyAttributionLayers:
               (do (for-each (x report.results) (list-push r x)) r))))
         '''
         assert verify_source(src)[0].status == 'verified'
+
+
+class TestInternalNamespaceCollisions:
+    """`translator.variables` holds user bindings and the verifier's own
+    accessors in one namespace, so a parameter can claim a name the verifier
+    uses. Calling a Z3 constant raises, which aborts the whole file rather than
+    one function.
+    """
+
+    def test_a_parameter_named_field_len_does_not_abort_the_file(self):
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type T (record (xs (List Int))))
+          (fn f ((arena Arena) (field_len Int) (t T))
+            (@spec ((Arena Int T) -> (List Int)))
+            (@alloc arena)
+            (@post (all-positive $result))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. t xs)) (list-push r x)) r))))
+        '''
+        results = verify_source(src)
+        assert results, "verification produced no result at all"
+        assert results[0].status in ('verified', 'failed', 'unknown', 'timeout')
+
+    def test_field_len_term_declines_an_occupied_name(self):
+        import z3
+        from slop.verifier import MinimalTypeEnv, Z3Translator
+        translator = Z3Translator(MinimalTypeEnv())
+        translator.variables['xs'] = z3.Int('xs')
+        translator.variables['field_len'] = z3.Int('field_len')
+        assert translator.field_len_term('xs') is None
+        assert translator.list_length_terms('xs') == []

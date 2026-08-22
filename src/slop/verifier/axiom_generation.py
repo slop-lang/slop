@@ -263,9 +263,12 @@ class AxiomGenerationMixin:
             if func is None:
                 func = z3.Function("field_len", z3.IntSort(), z3.IntSort())
                 translator.variables["field_len"] = func
-            field_len = func(handle)
-            if not any(z3.eq(field_len, t) for t in terms):
-                terms.append(field_len)
+            if isinstance(func, z3.FuncDeclRef) and func.arity() == 1:
+                # Occupied by a user binding of that name otherwise; see
+                # Z3Translator.field_len_term.
+                field_len = func(handle)
+                if not any(z3.eq(field_len, t) for t in terms):
+                    terms.append(field_len)
 
         links = [terms[0] == t for t in terms[1:]]
         return terms, links

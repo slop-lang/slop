@@ -1222,7 +1222,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
     def _inconsistent_context_result(
         self, solver, translator, fn_name, fn_form,
         pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
-        type_constraint_count, pre_constraint_count, body_equality,
+        type_constraint_count, pre_constraint_count,
+        assume_constraint_start, assume_constraint_end, body_equality,
     ):
         """A result to report when the axioms contradict each other, else None.
 
@@ -1279,13 +1280,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 "Assumptions are contradictory: the @assume set cannot hold "
                 "together with the preconditions, so it would discharge any "
                 "postcondition. @assume is trusted, not checked - narrow it.",
-                assume_z3,
+                list(translator.constraints[assume_constraint_start:assume_constraint_end])
+                + list(assume_z3),
             ),
             (
                 "A contract or body expression cannot be well-defined: the side "
                 "conditions from translating them cannot all hold. A division by "
                 "a zero denominator or a value outside its range type does this.",
-                list(translator.constraints[pre_constraint_count:]),
+                list(translator.constraints[pre_constraint_count:assume_constraint_start])
+                + list(translator.constraints[assume_constraint_end:]),
             ),
             (
                 "The body cannot produce a value of the declared return type: "
@@ -2677,6 +2680,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             # This enables path-sensitive reasoning through conditionals
 
         # Translate assumptions (trusted axioms) - AFTER body so local vars are declared
+        assume_constraint_start = len(translator.constraints)
         assume_z3: List[z3.BoolRef] = []
         failed_assumes: List[SExpr] = []
         for assume in assumptions:
@@ -2685,6 +2689,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 assume_z3.append(self._ensure_bool(z3_assume))
             else:
                 failed_assumes.append(assume)
+        assume_constraint_end = len(translator.constraints)
 
         # Translate properties (universal assertions)
         # properties is List[Tuple[Optional[str], SExpr]] - (name, expr) tuples
@@ -3251,7 +3256,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             inconsistent = self._inconsistent_context_result(
                 solver, translator, fn_name, fn_form,
                 pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
-                type_constraint_count, pre_constraint_count, body_equality,
+                type_constraint_count, pre_constraint_count,
+                assume_constraint_start, assume_constraint_end, body_equality,
             )
             if inconsistent is not None:
                 return inconsistent
