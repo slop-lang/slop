@@ -8632,3 +8632,28 @@ class TestEarlyExits:
           (when flag (return (/ n n)))
           n)
         ''') != 'verified'
+
+    def test_the_tails_own_side_conditions_are_guarded_too(self):
+        """`(/ 1 n)` asserts n != 0 because the tail ran. When an early return
+        bypasses the tail, that assertion applies to a division that never
+        happened."""
+        assert self._status('''
+        (fn t ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@pre flag)
+          (@post (and (== $result n) (!= $result 0)))
+          (when flag (return n))
+          (/ 1 n))
+        ''') != 'verified'
+
+    def test_a_nested_return_before_a_direct_one(self):
+        """`(when c (if d (return 1) 0) (return 2))` returns 1 when d holds, so
+        taking the direct return as the whole story models the wrong value for
+        part of the path."""
+        assert self._status('''
+        (fn u ((c Bool) (d Bool))
+          (@spec ((Bool Bool) -> Int))
+          (@post (== $result 2))
+          (when c (if d (return 1) 0) (return 2))
+          3)
+        ''') != 'verified'

@@ -1224,7 +1224,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
         type_constraint_count, pre_constraint_count,
         assume_constraint_start, assume_constraint_end, body_equality,
-        result_length_axioms,
+        result_length_axioms, constraint_terms,
     ):
         """A result to report when the axioms contradict each other, else None.
 
@@ -1247,7 +1247,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         layer = z3.Solver()
         layer.set("timeout", self.timeout_ms)
-        for c in translator.constraints[:type_constraint_count]:
+        for c in constraint_terms[:type_constraint_count]:
             layer.add(c)
 
         if layer.check() == z3.unsat:
@@ -1270,7 +1270,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # them - @assume is trusted, so one that the body refutes is the
         # author's error rather than ours.
         assumption_assertions = (
-            list(translator.constraints[assume_constraint_start:assume_constraint_end])
+            list(constraint_terms[assume_constraint_start:assume_constraint_end])
             + list(assume_z3)
         )
 
@@ -1287,7 +1287,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         authored = [
             (
                 self._unsatisfiable_precondition_message(preconditions),
-                list(translator.constraints[type_constraint_count:pre_constraint_count])
+                list(constraint_terms[type_constraint_count:pre_constraint_count])
                 + list(pre_z3),
             ),
             (
@@ -1300,8 +1300,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 "A contract or body expression cannot be well-defined: the side "
                 "conditions from translating them cannot all hold. A division by "
                 "a zero denominator or a value outside its range type does this.",
-                list(translator.constraints[pre_constraint_count:assume_constraint_start])
-                + list(translator.constraints[assume_constraint_end:]),
+                list(constraint_terms[pre_constraint_count:assume_constraint_start])
+                + list(constraint_terms[assume_constraint_end:]),
             ),
             (
                 "The body cannot produce a value of the declared return type: "
@@ -2186,10 +2186,25 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         failed = False
 
         def returned_value(stmts):
+            """The value a statement list returns directly, if that is all of it.
+
+            `(when c (if d (return 1) 0) (return 2))` returns 1 when d holds, so
+            taking the direct `(return 2)` as the whole story would model the
+            wrong value for part of the path. A nested return anywhere means the
+            shape is not one this can guard.
+            """
+            direct = None
+            found = False
             for stmt in stmts:
                 if is_form(stmt, 'return'):
-                    return stmt[1] if len(stmt) >= 2 else None, True
-            return None, False
+                    if found:
+                        return None, False
+                    direct = stmt[1] if len(stmt) >= 2 else None
+                    found = True
+                    continue
+                if self._contains_any_form(stmt, ('return',)):
+                    return None, False
+            return direct, found
 
         def note(guard_term, value):
             guard = z3.And(guard_term, *[z3.Not(t) for t in earlier]) if earlier else guard_term
@@ -3060,8 +3075,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # This is important because @loop-invariant may reference local variables
         # from let bindings, which are declared during body translation
         body_z3: Optional[z3.ExprRef] = None
+        body_constraint_start = len(translator.constraints)
         if fn_body is not None and postconditions:
             body_z3 = translator.translate_expr(fn_body)
+        body_constraint_end = len(translator.constraints)
             # If we can translate the body, constrain $result to equal it
             # This enables path-sensitive reasoning through conditionals
 
@@ -3198,13 +3215,49 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
+        # _get_return_expr picks the trailing form. An explicit (return ...)
+        # elsewhere is another exit, and what it yields is just as much $result,
+        # so nothing the trailing constructor says describes the result alone.
+        # A multi-form body keeps only its last expression in fn_body, so the
+        # earlier forms have to be looked at too - both for that check and for
+        # the bindings a constructor's fields may refer to.
+        # The last element is fn_body rather than all_body_exprs[-1]: those are
+        # the same form, but fn_body has been through
+        # _desugar_callback_iterations and the other has not, and the two trees
+        # share no nodes. Anything keyed on node identity - which constructor
+        # is the returned one - has to see the same tree it was taken from.
+        combined_body = fn_body
+        if fn_body is not None and all_body_exprs and len(all_body_exprs) > 1:
+            combined_body = SList(
+                [Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
+                fn_body.line, fn_body.col)
+        # Exits other than the trailing form. `reached` is the condition under
+        # which control actually gets there; None means it always does, and a
+        # `return` in a shape _early_exits cannot guard leaves early_exits None,
+        # in which case nothing is claimed about the result at all.
+        early_exits = (self._early_exits(combined_body, translator)
+                       if combined_body is not None else [])
+        body_has_one_exit = early_exits is not None
+        reached_guard = None
+        if early_exits:
+            reached_guard = z3.And(*[z3.Not(guard) for guard, _ in early_exits])
+
+        # The tail's own side conditions - a non-zero divisor, a string length -
+        # only hold because the tail ran. An early return bypasses it, so they
+        # travel under the same guard as everything else derived from it.
+        constraint_terms = list(translator.constraints)
+        if reached_guard is not None:
+            for i in range(body_constraint_start, min(body_constraint_end,
+                                                      len(constraint_terms))):
+                constraint_terms[i] = z3.Implies(reached_guard, constraint_terms[i])
+
         # Check: can we satisfy preconditions but violate postconditions?
         # If (pre AND NOT post) is SAT, then contract can be violated
         solver = z3.Solver()
         solver.set("timeout", self.timeout_ms)
 
         # Add type constraints
-        for c in translator.constraints:
+        for c in constraint_terms:
             solver.add(c)
 
         # Add preconditions
@@ -3234,32 +3287,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for axiom in range_field_axioms:
             solver.add(axiom)
 
-        # _get_return_expr picks the trailing form. An explicit (return ...)
-        # elsewhere is another exit, and what it yields is just as much $result,
-        # so nothing the trailing constructor says describes the result alone.
-        # A multi-form body keeps only its last expression in fn_body, so the
-        # earlier forms have to be looked at too - both for that check and for
-        # the bindings a constructor's fields may refer to.
-        # The last element is fn_body rather than all_body_exprs[-1]: those are
-        # the same form, but fn_body has been through
-        # _desugar_callback_iterations and the other has not, and the two trees
-        # share no nodes. Anything keyed on node identity - which constructor
-        # is the returned one - has to see the same tree it was taken from.
-        combined_body = fn_body
-        if fn_body is not None and all_body_exprs and len(all_body_exprs) > 1:
-            combined_body = SList(
-                [Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
-                fn_body.line, fn_body.col)
-        # Exits other than the trailing form. `reached` is the condition under
-        # which control actually gets there; None means it always does, and a
-        # `return` in a shape _early_exits cannot guard leaves early_exits None,
-        # in which case nothing is claimed about the result at all.
-        early_exits = (self._early_exits(combined_body, translator)
-                       if combined_body is not None else [])
-        body_has_one_exit = early_exits is not None
-        reached_guard = None
-        if early_exits:
-            reached_guard = z3.And(*[z3.Not(guard) for guard, _ in early_exits])
 
         # Add body constraint for path-sensitive analysis
         # This constrains $result to equal the translated function body
@@ -3726,7 +3753,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
                 type_constraint_count, pre_constraint_count,
                 assume_constraint_start, assume_constraint_end, body_equality,
-                result_length_axioms,
+                result_length_axioms, constraint_terms,
             )
             if inconsistent is not None:
                 return inconsistent
