@@ -1845,7 +1845,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
     def _extract_conditional_record_axioms(self, cond_expr: SList, translator: Z3Translator,
                                            fn_body: Optional[SExpr] = None,
-                                           param_names: Optional[Set[str]] = None) -> List:
+                                           param_names: Optional[Set[str]] = None,
+                                           reached_guard=None) -> List:
         """Axioms for a conditional whose branches build or pass along a record.
 
         Each branch contributes its own facts under its own guard. A branch that
@@ -1897,7 +1898,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                             field_names.append(item[0].name)
                 axioms.extend(self._extract_record_field_axioms(
                     record_new, translator, base_accessor=result_var,
-                    path_cond=guard, bindings=branch_bindings))
+                    path_cond=self._conjoin(reached_guard, guard),
+                    bindings=branch_bindings))
             else:
                 passthrough.append((guard, branch))
 
@@ -1909,7 +1911,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 continue
             for field_name in field_names:
                 axioms.append(z3.Implies(
-                    guard,
+                    self._conjoin(reached_guard, guard),
                     translator._translate_field_for_obj(result_var, field_name)
                     == translator._translate_field_for_obj(branch_z3, field_name)))
 
@@ -2146,15 +2148,96 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         forms: List[int] = []
 
         def walk(node):
-            if not isinstance(node, SList):
+            if not isinstance(node, SList) or len(node) < 1:
                 return
             if is_form(node, 'record-new'):
                 forms.append(id(node))
-            for item in node.items:
-                walk(item)
+                # Only the field values, not everything underneath: a
+                # constructor handed to a call, as in
+                # (ys (touch (record-new Box (xs e)))), is an argument that
+                # callee may mutate through, not part of the value returned.
+                for item in node.items[2:]:
+                    if isinstance(item, SList) and len(item) >= 2:
+                        walk(item[-1])
+                return
+            head = node[0]
+            if isinstance(head, Symbol) and head.name in {'some', 'ok', 'error'} and len(node) >= 2:
+                walk(node[1])
 
         walk(expr)
         return tuple(forms)
+
+    def _early_exits(self, body: SExpr, translator: Z3Translator):
+        """[(guard, value)] for each `(return v)` that can run before the tail.
+
+        `_get_return_expr` sees only the trailing expression, so a function with
+        an early return has exits it does not know about - and `$result == body`
+        was asserted for the trailing one unconditionally, which proves whatever
+        that form yields regardless of which path ran.
+
+        Recognises a bare `(return v)`, `(when C ... (return v))` and
+        `(if C (return v) ...)` among the statements leading up to the tail.
+        Guards are cumulative: a later exit only runs if the earlier tests all
+        failed. Returns None if a `return` turns up in a shape this cannot
+        guard, which tells the caller to withhold rather than guess.
+        """
+        exits: List = []
+        earlier: List = []
+        failed = False
+
+        def returned_value(stmts):
+            for stmt in stmts:
+                if is_form(stmt, 'return'):
+                    return stmt[1] if len(stmt) >= 2 else None, True
+            return None, False
+
+        def note(guard_term, value):
+            guard = z3.And(guard_term, *[z3.Not(t) for t in earlier]) if earlier else guard_term
+            exits.append((guard, value))
+            earlier.append(guard_term)
+
+        def scan(stmts):
+            nonlocal failed
+            for stmt in stmts:
+                if not isinstance(stmt, SList):
+                    continue
+                if is_form(stmt, 'return'):
+                    note(z3.BoolVal(True), stmt[1] if len(stmt) >= 2 else None)
+                    return
+                if is_form(stmt, 'when') and len(stmt) >= 3:
+                    value, found = returned_value(stmt.items[2:])
+                    if found:
+                        note(self._condition_term(stmt[1], translator), value)
+                        continue
+                elif is_form(stmt, 'if') and len(stmt) >= 3:
+                    then_value, then_found = returned_value([stmt[2]])
+                    if then_found:
+                        note(self._condition_term(stmt[1], translator), then_value)
+                        if len(stmt) >= 4 and not self._contains_any_form(stmt[3], ('return',)):
+                            continue
+                        if len(stmt) < 4:
+                            continue
+                if self._contains_any_form(stmt, ('return',)):
+                    failed = True
+                    return
+
+        node = body
+        while True:
+            if is_form(node, 'let') and len(node) >= 3:
+                scan(node.items[2:-1])
+                node = node.items[-1]
+            elif is_form(node, 'do') and len(node) >= 2:
+                scan(node.items[1:-1])
+                node = node.items[-1]
+            else:
+                break
+            if failed:
+                return None
+        if failed:
+            return None
+        if self._contains_any_form(node, ('return',)):
+            return None
+        return exits
 
     def _tail_binding_names(self, body: SExpr) -> Set[str]:
         """Every name bound along the tail of `body`, kept or not."""
@@ -3151,14 +3234,60 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for axiom in range_field_axioms:
             solver.add(axiom)
 
+        # _get_return_expr picks the trailing form. An explicit (return ...)
+        # elsewhere is another exit, and what it yields is just as much $result,
+        # so nothing the trailing constructor says describes the result alone.
+        # A multi-form body keeps only its last expression in fn_body, so the
+        # earlier forms have to be looked at too - both for that check and for
+        # the bindings a constructor's fields may refer to.
+        # The last element is fn_body rather than all_body_exprs[-1]: those are
+        # the same form, but fn_body has been through
+        # _desugar_callback_iterations and the other has not, and the two trees
+        # share no nodes. Anything keyed on node identity - which constructor
+        # is the returned one - has to see the same tree it was taken from.
+        combined_body = fn_body
+        if fn_body is not None and all_body_exprs and len(all_body_exprs) > 1:
+            combined_body = SList(
+                [Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
+                fn_body.line, fn_body.col)
+        # Exits other than the trailing form. `reached` is the condition under
+        # which control actually gets there; None means it always does, and a
+        # `return` in a shape _early_exits cannot guard leaves early_exits None,
+        # in which case nothing is claimed about the result at all.
+        early_exits = (self._early_exits(combined_body, translator)
+                       if combined_body is not None else [])
+        body_has_one_exit = early_exits is not None
+        reached_guard = None
+        if early_exits:
+            reached_guard = z3.And(*[z3.Not(guard) for guard, _ in early_exits])
+
         # Add body constraint for path-sensitive analysis
         # This constrains $result to equal the translated function body
         body_equality: List[z3.BoolRef] = []
         if body_z3 is not None:
             result_var = translator.variables.get('$result')
             if result_var is not None:
-                body_equality.append(result_var == body_z3)
-                solver.add(body_equality[0])
+                # Only on the path that reaches the trailing form. Asserting it
+                # unconditionally proved whatever that form yields even for a
+                # call that took an earlier (return ...).
+                equality = (result_var == body_z3 if reached_guard is None
+                            else z3.Implies(reached_guard, result_var == body_z3))
+                body_equality.append(equality)
+                solver.add(equality)
+
+        # What each early exit yields is $result on its own path.
+        if early_exits:
+            result_var = translator.variables.get('$result')
+            if result_var is not None:
+                for guard, value in early_exits:
+                    if value is None:
+                        continue
+                    value_z3 = translator.translate_expr(value)
+                    if value_z3 is None or value_z3.sort() != result_var.sort():
+                        continue
+                    exit_equality = z3.Implies(guard, result_var == value_z3)
+                    body_equality.append(exit_equality)
+                    solver.add(exit_equality)
 
         # Phase 2: Add reflexivity axioms for equality functions
         # For any function ending in -eq, add axiom: fn_eq(x, x) == true
@@ -3176,19 +3305,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         # Phase 3: Add record field axioms if body is record-new
         # For (record-new Type (field1 val1) ...), add: field_field1($result) == val1
-        # _get_return_expr picks the trailing form. An explicit (return ...)
-        # elsewhere is another exit, and what it yields is just as much $result,
-        # so nothing the trailing constructor says describes the result alone.
-        body_has_one_exit = (fn_body is not None
-                             and not self._contains_any_form(fn_body, ('return',)))
 
         if fn_body is not None and body_has_one_exit and self._is_record_new(fn_body):
             # Get the actual record-new form (may be inside a do block)
             return_expr = self._get_return_expr(fn_body)
             field_axioms = self._extract_record_field_axioms(
                 return_expr, translator,
+                path_cond=reached_guard,
                 bindings=self._tail_bindings(
-                    fn_body, declared_param_names,
+                    combined_body, declared_param_names,
                     result_forms=self._nested_record_forms(return_expr)))
             for axiom in field_axioms:
                 solver.add(axiom)
@@ -3203,14 +3328,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 # Array encoding needs the representation to exist; the length
                 # claim itself comes from _result_length_axioms below.
                 translator._create_list_array('$result')
-            # A multi-form body keeps only its last expression in fn_body, so a
-            # push in an earlier form would be invisible to the push scan and
-            # the result would look shorter than it is.
-            whole_body = fn_body
-            if all_body_exprs and len(all_body_exprs) > 1:
-                whole_body = SList([Symbol('do')] + list(all_body_exprs),
-                                   fn_body.line, fn_body.col)
-            result_length_axioms = self._result_length_axioms(whole_body, translator)
+            # combined_body, not fn_body: a multi-form body keeps only its last
+            # expression there, and a push in an earlier form would be
+            # invisible to the push scan.
+            result_length_axioms = self._result_length_axioms(combined_body, translator)
             for axiom in result_length_axioms:
                 solver.add(axiom)
 
@@ -3299,7 +3420,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return_expr = self._get_return_expr(fn_body)
             if self._is_conditional_with_record_new(return_expr):
                 cond_axioms = self._extract_conditional_record_axioms(
-                    return_expr, translator, fn_body, declared_param_names)
+                    return_expr, translator, combined_body, declared_param_names,
+                    reached_guard)
                 for axiom in cond_axioms:
                     solver.add(axiom)
 

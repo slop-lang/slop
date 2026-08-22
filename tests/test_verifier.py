@@ -8471,3 +8471,116 @@ class TestConditionalRecordFields:
               (record-new Outer (inner (record-new Inner (xs e)))))))
         '''
         assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+    def test_a_return_in_an_earlier_top_level_form(self):
+        """fn_body is only the last form. The exit check has to see the rest."""
+        assert self._status('''
+  (fn c1 ((arena Arena) (flag Bool) (c Bool) (old F))
+    (@spec ((Arena Bool Bool F) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (when flag (return old))
+    (if c (record-new F (flag true) (xs (list-new arena Item)) (ys (list-new arena Item)))
+          (record-new F (flag false) (xs (list-new arena Item)) (ys (list-new arena Item)))))''') != 'verified'
+
+    def test_a_multi_form_body_without_a_return(self):
+        assert self._status('''
+  (fn c2 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (println "hi")
+    (if c (record-new F (flag true) (xs (list-new arena Item)) (ys (list-new arena Item)))
+          (record-new F (flag false) (xs (list-new arena Item)) (ys (list-new arena Item)))))''') == 'verified'
+
+    def test_a_constructor_handed_to_a_call_is_not_part_of_the_result(self):
+        """`(ys (touch (record-new Box (xs e))))` builds a record as an
+        argument; the callee may mutate `e` through it."""
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Item (record (v Int)))
+          (type Box (record (xs (List Item))))
+          (type F (record (flag Bool) (xs (List Item)) (ys (List Item))))
+          (fn c3 ((arena Arena) (it Item))
+            (@spec ((Arena Item) -> F))
+            (@alloc arena)
+            (@post {(list-len (. $result xs)) == 0})
+            (let ((e (list-new arena Item)))
+              (record-new F (flag true) (xs e) (ys (touch (record-new Box (xs e))))))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+
+class TestEarlyExits:
+    """An early `(return ...)` is a second path to $result.
+
+    `_get_return_expr` sees only the trailing form, and `$result == body` was
+    asserted for it unconditionally - so a postcondition true of the trailing
+    form was proved for a call that returned somewhere else. Withholding
+    everything is sound but loses contracts that hold on both paths, so each
+    exit is modelled as its own guarded path instead.
+    """
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        return verify_source(src, filename="probe.slop")[0].status
+
+    def test_a_claim_true_only_of_the_trailing_form(self):
+        assert self._status('''
+        (fn pick ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@post (== $result 7))
+          (when flag (return n))
+          7)
+        ''') != 'verified'
+
+    def test_a_claim_true_on_both_paths(self):
+        assert self._status('''
+        (fn pick ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@pre (== n 7))
+          (@post (== $result 7))
+          (when flag (return n))
+          7)
+        ''') == 'verified'
+
+    def test_a_record_field_claim_that_both_paths_satisfy(self):
+        """slop-rdf's indexed-graph-add is this shape: return the graph
+        unchanged when the triple is already present, otherwise a bigger one."""
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool))
+            (@spec ((G Bool) -> G))
+            (@pre (>= (. g size) 0))
+            (@post (>= (. $result size) (. g size)))
+            (when flag (return g))
+            (record-new G (size (+ (. g size) 1)))))
+        ''') == 'verified'
+
+    def test_a_record_field_claim_only_the_trailing_path_satisfies(self):
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool))
+            (@spec ((G Bool) -> G))
+            (@pre (>= (. g size) 0))
+            (@post (> (. $result size) (. g size)))
+            (when flag (return g))
+            (record-new G (size (+ (. g size) 1)))))
+        ''') != 'verified'
+
+    def test_a_return_in_a_shape_that_cannot_be_guarded(self):
+        """A return inside a loop has no single condition to negate, so nothing
+        is claimed rather than something guessed."""
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool) (xs (List Int)))
+            (@spec ((G Bool (List Int)) -> G))
+            (@post (== (. $result size) 1))
+            (for-each (x xs) (when flag (return g)))
+            (record-new G (size 1))))
+        ''') != 'verified'
