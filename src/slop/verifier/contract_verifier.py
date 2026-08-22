@@ -3187,20 +3187,25 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         if result_var is not None:
                             prop_solver.add(result_var == body_z3)
 
-                    # Short-circuit: if pattern analysis already proves this property
-                    # (the axiom is structurally identical to the property), skip Z3.
-                    if emptiness_verified:
-                        continue
-
                     prop_str = pretty_print(prop_expr)
 
                     # Vacuity guard (issue #115): the property solver carries a
                     # different axiom subset from the postcondition solver, so it
                     # needs its own consistency check. An unsat base context here
                     # would make every property "hold" without being proved.
+                    #
+                    # Ahead of the emptiness short-circuit below: that path
+                    # reports verified without consulting Z3 at all, so a
+                    # property matching an emptiness axiom would otherwise be the
+                    # one thing that can still pass on a contradictory context.
                     if prop_solver.check() == z3.unsat:
                         unknown_properties.append((prop_name, prop_str,
                             "verification context is inconsistent (verifier defect)"))
+                        continue
+
+                    # Short-circuit: if pattern analysis already proves this property
+                    # (the axiom is structurally identical to the property), skip Z3.
+                    if emptiness_verified:
                         continue
 
                     # Check if NOT property is satisfiable

@@ -29,13 +29,18 @@ class AxiomGenerationMixin:
     """Mixin providing axiom generation methods."""
 
     def _count_bindings_of(self, expr: 'SExpr', name: str) -> int:
-        """How many `let` forms under `expr` bind `name`.
+        """How many forms under `expr` bind `name`.
 
         More than one means an inner binding shadows the outer, so pushes to the
-        two are not pushes to the same list.
+        two are not pushes to the same list. `for-each` binders count: a loop
+        variable may share the accumulator's name.
         """
         count = 0
         if isinstance(expr, SList):
+            if is_form(expr, 'for-each') and len(expr) >= 2 and isinstance(expr[1], SList):
+                binder = expr[1]
+                if len(binder) >= 1 and isinstance(binder[0], Symbol) and binder[0].name == name:
+                    count += 1
             if is_form(expr, 'let') and len(expr) >= 2 and isinstance(expr[1], SList):
                 for binding in expr[1].items:
                     if not isinstance(binding, SList) or len(binding) < 2:
@@ -49,6 +54,59 @@ class AxiomGenerationMixin:
             for item in expr.items:
                 count += self._count_bindings_of(item, name)
         return count
+
+    # A list variable's length is only derivable if push is the only thing that
+    # happens to it. These are the contexts a bare occurrence of the name may
+    # appear in without invalidating that: the target of a push, the argument of
+    # a read, its own binding, or the value being returned.
+    _LIST_READ_OPS = ('list-len', 'list-get')
+
+    def _list_escapes(self, expr: 'SExpr', name: str,
+                      parent_head: Optional[str] = None,
+                      index: int = -1, is_last: bool = False) -> bool:
+        """True if `name` is used in a way that leaves its length unknown.
+
+        Counting pushes only bounds a list if nothing else touches it. A
+        `list-pop` shortens it, a `set!` replaces it outright, and handing it to
+        a function that appends to it does the same at a distance. None of those
+        are modelled, so any occurrence outside the handful of contexts that are
+        means no bound may be claimed.
+        """
+        if isinstance(expr, Symbol):
+            if expr.name != name:
+                return False
+            if parent_head == 'list-push' and index == 1:
+                return False
+            if parent_head in self._LIST_READ_OPS and index == 1:
+                return False
+            if parent_head == 'mut' and index == 1:
+                return False
+            # The trailing position of a do/let block is the value it yields.
+            if parent_head in ('do', 'let') and is_last:
+                return False
+            return True
+
+        if isinstance(expr, SList):
+            head = expr[0].name if len(expr) and isinstance(expr[0], Symbol) else None
+            last = len(expr) - 1
+            for i, item in enumerate(expr.items):
+                if self._list_escapes(item, name, head, i, i == last):
+                    return True
+        return False
+
+    def _collection_is_mutated(self, fn_body: 'SExpr', coll: 'SExpr') -> bool:
+        """True if `coll` is pushed to anywhere in the body.
+
+        A loop bound is stated against the source's length as a single term, but
+        that term denotes one value: if the body also appends to the source, the
+        bound would be read against the enlarged length rather than the one the
+        loop saw.
+        """
+        from slop.parser import pretty_print
+        target = pretty_print(coll)
+        pushes: List = []
+        self._find_list_push_calls(fn_body, pushes)
+        return any(pretty_print(lst) == target for lst, _ in pushes)
 
     def _contains_any_form(self, expr: 'SExpr', heads) -> bool:
         """True if `expr` contains a call to any of `heads`."""
@@ -164,10 +222,16 @@ class AxiomGenerationMixin:
         if self._count_bindings_of(fn_body, name) > 1:
             return axioms
 
+        # Pushes are the only mutation modelled. A list-pop, a set! or a call
+        # that receives the list and appends to it all change the length in ways
+        # the count does not see.
+        if self._list_escapes(fn_body, name):
+            return axioms
+
         if any(site.loop_depth > 0 for site in sites):
             early_exit = self._contains_any_form(fn_body, ('break', 'continue'))
             axioms.extend(self._loop_result_length_axioms(
-                sites, terms, translator, early_exit))
+                fn_body, sites, terms, translator, early_exit))
             return axioms
 
         upper = len(sites)
@@ -183,7 +247,8 @@ class AxiomGenerationMixin:
                 axioms.append(t <= z3.IntVal(upper))
         return axioms
 
-    def _loop_result_length_axioms(self, sites: List['PushSiteInfo'],
+    def _loop_result_length_axioms(self, fn_body: 'SExpr',
+                                   sites: List['PushSiteInfo'],
                                    terms: List[z3.ArithRef],
                                    translator: 'Z3Translator',
                                    early_exit: bool = False) -> List[z3.BoolRef]:
@@ -217,7 +282,11 @@ class AxiomGenerationMixin:
         if len(distinct) != 1:
             return []
 
-        src_terms, links = self._length_terms_for(collections[0][0], translator)
+        source = collections[0][0]
+        if self._collection_is_mutated(fn_body, source):
+            return []
+
+        src_terms, links = self._length_terms_for(source, translator)
         if not src_terms:
             return []
         source_len = src_terms[0]

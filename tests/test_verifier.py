@@ -7368,3 +7368,42 @@ class TestResultLengthFailsClosed:
             ''' % (post, self.EARLY_RETURN)
             result = verify_source(src)[0]
             assert result.status != 'verified', f"{post}: {result.message}"
+
+    POP = '''
+        (let ((mut r (list-new arena Int)))
+          (do (list-push r 1) (list-pop r) r))'''
+    REASSIGN = '''
+        (let ((mut r (list-new arena Int)))
+          (do (set! r items) r))'''
+    ESCAPES = '''
+        (let ((mut r (list-new arena Int)))
+          (do (list-push r 1) (helper arena r) r))'''
+    SOURCE_MUTATED = '''
+        (let ((mut r (list-new arena Int)))
+          (do (for-each (x items) (list-push r x))
+              (list-push items 9)
+              r))'''
+    BINDER_SHADOWS = '''
+        (let ((mut result (list-new arena Int)))
+          (do (for-each (result items) (list-push result 1)) result))'''
+
+    def test_pop_is_not_modelled(self):
+        """Counting pushes only bounds a list if nothing else shortens it."""
+        assert self._one(self.POP, "(== (list-len $result) 1)").status != 'verified'
+
+    def test_reassignment_is_not_modelled(self):
+        assert self._one(self.REASSIGN, "(== (list-len $result) 0)").status != 'verified'
+
+    def test_accumulator_handed_to_a_function_escapes(self):
+        """The callee may append to it, and nothing here can see that."""
+        assert self._one(self.ESCAPES, "(== (list-len $result) 1)").status != 'verified'
+
+    def test_source_mutated_after_the_loop(self):
+        """len($result) == len(items) holds for the length the loop saw, not the
+        one the postcondition reads after the body appends to items."""
+        assert self._one(self.SOURCE_MUTATED,
+                         "(== (list-len $result) (list-len items))").status != 'verified'
+
+    def test_loop_binder_shadowing_the_accumulator(self):
+        assert self._one(self.BINDER_SHADOWS,
+                         "(== (list-len $result) (list-len items))").status != 'verified'
