@@ -1866,6 +1866,13 @@ class Z3Translator:
                     init_value = binding[1]
 
                 if var_name and init_value is not None:
+                    # A new binding of the name, whatever the old one was: the
+                    # type it was declared with and the version it held before
+                    # any assignment both belong to that other binding. Keeping
+                    # them re-states an outer parameter's bounds on this local,
+                    # which can make the context contradictory (#118).
+                    self._declared_types.pop(var_name, None)
+                    self._pre_loop_variables.pop(var_name, None)
                     # Translate initial value
                     init_z3 = self.translate_expr(init_value)
                     if init_z3 is not None:

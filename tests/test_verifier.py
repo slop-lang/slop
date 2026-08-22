@@ -9307,3 +9307,28 @@ class TestLoopVariableVersions:
               (do (while (< i 5) (set! i (+ i 1))))
               i)))
         ''').status == 'verified'
+
+    def test_a_local_does_not_inherit_a_shadowed_parameters_bounds(self):
+        """The declared type belongs to the binding, not the spelling. Keeping
+        an outer `(Int 0 .. 9)` on an ordinary local made assigning 20 to it a
+        contradiction rather than a fact."""
+        assert self._result('''
+        (module m
+          (type Small (Int 0 .. 9))
+          (fn f ((x Small))
+            (@spec ((Small) -> Int))
+            (@post (== $result 20))
+            (let ((mut x 0))
+              (set! x 20)
+              x)))
+        ''').status == 'verified'
+
+    def test_a_parameter_keeps_its_own_bound(self):
+        assert self._result('''
+        (module m
+          (type Small (Int 0 .. 9))
+          (fn g ((x Small))
+            (@spec ((Small) -> Int))
+            (@post (<= x 9))
+            1))
+        ''').status == 'verified'
