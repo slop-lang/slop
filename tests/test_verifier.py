@@ -8079,3 +8079,631 @@ class TestReturnedBindingScope:
           (let ((mut r (list-new arena Int))) (list-push r 1))
           (let ((mut r (list-new arena Int))) r))
         ''') == 'verified'
+
+
+_RECORD_FIELD_PROBE = '''
+(module probe
+  (type Item (record (v Int)))
+  (type F (record (flag Bool) (xs (List Item)) (ys (List Item))))
+
+  (fn opaque? ((n Int))
+    (@spec ((Int) -> Bool))
+    (> n 3))
+
+%s)
+'''
+
+
+class TestConditionalRecordFields:
+    """Issue #70: what a record-new says about its fields, through a branch.
+
+    The conditional path used to reimplement one line of
+    _extract_record_field_axioms - field equals value - and drop everything else
+    it derives, including the length of a `list-new` field. So a postcondition
+    true of *both* arms of an `if` failed, and the `implies` in the issue was a
+    red herring: the plain form fails identically.
+    """
+
+    @staticmethod
+    def _status(fn_source):
+        from slop.verifier import verify_source
+        results = [r for r in verify_source(_RECORD_FIELD_PROBE % fn_source,
+                                            filename="probe.slop")
+                   if r.name != 'opaque?']
+        assert len(results) == 1
+        return results[0].status
+
+    EMPTY = "(xs (list-new arena Item)) (ys (list-new arena Item))"
+
+    def test_unconditional_record_new(self):
+        assert self._status('''
+  (fn v0 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (record-new F (flag true) %s))''' % self.EMPTY) == 'verified'
+
+    def test_if_between_two_record_new(self):
+        assert self._status('''
+  (fn v1 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (record-new F (flag true) %s)
+          (record-new F (flag false) %s)))''' % (self.EMPTY, self.EMPTY)) == 'verified'
+
+    def test_cond_between_two_record_new(self):
+        """`cond` is the same shape as `if` and was not recognised at all."""
+        assert self._status('''
+  (fn v2 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (cond (c (record-new F (flag true) %s))
+          (else (record-new F (flag false) %s))))''' % (self.EMPTY, self.EMPTY)) == 'verified'
+
+    def test_opaque_condition(self):
+        """A condition that does not translate to a Bool used to abandon the
+        whole analysis, which loses the facts that hold in both arms - the usual
+        reason to write the branch."""
+        assert self._status('''
+  (fn v3 ((arena Arena) (n Int))
+    (@spec ((Arena Int) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if (opaque? n) (record-new F (flag true) %s)
+                    (record-new F (flag false) %s)))''' % (self.EMPTY, self.EMPTY)) == 'verified'
+
+    def test_per_field_conditional(self):
+        assert self._status('''
+  (fn v4 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (record-new F (flag c)
+      (xs (if c (list-new arena Item) (list-new arena Item)))
+      (ys (list-new arena Item))))''') == 'verified'
+
+    def test_let_bound_list_field(self):
+        """Even unconditionally, a field holding a local empty list lost its
+        length: the test for it was syntactic."""
+        assert self._status('''
+  (fn v5 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (record-new F (flag true) (xs e) (ys e))))''') == 'verified'
+
+    def test_issue_70_r2_verbatim(self):
+        assert self._status('''
+  (fn r2 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post (implies {(. $result flag) == true} {(list-len (. $result xs)) == 0}))
+    (if c (record-new F (flag true)  %s)
+          (record-new F (flag false) %s)))''' % (self.EMPTY, self.EMPTY)) == 'verified'
+
+    # --- the guards have to be exact, not just present --------------------
+
+    def test_one_arm_that_is_not_empty(self):
+        assert self._status('''
+  (fn n1 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (record-new F (flag true) %s)
+          (record-new F (flag false) (xs zs) (ys (list-new arena Item)))))''' % self.EMPTY) != 'verified'
+
+    def test_a_cond_clause_does_not_borrow_an_earlier_one(self):
+        """A clause runs only when no earlier test matched, so each guard has to
+        carry the negation of the ones above it."""
+        assert self._status('''
+  (fn n2 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (cond (c (record-new F (flag true) (xs zs) (ys (list-new arena Item))))
+          (else (record-new F (flag false) %s))))''' % self.EMPTY) != 'verified'
+
+    def test_opaque_condition_does_not_become_a_free_choice(self):
+        """The fresh Bool must not let Z3 pick the arm that suits the goal."""
+        assert self._status('''
+  (fn n3 ((arena Arena) (n Int) (zs (List Item)))
+    (@spec ((Arena Int (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if (opaque? n) (record-new F (flag true) %s)
+                    (record-new F (flag false) (xs zs) (ys (list-new arena Item)))))''' % self.EMPTY) != 'verified'
+
+    def test_per_field_conditional_with_one_unknown_arm(self):
+        assert self._status('''
+  (fn n4 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (record-new F (flag c)
+      (xs (if c (list-new arena Item) zs))
+      (ys (list-new arena Item))))''') != 'verified'
+
+    # --- a binding may only be followed while it still holds what it was given
+
+    def test_a_mutated_binding_is_not_followed(self):
+        """`(list-push e it)` changes what `e` holds, so its initializer no
+        longer describes the field it ends up in."""
+        assert self._status('''
+  (fn m1 ((arena Arena) (it Item))
+    (@spec ((Arena Item) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((mut e (list-new arena Item)))
+      (list-push e it)
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_a_binding_handed_to_a_function_is_not_followed(self):
+        """The callee may append to it, and nothing here can see that."""
+        assert self._status('''
+  (fn m2 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (fill arena e)
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_an_alias_chain_is_followed(self):
+        assert self._status('''
+  (fn m3 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((a (list-new arena Item)))
+      (let ((b a))
+        (record-new F (flag true) (xs b) (ys a)))))''') == 'verified'
+
+    def test_a_shadowed_name_is_not_followed(self):
+        """The translator gives both bindings of a shadowed name one Z3
+        constant, so a fact derived from the inner initializer would land on
+        the outer value too - here claiming the parameter `zs` is empty."""
+        assert self._status('''
+  (fn m4 ((arena Arena) (zs (List Item)))
+    (@spec ((Arena (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((x zs))
+      (let ((y x))
+        (let ((x (list-new arena Item)))
+          (record-new F (flag true) (xs y) (ys x))))))''') != 'verified'
+
+    def test_a_shadowed_name_does_not_leak_to_the_outer_value(self):
+        assert self._status('''
+  (fn m5 ((arena Arena) (zs (List Item)))
+    (@spec ((Arena (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len zs) == 0})
+    (let ((x zs))
+      (let ((x (list-new arena Item)))
+        (record-new F (flag true) (xs x) (ys x)))))''') != 'verified'
+
+    def test_an_explicit_return_is_another_exit(self):
+        """_get_return_expr picks the trailing form. What a `(return ...)`
+        elsewhere yields is just as much $result, so the trailing constructor
+        does not describe the result on its own."""
+        assert self._status('''
+  (fn m6 ((arena Arena) (flag Bool) (old F))
+    (@spec ((Arena Bool F) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (when flag (return old))
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_mutation_through_an_alias_invalidates_the_binding(self):
+        """`(let ((mut a e)) (list-push a it))` changes the same list, and the
+        occurrence of `e` in `(a e)` is a read - so stability has to follow the
+        aliases rather than just the name."""
+        assert self._status('''
+  (fn m7 ((arena Arena) (it Item))
+    (@spec ((Arena Item) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (let ((mut a e))
+        (list-push a it)
+        (record-new F (flag true) (xs e) (ys e)))))''') != 'verified'
+
+    def test_a_read_only_alias_keeps_the_binding(self):
+        assert self._status('''
+  (fn m8 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (let ((a e))
+        (record-new F (flag true) (xs e) (ys a)))))''') == 'verified'
+
+    def test_a_local_shadowing_a_parameter_is_not_followed(self):
+        """A parameter is a binding of the name too, and shares the translator's
+        one constant with the local - so the local's initializer would describe
+        the caller's list."""
+        assert self._status('''
+  (fn m9 ((arena Arena) (e (List Item)))
+    (@spec ((Arena (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len e) == 0})
+    (let ((e (list-new arena Item)))
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_a_list_stored_in_another_record_is_reachable_again(self):
+        """`(list-push (. box xs) it)` never mentions `e`, so treating the
+        field write in `box` as a harmless read left `e` looking untouched."""
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Item (record (v Int)))
+          (type Box (record (xs (List Item))))
+          (type F (record (flag Bool) (xs (List Item)) (ys (List Item))))
+          (fn b1 ((arena Arena) (it Item))
+            (@spec ((Arena Item) -> F))
+            (@alloc arena)
+            (@post {(list-len (. $result xs)) == 0})
+            (let ((e (list-new arena Item)))
+              (let ((box (record-new Box (xs e))))
+                (list-push (. box xs) it)
+                (record-new F (flag true) (xs e) (ys e))))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+    def test_a_branch_may_bind_its_own_locals(self):
+        assert self._status('''
+  (fn b2 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+          (let ((g (list-new arena Item))) (record-new F (flag false) (xs g) (ys g)))))''') == 'verified'
+
+    def test_a_branch_local_binding_that_is_not_empty(self):
+        assert self._status('''
+  (fn b3 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+          (record-new F (flag false) (xs zs) (ys zs))))''') != 'verified'
+
+    def test_a_binding_whose_initializer_is_a_conditional(self):
+        """`(xs e)` where `e` was bound to an `if` is still a branch; the
+        dispatch has to happen after the name is resolved."""
+        assert self._status('''
+  (fn b4 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (if c (list-new arena Item) (list-new arena Item))))
+      (record-new F (flag true) (xs e) (ys e))))''') == 'verified'
+
+    def test_a_conditional_initializer_with_one_unknown_arm(self):
+        assert self._status('''
+  (fn b5 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (if c (list-new arena Item) zs)))
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_both_arms_may_use_the_same_local_name(self):
+        """Sibling arms are not enclosing scopes. Their axioms carry mutually
+        exclusive guards, so sharing a Z3 constant between them is harmless -
+        counting the two bindings as shadowing discarded both."""
+        assert self._status('''
+  (fn s1 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+          (let ((e (list-new arena Item))) (record-new F (flag false) (xs e) (ys e)))))''') == 'verified'
+
+    def test_the_same_local_name_with_one_arm_not_empty(self):
+        assert self._status('''
+  (fn s2 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+          (let ((e zs)) (record-new F (flag false) (xs e) (ys e)))))''') != 'verified'
+
+    def test_a_branch_local_shadowing_an_enclosing_binding(self):
+        """An enclosing scope *is* live at the same time, and shares the
+        constant - so the arm's fresh list would describe the outer value."""
+        assert self._status('''
+  (fn s3 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@pre c)
+    (@post {(list-len zs) == 0})
+    (let ((e zs))
+      (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+            (record-new F (flag false) (xs e) (ys e)))))''') != 'verified'
+
+    def test_a_disjoint_earlier_let_may_reuse_the_name(self):
+        """Two `let`s in a `do` are as disjoint as two branches. Counting them
+        across the whole body discarded the binding that is actually in scope."""
+        assert self._status('''
+  (fn d1 ((arena Arena) (zs (List Item)))
+    (@spec ((Arena (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e zs)) (list-len e))
+    (let ((e (list-new arena Item)))
+      (record-new F (flag true) (xs e) (ys e))))''') == 'verified'
+
+    def test_a_constructor_nested_in_the_result(self):
+        """A record built inline inside the returned one is part of the same
+        value; nothing can reach through it afterwards."""
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Item (record (v Int)))
+          (type Inner (record (xs (List Item))))
+          (type Outer (record (inner Inner)))
+          (fn d2 ((arena Arena))
+            (@spec ((Arena) -> Outer))
+            (@alloc arena)
+            (@post {(list-len (. (. $result inner) xs)) == 0})
+            (let ((e (list-new arena Item)))
+              (record-new Outer (inner (record-new Inner (xs e)))))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status == 'verified'
+
+    def test_a_nested_constructor_holding_an_unknown_list(self):
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Item (record (v Int)))
+          (type Inner (record (xs (List Item))))
+          (type Outer (record (inner Inner)))
+          (fn d3 ((arena Arena) (zs (List Item)))
+            (@spec ((Arena (List Item)) -> Outer))
+            (@alloc arena)
+            (@post {(list-len (. (. $result inner) xs)) == 0})
+            (let ((e zs))
+              (record-new Outer (inner (record-new Inner (xs e)))))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+    def test_a_return_in_an_earlier_top_level_form(self):
+        """fn_body is only the last form. The exit check has to see the rest."""
+        assert self._status('''
+  (fn c1 ((arena Arena) (flag Bool) (c Bool) (old F))
+    (@spec ((Arena Bool Bool F) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (when flag (return old))
+    (if c (record-new F (flag true) (xs (list-new arena Item)) (ys (list-new arena Item)))
+          (record-new F (flag false) (xs (list-new arena Item)) (ys (list-new arena Item)))))''') != 'verified'
+
+    def test_a_multi_form_body_without_a_return(self):
+        assert self._status('''
+  (fn c2 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (println "hi")
+    (if c (record-new F (flag true) (xs (list-new arena Item)) (ys (list-new arena Item)))
+          (record-new F (flag false) (xs (list-new arena Item)) (ys (list-new arena Item)))))''') == 'verified'
+
+    def test_a_constructor_handed_to_a_call_is_not_part_of_the_result(self):
+        """`(ys (touch (record-new Box (xs e))))` builds a record as an
+        argument; the callee may mutate `e` through it."""
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Item (record (v Int)))
+          (type Box (record (xs (List Item))))
+          (type F (record (flag Bool) (xs (List Item)) (ys (List Item))))
+          (fn c3 ((arena Arena) (it Item))
+            (@spec ((Arena Item) -> F))
+            (@alloc arena)
+            (@post {(list-len (. $result xs)) == 0})
+            (let ((e (list-new arena Item)))
+              (record-new F (flag true) (xs e) (ys (touch (record-new Box (xs e))))))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+
+class TestEarlyExits:
+    """An early `(return ...)` is a second path to $result.
+
+    `_get_return_expr` sees only the trailing form, and `$result == body` was
+    asserted for it unconditionally - so a postcondition true of the trailing
+    form was proved for a call that returned somewhere else. Withholding
+    everything is sound but loses contracts that hold on both paths, so each
+    exit is modelled as its own guarded path instead.
+    """
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        return verify_source(src, filename="probe.slop")[0].status
+
+    def test_a_claim_true_only_of_the_trailing_form(self):
+        assert self._status('''
+        (fn pick ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@post (== $result 7))
+          (when flag (return n))
+          7)
+        ''') != 'verified'
+
+    def test_a_claim_true_on_both_paths(self):
+        assert self._status('''
+        (fn pick ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@pre (== n 7))
+          (@post (== $result 7))
+          (when flag (return n))
+          7)
+        ''') == 'verified'
+
+    def test_a_record_field_claim_that_both_paths_satisfy(self):
+        """slop-rdf's indexed-graph-add is this shape: return the graph
+        unchanged when the triple is already present, otherwise a bigger one."""
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool))
+            (@spec ((G Bool) -> G))
+            (@pre (>= (. g size) 0))
+            (@post (>= (. $result size) (. g size)))
+            (when flag (return g))
+            (record-new G (size (+ (. g size) 1)))))
+        ''') == 'verified'
+
+    def test_a_record_field_claim_only_the_trailing_path_satisfies(self):
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool))
+            (@spec ((G Bool) -> G))
+            (@pre (>= (. g size) 0))
+            (@post (> (. $result size) (. g size)))
+            (when flag (return g))
+            (record-new G (size (+ (. g size) 1)))))
+        ''') != 'verified'
+
+    def test_a_return_in_a_shape_that_cannot_be_guarded(self):
+        """A return inside a loop has no single condition to negate, so nothing
+        is claimed rather than something guessed."""
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool) (xs (List Int)))
+            (@spec ((G Bool (List Int)) -> G))
+            (@post (== (. $result size) 1))
+            (for-each (x xs) (when flag (return g)))
+            (record-new G (size 1))))
+        ''') != 'verified'
+
+    def test_a_record_returned_early_gets_its_fields(self):
+        """The equality alone ties $result to a fresh identifier nothing else
+        describes, so the early path had no field facts at all."""
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool))
+            (@spec ((G Bool) -> G))
+            (@post (== (. $result size) 1))
+            (when flag (return (record-new G (size 1))))
+            (record-new G (size 1))))
+        ''') == 'verified'
+
+    def test_an_early_record_that_differs(self):
+        assert self._status('''
+        (module m
+          (type G (record (size Int)))
+          (fn add ((g G) (flag Bool))
+            (@spec ((G Bool) -> G))
+            (@post (== (. $result size) 1))
+            (when flag (return (record-new G (size 2))))
+            (record-new G (size 1))))
+        ''') != 'verified'
+
+    def test_side_conditions_of_an_early_value_reach_the_solver(self):
+        """translator.constraints is copied into the solver before the exit
+        values are translated, so anything they append arrives too late."""
+        assert self._status('''
+        (fn a ((arena Arena) (flag Bool))
+          (@spec ((Arena Bool) -> Int))
+          (@alloc arena)
+          (@post (!= $result 0))
+          (when flag (return (arena-alloc arena 8)))
+          1)
+        ''') == 'verified'
+
+    def test_an_exit_value_side_condition_stays_on_its_path(self):
+        """`(/ n n)` asserts n != 0 because that division happened. It happens
+        only when the early return is taken, so the constraint belongs under the
+        same guard - unguarded, it proves the trailing path non-zero too."""
+        assert self._status('''
+        (fn d ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@post (!= $result 0))
+          (when flag (return (/ n n)))
+          n)
+        ''') != 'verified'
+
+    def test_the_tails_own_side_conditions_are_guarded_too(self):
+        """`(/ 1 n)` asserts n != 0 because the tail ran. When an early return
+        bypasses the tail, that assertion applies to a division that never
+        happened."""
+        assert self._status('''
+        (fn t ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@pre flag)
+          (@post (and (== $result n) (!= $result 0)))
+          (when flag (return n))
+          (/ 1 n))
+        ''') != 'verified'
+
+    def test_a_nested_return_before_a_direct_one(self):
+        """`(when c (if d (return 1) 0) (return 2))` returns 1 when d holds, so
+        taking the direct return as the whole story models the wrong value for
+        part of the path."""
+        assert self._status('''
+        (fn u ((c Bool) (d Bool))
+          (@spec ((Bool Bool) -> Int))
+          (@post (== $result 2))
+          (when c (if d (return 1) 0) (return 2))
+          3)
+        ''') != 'verified'
+
+    def test_a_return_inside_a_let_initializer(self):
+        """The walk stepped over the binding list, so a return there left the
+        body looking like it had one exit."""
+        assert self._status('''
+        (module m
+          (type Item (record (v Int)))
+          (type F (record (xs (List Item))))
+          (fn r ((arena Arena) (flag Bool) (old F))
+            (@spec ((Arena Bool F) -> F))
+            (@alloc arena)
+            (@post {(list-len (. $result xs)) == 0})
+            (let ((ignored (if flag (return old) 0))
+                  (e (list-new arena Item)))
+              (record-new F (xs e)))))
+        ''') != 'verified'
+
+    def test_an_exit_side_condition_is_attributed_to_the_contract(self):
+        """A @pre that contradicts an exit's side condition is the author's
+        error; the diagnosis only sees it if constraint_terms carries it."""
+        from slop.verifier import verify_source
+        result = verify_source('''
+        (fn c ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@pre flag)
+          (@pre (== n 0))
+          (@post (== $result 1))
+          (when flag (return (/ 1 n)))
+          1)
+        ''', filename="probe.slop")[0]
+        assert result.status == 'failed'
+        assert 'verifier defect' not in result.message
+
+    def test_a_return_inside_a_quoted_form_is_data(self):
+        """`(quote (return 1))` is a symbol the function never executes, so it
+        must not make the body look like it has a second exit."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Item (record (v Int)))
+          (type F (record (xs (List Item))))
+          (fn q ((arena Arena))
+            (@spec ((Arena) -> F))
+            (@alloc arena)
+            (@post {(list-len (. $result xs)) == 0})
+            (let ((tag (quote (return 1)))
+                  (e (list-new arena Item)))
+              (record-new F (xs e)))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status == 'verified'
