@@ -8046,3 +8046,36 @@ class TestReturnedPreexistingList:
           (list-push xs 1)
           xs)
         ''') != 'verified'
+
+
+class TestReturnedBindingScope:
+    """The returned name has to be resolved to the binding that actually
+    governs it. A body-wide scan conflates same-named bindings in disjoint
+    scopes, and lets an unrelated allocation decide whether the returned list
+    started empty.
+    """
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        return verify_source(src)[0].status
+
+    def test_an_unrelated_allocation_does_not_make_the_result_empty(self):
+        assert self._status('''
+        (fn f ((arena Arena) (xs (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) 0))
+          (let ((mut tmp (list-new arena Int))) tmp)
+          xs)
+        ''') != 'verified'
+
+    def test_disjoint_bindings_of_the_same_name_are_not_shadowing(self):
+        assert self._status('''
+        (fn f ((arena Arena))
+          (@spec ((Arena) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) 0))
+          (let ((mut r (list-new arena Int))) (list-push r 1))
+          (let ((mut r (list-new arena Int))) r))
+        ''') == 'verified'

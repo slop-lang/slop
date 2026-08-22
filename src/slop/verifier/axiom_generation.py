@@ -49,6 +49,32 @@ class AxiomGenerationMixin:
             return None
         return target.name if isinstance(target, Symbol) else None
 
+    def _binding_in_scope_at_tail(self, body: 'SExpr', name: str):
+        """The initializer bound to `name` where the body returns, and its scope.
+
+        Follows the tail of the body - the last form of each nested do/let,
+        which is what the function actually yields - and keeps the innermost
+        binding of `name` seen on the way. Returns (None, body) when the name is
+        not bound here at all, which is the case for a parameter.
+        """
+        initializer = None
+        scope = body
+        node = body
+        while True:
+            if is_form(node, 'let') and len(node) >= 3:
+                bindings = node[1]
+                if isinstance(bindings, SList):
+                    for binding in bindings.items:
+                        if (isinstance(binding, SList) and len(binding) >= 2
+                                and self._binding_name(binding) == name):
+                            initializer = binding[-1]
+                            scope = node
+                node = node.items[-1]
+            elif is_form(node, 'do') and len(node) >= 2:
+                node = node.items[-1]
+            else:
+                return initializer, scope
+
     def _count_bindings_of(self, expr: 'SExpr', name: str) -> int:
         """How many forms under `expr` bind `name`.
 
@@ -357,7 +383,14 @@ class AxiomGenerationMixin:
             return axioms
 
         name = return_expr.name
-        sites = self._collect_push_sites([fn_body], name)
+
+        # Resolve the returned name to the binding that governs it, and work
+        # inside that binding's scope from here on. Scanning the whole body
+        # instead conflates same-named bindings in disjoint scopes, and lets an
+        # unrelated (list-new ...) elsewhere decide whether the returned list
+        # started empty.
+        initializer, scope = self._binding_in_scope_at_tail(fn_body, name)
+        sites = self._collect_push_sites([scope], name)
 
         # Fail closed. _collect_push_sites is a whitelist walk: it classifies
         # the forms it knows and silently returns nothing for the rest, which is
@@ -368,31 +401,31 @@ class AxiomGenerationMixin:
         # or a push built by (set! name (list-push name x)) - and no bound may
         # be claimed. Without this, a push under a `cond` yielded no sites and
         # so "proved" the result empty.
-        if len(sites) != self._count_push_to_var([fn_body], name):
+        if len(sites) != self._count_push_to_var([scope], name):
             return axioms
 
         # A nested (let ((mut name ...))) rebinds the name to a different list.
         # Pushes to the inner one are still counted against the outer, so bail.
-        if self._count_bindings_of(fn_body, name) > 1:
+        if self._count_bindings_of(scope, name) > 1:
             return axioms
 
         # Pushes are the only mutation modelled. A list-pop, a set! or a call
         # that receives the list and appends to it all change the length in ways
         # the count does not see.
-        if self._list_escapes(fn_body, return_expr):
+        if self._list_escapes(scope, return_expr):
             return axioms
 
         # A list the function allocated itself started empty, so the push sites
         # account for its whole contents. One it was handed may already hold
         # anything, so the same sites only raise its floor.
-        starts_empty = self._is_list_new(fn_body)
+        starts_empty = is_form(initializer, 'list-new')
 
         if any(site.loop_depth > 0 for site in sites):
             if not starts_empty:
                 return axioms
-            early_exit = self._contains_any_form(fn_body, ('break', 'continue'))
+            early_exit = self._contains_any_form(scope, ('break', 'continue'))
             axioms.extend(self._loop_result_length_axioms(
-                fn_body, sites, terms, translator, early_exit))
+                scope, sites, terms, translator, early_exit))
             return axioms
 
         upper = len(sites)
