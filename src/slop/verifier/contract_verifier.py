@@ -1168,6 +1168,224 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return self._get_return_expr(expr.items[-1])
         return expr
 
+    @staticmethod
+    def _contains_quantifier(expr) -> bool:
+        """True if `expr` has a ForAll or Exists anywhere inside it."""
+        stack = [expr]
+        while stack:
+            node = stack.pop()
+            if z3.is_quantifier(node):
+                return True
+            if z3.is_app(node):
+                stack.extend(node.children())
+        return False
+
+    def _axioms_are_contradictory(self, assertions) -> bool:
+        """True unless this axiom set is shown satisfiable, so a proof from it holds.
+
+        Showing satisfiability is the expensive direction - Z3 has to produce a
+        model, and with quantified sequence axioms it often cannot inside the
+        timeout. Answering "cannot tell" with "fine, accept the proof" would
+        make the guard optional exactly where it is hardest, so instead: when
+        the full set is undecided, retry on the ground fragment. Dropping
+        assertions can only make a set easier to satisfy, so a satisfiable
+        ground subset is not proof of anything - but it is cheap, and in
+        practice it settles.
+
+        Ground-satisfiable-but-quantifier-undecided is where the line falls: the
+        proof is accepted, on the grounds that every contradiction seen here has
+        been ground (two conflicting claims about one length) and that
+        unsatisfiability is the direction Z3 answers quickly. An undecided
+        ground fragment gets no such benefit and the proof is withheld.
+        """
+        assertions = list(assertions)
+        solver = z3.Solver()
+        solver.set("timeout", self.timeout_ms)
+        for a in assertions:
+            solver.add(a)
+        outcome = solver.check()
+        if outcome != z3.unknown:
+            return outcome == z3.unsat
+
+        ground = [a for a in assertions if not self._contains_quantifier(a)]
+        if len(ground) == len(assertions):
+            # Nothing was dropped, so there is no cheaper question left to ask.
+            return True
+        ground_solver = z3.Solver()
+        ground_solver.set("timeout", self.timeout_ms)
+        for a in ground:
+            ground_solver.add(a)
+        # An undecided ground fragment leaves the whole question open, and the
+        # guard exists so that an unestablished proof is not reported as one.
+        return ground_solver.check() != z3.sat
+
+    def _inconsistent_context_result(
+        self, solver, translator, fn_name, fn_form,
+        pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
+        type_constraint_count, pre_constraint_count,
+        assume_constraint_start, assume_constraint_end, body_equality,
+        result_length_axioms,
+    ):
+        """A result to report when the axioms contradict each other, else None.
+
+        Issue #115. Every contract is discharged by asking whether
+        (axioms AND NOT contract) is satisfiable, so if the axioms alone are
+        unsatisfiable that answers "no" for any contract and it reports verified
+        having proved nothing.
+
+        Only worth asking once a contract has come back proved: a counterexample
+        is itself a model of the axioms, so a sat result has already shown them
+        consistent.
+
+        Four things can make the context unsat and they are not the same
+        problem, so the layers are added one at a time and the first one that
+        tips it over names the cause. Three of them are the author's contract;
+        only what survives all three is ours.
+        """
+        if not self._axioms_are_contradictory(solver.assertions()):
+            return None
+
+        layer = z3.Solver()
+        layer.set("timeout", self.timeout_ms)
+        for c in translator.constraints[:type_constraint_count]:
+            layer.add(c)
+
+        if layer.check() == z3.unsat:
+            # Unsat before any @pre was added: the parameter or result types
+            # themselves admit no value, e.g. an empty range (Int 5 .. 3).
+            return VerificationResult(
+                name=fn_name,
+                verified=False,
+                status="failed",
+                message=(
+                    "Parameter or result types admit no value: their constraints "
+                    "cannot all hold, so the function can never be called. An "
+                    "empty range type such as (Int 5 .. 3) does this."
+                ),
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+            )
+
+        # The assumptions are held back to the end, so that a contradiction
+        # they introduce is distinguishable from one already present without
+        # them - @assume is trusted, so one that the body refutes is the
+        # author's error rather than ours.
+        assumption_assertions = (
+            list(translator.constraints[assume_constraint_start:assume_constraint_end])
+            + list(assume_z3)
+        )
+
+        def _is_assumption(assertion) -> bool:
+            return any(z3.eq(assertion, a) for a in assumption_assertions)
+
+        # Everything else the main solver holds. Enumerating the kinds of axiom
+        # by hand does not work - Phase 3's record fields, Phase 4's union tags,
+        # the sequence identities and the rest are added straight to the solver -
+        # so take them from the solver itself. Re-adding assertions already in
+        # an earlier layer is harmless.
+        generated_axioms = [a for a in solver.assertions() if not _is_assumption(a)]
+
+        authored = [
+            (
+                self._unsatisfiable_precondition_message(preconditions),
+                list(translator.constraints[type_constraint_count:pre_constraint_count])
+                + list(pre_z3),
+            ),
+            (
+                "Type invariants are contradictory: no value of the parameter "
+                "types can satisfy them together with the preconditions, so the "
+                "function has no legal input.",
+                invariant_z3 + range_field_axioms,
+            ),
+            (
+                "A contract or body expression cannot be well-defined: the side "
+                "conditions from translating them cannot all hold. A division by "
+                "a zero denominator or a value outside its range type does this.",
+                list(translator.constraints[pre_constraint_count:assume_constraint_start])
+                + list(translator.constraints[assume_constraint_end:]),
+            ),
+            (
+                "The body cannot produce a value of the declared return type: "
+                "what it computes and what the type admits have no overlap. A "
+                "literal outside a range return type does this.",
+                list(body_equality) + list(result_length_axioms),
+            ),
+            (
+                "Verification context is inconsistent: the axioms generated for this "
+                "function contradict each other, so nothing can be proved from them. "
+                "This is a verifier defect, not a problem with the contract - please "
+                "report it with the function body.",
+                generated_axioms,
+            ),
+            (
+                "An assumption contradicts the function: @assume is trusted, so "
+                "one that the body or the contract already refutes would "
+                "discharge any postcondition. Check it against the body.",
+                assumption_assertions,
+            ),
+        ]
+        for message, extra in authored:
+            for a in extra:
+                layer.add(a)
+            outcome = layer.check()
+            if outcome == z3.unsat:
+                # Only the verifier's own layer is our fault; the rest are the
+                # author's, and a contract that cannot hold is a failure.
+                ours = message.startswith("Verification context is inconsistent")
+                return VerificationResult(
+                    name=fn_name,
+                    verified=False,
+                    status="unknown" if ours else "failed",
+                    message=message,
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                )
+            if outcome == z3.unknown:
+                # This layer may be the culprit. Adding the next one and
+                # blaming whichever check happens to come back unsat would name
+                # the wrong cause, which is the one thing this loop exists to
+                # avoid.
+                return VerificationResult(
+                    name=fn_name,
+                    verified=False,
+                    status="unknown",
+                    message=(
+                        "The axioms for this function contradict each other, but which "
+                        "part is responsible could not be determined within the timeout. "
+                        "Raise the timeout to get a specific diagnosis."
+                    ),
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                )
+
+        # Unreachable in principle - the last layer holds everything the main
+        # solver does, and that is unsat by hypothesis - but a layer's check can
+        # come back undecided, and saying so beats asserting a cause.
+        return VerificationResult(
+            name=fn_name,
+            verified=False,
+            status="unknown",
+            message=(
+                "Verification context is inconsistent: the axioms generated for this "
+                "function contradict each other, so nothing can be proved from them. "
+                "This is a verifier defect, not a problem with the contract - please "
+                "report it with the function body."
+            ),
+            location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+        )
+
+    def _unsatisfiable_precondition_message(
+        self, preconditions: List[Tuple[Optional[str], SExpr]]
+    ) -> str:
+        """Message for a @pre set that no input can satisfy, naming each one."""
+        from slop.parser import pretty_print
+        if not preconditions:
+            return "Preconditions are unsatisfiable"
+        details = []
+        for pre_name, pre_expr in preconditions:
+            pre_str = pretty_print(pre_expr)
+            details.append(f"'{pre_name}': {pre_str}" if pre_name else pre_str)
+        if len(details) == 1:
+            return f"Precondition is unsatisfiable: {details[0]}"
+        return "Preconditions are unsatisfiable:\n" + "\n".join(f"  • {d}" for d in details)
+
     def _propagate_properties_as_loop_invariants(
         self, fn_body: SExpr, properties: List[Tuple[Optional[str], SExpr]]
     ) -> List[SExpr]:
@@ -1500,8 +1718,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         # Translate the pushed item
                         item_z3 = translator.translate_expr(item_expr)
                         if item_z3 is not None:
-                            # After push: length increases by 1
-                            axioms.append(length >= 1)
+                            # A push only raises the lower bound if it is
+                            # actually taken: one guarded by a when/if or sitting
+                            # in a match arm may not be, and one inside a loop
+                            # over an empty collection runs zero times. An
+                            # unconditional `length >= 1` here was the same
+                            # unsound shape as issue #115.
+                            taken = self._unconditional_push_count(body, lst_name)
+                            if taken >= 1:
+                                axioms.append(length >= taken)
 
                             # Key axiom for element properties:
                             # The pushed element exists somewhere in the array
@@ -1540,100 +1765,76 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                             # This works because all elements are pushed with type-pred
                             continue  # Use fallback axioms for length tracking
 
-            # Fallback: length-based axioms
-            # Get or create the field_len function
-            func_name = "field_len"
-            if func_name not in translator.variables:
-                func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
-                translator.variables[func_name] = func
-            else:
-                func = translator.variables[func_name]
+            # Fallback: nothing sound to say about this list's length here.
+            #
+            # This used to introduce a fresh _list_pre_len_N with
+            #   pre_len == field_len(lst); post_len == pre_len + 1; post_len >= 1
+            # Nothing ever read post_len, and pre_len was fresh, so the three
+            # together said only field_len(lst) >= 0 - which the translator
+            # already asserts. The length of the *returned* list is derived
+            # from its push sites by _result_length_axioms, which is the only
+            # place that knows which pushes are conditional or in a loop.
+            #
+            # A push through an alias, e.g. (list-push (. c items) x), cannot be
+            # expressed at all while field_len is a function of the handle: the
+            # pushed-to list keeps its identity, so its pre- and post-lengths
+            # would have to be two values of one term.
+            pass
 
-            # Create a "pre-push length" variable for tracking
-            pre_len_name = f"_list_pre_len_{id(list_expr)}"
-            if pre_len_name not in translator.variables:
-                pre_len = z3.Int(pre_len_name)
-                translator.variables[pre_len_name] = pre_len
-
-                # The pre-push length equals what field_len returns for the list
-                axioms.append(pre_len == func(lst_z3))
-
-                # After the push, the length is pre_len + 1
-                # We need to constrain future references to this list's length
-                # Create a "post-push" marker
-                post_len_name = f"_list_post_len_{id(list_expr)}"
-                post_len = z3.Int(post_len_name)
-                translator.variables[post_len_name] = post_len
-                axioms.append(post_len == pre_len + 1)
-                axioms.append(post_len >= 1)  # After push, length is at least 1
-
-        # Connect returned list to $result
-        # If the function returns a list variable that had push called on it,
-        # add axiom: field_len($result) >= number_of_pushes
-        result_var = translator.variables.get('$result')
-        if result_var is not None and push_calls:
-            # Find the return expression
-            return_expr = self._get_return_expr(body)
-            if isinstance(return_expr, Symbol):
-                # Check if this variable had push calls
-                for list_expr, _ in push_calls:
-                    if isinstance(list_expr, Symbol) and list_expr.name == return_expr.name:
-                        # The returned variable is the one we pushed to
-                        func_name = "field_len"
-                        if func_name in translator.variables:
-                            func = translator.variables[func_name]
-                            # Count pushes to this list
-                            push_count = sum(
-                                1 for lst, _ in push_calls
-                                if isinstance(lst, Symbol) and lst.name == return_expr.name
-                            )
-                            # $result is the list after all pushes, so length >= push_count
-                            axioms.append(func(result_var) >= push_count)
-
-            elif isinstance(return_expr, SList) and is_form(return_expr, 'record-new'):
-                # record-new return: connect field-pushed lists to $result fields
-                # For (record-new Type (field1 val1) (field2 val2) ...),
-                # check if any field value matches a push target.
-                # If so: field_len(field_X($result)) == field_len(push_target) + push_count
-                from slop.parser import pretty_print
-                func_name = "field_len"
-                if func_name not in translator.variables:
-                    func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
-                    translator.variables[func_name] = func
-                else:
-                    func = translator.variables[func_name]
-
-                # Build a map of push target repr -> count
-                push_target_counts: Dict[str, int] = {}
-                push_target_exprs: Dict[str, SExpr] = {}
-                for list_expr, _ in push_calls:
-                    key = pretty_print(list_expr)
-                    push_target_counts[key] = push_target_counts.get(key, 0) + 1
-                    push_target_exprs[key] = list_expr
-
-                for field_pair in return_expr.items[2:]:  # Skip 'record-new' and TypeName
-                    if isinstance(field_pair, SList) and len(field_pair) >= 2:
-                        field_name_sym = field_pair[0]
-                        field_value = field_pair[1]
-                        if isinstance(field_name_sym, Symbol):
-                            field_value_str = pretty_print(field_value)
-                            if field_value_str in push_target_counts:
-                                # This field references a list that was pushed to
-                                field_name = field_name_sym.name
-                                accessor_name = f"field_{field_name}"
-                                if accessor_name not in translator.variables:
-                                    accessor = z3.Function(accessor_name, z3.IntSort(), z3.IntSort())
-                                    translator.variables[accessor_name] = accessor
-                                else:
-                                    accessor = translator.variables[accessor_name]
-
-                                push_count = push_target_counts[field_value_str]
-                                lst_z3 = translator.translate_expr(push_target_exprs[field_value_str])
-                                if lst_z3 is not None:
-                                    # field_len(field_X($result)) == field_len(push_target) + push_count
-                                    axioms.append(func(accessor(result_var)) == func(lst_z3) + push_count)
+        # Nothing is asserted here about the length of the returned list.
+        #
+        # Two axioms used to be, and both were unsound (issue #115):
+        #
+        #   field_len($result) >= push_count
+        #     wrong whenever a push is conditional or inside a loop that may
+        #     run zero times, and it contradicted the flat field_len == 0 that
+        #     Phase 3.5 derived from the (mut r (list-new ...)) binding.
+        #     _result_length_axioms now derives one bound from the push sites.
+        #
+        #   field_len(field_X($result)) == field_len(push_target) + push_count
+        #     emitted when a record field held the pushed-to list. It fired
+        #     only when the field value *was* the push target, and in exactly
+        #     that case Phase 3 has already asserted
+        #     field_X($result) == push_target - so the pair reads X == X + 1.
+        #     push mutates the list in place; with field_len a function of the
+        #     handle there is no second term to carry the pre-push length.
 
         return axioms
+
+    def _result_sequence_equality(self, fn_body: SExpr,
+                                  translator: Z3Translator) -> List:
+        """Equate $result's Seq with the returned local's, when they must agree.
+
+        Under Seq encoding the two get separate constants, so a @loop-invariant
+        stated about the local proves nothing about the result unless they are
+        tied together.
+
+        Withheld when the body contains an explicit (return ...):
+        _get_return_expr only sees the trailing expression, and equating
+        $result with it would claim the other exit cannot happen.
+        """
+        if self._contains_any_form(fn_body, ('return',)):
+            return []
+        ret_expr = self._get_return_expr(fn_body)
+        if not isinstance(ret_expr, Symbol):
+            return []
+        result_seq = translator.list_seqs.get('$result')
+        ret_seq = translator.list_seqs.get(ret_expr.name)
+        if result_seq is None or ret_seq is None or z3.eq(result_seq, ret_seq):
+            return []
+        return [result_seq == ret_seq]
+
+    def _unconditional_push_count(self, body: SExpr, list_name: str) -> int:
+        """How many pushes to `list_name` are certain to happen exactly once.
+
+        Sites under a when/if guard or inside a match arm may not run, and
+        sites inside a loop run an unknown number of times, so neither
+        contributes to a lower bound on the length.
+        """
+        return sum(
+            1 for site in self._collect_push_sites([body], list_name)
+            if site.loop_depth == 0 and not site.guard_conditions and not site.conditional
+        )
 
     def _extract_conditional_record_axioms(self, cond_expr: SList, translator: Z3Translator) -> List:
         """Extract axioms for conditional with record-new in either branch.
@@ -1965,38 +2166,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                                             field_val[1], translator, base_accessor=payload_func(field_func)
                                         )
                                         axioms.extend(nested)
-        return axioms
-
-    def _extract_list_new_axioms(self, list_new_expr: SList, translator: Z3Translator) -> List:
-        """Extract axiom: field_len($result) == 0 for list-new
-
-        When list-new is called, the resulting list has length 0.
-        This allows proving postconditions like {(list-len $result) == 0}.
-
-        With array encoding enabled, also sets up the array representation.
-        """
-        axioms = []
-        result_var = translator.variables.get('$result')
-        if result_var is None:
-            return axioms
-
-        # With array encoding, set up array for $result
-        if translator.use_array_encoding:
-            arr, length = translator._create_list_array('$result')
-            # Empty list: length == 0
-            axioms.append(length == z3.IntVal(0))
-            return axioms
-
-        # Get or create field_len function (fallback for non-array encoding)
-        func_name = "field_len"
-        if func_name not in translator.variables:
-            func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
-            translator.variables[func_name] = func
-        else:
-            func = translator.variables[func_name]
-
-        # list-new returns empty list: len == 0
-        axioms.append(func(result_var) == z3.IntVal(0))
         return axioms
 
     def _extract_record_field_range_axioms(self, translator: Z3Translator) -> List:
@@ -2504,6 +2673,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             elif self._references_result_collection(postconditions) or self._references_result_collection(property_exprs):
                 translator._create_list_seq('$result')
 
+        # Everything in translator.constraints up to here comes from declaring
+        # the parameters and $result. Each later phase appends its own side
+        # conditions - a division adds a non-zero denominator, a range type adds
+        # its bounds - so the diagnosis below can only attribute a contradiction
+        # correctly if it knows where each phase's constraints begin.
+        type_constraint_count = len(translator.constraints)
+
         # Translate preconditions
         pre_z3: List[z3.BoolRef] = []
         failed_pres: List[Tuple[Optional[str], SExpr]] = []
@@ -2513,6 +2689,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 pre_z3.append(self._ensure_bool(z3_pre))
             else:
                 failed_pres.append((pre_name, pre_expr))
+
+        pre_constraint_count = len(translator.constraints)
 
         # Translate postconditions
         post_z3: List[z3.BoolRef] = []
@@ -2534,6 +2712,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             # This enables path-sensitive reasoning through conditionals
 
         # Translate assumptions (trusted axioms) - AFTER body so local vars are declared
+        assume_constraint_start = len(translator.constraints)
         assume_z3: List[z3.BoolRef] = []
         failed_assumes: List[SExpr] = []
         for assume in assumptions:
@@ -2542,6 +2721,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 assume_z3.append(self._ensure_bool(z3_assume))
             else:
                 failed_assumes.append(assume)
+        assume_constraint_end = len(translator.constraints)
 
         # Translate properties (universal assertions)
         # properties is List[Tuple[Optional[str], SExpr]] - (name, expr) tuples
@@ -2649,27 +2829,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
             result = solver.check()
             if result == z3.unsat:
-                # Build message with precondition names/details
-                from slop.parser import pretty_print
-                if preconditions:
-                    pre_details = []
-                    for pre_name, pre_expr in preconditions:
-                        pre_str = pretty_print(pre_expr)
-                        if pre_name:
-                            pre_details.append(f"'{pre_name}': {pre_str}")
-                        else:
-                            pre_details.append(pre_str)
-                    if len(preconditions) == 1:
-                        message = f"Precondition is unsatisfiable: {pre_details[0]}"
-                    else:
-                        message = "Preconditions are unsatisfiable:\n" + "\n".join(f"  • {p}" for p in pre_details)
-                else:
-                    message = "Preconditions are unsatisfiable"
                 return VerificationResult(
                     name=fn_name,
                     verified=False,
                     status="failed",
-                    message=message,
+                    message=self._unsatisfiable_precondition_message(preconditions),
                     location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                 )
             return VerificationResult(
@@ -2701,10 +2865,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # For (type T (record ...) (@invariant cond)), when param has type T,
         # add cond substituted with param.field references
         param_invariants = self._collect_parameter_invariants(params)
+        invariant_z3: List[z3.BoolRef] = []
         for param_name, inv_expr in param_invariants:
             inv_z3 = translator.translate_expr(inv_expr)
             if inv_z3 is not None:
-                solver.add(self._ensure_bool(inv_z3))
+                inv_bool = self._ensure_bool(inv_z3)
+                solver.add(inv_bool)
+                invariant_z3.append(inv_bool)
 
         # Phase 1b: Add range type axioms for record fields
         # For record types with range-typed fields like (inferred-count (Int 0 ..)),
@@ -2715,10 +2882,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         # Add body constraint for path-sensitive analysis
         # This constrains $result to equal the translated function body
+        body_equality: List[z3.BoolRef] = []
         if body_z3 is not None:
             result_var = translator.variables.get('$result')
             if result_var is not None:
-                solver.add(result_var == body_z3)
+                body_equality.append(result_var == body_z3)
+                solver.add(body_equality[0])
 
         # Phase 2: Add reflexivity axioms for equality functions
         # For any function ending in -eq, add axiom: fn_eq(x, x) == true
@@ -2743,12 +2912,25 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for axiom in field_axioms:
                 solver.add(axiom)
 
-        # Phase 3.5: Add list-new axioms if body is list-new
-        # For (list-new arena Type), add: field_len($result) == 0
-        if fn_body is not None and self._is_list_new(fn_body):
-            return_expr = self._get_return_expr(fn_body)
-            list_axioms = self._extract_list_new_axioms(return_expr, translator)
-            for axiom in list_axioms:
+        # Phase 3.5: Length of a returned list, derived from its push sites.
+        result_length_axioms: List[z3.BoolRef] = []
+        # This used to assert a flat field_len($result) == 0 whenever the body
+        # bound a list with (mut r (list-new ...)), ignoring every push, which
+        # contradicted the push-count axiom in Phase 7 - issue #115.
+        if fn_body is not None:
+            if translator.use_array_encoding and self._is_list_new(fn_body):
+                # Array encoding needs the representation to exist; the length
+                # claim itself comes from _result_length_axioms below.
+                translator._create_list_array('$result')
+            # A multi-form body keeps only its last expression in fn_body, so a
+            # push in an earlier form would be invisible to the push scan and
+            # the result would look shorter than it is.
+            whole_body = fn_body
+            if all_body_exprs and len(all_body_exprs) > 1:
+                whole_body = SList([Symbol('do')] + list(all_body_exprs),
+                                   fn_body.line, fn_body.col)
+            result_length_axioms = self._result_length_axioms(whole_body, translator)
+            for axiom in result_length_axioms:
                 solver.add(axiom)
 
         # Phase 4: Add union tag axiom if body is union-new
@@ -3095,6 +3277,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # WP computation failed - continue with standard verification
                     pass
 
+        # Under Seq encoding the returned local and $result get separate Seq
+        # constants, so a fact about one is invisible to the other. The property
+        # solver below already equates them; the postcondition solver needs it
+        # too, or a @loop-invariant stated about the local proves nothing about
+        # the result.
+        if fn_body is not None and translator.use_seq_encoding:
+            for equality in self._result_sequence_equality(fn_body, translator):
+                solver.add(equality)
+
         # First try all postconditions together (fast path)
         solver.push()
         solver.add(z3.Not(z3.And(*post_z3)))
@@ -3102,6 +3293,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         solver.pop()
 
         if result == z3.unsat:
+            # Proved - but check the axioms were consistent before believing it.
+            inconsistent = self._inconsistent_context_result(
+                solver, translator, fn_name, fn_form,
+                pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
+                type_constraint_count, pre_constraint_count,
+                assume_constraint_start, assume_constraint_end, body_equality,
+                result_length_axioms,
+            )
+            if inconsistent is not None:
+                return inconsistent
+
             # Postconditions always hold when preconditions are met
             # Now verify properties (universal assertions - independent of preconditions)
             if prop_z3:
@@ -3126,13 +3328,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # Loop invariants reference the local variable (e.g., 'result'),
                     # while properties reference '$result' - these are different Z3 seqs
                     if fn_body is not None and translator.use_seq_encoding:
-                        return_expr = self._get_return_expr(fn_body)
-                        if isinstance(return_expr, Symbol):
-                            ret_name = return_expr.name
-                            result_seq = translator.list_seqs.get('$result')
-                            ret_seq = translator.list_seqs.get(ret_name)
-                            if result_seq is not None and ret_seq is not None and not z3.eq(result_seq, ret_seq):
-                                prop_solver.add(result_seq == ret_seq)
+                        for equality in self._result_sequence_equality(fn_body, translator):
+                            prop_solver.add(equality)
 
                     # Add pattern axioms (filter/map/fold axioms derived from loop analysis)
                     # These are needed for properties that reason about collection contents
@@ -3173,9 +3370,27 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         if result_var is not None:
                             prop_solver.add(result_var == body_z3)
 
-                    # Short-circuit: if pattern analysis already proves this property
-                    # (the axiom is structurally identical to the property), skip Z3.
+                    prop_str = pretty_print(prop_expr)
+
+                    # Vacuity guard (issue #115). The property solver carries a
+                    # different axiom subset from the postcondition solver, so it
+                    # needs its own consistency check.
+                    #
+                    # Ahead of the emptiness short-circuit below: that path
+                    # reports verified without consulting Z3 at all, so a
+                    # property matching an emptiness axiom would otherwise be the
+                    # one thing that can still pass on a contradictory context.
+                    # Everything asserted so far is the axiom set; Not(prop)
+                    # goes on next. Kept aside so the consistency check below
+                    # can be run on the axioms alone without disturbing the
+                    # solver, whose stack the structural-vacuity branch reuses.
+                    prop_axioms = list(prop_solver.assertions())
+
+
                     if emptiness_verified:
+                        if self._axioms_are_contradictory(prop_axioms):
+                            unknown_properties.append((prop_name, prop_str,
+                                "verification context is inconsistent (verifier defect)"))
                         continue
 
                     # Check if NOT property is satisfiable
@@ -3183,7 +3398,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
                     prop_result = prop_solver.check()
 
-                    prop_str = pretty_print(prop_expr)
+                    if prop_result == z3.unsat:
+                        # Asked only of a proof: a sat result is itself a model
+                        # of the axioms, so it has already shown them consistent.
+                        if self._axioms_are_contradictory(prop_axioms):
+                            unknown_properties.append((prop_name, prop_str,
+                                "verification context is inconsistent (verifier defect)"))
+                            continue
 
                     if prop_result == z3.sat:
                         model = prop_solver.model()
@@ -3313,18 +3534,26 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             else:
                 message = "Contract may be violated"
 
-            # Get counterexample from one more check
+            # Get counterexample from one more check.
+            #
+            # The same query said sat above, but this is a fresh solve on a
+            # solver that has since learned from other checks, and it can time
+            # out where the first did not. Asking an unknown solver for its
+            # model raises, which took down the whole file rather than one
+            # function - so a failure that cannot be illustrated is reported
+            # without an illustration.
             solver.push()
             solver.add(z3.Not(z3.And(*post_z3)))
-            solver.check()
-            model = solver.model()
+            counterexample_result = solver.check()
+            model = solver.model() if counterexample_result == z3.sat else None
             solver.pop()
 
             counterexample = {}
-            for decl in model.decls():
-                name = decl.name()
-                if not name.startswith('field_'):  # Skip internal functions
-                    counterexample[name] = str(model[decl])
+            if model is not None:
+                for decl in model.decls():
+                    name = decl.name()
+                    if not name.startswith('field_'):  # Skip internal functions
+                        counterexample[name] = str(model[decl])
 
             # Generate actionable suggestions for failed verification
             suggestions = self._generate_failure_suggestion(fn_form, fn_body)
@@ -3342,7 +3571,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 verified=False,
                 status="failed",
                 message=message,
-                counterexample=counterexample,
+                counterexample=counterexample or None,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col),
                 suggestions=suggestions if suggestions else None
             )

@@ -37,6 +37,16 @@ class PushSiteInfo:
     pushed_expr: 'SExpr'                # The expression being pushed
     guard_conditions: List['SExpr']     # Enclosing when/if conditions (innermost last)
     bindings: Dict[str, 'SExpr']        # Variable bindings in scope at this push
+    conditional: bool = False           # May not be taken: a match arm, an if or
+                                        # cond branch. Distinct from
+                                        # guard_conditions, which holds the
+                                        # guards that are expressible as terms -
+                                        # a match arm has none.
+    loop_depth: int = 0                 # Enclosing while/for-each nesting depth
+    loop_collections: List[Optional['SExpr']] = field(default_factory=list)
+                                        # Collection of each enclosing loop,
+                                        # outermost first; None for a `while`,
+                                        # whose trip count is unknown
 
 
 @dataclass

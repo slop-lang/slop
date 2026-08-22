@@ -28,6 +28,476 @@ if TYPE_CHECKING:
 class AxiomGenerationMixin:
     """Mixin providing axiom generation methods."""
 
+    @staticmethod
+    def _binding_name(binding: 'SList') -> Optional[str]:
+        """The name a `let` binding introduces, across the three spellings.
+
+        (name value), (mut name value) and ((mut name) value) all bind a name;
+        the last is easy to miss, since its head is a list rather than a symbol.
+        """
+        head = binding[0]
+        if isinstance(head, Symbol):
+            if head.name == 'mut' and len(binding) >= 3:
+                target = binding[1]
+            else:
+                target = head
+        elif isinstance(head, SList) and len(head) >= 2:
+            if not (isinstance(head[0], Symbol) and head[0].name == 'mut'):
+                return None
+            target = head[1]
+        else:
+            return None
+        return target.name if isinstance(target, Symbol) else None
+
+    def _binding_in_scope_at_tail(self, body: 'SExpr', name: str):
+        """The initializer bound to `name` where the body returns, and its scope.
+
+        Follows the tail of the body - the last form of each nested do/let,
+        which is what the function actually yields - and keeps the innermost
+        binding of `name` seen on the way. Returns (None, body) when the name is
+        not bound here at all, which is the case for a parameter.
+        """
+        initializer = None
+        scope = body
+        node = body
+        while True:
+            if is_form(node, 'let') and len(node) >= 3:
+                bindings = node[1]
+                if isinstance(bindings, SList):
+                    for binding in bindings.items:
+                        if (isinstance(binding, SList) and len(binding) >= 2
+                                and self._binding_name(binding) == name):
+                            initializer = binding[-1]
+                            scope = node
+                node = node.items[-1]
+            elif is_form(node, 'do') and len(node) >= 2:
+                node = node.items[-1]
+            else:
+                return initializer, scope
+
+    def _count_bindings_of(self, expr: 'SExpr', name: str) -> int:
+        """How many forms under `expr` bind `name`.
+
+        More than one means an inner binding shadows the outer, so pushes to the
+        two are not pushes to the same list. `for-each` binders count: a loop
+        variable may share the accumulator's name.
+        """
+        count = 0
+        if isinstance(expr, SList):
+            if is_form(expr, 'for-each') and len(expr) >= 2 and isinstance(expr[1], SList):
+                binder = expr[1]
+                if len(binder) >= 1 and isinstance(binder[0], Symbol) and binder[0].name == name:
+                    count += 1
+            if is_form(expr, 'let') and len(expr) >= 2 and isinstance(expr[1], SList):
+                for binding in expr[1].items:
+                    if isinstance(binding, SList) and len(binding) >= 2:
+                        if self._binding_name(binding) == name:
+                            count += 1
+            for item in expr.items:
+                count += self._count_bindings_of(item, name)
+        return count
+
+    def _field_path(self, expr: 'SExpr') -> Optional[str]:
+        """A dotted path for a field access, in whichever spelling it is written.
+
+        `(. report results)` and `report.results` are the same list; the parser
+        keeps the second as one symbol. Returns None for anything that is not a
+        field access, so a plain variable still matches by name.
+        """
+        if isinstance(expr, Symbol):
+            return expr.name if '.' in expr.name.strip('.') else None
+        if is_form(expr, '.') and len(expr) >= 3:
+            head = self._field_path(expr[1])
+            if head is None:
+                head = expr[1].name if isinstance(expr[1], Symbol) else None
+            field = expr[2].name if isinstance(expr[2], Symbol) else None
+            if head is None or field is None:
+                return None
+            return f"{head}.{field}"
+        return None
+
+    def _uses_outside(self, body: 'SExpr', target: 'SExpr', allowed) -> bool:
+        """True if `target` appears anywhere in `body` in a context `allowed` rejects.
+
+        `target` is an expression, so this works for a plain variable and for
+        something like `(. report results)` alike. `allowed` is called with
+        (parent_head, index, returns_value) for each occurrence and says whether
+        that use leaves the list's length knowable; returns_value is true only
+        for the value the function actually yields, which means the trailing
+        position of a do/let chain reached from the body root - `(list-pop (do r))`
+        has r in a trailing position, but that block is an argument, not a result.
+        """
+        from slop.parser import pretty_print
+
+        # Printing every node to compare it is quadratic on a large body, and
+        # the rule files this runs over are large. Compare structurally, and
+        # print only for a compound target against a node that could match it.
+        target_is_symbol = isinstance(target, Symbol)
+        target_name = target.name if target_is_symbol else None
+        target_str = None if target_is_symbol else pretty_print(target)
+        target_len = None if target_is_symbol else len(target)
+        # `(. report results)` and `report.results` denote the same list, and a
+        # body may use one to iterate and the other to mutate.
+        target_path = self._field_path(target)
+
+        def matches(node):
+            if target_path is not None and self._field_path(node) == target_path:
+                return True
+            if target_is_symbol:
+                return isinstance(node, Symbol) and node.name == target_name
+            if not isinstance(node, SList) or len(node) != target_len:
+                return False
+            return pretty_print(node) == target_str
+
+        def walk(node, parent_head, index, returns_value):
+            if matches(node):
+                return not allowed(parent_head, index, returns_value)
+            if not isinstance(node, SList):
+                return False
+            head = node[0].name if len(node) and isinstance(node[0], Symbol) else None
+            last = len(node) - 1
+            block = head in ('do', 'let')
+            for i, item in enumerate(node.items):
+                # The binder of a for-each is (var collection); name that
+                # position so a collection may be recognised there.
+                child_head = '@for-each-binder' if (head == 'for-each' and i == 1) else head
+                if isinstance(item, SList) and child_head == '@for-each-binder':
+                    for j, sub in enumerate(item.items):
+                        if walk(sub, '@for-each-binder', j, False):
+                            return True
+                    continue
+                if walk(item, head, i, returns_value and block and i == last):
+                    return True
+            return False
+
+        return walk(body, None, -1, True)
+
+    @staticmethod
+    def _accumulator_use_is_safe(parent_head, index, returns_value) -> bool:
+        """Contexts in which the returned list's length stays derivable.
+
+        Counting pushes bounds a list only if nothing else touches it. A
+        list-pop shortens it, a set! replaces it outright, and handing it to a
+        function that appends to it does the same at a distance. Only the target
+        of a push, the argument of a read, its own binding, and the value the
+        body yields are accounted for; anything else, including an operation
+        this does not know about, means no bound.
+        """
+        if parent_head == 'list-push' and index == 1:
+            return True
+        if parent_head in ('list-len', 'list-get') and index == 1:
+            return True
+        if parent_head == 'mut' and index == 1:
+            return True
+        return returns_value
+
+    @staticmethod
+    def _source_use_is_safe(parent_head, index, returns_value) -> bool:
+        """Contexts in which a loop's source collection is only read.
+
+        A loop bound is stated against the source's length as one term, so
+        anything that changes that length - a push, a pop, a reassignment, a
+        callee that appends - would have the bound read against a different
+        collection than the loop saw.
+        """
+        if parent_head == '@for-each-binder' and index == 1:
+            return True
+        return parent_head in ('list-len', 'list-get') and index == 1
+
+    def _list_escapes(self, expr: 'SExpr', target: 'SExpr') -> bool:
+        """True if the returned list is used in a way that hides its length."""
+        return self._uses_outside(expr, target, self._accumulator_use_is_safe)
+
+    @staticmethod
+    def _owner_use_is_safe(parent_head, index, returns_value) -> bool:  # noqa: D401
+        """Contexts in which the owner of a field-valued collection is only read.
+
+        For a source like `(. report results)`, `report` itself has to stay put:
+        a `(set! report other)` after the loop, or handing `report` to a callee
+        that replaces its list, changes which collection the bound is read
+        against without touching the printed source expression at all.
+        """
+        return parent_head == '.' and index == 1
+
+    def _is_stable_source(self, coll: 'SExpr') -> bool:
+        """True if `coll` is a shape whose dependencies can be enumerated.
+
+        A variable, or a field chain rooted at one. Anything else - an `if`
+        choosing between two collections, a call returning one - depends on
+        values this cannot list, so a mutation of one of them would go unnoticed
+        while the printed source expression stayed the same.
+        """
+        node = coll
+        while is_form(node, '.') and len(node) >= 2:
+            node = node[1]
+        return isinstance(node, Symbol)
+
+    @staticmethod
+    def _dotted_symbol_owners(name: str) -> List[str]:
+        """The owner prefixes of a shorthand field symbol, e.g. `report.results`.
+
+        The parser keeps that spelling as one symbol rather than a (. ...) form,
+        so a chain written this way needs its prefixes recovered by hand.
+        """
+        if '.' not in name or name.startswith('.') or name.endswith('.'):
+            return []
+        parts = name.split('.')
+        return ['.'.join(parts[:i]) for i in range(1, len(parts))]
+
+    def _source_escapes(self, fn_body: 'SExpr', coll: 'SExpr') -> bool:
+        """True if the loop's source collection is anything but read in this body."""
+        if self._uses_outside(fn_body, coll, self._source_use_is_safe):
+            return True
+        # A field access is only as stable as the value it reads from.
+        for owner in self._owner_expressions(coll):
+            if self._uses_outside(fn_body, owner, self._owner_use_is_safe):
+                return True
+        return False
+
+    def _owner_expressions(self, coll: 'SExpr') -> List['SExpr']:
+        """The sub-expressions a field-access source depends on.
+
+        Covers both spellings: the `(. report results)` form and the shorthand
+        `report.results`, which the parser keeps as a single symbol.
+        """
+        owners: List['SExpr'] = []
+        node = coll
+        while is_form(node, '.') and len(node) >= 2:
+            node = node[1]
+            owners.append(node)
+        if isinstance(node, Symbol):
+            owners.extend(Symbol(prefix) for prefix in self._dotted_symbol_owners(node.name))
+        return owners
+
+    def _contains_any_form(self, expr: 'SExpr', heads) -> bool:
+        """True if `expr` calls any of `heads` in this function's own body.
+
+        The walk stops at a nested `(fn ...)`: a callback's `return` leaves the
+        callback, and its `break` belongs to a loop inside it, so neither says
+        anything about the enclosing function's exits. Counting them suppressed
+        the result-length axioms of any function that passes a callback.
+        """
+        if isinstance(expr, SList):
+            if len(expr) >= 1 and isinstance(expr[0], Symbol):
+                if expr[0].name in heads:
+                    return True
+                if expr[0].name == 'fn':
+                    return False
+            for item in expr.items:
+                if self._contains_any_form(item, heads):
+                    return True
+        return False
+
+    def _length_terms_for(self, expr: 'SExpr', translator: 'Z3Translator'):
+        """Every length term for the list denoted by `expr`, plus links between them.
+
+        A list can carry more than one length representation at once (see
+        Z3Translator.list_length_terms). Callers assert a bound on all of them
+        and add the links, so the fact is visible whichever one the contract
+        happened to translate to.
+        """
+        terms: List[z3.ArithRef] = []
+
+        if isinstance(expr, Symbol):
+            terms.extend(translator.list_length_terms(expr.name))
+        elif is_form(expr, '.') and len(expr) >= 3:
+            obj, fld = expr[1], expr[2]
+            if isinstance(obj, Symbol) and isinstance(fld, Symbol):
+                # Same key as _extract_map_push_axioms / _get_or_create_collection_seq.
+                # It names a Seq/array registration, not a variable - a parameter
+                # could legitimately be called _field_report_results, and reading
+                # it out of `variables` would tie that parameter's length to an
+                # unrelated field's.
+                key = translator.field_collection_key(obj.name, fld.name)
+                seq = translator.list_seqs.get(key)
+                if seq is not None:
+                    terms.append(z3.Length(seq))
+                arr_entry = translator.list_arrays.get(key)
+                if arr_entry is not None:
+                    terms.append(arr_entry[1])
+
+        handle = translator.translate_expr(expr)
+        if handle is not None and z3.is_expr(handle) and handle.sort() == z3.IntSort():
+            func = translator.variables.get("field_len")
+            if func is None:
+                func = z3.Function("field_len", z3.IntSort(), z3.IntSort())
+                translator.variables["field_len"] = func
+            if isinstance(func, z3.FuncDeclRef) and func.arity() == 1:
+                # Occupied by a user binding of that name otherwise; see
+                # Z3Translator.field_len_term.
+                field_len = func(handle)
+                if not any(z3.eq(field_len, t) for t in terms):
+                    terms.append(field_len)
+
+        links = [terms[0] == t for t in terms[1:]]
+        return terms, links
+
+    def _result_length_axioms(self, fn_body: SExpr,
+                              translator: 'Z3Translator') -> List[z3.BoolRef]:
+        """Sound bounds on the length of the list this function returns.
+
+        This replaces two axioms that used to be emitted independently and
+        contradicted each other on any body that pushes (issue #115): a flat
+        `field_len($result) == 0` derived from the `(mut r (list-new ...))`
+        binding, which ignored every push, and a `field_len($result) >= n`
+        derived from the push count, which was itself wrong for a conditional
+        or looping push. An unsatisfiable pair makes every postcondition
+        discharge without being proved.
+
+        What the push sites support:
+
+            no pushes                                 len == 0
+            n straight-line unconditional pushes      len == n
+            n sites, some conditional, none in a loop 0 <= len <= n
+            unconditional push in a map loop          len == len(source)
+            guarded push in a filter loop             0 <= len <= len(source)
+            any other loop push                       no bound
+
+        A push under a `match` arm or a `when`/`if` guard is conditional: it
+        contributes to the upper bound but not the lower. A push inside a loop
+        runs an unknown number of times, so the site count bounds nothing - only
+        a recognised map/filter shape gives a bound there, from the length of
+        the collection being iterated.
+        """
+        terms = translator.list_length_terms('$result')
+        if not terms:
+            return []
+
+        axioms: List[z3.BoolRef] = list(translator.link_list_length_terms('$result'))
+
+        # _get_return_expr only looks at the trailing expression. An explicit
+        # (return ...) elsewhere in the body is a second exit it cannot see, and
+        # whatever that path returns is just as much $result - so nothing about
+        # the trailing expression describes the result on its own.
+        if self._contains_any_form(fn_body, ('return',)):
+            return axioms
+
+        return_expr = self._get_return_expr(fn_body)
+
+        # A bare (list-new ...) return is empty, with no body to push from.
+        if is_form(return_expr, 'list-new'):
+            axioms.extend(t == z3.IntVal(0) for t in terms)
+            return axioms
+
+        if not isinstance(return_expr, Symbol):
+            return axioms
+
+        name = return_expr.name
+
+        # Resolve the returned name to the binding that governs it, and work
+        # inside that binding's scope from here on. Scanning the whole body
+        # instead conflates same-named bindings in disjoint scopes, and lets an
+        # unrelated (list-new ...) elsewhere decide whether the returned list
+        # started empty.
+        initializer, scope = self._binding_in_scope_at_tail(fn_body, name)
+        sites = self._collect_push_sites([scope], name)
+
+        # Fail closed. _collect_push_sites is a whitelist walk: it classifies
+        # the forms it knows and silently returns nothing for the rest, which is
+        # fine for a heuristic but not for deriving a bound. A plain recursive
+        # count of every (list-push name ...) in the body says how many there
+        # really are; if the structured walk saw a different number it passed
+        # through something it does not model - a form it does not descend into,
+        # or a push built by (set! name (list-push name x)) - and no bound may
+        # be claimed. Without this, a push under a `cond` yielded no sites and
+        # so "proved" the result empty.
+        if len(sites) != self._count_push_to_var([scope], name):
+            return axioms
+
+        # A nested (let ((mut name ...))) rebinds the name to a different list.
+        # Pushes to the inner one are still counted against the outer, so bail.
+        if self._count_bindings_of(scope, name) > 1:
+            return axioms
+
+        # Pushes are the only mutation modelled. A list-pop, a set! or a call
+        # that receives the list and appends to it all change the length in ways
+        # the count does not see.
+        if self._list_escapes(scope, return_expr):
+            return axioms
+
+        # A list the function allocated itself started empty, so the push sites
+        # account for its whole contents. One it was handed may already hold
+        # anything, so the same sites only raise its floor.
+        starts_empty = is_form(initializer, 'list-new')
+
+        if any(site.loop_depth > 0 for site in sites):
+            if not starts_empty:
+                return axioms
+            early_exit = self._contains_any_form(scope, ('break', 'continue'))
+            axioms.extend(self._loop_result_length_axioms(
+                scope, sites, terms, translator, early_exit))
+            return axioms
+
+        upper = len(sites)
+        lower = sum(
+            1 for site in sites
+            if not site.guard_conditions and not site.conditional
+        )
+        for t in terms:
+            if not starts_empty:
+                if lower:
+                    axioms.append(t >= z3.IntVal(lower))
+            elif lower == upper:
+                axioms.append(t == z3.IntVal(lower))
+            else:
+                axioms.append(t >= z3.IntVal(lower))
+                axioms.append(t <= z3.IntVal(upper))
+        return axioms
+
+    def _loop_result_length_axioms(self, fn_body: 'SExpr',
+                                   sites: List['PushSiteInfo'],
+                                   terms: List[z3.ArithRef],
+                                   translator: 'Z3Translator',
+                                   early_exit: bool = False) -> List[z3.BoolRef]:
+        """Length bound for a result built by pushing inside a loop.
+
+        The bound comes from the loop itself rather than from a named pattern:
+        every push site must sit inside the same single `for-each`, and then k
+        sites over a collection C give at most k*len(C) elements - exactly
+        len(C) when the one site is unconditional. That covers a map and a
+        filter alike, including a filter written as a `match` arm rather than a
+        `when`, which the pattern detectors do not recognise.
+
+        Anything else gets no bound: a `while` has no collection to measure, and
+        nested loops multiply out to a product this does not try to express. The
+        length is then left unconstrained beyond the non-negativity the type
+        carries, and the caller reports that it could not bound it.
+
+        `early_exit` suppresses the exact case: with a break, continue or return
+        in the body the single push no longer runs once per element. The k*len(C)
+        upper bound survives, since every exit only makes the loop shorter.
+        """
+        if not sites:
+            return []
+
+        collections = [site.loop_collections for site in sites]
+        if any(len(c) != 1 or c[0] is None for c in collections):
+            return []
+
+        from slop.parser import pretty_print
+        distinct = {pretty_print(c[0]) for c in collections}
+        if len(distinct) != 1:
+            return []
+
+        source = collections[0][0]
+        if not self._is_stable_source(source):
+            return []
+        if self._source_escapes(fn_body, source):
+            return []
+
+        src_terms, links = self._length_terms_for(source, translator)
+        if not src_terms:
+            return []
+        source_len = src_terms[0]
+
+        exact = (len(sites) == 1
+                 and not sites[0].guard_conditions
+                 and not sites[0].conditional
+                 and not early_exit)
+        if exact:
+            return links + [t == source_len for t in terms]
+        return links + [t <= len(sites) * source_len for t in terms]
+
     def _extract_seq_push_axioms(self, fn_body: SExpr, postconditions: List[SExpr],
                                   translator: 'Z3Translator') -> List[z3.BoolRef]:
         """Generate axioms connecting pushed elements to their source.
@@ -203,9 +673,8 @@ class AxiomGenerationMixin:
             obj = map_pattern.collection[1]
             field = map_pattern.collection[2]
             if isinstance(obj, Symbol) and isinstance(field, Symbol):
-                # Must match naming convention in _get_or_create_collection_seq:
-                # "_field_{obj_name}_{field_name}"
-                source_name = f"_field_{obj.name}_{field.name}"
+                # Must match the key _get_or_create_collection_seq registers under
+                source_name = translator.field_collection_key(obj.name, field.name)
                 if source_name not in translator.list_seqs:
                     translator._create_list_seq(source_name)
                 source_seq = translator.list_seqs.get(source_name)
@@ -431,7 +900,7 @@ class AxiomGenerationMixin:
             obj = pattern.outer_collection[1]
             field = pattern.outer_collection[2]
             if isinstance(obj, Symbol) and isinstance(field, Symbol):
-                outer_name = f"_field_{obj.name}_{field.name}"
+                outer_name = translator.field_collection_key(obj.name, field.name)
                 if outer_name not in translator.list_seqs:
                     translator._create_list_seq(outer_name)
                 outer_seq = translator.list_seqs.get(outer_name)
@@ -679,7 +1148,7 @@ class AxiomGenerationMixin:
             field = match_ctx.collection_expr[2]
             if isinstance(obj, Symbol) and isinstance(field, Symbol):
                 # The index is (. obj by-predicate), parent list is (. obj triples)
-                parent_name = f"_field_{obj.name}_triples"
+                parent_name = translator.field_collection_key(obj.name, "triples")
                 if parent_name not in translator.list_seqs:
                     translator._create_list_seq(parent_name)
                 parent_seq = translator.list_seqs.get(parent_name)

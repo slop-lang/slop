@@ -3678,29 +3678,23 @@ class TestArrayEncoding:
         assert z3.is_bool(result)
 
     def test_list_new_with_array_encoding(self):
-        """Test list-new with array encoding creates proper axioms"""
+        """A body that is just (list-new ...) returns an empty list."""
         from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator
         from slop.parser import parse
         import z3
 
         env = MinimalTypeEnv()
         translator = Z3Translator(env, use_array_encoding=True)
-
-        # Declare $result
         translator.declare_variable('$result', z3.IntSort())
+        translator._create_list_array('$result')
 
         verifier = ContractVerifier(env)
 
-        # Extract axioms for list-new
-        list_new_expr = parse("(list-new arena Triple)")[0]
-        axioms = verifier._extract_list_new_axioms(list_new_expr, translator)
+        body = parse("(list-new arena Triple)")[0]
+        axioms = verifier._result_length_axioms(body, translator)
 
-        # Should have created array for $result
         assert '$result' in translator.list_arrays
-
-        # Should have axiom that length is 0
         assert len(axioms) >= 1
-        # First axiom should be length == 0 (may be normalized to 0 == length)
         has_length_zero = any("== 0" in str(a) or "0 ==" in str(a) for a in axioms)
         assert has_length_zero, f"Expected length == 0 axiom, got: {axioms}"
 
@@ -4891,7 +4885,7 @@ class TestSequenceTheory:
         assert z3.is_quantifier(result)
 
         # Should have created a Seq for the field access
-        assert "_field_delta_triples" in translator.list_seqs
+        assert translator.field_collection_key("delta", "triples") in translator.list_seqs
 
     def test_function_call_collection_translation(self):
         """Test (forall (elem (fn-name args)) body) translation for function calls"""
@@ -5024,7 +5018,7 @@ class TestSequenceTheory:
 
         # Should have created Seqs
         assert '$result' in translator.list_seqs
-        assert '_field_delta_triples' in translator.list_seqs
+        assert translator.field_collection_key('delta', 'triples') in translator.list_seqs
 
     def test_property_verification_with_collection_quantifier(self):
         """Integration test: property with collection-bound forall"""
@@ -5905,7 +5899,7 @@ class TestNestedLoopPattern:
 
         # Create seqs
         translator._create_list_seq('$result')
-        translator._create_list_seq('_field_delta_triples')
+        translator._create_list_seq(translator.field_collection_key('delta', 'triples'))
 
         # Nested loop pattern body
         body = parse("""
@@ -6038,7 +6032,7 @@ class TestNestedLoopPattern:
 
         # Create seqs
         translator._create_list_seq('$result')
-        translator._create_list_seq('_field_delta_triples')
+        translator._create_list_seq(translator.field_collection_key('delta', 'triples'))
 
         # Simplified eq-trans body
         body = parse("""
@@ -6965,3 +6959,1123 @@ class TestMatchArmPostconditionPropagation:
         verifier = ContractVerifier(env, function_registry=registry)
         result = verifier.verify_function(fn_form)
         assert result.status == "verified", f"Expected verified, got {result.status}: {result.message}"
+
+
+# ============================================================================
+# Issue #115: a self-contradictory axiom set discharges every contract
+# ============================================================================
+
+_PUSH_BODY_SHAPES = {
+    # name -> (body, params, expected length bound as (lower, upper|None))
+    'no_pushes': ('''
+        (let ((mut r (list-new arena Msg)))
+          r)''', 0, 0),
+    'one_unconditional_push': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (list-push r (record-new Msg (v 1) (to root))) r))''', 1, 1),
+    'two_unconditional_pushes': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (list-push r (record-new Msg (v 1) (to root)))
+              (list-push r (record-new Msg (v 2) (to root)))
+              r))''', 2, 2),
+    'push_under_when': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (when (> root 0) (list-push r (record-new Msg (v 1) (to root)))) r))''', 0, 1),
+    'push_in_one_match_arm': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (match ax
+                ((a n) (list-push r (record-new Msg (v n) (to root))))
+                ((b _) (do)))
+              r))''', 0, 1),
+    'push_in_both_match_arms': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (match ax
+                ((a n) (list-push r (record-new Msg (v n) (to root))))
+                ((b n) (list-push r (record-new Msg (v n) (to root)))))
+              r))''', 0, 2),
+    'guarded_and_unguarded': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (list-push r (record-new Msg (v 1) (to root)))
+              (when (> root 0) (list-push r (record-new Msg (v 2) (to root))))
+              r))''', 1, 2),
+}
+
+
+def _push_shape_source(body, post):
+    """A list-returning function over Msg/Ax with `post` as its @post."""
+    return '''
+    (module probe
+      (type Msg (record (v Int) (to Int)))
+      (type Ax  (union (a Int) (b Int)))
+
+      (fn build ((arena Arena) (ax Ax) (root Int))
+        (@spec ((Arena Ax Int) -> (List Msg)))
+        (@alloc arena)
+        (@post %s)
+        %s))
+    ''' % (post, body)
+
+
+class TestResultLengthBounds:
+    """Issue #115: the length of a push-built result, derived from its push sites.
+
+    Two axioms used to be emitted about it independently - a flat
+    field_len($result) == 0 from the (mut r (list-new ...)) binding and a
+    field_len($result) >= push_count from the push count - and the pair was
+    unsatisfiable, so every postcondition on such a function reported verified
+    without being proved. These pin the bound that replaced them.
+    """
+
+    @pytest.mark.parametrize("shape", sorted(_PUSH_BODY_SHAPES))
+    def test_lower_bound_holds(self, shape):
+        from slop.verifier import verify_source
+        body, lower, _ = _PUSH_BODY_SHAPES[shape]
+        src = _push_shape_source(body, "{(list-len $result) >= %d}" % lower)
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status == 'verified', f"{shape}: {result.message}"
+
+    @pytest.mark.parametrize("shape", sorted(_PUSH_BODY_SHAPES))
+    def test_upper_bound_holds(self, shape):
+        from slop.verifier import verify_source
+        body, _, upper = _PUSH_BODY_SHAPES[shape]
+        src = _push_shape_source(body, "{(list-len $result) <= %d}" % upper)
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status == 'verified', f"{shape}: {result.message}"
+
+    @pytest.mark.parametrize("shape", sorted(_PUSH_BODY_SHAPES))
+    def test_below_lower_bound_fails(self, shape):
+        """A length claim the body does not support must not verify."""
+        from slop.verifier import verify_source
+        body, lower, _ = _PUSH_BODY_SHAPES[shape]
+        src = _push_shape_source(body, "{(list-len $result) == %d}" % (lower - 1))
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status != 'verified', f"{shape}: {result.message}"
+
+    @pytest.mark.parametrize("shape", sorted(_PUSH_BODY_SHAPES))
+    def test_above_upper_bound_fails(self, shape):
+        from slop.verifier import verify_source
+        body, _, upper = _PUSH_BODY_SHAPES[shape]
+        src = _push_shape_source(body, "{(list-len $result) == %d}" % (upper + 1))
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status != 'verified', f"{shape}: {result.message}"
+
+    def test_map_loop_length_equals_source(self):
+        """One unconditional push per source element: len($result) == len(source)."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn transform ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (== (list-len $result) (list-len items)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result (item-new arena x)))
+            result))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+    def test_map_loop_length_is_not_zero(self):
+        """The same body must not prove the result empty."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn transform ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (== (list-len $result) 0))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result (item-new arena x)))
+            result))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+    def test_filter_loop_length_bounded_by_source(self):
+        """A guarded push per element: len($result) <= len(source)."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn keep-positive ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (<= (list-len $result) (list-len items)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (when (> x 0)
+                (list-push result x)))
+            result))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+
+class TestVacuityGuard:
+    """Issue #115: nothing may be reported verified on a contradictory context."""
+
+    def test_false_length_postcondition_is_not_verified(self):
+        from slop.verifier import verify_source
+        body, _, _ = _PUSH_BODY_SHAPES['one_unconditional_push']
+        for claim in ("== 0", "== 99", ">= 2"):
+            src = _push_shape_source(body, "{(list-len $result) %s}" % claim)
+            result = verify_source(src, filename="probe.slop")[0]
+            assert result.status == 'failed', f"len {claim}: {result.status} {result.message}"
+
+    def test_true_length_postcondition_still_verifies(self):
+        """The guard must not blanket-downgrade contracts that do hold."""
+        from slop.verifier import verify_source
+        body, _, _ = _PUSH_BODY_SHAPES['one_unconditional_push']
+        src = _push_shape_source(body, "{(list-len $result) == 1}")
+        assert verify_source(src, filename="probe.slop")[0].status == 'verified'
+
+    def test_unsatisfiable_precondition_is_reported_as_such(self):
+        """An impossible @pre is a user error, not a verifier defect - the two
+        make the base context unsat for different reasons and must not be
+        reported with the same message."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn impossible ((n Int))
+          (@spec ((Int) -> Int))
+          (@pre (> n 10))
+          (@pre (< n 5))
+          (@post (== $result n))
+          n)
+        '''
+        result = verify_source(src)[0]
+        assert result.status == 'failed'
+        assert 'unsatisfiable' in result.message.lower()
+        assert 'verifier defect' not in result.message
+
+    def test_no_fixture_produces_a_contradictory_context(self):
+        """The invariant behind the guard, checked directly.
+
+        Every contract is discharged by asking whether (axioms AND NOT post) is
+        satisfiable. If the axioms alone are unsat that answer is "no" for any
+        post, so the contract reports verified having proved nothing. This walks
+        a corpus of shapes and re-checks each base context standalone. It does
+        not go through the guard, so it still fires if the guard is removed.
+        """
+        import z3 as _z3
+        from slop.verifier import verify_source
+
+        snapshots = []
+        orig_push = _z3.Solver.push
+        orig_check = _z3.Solver.check
+
+        def push(self, *a, **k):
+            # At this point the goal has not been pushed yet, so the assertions
+            # are exactly the axioms.
+            self._slop_base = list(self.assertions())
+            return orig_push(self, *a, **k)
+
+        def check(self, *a, **k):
+            if self.num_scopes() > 0:
+                base = getattr(self, '_slop_base', None)
+                if base is not None:
+                    snapshots.append(base)
+            else:
+                # A check outside any scope is the guard's own consistency
+                # check. Recording it here keeps this test independent of the
+                # guard: remove the guard and the same set still gets examined
+                # on the push below.
+                snapshots.append(list(self.assertions()))
+            return orig_check(self, *a, **k)
+
+        _z3.Solver.push, _z3.Solver.check = push, check
+        try:
+            for shape, (body, lower, upper) in sorted(_PUSH_BODY_SHAPES.items()):
+                for post in ("{(list-len $result) >= %d}" % lower,
+                             "{(list-len $result) <= %d}" % upper,
+                             "{(list-len $result) == %d}" % (upper + 1)):
+                    verify_source(_push_shape_source(body, post), filename="probe.slop")
+        finally:
+            _z3.Solver.push, _z3.Solver.check = orig_push, orig_check
+
+        assert snapshots, "instrumentation caught no solver contexts"
+        for base in snapshots:
+            solver = _z3.Solver()
+            solver.set("timeout", 5000)
+            for assertion in base:
+                solver.add(assertion)
+            assert solver.check() != _z3.unsat, (
+                "axiom set is self-contradictory, so every contract on this "
+                "function would discharge without being proved:\n  "
+                + "\n  ".join(str(a) for a in base)
+            )
+
+    def test_contradictory_assumptions_are_reported_as_such(self):
+        """@assume is trusted, so a contradictory set would discharge anything.
+
+        That is the author's error, not a verifier defect, and the guard has to
+        say which - otherwise the report sends them to the wrong place.
+        """
+        from slop.verifier import verify_source
+        src = '''
+        (fn contradictory ((n Int))
+          (@spec ((Int) -> Int))
+          (@assume (== n 1))
+          (@assume (== n 2))
+          (@post (== $result 42))
+          n)
+        '''
+        result = verify_source(src)[0]
+        assert result.status == 'failed'
+        assert 'An assumption contradicts the function' in result.message
+
+    def test_match_arm_filter_loop_bounded_by_source(self):
+        """A filter written as a match arm, not a `when`.
+
+        The map/filter pattern detectors do not recognise this shape, so the
+        bound has to come from the loop structure itself.
+        """
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Sev (enum lo hi))
+          (type Res (record (sev Sev)))
+          (type Report (record (results (List Res))))
+
+          (fn get-high ((arena Arena) (report Report))
+            (@spec ((Arena Report) -> (List Res)))
+            (@alloc arena)
+            (@post (>= (list-len $result) 0))
+            (@post (<= (list-len $result) (list-len (. report results))))
+            (let ((mut result (list-new arena Res)))
+              (for-each (r (. report results))
+                (match (. r sev)
+                  (hi (list-push result r))
+                  (_ (do))))
+              result)))
+        '''
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status == 'verified', result.message
+
+    def test_two_pushes_per_iteration_bounded_by_twice_source(self):
+        from slop.verifier import verify_source
+        src = '''
+        (fn duplicate ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (<= (list-len $result) (* 2 (list-len items))))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result x)
+              (list-push result x))
+            result))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+    def test_while_loop_push_gets_no_length_bound(self):
+        """A while loop has no collection to measure, so nothing is claimed.
+
+        The claim below is true of the body but not derivable, and the point is
+        that the verifier does not instead claim something false.
+        """
+        from slop.verifier import verify_source
+        src = '''
+        (fn drain ((arena Arena) (n Int))
+          (@spec ((Arena Int) -> (List Int)))
+          (@post (== (list-len $result) 0))
+          (let ((mut result (list-new arena Int))
+                (mut i 0))
+            (while (< i n)
+              (list-push result i)
+              (set! i (+ i 1)))
+            result))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+
+class TestResultLengthFailsClosed:
+    """A length bound may only be claimed when the push scan is trustworthy.
+
+    _collect_push_sites is a whitelist walk. It classifies the forms it knows
+    and returns nothing for the rest, which is fine for a heuristic but not for
+    deriving a bound: a push the walk did not see reads as a push that does not
+    happen, and "no pushes" means "the result is empty". Each case here paired a
+    false claim with a true weaker one, so the tests pin both that the false one
+    is rejected and that rejecting it did not cost the true one.
+    """
+
+    @staticmethod
+    def _one(body, post):
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena) (flag Bool) (n Int) (items (List Int)))
+          (@spec ((Arena Bool Int (List Int)) -> (List Int)))
+          (@alloc arena)
+          (@post %s)
+          %s)
+        ''' % (post, body)
+        return verify_source(src)[0]
+
+    IF_ELSE = '''
+        (let ((mut result (list-new arena Int)))
+          (do (if flag (do) (list-push result 1)) result))'''
+    COND = '''
+        (let ((mut result (list-new arena Int)))
+          (do (cond ((> n 0) (list-push result 1)) (else (do))) result))'''
+    BREAK = '''
+        (let ((mut result (list-new arena Int)))
+          (do (for-each (x items) (list-push result x) (break)) result))'''
+    SHADOW = '''
+        (let ((mut result (list-new arena Int)))
+          (do (let ((mut result (list-new arena Int)))
+                (list-push result 1))
+              result))'''
+    SET_BANG = '''
+        (let ((mut result (list-new arena Int)))
+          (do (for-each (x items) (set! result (list-push result x))) result))'''
+
+    def test_push_only_in_else_branch_is_conditional(self):
+        """The else branch has no term to record as a guard, so it has to be
+        marked conditional or it reads as a push that always happens."""
+        assert self._one(self.IF_ELSE, "(== (list-len $result) 1)").status != 'verified'
+        assert self._one(self.IF_ELSE, "(<= (list-len $result) 1)").status == 'verified'
+
+    def test_push_under_cond_is_seen(self):
+        assert self._one(self.COND, "(== (list-len $result) 0)").status != 'verified'
+        assert self._one(self.COND, "(<= (list-len $result) 1)").status == 'verified'
+
+    def test_loop_with_break_is_not_exact(self):
+        """One unguarded push per iteration stops meaning one per element once
+        the loop can leave early. The upper bound survives; the equality does not."""
+        assert self._one(self.BREAK, "(== (list-len $result) (list-len items))").status != 'verified'
+        assert self._one(self.BREAK, "(<= (list-len $result) (list-len items))").status == 'verified'
+
+    def test_shadowed_binding_is_not_the_returned_list(self):
+        assert self._one(self.SHADOW, "(== (list-len $result) 1)").status != 'verified'
+
+    def test_push_through_set_is_not_counted_as_absent(self):
+        """(set! result (list-push result x)) is a push the structured walk does
+        not descend to. The plain count sees it, the mismatch forces a bail."""
+        assert self._one(self.SET_BANG, "(== (list-len $result) 0)").status != 'verified'
+
+    EARLY_RETURN = '''
+        (do
+          (when flag (return items))
+          (list-new arena Int))'''
+
+    def test_explicit_return_is_a_second_exit(self):
+        """_get_return_expr sees only the trailing expression.
+
+        With `(when flag (return items))` above it, `items` is just as much
+        $result as the trailing `(list-new ...)`, so neither the length bound
+        nor the sequence identity may be taken from the trailing form alone.
+        The length half of this false-verified before this branch too.
+        """
+        from slop.verifier import verify_source
+        for post in ("(== (list-len $result) 0)",
+                     "(forall (e $result) (> e 0))"):
+            src = '''
+            (fn pick ((arena Arena) (flag Bool) (items (List Int)))
+              (@spec ((Arena Bool (List Int)) -> (List Int)))
+              (@alloc arena)
+              (@post %s)
+              %s)
+            ''' % (post, self.EARLY_RETURN)
+            result = verify_source(src)[0]
+            assert result.status != 'verified', f"{post}: {result.message}"
+
+    POP = '''
+        (let ((mut r (list-new arena Int)))
+          (do (list-push r 1) (list-pop r) r))'''
+    REASSIGN = '''
+        (let ((mut r (list-new arena Int)))
+          (do (set! r items) r))'''
+    ESCAPES = '''
+        (let ((mut r (list-new arena Int)))
+          (do (list-push r 1) (helper arena r) r))'''
+    SOURCE_MUTATED = '''
+        (let ((mut r (list-new arena Int)))
+          (do (for-each (x items) (list-push r x))
+              (list-push items 9)
+              r))'''
+    BINDER_SHADOWS = '''
+        (let ((mut result (list-new arena Int)))
+          (do (for-each (result items) (list-push result 1)) result))'''
+
+    def test_pop_is_not_modelled(self):
+        """Counting pushes only bounds a list if nothing else shortens it."""
+        assert self._one(self.POP, "(== (list-len $result) 1)").status != 'verified'
+
+    def test_reassignment_is_not_modelled(self):
+        assert self._one(self.REASSIGN, "(== (list-len $result) 0)").status != 'verified'
+
+    def test_accumulator_handed_to_a_function_escapes(self):
+        """The callee may append to it, and nothing here can see that."""
+        assert self._one(self.ESCAPES, "(== (list-len $result) 1)").status != 'verified'
+
+    def test_source_mutated_after_the_loop(self):
+        """len($result) == len(items) holds for the length the loop saw, not the
+        one the postcondition reads after the body appends to items."""
+        assert self._one(self.SOURCE_MUTATED,
+                         "(== (list-len $result) (list-len items))").status != 'verified'
+
+    def test_loop_binder_shadowing_the_accumulator(self):
+        assert self._one(self.BINDER_SHADOWS,
+                         "(== (list-len $result) (list-len items))").status != 'verified'
+
+    SOURCE_POPPED = '''
+        (let ((mut r (list-new arena Int)))
+          (do (for-each (x items) (list-push r x)) (list-pop items) r))'''
+    RETURN_SHAPED_ARGUMENT = '''
+        (let ((mut r (list-new arena Int)))
+          (do (list-push r 1) (list-pop (do r)) r))'''
+
+    def test_source_shortened_after_the_loop(self):
+        """The bound is against one length term; a pop makes that term denote a
+        different collection than the loop iterated."""
+        assert self._one(self.SOURCE_POPPED,
+                         "(== (list-len $result) (list-len items))").status != 'verified'
+
+    def test_trailing_position_of_an_argument_block_is_not_the_result(self):
+        """`(list-pop (do r))` has r trailing a do block, but that block is an
+        argument. Only the block the function actually yields is exempt."""
+        assert self._one(self.RETURN_SHAPED_ARGUMENT,
+                         "(== (list-len $result) 1)").status != 'verified'
+
+
+class TestInconsistencyAttribution:
+    """Issue #115: an unsat base context has several causes, and the report has
+    to name the right one - three of them are the author's contract, one is
+    ours, and only the last should ask for a bug report.
+    """
+
+    @staticmethod
+    def _verify(src):
+        from slop.verifier import verify_source
+        return verify_source(src)[0]
+
+    def test_unsatisfiable_preconditions(self):
+        r = self._verify('''
+        (fn impossible ((n Int))
+          (@spec ((Int) -> Int))
+          (@pre (> n 10))
+          (@pre (< n 5))
+          (@post (== $result n))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'unsatisfiable' in r.message.lower()
+        assert 'verifier defect' not in r.message
+
+    def test_contradictory_type_invariants(self):
+        r = self._verify('''
+        (module m
+          (type Weird (record (x Int))
+            (@invariant (> x 0))
+            (@invariant (< x 0)))
+          (fn f ((w Weird))
+            (@spec ((Weird) -> Int))
+            (@post (== $result 1))
+            1))
+        ''')
+        assert r.status == 'failed'
+        assert 'Type invariants are contradictory' in r.message
+
+    def test_contradictory_assumptions(self):
+        r = self._verify('''
+        (fn contradictory ((n Int))
+          (@spec ((Int) -> Int))
+          (@assume (== n 1))
+          (@assume (== n 2))
+          (@post (== $result 42))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'An assumption contradicts the function' in r.message
+
+    def test_ill_defined_assumption_names_the_assumption(self):
+        """An @assume's own side conditions live in the same growing list as a
+        postcondition's, so without their own marks they fall through to the
+        generic layer and the assumption escapes the blame."""
+        r = self._verify('''
+        (fn f ((n Int))
+          (@spec ((Int) -> Int))
+          (@assume (== (/ 1 0) n))
+          (@post (== $result n))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'An assumption contradicts the function' in r.message
+
+    def test_ill_defined_contract_expression(self):
+        """A postcondition's own side conditions, not the preconditions.
+
+        translator.constraints accumulates across phases, so replaying the whole
+        list when diagnosing an unsatisfiable @pre blamed the preconditions for
+        a contradiction a postcondition introduced.
+        """
+        r = self._verify('''
+        (fn f ((n Int))
+          (@spec ((Int) -> Int))
+          (@post (== (/ 1 0) 0))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'well-defined' in r.message
+        assert 'Precondition' not in r.message
+
+    def test_field_source_owner_reassigned(self):
+        """A field source is only as stable as the value it reads from.
+
+        `(set! report other)` never mentions `(. report results)`, so a check
+        keyed on the printed source expression alone does not see it.
+        """
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep) (other Rep))
+            (@spec ((Arena Rep Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len (. report results))))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x))
+                  (set! report other)
+                  r))))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+    def test_field_source_owner_untouched_still_bounds(self):
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep))
+            (@spec ((Arena Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len (. report results))))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x)) r))))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+
+class TestBaselineTypeContradiction:
+    def test_empty_range_type_is_not_blamed_on_preconditions(self):
+        """The layer is unsat before any @pre is added, and the function has
+        none - reporting them as unsatisfiable names something that is not there."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Empty (Int 5 .. 3))
+          (fn f ((n Empty))
+            (@spec ((Empty) -> Int))
+            (@post (== $result 1))
+            1))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'admit no value' in r.message
+        assert 'Precondition' not in r.message
+
+    def test_empty_range_type_is_found_even_with_a_precondition(self):
+        """The contradiction predates the @pre, so a @pre that is true of
+        nothing in particular must not take the blame for it."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Empty (Int 5 .. 3))
+          (fn f ((n Empty))
+            (@spec ((Empty) -> Int))
+            (@pre (> n 0))
+            (@post (== $result 1))
+            1))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'admit no value' in r.message
+
+    def test_range_field_conflicting_with_an_invariant(self):
+        """The range axioms for record fields are part of what makes the main
+        solver unsat, so the layer that names invariants has to carry them."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Weird (record (x (Int 0 ..)))
+            (@invariant (< x 0)))
+          (fn f ((w Weird))
+            (@spec ((Weird) -> Int))
+            (@post (== $result 1))
+            1))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'Type invariants are contradictory' in r.message
+        assert 'verifier defect' not in r.message
+
+
+class TestVacuityGuardCost:
+    """The guard asks whether the axioms are consistent. That question only
+    needs asking of a proof: a counterexample is itself a model of the axioms,
+    so a sat result has already answered it. Running it up front instead cost a
+    full satisfiability check on every function, which on a large rule file is
+    the expensive direction - Z3 has to find a model rather than refute one, and
+    it took growl's rule files from seconds to minutes.
+    """
+
+    SRC = (
+        '(fn f ((arena Arena))\n'
+        '  (@spec ((Arena) -> (List Int)))\n'
+        '  (@post (== (list-len $result) %d))\n'
+        '  (let ((mut r (list-new arena Int)))\n'
+        '    (do (list-push r 1) r)))\n'
+    )
+
+    @staticmethod
+    def _guard_calls(src):
+        import slop.verifier.contract_verifier as cv
+        from slop.verifier import verify_source
+
+        calls = {"n": 0}
+        orig = cv.ContractVerifier._inconsistent_context_result
+
+        def counted(self, *a, **k):
+            calls["n"] += 1
+            return orig(self, *a, **k)
+
+        cv.ContractVerifier._inconsistent_context_result = counted
+        try:
+            status = verify_source(src)[0].status
+        finally:
+            cv.ContractVerifier._inconsistent_context_result = orig
+        return status, calls["n"]
+
+    def test_the_guard_runs_on_a_proof(self):
+        status, calls = self._guard_calls(self.SRC % 1)
+        assert status == 'verified'
+        assert calls == 1
+
+    def test_the_guard_does_not_run_on_a_counterexample(self):
+        status, calls = self._guard_calls(self.SRC % 5)
+        assert status == 'failed'
+        assert calls == 0
+
+
+class TestGroundFragmentFallback:
+    """Deciding consistency outright is the expensive direction: a consistent
+    axiom set means Z3 has to produce a model, and with quantified sequence
+    axioms it often cannot inside the timeout. Dropping assertions can only make
+    a set easier to satisfy, so an unsatisfiable ground subset still proves the
+    whole set unsatisfiable - and the ground fragment is cheap.
+    """
+
+    @staticmethod
+    def _verifier(timeout_ms):
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        return ContractVerifier(MinimalTypeEnv(), "<test>", timeout_ms)
+
+    def test_ground_contradiction_found_when_the_full_check_times_out(self):
+        import z3
+        x = z3.Int('x')
+        f = z3.Function('f', z3.IntSort(), z3.IntSort(), z3.IntSort())
+        i, j, k = z3.Ints('i j k')
+        # A quantified axiom Z3 will not settle in a millisecond, alongside a
+        # contradiction that needs no quantifier reasoning at all.
+        hard = z3.ForAll([i, j, k], f(f(i, j), k) == f(i, f(j, k)))
+        assertions = [hard, x == 0, x >= 1]
+
+        verifier = self._verifier(1)
+        assert verifier._axioms_are_contradictory(assertions)
+
+    def test_a_satisfiable_set_is_not_called_contradictory(self):
+        import z3
+        x = z3.Int('x')
+        i = z3.Int('i')
+        g = z3.Function('g', z3.IntSort(), z3.IntSort())
+        assertions = [z3.ForAll([i], g(i) >= 0), x == 3]
+
+        verifier = self._verifier(5000)
+        assert not verifier._axioms_are_contradictory(assertions)
+
+    def test_an_undecided_ground_fragment_withholds_the_proof(self):
+        """The fallback is what makes an undecided full check acceptable. If it
+        is undecided too, nothing has been established and the proof is not
+        accepted - answering "cannot tell" with "fine" would disable the guard
+        exactly where it is hardest."""
+        import z3
+        n = 40
+        xs = [z3.Int(f'ground_{k}') for k in range(n)]
+        i = z3.Int('i')
+        g = z3.Function('g', z3.IntSort(), z3.IntSort())
+        # A ground pigeonhole big enough not to settle in a millisecond, plus a
+        # quantified assertion so the ground fragment is a strict subset.
+        ground = [z3.And(x >= 0, x < n - 1) for x in xs] + [z3.Distinct(*xs)]
+        assertions = [z3.ForAll([i], g(i) >= 0)] + ground
+
+        verifier = self._verifier(1)
+        assert verifier._axioms_are_contradictory(assertions)
+
+    def test_an_all_ground_set_that_cannot_be_decided_withholds_the_proof(self):
+        import z3
+        n = 40
+        xs = [z3.Int(f'only_ground_{k}') for k in range(n)]
+        assertions = [z3.And(x >= 0, x < n - 1) for x in xs] + [z3.Distinct(*xs)]
+
+        verifier = self._verifier(1)
+        assert verifier._axioms_are_contradictory(assertions)
+
+    def test_quantifier_detection_sees_nested_quantifiers(self):
+        import z3
+        i = z3.Int('i')
+        p = z3.Function('p', z3.IntSort(), z3.BoolSort())
+        verifier = self._verifier(1000)
+        assert verifier._contains_quantifier(z3.And(z3.BoolVal(True),
+                                                    z3.ForAll([i], p(i))))
+        assert not verifier._contains_quantifier(z3.Int('x') == 0)
+
+
+class TestInconsistencyAttributionLayers:
+    """Each phase of translation adds its own side conditions to a single
+    growing list, and the main solver holds one more assertion beyond it - the
+    body equality. Diagnosing an unsat context means knowing which layer tipped
+    it over; getting that wrong sends the reader to the wrong place.
+    """
+
+    @staticmethod
+    def _verify(src):
+        from slop.verifier import verify_source
+        return verify_source(src)[0]
+
+    def test_precondition_side_condition_belongs_to_the_precondition(self):
+        """The @pre's own division constraint lands before the snapshot, so a
+        naive prefix blames the parameter types for it."""
+        r = self._verify('''
+        (fn f ((n Int))
+          (@spec ((Int) -> Int))
+          (@pre (== (/ 1 0) n))
+          (@post (== $result n))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'Precondition is unsatisfiable' in r.message
+
+    def test_body_outside_the_return_range(self):
+        """$result == body is asserted directly on the main solver, not through
+        translator.constraints, so a layered replay has to carry it too."""
+        r = self._verify('''
+        (module m
+          (fn f ()
+            (@spec (() -> (Int 0 .. 1)))
+            (@post (>= $result 0))
+            2))
+        ''')
+        assert r.status == 'failed'
+        assert 'declared return type' in r.message
+        assert 'verifier defect' not in r.message
+
+    def test_alternative_mutable_binding_shadows(self):
+        """((mut name) value) is a supported spelling whose head is a list, so a
+        scan that expects a symbol head misses it and counts the inner push
+        against the outer list."""
+        r = self._verify('''
+        (fn f ((arena Arena))
+          (@spec ((Arena) -> (List Int)))
+          (@post (== (list-len $result) 1))
+          (let (((mut result) (list-new arena Int)))
+            (do (let (((mut result) (list-new arena Int)))
+                  (list-push result 1))
+                result)))
+        ''')
+        assert r.status != 'verified'
+
+    def test_compound_loop_source_gets_no_bound(self):
+        """`(if flag items other)` depends on values the escape check cannot
+        enumerate, so `(set! flag ...)` after the loop changes which collection
+        the bound is read against without touching the source expression."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena) (mut flag Bool) (items (List Int)) (other (List Int)))
+          (@spec ((Arena Bool (List Int) (List Int)) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) (list-len (if flag items other))))
+          (let ((mut r (list-new arena Int)))
+            (do (for-each (x (if flag items other)) (list-push r x))
+                (set! flag (not flag))
+                r)))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+    def test_synthetic_field_key_is_not_a_user_variable(self):
+        """`_field_report_results` is the registry key for `(. report results)`
+        and also a legal parameter name. Reading it out of the variable table
+        would tie an unrelated parameter's length to the field's."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep) (_field_report_results (List Int)))
+            (@spec ((Arena Rep (List Int)) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len (. report results)) (list-len _field_report_results)))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x)) r))))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+    def test_dotted_field_source_owner_reassigned(self):
+        """`report.results` is one symbol to the parser, not a (. ...) form, so
+        the owner has to be recovered from the name before it can be tracked."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (mut report Rep) (other Rep))
+            (@spec ((Arena Rep Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len report.results)))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x report.results) (list-push r x))
+                  (set! report other)
+                  r))))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+    def test_dotted_field_source_untouched_still_bounds(self):
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep))
+            (@spec ((Arena Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len report.results)))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x report.results) (list-push r x)) r))))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+
+class TestInternalNamespaceCollisions:
+    """`translator.variables` holds user bindings and the verifier's own
+    accessors in one namespace, so a parameter can claim a name the verifier
+    uses. Calling a Z3 constant raises, which aborts the whole file rather than
+    one function.
+    """
+
+    def test_a_parameter_named_field_len_does_not_abort_the_file(self):
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type T (record (xs (List Int))))
+          (fn f ((arena Arena) (field_len Int) (t T))
+            (@spec ((Arena Int T) -> (List Int)))
+            (@alloc arena)
+            (@post (all-positive $result))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. t xs)) (list-push r x)) r))))
+        '''
+        results = verify_source(src)
+        assert results, "verification produced no result at all"
+        assert results[0].status in ('verified', 'failed', 'unknown', 'timeout')
+
+    def test_field_len_term_declines_an_occupied_name(self):
+        import z3
+        from slop.verifier import MinimalTypeEnv, Z3Translator
+        translator = Z3Translator(MinimalTypeEnv())
+        translator.variables['xs'] = z3.Int('xs')
+        translator.variables['field_len'] = z3.Int('field_len')
+        assert translator.field_len_term('xs') is None
+        assert translator.list_length_terms('xs') == []
+
+
+class TestCallbackBoundaries:
+    """A callback is a separate function. Its `return` leaves the callback and
+    its `break` belongs to a loop inside it, so neither describes the enclosing
+    function's exits - counting them suppressed the length axioms of every
+    function that passes one.
+    """
+
+    def test_a_callback_local_return_does_not_suppress_the_bound(self):
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena) (g Graph))
+          (@spec ((Arena Graph) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) 1))
+          (let ((mut r (list-new arena Int)))
+            (do (list-push r 1)
+                (graph-for-each g (fn ((x Int)) (do (return 0))))
+                r)))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+    def test_an_outer_return_still_suppresses_it(self):
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena) (flag Bool) (items (List Int)))
+          (@spec ((Arena Bool (List Int)) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) 1))
+          (let ((mut r (list-new arena Int)))
+            (do (when flag (return items))
+                (list-push r 1)
+                r)))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+
+class TestAssumptionAgainstBody:
+    def test_an_assumption_the_body_refutes_is_named(self):
+        """@assume is trusted, so one the body already refutes discharges
+        everything. That is the author's error, not a verifier defect - and the
+        body fact that refutes it here is a record-field axiom added straight to
+        the solver, not something the diagnosis could have enumerated by hand."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena))
+          (@spec ((Arena) -> (List Int)))
+          (@assume (== (list-len $result) 0))
+          (@post (== (list-len $result) 7))
+          (let ((mut r (list-new arena Int)))
+            (do (list-push r 1) r)))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'An assumption contradicts the function' in r.message
+
+    def test_an_assumption_refuted_by_a_record_field_is_named(self):
+        """The refuting fact is Phase 3's field_x($result) == 1, which never
+        passes through translator.constraints. The diagnosis takes the generated
+        axioms from the solver rather than listing their kinds."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type R (record (x Int)))
+          (fn f ()
+            (@spec (() -> R))
+            (@assume (== (. $result x) 0))
+            (@post (== (. $result x) 5))
+            (record-new R (x 1))))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'An assumption contradicts the function' in r.message
+
+    def test_a_parameter_named_like_a_field_key_is_not_the_field(self):
+        """The Seq registry is keyed by name, and a field collection has no
+        variable to name it. A key a parameter could also be spelled would let
+        that parameter's sequence stand in for the field's."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep) (_field_report_results (List Int)))
+            (@spec ((Arena Rep (List Int)) -> (List Int)))
+            (@alloc arena)
+            (@post (<= (list-len $result) (list-len _field_report_results)))
+            (@property p (forall (x $result) (>= x 0)))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x)) r))))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+
+class TestReturnedPreexistingList:
+    """A list the function allocated started empty, so its push sites account
+    for the whole contents. One it was handed may already hold anything, so the
+    same sites only raise its floor.
+    """
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        return verify_source(src)[0].status
+
+    def test_lower_bound_on_a_returned_parameter(self):
+        assert self._status('''
+        (fn f ((xs (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (>= (list-len $result) 1))
+          (do (list-push xs 1) xs))
+        ''') == 'verified'
+
+    def test_no_upper_bound_on_a_returned_parameter(self):
+        assert self._status('''
+        (fn f ((xs (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (== (list-len $result) 1))
+          (do (list-push xs 1) xs))
+        ''') != 'verified'
+
+    def test_a_conditional_push_raises_no_floor(self):
+        assert self._status('''
+        (fn f ((xs (List Int)) (flag Bool))
+          (@spec (((List Int) Bool) -> (List Int)))
+          (@post (>= (list-len $result) 1))
+          (do (when flag (list-push xs 1)) xs))
+        ''') != 'verified'
+
+    def test_a_loop_push_onto_a_handed_list_claims_nothing(self):
+        """The loop equality is about a list that started empty; for one that
+        did not, len(source) is not even a floor."""
+        assert self._status('''
+        (fn f ((xs (List Int)) (ys (List Int)))
+          (@spec (((List Int) (List Int)) -> (List Int)))
+          (@post (>= (list-len $result) (list-len ys)))
+          (do (for-each (y ys) (list-push xs y)) xs))
+        ''') != 'verified'
+
+    def test_mixed_field_spellings_count_as_the_same_list(self):
+        """`(. report results)` and `report.results` denote one list, and a body
+        may iterate with one spelling and mutate with the other."""
+        assert self._status('''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep))
+            (@spec ((Arena Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len (. report results))))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x))
+                  (list-pop report.results)
+                  r))))
+        ''') != 'verified'
+
+    def test_a_push_in_an_earlier_top_level_form_counts(self):
+        """A multi-form body keeps only its last expression in fn_body, so a
+        push in an earlier form is invisible to a scan of that alone - and an
+        unseen push makes the result look shorter than it is."""
+        assert self._status('''
+        (fn f ((xs (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (>= (list-len $result) 1))
+          (list-push xs 1)
+          xs)
+        ''') == 'verified'
+
+    def test_earlier_forms_do_not_gain_an_upper_bound(self):
+        assert self._status('''
+        (fn f ((xs (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (== (list-len $result) 1))
+          (list-push xs 1)
+          xs)
+        ''') != 'verified'
+
+
+class TestReturnedBindingScope:
+    """The returned name has to be resolved to the binding that actually
+    governs it. A body-wide scan conflates same-named bindings in disjoint
+    scopes, and lets an unrelated allocation decide whether the returned list
+    started empty.
+    """
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        return verify_source(src)[0].status
+
+    def test_an_unrelated_allocation_does_not_make_the_result_empty(self):
+        assert self._status('''
+        (fn f ((arena Arena) (xs (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) 0))
+          (let ((mut tmp (list-new arena Int))) tmp)
+          xs)
+        ''') != 'verified'
+
+    def test_disjoint_bindings_of_the_same_name_are_not_shadowing(self):
+        assert self._status('''
+        (fn f ((arena Arena))
+          (@spec ((Arena) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) 0))
+          (let ((mut r (list-new arena Int))) (list-push r 1))
+          (let ((mut r (list-new arena Int))) r))
+        ''') == 'verified'
