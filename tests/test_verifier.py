@@ -9270,3 +9270,40 @@ class TestLoopVariableVersions:
             (@post (>= (list-len xs) 0))
             (let ((field_len 3)) field_len)))
         ''').status == 'verified'
+
+    def test_an_assignment_a_return_never_reaches(self):
+        """`(set! x (do (return 0) 1))` never completes. The weakest-precondition
+        pass substituted the value anyway and its result asserted the
+        postcondition outright, so it is kept away from bodies that return."""
+        assert self._result('''
+        (module m
+          (fn f ((mut x Int))
+            (@spec ((Int) -> Int))
+            (@pre (== x 0))
+            (@post (== x 1))
+            (let () (set! x (do (return 0) 1)) x)))
+        ''').status != 'verified'
+
+    def test_a_local_of_another_sort_shadowing_a_bounded_parameter(self):
+        """The outer declaration's bounds do not apply to it, and asking Z3 to
+        compare a Bool with 0 raises rather than failing to verify."""
+        assert self._result('''
+        (module m
+          (fn s ((mut x U8))
+            (@spec ((U8) -> Int))
+            (@post (>= $result 0))
+            (let ((mut x false))
+              (set! x false)
+              1)))
+        ''').status == 'verified'
+
+    def test_a_loop_wrapped_in_a_block_still_runs(self):
+        assert self._result('''
+        (module m
+          (fn w ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (>= $result 5))
+            (let ((mut i 0))
+              (do (while (< i 5) (set! i (+ i 1))))
+              i)))
+        ''').status == 'verified'

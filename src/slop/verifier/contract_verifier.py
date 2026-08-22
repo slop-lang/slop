@@ -110,8 +110,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         - Simple variable references (just returns True)
         - Simple function calls without control flow
         - Loops (require explicit invariants which we handle separately)
+        - Anything with an explicit (return ...), which the calculus walks
+          straight past: it substitutes an assignment's value even when a
+          return in that value means the assignment never happens, and the
+          resulting weakest precondition asserts the postcondition outright.
         """
         if not isinstance(body, SList) or len(body) == 0:
+            return False
+
+        if self._contains_any_form(body, ('return',)):
             return False
 
         head = body[0]

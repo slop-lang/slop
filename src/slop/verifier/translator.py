@@ -1124,6 +1124,11 @@ class Z3Translator:
         typ = self._declared_types.get(name)
         if typ is None:
             return
+        # A local may shadow a parameter of another sort entirely; the outer
+        # declaration's bounds do not apply to it, and asking Z3 to compare a
+        # Bool with 0 raises rather than failing to verify.
+        if not (z3.is_expr(var) and var.sort() == z3.IntSort()):
+            return
         if isinstance(typ, PrimitiveType) and typ.name.startswith('U'):
             self.constraints.append(var >= 0)
         elif isinstance(typ, RangeType):
@@ -2011,13 +2016,27 @@ class Z3Translator:
             else:
                 statements = [node]
             for statement in statements:
-                if is_form(statement, 'while') or is_form(statement, 'for-each'):
-                    self._unconditional_loops.add(id(statement))
-                elif is_form(statement, 'set!'):
-                    self._unconditional_assignments.add(id(statement))
+                self._note_statement(statement)
             if len(statements) <= 1 and statements and statements[0] is node:
                 return
             node = statements[-1]
+
+    def _note_statement(self, statement: 'SExpr') -> None:
+        """Mark one statement, and anything a plain block wraps.
+
+        A `do` or a `let` in statement position runs whenever its enclosing
+        block does, so a loop inside one is as unconditional as a bare one.
+        """
+        if is_form(statement, 'while') or is_form(statement, 'for-each'):
+            self._unconditional_loops.add(id(statement))
+        elif is_form(statement, 'set!'):
+            self._unconditional_assignments.add(id(statement))
+        elif is_form(statement, 'do') and len(statement) >= 2:
+            for inner in statement.items[1:]:
+                self._note_statement(inner)
+        elif is_form(statement, 'let') and len(statement) >= 3:
+            for inner in statement.items[2:]:
+                self._note_statement(inner)
 
     @contextmanager
     def initial_versions(self):
@@ -2083,6 +2102,10 @@ class Z3Translator:
         # re-derives the binding's initial value attaches it there rather than
         # to what the assignment produced.
         self._pre_loop_variables.setdefault(name, before)
+        # `(set! x (do (return 0) 1))` never completes: the return leaves the
+        # function before the assignment lands.
+        if self._contains_return([expr[2]]):
+            carries_value = False
         prefix = f"{name}_after_set"
         if z3.is_bool(before):
             after = z3.FreshBool(prefix)
