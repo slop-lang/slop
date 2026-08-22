@@ -3283,13 +3283,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     if value is None:
                         continue
                     # Translating a value can append side conditions - a
-                    # non-zero allocation, a string's length - and everything in
-                    # translator.constraints was copied to the solver before
-                    # this point, so the new ones have to be carried over.
+                    # non-zero allocation, a non-zero divisor, a string's length
+                    # - and everything in translator.constraints was copied to
+                    # the solver before this point, so the new ones have to be
+                    # carried over. Under this exit's guard, though: they hold
+                    # because this path ran, and `(when flag (return (/ n n)))`
+                    # would otherwise assert n != 0 for the path that did not.
                     before = len(translator.constraints)
                     value_z3 = translator.translate_expr(value)
                     for constraint in translator.constraints[before:]:
-                        solver.add(constraint)
+                        solver.add(z3.Implies(guard, constraint))
                     if value_z3 is None or value_z3.sort() != result_var.sort():
                         continue
                     exit_equality = z3.Implies(guard, result_var == value_z3)

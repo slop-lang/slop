@@ -8620,3 +8620,15 @@ class TestEarlyExits:
           (when flag (return (arena-alloc arena 8)))
           1)
         ''') == 'verified'
+
+    def test_an_exit_value_side_condition_stays_on_its_path(self):
+        """`(/ n n)` asserts n != 0 because that division happened. It happens
+        only when the early return is taken, so the constraint belongs under the
+        same guard - unguarded, it proves the trailing path non-zero too."""
+        assert self._status('''
+        (fn d ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@post (!= $result 0))
+          (when flag (return (/ n n)))
+          n)
+        ''') != 'verified'
