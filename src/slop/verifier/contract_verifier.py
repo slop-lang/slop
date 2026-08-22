@@ -1874,6 +1874,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             id(self._get_return_expr(branch)) for _, branch in branches
             if self._is_record_new(branch))
         bindings = self._tail_bindings(fn_body, param_names, result_forms=result_forms)
+        # A branch-local name may shadow an enclosing binding, which shares its
+        # Z3 constant. Sibling arms do not: their axioms carry mutually
+        # exclusive guards.
+        enclosing_names = set(param_names or ()) | self._tail_binding_names(fn_body)
 
         field_names: List[str] = []
         passthrough: List = []
@@ -1884,7 +1888,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 # An arm may bind its own locals before constructing.
                 branch_bindings = dict(bindings)
                 branch_bindings.update(self._tail_bindings(
-                    branch, param_names, stability_body=fn_body,
+                    branch, enclosing_names, stability_body=fn_body,
                     result_forms=result_forms))
                 for item in record_new.items[2:]:
                     if isinstance(item, SList) and len(item) >= 2 and isinstance(item[0], Symbol):
@@ -2131,6 +2135,24 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return walk(body, None, -1, False)
 
+    def _tail_binding_names(self, body: SExpr) -> Set[str]:
+        """Every name bound along the tail of `body`, kept or not."""
+        names: Set[str] = set()
+        node = body
+        while True:
+            if is_form(node, 'let') and len(node) >= 3:
+                if isinstance(node[1], SList):
+                    for binding in node[1].items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            name = self._binding_name(binding)
+                            if name:
+                                names.add(name)
+                node = node.items[-1]
+            elif is_form(node, 'do') and len(node) >= 2:
+                node = node.items[-1]
+            else:
+                return names
+
     def _tail_bindings(self, body: SExpr,
                        param_names: Optional[Set[str]] = None,
                        stability_body: Optional[SExpr] = None,
@@ -2145,7 +2167,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         would resolve `y` to the inner empty list rather than to `zs`.
 
         A name that anything mutates is dropped rather than recorded, as is one
-        that shadows another binding or a parameter.
+        that shadows another binding or a parameter. `param_names` carries those
+        names - for a branch it also carries whatever the enclosing scopes bind,
+        since the translator shares one constant with them. Sibling branches are
+        not enclosing scopes: their facts are guarded by mutually exclusive
+        conditions and cannot reach each other.
         """
         if param_names is None:
             param_names = set()
@@ -2172,7 +2198,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         # through a name that is bound more than once, and a
                         # parameter counts as one of those bindings.
                         if (name in param_names
-                                or self._count_bindings_of(stability_body, name) > 1):
+                                or self._count_bindings_of(body, name) > 1):
                             bindings.pop(name, None)
                             continue
                         bindings[name] = (binding[-1], dict(bindings))

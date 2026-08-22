@@ -8391,3 +8391,37 @@ class TestConditionalRecordFields:
     (@post {(list-len (. $result xs)) == 0})
     (let ((e (if c (list-new arena Item) zs)))
       (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_both_arms_may_use_the_same_local_name(self):
+        """Sibling arms are not enclosing scopes. Their axioms carry mutually
+        exclusive guards, so sharing a Z3 constant between them is harmless -
+        counting the two bindings as shadowing discarded both."""
+        assert self._status('''
+  (fn s1 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+          (let ((e (list-new arena Item))) (record-new F (flag false) (xs e) (ys e)))))''') == 'verified'
+
+    def test_the_same_local_name_with_one_arm_not_empty(self):
+        assert self._status('''
+  (fn s2 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+          (let ((e zs)) (record-new F (flag false) (xs e) (ys e)))))''') != 'verified'
+
+    def test_a_branch_local_shadowing_an_enclosing_binding(self):
+        """An enclosing scope *is* live at the same time, and shares the
+        constant - so the arm's fresh list would describe the outer value."""
+        assert self._status('''
+  (fn s3 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@pre c)
+    (@post {(list-len zs) == 0})
+    (let ((e zs))
+      (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+            (record-new F (flag false) (xs e) (ys e)))))''') != 'verified'
