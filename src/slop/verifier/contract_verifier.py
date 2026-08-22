@@ -2239,6 +2239,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         node = body
         while True:
             if is_form(node, 'let') and len(node) >= 3:
+                # A binding initializer can return too, and there is no obvious
+                # guard for one that does.
+                if self._contains_any_form(node[1], ('return',)):
+                    return None
                 scan(node.items[2:-1])
                 node = node.items[-1]
             elif is_form(node, 'do') and len(node) >= 2:
@@ -3319,7 +3323,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     before = len(translator.constraints)
                     value_z3 = translator.translate_expr(value)
                     for constraint in translator.constraints[before:]:
-                        solver.add(z3.Implies(guard, constraint))
+                        guarded_constraint = z3.Implies(guard, constraint)
+                        solver.add(guarded_constraint)
+                        # constraint_terms is what the inconsistency diagnosis
+                        # replays; a condition only the solver knows about would
+                        # come out as a verifier defect.
+                        constraint_terms.append(guarded_constraint)
                     if value_z3 is None or value_z3.sort() != result_var.sort():
                         continue
                     exit_equality = z3.Implies(guard, result_var == value_z3)

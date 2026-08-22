@@ -8657,3 +8657,35 @@ class TestEarlyExits:
           (when c (if d (return 1) 0) (return 2))
           3)
         ''') != 'verified'
+
+    def test_a_return_inside_a_let_initializer(self):
+        """The walk stepped over the binding list, so a return there left the
+        body looking like it had one exit."""
+        assert self._status('''
+        (module m
+          (type Item (record (v Int)))
+          (type F (record (xs (List Item))))
+          (fn r ((arena Arena) (flag Bool) (old F))
+            (@spec ((Arena Bool F) -> F))
+            (@alloc arena)
+            (@post {(list-len (. $result xs)) == 0})
+            (let ((ignored (if flag (return old) 0))
+                  (e (list-new arena Item)))
+              (record-new F (xs e)))))
+        ''') != 'verified'
+
+    def test_an_exit_side_condition_is_attributed_to_the_contract(self):
+        """A @pre that contradicts an exit's side condition is the author's
+        error; the diagnosis only sees it if constraint_terms carries it."""
+        from slop.verifier import verify_source
+        result = verify_source('''
+        (fn c ((flag Bool) (n Int))
+          (@spec ((Bool Int) -> Int))
+          (@pre flag)
+          (@pre (== n 0))
+          (@post (== $result 1))
+          (when flag (return (/ 1 n)))
+          1)
+        ''', filename="probe.slop")[0]
+        assert result.status == 'failed'
+        assert 'verifier defect' not in result.message
