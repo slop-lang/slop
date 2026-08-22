@@ -7676,3 +7676,58 @@ class TestGroundFragmentFallback:
         assert verifier._contains_quantifier(z3.And(z3.BoolVal(True),
                                                     z3.ForAll([i], p(i))))
         assert not verifier._contains_quantifier(z3.Int('x') == 0)
+
+
+class TestInconsistencyAttributionLayers:
+    """Each phase of translation adds its own side conditions to a single
+    growing list, and the main solver holds one more assertion beyond it - the
+    body equality. Diagnosing an unsat context means knowing which layer tipped
+    it over; getting that wrong sends the reader to the wrong place.
+    """
+
+    @staticmethod
+    def _verify(src):
+        from slop.verifier import verify_source
+        return verify_source(src)[0]
+
+    def test_precondition_side_condition_belongs_to_the_precondition(self):
+        """The @pre's own division constraint lands before the snapshot, so a
+        naive prefix blames the parameter types for it."""
+        r = self._verify('''
+        (fn f ((n Int))
+          (@spec ((Int) -> Int))
+          (@pre (== (/ 1 0) n))
+          (@post (== $result n))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'Precondition is unsatisfiable' in r.message
+
+    def test_body_outside_the_return_range(self):
+        """$result == body is asserted directly on the main solver, not through
+        translator.constraints, so a layered replay has to carry it too."""
+        r = self._verify('''
+        (module m
+          (fn f ()
+            (@spec (() -> (Int 0 .. 1)))
+            (@post (>= $result 0))
+            2))
+        ''')
+        assert r.status == 'failed'
+        assert 'declared return type' in r.message
+        assert 'verifier defect' not in r.message
+
+    def test_alternative_mutable_binding_shadows(self):
+        """((mut name) value) is a supported spelling whose head is a list, so a
+        scan that expects a symbol head misses it and counts the inner push
+        against the outer list."""
+        r = self._verify('''
+        (fn f ((arena Arena))
+          (@spec ((Arena) -> (List Int)))
+          (@post (== (list-len $result) 1))
+          (let (((mut result) (list-new arena Int)))
+            (do (let (((mut result) (list-new arena Int)))
+                  (list-push result 1))
+                result)))
+        ''')
+        assert r.status != 'verified'

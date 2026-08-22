@@ -1218,7 +1218,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
     def _inconsistent_context_result(
         self, solver, translator, fn_name, fn_form,
         pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
-        pre_constraint_count,
+        type_constraint_count, pre_constraint_count, body_equality,
     ):
         """A result to report when the axioms contradict each other, else None.
 
@@ -1241,7 +1241,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         layer = z3.Solver()
         layer.set("timeout", self.timeout_ms)
-        for c in translator.constraints[:pre_constraint_count]:
+        for c in translator.constraints[:type_constraint_count]:
             layer.add(c)
 
         if layer.check() == z3.unsat:
@@ -1260,7 +1260,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             )
 
         authored = [
-            (self._unsatisfiable_precondition_message(preconditions), pre_z3),
+            (
+                self._unsatisfiable_precondition_message(preconditions),
+                list(translator.constraints[type_constraint_count:pre_constraint_count])
+                + list(pre_z3),
+            ),
             (
                 "Type invariants are contradictory: no value of the parameter "
                 "types can satisfy them together with the preconditions, so the "
@@ -1277,7 +1281,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 "A contract or body expression cannot be well-defined: the side "
                 "conditions from translating them cannot all hold. A division by "
                 "a zero denominator or a value outside its range type does this.",
-                translator.constraints[pre_constraint_count:],
+                list(translator.constraints[pre_constraint_count:]),
+            ),
+            (
+                "The body cannot produce a value of the declared return type: "
+                "what it computes and what the type admits have no overlap. A "
+                "literal outside a range return type does this.",
+                body_equality,
             ),
         ]
         for message, extra in authored:
@@ -2607,6 +2617,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             elif self._references_result_collection(postconditions) or self._references_result_collection(property_exprs):
                 translator._create_list_seq('$result')
 
+        # Everything in translator.constraints up to here comes from declaring
+        # the parameters and $result. Each later phase appends its own side
+        # conditions - a division adds a non-zero denominator, a range type adds
+        # its bounds - so the diagnosis below can only attribute a contradiction
+        # correctly if it knows where each phase's constraints begin.
+        type_constraint_count = len(translator.constraints)
+
         # Translate preconditions
         pre_z3: List[z3.BoolRef] = []
         failed_pres: List[Tuple[Optional[str], SExpr]] = []
@@ -2617,12 +2634,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             else:
                 failed_pres.append((pre_name, pre_expr))
 
-        # Everything in translator.constraints so far belongs to the parameter
-        # declarations and the preconditions. Translating postconditions and the
-        # body appends more - a division adds its own non-zero side condition,
-        # for one - and replaying the whole list when diagnosing an
-        # unsatisfiable @pre would blame the preconditions for a contradiction
-        # that came from a postcondition.
         pre_constraint_count = len(translator.constraints)
 
         # Translate postconditions
@@ -2813,10 +2824,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         # Add body constraint for path-sensitive analysis
         # This constrains $result to equal the translated function body
+        body_equality: List[z3.BoolRef] = []
         if body_z3 is not None:
             result_var = translator.variables.get('$result')
             if result_var is not None:
-                solver.add(result_var == body_z3)
+                body_equality.append(result_var == body_z3)
+                solver.add(body_equality[0])
 
         # Phase 2: Add reflexivity axioms for equality functions
         # For any function ending in -eq, add axiom: fn_eq(x, x) == true
@@ -3217,7 +3230,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             inconsistent = self._inconsistent_context_result(
                 solver, translator, fn_name, fn_form,
                 pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
-                pre_constraint_count,
+                type_constraint_count, pre_constraint_count, body_equality,
             )
             if inconsistent is not None:
                 return inconsistent

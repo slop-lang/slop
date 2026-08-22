@@ -28,6 +28,27 @@ if TYPE_CHECKING:
 class AxiomGenerationMixin:
     """Mixin providing axiom generation methods."""
 
+    @staticmethod
+    def _binding_name(binding: 'SList') -> Optional[str]:
+        """The name a `let` binding introduces, across the three spellings.
+
+        (name value), (mut name value) and ((mut name) value) all bind a name;
+        the last is easy to miss, since its head is a list rather than a symbol.
+        """
+        head = binding[0]
+        if isinstance(head, Symbol):
+            if head.name == 'mut' and len(binding) >= 3:
+                target = binding[1]
+            else:
+                target = head
+        elif isinstance(head, SList) and len(head) >= 2:
+            if not (isinstance(head[0], Symbol) and head[0].name == 'mut'):
+                return None
+            target = head[1]
+        else:
+            return None
+        return target.name if isinstance(target, Symbol) else None
+
     def _count_bindings_of(self, expr: 'SExpr', name: str) -> int:
         """How many forms under `expr` bind `name`.
 
@@ -43,14 +64,9 @@ class AxiomGenerationMixin:
                     count += 1
             if is_form(expr, 'let') and len(expr) >= 2 and isinstance(expr[1], SList):
                 for binding in expr[1].items:
-                    if not isinstance(binding, SList) or len(binding) < 2:
-                        continue
-                    head = binding[0]
-                    if not isinstance(head, Symbol):
-                        continue
-                    bound = binding[1] if head.name == 'mut' and len(binding) >= 3 else head
-                    if isinstance(bound, Symbol) and bound.name == name:
-                        count += 1
+                    if isinstance(binding, SList) and len(binding) >= 2:
+                        if self._binding_name(binding) == name:
+                            count += 1
             for item in expr.items:
                 count += self._count_bindings_of(item, name)
         return count

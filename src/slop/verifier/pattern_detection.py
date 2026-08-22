@@ -2389,6 +2389,8 @@ class PatternDetectionMixin:
                     for binding in let_bindings.items:
                         if isinstance(binding, SList) and len(binding) >= 2:
                             first = binding[0]
+                            var_name = None
+                            var_value = None
                             if isinstance(first, Symbol):
                                 if first.name == 'mut' and len(binding) >= 3:
                                     var_name = binding[1].name if isinstance(binding[1], Symbol) else None
@@ -2396,8 +2398,13 @@ class PatternDetectionMixin:
                                 else:
                                     var_name = first.name
                                     var_value = binding[1]
-                                if var_name:
-                                    new_bindings[var_name] = var_value
+                            elif (isinstance(first, SList) and len(first) >= 2
+                                  and isinstance(first[0], Symbol) and first[0].name == 'mut'):
+                                # ((mut var) value), the alternative spelling
+                                var_name = first[1].name if isinstance(first[1], Symbol) else None
+                                var_value = binding[1]
+                            if var_name:
+                                new_bindings[var_name] = var_value
                 sites += self._collect_push_sites(
                     stmt.items[2:], result_var, new_bindings, guards,
                     conditional, loop_depth, loop_collections
