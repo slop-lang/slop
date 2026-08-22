@@ -159,7 +159,7 @@ class AxiomGenerationMixin:
         return self._uses_outside(expr, target, self._accumulator_use_is_safe)
 
     @staticmethod
-    def _owner_use_is_safe(parent_head, index, returns_value) -> bool:
+    def _owner_use_is_safe(parent_head, index, returns_value) -> bool:  # noqa: D401
         """Contexts in which the owner of a field-valued collection is only read.
 
         For a source like `(. report results)`, `report` itself has to stay put:
@@ -182,6 +182,18 @@ class AxiomGenerationMixin:
             node = node[1]
         return isinstance(node, Symbol)
 
+    @staticmethod
+    def _dotted_symbol_owners(name: str) -> List[str]:
+        """The owner prefixes of a shorthand field symbol, e.g. `report.results`.
+
+        The parser keeps that spelling as one symbol rather than a (. ...) form,
+        so a chain written this way needs its prefixes recovered by hand.
+        """
+        if '.' not in name or name.startswith('.') or name.endswith('.'):
+            return []
+        parts = name.split('.')
+        return ['.'.join(parts[:i]) for i in range(1, len(parts))]
+
     def _source_escapes(self, fn_body: 'SExpr', coll: 'SExpr') -> bool:
         """True if the loop's source collection is anything but read in this body."""
         if self._uses_outside(fn_body, coll, self._source_use_is_safe):
@@ -193,12 +205,18 @@ class AxiomGenerationMixin:
         return False
 
     def _owner_expressions(self, coll: 'SExpr') -> List['SExpr']:
-        """The sub-expressions a field-access source depends on."""
+        """The sub-expressions a field-access source depends on.
+
+        Covers both spellings: the `(. report results)` form and the shorthand
+        `report.results`, which the parser keeps as a single symbol.
+        """
         owners: List['SExpr'] = []
         node = coll
         while is_form(node, '.') and len(node) >= 2:
             node = node[1]
             owners.append(node)
+        if isinstance(node, Symbol):
+            owners.extend(Symbol(prefix) for prefix in self._dotted_symbol_owners(node.name))
         return owners
 
     def _contains_any_form(self, expr: 'SExpr', heads) -> bool:

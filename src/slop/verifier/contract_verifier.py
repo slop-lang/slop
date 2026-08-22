@@ -1181,21 +1181,22 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return False
 
     def _axioms_are_contradictory(self, assertions) -> bool:
-        """True if this axiom set is unsatisfiable, so nothing follows from it.
+        """True unless this axiom set is shown satisfiable, so a proof from it holds.
 
-        Deciding it outright is the expensive direction - a consistent set means
-        Z3 has to produce a model, and with quantified sequence axioms it often
-        cannot inside the timeout. When that happens, fall back to the ground
-        fragment: dropping assertions can only make a set easier to satisfy, so
-        an unsatisfiable ground subset proves the whole set unsatisfiable, and
-        the ground fragment is cheap to decide.
+        Showing satisfiability is the expensive direction - Z3 has to produce a
+        model, and with quantified sequence axioms it often cannot inside the
+        timeout. Answering "cannot tell" with "fine, accept the proof" would
+        make the guard optional exactly where it is hardest, so instead: when
+        the full set is undecided, retry on the ground fragment. Dropping
+        assertions can only make a set easier to satisfy, so a satisfiable
+        ground subset is not proof of anything - but it is cheap, and in
+        practice it settles.
 
-        That leaves one gap, stated rather than hidden: a contradiction that
-        needs a quantified axiom to derive, in a set Z3 cannot settle in time,
-        is not caught. Every contradiction seen in practice has been ground -
-        two conflicting claims about the same length - and unsatisfiability is
-        the direction Z3 answers quickly, so a timeout here almost always means
-        satisfiable-but-hard rather than contradictory.
+        Ground-satisfiable-but-quantifier-undecided is where the line falls: the
+        proof is accepted, on the grounds that every contradiction seen here has
+        been ground (two conflicting claims about one length) and that
+        unsatisfiability is the direction Z3 answers quickly. An undecided
+        ground fragment gets no such benefit and the proof is withheld.
         """
         assertions = list(assertions)
         solver = z3.Solver()
@@ -1208,12 +1209,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         ground = [a for a in assertions if not self._contains_quantifier(a)]
         if len(ground) == len(assertions):
-            return False
+            # Nothing was dropped, so there is no cheaper question left to ask.
+            return True
         ground_solver = z3.Solver()
         ground_solver.set("timeout", self.timeout_ms)
         for a in ground:
             ground_solver.add(a)
-        return ground_solver.check() == z3.unsat
+        # An undecided ground fragment leaves the whole question open, and the
+        # guard exists so that an unestablished proof is not reported as one.
+        return ground_solver.check() != z3.sat
 
     def _inconsistent_context_result(
         self, solver, translator, fn_name, fn_form,
@@ -1293,12 +1297,29 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for message, extra in authored:
             for a in extra:
                 layer.add(a)
-            if layer.check() == z3.unsat:
+            outcome = layer.check()
+            if outcome == z3.unsat:
                 return VerificationResult(
                     name=fn_name,
                     verified=False,
                     status="failed",
                     message=message,
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                )
+            if outcome == z3.unknown:
+                # This layer may be the culprit. Adding the next one and
+                # blaming whichever check happens to come back unsat would name
+                # the wrong cause, which is the one thing this loop exists to
+                # avoid.
+                return VerificationResult(
+                    name=fn_name,
+                    verified=False,
+                    status="unknown",
+                    message=(
+                        "The axioms for this function contradict each other, but which "
+                        "part is responsible could not be determined within the timeout. "
+                        "Raise the timeout to get a specific diagnosis."
+                    ),
                     location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                 )
 

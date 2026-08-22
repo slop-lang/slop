@@ -7668,6 +7668,33 @@ class TestGroundFragmentFallback:
         verifier = self._verifier(5000)
         assert not verifier._axioms_are_contradictory(assertions)
 
+    def test_an_undecided_ground_fragment_withholds_the_proof(self):
+        """The fallback is what makes an undecided full check acceptable. If it
+        is undecided too, nothing has been established and the proof is not
+        accepted - answering "cannot tell" with "fine" would disable the guard
+        exactly where it is hardest."""
+        import z3
+        n = 40
+        xs = [z3.Int(f'ground_{k}') for k in range(n)]
+        i = z3.Int('i')
+        g = z3.Function('g', z3.IntSort(), z3.IntSort())
+        # A ground pigeonhole big enough not to settle in a millisecond, plus a
+        # quantified assertion so the ground fragment is a strict subset.
+        ground = [z3.And(x >= 0, x < n - 1) for x in xs] + [z3.Distinct(*xs)]
+        assertions = [z3.ForAll([i], g(i) >= 0)] + ground
+
+        verifier = self._verifier(1)
+        assert verifier._axioms_are_contradictory(assertions)
+
+    def test_an_all_ground_set_that_cannot_be_decided_withholds_the_proof(self):
+        import z3
+        n = 40
+        xs = [z3.Int(f'only_ground_{k}') for k in range(n)]
+        assertions = [z3.And(x >= 0, x < n - 1) for x in xs] + [z3.Distinct(*xs)]
+
+        verifier = self._verifier(1)
+        assert verifier._axioms_are_contradictory(assertions)
+
     def test_quantifier_detection_sees_nested_quantifiers(self):
         import z3
         i = z3.Int('i')
@@ -7765,3 +7792,35 @@ class TestInconsistencyAttributionLayers:
               (do (for-each (x (. report results)) (list-push r x)) r))))
         '''
         assert verify_source(src)[0].status != 'verified'
+
+    def test_dotted_field_source_owner_reassigned(self):
+        """`report.results` is one symbol to the parser, not a (. ...) form, so
+        the owner has to be recovered from the name before it can be tracked."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (mut report Rep) (other Rep))
+            (@spec ((Arena Rep Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len report.results)))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x report.results) (list-push r x))
+                  (set! report other)
+                  r))))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+    def test_dotted_field_source_untouched_still_bounds(self):
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep))
+            (@spec ((Arena Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len report.results)))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x report.results) (list-push r x)) r))))
+        '''
+        assert verify_source(src)[0].status == 'verified'
