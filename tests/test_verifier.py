@@ -7214,3 +7214,65 @@ class TestVacuityGuard:
         result = verify_source(src)[0]
         assert result.status == 'failed'
         assert 'Assumptions are contradictory' in result.message
+
+    def test_match_arm_filter_loop_bounded_by_source(self):
+        """A filter written as a match arm, not a `when`.
+
+        The map/filter pattern detectors do not recognise this shape, so the
+        bound has to come from the loop structure itself.
+        """
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Sev (enum lo hi))
+          (type Res (record (sev Sev)))
+          (type Report (record (results (List Res))))
+
+          (fn get-high ((arena Arena) (report Report))
+            (@spec ((Arena Report) -> (List Res)))
+            (@alloc arena)
+            (@post (>= (list-len $result) 0))
+            (@post (<= (list-len $result) (list-len (. report results))))
+            (let ((mut result (list-new arena Res)))
+              (for-each (r (. report results))
+                (match (. r sev)
+                  (hi (list-push result r))
+                  (_ (do))))
+              result)))
+        '''
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status == 'verified', result.message
+
+    def test_two_pushes_per_iteration_bounded_by_twice_source(self):
+        from slop.verifier import verify_source
+        src = '''
+        (fn duplicate ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (<= (list-len $result) (* 2 (list-len items))))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result x)
+              (list-push result x))
+            result))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+    def test_while_loop_push_gets_no_length_bound(self):
+        """A while loop has no collection to measure, so nothing is claimed.
+
+        The claim below is true of the body but not derivable, and the point is
+        that the verifier does not instead claim something false.
+        """
+        from slop.verifier import verify_source
+        src = '''
+        (fn drain ((arena Arena) (n Int))
+          (@spec ((Arena Int) -> (List Int)))
+          (@post (== (list-len $result) 0))
+          (let ((mut result (list-new arena Int))
+                (mut i 0))
+            (while (< i n)
+              (list-push result i)
+              (set! i (+ i 1)))
+            result))
+        '''
+        assert verify_source(src)[0].status != 'verified'

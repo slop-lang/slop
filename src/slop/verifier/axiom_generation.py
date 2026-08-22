@@ -108,8 +108,7 @@ class AxiomGenerationMixin:
         sites = self._collect_push_sites([fn_body], return_expr.name)
 
         if any(site.loop_depth > 0 for site in sites):
-            loop_axioms = self._loop_result_length_axioms(fn_body, terms, translator)
-            axioms.extend(loop_axioms)
+            axioms.extend(self._loop_result_length_axioms(sites, terms, translator))
             return axioms
 
         upper = len(sites)
@@ -125,30 +124,46 @@ class AxiomGenerationMixin:
                 axioms.append(t <= z3.IntVal(upper))
         return axioms
 
-    def _loop_result_length_axioms(self, fn_body: SExpr, terms: List[z3.ArithRef],
+    def _loop_result_length_axioms(self, sites: List['PushSiteInfo'],
+                                   terms: List[z3.ArithRef],
                                    translator: 'Z3Translator') -> List[z3.BoolRef]:
         """Length bound for a result built by pushing inside a loop.
 
-        Only the two recognised shapes give one: a map pushes exactly once per
-        source element, a filter at most once. Anything else - a while loop, a
-        nested join, several pushes per iteration - gets no bound, which leaves
-        the length unconstrained beyond the non-negativity the type carries.
+        The bound comes from the loop itself rather than from a named pattern:
+        every push site must sit inside the same single `for-each`, and then k
+        sites over a collection C give at most k*len(C) elements - exactly
+        len(C) when the one site is unconditional. That covers a map and a
+        filter alike, including a filter written as a `match` arm rather than a
+        `when`, which the pattern detectors do not recognise.
+
+        Anything else gets no bound: a `while` has no collection to measure, and
+        nested loops multiply out to a product this does not try to express. The
+        length is then left unconstrained beyond the non-negativity the type
+        carries, and the caller reports that it could not bound it.
         """
-        map_pattern = self._detect_map_pattern(fn_body)
-        if map_pattern is not None:
-            src_terms, links = self._length_terms_for(map_pattern.collection, translator)
-            if src_terms:
-                return links + [t == src_terms[0] for t in terms]
+        if not sites:
             return []
 
-        filter_pattern = self._detect_filter_pattern(fn_body)
-        if filter_pattern is not None:
-            src_terms, links = self._length_terms_for(filter_pattern.collection, translator)
-            if src_terms:
-                return links + [t <= src_terms[0] for t in terms]
+        collections = [site.loop_collections for site in sites]
+        if any(len(c) != 1 or c[0] is None for c in collections):
             return []
 
-        return []
+        from slop.parser import pretty_print
+        distinct = {pretty_print(c[0]) for c in collections}
+        if len(distinct) != 1:
+            return []
+
+        src_terms, links = self._length_terms_for(collections[0][0], translator)
+        if not src_terms:
+            return []
+        source_len = src_terms[0]
+
+        exact = (len(sites) == 1
+                 and not sites[0].guard_conditions
+                 and not sites[0].in_match_arm)
+        if exact:
+            return links + [t == source_len for t in terms]
+        return links + [t <= len(sites) * source_len for t in terms]
 
     def _extract_seq_push_axioms(self, fn_body: SExpr, postconditions: List[SExpr],
                                   translator: 'Z3Translator') -> List[z3.BoolRef]:

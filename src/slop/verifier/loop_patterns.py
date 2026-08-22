@@ -39,6 +39,10 @@ class PushSiteInfo:
     bindings: Dict[str, 'SExpr']        # Variable bindings in scope at this push
     in_match_arm: bool = False          # Inside a match clause, so not always taken
     loop_depth: int = 0                 # Enclosing while/for-each nesting depth
+    loop_collections: List[Optional['SExpr']] = field(default_factory=list)
+                                        # Collection of each enclosing loop,
+                                        # outermost first; None for a `while`,
+                                        # whose trip count is unknown
 
 
 @dataclass
