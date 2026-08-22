@@ -1891,13 +1891,23 @@ class PatternDetectionMixin:
         # Find mutable count binding initialized to 0
         count_var = None
         for binding in bindings.items:
+            if not isinstance(binding, SList) or len(binding) < 2:
+                continue
+            first = binding[0]
             if self._is_mutable_binding(binding) and len(binding) >= 3:
                 var_name = binding[1].name if isinstance(binding[1], Symbol) else None
                 init_expr = binding[2]
-                # Check if initialized to 0
-                if var_name and isinstance(init_expr, Number) and init_expr.value == 0:
-                    count_var = var_name
-                    break
+            elif (isinstance(first, SList) and len(first) >= 2
+                  and isinstance(first[0], Symbol) and first[0].name == 'mut'):
+                # ((mut count) 0), the spelling _translate_let also takes
+                var_name = first[1].name if isinstance(first[1], Symbol) else None
+                init_expr = binding[1]
+            else:
+                continue
+            # Check if initialized to 0
+            if var_name and isinstance(init_expr, Number) and init_expr.value == 0:
+                count_var = var_name
+                break
 
         if not count_var:
             return None
@@ -2054,6 +2064,10 @@ class PatternDetectionMixin:
                         bound, init = binding[1], binding[2]
                     elif isinstance(first, Symbol):
                         bound, init = first, binding[1]
+                    elif (isinstance(first, SList) and len(first) >= 2
+                          and isinstance(first[0], Symbol) and first[0].name == 'mut'):
+                        # ((mut name) init), the third spelling _translate_let takes
+                        bound, init = first[1], binding[1]
                     else:
                         continue
                     if isinstance(bound, Symbol) and bound.name == name:

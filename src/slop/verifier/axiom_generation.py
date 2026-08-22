@@ -2813,6 +2813,10 @@ class AxiomGenerationMixin:
                         bound, init = binding[1], binding[2]
                     elif isinstance(first, Symbol):
                         bound, init = first, binding[1]
+                    elif (isinstance(first, SList) and len(first) >= 2
+                          and isinstance(first[0], Symbol) and first[0].name == 'mut'):
+                        # ((mut name) init), the third spelling _translate_let takes
+                        bound, init = first[1], binding[1]
                     else:
                         continue
                     if isinstance(bound, Symbol) and bound.name == name:

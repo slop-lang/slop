@@ -1876,15 +1876,16 @@ class Z3Translator:
         """
         if self._in_quoted_form:
             return None
+        if self._in_loop_body:
+            # The enclosing loop's havoc already covered everything this one
+            # assigns; versioning again would replace those constants.
+            return None
         loop_id = id(expr)
         unconditional = loop_id in self._unconditional_loops
         body_items = expr.items[2:]
 
         assigned: Dict[str, List['SExpr']] = {}
         self._collect_assignments(body_items, assigned)
-
-        if self._contains_early_exit(body_items):
-            unconditional = False
 
         for name, values in assigned.items():
             before = self.variables.get(name)
@@ -1917,12 +1918,13 @@ class Z3Translator:
         # The exit condition constrains the post-loop values, so it is stated
         # here rather than by a later pass that would not know which version of
         # each name a given loop ended with.
-        # A `break` or `return` can leave the loop with its condition still
-        # true, so the exit rule does not apply.
-        if unconditional and self._contains_early_exit(body_items):
-            unconditional = False
+        # A `break` in this loop, or a `return` anywhere in it, can leave with
+        # the condition still true - so the exit rule does not apply. Neither
+        # changes the direction a counter moves, which is kept.
+        exits_early = (self._contains_own_break(body_items)
+                       or self._contains_return(body_items))
 
-        if unconditional and is_form(expr, 'while') and len(expr) >= 2:
+        if unconditional and not exits_early and is_form(expr, 'while') and len(expr) >= 2:
             cond_z3 = self.translate_expr(expr[1])
             if cond_z3 is not None and z3.is_bool(cond_z3):
                 self.constraints.append(z3.Not(cond_z3))
@@ -2018,22 +2020,40 @@ class Z3Translator:
             self.constraints.append(after == value_z3)
         return None
 
-    def _contains_early_exit(self, stmts) -> bool:
-        """True if these statements can leave their loop early.
+    def _contains_own_break(self, stmts) -> bool:
+        """True if these statements break out of *this* loop.
 
-        Stops at a nested `(fn ...)`, whose break belongs to a loop inside it,
-        and at a `(quote ...)`, which is data.
+        Stops at a nested loop, whose break belongs to that one, and at a
+        `(fn ...)` or `(quote ...)`.
         """
         for stmt in stmts:
             if not isinstance(stmt, SList) or len(stmt) < 1:
                 continue
             head = stmt[0]
             if isinstance(head, Symbol):
-                if head.name in ('break', 'return'):
+                if head.name == 'break':
+                    return True
+                if head.name in ('fn', 'quote', 'while', 'for-each'):
+                    continue
+            if self._contains_own_break(stmt.items):
+                return True
+        return False
+
+    def _contains_return(self, stmts) -> bool:
+        """True if these statements can return from the function.
+
+        A `return` leaves every enclosing loop, so nested ones are walked.
+        """
+        for stmt in stmts:
+            if not isinstance(stmt, SList) or len(stmt) < 1:
+                continue
+            head = stmt[0]
+            if isinstance(head, Symbol):
+                if head.name == 'return':
                     return True
                 if head.name in ('fn', 'quote'):
                     continue
-            if self._contains_early_exit(stmt.items):
+            if self._contains_return(stmt.items):
                 return True
         return False
 

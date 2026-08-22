@@ -9023,3 +9023,40 @@ class TestLoopVariableVersions:
               (while (< i n) (set! i (+ 1 i)))
               i)))
         ''').status == 'verified'
+
+    def test_a_break_does_not_reverse_a_counter(self):
+        """It stops the loop early; it does not undo the steps already taken."""
+        assert self._result('''
+        (module m
+          (fn b ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (>= $result 0))
+            (let ((mut i 0))
+              (while (< i n) (set! i (+ i 1)) (break))
+              i)))
+        ''').status == 'verified'
+
+    def test_an_inner_break_belongs_to_the_inner_loop(self):
+        assert self._result('''
+        (module m
+          (fn o ((arena Arena) (n Int) (m Int))
+            (@spec ((Arena Int Int) -> Int))
+            (@post (>= $result n))
+            (let ((mut i 0)
+                  (mut j 0))
+              (while (< i n)
+                (while (< j m) (set! j (+ j 1)) (break))
+                (set! i (+ i 1)))
+              i)))
+        ''').status == 'verified'
+
+    def test_the_alternative_mutable_spelling_is_a_counter_too(self):
+        assert self._result('''
+        (module m
+          (fn c ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let (((mut count) 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              count)))
+        ''').status == 'verified'
