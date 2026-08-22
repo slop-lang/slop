@@ -3556,7 +3556,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None:
             count_pattern = self._detect_count_pattern(fn_body)
             if count_pattern is not None:
-                count_axioms = self._generate_count_axioms(count_pattern, translator)
+                count_axioms = self._generate_count_axioms(count_pattern, translator, fn_body)
                 for axiom in count_axioms:
                     solver.add(axiom)
 

@@ -8862,3 +8862,53 @@ class TestLoopVariableVersions:
               (while (< i 5) (set! i (+ i 1)))
               i)))
         ''').status != 'verified'
+
+    def test_a_loop_that_can_break_has_no_exit_fact(self):
+        """`(break)` leaves the loop with its condition still true."""
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (>= $result 10))
+            (let ((mut i 0))
+              (while (< i 10) (set! i (+ i 1)) (break))
+              i)))
+        ''').status != 'verified'
+
+    def test_a_branch_local_assignment_does_not_become_the_value(self):
+        """Both arms are translated into one shared map, so the last one would
+        otherwise be current whatever the condition said."""
+        assert self._result('''
+        (module m
+          (fn g ((arena Arena) (flag Bool))
+            (@spec ((Arena Bool) -> Int))
+            (@pre flag)
+            (@post (== $result 2))
+            (let ((mut i 0))
+              (if flag (set! i 1) (set! i 2))
+              i)))
+        ''').status != 'verified'
+
+    def test_an_unconditional_assignment_is_the_value(self):
+        assert self._result('''
+        (module m
+          (fn s ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 3))
+            (let ((mut i 0))
+              (set! i 3)
+              i)))
+        ''').status == 'verified'
+
+    def test_a_count_bound_belongs_to_the_counter(self):
+        """The count pattern only recognises a count-shaped loop; it does not
+        check that the function returns the counter."""
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              100)))
+        ''').status != 'verified'

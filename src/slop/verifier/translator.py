@@ -71,6 +71,7 @@ class Z3Translator:
         # note_body() says otherwise, so a loop nobody has placed is treated as
         # conditional and gets no facts attached to it.
         self._unconditional_loops: Set[int] = set()
+        self._unconditional_assignments: Set[int] = set()
         self._in_loop_body = False
         self._record_new_counter = 0  # Counter for unique record-new values
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
@@ -1871,6 +1872,9 @@ class Z3Translator:
         assigned: Dict[str, List['SExpr']] = {}
         self._collect_assignments(body_items, assigned)
 
+        if self._contains_early_exit(body_items):
+            unconditional = False
+
         for name, values in assigned.items():
             before = self.variables.get(name)
             if before is None or not z3.is_expr(before):
@@ -1902,6 +1906,11 @@ class Z3Translator:
         # The exit condition constrains the post-loop values, so it is stated
         # here rather than by a later pass that would not know which version of
         # each name a given loop ended with.
+        # A `break` or `return` can leave the loop with its condition still
+        # true, so the exit rule does not apply.
+        if unconditional and self._contains_early_exit(body_items):
+            unconditional = False
+
         if unconditional and is_form(expr, 'while') and len(expr) >= 2:
             cond_z3 = self.translate_expr(expr[1])
             if cond_z3 is not None and z3.is_bool(cond_z3):
@@ -1938,22 +1947,24 @@ class Z3Translator:
             for statement in statements:
                 if is_form(statement, 'while') or is_form(statement, 'for-each'):
                     self._unconditional_loops.add(id(statement))
+                elif is_form(statement, 'set!'):
+                    self._unconditional_assignments.add(id(statement))
             if len(statements) <= 1 and statements and statements[0] is node:
                 return
             node = statements[-1]
 
     def initial_variable(self, name: str):
-        """The constant `name` held before any loop gave it a new one.
+        """The constant `name` held before any loop or assignment replaced it.
 
         A phase that re-derives a binding's *initial* value has to attach it to
         that constant. Reading `variables` instead picks up whatever version is
-        current, which after a loop means asserting the starting value of the
-        thing the loop produced.
+        current, which after a loop or a `set!` means asserting the starting
+        value of the thing that replaced it.
         """
         return self._pre_loop_variables.get(name, self.variables.get(name))
 
     def is_loop_versioned(self, name: str) -> bool:
-        """True if a loop assigned `name`, so its value after differs from before."""
+        """True if a loop or a `set!` replaced `name`, so it has more than one value."""
         return name in self._pre_loop_variables
 
     def _translate_assignment(self, expr: SList) -> Optional[z3.ExprRef]:
@@ -1968,6 +1979,11 @@ class Z3Translator:
         if self._in_loop_body:
             return None
         target = expr[1]
+        # A `set!` in a branch runs only if that branch does, and both arms are
+        # translated into one shared map - so the last one translated would
+        # otherwise become the current value whatever the condition said. The
+        # name is still given a new constant, just an unconstrained one.
+        carries_value = id(expr) in self._unconditional_assignments
         if not isinstance(target, Symbol):
             return None
         name = target.name
@@ -1975,6 +1991,10 @@ class Z3Translator:
         value_z3 = self.translate_expr(expr[2])
         if before is None or not z3.is_expr(before):
             return None
+        # The constant it held before this assignment, so a phase that later
+        # re-derives the binding's initial value attaches it there rather than
+        # to what the assignment produced.
+        self._pre_loop_variables.setdefault(name, before)
         prefix = f"{name}_after_set"
         if z3.is_bool(before):
             after = z3.FreshBool(prefix)
@@ -1983,9 +2003,28 @@ class Z3Translator:
         else:
             after = z3.FreshInt(prefix)
         self.variables[name] = after
-        if value_z3 is not None and value_z3.sort() == after.sort():
+        if carries_value and value_z3 is not None and value_z3.sort() == after.sort():
             self.constraints.append(after == value_z3)
         return None
+
+    def _contains_early_exit(self, stmts) -> bool:
+        """True if these statements can leave their loop early.
+
+        Stops at a nested `(fn ...)`, whose break belongs to a loop inside it,
+        and at a `(quote ...)`, which is data.
+        """
+        for stmt in stmts:
+            if not isinstance(stmt, SList) or len(stmt) < 1:
+                continue
+            head = stmt[0]
+            if isinstance(head, Symbol):
+                if head.name in ('break', 'return'):
+                    return True
+                if head.name in ('fn', 'quote'):
+                    continue
+            if self._contains_early_exit(stmt.items):
+                return True
+        return False
 
     def _collect_assignments(self, stmts, assigned: Dict[str, List]):
         """Every `(set! name value)` under `stmts`, grouped by name.

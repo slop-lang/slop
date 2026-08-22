@@ -1983,7 +1983,8 @@ class PatternDetectionMixin:
         return False
 
     def _generate_count_axioms(self, pattern: CountPatternInfo,
-                               translator: Z3Translator) -> List:
+                               translator: Z3Translator,
+                               body: Optional['SExpr'] = None) -> List:
         """Generate Z3 axioms for detected count pattern.
 
         Axioms:
@@ -1991,8 +1992,21 @@ class PatternDetectionMixin:
         2. Count is bounded by collection size: $result <= (list-len collection)
         """
         axioms = []
+        # The bound describes the counter. _detect_count_pattern only finds a
+        # count-shaped loop; it does not check that the function returns the
+        # counter, and a function that returns something else would otherwise
+        # inherit the bound.
+        counted = translator.variables.get(pattern.count_var)
         result_var = translator.variables.get('$result')
-        if result_var is None:
+        if counted is None or result_var is None:
+            return axioms
+        if not (z3.is_expr(counted) and counted.sort() == z3.IntSort()):
+            return axioms
+        if body is not None:
+            returned = self._get_return_expr(body)
+            if not (isinstance(returned, Symbol) and returned.name == pattern.count_var):
+                return axioms
+        elif not z3.eq(counted, result_var):
             return axioms
 
         # Only add numeric axioms if result is an integer type
