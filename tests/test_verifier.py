@@ -7276,3 +7276,69 @@ class TestVacuityGuard:
             result))
         '''
         assert verify_source(src)[0].status != 'verified'
+
+
+class TestResultLengthFailsClosed:
+    """A length bound may only be claimed when the push scan is trustworthy.
+
+    _collect_push_sites is a whitelist walk. It classifies the forms it knows
+    and returns nothing for the rest, which is fine for a heuristic but not for
+    deriving a bound: a push the walk did not see reads as a push that does not
+    happen, and "no pushes" means "the result is empty". Each case here paired a
+    false claim with a true weaker one, so the tests pin both that the false one
+    is rejected and that rejecting it did not cost the true one.
+    """
+
+    @staticmethod
+    def _one(body, post):
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena) (flag Bool) (n Int) (items (List Int)))
+          (@spec ((Arena Bool Int (List Int)) -> (List Int)))
+          (@alloc arena)
+          (@post %s)
+          %s)
+        ''' % (post, body)
+        return verify_source(src)[0]
+
+    IF_ELSE = '''
+        (let ((mut result (list-new arena Int)))
+          (do (if flag (do) (list-push result 1)) result))'''
+    COND = '''
+        (let ((mut result (list-new arena Int)))
+          (do (cond ((> n 0) (list-push result 1)) (else (do))) result))'''
+    BREAK = '''
+        (let ((mut result (list-new arena Int)))
+          (do (for-each (x items) (list-push result x) (break)) result))'''
+    SHADOW = '''
+        (let ((mut result (list-new arena Int)))
+          (do (let ((mut result (list-new arena Int)))
+                (list-push result 1))
+              result))'''
+    SET_BANG = '''
+        (let ((mut result (list-new arena Int)))
+          (do (for-each (x items) (set! result (list-push result x))) result))'''
+
+    def test_push_only_in_else_branch_is_conditional(self):
+        """The else branch has no term to record as a guard, so it has to be
+        marked conditional or it reads as a push that always happens."""
+        assert self._one(self.IF_ELSE, "(== (list-len $result) 1)").status != 'verified'
+        assert self._one(self.IF_ELSE, "(<= (list-len $result) 1)").status == 'verified'
+
+    def test_push_under_cond_is_seen(self):
+        assert self._one(self.COND, "(== (list-len $result) 0)").status != 'verified'
+        assert self._one(self.COND, "(<= (list-len $result) 1)").status == 'verified'
+
+    def test_loop_with_break_is_not_exact(self):
+        """One unguarded push per iteration stops meaning one per element once
+        the loop can leave early. The upper bound survives; the equality does not."""
+        assert self._one(self.BREAK, "(== (list-len $result) (list-len items))").status != 'verified'
+        assert self._one(self.BREAK, "(<= (list-len $result) (list-len items))").status == 'verified'
+
+    def test_shadowed_binding_is_not_the_returned_list(self):
+        assert self._one(self.SHADOW, "(== (list-len $result) 1)").status != 'verified'
+
+    def test_push_through_set_is_not_counted_as_absent(self):
+        """(set! result (list-push result x)) is a push the structured walk does
+        not descend to. The plain count sees it, the mismatch forces a bail."""
+        assert self._one(self.SET_BANG, "(== (list-len $result) 0)").status != 'verified'

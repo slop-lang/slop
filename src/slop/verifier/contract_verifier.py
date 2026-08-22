@@ -1607,7 +1607,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         """
         return sum(
             1 for site in self._collect_push_sites([body], list_name)
-            if site.loop_depth == 0 and not site.guard_conditions and not site.in_match_arm
+            if site.loop_depth == 0 and not site.guard_conditions and not site.conditional
         )
 
     def _extract_conditional_record_axioms(self, cond_expr: SList, translator: Z3Translator) -> List:

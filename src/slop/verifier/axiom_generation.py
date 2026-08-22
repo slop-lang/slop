@@ -28,6 +28,38 @@ if TYPE_CHECKING:
 class AxiomGenerationMixin:
     """Mixin providing axiom generation methods."""
 
+    def _count_bindings_of(self, expr: 'SExpr', name: str) -> int:
+        """How many `let` forms under `expr` bind `name`.
+
+        More than one means an inner binding shadows the outer, so pushes to the
+        two are not pushes to the same list.
+        """
+        count = 0
+        if isinstance(expr, SList):
+            if is_form(expr, 'let') and len(expr) >= 2 and isinstance(expr[1], SList):
+                for binding in expr[1].items:
+                    if not isinstance(binding, SList) or len(binding) < 2:
+                        continue
+                    head = binding[0]
+                    if not isinstance(head, Symbol):
+                        continue
+                    bound = binding[1] if head.name == 'mut' and len(binding) >= 3 else head
+                    if isinstance(bound, Symbol) and bound.name == name:
+                        count += 1
+            for item in expr.items:
+                count += self._count_bindings_of(item, name)
+        return count
+
+    def _contains_any_form(self, expr: 'SExpr', heads) -> bool:
+        """True if `expr` contains a call to any of `heads`."""
+        if isinstance(expr, SList):
+            if len(expr) >= 1 and isinstance(expr[0], Symbol) and expr[0].name in heads:
+                return True
+            for item in expr.items:
+                if self._contains_any_form(item, heads):
+                    return True
+        return False
+
     def _length_terms_for(self, expr: 'SExpr', translator: 'Z3Translator'):
         """Every length term for the list denoted by `expr`, plus links between them.
 
@@ -105,16 +137,36 @@ class AxiomGenerationMixin:
         if not isinstance(return_expr, Symbol):
             return axioms
 
-        sites = self._collect_push_sites([fn_body], return_expr.name)
+        name = return_expr.name
+        sites = self._collect_push_sites([fn_body], name)
+
+        # Fail closed. _collect_push_sites is a whitelist walk: it classifies
+        # the forms it knows and silently returns nothing for the rest, which is
+        # fine for a heuristic but not for deriving a bound. A plain recursive
+        # count of every (list-push name ...) in the body says how many there
+        # really are; if the structured walk saw a different number it passed
+        # through something it does not model - a form it does not descend into,
+        # or a push built by (set! name (list-push name x)) - and no bound may
+        # be claimed. Without this, a push under a `cond` yielded no sites and
+        # so "proved" the result empty.
+        if len(sites) != self._count_push_to_var([fn_body], name):
+            return axioms
+
+        # A nested (let ((mut name ...))) rebinds the name to a different list.
+        # Pushes to the inner one are still counted against the outer, so bail.
+        if self._count_bindings_of(fn_body, name) > 1:
+            return axioms
 
         if any(site.loop_depth > 0 for site in sites):
-            axioms.extend(self._loop_result_length_axioms(sites, terms, translator))
+            early_exit = self._contains_any_form(fn_body, ('break', 'continue', 'return'))
+            axioms.extend(self._loop_result_length_axioms(
+                sites, terms, translator, early_exit))
             return axioms
 
         upper = len(sites)
         lower = sum(
             1 for site in sites
-            if not site.guard_conditions and not site.in_match_arm
+            if not site.guard_conditions and not site.conditional
         )
         for t in terms:
             if lower == upper:
@@ -126,7 +178,8 @@ class AxiomGenerationMixin:
 
     def _loop_result_length_axioms(self, sites: List['PushSiteInfo'],
                                    terms: List[z3.ArithRef],
-                                   translator: 'Z3Translator') -> List[z3.BoolRef]:
+                                   translator: 'Z3Translator',
+                                   early_exit: bool = False) -> List[z3.BoolRef]:
         """Length bound for a result built by pushing inside a loop.
 
         The bound comes from the loop itself rather than from a named pattern:
@@ -140,6 +193,10 @@ class AxiomGenerationMixin:
         nested loops multiply out to a product this does not try to express. The
         length is then left unconstrained beyond the non-negativity the type
         carries, and the caller reports that it could not bound it.
+
+        `early_exit` suppresses the exact case: with a break, continue or return
+        in the body the single push no longer runs once per element. The k*len(C)
+        upper bound survives, since every exit only makes the loop shorter.
         """
         if not sites:
             return []
@@ -160,7 +217,8 @@ class AxiomGenerationMixin:
 
         exact = (len(sites) == 1
                  and not sites[0].guard_conditions
-                 and not sites[0].in_match_arm)
+                 and not sites[0].conditional
+                 and not early_exit)
         if exact:
             return links + [t == source_len for t in terms]
         return links + [t <= len(sites) * source_len for t in terms]

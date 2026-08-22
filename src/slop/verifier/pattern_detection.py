@@ -2283,7 +2283,7 @@ class PatternDetectionMixin:
         self, stmts: list, result_var: str,
         bindings: Optional[Dict[str, 'SExpr']] = None,
         guards: Optional[List['SExpr']] = None,
-        in_match_arm: bool = False,
+        conditional: bool = False,
         loop_depth: int = 0,
         loop_collections: Optional[List] = None
     ) -> List[PushSiteInfo]:
@@ -2297,11 +2297,11 @@ class PatternDetectionMixin:
             result_var: Name of the result variable being pushed to
             bindings: Variable bindings in scope (accumulated from let forms)
             guards: Guard conditions enclosing this scope (from when/if forms)
-            in_match_arm: True inside a match clause body, where the push is
-                taken only for that variant. Match arms carry no entry in
-                `guards` - the pattern is not a translatable condition - so
-                without this flag such a push is indistinguishable from an
-                unconditional one.
+            conditional: True inside a branch that may not be taken - a match
+                arm, either arm of an `if`, a `cond` clause. An `if` else branch
+                and a match arm carry no entry in `guards` (there is no term to
+                record), so without this flag such a push is indistinguishable
+                from an unconditional one.
             loop_depth: Enclosing while/for-each nesting depth. A push at depth
                 > 0 runs an unknown number of times, so the count of sites is
                 not an upper bound on the result length.
@@ -2334,7 +2334,7 @@ class PatternDetectionMixin:
                         pushed_expr=stmt[2],
                         guard_conditions=list(guards),
                         bindings=dict(bindings),
-                        in_match_arm=in_match_arm,
+                        conditional=conditional,
                         loop_depth=loop_depth,
                         loop_collections=list(loop_collections)
                     ))
@@ -2345,7 +2345,7 @@ class PatternDetectionMixin:
                 new_guards = guards + [stmt[1]]
                 sites += self._collect_push_sites(
                     stmt.items[2:], result_var, bindings, new_guards,
-                    in_match_arm, loop_depth, loop_collections
+                    True, loop_depth, loop_collections
                 )
                 continue
 
@@ -2354,12 +2354,30 @@ class PatternDetectionMixin:
                 new_guards = guards + [stmt[1]]
                 sites += self._collect_push_sites(
                     [stmt[2]], result_var, bindings, new_guards,
-                    in_match_arm, loop_depth, loop_collections
+                    True, loop_depth, loop_collections
                 )
                 if len(stmt) >= 4:
+                    # The else branch runs when the condition is false. There is
+                    # no negated term to add to `guards`, so it is marked
+                    # conditional instead - otherwise a push that only happens
+                    # in the else branch reads as one that always happens.
                     sites += self._collect_push_sites(
                         [stmt[3]], result_var, bindings, guards,
-                        in_match_arm, loop_depth, loop_collections
+                        True, loop_depth, loop_collections
+                    )
+                continue
+
+            # (cond (test body...) ... (else body...)) — every clause is conditional
+            if is_form(stmt, 'cond') and len(stmt) >= 2:
+                for clause in stmt.items[1:]:
+                    if not isinstance(clause, SList) or len(clause) < 2:
+                        continue
+                    test = clause[0]
+                    is_else = isinstance(test, Symbol) and test.name == 'else'
+                    clause_guards = guards if is_else else guards + [test]
+                    sites += self._collect_push_sites(
+                        clause.items[1:], result_var, bindings, clause_guards,
+                        True, loop_depth, loop_collections
                     )
                 continue
 
@@ -2382,7 +2400,7 @@ class PatternDetectionMixin:
                                     new_bindings[var_name] = var_value
                 sites += self._collect_push_sites(
                     stmt.items[2:], result_var, new_bindings, guards,
-                    in_match_arm, loop_depth, loop_collections
+                    conditional, loop_depth, loop_collections
                 )
                 continue
 
@@ -2390,7 +2408,7 @@ class PatternDetectionMixin:
             if is_form(stmt, 'do'):
                 sites += self._collect_push_sites(
                     stmt.items[1:], result_var, bindings, guards,
-                    in_match_arm, loop_depth, loop_collections
+                    conditional, loop_depth, loop_collections
                 )
                 continue
 
@@ -2398,7 +2416,7 @@ class PatternDetectionMixin:
             if is_form(stmt, 'while') and len(stmt) >= 3:
                 sites += self._collect_push_sites(
                     stmt.items[2:], result_var, bindings, guards,
-                    in_match_arm, loop_depth + 1, loop_collections + [None]
+                    conditional, loop_depth + 1, loop_collections + [None]
                 )
                 continue
 
@@ -2408,7 +2426,7 @@ class PatternDetectionMixin:
                 coll = binder[1] if isinstance(binder, SList) and len(binder) >= 2 else None
                 sites += self._collect_push_sites(
                     stmt.items[2:], result_var, bindings, guards,
-                    in_match_arm, loop_depth + 1, loop_collections + [coll]
+                    conditional, loop_depth + 1, loop_collections + [coll]
                 )
                 continue
 
@@ -2438,7 +2456,7 @@ class PatternDetectionMixin:
                     if isinstance(arg, SList) and is_form(arg, 'fn') and len(arg) >= 3:
                         sites += self._collect_push_sites(
                             arg.items[2:], result_var, bindings, guards,
-                            in_match_arm, loop_depth + 1, loop_collections + [None]
+                            conditional, loop_depth + 1, loop_collections + [None]
                         )
 
         return sites
