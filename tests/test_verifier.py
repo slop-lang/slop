@@ -8333,3 +8333,61 @@ class TestConditionalRecordFields:
     (@post {(list-len e) == 0})
     (let ((e (list-new arena Item)))
       (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_a_list_stored_in_another_record_is_reachable_again(self):
+        """`(list-push (. box xs) it)` never mentions `e`, so treating the
+        field write in `box` as a harmless read left `e` looking untouched."""
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Item (record (v Int)))
+          (type Box (record (xs (List Item))))
+          (type F (record (flag Bool) (xs (List Item)) (ys (List Item))))
+          (fn b1 ((arena Arena) (it Item))
+            (@spec ((Arena Item) -> F))
+            (@alloc arena)
+            (@post {(list-len (. $result xs)) == 0})
+            (let ((e (list-new arena Item)))
+              (let ((box (record-new Box (xs e))))
+                (list-push (. box xs) it)
+                (record-new F (flag true) (xs e) (ys e))))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+    def test_a_branch_may_bind_its_own_locals(self):
+        assert self._status('''
+  (fn b2 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+          (let ((g (list-new arena Item))) (record-new F (flag false) (xs g) (ys g)))))''') == 'verified'
+
+    def test_a_branch_local_binding_that_is_not_empty(self):
+        assert self._status('''
+  (fn b3 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
+          (record-new F (flag false) (xs zs) (ys zs))))''') != 'verified'
+
+    def test_a_binding_whose_initializer_is_a_conditional(self):
+        """`(xs e)` where `e` was bound to an `if` is still a branch; the
+        dispatch has to happen after the name is resolved."""
+        assert self._status('''
+  (fn b4 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (if c (list-new arena Item) (list-new arena Item))))
+      (record-new F (flag true) (xs e) (ys e))))''') == 'verified'
+
+    def test_a_conditional_initializer_with_one_unknown_arm(self):
+        assert self._status('''
+  (fn b5 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (if c (list-new arena Item) zs)))
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'

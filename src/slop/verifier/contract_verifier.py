@@ -1844,7 +1844,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         )
 
     def _extract_conditional_record_axioms(self, cond_expr: SList, translator: Z3Translator,
-                                           bindings: Optional[Dict[str, Tuple[SExpr, Dict]]] = None) -> List:
+                                           fn_body: Optional[SExpr] = None,
+                                           param_names: Optional[Set[str]] = None) -> List:
         """Axioms for a conditional whose branches build or pass along a record.
 
         Each branch contributes its own facts under its own guard. A branch that
@@ -1859,12 +1860,20 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         result_var = translator.variables.get('$result')
         if result_var is None:
             return axioms
-        if bindings is None:
-            bindings = {}
+        if fn_body is None:
+            fn_body = cond_expr
 
         branches = self._branch_conditions(cond_expr, translator)
         if branches is None:
             return axioms
+
+        # Every constructor about to be described, so a list stored in one of
+        # them still counts as read-only; a record built anywhere else is a way
+        # to reach the list again.
+        result_forms = tuple(
+            id(self._get_return_expr(branch)) for _, branch in branches
+            if self._is_record_new(branch))
+        bindings = self._tail_bindings(fn_body, param_names, result_forms=result_forms)
 
         field_names: List[str] = []
         passthrough: List = []
@@ -1872,13 +1881,18 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for guard, branch in branches:
             if self._is_record_new(branch):
                 record_new = self._get_return_expr(branch)
+                # An arm may bind its own locals before constructing.
+                branch_bindings = dict(bindings)
+                branch_bindings.update(self._tail_bindings(
+                    branch, param_names, stability_body=fn_body,
+                    result_forms=result_forms))
                 for item in record_new.items[2:]:
                     if isinstance(item, SList) and len(item) >= 2 and isinstance(item[0], Symbol):
                         if item[0].name not in field_names:
                             field_names.append(item[0].name)
                 axioms.extend(self._extract_record_field_axioms(
                     record_new, translator, base_accessor=result_var,
-                    path_cond=guard, bindings=bindings))
+                    path_cond=guard, bindings=branch_bindings))
             else:
                 passthrough.append((guard, branch))
 
@@ -2051,6 +2065,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return aliases
 
     def _binding_is_stable(self, body: SExpr, name: str,
+                           result_forms: Tuple[int, ...] = (),
                            seen: Optional[Set[str]] = None) -> bool:
         """True if `name` is only read in this body, never changed.
 
@@ -2060,9 +2075,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         the callee do either - so only the handful of positions that are known
         to be reads keep a binding resolvable.
 
-        A read is not always harmless: `(let ((a e)) (list-push a it))` mutates
-        the same list through another name. Every alias of the name has to be
-        stable too, which is what `seen` follows.
+        A read is not always harmless. `(let ((a e)) (list-push a it))` mutates
+        the same list through another name, so every alias has to be stable too
+        - that is what `seen` follows. And storing the list in a record hands
+        out another way to reach it: `(list-push (. box xs) it)` never mentions
+        `e`. So a record field counts as a read only inside `result_forms`, the
+        constructors whose fields are being described here, which nothing in the
+        function can reach through afterwards.
         """
         if seen is None:
             seen = set()
@@ -2071,7 +2090,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         seen.add(name)
 
         for alias in self._aliases_of(body, name):
-            if not self._binding_is_stable(body, alias, seen):
+            if not self._binding_is_stable(body, alias, result_forms, seen):
                 return False
 
         def walk(node, parent_head, index, in_pair) -> bool:
@@ -2082,10 +2101,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     return True
                 if parent_head == 'mut' and index == 1:
                     return True
-                # Inside a let binding or a record-new field pair the name is
-                # either being bound or being read as a value. Neither changes
-                # what it holds, and the second is the use this resolution
-                # exists to serve.
+                # A let binding or a field of a constructor being described
+                # here: the name is bound, or read as a value that nothing goes
+                # on to reach through.
                 if in_pair:
                     return True
                 return False
@@ -2094,10 +2112,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 return True
 
             head = node[0].name if len(node) and isinstance(node[0], Symbol) else None
-            is_record_new = is_form(node, 'record-new')
+            # An intermediate record is a way to reach the list again, so only
+            # the constructors whose fields are being described count as reads.
+            is_result_record = is_form(node, 'record-new') and id(node) in result_forms
             is_let_bindings = parent_head == 'let' and index == 1
             for i, item in enumerate(node.items):
-                in_child_pair = (is_record_new and i >= 2) or is_let_bindings
+                in_child_pair = (is_result_record and i >= 2) or is_let_bindings
                 if in_child_pair and isinstance(item, SList):
                     # A pair's head is a name, not a call, so its children are
                     # walked with no parent head of their own.
@@ -2112,7 +2132,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return walk(body, None, -1, False)
 
     def _tail_bindings(self, body: SExpr,
-                       param_names: Optional[Set[str]] = None) -> Dict[str, Tuple[SExpr, Dict]]:
+                       param_names: Optional[Set[str]] = None,
+                       stability_body: Optional[SExpr] = None,
+                       result_forms: Tuple[int, ...] = ()) -> Dict[str, Tuple[SExpr, Dict]]:
         """The `let` bindings in scope where the body yields its value.
 
         Follows the tail - the last form of each nested do/let - so a field
@@ -2127,6 +2149,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         """
         if param_names is None:
             param_names = set()
+        if stability_body is None:
+            stability_body = body
         bindings: Dict[str, Tuple[SExpr, Dict]] = {}
         node = body
         while True:
@@ -2138,7 +2162,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         name = self._binding_name(binding)
                         if not name:
                             continue
-                        if not self._binding_is_stable(body, name):
+                        if not self._binding_is_stable(stability_body, name, result_forms):
                             bindings.pop(name, None)
                             continue
                         # The translator gives every binding of a name one Z3
@@ -2148,7 +2172,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         # through a name that is bound more than once, and a
                         # parameter counts as one of those bindings.
                         if (name in param_names
-                                or self._count_bindings_of(body, name) > 1):
+                                or self._count_bindings_of(stability_body, name) > 1):
                             bindings.pop(name, None)
                             continue
                         bindings[name] = (binding[-1], dict(bindings))
@@ -2240,7 +2264,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         yields a length for both arms. A symbol is followed to what it was bound
         to, which is what makes `(xs e)` work when `e` is a local empty list.
         """
-        branches = self._branch_conditions(value, translator)
+        # Resolve first: a field written as `(xs e)` where `e` was bound to an
+        # `if` is still a branch, and dispatching on the unresolved symbol would
+        # miss it.
+        resolved = self._resolve_binding(value, bindings)
+
+        branches = self._branch_conditions(resolved, translator)
         if branches is not None:
             axioms = []
             for guard, branch in branches:
@@ -2253,8 +2282,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         def add(axiom):
             axioms.append(axiom if path_cond is None else z3.Implies(path_cond, axiom))
-
-        resolved = self._resolve_binding(value, bindings)
 
         # A freshly created list is empty. Reaching it through a binding counts:
         # a syntactic test for (list-new ...) misses (xs e), and that shape is
@@ -3110,7 +3137,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return_expr = self._get_return_expr(fn_body)
             field_axioms = self._extract_record_field_axioms(
                 return_expr, translator,
-                bindings=self._tail_bindings(fn_body, declared_param_names))
+                bindings=self._tail_bindings(
+                    fn_body, declared_param_names,
+                    result_forms=(id(return_expr),)))
             for axiom in field_axioms:
                 solver.add(axiom)
 
@@ -3220,8 +3249,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return_expr = self._get_return_expr(fn_body)
             if self._is_conditional_with_record_new(return_expr):
                 cond_axioms = self._extract_conditional_record_axioms(
-                    return_expr, translator,
-                    bindings=self._tail_bindings(fn_body, declared_param_names))
+                    return_expr, translator, fn_body, declared_param_names)
                 for axiom in cond_axioms:
                     solver.add(axiom)
 
