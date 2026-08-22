@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Set, Tuple, Any, TYPE_CHECKING
 
 from slop.parser import SList, Symbol, String, Number, is_form
@@ -75,6 +76,7 @@ class Z3Translator:
         self._in_loop_body = False
         self._in_quoted_form = False
         self._versions_frozen = False
+        self._prefer_initial_versions = False
         self._record_new_counter = 0  # Counter for unique record-new values
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
         self._build_enum_map()
@@ -1439,6 +1441,8 @@ class Z3Translator:
         # replaced has no single value to give them - the filter that excluded
         # `target` did so before `(set! target 999)`, not after - so it is
         # refused rather than answered with the wrong one (issue #116).
+        if self._prefer_initial_versions and name in self._pre_loop_variables:
+            return self._pre_loop_variables[name]
         if self._versions_frozen and name in self._pre_loop_variables:
             return None
 
@@ -1986,6 +1990,21 @@ class Z3Translator:
             if len(statements) <= 1 and statements and statements[0] is node:
                 return
             node = statements[-1]
+
+    @contextmanager
+    def initial_versions(self):
+        """Read every name as it stood before any loop or assignment.
+
+        For a pass that runs after the body has been walked but is asking about
+        something written near the top of it - an early-return guard, say, which
+        tests the values in scope where it appears.
+        """
+        was = self._prefer_initial_versions
+        self._prefer_initial_versions = True
+        try:
+            yield
+        finally:
+            self._prefer_initial_versions = was
 
     def freeze_versions(self) -> None:
         """Stop answering for names that have more than one version.

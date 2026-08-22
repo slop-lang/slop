@@ -9163,9 +9163,23 @@ class TestLoopVariableVersions:
               i)))
         ''').status == 'verified'
 
-    def test_an_exit_guard_naming_a_reassigned_variable_is_withdrawn(self):
-        """There is no program point here to say which version the guard meant,
-        so the exit modelling is given up rather than guessed."""
+    def test_a_guard_past_a_reassignment_is_withdrawn(self):
+        """Guards are read as they stood at the top. Past an assignment the
+        name they test may have changed, and there is no program point here to
+        say which version was meant - so the modelling is given up, and with it
+        the claim that the trailing form is the only result."""
+        assert self._result('''
+        (module m
+          (fn h ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 5))
+            (let ((mut i 0))
+              (set! i 5)
+              (when (== i 0) (return -1))
+              i)))
+        ''').status != 'verified'
+
+    def test_a_guard_before_any_reassignment_is_exact(self):
         assert self._result('''
         (module m
           (fn h ((arena Arena))
@@ -9175,4 +9189,4 @@ class TestLoopVariableVersions:
               (when (> i 0) (return 7))
               (set! i 5)
               i)))
-        ''').status != 'verified'
+        ''').status == 'verified'

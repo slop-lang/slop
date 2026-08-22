@@ -2207,6 +2207,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         Recognises a bare `(return v)`, `(when C ... (return v))` and
         `(if C (return v) ...)` among the statements leading up to the tail.
+
+        Runs before the body is translated, so a guard reads the versions in
+        scope at the top - which is what a guard before the first loop means.
+        A guard naming a `let`-bound local has nothing to read yet and becomes
+        an unconstrained Bool, which leaves that exit looking possible when it
+        may not be; the conservative direction, and the price of not having
+        program points here.
         Guards are cumulative: a later exit only runs if the earlier tests all
         failed. Returns None if a `return` turns up in a shape this cannot
         guard, which tells the caller to withhold rather than guess.
@@ -2214,6 +2221,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         exits: List = []
         earlier: List = []
         failed = False
+        # Guards are read as they stood at the top of the body. That is what a
+        # guard before the first loop or assignment means; past one, the name it
+        # tests may have changed and there is no program point here to say
+        # which version it meant, so the whole modelling is given up.
+        reassigned = False
 
         def returned_value(stmts):
             """The value a statement list returns directly, if that is all of it.
@@ -2237,14 +2249,27 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return direct, found
 
         def note(guard_term, value, guard_expr):
+            nonlocal failed
+            if reassigned and self._mentions_loop_versioned(guard_expr, translator):
+                failed = True
+                return
             guard = z3.And(guard_term, *[z3.Not(t) for t in earlier]) if earlier else guard_term
             exits.append((guard, value, guard_expr))
             earlier.append(guard_term)
 
         def scan(stmts):
-            nonlocal failed
+            nonlocal failed, reassigned
             for stmt in stmts:
                 if not isinstance(stmt, SList):
+                    continue
+                if (is_form(stmt, 'while') or is_form(stmt, 'for-each')
+                        or is_form(stmt, 'set!')):
+                    reassigned = True
+                    # A return inside a loop or an assigned value still has no
+                    # single condition to negate.
+                    if self._contains_any_form(stmt, ('return',)):
+                        failed = True
+                        return
                     continue
                 if is_form(stmt, 'return'):
                     note(z3.BoolVal(True), stmt[1] if len(stmt) >= 2 else None, stmt)
@@ -2275,6 +2300,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     return None
                 scan(node.items[2:-1])
                 node = node.items[-1]
+                if failed:
+                    return None
             elif is_form(node, 'do') and len(node) >= 2:
                 scan(node.items[1:-1])
                 node = node.items[-1]
@@ -3108,6 +3135,22 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Translate function body BEFORE assumptions
         # This is important because @loop-invariant may reference local variables
         # from let bindings, which are declared during body translation
+
+        body_z3: Optional[z3.ExprRef] = None
+        body_constraint_start = len(translator.constraints)
+        if fn_body is not None:
+            # Which loops run whenever the body does. Without this every loop is
+            # taken as conditional and contributes no facts. The last form is
+            # fn_body rather than all_body_exprs[-1]: the same form, but
+            # _desugar_callback_iterations rebuilt it, and this is keyed on
+            # node identity.
+            for form in (list(all_body_exprs[:-1]) + [fn_body]
+                         if all_body_exprs else [fn_body]):
+                translator.note_body(form)
+        if fn_body is not None and postconditions:
+            body_z3 = translator.translate_expr(fn_body)
+        body_constraint_end = len(translator.constraints)
+
         # _get_return_expr picks the trailing form. An explicit (return ...)
         # elsewhere is another exit, and what it yields is just as much $result,
         # so nothing the trailing constructor says describes the result alone.
@@ -3128,27 +3171,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # which control actually gets there; None means it always does, and a
         # `return` in a shape _early_exits cannot guard leaves early_exits None,
         # in which case nothing is claimed about the result at all.
-        early_exits = (self._early_exits(combined_body, translator)
-                       if combined_body is not None else [])
+        with translator.initial_versions():
+            early_exits = (self._early_exits(combined_body, translator)
+                           if combined_body is not None else [])
         body_has_one_exit = early_exits is not None
         reached_guard = None
         if early_exits:
             reached_guard = z3.And(*[z3.Not(guard) for guard, _, _ in early_exits])
 
-        body_z3: Optional[z3.ExprRef] = None
-        body_constraint_start = len(translator.constraints)
-        if fn_body is not None:
-            # Which loops run whenever the body does. Without this every loop is
-            # taken as conditional and contributes no facts. The last form is
-            # fn_body rather than all_body_exprs[-1]: the same form, but
-            # _desugar_callback_iterations rebuilt it, and this is keyed on
-            # node identity.
-            for form in (list(all_body_exprs[:-1]) + [fn_body]
-                         if all_body_exprs else [fn_body]):
-                translator.note_body(form)
-        if fn_body is not None and postconditions:
-            body_z3 = translator.translate_expr(fn_body)
-        body_constraint_end = len(translator.constraints)
             # If we can translate the body, constrain $result to equal it
             # This enables path-sensitive reasoning through conditionals
 
@@ -3286,17 +3316,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             )
 
 
-        # An exit guard was translated above, before the body, so it reads the
-        # versions in scope at the top. That is right for a guard before the
-        # first loop and wrong for one after it, and there is no program point
-        # here to tell them apart - so if any guard names something a loop or an
-        # assignment went on to replace, the exit modelling is withdrawn.
-        if early_exits and any(self._mentions_loop_versioned(guard_expr, translator)
-                               for _, _, guard_expr in early_exits):
-            early_exits = None
-            body_has_one_exit = False
-            reached_guard = None
-
         # Contracts have been translated by now - a @loop-invariant is about the
         # value the loop leaves behind, so it wants the final version. The
         # pattern phases below re-translate expressions from anywhere in the
@@ -3353,7 +3372,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Add body constraint for path-sensitive analysis
         # This constrains $result to equal the translated function body
         body_equality: List[z3.BoolRef] = []
-        if body_z3 is not None:
+        # early_exits is None when the body returns somewhere this cannot guard,
+        # or when a guard turned out to name something later reassigned. Either
+        # way the trailing form is not the only thing $result can be, so it is
+        # not equated with it at all.
+        if body_z3 is not None and early_exits is not None:
             result_var = translator.variables.get('$result')
             if result_var is not None:
                 # Only on the path that reaches the trailing form. Asserting it
