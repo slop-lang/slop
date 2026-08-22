@@ -765,6 +765,41 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if z3_axiom is not None:
                 axioms.append(z3_axiom)
 
+    def _body_bound_names(self, expr: SExpr) -> Set[str]:
+        """Every name the body introduces: let bindings, loop and lambda binders."""
+        names: Set[str] = set()
+
+        def walk(node):
+            if not isinstance(node, SList):
+                return
+            if is_form(node, 'let') and len(node) >= 2 and isinstance(node[1], SList):
+                for binding in node[1].items:
+                    if isinstance(binding, SList) and len(binding) >= 2:
+                        name = self._binding_name(binding)
+                        if name:
+                            names.add(name)
+            elif is_form(node, 'for-each') and len(node) >= 2:
+                binder = node[1]
+                if isinstance(binder, SList) and len(binder) >= 1 and isinstance(binder[0], Symbol):
+                    names.add(binder[0].name)
+            elif is_form(node, 'fn') and len(node) >= 2 and isinstance(node[1], SList):
+                for param in node[1].items:
+                    if isinstance(param, SList) and len(param) >= 1 and isinstance(param[0], Symbol):
+                        names.add(param[0].name)
+            elif is_form(node, 'match') and len(node) >= 3:
+                for clause in node.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 1:
+                        pattern = clause[0]
+                        if isinstance(pattern, SList):
+                            for item in pattern.items[1:]:
+                                if isinstance(item, Symbol):
+                                    names.add(item.name)
+            for item in node.items:
+                walk(item)
+
+        walk(expr)
+        return names
+
     def _mentions_loop_versioned(self, expr: SExpr, translator: Z3Translator) -> bool:
         """True if `expr` names a variable some loop reassigned."""
         if isinstance(expr, Symbol):
@@ -3126,7 +3161,22 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # This is important because @loop-invariant may reference local variables
         # from let bindings, which are declared during body translation
 
+        # A multi-form body keeps only its last expression in fn_body, so the
+        # earlier forms have to be looked at too. The last element is fn_body
+        # rather than all_body_exprs[-1]: those are the same form, but fn_body
+        # has been through _desugar_callback_iterations and the other has not,
+        # and the two trees share no nodes. Anything keyed on node identity -
+        # which constructor is the returned one - has to see the same tree it
+        # was taken from.
+        combined_body = fn_body
+        if fn_body is not None and all_body_exprs and len(all_body_exprs) > 1:
+            combined_body = SList(
+                [Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
+                fn_body.line, fn_body.col)
+
         body_z3: Optional[z3.ExprRef] = None
+        # What each name meant before the body introduced any of its own.
+        scope_before_body = dict(translator.variables)
         body_constraint_start = len(translator.constraints)
         if fn_body is not None:
             # Which loops run whenever the body does. Without this every loop is
@@ -3145,6 +3195,21 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # speaks about the state the function ends in, so a mutable parameter
         # in one means the value it was left with. @pre keeps the versions from
         # before the body, which is what it is about.
+        #
+        # The body's own bindings are put away first. A contract cannot name a
+        # local, and leaving them in place lets one shadow a parameter - or a
+        # verifier accessor, where a local called `field_len` turns a
+        # `list-len` postcondition into a TypeError. Names a `set!` replaced
+        # keep their final version, which is the point of translating here.
+        body_locals = {}
+        if fn_body is not None:
+            for local in self._body_bound_names(combined_body):
+                if local in translator.variables:
+                    body_locals[local] = translator.variables[local]
+                    if local in scope_before_body:
+                        translator.variables[local] = scope_before_body[local]
+                    else:
+                        del translator.variables[local]
         # Translate postconditions
         post_z3: List[z3.BoolRef] = []
         failed_posts: List[SExpr] = []
@@ -3159,19 +3224,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # _get_return_expr picks the trailing form. An explicit (return ...)
         # elsewhere is another exit, and what it yields is just as much $result,
         # so nothing the trailing constructor says describes the result alone.
-        # A multi-form body keeps only its last expression in fn_body, so the
-        # earlier forms have to be looked at too - both for that check and for
-        # the bindings a constructor's fields may refer to.
-        # The last element is fn_body rather than all_body_exprs[-1]: those are
-        # the same form, but fn_body has been through
-        # _desugar_callback_iterations and the other has not, and the two trees
-        # share no nodes. Anything keyed on node identity - which constructor
-        # is the returned one - has to see the same tree it was taken from.
-        combined_body = fn_body
-        if fn_body is not None and all_body_exprs and len(all_body_exprs) > 1:
-            combined_body = SList(
-                [Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
-                fn_body.line, fn_body.col)
         # Exits other than the trailing form. `reached` is the condition under
         # which control actually gets there; None means it always does, and a
         # `return` in a shape _early_exits cannot guard leaves early_exits None,
@@ -3186,6 +3238,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
             # If we can translate the body, constrain $result to equal it
             # This enables path-sensitive reasoning through conditionals
+
+        # Locals come back: a @loop-invariant is written about them.
+        for local, value in body_locals.items():
+            translator.variables[local] = value
 
         # Translate assumptions (trusted axioms) - AFTER body so local vars are declared
         assume_constraint_start = len(translator.constraints)

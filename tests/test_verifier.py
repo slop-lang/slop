@@ -9248,3 +9248,25 @@ class TestLoopVariableVersions:
             (@post (== $result x))
             (let () (set! x 1) x)))
         ''').status == 'verified'
+
+    def test_a_local_cannot_shadow_a_parameter_in_a_postcondition(self):
+        """A contract cannot name a local, so leaving the body's bindings in
+        place while translating one lets a local stand in for a parameter."""
+        assert self._result('''
+        (module m
+          (fn f ((x Int))
+            (@spec ((Int) -> Int))
+            (@post x)
+            (let ((x true)) 1)))
+        ''').status != 'verified'
+
+    def test_a_local_named_like_a_verifier_accessor(self):
+        """`field_len` is the verifier's own length accessor and a legal local
+        name; a `list-len` postcondition must not be handed the local."""
+        assert self._result('''
+        (module m
+          (fn fl ((arena Arena) (xs (List Int)))
+            (@spec ((Arena (List Int)) -> Int))
+            (@post (>= (list-len xs) 0))
+            (let ((field_len 3)) field_len)))
+        ''').status == 'verified'
