@@ -8079,3 +8079,149 @@ class TestReturnedBindingScope:
           (let ((mut r (list-new arena Int))) (list-push r 1))
           (let ((mut r (list-new arena Int))) r))
         ''') == 'verified'
+
+
+_RECORD_FIELD_PROBE = '''
+(module probe
+  (type Item (record (v Int)))
+  (type F (record (flag Bool) (xs (List Item)) (ys (List Item))))
+
+  (fn opaque? ((n Int))
+    (@spec ((Int) -> Bool))
+    (> n 3))
+
+%s)
+'''
+
+
+class TestConditionalRecordFields:
+    """Issue #70: what a record-new says about its fields, through a branch.
+
+    The conditional path used to reimplement one line of
+    _extract_record_field_axioms - field equals value - and drop everything else
+    it derives, including the length of a `list-new` field. So a postcondition
+    true of *both* arms of an `if` failed, and the `implies` in the issue was a
+    red herring: the plain form fails identically.
+    """
+
+    @staticmethod
+    def _status(fn_source):
+        from slop.verifier import verify_source
+        results = [r for r in verify_source(_RECORD_FIELD_PROBE % fn_source,
+                                            filename="probe.slop")
+                   if r.name != 'opaque?']
+        assert len(results) == 1
+        return results[0].status
+
+    EMPTY = "(xs (list-new arena Item)) (ys (list-new arena Item))"
+
+    def test_unconditional_record_new(self):
+        assert self._status('''
+  (fn v0 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (record-new F (flag true) %s))''' % self.EMPTY) == 'verified'
+
+    def test_if_between_two_record_new(self):
+        assert self._status('''
+  (fn v1 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (record-new F (flag true) %s)
+          (record-new F (flag false) %s)))''' % (self.EMPTY, self.EMPTY)) == 'verified'
+
+    def test_cond_between_two_record_new(self):
+        """`cond` is the same shape as `if` and was not recognised at all."""
+        assert self._status('''
+  (fn v2 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (cond (c (record-new F (flag true) %s))
+          (else (record-new F (flag false) %s))))''' % (self.EMPTY, self.EMPTY)) == 'verified'
+
+    def test_opaque_condition(self):
+        """A condition that does not translate to a Bool used to abandon the
+        whole analysis, which loses the facts that hold in both arms - the usual
+        reason to write the branch."""
+        assert self._status('''
+  (fn v3 ((arena Arena) (n Int))
+    (@spec ((Arena Int) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if (opaque? n) (record-new F (flag true) %s)
+                    (record-new F (flag false) %s)))''' % (self.EMPTY, self.EMPTY)) == 'verified'
+
+    def test_per_field_conditional(self):
+        assert self._status('''
+  (fn v4 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (record-new F (flag c)
+      (xs (if c (list-new arena Item) (list-new arena Item)))
+      (ys (list-new arena Item))))''') == 'verified'
+
+    def test_let_bound_list_field(self):
+        """Even unconditionally, a field holding a local empty list lost its
+        length: the test for it was syntactic."""
+        assert self._status('''
+  (fn v5 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (record-new F (flag true) (xs e) (ys e))))''') == 'verified'
+
+    def test_issue_70_r2_verbatim(self):
+        assert self._status('''
+  (fn r2 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> F))
+    (@alloc arena)
+    (@post (implies {(. $result flag) == true} {(list-len (. $result xs)) == 0}))
+    (if c (record-new F (flag true)  %s)
+          (record-new F (flag false) %s)))''' % (self.EMPTY, self.EMPTY)) == 'verified'
+
+    # --- the guards have to be exact, not just present --------------------
+
+    def test_one_arm_that_is_not_empty(self):
+        assert self._status('''
+  (fn n1 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if c (record-new F (flag true) %s)
+          (record-new F (flag false) (xs zs) (ys (list-new arena Item)))))''' % self.EMPTY) != 'verified'
+
+    def test_a_cond_clause_does_not_borrow_an_earlier_one(self):
+        """A clause runs only when no earlier test matched, so each guard has to
+        carry the negation of the ones above it."""
+        assert self._status('''
+  (fn n2 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (cond (c (record-new F (flag true) (xs zs) (ys (list-new arena Item))))
+          (else (record-new F (flag false) %s))))''' % self.EMPTY) != 'verified'
+
+    def test_opaque_condition_does_not_become_a_free_choice(self):
+        """The fresh Bool must not let Z3 pick the arm that suits the goal."""
+        assert self._status('''
+  (fn n3 ((arena Arena) (n Int) (zs (List Item)))
+    (@spec ((Arena Int (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (if (opaque? n) (record-new F (flag true) %s)
+                    (record-new F (flag false) (xs zs) (ys (list-new arena Item)))))''' % self.EMPTY) != 'verified'
+
+    def test_per_field_conditional_with_one_unknown_arm(self):
+        assert self._status('''
+  (fn n4 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (record-new F (flag c)
+      (xs (if c (list-new arena Item) zs))
+      (ys (list-new arena Item))))''') != 'verified'

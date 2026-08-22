@@ -1653,11 +1653,18 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return False
 
     def _is_conditional_with_record_new(self, expr: SExpr) -> bool:
-        """Check if expression is (if cond (record-new ...) else) or (if cond then (record-new ...))"""
-        if is_form(expr, 'if') and len(expr) >= 4:
-            then_branch = expr[2]
-            else_branch = expr[3]
-            return self._is_record_new(then_branch) or self._is_record_new(else_branch)
+        """True for an `if` or `cond` with a record-new in at least one branch.
+
+        `cond` counts: it is the same shape, and a function that assembles its
+        result differently under three conditions rather than two should not
+        lose its field axioms for it.
+        """
+        if is_form(expr, 'if') and len(expr) >= 3:
+            return any(self._is_record_new(branch) for branch in expr.items[2:])
+        if is_form(expr, 'cond') and len(expr) >= 2:
+            return any(self._is_record_new(clause[-1])
+                       for clause in expr.items[1:]
+                       if isinstance(clause, SList) and len(clause) >= 2)
         return False
 
     def _find_list_push_calls(self, expr: SExpr, result: List[Tuple[SExpr, SExpr]]):
@@ -1836,104 +1843,64 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if site.loop_depth == 0 and not site.guard_conditions and not site.conditional
         )
 
-    def _extract_conditional_record_axioms(self, cond_expr: SList, translator: Z3Translator) -> List:
-        """Extract axioms for conditional with record-new in either branch.
+    def _extract_conditional_record_axioms(self, cond_expr: SList, translator: Z3Translator,
+                                           bindings: Optional[Dict[str, SExpr]] = None) -> List:
+        """Axioms for a conditional whose branches build or pass along a record.
 
-        For (if cond (record-new Type (f1 v1) ...) var):
-        - Add: cond => field_f1($result) == v1
-        - Add: !cond => field_f1($result) == field_f1(var)
-
-        For (if cond var (record-new Type (f1 v1) ...)):
-        - Add: !cond => field_f1($result) == v1
-        - Add: cond => field_f1($result) == field_f1(var)
+        Each branch contributes its own facts under its own guard. A branch that
+        constructs a record goes through _extract_record_field_axioms, so it
+        picks up everything a record-new says - the length of a `list-new`
+        field, a nested record, a string length, a union tag - rather than only
+        the field-equals-value line this used to reimplement (issue #70). A
+        branch that yields something else carries that value's fields across
+        under the same guard.
         """
         axioms = []
         result_var = translator.variables.get('$result')
         if result_var is None:
             return axioms
+        if bindings is None:
+            bindings = {}
 
-        if len(cond_expr) < 4:
+        branches = self._branch_conditions(cond_expr, translator)
+        if branches is None:
+            return axioms
+
+        field_names: List[str] = []
+        passthrough: List = []
+
+        for guard, branch in branches:
+            if self._is_record_new(branch):
+                record_new = self._get_return_expr(branch)
+                for item in record_new.items[2:]:
+                    if isinstance(item, SList) and len(item) >= 2 and isinstance(item[0], Symbol):
+                        if item[0].name not in field_names:
+                            field_names.append(item[0].name)
+                axioms.extend(self._extract_record_field_axioms(
+                    record_new, translator, base_accessor=result_var,
+                    path_cond=guard, bindings=bindings))
+            else:
+                passthrough.append((guard, branch))
+
+        # A branch that yields an existing record: under its guard the result is
+        # that value, so the fields the other branches name agree with it.
+        for guard, branch in passthrough:
+            branch_z3 = translator.translate_expr(branch)
+            if branch_z3 is None:
+                continue
+            for field_name in field_names:
+                axioms.append(z3.Implies(
+                    guard,
+                    translator._translate_field_for_obj(result_var, field_name)
+                    == translator._translate_field_for_obj(branch_z3, field_name)))
+
+        if not (is_form(cond_expr, 'if') and len(cond_expr) >= 4):
             return axioms
 
         condition = cond_expr[1]
         then_branch = cond_expr[2]
         else_branch = cond_expr[3]
-
-        # Translate the condition
-        cond_z3 = translator.translate_expr(condition)
-        if cond_z3 is None:
-            return axioms
-
-        # Defensive check: ensure condition is Bool before using z3.Not()
-        # Some predicates may not be detected as Bool-returning, handle gracefully
-        if cond_z3.sort() != z3.BoolSort():
-            return axioms
-
-        # Determine which branch has record-new
-        record_new_in_then = self._is_record_new(then_branch)
-        record_new_in_else = self._is_record_new(else_branch)
-
-        # Handle case where BOTH branches are record-new
-        if record_new_in_then and record_new_in_else:
-            # Extract field axioms from both branches
-            then_return = self._get_return_expr(then_branch)
-            else_return = self._get_return_expr(else_branch)
-
-            # Process then branch: cond => field($result) == value
-            for item in then_return.items[2:]:  # Skip 'record-new' and Type
-                if isinstance(item, SList) and len(item) >= 2:
-                    field_name = item[0].name if isinstance(item[0], Symbol) else None
-                    if field_name:
-                        field_value = translator.translate_expr(item[1])
-                        if field_value is not None:
-                            field_func = translator._translate_field_for_obj(result_var, field_name)
-                            axioms.append(z3.Implies(cond_z3, field_func == field_value))
-
-            # Process else branch: !cond => field($result) == value
-            for item in else_return.items[2:]:  # Skip 'record-new' and Type
-                if isinstance(item, SList) and len(item) >= 2:
-                    field_name = item[0].name if isinstance(item[0], Symbol) else None
-                    if field_name:
-                        field_value = translator.translate_expr(item[1])
-                        if field_value is not None:
-                            field_func = translator._translate_field_for_obj(result_var, field_name)
-                            axioms.append(z3.Implies(z3.Not(cond_z3), field_func == field_value))
-
-            return axioms
-
-        if record_new_in_then:
-            record_branch = then_branch
-            var_branch = else_branch
-            record_cond = cond_z3  # record-new happens when cond is true
-        elif record_new_in_else:
-            record_branch = else_branch
-            var_branch = then_branch
-            record_cond = z3.Not(cond_z3)  # record-new happens when cond is false
-        else:
-            return axioms
-
-        # Extract field values from record-new branch
-        field_names = []
-        for item in record_branch.items[2:]:  # Skip 'record-new' and Type
-            if isinstance(item, SList) and len(item) >= 2:
-                field_name = item[0].name if isinstance(item[0], Symbol) else None
-                if field_name:
-                    field_names.append(field_name)
-                    field_value = translator.translate_expr(item[1])
-                    if field_value is not None:
-                        field_func = translator._translate_field_for_obj(result_var, field_name)
-                        # Add: record_cond => field($result) == value
-                        axioms.append(z3.Implies(record_cond, field_func == field_value))
-
-        # Handle variable branch: add field equality axioms
-        if isinstance(var_branch, Symbol):
-            var_z3 = translator.translate_expr(var_branch)
-            if var_z3 is not None:
-                # For each field, add: !record_cond => field($result) == field(var)
-                for field_name in field_names:
-                    result_field = translator._translate_field_for_obj(result_var, field_name)
-                    var_field = translator._translate_field_for_obj(var_z3, field_name)
-                    axioms.append(z3.Implies(z3.Not(record_cond), result_field == var_field))
+        var_branch = else_branch if self._is_record_new(then_branch) else then_branch
 
         # Special case: conditional insert with contains check
         # Pattern: (if (contains coll item) coll (record-new ...add item...))
@@ -2062,110 +2029,222 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return constraints
 
-    def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator,
-                                      base_accessor: Optional[z3.ExprRef] = None) -> List:
-        """Extract axioms: field_X($result) == value for each field in record-new
+    def _tail_bindings(self, body: SExpr) -> Dict[str, SExpr]:
+        """Every `let` binding in scope where the body yields its value.
 
-        Also handles:
-        - list-new as field value: add field_len(field_accessor($result)) == 0
-        - nested record-new: recursively extract field axioms for nested records
-        - string literals: add string_len axiom
+        Follows the tail - the last form of each nested do/let - so a field
+        written as `(xs e)` can be resolved back to what `e` was bound to.
+        Inner bindings win, which is the scoping a reader expects.
+        """
+        bindings: Dict[str, SExpr] = {}
+        node = body
+        while True:
+            if is_form(node, 'let') and len(node) >= 3:
+                if isinstance(node[1], SList):
+                    for binding in node[1].items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            name = self._binding_name(binding)
+                            if name:
+                                bindings[name] = binding[-1]
+                node = node.items[-1]
+            elif is_form(node, 'do') and len(node) >= 2:
+                node = node.items[-1]
+            else:
+                return bindings
+
+    def _resolve_binding(self, expr: SExpr, bindings: Dict[str, SExpr]) -> SExpr:
+        """Follow a symbol through the let bindings in scope, to its initializer."""
+        seen = set()
+        node = expr
+        while isinstance(node, Symbol) and node.name in bindings and node.name not in seen:
+            seen.add(node.name)
+            node = bindings[node.name]
+        return node
+
+    def _condition_term(self, cond_expr: SExpr, translator: Z3Translator):
+        """A Bool term for a branch condition, opaque or not.
+
+        An `if` on a function call translates to an Int, and refusing to model
+        the branch at all then loses every fact that holds in *both* arms -
+        which is the usual reason to write one. A fresh Bool keeps the branch
+        structure without claiming to know which way the test goes.
+        """
+        translated = translator.translate_expr(cond_expr)
+        if translated is not None and translated.sort() == z3.BoolSort():
+            return translated
+        self._opaque_condition_counter = getattr(self, '_opaque_condition_counter', 0) + 1
+        return z3.Bool(f"_path_{self._opaque_condition_counter}")
+
+    def _branch_conditions(self, expr: SExpr, translator: Z3Translator):
+        """[(guard, branch)] for an `if` or `cond`, or None if it is neither.
+
+        A `cond` clause runs when its own test holds *and* no earlier one did,
+        so each guard carries the negation of the tests above it. Taking the
+        test alone would claim a later clause runs when an earlier one already
+        matched.
+        """
+        if is_form(expr, 'if') and len(expr) >= 3:
+            guard = self._condition_term(expr[1], translator)
+            branches = [(guard, expr[2])]
+            if len(expr) >= 4:
+                branches.append((z3.Not(guard), expr[3]))
+            return branches
+
+        if is_form(expr, 'cond') and len(expr) >= 2:
+            branches = []
+            earlier: List = []
+            for clause in expr.items[1:]:
+                if not isinstance(clause, SList) or len(clause) < 2:
+                    return None
+                test = clause[0]
+                body = clause[-1]
+                if isinstance(test, Symbol) and test.name == 'else':
+                    guard = z3.And(*[z3.Not(t) for t in earlier]) if earlier else z3.BoolVal(True)
+                    branches.append((guard, body))
+                    break
+                term = self._condition_term(test, translator)
+                guard = z3.And(term, *[z3.Not(t) for t in earlier]) if earlier else term
+                branches.append((guard, body))
+                earlier.append(term)
+            return branches or None
+
+        return None
+
+    @staticmethod
+    def _conjoin(path_cond, guard):
+        """path_cond AND guard, with None standing for "no condition"."""
+        if path_cond is None:
+            return guard
+        if guard is None:
+            return path_cond
+        return z3.And(path_cond, guard)
+
+    def _record_value_axioms(self, field_func, value: SExpr, translator: Z3Translator,
+                             bindings: Dict[str, SExpr], path_cond) -> List:
+        """What is known about a record field, from the shape of its value.
+
+        Recurses through `if`/`cond` in the value itself, conjoining each
+        branch's guard, so `(xs (if c (list-new ...) (list-new ...)))` still
+        yields a length for both arms. A symbol is followed to what it was bound
+        to, which is what makes `(xs e)` work when `e` is a local empty list.
+        """
+        branches = self._branch_conditions(value, translator)
+        if branches is not None:
+            axioms = []
+            for guard, branch in branches:
+                axioms.extend(self._record_value_axioms(
+                    field_func, branch, translator, bindings,
+                    self._conjoin(path_cond, guard)))
+            return axioms
+
+        axioms = []
+
+        def add(axiom):
+            axioms.append(axiom if path_cond is None else z3.Implies(path_cond, axiom))
+
+        resolved = self._resolve_binding(value, bindings)
+
+        # A freshly created list is empty. Reaching it through a binding counts:
+        # a syntactic test for (list-new ...) misses (xs e), and that shape is
+        # not rare.
+        if is_form(resolved, 'list-new'):
+            add(self._length_accessor(translator)(field_func) == z3.IntVal(0))
+
+        if is_form(resolved, 'record-new'):
+            axioms.extend(self._extract_record_field_axioms(
+                resolved, translator, base_accessor=field_func,
+                path_cond=path_cond, bindings=bindings))
+
+        if isinstance(resolved, String):
+            str_len_func_name = "string_len"
+            if str_len_func_name not in translator.variables:
+                str_len_func = z3.Function(str_len_func_name, z3.IntSort(), z3.IntSort())
+                translator.variables[str_len_func_name] = str_len_func
+            else:
+                str_len_func = translator.variables[str_len_func_name]
+            add(str_len_func(field_func) == z3.IntVal(len(resolved.value)))
+
+        # Option/Result constructors: tag, and payload where there is one.
+        if isinstance(resolved, SList) and len(resolved) >= 1:
+            head = resolved[0]
+            if isinstance(head, Symbol) and head.name in {'some', 'none', 'ok', 'error'}:
+                constructor = head.name
+                # Tag index mapping (matches translator.py lines 54-92)
+                tag_idx = {'none': 0, 'some': 1, 'ok': 0, 'error': 1}.get(constructor, 0)
+                if "union_tag" not in translator.variables:
+                    tag_func = z3.Function("union_tag", z3.IntSort(), z3.IntSort())
+                    translator.variables["union_tag"] = tag_func
+                else:
+                    tag_func = translator.variables["union_tag"]
+                add(tag_func(field_func) == z3.IntVal(tag_idx))
+
+                if len(resolved) >= 2 and constructor != 'none':
+                    payload = translator.translate_expr(resolved[1])
+                    if payload is not None:
+                        payload_func_name = f"union_payload_{constructor}"
+                        if payload_func_name not in translator.variables:
+                            payload_func = z3.Function(
+                                payload_func_name, z3.IntSort(), z3.IntSort())
+                            translator.variables[payload_func_name] = payload_func
+                        else:
+                            payload_func = translator.variables[payload_func_name]
+                        add(payload_func(field_func) == payload)
+
+                        if is_form(resolved[1], 'record-new'):
+                            axioms.extend(self._extract_record_field_axioms(
+                                resolved[1], translator,
+                                base_accessor=payload_func(field_func),
+                                path_cond=path_cond, bindings=bindings))
+        return axioms
+
+    @staticmethod
+    def _length_accessor(translator: Z3Translator):
+        """The field_len function, created if this is its first use."""
+        func = translator.variables.get("field_len")
+        if func is None:
+            func = z3.Function("field_len", z3.IntSort(), z3.IntSort())
+            translator.variables["field_len"] = func
+        return func
+
+    def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator,
+                                      base_accessor: Optional[z3.ExprRef] = None,
+                                      path_cond=None,
+                                      bindings: Optional[Dict[str, SExpr]] = None) -> List:
+        """Axioms for each field of a record-new: its value, and what that implies.
+
+        `path_cond` guards every axiom, for a record built on one branch of a
+        conditional. `bindings` are the let bindings in scope, used to follow a
+        field value written as a local name.
 
         Args:
             record_new: The record-new expression
             translator: The Z3 translator
             base_accessor: The Z3 accessor for the base object (default: $result)
+            path_cond: Bool term this record is conditional on, or None
+            bindings: let bindings in scope at the record-new
         """
         axioms = []
         if base_accessor is None:
             base_accessor = translator.variables.get('$result')
         if base_accessor is None:
             return axioms
+        if bindings is None:
+            bindings = {}
 
         # record-new Type (field1 val1) (field2 val2) ...
         for item in record_new.items[2:]:  # Skip 'record-new' and Type
             if isinstance(item, SList) and len(item) >= 2:
                 field_name = item[0].name if isinstance(item[0], Symbol) else None
-                if field_name:
-                    field_func = translator._translate_field_for_obj(base_accessor, field_name)
-                    field_value = translator.translate_expr(item[1])
-                    if field_value is not None:
-                        axioms.append(field_func == field_value)
-
-                    # If field value is list-new, add length=0 axiom for the field
-                    if is_form(item[1], 'list-new'):
-                        func_name = "field_len"
-                        if func_name not in translator.variables:
-                            len_func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
-                            translator.variables[func_name] = len_func
-                        else:
-                            len_func = translator.variables[func_name]
-                        axioms.append(len_func(field_func) == z3.IntVal(0))
-
-                    # If field value is a nested record-new, recursively extract its field axioms
-                    # This handles patterns like: (record-new Outer (inner (record-new Inner (x 1))))
-                    # We want: field_x(field_inner($result)) == 1
-                    if is_form(item[1], 'record-new'):
-                        nested_axioms = self._extract_record_field_axioms(
-                            item[1], translator, base_accessor=field_func
-                        )
-                        axioms.extend(nested_axioms)
-
-                    # If field value is a string literal, add string_len axiom
-                    # This allows proving postconditions like {(string-len (. report reason)) > 0}
-                    if isinstance(item[1], String):
-                        str_len_func_name = "string_len"
-                        if str_len_func_name not in translator.variables:
-                            str_len_func = z3.Function(str_len_func_name, z3.IntSort(), z3.IntSort())
-                            translator.variables[str_len_func_name] = str_len_func
-                        else:
-                            str_len_func = translator.variables[str_len_func_name]
-                        actual_len = len(item[1].value)
-                        axioms.append(str_len_func(field_func) == z3.IntVal(actual_len))
-
-                    # If field value is a union constructor (some, none, ok, error), add union axioms
-                    # This enables proving match postconditions on record fields containing Option/Result
-                    # e.g., (match $result.current-formula-id ((some id) (== id formula-id)) ((none) false))
-                    if isinstance(item[1], SList) and len(item[1]) >= 1:
-                        field_val = item[1]
-                        head = field_val[0]
-                        if isinstance(head, Symbol) and head.name in {'some', 'none', 'ok', 'error'}:
-                            constructor = head.name
-
-                            # Tag index mapping (matches translator.py lines 54-92)
-                            tag_map = {'none': 0, 'some': 1, 'ok': 0, 'error': 1}
-                            tag_idx = tag_map.get(constructor, 0)
-
-                            # Get/create union_tag function
-                            if "union_tag" not in translator.variables:
-                                tag_func = z3.Function("union_tag", z3.IntSort(), z3.IntSort())
-                                translator.variables["union_tag"] = tag_func
-                            else:
-                                tag_func = translator.variables["union_tag"]
-
-                            # Axiom 1: union_tag(field_X($result)) == tag_index
-                            axioms.append(tag_func(field_func) == z3.IntVal(tag_idx))
-
-                            # For constructors with payload (some, ok, error), add payload axiom
-                            if len(field_val) >= 2 and constructor != 'none':
-                                payload = translator.translate_expr(field_val[1])
-                                if payload is not None:
-                                    payload_func_name = f"union_payload_{constructor}"
-                                    if payload_func_name not in translator.variables:
-                                        payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
-                                        translator.variables[payload_func_name] = payload_func
-                                    else:
-                                        payload_func = translator.variables[payload_func_name]
-
-                                    # Axiom 2: union_payload_<constructor>(field_X($result)) == payload
-                                    axioms.append(payload_func(field_func) == payload)
-
-                                    # If payload is record-new, recursively extract its fields
-                                    if is_form(field_val[1], 'record-new'):
-                                        nested = self._extract_record_field_axioms(
-                                            field_val[1], translator, base_accessor=payload_func(field_func)
-                                        )
-                                        axioms.extend(nested)
+                if not field_name:
+                    continue
+                field_func = translator._translate_field_for_obj(base_accessor, field_name)
+                field_value = translator.translate_expr(item[1])
+                if field_value is not None:
+                    equality = field_func == field_value
+                    axioms.append(equality if path_cond is None
+                                  else z3.Implies(path_cond, equality))
+                axioms.extend(self._record_value_axioms(
+                    field_func, item[1], translator, bindings, path_cond))
         return axioms
 
     def _extract_record_field_range_axioms(self, translator: Z3Translator) -> List:
@@ -2908,7 +2987,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None and self._is_record_new(fn_body):
             # Get the actual record-new form (may be inside a do block)
             return_expr = self._get_return_expr(fn_body)
-            field_axioms = self._extract_record_field_axioms(return_expr, translator)
+            field_axioms = self._extract_record_field_axioms(
+                return_expr, translator, bindings=self._tail_bindings(fn_body))
             for axiom in field_axioms:
                 solver.add(axiom)
 
@@ -3017,7 +3097,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None:
             return_expr = self._get_return_expr(fn_body)
             if self._is_conditional_with_record_new(return_expr):
-                cond_axioms = self._extract_conditional_record_axioms(return_expr, translator)
+                cond_axioms = self._extract_conditional_record_axioms(
+                    return_expr, translator, bindings=self._tail_bindings(fn_body))
                 for axiom in cond_axioms:
                     solver.add(axiom)
 
