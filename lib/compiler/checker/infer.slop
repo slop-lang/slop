@@ -444,6 +444,65 @@
   ;; Type Comparison
   ;; ============================================================
 
+  (fn is-unwrappable-container ((t (Ptr ResolvedType)))
+    (@intent "A container whose element type this comparison walks into")
+    (@spec (((Ptr ResolvedType)) -> Bool))
+    (@pure)
+    (@pre (!= t nil))
+    (let ((kind (. (deref t) kind)))
+      (or (== kind 'rk-list) (== kind 'rk-option))))
+
+  (fn container-inners-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
+    (@intent "Compare two containers by element type, without recursing on a cycle")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
+    (@pre (!= a nil))
+    (@pre (!= b nil))
+    ;; Iterative rather than recursive, and that is the point. Container aliases
+    ;; can form cycles of any length -- (type A (List B)) with (type B (List A))
+    ;; alternates between the two pairs forever -- so a self-reference check
+    ;; catches only the one-node case and mutual recursion still hangs the
+    ;; checker. Unwrapping in a loop bounds the whole family at once.
+    ;;
+    ;; Only nested containers are unwrapped here. Once the element types are
+    ;; something else, types-equal settles them and cannot come back through this
+    ;; function, so that call is not part of any cycle.
+    ;;
+    ;; An absent element type means the checker never recorded one, not that the
+    ;; types differ -- several alias and generic paths leave it unset. Answering
+    ;; true there errs the same way the generic sentinels in types-equal do.
+    (let ((mut ca a)
+          (mut cb b)
+          (mut steps 0)
+          (mut done false)
+          (mut result true))
+      (while (and (not done) (< steps 32))
+        (match (. (deref ca) inner-type)
+          ((some a-inner)
+            (match (. (deref cb) inner-type)
+              ((some b-inner)
+                (if (and (is-unwrappable-container a-inner)
+                         (is-unwrappable-container b-inner)
+                         (== (. (deref a-inner) kind) (. (deref b-inner) kind))
+                         (!= a-inner ca)
+                         (!= b-inner cb))
+                  ;; Both sides nest another container of the same kind: step in.
+                  (do (set! ca a-inner)
+                      (set! cb b-inner)
+                      (set! steps (+ steps 1)))
+                  (do (set! result (if (or (== a-inner ca) (== b-inner cb))
+                                     ;; Self-referential: settle it by name here
+                                     ;; rather than descend into itself.
+                                     (string-eq (. (deref ca) name) (. (deref cb) name))
+                                     (types-equal a-inner b-inner)))
+                      (set! done true))))
+              ((none) (do (set! result true) (set! done true)))))
+          ((none) (do (set! result true) (set! done true)))))
+      ;; Ran out of steps, so the two are cycling past each other. Fall back to
+      ;; the names, which for a genuine cycle is the only finite answer.
+      (if done
+        result
+        (string-eq (. (deref ca) name) (. (deref cb) name)))))
+
   (fn types-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
     (@intent "Check if two types are equal, handling generics and aliases")
     (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
@@ -455,6 +514,25 @@
           (a-name (. (deref a) name))
           (b-name (. (deref b) name)))
       (cond
+        ;; The same type object. Cheap, but load-bearing: a self-referential
+        ;; alias like (type Recursive (List Recursive)) has itself as its element,
+        ;; so without this the container rule below descends into it forever and
+        ;; the checker hangs rather than answering.
+        ((== a b) true)
+
+        ;; Containers are compared by element type FIRST, ahead of the same-name
+        ;; shortcut below. Every anonymous list resolves to the bare name "List",
+        ;; so two of them comparing equal on the name alone is exactly the
+        ;; mistake: it accepted a (List (List String)) for a (List (List Int)),
+        ;; since the recursion landed back on the shortcut one level down.
+        ((and (== a-kind 'rk-option) (== b-kind 'rk-option))
+          (or (string-eq a-name "Option_T")
+              (string-eq b-name "Option_T")
+              (container-inners-equal a b)))
+
+        ((and (== a-kind 'rk-list) (== b-kind 'rk-list))
+          (container-inners-equal a b))
+
         ;; Same name - definitely equal
         ((string-eq a-name b-name) true)
 
@@ -468,11 +546,10 @@
         ;; Generic type variable "T" matches anything (legacy)
         ((or (string-eq a-name "T") (string-eq b-name "T")) true)
 
-        ;; Both Option types - check if one is generic (Option_T)
-        ((and (== a-kind 'rk-option) (== b-kind 'rk-option))
-          (or (string-eq a-name "Option_T")
-              (string-eq b-name "Option_T")))
-
+        ;; Both List types - a named alias against the anonymous (List T), whose
+        ;; resolved name is the bare "List". Same shape as the Option_T rule above:
+        ;; (type PointList (List Point)) could be declared and then not be passed a
+        ;; (List Point), because the names differ and nothing else related them.
         ;; Both Result types - generic "Result" matches any Result_X_Y
         ((and (== a-kind 'rk-result) (== b-kind 'rk-result))
           (or (string-eq a-name "Result")
@@ -1527,10 +1604,15 @@
                 (let ((actual-type (infer-expr env arg-expr))
                       (expected-name (. (deref expected-type) name))
                       (actual-name (. (deref actual-type) name)))
-                  ;; Catch Option passed to non-Option parameter
+                  ;; Catch Option passed to non-Option parameter.
+                  ;; The kind, not just the name: an Option ALIAS is named whatever
+                  ;; the user called it, so (type MaybeInt (Option Int)) failed a
+                  ;; test that only looked for an "Option_" prefix and reported
+                  ;; "expected MaybeInt, got Option_T" for a correct call.
                   (when (and (or (string-eq actual-name "Option_T")
                                  (starts-with actual-name "Option_"))
-                             (not (starts-with expected-name "Option_")))
+                             (not (starts-with expected-name "Option_"))
+                             (!= (. (deref expected-type) kind) 'rk-option))
                     (let ((parts (list-new arena String)))
                       (list-push parts "argument ")
                       (list-push parts (int-to-string arena (+ arg-idx 1)))

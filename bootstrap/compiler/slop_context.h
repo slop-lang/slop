@@ -576,6 +576,7 @@ void context_ctx_register_struct_key_type(context_TranspileContext* ctx, slop_st
 uint8_t context_ctx_has_struct_key_type(context_TranspileContext* ctx, slop_string c_type);
 slop_list_string context_ctx_get_struct_key_types(context_TranspileContext* ctx);
 void context_ctx_register_type_alias(context_TranspileContext* ctx, slop_string name, slop_string slop_type);
+uint8_t context_ctx_is_option_c_type(context_TranspileContext* ctx, slop_string c_type);
 slop_option_string context_ctx_lookup_type_alias(context_TranspileContext* ctx, slop_string name);
 void context_ctx_add_deferred_lambda(context_TranspileContext* ctx, slop_string lambda_code);
 slop_list_string context_ctx_get_deferred_lambdas(context_TranspileContext* ctx);

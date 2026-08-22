@@ -176,6 +176,11 @@ SLOP_OPTION_DEFINE(parser_Token, slop_option_parser_Token)
 SLOP_OPTION_DEFINE(parser_ParseError, slop_option_parser_ParseError)
 #endif
 
+#ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
+#define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
+SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
+#endif
+
 #ifndef SLOP_OPTION_PARSER_LEXERSTATE_DEFINED
 #define SLOP_OPTION_PARSER_LEXERSTATE_DEFINED
 SLOP_OPTION_DEFINE(parser_LexerState, slop_option_parser_LexerState)
@@ -184,11 +189,6 @@ SLOP_OPTION_DEFINE(parser_LexerState, slop_option_parser_LexerState)
 #ifndef SLOP_OPTION_PARSER_PARSERSTATE_DEFINED
 #define SLOP_OPTION_PARSER_PARSERSTATE_DEFINED
 SLOP_OPTION_DEFINE(parser_ParserState, slop_option_parser_ParserState)
-#endif
-
-#ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
-#define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
-SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #endif
 
 

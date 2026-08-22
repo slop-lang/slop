@@ -1,0 +1,91 @@
+;; Negative fixture for #101: relating an alias to the container it names must
+;; not relate it to a DIFFERENT container. Comparing by element type is what
+;; keeps those apart -- an earlier draft accepted any anonymous list because its
+;; resolved name is the bare "List", so a (List String) satisfied a (List Int)
+;; alias and cc reported the mismatch instead.
+;;
+;; Unlike Option_T, "List" is not a generic sentinel: it is the name of an
+;; ordinary anonymous list that carries a real element type.
+
+(module test-container-alias-mismatch
+
+  (type Ints (List Int))
+
+  (type MaybeInt (Option Int))
+
+  ;; Nested. Both element types resolve to the bare name "List", so a recursion
+  ;; that fell back to the same-name shortcut one level down accepted this.
+  (type NestedInts (List (List Int)))
+
+  ;; Self-referential. Its element type IS itself, so comparing it with anything
+  ;; that reaches the container rule descends forever unless the cycle is caught
+  ;; -- the checker hung rather than answering. The value of this case is that it
+  ;; TERMINATES; the diagnostic it produces is the same one v0.2.0 produces.
+  (type Recursive (List Recursive))
+
+  ;; Mutually recursive, which a self-reference check does not catch: comparing
+  ;; MutA with MutB alternates between the two pairs, and neither side is ever
+  ;; its own element. This is why the comparison unwraps in a bounded loop rather
+  ;; than recursing.
+  (type MutA (List MutB))
+
+  (type MutB (List MutA))
+
+  (fn total ((xs Ints))
+    (@intent "Expects a (List Int)")
+    (@spec ((Ints) -> Int))
+    (list-len xs))
+
+  (fn unwrap ((m MaybeInt))
+    (@intent "Expects an (Option Int)")
+    (@spec ((MaybeInt) -> Bool))
+    (is-none m))
+
+  (fn bad-list-element ()
+    (@intent "A (List String) is not a (List Int)")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((ss (list-new arena String)))
+        (list-push ss "a")
+        (total ss))))
+
+  (fn nested-total ((xs NestedInts))
+    (@intent "Expects a (List (List Int))")
+    (@spec ((NestedInts) -> Int))
+    (list-len xs))
+
+  (fn bad-nested-element ()
+    (@intent "A (List (List String)) is not a (List (List Int))")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((outer (list-new arena (List String))))
+        (nested-total outer))))
+
+  (fn recursive-size ((r Recursive))
+    (@intent "A self-referential container alias must not hang the checker")
+    (@spec ((Recursive) -> Int))
+    (list-len r))
+
+  (fn touch-recursive ()
+    (@intent "Force the comparison that used to recurse forever")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((xs (list-new arena Recursive)))
+        (recursive-size xs))))
+
+  (fn mut-size ((x MutA))
+    (@intent "A mutually recursive alias cycle must not hang the checker either")
+    (@spec ((MutA) -> Int))
+    (list-len x))
+
+  (fn touch-mutual ()
+    (@intent "Force the comparison that alternates between the pair")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((xs (list-new arena MutA)))
+        (mut-size xs))))
+
+  (fn bad-option-payload ()
+    (@intent "An (Option String) is not an (Option Int)")
+    (@spec (() -> Bool))
+    (unwrap (some "a"))))

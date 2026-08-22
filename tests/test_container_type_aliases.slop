@@ -1,0 +1,208 @@
+;; ============================================================
+;; Type aliases to containers (#101)
+;;
+;; (type PointList (List Point)) could be declared and then not used. Three
+;; separate things were wrong, and all three had to be fixed for it to work:
+;;
+;;   1. prescan-type only registered the containers named by a (Map ...) or
+;;      (Set ...) alias body, so an alias was the one place a (List T) could
+;;      be mentioned without slop_list_<T> ever being emitted.
+;;   2. The alias typedef was emitted in the early pass, before the container
+;;      it names exists -- "typedef slop_list_mod_Point mod_PointList;" ahead
+;;      of the SLOP_LIST_DEFINE. Result aliases were already emitted late for
+;;      this exact reason; List and Option were not.
+;;   3. The checker registered a List alias as rk-list and an Option alias as
+;;      a bare rk-primitive, and related neither to the container it stands
+;;      for -- so passing a (List Point) to a PointList parameter was an
+;;      error, and so was passing (none) to an Option alias.
+;;
+;; Map and Set aliases already worked, since both are slop_map* and the
+;; runtime defines that. They are here as the control.
+;; ============================================================
+
+(module test-container-type-aliases
+
+  (type Point (record (x Int) (y Int)))
+
+  (type PointList (List Point))
+
+  (type MaybeInt (Option Int))
+
+  (type MaybePoint (Option Point))
+
+  ;; A record whose field is a container alias. This is why container aliases
+  ;; cannot simply all be deferred: the sorted struct pass runs between the two
+  ;; alias passes, so Holder needs MaybeString already emitted. It does not have
+  ;; to wait for anything -- slop_option_string is predefined by the runtime --
+  ;; which is what container-alias-ready checks.
+  (type MaybeString (Option String))
+
+  (type Holder (record (label String) (value MaybeString)))
+
+  (type Tally (Map String Int))
+
+  (type Names (Set String))
+
+  ;; The alias is the ONLY mention of (List Point) in this module, which is the
+  ;; case that needed the registration fix -- with a list-new somewhere the
+  ;; container was already registered and only the ordering was wrong.
+  (fn list-alias-len ((xs PointList))
+    (@intent "A List alias in parameter position")
+    (@spec ((PointList) -> Int))
+    (list-len xs))
+
+  (fn make-points ((arena Arena))
+    (@intent "Build the underlying (List Point) to pass as a PointList")
+    (@spec ((Arena) -> (List Point)))
+    (@alloc arena)
+    (let ((xs (list-new arena Point)))
+      (list-push xs (Point 1 2))
+      (list-push xs (Point 3 4))
+      xs))
+
+  (fn test-list-alias ()
+    (@intent "A (List Point) is accepted where a PointList is expected")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (== (list-alias-len (make-points arena)) 2)))
+
+  ;; Returning the alias type, with both arms: (some x) and a bare (none).
+  ;; The bare none is the one that stayed _slop_option_generic, because the
+  ;; return type was an alias rather than a slop_option_ name.
+  (fn maybe ((n Int))
+    (@intent "Return an Option alias from both arms")
+    (@spec ((Int) -> MaybeInt))
+    (if (> n 0) (some n) (none)))
+
+  (fn opt-alias-empty ((m MaybeInt))
+    (@intent "An Option alias in parameter position")
+    (@spec ((MaybeInt) -> Bool))
+    (is-none m))
+
+  (fn test-option-alias-roundtrip ()
+    (@intent "Both arms round-trip through the alias")
+    (@spec (() -> Bool))
+    (and (not (opt-alias-empty (maybe 5)))
+         (opt-alias-empty (maybe 0))))
+
+  ;; The concrete Option passed where the alias is expected, and vice versa.
+  ;; Neither name is the Option_T sentinel, so this needs the element-type
+  ;; comparison rather than a name match.
+  (fn test-option-alias-vs-concrete ()
+    (@intent "(some 3) and (none) are accepted where MaybeInt is expected")
+    (@spec (() -> Bool))
+    (and (not (opt-alias-empty (some 3)))
+         (opt-alias-empty (none))))
+
+  (fn point-opt-empty ((m MaybePoint))
+    (@intent "An Option alias over a record payload")
+    (@spec ((MaybePoint) -> Bool))
+    (is-none m))
+
+  (fn test-option-alias-record-payload ()
+    (@intent "The payload being a struct changes nothing")
+    (@spec (() -> Bool))
+    ;; The record is bound first rather than written (some (Point 1 2)) inline:
+    ;; a record constructor inside (some ...) in argument position is looked up
+    ;; as a function and fails with "Unknown function 'Point' for Option type
+    ;; inference". That is unrelated to aliases -- it reproduces with a concrete
+    ;; (Option Point) parameter, on v0.2.0 as well -- and is filed as #112.
+    (let ((p (Point 1 2)))
+      (and (not (point-opt-empty (some p)))
+           (point-opt-empty (none)))))
+
+  ;; Control: Map and Set aliases, which already worked because both are
+  ;; slop_map* and the runtime defines it. If these break, the change reached
+  ;; further than it should have.
+  (fn tally-size ((arena Arena))
+    (@intent "A Map alias")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((t (map-new arena String Int)))
+      (map-put t "a" 1)
+      (map-put t "b" 2)
+      (list-len (map-keys t))))
+
+  (fn names-size ((arena Arena))
+    (@intent "A Set alias")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((s (set-new arena String)))
+      (set-put s "x")
+      (set-put s "x")
+      (set-put s "y")
+      (list-len (set-elements s))))
+
+  (fn hold ((s String))
+    (@intent "Build a record whose field is a container alias")
+    (@spec ((String) -> Holder))
+    (Holder "h" (some s)))
+
+  (fn test-record-field-alias ()
+    (@intent "A record field typed by a container alias round-trips")
+    (@spec (() -> Bool))
+    (match (. (hold "x") value)
+      ((some v) (string-eq v "x"))
+      ((none) false)))
+
+  ;; An explicit (return (none)) inside a match arm. match.slop carries its own
+  ;; copy of the "is this an Option" test, so fixing the one in stmt.slop was not
+  ;; enough: this emitted a bare `return none;` and cc rejected
+  ;; _slop_option_generic against the alias.
+  (fn pick ((n Int))
+    (@intent "Explicit returns of an Option alias from inside match arms")
+    (@spec ((Int) -> MaybeInt))
+    (match (if (> n 0) (some n) (none))
+      ((some v) (return (some v)))
+      ((none) (return (none)))))
+
+  (fn test-match-arm-return ()
+    (@intent "Both arms return the alias type correctly")
+    (@spec (() -> Bool))
+    (and (not (opt-alias-empty (pick 3)))
+         (opt-alias-empty (pick 0))))
+
+  (fn test-map-set-aliases ()
+    (@intent "Map and Set aliases still work")
+    (@spec (() -> Bool))
+    (with-arena 16384
+      (and (== (tally-size arena) 2)
+           (== (names-size arena) 2))))
+
+  (fn main ()
+    (@intent "Run the container alias tests")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-list-alias)
+        (println "test-list-alias: PASS")
+        (do (println "test-list-alias: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-option-alias-roundtrip)
+        (println "test-option-alias-roundtrip: PASS")
+        (do (println "test-option-alias-roundtrip: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-option-alias-vs-concrete)
+        (println "test-option-alias-vs-concrete: PASS")
+        (do (println "test-option-alias-vs-concrete: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-option-alias-record-payload)
+        (println "test-option-alias-record-payload: PASS")
+        (do (println "test-option-alias-record-payload: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-record-field-alias)
+        (println "test-record-field-alias: PASS")
+        (do (println "test-record-field-alias: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-match-arm-return)
+        (println "test-match-arm-return: PASS")
+        (do (println "test-match-arm-return: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-map-set-aliases)
+        (println "test-map-set-aliases: PASS")
+        (do (println "test-map-set-aliases: FAIL")
+            (set! failures (+ failures 1))))
+
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (print failures) (println " test(s) failed") 1)))))

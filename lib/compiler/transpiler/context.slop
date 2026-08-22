@@ -84,7 +84,7 @@
     ;; Arena discovery (any arena-typed variable, not just one literally named 'arena')
     ctx-find-arena-var
     ;; Type alias tracking for resolving Map/Set types
-    TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias
+    TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias ctx-is-option-c-type
     ;; Generic function support
     GenericFuncInstantiation ctx-register-generic-instantiation ctx-has-generic-instantiation
     ctx-get-generic-instantiations mangle-generic-fn-name
@@ -101,7 +101,7 @@
 
   (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type is-type-variable))
-  (import strlib (index-of substring char-at))
+  (import strlib (index-of substring char-at starts-with))
 
   ;; FFI for error handling
   (ffi "stdio.h"
@@ -2041,6 +2041,24 @@
     (@spec (((Ptr TranspileContext) String String) -> Unit))
     (@pre {ctx != nil})
     (list-push (. (deref ctx) type-aliases) (TypeAliasEntry name slop-type)))
+
+  (fn ctx-is-option-c-type ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Is this C type an Option, directly or through a type alias?")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    ;; A generated Option is named slop_option_<T>, but an alias is named whatever
+    ;; the user called it: (type MaybeInt (Option Int)) is mod_MaybeInt. Several
+    ;; callers hold only the C type -- FuncParamType carries nothing else -- so
+    ;; prescan registers the alias under its C name as well as its SLOP name, and
+    ;; this is the lookup that pays for it.
+    ;;
+    ;; Asking by name rather than by kind is what left a bare (none) as
+    ;; _slop_option_generic when the target was an alias, which cc then rejected.
+    (if (starts-with c-type "slop_option_")
+      true
+      (match (ctx-lookup-type-alias ctx c-type)
+        ((some slop-type) (starts-with slop-type "(Option "))
+        ((none) false))))
 
   (fn ctx-lookup-type-alias ((ctx (Ptr TranspileContext)) (name String))
     (@intent "Look up a type alias to get its SLOP type definition")

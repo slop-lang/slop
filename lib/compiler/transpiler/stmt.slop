@@ -21,7 +21,7 @@
   (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type
                    ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens VarEntry
-                   ctx-get-current-return-type ctx-is-capture-retval
+                   ctx-get-current-return-type ctx-is-capture-retval ctx-is-option-c-type
                    to-c-type-prefixed ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    LastLambdaInfo ctx-get-last-lambda-info ctx-clear-last-lambda-info))
   (import ctype (to-c-type to-c-name))
@@ -263,7 +263,7 @@
                                     (let ((c-type (to-c-type-prefixed ctx type-expr)))
                                       ;; Special case: handle Option type initialization
                                       (let ((final-init
-                                              (if (starts-with c-type "slop_option_")
+                                              (if (ctx-is-option-c-type ctx c-type)
                                                 ;; Option type - check for special constructors
                                                 (let ((some-val (get-some-value init-expr)))
                                                   (match some-val
@@ -547,7 +547,7 @@
                           ;; Check if target is Option type and value is (some ...)
                           (match target-type-opt
                             ((some target-type)
-                              (if (starts-with target-type "slop_option_")
+                              (if (ctx-is-option-c-type ctx target-type)
                                 ;; Option type - handle (some ...) and (none) specially
                                 (let ((some-val-opt (get-some-value value-expr)))
                                   (match some-val-opt
@@ -579,7 +579,7 @@
                                     (if (is-none-form value-expr)
                                       (match (ctx-get-current-return-type ctx)
                                         ((some ret-type)
-                                          (if (starts-with ret-type "slop_option_")
+                                          (if (ctx-is-option-c-type ctx ret-type)
                                             (ctx-emit ctx (ctx-str ctx target-c (ctx-str3 ctx " = (" ret-type "){.has_value = false};")))
                                             (let ((value-c (transpile-expr ctx value-expr)))
                                               (ctx-emit ctx (ctx-str4 ctx target-c " = " value-c ";")))))
@@ -688,7 +688,7 @@
                                       (ctx-str ctx target-c "->")
                                       (ctx-str ctx target-c "."))))))
                           ;; Check if Option type
-                          (if (starts-with c-type "slop_option_")
+                          (if (ctx-is-option-c-type ctx c-type)
                             ;; Option type - handle none and (some x)
                             (if (is-none-form value-expr)
                               ;; none -> {.has_value = false}
@@ -1385,7 +1385,7 @@
                         ((string-eq op "some")
                           (match (ctx-get-current-return-type ctx)
                             ((some ret-type)
-                              (if (starts-with ret-type "slop_option_")
+                              (if (ctx-is-option-c-type ctx ret-type)
                                 (if (< (list-len items) 2)
                                   (emit-return-with-typed-none ctx (transpile-expr ctx expr))
                                   (match (list-get items 1)
@@ -1399,7 +1399,7 @@
                         ((string-eq op "none")
                           (match (ctx-get-current-return-type ctx)
                             ((some ret-type)
-                              (if (starts-with ret-type "slop_option_")
+                              (if (ctx-is-option-c-type ctx ret-type)
                                 (ctx-emit ctx (ctx-str3 ctx "return (" ret-type "){.has_value = false};"))
                                 (emit-return-with-typed-none ctx (transpile-expr ctx expr))))
                             ((none) (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))
@@ -1421,13 +1421,13 @@
       (if (string-eq code "none")
         (match (ctx-get-current-return-type ctx)
           ((some ret-type)
-            (when (starts-with ret-type "slop_option_")
+            (when (ctx-is-option-c-type ctx ret-type)
               (set! final-code (ctx-str3 ctx "(" ret-type "){.has_value = false}"))))
           ((none) (do)))
         ;; Check if returning a variable of generic option type
         (match (ctx-get-current-return-type ctx)
           ((some ret-type)
-            (when (starts-with ret-type "slop_option_")
+            (when (ctx-is-option-c-type ctx ret-type)
               ;; Check if code is a simple variable name that's a generic option
               (match (ctx-lookup-var ctx code)
                 ((some var-entry)
