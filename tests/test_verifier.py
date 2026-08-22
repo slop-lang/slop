@@ -8025,3 +8025,24 @@ class TestReturnedPreexistingList:
                   (list-pop report.results)
                   r))))
         ''') != 'verified'
+
+    def test_a_push_in_an_earlier_top_level_form_counts(self):
+        """A multi-form body keeps only its last expression in fn_body, so a
+        push in an earlier form is invisible to a scan of that alone - and an
+        unseen push makes the result look shorter than it is."""
+        assert self._status('''
+        (fn f ((xs (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (>= (list-len $result) 1))
+          (list-push xs 1)
+          xs)
+        ''') == 'verified'
+
+    def test_earlier_forms_do_not_gain_an_upper_bound(self):
+        assert self._status('''
+        (fn f ((xs (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (== (list-len $result) 1))
+          (list-push xs 1)
+          xs)
+        ''') != 'verified'

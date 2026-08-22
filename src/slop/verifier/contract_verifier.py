@@ -2922,7 +2922,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 # Array encoding needs the representation to exist; the length
                 # claim itself comes from _result_length_axioms below.
                 translator._create_list_array('$result')
-            result_length_axioms = self._result_length_axioms(fn_body, translator)
+            # A multi-form body keeps only its last expression in fn_body, so a
+            # push in an earlier form would be invisible to the push scan and
+            # the result would look shorter than it is.
+            whole_body = fn_body
+            if all_body_exprs and len(all_body_exprs) > 1:
+                whole_body = SList([Symbol('do')] + list(all_body_exprs),
+                                   fn_body.line, fn_body.col)
+            result_length_axioms = self._result_length_axioms(whole_body, translator)
             for axiom in result_length_axioms:
                 solver.add(axiom)
 
