@@ -2917,8 +2917,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # This used to assert a flat field_len($result) == 0 whenever the body
         # bound a list with (mut r (list-new ...)), ignoring every push, which
         # contradicted the push-count axiom in Phase 7 - issue #115.
-        if fn_body is not None and self._is_list_new(fn_body):
-            if translator.use_array_encoding:
+        if fn_body is not None:
+            if translator.use_array_encoding and self._is_list_new(fn_body):
                 # Array encoding needs the representation to exist; the length
                 # claim itself comes from _result_length_axioms below.
                 translator._create_list_array('$result')

@@ -71,6 +71,25 @@ class AxiomGenerationMixin:
                 count += self._count_bindings_of(item, name)
         return count
 
+    def _field_path(self, expr: 'SExpr') -> Optional[str]:
+        """A dotted path for a field access, in whichever spelling it is written.
+
+        `(. report results)` and `report.results` are the same list; the parser
+        keeps the second as one symbol. Returns None for anything that is not a
+        field access, so a plain variable still matches by name.
+        """
+        if isinstance(expr, Symbol):
+            return expr.name if '.' in expr.name.strip('.') else None
+        if is_form(expr, '.') and len(expr) >= 3:
+            head = self._field_path(expr[1])
+            if head is None:
+                head = expr[1].name if isinstance(expr[1], Symbol) else None
+            field = expr[2].name if isinstance(expr[2], Symbol) else None
+            if head is None or field is None:
+                return None
+            return f"{head}.{field}"
+        return None
+
     def _uses_outside(self, body: 'SExpr', target: 'SExpr', allowed) -> bool:
         """True if `target` appears anywhere in `body` in a context `allowed` rejects.
 
@@ -91,8 +110,13 @@ class AxiomGenerationMixin:
         target_name = target.name if target_is_symbol else None
         target_str = None if target_is_symbol else pretty_print(target)
         target_len = None if target_is_symbol else len(target)
+        # `(. report results)` and `report.results` denote the same list, and a
+        # body may use one to iterate and the other to mutate.
+        target_path = self._field_path(target)
 
         def matches(node):
+            if target_path is not None and self._field_path(node) == target_path:
+                return True
             if target_is_symbol:
                 return isinstance(node, Symbol) and node.name == target_name
             if not isinstance(node, SList) or len(node) != target_len:
@@ -358,7 +382,14 @@ class AxiomGenerationMixin:
         if self._list_escapes(fn_body, return_expr):
             return axioms
 
+        # A list the function allocated itself started empty, so the push sites
+        # account for its whole contents. One it was handed may already hold
+        # anything, so the same sites only raise its floor.
+        starts_empty = self._is_list_new(fn_body)
+
         if any(site.loop_depth > 0 for site in sites):
+            if not starts_empty:
+                return axioms
             early_exit = self._contains_any_form(fn_body, ('break', 'continue'))
             axioms.extend(self._loop_result_length_axioms(
                 fn_body, sites, terms, translator, early_exit))
@@ -370,7 +401,10 @@ class AxiomGenerationMixin:
             if not site.guard_conditions and not site.conditional
         )
         for t in terms:
-            if lower == upper:
+            if not starts_empty:
+                if lower:
+                    axioms.append(t >= z3.IntVal(lower))
+            elif lower == upper:
                 axioms.append(t == z3.IntVal(lower))
             else:
                 axioms.append(t >= z3.IntVal(lower))

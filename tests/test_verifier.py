@@ -7963,3 +7963,65 @@ class TestAssumptionAgainstBody:
               (do (for-each (x (. report results)) (list-push r x)) r))))
         '''
         assert verify_source(src)[0].status != 'verified'
+
+
+class TestReturnedPreexistingList:
+    """A list the function allocated started empty, so its push sites account
+    for the whole contents. One it was handed may already hold anything, so the
+    same sites only raise its floor.
+    """
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        return verify_source(src)[0].status
+
+    def test_lower_bound_on_a_returned_parameter(self):
+        assert self._status('''
+        (fn f ((xs (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (>= (list-len $result) 1))
+          (do (list-push xs 1) xs))
+        ''') == 'verified'
+
+    def test_no_upper_bound_on_a_returned_parameter(self):
+        assert self._status('''
+        (fn f ((xs (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (== (list-len $result) 1))
+          (do (list-push xs 1) xs))
+        ''') != 'verified'
+
+    def test_a_conditional_push_raises_no_floor(self):
+        assert self._status('''
+        (fn f ((xs (List Int)) (flag Bool))
+          (@spec (((List Int) Bool) -> (List Int)))
+          (@post (>= (list-len $result) 1))
+          (do (when flag (list-push xs 1)) xs))
+        ''') != 'verified'
+
+    def test_a_loop_push_onto_a_handed_list_claims_nothing(self):
+        """The loop equality is about a list that started empty; for one that
+        did not, len(source) is not even a floor."""
+        assert self._status('''
+        (fn f ((xs (List Int)) (ys (List Int)))
+          (@spec (((List Int) (List Int)) -> (List Int)))
+          (@post (>= (list-len $result) (list-len ys)))
+          (do (for-each (y ys) (list-push xs y)) xs))
+        ''') != 'verified'
+
+    def test_mixed_field_spellings_count_as_the_same_list(self):
+        """`(. report results)` and `report.results` denote one list, and a body
+        may iterate with one spelling and mutate with the other."""
+        assert self._status('''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep))
+            (@spec ((Arena Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len (. report results))))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x))
+                  (list-pop report.results)
+                  r))))
+        ''') != 'verified'
