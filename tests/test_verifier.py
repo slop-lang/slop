@@ -9190,3 +9190,37 @@ class TestLoopVariableVersions:
               (set! i 5)
               i)))
         ''').status == 'verified'
+
+    def test_a_fresh_version_keeps_its_type_bounds(self):
+        """A fresh constant is fresh in every sense, including the constraints
+        the declaration put on the first one. A U8 stays non-negative."""
+        assert self._result('''
+        (module m
+          (fn u ((arena Arena) (flag Bool) (mut x U8))
+            (@spec ((Arena Bool U8) -> U8))
+            (@post (>= $result 0))
+            (do (if flag (set! x 5) 0) x)))
+        ''').status == 'verified'
+
+    def test_a_range_bound_survives_a_loop(self):
+        assert self._result('''
+        (module m
+          (type Small (Int 0 .. 9))
+          (fn r ((arena Arena) (n Int) (mut x Small))
+            (@spec ((Arena Int Small) -> Small))
+            (@post (<= $result 9))
+            (let ((mut k 0))
+              (while (< k n) (set! k (+ k 1)) (set! x 3))
+              x)))
+        ''').status == 'verified'
+
+    def test_a_for_each_over_an_unknown_collection_may_change_things(self):
+        assert self._result('''
+        (module m
+          (fn e ((arena Arena) (xs (List Int)))
+            (@spec ((Arena (List Int)) -> Int))
+            (@post (== $result 0))
+            (let ((mut i 0))
+              (for-each (x xs) (set! i 1))
+              i)))
+        ''').status != 'verified'

@@ -77,6 +77,7 @@ class Z3Translator:
         self._in_quoted_form = False
         self._versions_frozen = False
         self._prefer_initial_versions = False
+        self._declared_types: Dict[str, Any] = {}
         self._record_new_counter = 0  # Counter for unique record-new values
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
         self._build_enum_map()
@@ -1110,7 +1111,25 @@ class Z3Translator:
             var = z3.Int(name)
 
         self.variables[name] = var
+        self._declared_types[name] = typ
         return var
+
+    def _apply_declared_bounds(self, name: str, var: z3.ExprRef) -> None:
+        """Re-state a name's type bounds for a new version of it.
+
+        A fresh constant is fresh in every sense, including the constraints the
+        declaration put on the first one. A `U8` stays non-negative across an
+        assignment; forgetting that loses the type, not just the value.
+        """
+        typ = self._declared_types.get(name)
+        if typ is None:
+            return
+        if isinstance(typ, PrimitiveType) and typ.name.startswith('U'):
+            self.constraints.append(var >= 0)
+        elif isinstance(typ, RangeType):
+            self._add_range_constraints(var, typ.bounds)
+        elif isinstance(typ, PtrType):
+            self.constraints.append(var >= 0)
 
     def _add_range_constraints(self, var: z3.ArithRef, bounds: RangeBounds):
         """Add constraints for range type bounds"""
@@ -1908,6 +1927,14 @@ class Z3Translator:
             entry_condition = self.translate_expr(expr[1])
             if entry_condition is not None and not z3.is_bool(entry_condition):
                 entry_condition = None
+        elif is_form(expr, 'for-each') and len(expr) >= 2:
+            # The same idea for a collection loop: no elements, no iterations.
+            binder = expr[1]
+            collection = binder[1] if isinstance(binder, SList) and len(binder) >= 2 else None
+            if collection is not None:
+                length = self._collection_length_term(collection)
+                if length is not None:
+                    entry_condition = length > 0
 
         for name, values in assigned.items():
             before = self.variables.get(name)
@@ -1929,6 +1956,7 @@ class Z3Translator:
                 else:
                     after = z3.FreshInt(prefix)
                 self._loop_versions[key] = after
+                self._apply_declared_bounds(name, after)
                 if unconditional:
                     direction = self._assignment_direction(name, values)
                     if direction > 0:
@@ -2062,6 +2090,7 @@ class Z3Translator:
             after = z3.FreshReal(prefix)
         else:
             after = z3.FreshInt(prefix)
+        self._apply_declared_bounds(name, after)
         self.variables[name] = after
         if carries_value and value_z3 is not None and value_z3.sort() == after.sort():
             self.constraints.append(after == value_z3)
@@ -2103,6 +2132,23 @@ class Z3Translator:
             if self._contains_return(stmt.items):
                 return True
         return False
+
+    def _collection_length_term(self, collection: 'SExpr'):
+        """A length term for a loop's collection, if one can be named."""
+        if isinstance(collection, Symbol):
+            seq = self.list_seqs.get(collection.name)
+            if seq is not None:
+                return z3.Length(seq)
+        handle = self.translate_expr(collection)
+        if handle is None or not z3.is_expr(handle) or handle.sort() != z3.IntSort():
+            return None
+        func = self.variables.get("field_len")
+        if func is None:
+            func = z3.Function("field_len", z3.IntSort(), z3.IntSort())
+            self.variables["field_len"] = func
+        if not isinstance(func, z3.FuncDeclRef) or func.arity() != 1:
+            return None
+        return func(handle)
 
     def _collect_assignments(self, stmts, assigned: Dict[str, List]):
         """Every `(set! name value)` under `stmts`, grouped by name.
