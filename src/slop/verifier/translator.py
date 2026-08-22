@@ -1897,6 +1897,14 @@ class Z3Translator:
         assigned: Dict[str, List['SExpr']] = {}
         self._collect_assignments(body_items, assigned)
 
+        # The condition as it reads on entry. If it is false there the body
+        # never runs, and every name it assigns keeps the value it came in with.
+        entry_condition = None
+        if is_form(expr, 'while') and len(expr) >= 2:
+            entry_condition = self.translate_expr(expr[1])
+            if entry_condition is not None and not z3.is_bool(entry_condition):
+                entry_condition = None
+
         for name, values in assigned.items():
             before = self.variables.get(name)
             if before is None or not z3.is_expr(before):
@@ -1923,6 +1931,9 @@ class Z3Translator:
                         self.constraints.append(after >= before)
                     elif direction < 0:
                         self.constraints.append(after <= before)
+                if entry_condition is not None:
+                    self.constraints.append(
+                        z3.Implies(z3.Not(entry_condition), after == before))
             self.variables[name] = after
 
         # The exit condition constrains the post-loop values, so it is stated

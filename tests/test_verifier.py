@@ -8770,16 +8770,46 @@ class TestLoopVariableVersions:
         ''').status == 'verified'
 
     def test_a_counter_moving_both_ways_keeps_no_direction(self):
+        """The loop is driven by k, so only the direction of the writes to i
+        could establish this - and there is no single direction."""
         assert self._result('''
         (module m
           (fn f ((arena Arena) (n Int) (c Bool))
             (@spec ((Arena Int Bool) -> Int))
-            (@post (>= $result 0))
-            (let ((mut i 0))
-              (while (< i n)
+            (@post (>= $result 5))
+            (let ((mut i 5)
+                  (mut k 0))
+              (while (< k n)
+                (set! k (+ k 1))
                 (if c (set! i (+ i 1)) (set! i (- i 1))))
               i)))
         ''').status != 'verified'
+
+    def test_a_counter_moving_one_way_keeps_its_direction(self):
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (>= $result 5))
+            (let ((mut i 5)
+                  (mut k 0))
+              (while (< k n)
+                (set! k (+ k 1))
+                (set! i (+ i 1)))
+              i)))
+        ''').status == 'verified'
+
+    def test_a_loop_that_never_runs_leaves_its_variables_alone(self):
+        assert self._result('''
+        (module m
+          (fn z ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@pre (<= n 0))
+            (@post (== $result 0))
+            (let ((mut i 0))
+              (while (< i n) (set! i (+ i 1)))
+              i)))
+        ''').status == 'verified'
 
     def test_a_variable_the_loop_does_not_touch_keeps_its_value(self):
         assert self._result('''
@@ -9116,4 +9146,33 @@ class TestLoopVariableVersions:
             (let ((mut count 0))
               (for-each (x items) (if true (set! count (+ count 1))))
               (return count))))
+        ''').status != 'verified'
+
+    def test_an_exit_guard_reads_the_value_it_was_written_against(self):
+        """`(when (== i 0) (return -1))` before the loop tests i's starting
+        value. Translating it after the body would test what the loop left."""
+        assert self._result('''
+        (module m
+          (fn g ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@pre (> n 3))
+            (@post (>= $result 2))
+            (let ((mut i 1))
+              (when (== i 0) (return -1))
+              (while (< i n) (set! i (+ i 1)))
+              i)))
+        ''').status == 'verified'
+
+    def test_an_exit_guard_naming_a_reassigned_variable_is_withdrawn(self):
+        """There is no program point here to say which version the guard meant,
+        so the exit modelling is given up rather than guessed."""
+        assert self._result('''
+        (module m
+          (fn h ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 7))
+            (let ((mut i 1))
+              (when (> i 0) (return 7))
+              (set! i 5)
+              i)))
         ''').status != 'verified'

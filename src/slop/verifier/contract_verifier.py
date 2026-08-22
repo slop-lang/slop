@@ -2236,9 +2236,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     return None, False
             return direct, found
 
-        def note(guard_term, value):
+        def note(guard_term, value, guard_expr):
             guard = z3.And(guard_term, *[z3.Not(t) for t in earlier]) if earlier else guard_term
-            exits.append((guard, value))
+            exits.append((guard, value, guard_expr))
             earlier.append(guard_term)
 
         def scan(stmts):
@@ -2247,17 +2247,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 if not isinstance(stmt, SList):
                     continue
                 if is_form(stmt, 'return'):
-                    note(z3.BoolVal(True), stmt[1] if len(stmt) >= 2 else None)
+                    note(z3.BoolVal(True), stmt[1] if len(stmt) >= 2 else None, stmt)
                     return
                 if is_form(stmt, 'when') and len(stmt) >= 3:
                     value, found = returned_value(stmt.items[2:])
                     if found:
-                        note(self._condition_term(stmt[1], translator), value)
+                        note(self._condition_term(stmt[1], translator), value, stmt[1])
                         continue
                 elif is_form(stmt, 'if') and len(stmt) >= 3:
                     then_value, then_found = returned_value([stmt[2]])
                     if then_found:
-                        note(self._condition_term(stmt[1], translator), then_value)
+                        note(self._condition_term(stmt[1], translator), then_value, stmt[1])
                         if len(stmt) >= 4 and not self._contains_any_form(stmt[3], ('return',)):
                             continue
                         if len(stmt) < 4:
@@ -3108,6 +3108,33 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Translate function body BEFORE assumptions
         # This is important because @loop-invariant may reference local variables
         # from let bindings, which are declared during body translation
+        # _get_return_expr picks the trailing form. An explicit (return ...)
+        # elsewhere is another exit, and what it yields is just as much $result,
+        # so nothing the trailing constructor says describes the result alone.
+        # A multi-form body keeps only its last expression in fn_body, so the
+        # earlier forms have to be looked at too - both for that check and for
+        # the bindings a constructor's fields may refer to.
+        # The last element is fn_body rather than all_body_exprs[-1]: those are
+        # the same form, but fn_body has been through
+        # _desugar_callback_iterations and the other has not, and the two trees
+        # share no nodes. Anything keyed on node identity - which constructor
+        # is the returned one - has to see the same tree it was taken from.
+        combined_body = fn_body
+        if fn_body is not None and all_body_exprs and len(all_body_exprs) > 1:
+            combined_body = SList(
+                [Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
+                fn_body.line, fn_body.col)
+        # Exits other than the trailing form. `reached` is the condition under
+        # which control actually gets there; None means it always does, and a
+        # `return` in a shape _early_exits cannot guard leaves early_exits None,
+        # in which case nothing is claimed about the result at all.
+        early_exits = (self._early_exits(combined_body, translator)
+                       if combined_body is not None else [])
+        body_has_one_exit = early_exits is not None
+        reached_guard = None
+        if early_exits:
+            reached_guard = z3.And(*[z3.Not(guard) for guard, _, _ in early_exits])
+
         body_z3: Optional[z3.ExprRef] = None
         body_constraint_start = len(translator.constraints)
         if fn_body is not None:
@@ -3258,32 +3285,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
-        # _get_return_expr picks the trailing form. An explicit (return ...)
-        # elsewhere is another exit, and what it yields is just as much $result,
-        # so nothing the trailing constructor says describes the result alone.
-        # A multi-form body keeps only its last expression in fn_body, so the
-        # earlier forms have to be looked at too - both for that check and for
-        # the bindings a constructor's fields may refer to.
-        # The last element is fn_body rather than all_body_exprs[-1]: those are
-        # the same form, but fn_body has been through
-        # _desugar_callback_iterations and the other has not, and the two trees
-        # share no nodes. Anything keyed on node identity - which constructor
-        # is the returned one - has to see the same tree it was taken from.
-        combined_body = fn_body
-        if fn_body is not None and all_body_exprs and len(all_body_exprs) > 1:
-            combined_body = SList(
-                [Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
-                fn_body.line, fn_body.col)
-        # Exits other than the trailing form. `reached` is the condition under
-        # which control actually gets there; None means it always does, and a
-        # `return` in a shape _early_exits cannot guard leaves early_exits None,
-        # in which case nothing is claimed about the result at all.
-        early_exits = (self._early_exits(combined_body, translator)
-                       if combined_body is not None else [])
-        body_has_one_exit = early_exits is not None
-        reached_guard = None
-        if early_exits:
-            reached_guard = z3.And(*[z3.Not(guard) for guard, _ in early_exits])
+
+        # An exit guard was translated above, before the body, so it reads the
+        # versions in scope at the top. That is right for a guard before the
+        # first loop and wrong for one after it, and there is no program point
+        # here to tell them apart - so if any guard names something a loop or an
+        # assignment went on to replace, the exit modelling is withdrawn.
+        if early_exits and any(self._mentions_loop_versioned(guard_expr, translator)
+                               for _, _, guard_expr in early_exits):
+            early_exits = None
+            body_has_one_exit = False
+            reached_guard = None
 
         # Contracts have been translated by now - a @loop-invariant is about the
         # value the loop leaves behind, so it wants the final version. The
@@ -3356,7 +3368,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if early_exits:
             result_var = translator.variables.get('$result')
             if result_var is not None:
-                for guard, value in early_exits:
+                for guard, value, _ in early_exits:
                     if value is None:
                         continue
                     # Translating a value can append side conditions - a
