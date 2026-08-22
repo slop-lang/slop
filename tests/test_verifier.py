@@ -8425,3 +8425,49 @@ class TestConditionalRecordFields:
     (let ((e zs))
       (if c (let ((e (list-new arena Item))) (record-new F (flag true) (xs e) (ys e)))
             (record-new F (flag false) (xs e) (ys e)))))''') != 'verified'
+
+    def test_a_disjoint_earlier_let_may_reuse_the_name(self):
+        """Two `let`s in a `do` are as disjoint as two branches. Counting them
+        across the whole body discarded the binding that is actually in scope."""
+        assert self._status('''
+  (fn d1 ((arena Arena) (zs (List Item)))
+    (@spec ((Arena (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e zs)) (list-len e))
+    (let ((e (list-new arena Item)))
+      (record-new F (flag true) (xs e) (ys e))))''') == 'verified'
+
+    def test_a_constructor_nested_in_the_result(self):
+        """A record built inline inside the returned one is part of the same
+        value; nothing can reach through it afterwards."""
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Item (record (v Int)))
+          (type Inner (record (xs (List Item))))
+          (type Outer (record (inner Inner)))
+          (fn d2 ((arena Arena))
+            (@spec ((Arena) -> Outer))
+            (@alloc arena)
+            (@post {(list-len (. (. $result inner) xs)) == 0})
+            (let ((e (list-new arena Item)))
+              (record-new Outer (inner (record-new Inner (xs e)))))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status == 'verified'
+
+    def test_a_nested_constructor_holding_an_unknown_list(self):
+        from slop.verifier import verify_source
+        src = '''
+        (module probe
+          (type Item (record (v Int)))
+          (type Inner (record (xs (List Item))))
+          (type Outer (record (inner Inner)))
+          (fn d3 ((arena Arena) (zs (List Item)))
+            (@spec ((Arena (List Item)) -> Outer))
+            (@alloc arena)
+            (@post {(list-len (. (. $result inner) xs)) == 0})
+            (let ((e zs))
+              (record-new Outer (inner (record-new Inner (xs e)))))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'

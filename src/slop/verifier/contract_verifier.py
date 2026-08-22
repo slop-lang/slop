@@ -1870,9 +1870,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Every constructor about to be described, so a list stored in one of
         # them still counts as read-only; a record built anywhere else is a way
         # to reach the list again.
-        result_forms = tuple(
-            id(self._get_return_expr(branch)) for _, branch in branches
-            if self._is_record_new(branch))
+        result_forms: Tuple[int, ...] = ()
+        for _, branch in branches:
+            if self._is_record_new(branch):
+                result_forms += self._nested_record_forms(self._get_return_expr(branch))
         bindings = self._tail_bindings(fn_body, param_names, result_forms=result_forms)
         # A branch-local name may shadow an enclosing binding, which shares its
         # Z3 constant. Sibling arms do not: their axioms carry mutually
@@ -2135,6 +2136,26 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return walk(body, None, -1, False)
 
+    def _nested_record_forms(self, expr: SExpr) -> Tuple[int, ...]:
+        """Every record-new inside `expr`, itself included.
+
+        A constructor nested in the one being returned is part of the same
+        value: it is built inline and nothing in the function can reach through
+        it afterwards, so a list stored there is as safe as one stored directly.
+        """
+        forms: List[int] = []
+
+        def walk(node):
+            if not isinstance(node, SList):
+                return
+            if is_form(node, 'record-new'):
+                forms.append(id(node))
+            for item in node.items:
+                walk(item)
+
+        walk(expr)
+        return tuple(forms)
+
     def _tail_binding_names(self, body: SExpr) -> Set[str]:
         """Every name bound along the tail of `body`, kept or not."""
         names: Set[str] = set()
@@ -2178,6 +2199,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if stability_body is None:
             stability_body = body
         bindings: Dict[str, Tuple[SExpr, Dict]] = {}
+        # The translator gives every binding of a name one Z3 constant, so a
+        # fact derived from one initializer would be asserted about the other
+        # value too. That only matters for bindings whose scopes overlap: one
+        # further down this same tail, or a parameter. Two disjoint `let`s in a
+        # `do`, like two sibling branches, cannot see each other.
+        seen: Set[str] = set()
+        dropped: Set[str] = set()
         node = body
         while True:
             if is_form(node, 'let') and len(node) >= 3:
@@ -2186,19 +2214,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         if not (isinstance(binding, SList) and len(binding) >= 2):
                             continue
                         name = self._binding_name(binding)
-                        if not name:
+                        if not name or name in dropped:
                             continue
-                        if not self._binding_is_stable(stability_body, name, result_forms):
+                        if name in seen or name in param_names:
+                            dropped.add(name)
                             bindings.pop(name, None)
                             continue
-                        # The translator gives every binding of a name one Z3
-                        # constant, so a fact derived from the inner initializer
-                        # would be asserted about the outer value too - or about
-                        # the parameter, which is worse. Nothing may be resolved
-                        # through a name that is bound more than once, and a
-                        # parameter counts as one of those bindings.
-                        if (name in param_names
-                                or self._count_bindings_of(body, name) > 1):
+                        seen.add(name)
+                        if not self._binding_is_stable(stability_body, name, result_forms):
+                            dropped.add(name)
                             bindings.pop(name, None)
                             continue
                         bindings[name] = (binding[-1], dict(bindings))
@@ -3165,7 +3189,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 return_expr, translator,
                 bindings=self._tail_bindings(
                     fn_body, declared_param_names,
-                    result_forms=(id(return_expr),)))
+                    result_forms=self._nested_record_forms(return_expr)))
             for axiom in field_axioms:
                 solver.add(axiom)
 
