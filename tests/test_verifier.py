@@ -8284,3 +8284,52 @@ class TestConditionalRecordFields:
     (let ((x zs))
       (let ((x (list-new arena Item)))
         (record-new F (flag true) (xs x) (ys x)))))''') != 'verified'
+
+    def test_an_explicit_return_is_another_exit(self):
+        """_get_return_expr picks the trailing form. What a `(return ...)`
+        elsewhere yields is just as much $result, so the trailing constructor
+        does not describe the result on its own."""
+        assert self._status('''
+  (fn m6 ((arena Arena) (flag Bool) (old F))
+    (@spec ((Arena Bool F) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (when flag (return old))
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_mutation_through_an_alias_invalidates_the_binding(self):
+        """`(let ((mut a e)) (list-push a it))` changes the same list, and the
+        occurrence of `e` in `(a e)` is a read - so stability has to follow the
+        aliases rather than just the name."""
+        assert self._status('''
+  (fn m7 ((arena Arena) (it Item))
+    (@spec ((Arena Item) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (let ((mut a e))
+        (list-push a it)
+        (record-new F (flag true) (xs e) (ys e)))))''') != 'verified'
+
+    def test_a_read_only_alias_keeps_the_binding(self):
+        assert self._status('''
+  (fn m8 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (let ((a e))
+        (record-new F (flag true) (xs e) (ys a)))))''') == 'verified'
+
+    def test_a_local_shadowing_a_parameter_is_not_followed(self):
+        """A parameter is a binding of the name too, and shares the translator's
+        one constant with the local - so the local's initializer would describe
+        the caller's list."""
+        assert self._status('''
+  (fn m9 ((arena Arena) (e (List Item)))
+    (@spec ((Arena (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len e) == 0})
+    (let ((e (list-new arena Item)))
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'

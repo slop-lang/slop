@@ -2029,7 +2029,29 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return constraints
 
-    def _binding_is_stable(self, body: SExpr, name: str) -> bool:
+    def _aliases_of(self, body: SExpr, name: str) -> List[str]:
+        """Names bound directly to `name`, which therefore denote the same list."""
+        aliases: List[str] = []
+
+        def walk(node):
+            if not isinstance(node, SList):
+                return
+            if is_form(node, 'let') and len(node) >= 2 and isinstance(node[1], SList):
+                for binding in node[1].items:
+                    if isinstance(binding, SList) and len(binding) >= 2:
+                        value = binding[-1]
+                        if isinstance(value, Symbol) and value.name == name:
+                            bound = self._binding_name(binding)
+                            if bound and bound != name:
+                                aliases.append(bound)
+            for item in node.items:
+                walk(item)
+
+        walk(body)
+        return aliases
+
+    def _binding_is_stable(self, body: SExpr, name: str,
+                           seen: Optional[Set[str]] = None) -> bool:
         """True if `name` is only read in this body, never changed.
 
         Following a name back to its initializer is only valid while nothing has
@@ -2037,7 +2059,21 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         place, `set!` replaces it outright, and handing it to a function lets
         the callee do either - so only the handful of positions that are known
         to be reads keep a binding resolvable.
+
+        A read is not always harmless: `(let ((a e)) (list-push a it))` mutates
+        the same list through another name. Every alias of the name has to be
+        stable too, which is what `seen` follows.
         """
+        if seen is None:
+            seen = set()
+        if name in seen:
+            return True
+        seen.add(name)
+
+        for alias in self._aliases_of(body, name):
+            if not self._binding_is_stable(body, alias, seen):
+                return False
+
         def walk(node, parent_head, index, in_pair) -> bool:
             if isinstance(node, Symbol):
                 if node.name != name:
@@ -2075,7 +2111,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return walk(body, None, -1, False)
 
-    def _tail_bindings(self, body: SExpr) -> Dict[str, Tuple[SExpr, Dict]]:
+    def _tail_bindings(self, body: SExpr,
+                       param_names: Optional[Set[str]] = None) -> Dict[str, Tuple[SExpr, Dict]]:
         """The `let` bindings in scope where the body yields its value.
 
         Follows the tail - the last form of each nested do/let - so a field
@@ -2085,8 +2122,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         one flattened map, `(let ((x zs)) (let ((y x)) (let ((x (list-new ...)))`
         would resolve `y` to the inner empty list rather than to `zs`.
 
-        A name that anything mutates is dropped rather than recorded.
+        A name that anything mutates is dropped rather than recorded, as is one
+        that shadows another binding or a parameter.
         """
+        if param_names is None:
+            param_names = set()
         bindings: Dict[str, Tuple[SExpr, Dict]] = {}
         node = body
         while True:
@@ -2101,11 +2141,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         if not self._binding_is_stable(body, name):
                             bindings.pop(name, None)
                             continue
-                        # The translator gives both bindings of a shadowed name
-                        # one Z3 constant, so a fact derived from the inner
-                        # initializer would be asserted about the outer value
-                        # too. Nothing may be resolved through such a name.
-                        if self._count_bindings_of(body, name) > 1:
+                        # The translator gives every binding of a name one Z3
+                        # constant, so a fact derived from the inner initializer
+                        # would be asserted about the outer value too - or about
+                        # the parameter, which is worse. Nothing may be resolved
+                        # through a name that is bound more than once, and a
+                        # parameter counts as one of those bindings.
+                        if (name in param_names
+                                or self._count_bindings_of(body, name) > 1):
                             bindings.pop(name, None)
                             continue
                         bindings[name] = (binding[-1], dict(bindings))
@@ -2772,6 +2815,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                                   use_seq_encoding=use_seq_encoding)
 
         # Declare parameter variables
+        declared_param_names: Set[str] = set()
         for param in params:
             if isinstance(param, SList) and len(param) >= 2:
                 # Handle parameter modes: (name Type) or (in name Type) or (out name Type) or (mut name Type)
@@ -2784,6 +2828,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # No mode: (name Type)
                     param_name = first.name if isinstance(first, Symbol) else None
                     param_type_expr = param[1]
+                if param_name:
+                    declared_param_names.add(param_name)
                 if param_name and param_type_expr:
                     param_type = _parse_type_expr_simple(param_type_expr, self.type_env.type_registry)
                     translator.declare_variable(param_name, param_type)
@@ -3053,11 +3099,18 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         # Phase 3: Add record field axioms if body is record-new
         # For (record-new Type (field1 val1) ...), add: field_field1($result) == val1
-        if fn_body is not None and self._is_record_new(fn_body):
+        # _get_return_expr picks the trailing form. An explicit (return ...)
+        # elsewhere is another exit, and what it yields is just as much $result,
+        # so nothing the trailing constructor says describes the result alone.
+        body_has_one_exit = (fn_body is not None
+                             and not self._contains_any_form(fn_body, ('return',)))
+
+        if fn_body is not None and body_has_one_exit and self._is_record_new(fn_body):
             # Get the actual record-new form (may be inside a do block)
             return_expr = self._get_return_expr(fn_body)
             field_axioms = self._extract_record_field_axioms(
-                return_expr, translator, bindings=self._tail_bindings(fn_body))
+                return_expr, translator,
+                bindings=self._tail_bindings(fn_body, declared_param_names))
             for axiom in field_axioms:
                 solver.add(axiom)
 
@@ -3163,11 +3216,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Phase 5: Add conditional record-new axioms
         # For (if cond (record-new Type (f1 v1) ...) else), add: cond => field_f1($result) == v1
         # Use _get_return_expr to handle let/do wrappers
-        if fn_body is not None:
+        if fn_body is not None and body_has_one_exit:
             return_expr = self._get_return_expr(fn_body)
             if self._is_conditional_with_record_new(return_expr):
                 cond_axioms = self._extract_conditional_record_axioms(
-                    return_expr, translator, bindings=self._tail_bindings(fn_body))
+                    return_expr, translator,
+                    bindings=self._tail_bindings(fn_body, declared_param_names))
                 for axiom in cond_axioms:
                     solver.add(axiom)
 
