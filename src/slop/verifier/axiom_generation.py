@@ -2741,6 +2741,69 @@ class AxiomGenerationMixin:
 
         return False
 
+    def _counter_rises_by_one(self, body: 'SExpr', name: str) -> bool:
+        """True if `name` starts at zero and every write adds exactly one."""
+        writes: List = []
+
+        def walk(node):
+            if not isinstance(node, SList) or len(node) < 1:
+                return
+            head = node[0]
+            if isinstance(head, Symbol):
+                if head.name in ('fn', 'quote'):
+                    return
+                if head.name == 'set!' and len(node) >= 3 and isinstance(node[1], Symbol):
+                    if node[1].name == name:
+                        writes.append(node[2])
+                    return
+            for item in node.items:
+                walk(item)
+
+        walk(body)
+        if len(writes) != 1:
+            return False
+        value = writes[0]
+        if not (isinstance(value, SList) and len(value) == 3):
+            return False
+        head, left, right = value[0], value[1], value[2]
+        if not (isinstance(head, Symbol) and head.name == '+'):
+            return False
+        if not (isinstance(left, Symbol) and left.name == name):
+            return False
+        if not (isinstance(right, Number) and right.value == 1):
+            return False
+        return self._binding_starts_at_zero(body, name)
+
+    def _binding_starts_at_zero(self, body: 'SExpr', name: str) -> bool:
+        """True if every `let` binding of `name` initialises it to 0."""
+        found = False
+
+        def walk(node):
+            nonlocal found
+            if not isinstance(node, SList):
+                return True
+            if is_form(node, 'let') and len(node) >= 2 and isinstance(node[1], SList):
+                for binding in node[1].items:
+                    if not (isinstance(binding, SList) and len(binding) >= 2):
+                        continue
+                    first = binding[0]
+                    if isinstance(first, Symbol) and first.name == 'mut' and len(binding) >= 3:
+                        bound, init = binding[1], binding[2]
+                    elif isinstance(first, Symbol):
+                        bound, init = first, binding[1]
+                    else:
+                        continue
+                    if isinstance(bound, Symbol) and bound.name == name:
+                        found = True
+                        if not (isinstance(init, Number) and init.value == 0):
+                            return False
+            for item in node.items:
+                if not walk(item):
+                    return False
+            return True
+
+        return walk(body) and found
+
     def _generate_count_axioms(self, pattern: CountPatternInfo,
                                translator: Z3Translator,
                                body: Optional['SExpr'] = None) -> List:
@@ -2764,6 +2827,12 @@ class AxiomGenerationMixin:
         if body is not None:
             returned = self._get_return_expr(body)
             if not (isinstance(returned, Symbol) and returned.name == pattern.count_var):
+                return axioms
+            # The bound is one element at most, so the counter has to be raised
+            # by exactly one at exactly one place. _detect_count_pattern matches
+            # the first increment it finds and says nothing about the rest, so a
+            # second one - or a (set! count 100) - would go unnoticed.
+            if not self._counter_rises_by_one(body, pattern.count_var):
                 return axioms
         elif not z3.eq(counted, result_var):
             return axioms

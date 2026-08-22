@@ -8912,3 +8912,39 @@ class TestLoopVariableVersions:
               (for-each (x items) (if true (set! count (+ count 1))))
               100)))
         ''').status != 'verified'
+
+    def test_a_counter_written_twice_is_not_bounded_by_one_per_element(self):
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (set! count (+ count 1)) (set! count (+ count 1)))
+              count)))
+        ''').status != 'verified'
+
+    def test_a_counter_overwritten_in_the_loop(self):
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count 100)))
+              count)))
+        ''').status != 'verified'
+
+    def test_a_quoted_assignment_in_a_loop_body_is_data(self):
+        assert self._result('''
+        (module m
+          (fn q ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (== $result 0))
+            (let ((mut i 0)
+                  (mut k 0))
+              (while (< k n)
+                (set! k (+ k 1))
+                (quote (set! i (+ i 1))))
+              i)))
+        ''').status == 'verified'

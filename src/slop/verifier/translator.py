@@ -2036,7 +2036,9 @@ class Z3Translator:
                 continue
             head = stmt[0]
             if isinstance(head, Symbol):
-                if head.name == 'fn':
+                # A callback's assignments are its own, and a quoted form is
+                # data - neither assigns anything here.
+                if head.name in ('fn', 'quote'):
                     continue
                 if head.name == 'set!' and len(stmt) >= 3 and isinstance(stmt[1], Symbol):
                     assigned.setdefault(stmt[1].name, []).append(stmt[2])

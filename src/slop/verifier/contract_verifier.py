@@ -696,9 +696,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return
 
         # Evaluated where the binding is, but this runs long after the body was
-        # translated. If the initializer mentions a name some loop reassigned,
-        # re-translating it reads the value the loop produced rather than the
-        # one the binding was given (issue #116).
+        # translated, when every name holds its final version. If the
+        # initializer mentions a name a loop or an assignment replaced, that is
+        # not necessarily the value the binding was given (issue #116).
+        #
+        # Conservative in one direction: a binding made *after* the loop should
+        # use the post version, and is skipped too. Telling the two apart needs
+        # the program point, which this pass does not have.
         if self._mentions_loop_versioned(init_expr, translator):
             return
 
