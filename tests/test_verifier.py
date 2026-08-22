@@ -8225,3 +8225,62 @@ class TestConditionalRecordFields:
     (record-new F (flag c)
       (xs (if c (list-new arena Item) zs))
       (ys (list-new arena Item))))''') != 'verified'
+
+    # --- a binding may only be followed while it still holds what it was given
+
+    def test_a_mutated_binding_is_not_followed(self):
+        """`(list-push e it)` changes what `e` holds, so its initializer no
+        longer describes the field it ends up in."""
+        assert self._status('''
+  (fn m1 ((arena Arena) (it Item))
+    (@spec ((Arena Item) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((mut e (list-new arena Item)))
+      (list-push e it)
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_a_binding_handed_to_a_function_is_not_followed(self):
+        """The callee may append to it, and nothing here can see that."""
+        assert self._status('''
+  (fn m2 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((e (list-new arena Item)))
+      (fill arena e)
+      (record-new F (flag true) (xs e) (ys e))))''') != 'verified'
+
+    def test_an_alias_chain_is_followed(self):
+        assert self._status('''
+  (fn m3 ((arena Arena))
+    (@spec ((Arena) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((a (list-new arena Item)))
+      (let ((b a))
+        (record-new F (flag true) (xs b) (ys a)))))''') == 'verified'
+
+    def test_a_shadowed_name_is_not_followed(self):
+        """The translator gives both bindings of a shadowed name one Z3
+        constant, so a fact derived from the inner initializer would land on
+        the outer value too - here claiming the parameter `zs` is empty."""
+        assert self._status('''
+  (fn m4 ((arena Arena) (zs (List Item)))
+    (@spec ((Arena (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len (. $result xs)) == 0})
+    (let ((x zs))
+      (let ((y x))
+        (let ((x (list-new arena Item)))
+          (record-new F (flag true) (xs y) (ys x))))))''') != 'verified'
+
+    def test_a_shadowed_name_does_not_leak_to_the_outer_value(self):
+        assert self._status('''
+  (fn m5 ((arena Arena) (zs (List Item)))
+    (@spec ((Arena (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len zs) == 0})
+    (let ((x zs))
+      (let ((x (list-new arena Item)))
+        (record-new F (flag true) (xs x) (ys x)))))''') != 'verified'

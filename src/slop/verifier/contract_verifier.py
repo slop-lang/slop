@@ -1844,7 +1844,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         )
 
     def _extract_conditional_record_axioms(self, cond_expr: SList, translator: Z3Translator,
-                                           bindings: Optional[Dict[str, SExpr]] = None) -> List:
+                                           bindings: Optional[Dict[str, Tuple[SExpr, Dict]]] = None) -> List:
         """Axioms for a conditional whose branches build or pass along a record.
 
         Each branch contributes its own facts under its own guard. A branch that
@@ -2029,36 +2029,103 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return constraints
 
-    def _tail_bindings(self, body: SExpr) -> Dict[str, SExpr]:
-        """Every `let` binding in scope where the body yields its value.
+    def _binding_is_stable(self, body: SExpr, name: str) -> bool:
+        """True if `name` is only read in this body, never changed.
+
+        Following a name back to its initializer is only valid while nothing has
+        changed what it holds. `list-push` and `list-pop` mutate the list in
+        place, `set!` replaces it outright, and handing it to a function lets
+        the callee do either - so only the handful of positions that are known
+        to be reads keep a binding resolvable.
+        """
+        def walk(node, parent_head, index, in_pair) -> bool:
+            if isinstance(node, Symbol):
+                if node.name != name:
+                    return True
+                if parent_head in ('list-len', 'list-get') and index == 1:
+                    return True
+                if parent_head == 'mut' and index == 1:
+                    return True
+                # Inside a let binding or a record-new field pair the name is
+                # either being bound or being read as a value. Neither changes
+                # what it holds, and the second is the use this resolution
+                # exists to serve.
+                if in_pair:
+                    return True
+                return False
+
+            if not isinstance(node, SList):
+                return True
+
+            head = node[0].name if len(node) and isinstance(node[0], Symbol) else None
+            is_record_new = is_form(node, 'record-new')
+            is_let_bindings = parent_head == 'let' and index == 1
+            for i, item in enumerate(node.items):
+                in_child_pair = (is_record_new and i >= 2) or is_let_bindings
+                if in_child_pair and isinstance(item, SList):
+                    # A pair's head is a name, not a call, so its children are
+                    # walked with no parent head of their own.
+                    for j, sub in enumerate(item.items):
+                        if not walk(sub, None, j, True):
+                            return False
+                    continue
+                if not walk(item, head, i, False):
+                    return False
+            return True
+
+        return walk(body, None, -1, False)
+
+    def _tail_bindings(self, body: SExpr) -> Dict[str, Tuple[SExpr, Dict]]:
+        """The `let` bindings in scope where the body yields its value.
 
         Follows the tail - the last form of each nested do/let - so a field
-        written as `(xs e)` can be resolved back to what `e` was bound to.
-        Inner bindings win, which is the scoping a reader expects.
+        written as `(xs e)` can be resolved back to what `e` was bound to. Each
+        entry carries the environment as it stood at its own binding, because a
+        later `let` may rebind a name an earlier initializer referred to: with
+        one flattened map, `(let ((x zs)) (let ((y x)) (let ((x (list-new ...)))`
+        would resolve `y` to the inner empty list rather than to `zs`.
+
+        A name that anything mutates is dropped rather than recorded.
         """
-        bindings: Dict[str, SExpr] = {}
+        bindings: Dict[str, Tuple[SExpr, Dict]] = {}
         node = body
         while True:
             if is_form(node, 'let') and len(node) >= 3:
                 if isinstance(node[1], SList):
                     for binding in node[1].items:
-                        if isinstance(binding, SList) and len(binding) >= 2:
-                            name = self._binding_name(binding)
-                            if name:
-                                bindings[name] = binding[-1]
+                        if not (isinstance(binding, SList) and len(binding) >= 2):
+                            continue
+                        name = self._binding_name(binding)
+                        if not name:
+                            continue
+                        if not self._binding_is_stable(body, name):
+                            bindings.pop(name, None)
+                            continue
+                        # The translator gives both bindings of a shadowed name
+                        # one Z3 constant, so a fact derived from the inner
+                        # initializer would be asserted about the outer value
+                        # too. Nothing may be resolved through such a name.
+                        if self._count_bindings_of(body, name) > 1:
+                            bindings.pop(name, None)
+                            continue
+                        bindings[name] = (binding[-1], dict(bindings))
                 node = node.items[-1]
             elif is_form(node, 'do') and len(node) >= 2:
                 node = node.items[-1]
             else:
                 return bindings
 
-    def _resolve_binding(self, expr: SExpr, bindings: Dict[str, SExpr]) -> SExpr:
-        """Follow a symbol through the let bindings in scope, to its initializer."""
+    def _resolve_binding(self, expr: SExpr, bindings: Dict[str, Tuple[SExpr, Dict]]) -> SExpr:
+        """Follow a symbol through the bindings in scope, to its initializer.
+
+        Each step continues in the environment that binding was made in, so a
+        name rebound later does not reach back into an earlier initializer.
+        """
         seen = set()
-        node = expr
-        while isinstance(node, Symbol) and node.name in bindings and node.name not in seen:
+        node, env = expr, bindings
+        while isinstance(node, Symbol) and node.name in env and node.name not in seen:
             seen.add(node.name)
-            node = bindings[node.name]
+            node, env = env[node.name]
         return node
 
     def _condition_term(self, cond_expr: SExpr, translator: Z3Translator):
@@ -2072,8 +2139,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         translated = translator.translate_expr(cond_expr)
         if translated is not None and translated.sort() == z3.BoolSort():
             return translated
-        self._opaque_condition_counter = getattr(self, '_opaque_condition_counter', 0) + 1
-        return z3.Bool(f"_path_{self._opaque_condition_counter}")
+        # FreshBool rather than a name of our own choosing: `_path_1` is a legal
+        # SLOP identifier, and colliding with a parameter of that name would tie
+        # the branch to an unrelated input.
+        return z3.FreshBool('_path')
 
     def _branch_conditions(self, expr: SExpr, translator: Z3Translator):
         """[(guard, branch)] for an `if` or `cond`, or None if it is neither.
@@ -2120,7 +2189,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return z3.And(path_cond, guard)
 
     def _record_value_axioms(self, field_func, value: SExpr, translator: Z3Translator,
-                             bindings: Dict[str, SExpr], path_cond) -> List:
+                             bindings: Dict[str, Tuple[SExpr, Dict]], path_cond) -> List:
         """What is known about a record field, from the shape of its value.
 
         Recurses through `if`/`cond` in the value itself, conjoining each
@@ -2209,7 +2278,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
     def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator,
                                       base_accessor: Optional[z3.ExprRef] = None,
                                       path_cond=None,
-                                      bindings: Optional[Dict[str, SExpr]] = None) -> List:
+                                      bindings: Optional[Dict[str, Tuple[SExpr, Dict]]] = None) -> List:
         """Axioms for each field of a record-new: its value, and what that implies.
 
         `path_cond` guards every axiom, for a record built on one branch of a
