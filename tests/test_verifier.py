@@ -9224,3 +9224,27 @@ class TestLoopVariableVersions:
               (for-each (x xs) (set! i 1))
               i)))
         ''').status != 'verified'
+
+    def test_a_postcondition_reads_the_state_the_function_ends_in(self):
+        """A @post about a mutable parameter means the value it was left with.
+        Translating postconditions before the body bound them to the version
+        the function started with, while the returned expression used the one it
+        finished with - so the two could disagree and still 'verify'."""
+        assert self._result('''
+        (module m
+          (fn f ((mut x Int))
+            (@spec ((Int) -> Int))
+            (@pre (== x 0))
+            (@post (!= $result x))
+            (let () (set! x 1) x)))
+        ''').status != 'verified'
+
+    def test_a_postcondition_true_of_the_final_state(self):
+        assert self._result('''
+        (module m
+          (fn g ((mut x Int))
+            (@spec ((Int) -> Int))
+            (@pre (== x 0))
+            (@post (== $result x))
+            (let () (set! x 1) x)))
+        ''').status == 'verified'

@@ -3122,16 +3122,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         pre_constraint_count = len(translator.constraints)
 
-        # Translate postconditions
-        post_z3: List[z3.BoolRef] = []
-        failed_posts: List[SExpr] = []
-        for post in postconditions:
-            z3_post = translator.translate_expr(post)
-            if z3_post is not None:
-                post_z3.append(self._ensure_bool(z3_post))
-            else:
-                failed_posts.append(post)
-
         # Translate function body BEFORE assumptions
         # This is important because @loop-invariant may reference local variables
         # from let bindings, which are declared during body translation
@@ -3150,6 +3140,21 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None and postconditions:
             body_z3 = translator.translate_expr(fn_body)
         body_constraint_end = len(translator.constraints)
+
+        # Postconditions are translated after the body, not before it: a @post
+        # speaks about the state the function ends in, so a mutable parameter
+        # in one means the value it was left with. @pre keeps the versions from
+        # before the body, which is what it is about.
+        # Translate postconditions
+        post_z3: List[z3.BoolRef] = []
+        failed_posts: List[SExpr] = []
+        for post in postconditions:
+            z3_post = translator.translate_expr(post)
+            if z3_post is not None:
+                post_z3.append(self._ensure_bool(z3_post))
+            else:
+                failed_posts.append(post)
+
 
         # _get_return_expr picks the trailing form. An explicit (return ...)
         # elsewhere is another exit, and what it yields is just as much $result,
