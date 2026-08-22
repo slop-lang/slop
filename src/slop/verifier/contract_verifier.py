@@ -1168,6 +1168,53 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return self._get_return_expr(expr.items[-1])
         return expr
 
+    @staticmethod
+    def _contains_quantifier(expr) -> bool:
+        """True if `expr` has a ForAll or Exists anywhere inside it."""
+        stack = [expr]
+        while stack:
+            node = stack.pop()
+            if z3.is_quantifier(node):
+                return True
+            if z3.is_app(node):
+                stack.extend(node.children())
+        return False
+
+    def _axioms_are_contradictory(self, assertions) -> bool:
+        """True if this axiom set is unsatisfiable, so nothing follows from it.
+
+        Deciding it outright is the expensive direction - a consistent set means
+        Z3 has to produce a model, and with quantified sequence axioms it often
+        cannot inside the timeout. When that happens, fall back to the ground
+        fragment: dropping assertions can only make a set easier to satisfy, so
+        an unsatisfiable ground subset proves the whole set unsatisfiable, and
+        the ground fragment is cheap to decide.
+
+        That leaves one gap, stated rather than hidden: a contradiction that
+        needs a quantified axiom to derive, in a set Z3 cannot settle in time,
+        is not caught. Every contradiction seen in practice has been ground -
+        two conflicting claims about the same length - and unsatisfiability is
+        the direction Z3 answers quickly, so a timeout here almost always means
+        satisfiable-but-hard rather than contradictory.
+        """
+        assertions = list(assertions)
+        solver = z3.Solver()
+        solver.set("timeout", self.timeout_ms)
+        for a in assertions:
+            solver.add(a)
+        outcome = solver.check()
+        if outcome != z3.unknown:
+            return outcome == z3.unsat
+
+        ground = [a for a in assertions if not self._contains_quantifier(a)]
+        if len(ground) == len(assertions):
+            return False
+        ground_solver = z3.Solver()
+        ground_solver.set("timeout", self.timeout_ms)
+        for a in ground:
+            ground_solver.add(a)
+        return ground_solver.check() == z3.unsat
+
     def _inconsistent_context_result(
         self, solver, translator, fn_name, fn_form,
         pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
@@ -1189,7 +1236,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         tips it over names the cause. Three of them are the author's contract;
         only what survives all three is ours.
         """
-        if solver.check() != z3.unsat:
+        if not self._axioms_are_contradictory(solver.assertions()):
             return None
 
         layer = z3.Solver()
@@ -3257,15 +3304,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # solver, whose stack the structural-vacuity branch reuses.
                     prop_axioms = list(prop_solver.assertions())
 
-                    def _axioms_are_inconsistent():
-                        consistency = z3.Solver()
-                        consistency.set("timeout", self.timeout_ms)
-                        for a in prop_axioms:
-                            consistency.add(a)
-                        return consistency.check() == z3.unsat
 
                     if emptiness_verified:
-                        if _axioms_are_inconsistent():
+                        if self._axioms_are_contradictory(prop_axioms):
                             unknown_properties.append((prop_name, prop_str,
                                 "verification context is inconsistent (verifier defect)"))
                         continue
@@ -3275,13 +3316,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
                     prop_result = prop_solver.check()
 
-                    if prop_result == z3.unsat and _axioms_are_inconsistent():
-                        # Proved only because the axioms contradict each other.
+                    if prop_result == z3.unsat:
                         # Asked only of a proof: a sat result is itself a model
                         # of the axioms, so it has already shown them consistent.
-                        unknown_properties.append((prop_name, prop_str,
-                            "verification context is inconsistent (verifier defect)"))
-                        continue
+                        if self._axioms_are_contradictory(prop_axioms):
+                            unknown_properties.append((prop_name, prop_str,
+                                "verification context is inconsistent (verifier defect)"))
+                            continue
 
                     if prop_result == z3.sat:
                         model = prop_solver.model()

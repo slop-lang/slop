@@ -7630,3 +7630,49 @@ class TestVacuityGuardCost:
         status, calls = self._guard_calls(self.SRC % 5)
         assert status == 'failed'
         assert calls == 0
+
+
+class TestGroundFragmentFallback:
+    """Deciding consistency outright is the expensive direction: a consistent
+    axiom set means Z3 has to produce a model, and with quantified sequence
+    axioms it often cannot inside the timeout. Dropping assertions can only make
+    a set easier to satisfy, so an unsatisfiable ground subset still proves the
+    whole set unsatisfiable - and the ground fragment is cheap.
+    """
+
+    @staticmethod
+    def _verifier(timeout_ms):
+        from slop.verifier import ContractVerifier, MinimalTypeEnv
+        return ContractVerifier(MinimalTypeEnv(), "<test>", timeout_ms)
+
+    def test_ground_contradiction_found_when_the_full_check_times_out(self):
+        import z3
+        x = z3.Int('x')
+        f = z3.Function('f', z3.IntSort(), z3.IntSort(), z3.IntSort())
+        i, j, k = z3.Ints('i j k')
+        # A quantified axiom Z3 will not settle in a millisecond, alongside a
+        # contradiction that needs no quantifier reasoning at all.
+        hard = z3.ForAll([i, j, k], f(f(i, j), k) == f(i, f(j, k)))
+        assertions = [hard, x == 0, x >= 1]
+
+        verifier = self._verifier(1)
+        assert verifier._axioms_are_contradictory(assertions)
+
+    def test_a_satisfiable_set_is_not_called_contradictory(self):
+        import z3
+        x = z3.Int('x')
+        i = z3.Int('i')
+        g = z3.Function('g', z3.IntSort(), z3.IntSort())
+        assertions = [z3.ForAll([i], g(i) >= 0), x == 3]
+
+        verifier = self._verifier(5000)
+        assert not verifier._axioms_are_contradictory(assertions)
+
+    def test_quantifier_detection_sees_nested_quantifiers(self):
+        import z3
+        i = z3.Int('i')
+        p = z3.Function('p', z3.IntSort(), z3.BoolSort())
+        verifier = self._verifier(1000)
+        assert verifier._contains_quantifier(z3.And(z3.BoolVal(True),
+                                                    z3.ForAll([i], p(i))))
+        assert not verifier._contains_quantifier(z3.Int('x') == 0)
