@@ -7731,3 +7731,37 @@ class TestInconsistencyAttributionLayers:
                 result)))
         ''')
         assert r.status != 'verified'
+
+    def test_compound_loop_source_gets_no_bound(self):
+        """`(if flag items other)` depends on values the escape check cannot
+        enumerate, so `(set! flag ...)` after the loop changes which collection
+        the bound is read against without touching the source expression."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena) (mut flag Bool) (items (List Int)) (other (List Int)))
+          (@spec ((Arena Bool (List Int) (List Int)) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) (list-len (if flag items other))))
+          (let ((mut r (list-new arena Int)))
+            (do (for-each (x (if flag items other)) (list-push r x))
+                (set! flag (not flag))
+                r)))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+    def test_synthetic_field_key_is_not_a_user_variable(self):
+        """`_field_report_results` is the registry key for `(. report results)`
+        and also a legal parameter name. Reading it out of the variable table
+        would tie an unrelated parameter's length to the field's."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep) (_field_report_results (List Int)))
+            (@spec ((Arena Rep (List Int)) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len (. report results)) (list-len _field_report_results)))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x)) r))))
+        '''
+        assert verify_source(src)[0].status != 'verified'

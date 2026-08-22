@@ -169,6 +169,19 @@ class AxiomGenerationMixin:
         """
         return parent_head == '.' and index == 1
 
+    def _is_stable_source(self, coll: 'SExpr') -> bool:
+        """True if `coll` is a shape whose dependencies can be enumerated.
+
+        A variable, or a field chain rooted at one. Anything else - an `if`
+        choosing between two collections, a call returning one - depends on
+        values this cannot list, so a mutation of one of them would go unnoticed
+        while the printed source expression stayed the same.
+        """
+        node = coll
+        while is_form(node, '.') and len(node) >= 2:
+            node = node[1]
+        return isinstance(node, Symbol)
+
     def _source_escapes(self, fn_body: 'SExpr', coll: 'SExpr') -> bool:
         """True if the loop's source collection is anything but read in this body."""
         if self._uses_outside(fn_body, coll, self._source_use_is_safe):
@@ -208,16 +221,23 @@ class AxiomGenerationMixin:
         """
         terms: List[z3.ArithRef] = []
 
-        name = None
         if isinstance(expr, Symbol):
-            name = expr.name
+            terms.extend(translator.list_length_terms(expr.name))
         elif is_form(expr, '.') and len(expr) >= 3:
             obj, fld = expr[1], expr[2]
             if isinstance(obj, Symbol) and isinstance(fld, Symbol):
-                # Same naming as _extract_map_push_axioms / _get_or_create_collection_seq
-                name = f"_field_{obj.name}_{fld.name}"
-        if name is not None:
-            terms.extend(translator.list_length_terms(name))
+                # Same key as _extract_map_push_axioms / _get_or_create_collection_seq.
+                # It names a Seq/array registration, not a variable - a parameter
+                # could legitimately be called _field_report_results, and reading
+                # it out of `variables` would tie that parameter's length to an
+                # unrelated field's.
+                key = f"_field_{obj.name}_{fld.name}"
+                seq = translator.list_seqs.get(key)
+                if seq is not None:
+                    terms.append(z3.Length(seq))
+                arr_entry = translator.list_arrays.get(key)
+                if arr_entry is not None:
+                    terms.append(arr_entry[1])
 
         handle = translator.translate_expr(expr)
         if handle is not None and z3.is_expr(handle) and handle.sort() == z3.IntSort():
@@ -363,6 +383,8 @@ class AxiomGenerationMixin:
             return []
 
         source = collections[0][0]
+        if not self._is_stable_source(source):
+            return []
         if self._source_escapes(fn_body, source):
             return []
 
