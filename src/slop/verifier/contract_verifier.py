@@ -1224,6 +1224,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
         type_constraint_count, pre_constraint_count,
         assume_constraint_start, assume_constraint_end, body_equality,
+        result_length_axioms,
     ):
         """A result to report when the axioms contradict each other, else None.
 
@@ -1295,6 +1296,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 "what it computes and what the type admits have no overlap. A "
                 "literal outside a range return type does this.",
                 body_equality,
+            ),
+            (
+                "An assumption contradicts what the body does: @assume is "
+                "trusted, so an assumption the body already refutes would "
+                "discharge any postcondition. Check it against the body.",
+                result_length_axioms,
             ),
         ]
         for message, extra in authored:
@@ -2881,6 +2888,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 solver.add(axiom)
 
         # Phase 3.5: Length of a returned list, derived from its push sites.
+        result_length_axioms: List[z3.BoolRef] = []
         # This used to assert a flat field_len($result) == 0 whenever the body
         # bound a list with (mut r (list-new ...)), ignoring every push, which
         # contradicted the push-count axiom in Phase 7 - issue #115.
@@ -2889,7 +2897,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 # Array encoding needs the representation to exist; the length
                 # claim itself comes from _result_length_axioms below.
                 translator._create_list_array('$result')
-            for axiom in self._result_length_axioms(fn_body, translator):
+            result_length_axioms = self._result_length_axioms(fn_body, translator)
+            for axiom in result_length_axioms:
                 solver.add(axiom)
 
         # Phase 4: Add union tag axiom if body is union-new
@@ -3258,6 +3267,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 pre_z3, preconditions, invariant_z3, range_field_axioms, assume_z3,
                 type_constraint_count, pre_constraint_count,
                 assume_constraint_start, assume_constraint_end, body_equality,
+                result_length_axioms,
             )
             if inconsistent is not None:
                 return inconsistent

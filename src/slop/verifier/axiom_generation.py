@@ -220,10 +220,19 @@ class AxiomGenerationMixin:
         return owners
 
     def _contains_any_form(self, expr: 'SExpr', heads) -> bool:
-        """True if `expr` contains a call to any of `heads`."""
+        """True if `expr` calls any of `heads` in this function's own body.
+
+        The walk stops at a nested `(fn ...)`: a callback's `return` leaves the
+        callback, and its `break` belongs to a loop inside it, so neither says
+        anything about the enclosing function's exits. Counting them suppressed
+        the result-length axioms of any function that passes a callback.
+        """
         if isinstance(expr, SList):
-            if len(expr) >= 1 and isinstance(expr[0], Symbol) and expr[0].name in heads:
-                return True
+            if len(expr) >= 1 and isinstance(expr[0], Symbol):
+                if expr[0].name in heads:
+                    return True
+                if expr[0].name == 'fn':
+                    return False
             for item in expr.items:
                 if self._contains_any_form(item, heads):
                     return True
@@ -249,7 +258,7 @@ class AxiomGenerationMixin:
                 # could legitimately be called _field_report_results, and reading
                 # it out of `variables` would tie that parameter's length to an
                 # unrelated field's.
-                key = f"_field_{obj.name}_{fld.name}"
+                key = translator.field_collection_key(obj.name, fld.name)
                 seq = translator.list_seqs.get(key)
                 if seq is not None:
                     terms.append(z3.Length(seq))
@@ -597,9 +606,8 @@ class AxiomGenerationMixin:
             obj = map_pattern.collection[1]
             field = map_pattern.collection[2]
             if isinstance(obj, Symbol) and isinstance(field, Symbol):
-                # Must match naming convention in _get_or_create_collection_seq:
-                # "_field_{obj_name}_{field_name}"
-                source_name = f"_field_{obj.name}_{field.name}"
+                # Must match the key _get_or_create_collection_seq registers under
+                source_name = translator.field_collection_key(obj.name, field.name)
                 if source_name not in translator.list_seqs:
                     translator._create_list_seq(source_name)
                 source_seq = translator.list_seqs.get(source_name)
@@ -825,7 +833,7 @@ class AxiomGenerationMixin:
             obj = pattern.outer_collection[1]
             field = pattern.outer_collection[2]
             if isinstance(obj, Symbol) and isinstance(field, Symbol):
-                outer_name = f"_field_{obj.name}_{field.name}"
+                outer_name = translator.field_collection_key(obj.name, field.name)
                 if outer_name not in translator.list_seqs:
                     translator._create_list_seq(outer_name)
                 outer_seq = translator.list_seqs.get(outer_name)
@@ -1073,7 +1081,7 @@ class AxiomGenerationMixin:
             field = match_ctx.collection_expr[2]
             if isinstance(obj, Symbol) and isinstance(field, Symbol):
                 # The index is (. obj by-predicate), parent list is (. obj triples)
-                parent_name = f"_field_{obj.name}_triples"
+                parent_name = translator.field_collection_key(obj.name, "triples")
                 if parent_name not in translator.list_seqs:
                     translator._create_list_seq(parent_name)
                 parent_seq = translator.list_seqs.get(parent_name)

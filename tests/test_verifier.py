@@ -4885,7 +4885,7 @@ class TestSequenceTheory:
         assert z3.is_quantifier(result)
 
         # Should have created a Seq for the field access
-        assert "_field_delta_triples" in translator.list_seqs
+        assert translator.field_collection_key("delta", "triples") in translator.list_seqs
 
     def test_function_call_collection_translation(self):
         """Test (forall (elem (fn-name args)) body) translation for function calls"""
@@ -5018,7 +5018,7 @@ class TestSequenceTheory:
 
         # Should have created Seqs
         assert '$result' in translator.list_seqs
-        assert '_field_delta_triples' in translator.list_seqs
+        assert translator.field_collection_key('delta', 'triples') in translator.list_seqs
 
     def test_property_verification_with_collection_quantifier(self):
         """Integration test: property with collection-bound forall"""
@@ -5899,7 +5899,7 @@ class TestNestedLoopPattern:
 
         # Create seqs
         translator._create_list_seq('$result')
-        translator._create_list_seq('_field_delta_triples')
+        translator._create_list_seq(translator.field_collection_key('delta', 'triples'))
 
         # Nested loop pattern body
         body = parse("""
@@ -6032,7 +6032,7 @@ class TestNestedLoopPattern:
 
         # Create seqs
         translator._create_list_seq('$result')
-        translator._create_list_seq('_field_delta_triples')
+        translator._create_list_seq(translator.field_collection_key('delta', 'triples'))
 
         # Simplified eq-trans body
         body = parse("""
@@ -7871,3 +7871,75 @@ class TestInternalNamespaceCollisions:
         translator.variables['field_len'] = z3.Int('field_len')
         assert translator.field_len_term('xs') is None
         assert translator.list_length_terms('xs') == []
+
+
+class TestCallbackBoundaries:
+    """A callback is a separate function. Its `return` leaves the callback and
+    its `break` belongs to a loop inside it, so neither describes the enclosing
+    function's exits - counting them suppressed the length axioms of every
+    function that passes one.
+    """
+
+    def test_a_callback_local_return_does_not_suppress_the_bound(self):
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena) (g Graph))
+          (@spec ((Arena Graph) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) 1))
+          (let ((mut r (list-new arena Int)))
+            (do (list-push r 1)
+                (graph-for-each g (fn ((x Int)) (do (return 0))))
+                r)))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+    def test_an_outer_return_still_suppresses_it(self):
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena) (flag Bool) (items (List Int)))
+          (@spec ((Arena Bool (List Int)) -> (List Int)))
+          (@alloc arena)
+          (@post (== (list-len $result) 1))
+          (let ((mut r (list-new arena Int)))
+            (do (when flag (return items))
+                (list-push r 1)
+                r)))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+
+class TestAssumptionAgainstBody:
+    def test_an_assumption_the_body_refutes_is_named(self):
+        """@assume is trusted, so one the body already refutes discharges
+        everything. That is the author's error, not a verifier defect."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn f ((arena Arena))
+          (@spec ((Arena) -> (List Int)))
+          (@assume (== (list-len $result) 0))
+          (@post (== (list-len $result) 7))
+          (let ((mut r (list-new arena Int)))
+            (do (list-push r 1) r)))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'contradicts what the body does' in r.message
+
+    def test_a_parameter_named_like_a_field_key_is_not_the_field(self):
+        """The Seq registry is keyed by name, and a field collection has no
+        variable to name it. A key a parameter could also be spelled would let
+        that parameter's sequence stand in for the field's."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep) (_field_report_results (List Int)))
+            (@spec ((Arena Rep (List Int)) -> (List Int)))
+            (@alloc arena)
+            (@post (<= (list-len $result) (list-len _field_report_results)))
+            (@property p (forall (x $result) (>= x 0)))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x)) r))))
+        '''
+        assert verify_source(src)[0].status != 'verified'

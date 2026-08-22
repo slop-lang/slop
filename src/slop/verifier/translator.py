@@ -245,6 +245,17 @@ class Z3Translator:
         self.list_seqs[name] = seq
         return seq
 
+    @staticmethod
+    def field_collection_key(obj_name: str, field_name: str) -> str:
+        """Registry key for the collection held in `obj.field`.
+
+        list_seqs and list_arrays are keyed by variable name, and a field
+        collection has no variable to name it. The key has to be one no SLOP
+        identifier can be, or a parameter spelled the same way would share the
+        registration and inherit its facts - a space does it.
+        """
+        return f"_field {obj_name}.{field_name}"
+
     def _get_list_seq(self, name: str) -> Optional[z3.SeqRef]:
         """Get the Seq variable for a list."""
         return self.list_seqs.get(name)
@@ -428,7 +439,7 @@ class Z3Translator:
             # Build a unique name for this field access
             obj_name = obj_expr.name if isinstance(obj_expr, Symbol) else "_obj"
             field_name = field_expr.name if isinstance(field_expr, Symbol) else "_field"
-            seq_name = f"_field_{obj_name}_{field_name}"
+            seq_name = self.field_collection_key(obj_name, field_name)
 
             if seq_name in self.list_seqs:
                 return self.list_seqs[seq_name]
