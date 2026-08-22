@@ -1265,6 +1265,25 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
+        # The assumptions are held back to the end, so that a contradiction
+        # they introduce is distinguishable from one already present without
+        # them - @assume is trusted, so one that the body refutes is the
+        # author's error rather than ours.
+        assumption_assertions = (
+            list(translator.constraints[assume_constraint_start:assume_constraint_end])
+            + list(assume_z3)
+        )
+
+        def _is_assumption(assertion) -> bool:
+            return any(z3.eq(assertion, a) for a in assumption_assertions)
+
+        # Everything else the main solver holds. Enumerating the kinds of axiom
+        # by hand does not work - Phase 3's record fields, Phase 4's union tags,
+        # the sequence identities and the rest are added straight to the solver -
+        # so take them from the solver itself. Re-adding assertions already in
+        # an earlier layer is harmless.
+        generated_axioms = [a for a in solver.assertions() if not _is_assumption(a)]
+
         authored = [
             (
                 self._unsatisfiable_precondition_message(preconditions),
@@ -1278,13 +1297,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 invariant_z3 + range_field_axioms,
             ),
             (
-                "Assumptions are contradictory: the @assume set cannot hold "
-                "together with the preconditions, so it would discharge any "
-                "postcondition. @assume is trusted, not checked - narrow it.",
-                list(translator.constraints[assume_constraint_start:assume_constraint_end])
-                + list(assume_z3),
-            ),
-            (
                 "A contract or body expression cannot be well-defined: the side "
                 "conditions from translating them cannot all hold. A division by "
                 "a zero denominator or a value outside its range type does this.",
@@ -1295,13 +1307,20 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 "The body cannot produce a value of the declared return type: "
                 "what it computes and what the type admits have no overlap. A "
                 "literal outside a range return type does this.",
-                body_equality,
+                list(body_equality) + list(result_length_axioms),
             ),
             (
-                "An assumption contradicts what the body does: @assume is "
-                "trusted, so an assumption the body already refutes would "
+                "Verification context is inconsistent: the axioms generated for this "
+                "function contradict each other, so nothing can be proved from them. "
+                "This is a verifier defect, not a problem with the contract - please "
+                "report it with the function body.",
+                generated_axioms,
+            ),
+            (
+                "An assumption contradicts the function: @assume is trusted, so "
+                "one that the body or the contract already refutes would "
                 "discharge any postcondition. Check it against the body.",
-                result_length_axioms,
+                assumption_assertions,
             ),
         ]
         for message, extra in authored:
@@ -1309,10 +1328,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 layer.add(a)
             outcome = layer.check()
             if outcome == z3.unsat:
+                # Only the verifier's own layer is our fault; the rest are the
+                # author's, and a contract that cannot hold is a failure.
+                ours = message.startswith("Verification context is inconsistent")
                 return VerificationResult(
                     name=fn_name,
                     verified=False,
-                    status="failed",
+                    status="unknown" if ours else "failed",
                     message=message,
                     location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                 )
@@ -1333,6 +1355,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                 )
 
+        # Unreachable in principle - the last layer holds everything the main
+        # solver does, and that is unsat by hypothesis - but a layer's check can
+        # come back undecided, and saying so beats asserting a cause.
         return VerificationResult(
             name=fn_name,
             verified=False,

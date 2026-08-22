@@ -7213,7 +7213,7 @@ class TestVacuityGuard:
         '''
         result = verify_source(src)[0]
         assert result.status == 'failed'
-        assert 'Assumptions are contradictory' in result.message
+        assert 'An assumption contradicts the function' in result.message
 
     def test_match_arm_filter_loop_bounded_by_source(self):
         """A filter written as a match arm, not a `when`.
@@ -7476,7 +7476,7 @@ class TestInconsistencyAttribution:
           n)
         ''')
         assert r.status == 'failed'
-        assert 'Assumptions are contradictory' in r.message
+        assert 'An assumption contradicts the function' in r.message
 
     def test_ill_defined_assumption_names_the_assumption(self):
         """An @assume's own side conditions live in the same growing list as a
@@ -7490,7 +7490,7 @@ class TestInconsistencyAttribution:
           n)
         ''')
         assert r.status == 'failed'
-        assert 'Assumptions are contradictory' in r.message
+        assert 'An assumption contradicts the function' in r.message
 
     def test_ill_defined_contract_expression(self):
         """A postcondition's own side conditions, not the preconditions.
@@ -7912,7 +7912,9 @@ class TestCallbackBoundaries:
 class TestAssumptionAgainstBody:
     def test_an_assumption_the_body_refutes_is_named(self):
         """@assume is trusted, so one the body already refutes discharges
-        everything. That is the author's error, not a verifier defect."""
+        everything. That is the author's error, not a verifier defect - and the
+        body fact that refutes it here is a record-field axiom added straight to
+        the solver, not something the diagnosis could have enumerated by hand."""
         from slop.verifier import verify_source
         src = '''
         (fn f ((arena Arena))
@@ -7924,7 +7926,25 @@ class TestAssumptionAgainstBody:
         '''
         r = verify_source(src)[0]
         assert r.status == 'failed'
-        assert 'contradicts what the body does' in r.message
+        assert 'An assumption contradicts the function' in r.message
+
+    def test_an_assumption_refuted_by_a_record_field_is_named(self):
+        """The refuting fact is Phase 3's field_x($result) == 1, which never
+        passes through translator.constraints. The diagnosis takes the generated
+        axioms from the solver rather than listing their kinds."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type R (record (x Int)))
+          (fn f ()
+            (@spec (() -> R))
+            (@assume (== (. $result x) 0))
+            (@post (== (. $result x) 5))
+            (record-new R (x 1))))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'An assumption contradicts the function' in r.message
 
     def test_a_parameter_named_like_a_field_key_is_not_the_field(self):
         """The Seq registry is keyed by name, and a field collection has no
