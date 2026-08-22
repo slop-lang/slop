@@ -7407,3 +7407,90 @@ class TestResultLengthFailsClosed:
     def test_loop_binder_shadowing_the_accumulator(self):
         assert self._one(self.BINDER_SHADOWS,
                          "(== (list-len $result) (list-len items))").status != 'verified'
+
+    SOURCE_POPPED = '''
+        (let ((mut r (list-new arena Int)))
+          (do (for-each (x items) (list-push r x)) (list-pop items) r))'''
+    RETURN_SHAPED_ARGUMENT = '''
+        (let ((mut r (list-new arena Int)))
+          (do (list-push r 1) (list-pop (do r)) r))'''
+
+    def test_source_shortened_after_the_loop(self):
+        """The bound is against one length term; a pop makes that term denote a
+        different collection than the loop iterated."""
+        assert self._one(self.SOURCE_POPPED,
+                         "(== (list-len $result) (list-len items))").status != 'verified'
+
+    def test_trailing_position_of_an_argument_block_is_not_the_result(self):
+        """`(list-pop (do r))` has r trailing a do block, but that block is an
+        argument. Only the block the function actually yields is exempt."""
+        assert self._one(self.RETURN_SHAPED_ARGUMENT,
+                         "(== (list-len $result) 1)").status != 'verified'
+
+
+class TestInconsistencyAttribution:
+    """Issue #115: an unsat base context has several causes, and the report has
+    to name the right one - three of them are the author's contract, one is
+    ours, and only the last should ask for a bug report.
+    """
+
+    @staticmethod
+    def _verify(src):
+        from slop.verifier import verify_source
+        return verify_source(src)[0]
+
+    def test_unsatisfiable_preconditions(self):
+        r = self._verify('''
+        (fn impossible ((n Int))
+          (@spec ((Int) -> Int))
+          (@pre (> n 10))
+          (@pre (< n 5))
+          (@post (== $result n))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'unsatisfiable' in r.message.lower()
+        assert 'verifier defect' not in r.message
+
+    def test_contradictory_type_invariants(self):
+        r = self._verify('''
+        (module m
+          (type Weird (record (x Int))
+            (@invariant (> x 0))
+            (@invariant (< x 0)))
+          (fn f ((w Weird))
+            (@spec ((Weird) -> Int))
+            (@post (== $result 1))
+            1))
+        ''')
+        assert r.status == 'failed'
+        assert 'Type invariants are contradictory' in r.message
+
+    def test_contradictory_assumptions(self):
+        r = self._verify('''
+        (fn contradictory ((n Int))
+          (@spec ((Int) -> Int))
+          (@assume (== n 1))
+          (@assume (== n 2))
+          (@post (== $result 42))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'Assumptions are contradictory' in r.message
+
+    def test_ill_defined_contract_expression(self):
+        """A postcondition's own side conditions, not the preconditions.
+
+        translator.constraints accumulates across phases, so replaying the whole
+        list when diagnosing an unsatisfiable @pre blamed the preconditions for
+        a contradiction a postcondition introduced.
+        """
+        r = self._verify('''
+        (fn f ((n Int))
+          (@spec ((Int) -> Int))
+          (@post (== (/ 1 0) 0))
+          n)
+        ''')
+        assert r.status == 'failed'
+        assert 'well-defined' in r.message
+        assert 'Precondition' not in r.message

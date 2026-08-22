@@ -55,58 +55,82 @@ class AxiomGenerationMixin:
                 count += self._count_bindings_of(item, name)
         return count
 
-    # A list variable's length is only derivable if push is the only thing that
-    # happens to it. These are the contexts a bare occurrence of the name may
-    # appear in without invalidating that: the target of a push, the argument of
-    # a read, its own binding, or the value being returned.
-    _LIST_READ_OPS = ('list-len', 'list-get')
+    def _uses_outside(self, body: 'SExpr', target: str, allowed) -> bool:
+        """True if `target` appears anywhere in `body` in a context `allowed` rejects.
 
-    def _list_escapes(self, expr: 'SExpr', name: str,
-                      parent_head: Optional[str] = None,
-                      index: int = -1, is_last: bool = False) -> bool:
-        """True if `name` is used in a way that leaves its length unknown.
-
-        Counting pushes only bounds a list if nothing else touches it. A
-        `list-pop` shortens it, a `set!` replaces it outright, and handing it to
-        a function that appends to it does the same at a distance. None of those
-        are modelled, so any occurrence outside the handful of contexts that are
-        means no bound may be claimed.
-        """
-        if isinstance(expr, Symbol):
-            if expr.name != name:
-                return False
-            if parent_head == 'list-push' and index == 1:
-                return False
-            if parent_head in self._LIST_READ_OPS and index == 1:
-                return False
-            if parent_head == 'mut' and index == 1:
-                return False
-            # The trailing position of a do/let block is the value it yields.
-            if parent_head in ('do', 'let') and is_last:
-                return False
-            return True
-
-        if isinstance(expr, SList):
-            head = expr[0].name if len(expr) and isinstance(expr[0], Symbol) else None
-            last = len(expr) - 1
-            for i, item in enumerate(expr.items):
-                if self._list_escapes(item, name, head, i, i == last):
-                    return True
-        return False
-
-    def _collection_is_mutated(self, fn_body: 'SExpr', coll: 'SExpr') -> bool:
-        """True if `coll` is pushed to anywhere in the body.
-
-        A loop bound is stated against the source's length as a single term, but
-        that term denotes one value: if the body also appends to the source, the
-        bound would be read against the enlarged length rather than the one the
-        loop saw.
+        `target` is a printed expression, so this works for a plain variable and
+        for something like `(. report results)` alike. `allowed` is called with
+        (parent_head, index, returns_value) for each occurrence and says whether
+        that use leaves the list's length knowable; returns_value is true only
+        for the value the function actually yields, which means the trailing
+        position of a do/let chain reached from the body root - `(list-pop (do r))`
+        has r in a trailing position, but that block is an argument, not a result.
         """
         from slop.parser import pretty_print
-        target = pretty_print(coll)
-        pushes: List = []
-        self._find_list_push_calls(fn_body, pushes)
-        return any(pretty_print(lst) == target for lst, _ in pushes)
+
+        def walk(node, parent_head, index, returns_value):
+            if pretty_print(node) == target:
+                return not allowed(parent_head, index, returns_value)
+            if not isinstance(node, SList):
+                return False
+            head = node[0].name if len(node) and isinstance(node[0], Symbol) else None
+            last = len(node) - 1
+            block = head in ('do', 'let')
+            for i, item in enumerate(node.items):
+                # The binder of a for-each is (var collection); name that
+                # position so a collection may be recognised there.
+                child_head = '@for-each-binder' if (head == 'for-each' and i == 1) else head
+                if isinstance(item, SList) and child_head == '@for-each-binder':
+                    for j, sub in enumerate(item.items):
+                        if walk(sub, '@for-each-binder', j, False):
+                            return True
+                    continue
+                if walk(item, head, i, returns_value and block and i == last):
+                    return True
+            return False
+
+        return walk(body, None, -1, True)
+
+    @staticmethod
+    def _accumulator_use_is_safe(parent_head, index, returns_value) -> bool:
+        """Contexts in which the returned list's length stays derivable.
+
+        Counting pushes bounds a list only if nothing else touches it. A
+        list-pop shortens it, a set! replaces it outright, and handing it to a
+        function that appends to it does the same at a distance. Only the target
+        of a push, the argument of a read, its own binding, and the value the
+        body yields are accounted for; anything else, including an operation
+        this does not know about, means no bound.
+        """
+        if parent_head == 'list-push' and index == 1:
+            return True
+        if parent_head in ('list-len', 'list-get') and index == 1:
+            return True
+        if parent_head == 'mut' and index == 1:
+            return True
+        return returns_value
+
+    @staticmethod
+    def _source_use_is_safe(parent_head, index, returns_value) -> bool:
+        """Contexts in which a loop's source collection is only read.
+
+        A loop bound is stated against the source's length as one term, so
+        anything that changes that length - a push, a pop, a reassignment, a
+        callee that appends - would have the bound read against a different
+        collection than the loop saw.
+        """
+        if parent_head == '@for-each-binder' and index == 1:
+            return True
+        return parent_head in ('list-len', 'list-get') and index == 1
+
+    def _list_escapes(self, expr: 'SExpr', name: str) -> bool:
+        """True if the returned list `name` is used in a way that hides its length."""
+        return self._uses_outside(expr, name, self._accumulator_use_is_safe)
+
+    def _source_escapes(self, fn_body: 'SExpr', coll: 'SExpr') -> bool:
+        """True if the loop's source collection is anything but read in this body."""
+        from slop.parser import pretty_print
+        return self._uses_outside(fn_body, pretty_print(coll), self._source_use_is_safe)
 
     def _contains_any_form(self, expr: 'SExpr', heads) -> bool:
         """True if `expr` contains a call to any of `heads`."""
@@ -283,7 +307,7 @@ class AxiomGenerationMixin:
             return []
 
         source = collections[0][0]
-        if self._collection_is_mutated(fn_body, source):
+        if self._source_escapes(fn_body, source):
             return []
 
         src_terms, links = self._length_terms_for(source, translator)

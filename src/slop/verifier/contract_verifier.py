@@ -2480,6 +2480,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             else:
                 failed_pres.append((pre_name, pre_expr))
 
+        # Everything in translator.constraints so far belongs to the parameter
+        # declarations and the preconditions. Translating postconditions and the
+        # body appends more - a division adds its own non-zero side condition,
+        # for one - and replaying the whole list when diagnosing an
+        # unsatisfiable @pre would blame the preconditions for a contradiction
+        # that came from a postcondition.
+        pre_constraint_count = len(translator.constraints)
+
         # Translate postconditions
         post_z3: List[z3.BoolRef] = []
         failed_posts: List[SExpr] = []
@@ -2651,10 +2659,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # For (type T (record ...) (@invariant cond)), when param has type T,
         # add cond substituted with param.field references
         param_invariants = self._collect_parameter_invariants(params)
+        invariant_z3: List[z3.BoolRef] = []
         for param_name, inv_expr in param_invariants:
             inv_z3 = translator.translate_expr(inv_expr)
             if inv_z3 is not None:
-                solver.add(self._ensure_bool(inv_z3))
+                inv_bool = self._ensure_bool(inv_z3)
+                solver.add(inv_bool)
+                invariant_z3.append(inv_bool)
 
         # Phase 1b: Add range type axioms for record fields
         # For record types with range-typed fields like (inferred-count (Int 0 ..)),
@@ -3069,38 +3080,48 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # contract being impossible, and axioms we generated that contradict
         # each other, which is a defect in this verifier.
         if solver.check() == z3.unsat:
-            # Narrow it down: the @pre set alone, then @pre plus @assume, then
-            # everything. The first two are the author's own contracts being
-            # impossible and are reported as such; only what is left over is
-            # ours.
+            # Narrow it down, adding one authored layer at a time: the @pre set,
+            # then the parameters' type invariants, then @assume. Each of those
+            # is the author's own contract being impossible and is reported as
+            # such; only a contradiction that survives all three is ours.
             layer = z3.Solver()
             layer.set("timeout", self.timeout_ms)
-            for c in translator.constraints:
+            for c in translator.constraints[:pre_constraint_count]:
                 layer.add(c)
             for p in pre_z3:
                 layer.add(p)
-            if layer.check() == z3.unsat:
-                return VerificationResult(
-                    name=fn_name,
-                    verified=False,
-                    status="failed",
-                    message=self._unsatisfiable_precondition_message(preconditions),
-                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
-                )
-            for a in assume_z3:
-                layer.add(a)
-            if layer.check() == z3.unsat:
-                return VerificationResult(
-                    name=fn_name,
-                    verified=False,
-                    status="failed",
-                    message=(
-                        "Assumptions are contradictory: the @assume set cannot hold "
-                        "together with the preconditions, so it would discharge any "
-                        "postcondition. @assume is trusted, not checked - narrow it."
-                    ),
-                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
-                )
+            authored = [
+                (self._unsatisfiable_precondition_message(preconditions), []),
+                (
+                    "Type invariants are contradictory: no value of the parameter "
+                    "types can satisfy them together with the preconditions, so the "
+                    "function has no legal input.",
+                    invariant_z3,
+                ),
+                (
+                    "Assumptions are contradictory: the @assume set cannot hold "
+                    "together with the preconditions, so it would discharge any "
+                    "postcondition. @assume is trusted, not checked - narrow it.",
+                    assume_z3,
+                ),
+                (
+                    "A contract or body expression cannot be well-defined: the side "
+                    "conditions from translating them cannot all hold. A division by "
+                    "a zero denominator or a value outside its range type does this.",
+                    translator.constraints[pre_constraint_count:],
+                ),
+            ]
+            for message, extra in authored:
+                for a in extra:
+                    layer.add(a)
+                if layer.check() == z3.unsat:
+                    return VerificationResult(
+                        name=fn_name,
+                        verified=False,
+                        status="failed",
+                        message=message,
+                        location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                    )
             return VerificationResult(
                 name=fn_name,
                 verified=False,
