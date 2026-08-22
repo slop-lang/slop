@@ -7342,3 +7342,29 @@ class TestResultLengthFailsClosed:
         """(set! result (list-push result x)) is a push the structured walk does
         not descend to. The plain count sees it, the mismatch forces a bail."""
         assert self._one(self.SET_BANG, "(== (list-len $result) 0)").status != 'verified'
+
+    EARLY_RETURN = '''
+        (do
+          (when flag (return items))
+          (list-new arena Int))'''
+
+    def test_explicit_return_is_a_second_exit(self):
+        """_get_return_expr sees only the trailing expression.
+
+        With `(when flag (return items))` above it, `items` is just as much
+        $result as the trailing `(list-new ...)`, so neither the length bound
+        nor the sequence identity may be taken from the trailing form alone.
+        The length half of this false-verified before this branch too.
+        """
+        from slop.verifier import verify_source
+        for post in ("(== (list-len $result) 0)",
+                     "(forall (e $result) (> e 0))"):
+            src = '''
+            (fn pick ((arena Arena) (flag Bool) (items (List Int)))
+              (@spec ((Arena Bool (List Int)) -> (List Int)))
+              (@alloc arena)
+              (@post %s)
+              %s)
+            ''' % (post, self.EARLY_RETURN)
+            result = verify_source(src)[0]
+            assert result.status != 'verified', f"{post}: {result.message}"

@@ -127,6 +127,13 @@ class AxiomGenerationMixin:
 
         axioms: List[z3.BoolRef] = list(translator.link_list_length_terms('$result'))
 
+        # _get_return_expr only looks at the trailing expression. An explicit
+        # (return ...) elsewhere in the body is a second exit it cannot see, and
+        # whatever that path returns is just as much $result - so nothing about
+        # the trailing expression describes the result on its own.
+        if self._contains_any_form(fn_body, ('return',)):
+            return axioms
+
         return_expr = self._get_return_expr(fn_body)
 
         # A bare (list-new ...) return is empty, with no body to push from.
@@ -158,7 +165,7 @@ class AxiomGenerationMixin:
             return axioms
 
         if any(site.loop_depth > 0 for site in sites):
-            early_exit = self._contains_any_form(fn_body, ('break', 'continue', 'return'))
+            early_exit = self._contains_any_form(fn_body, ('break', 'continue'))
             axioms.extend(self._loop_result_length_axioms(
                 sites, terms, translator, early_exit))
             return axioms

@@ -1598,6 +1598,29 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return axioms
 
+    def _result_sequence_equality(self, fn_body: SExpr,
+                                  translator: Z3Translator) -> List:
+        """Equate $result's Seq with the returned local's, when they must agree.
+
+        Under Seq encoding the two get separate constants, so a @loop-invariant
+        stated about the local proves nothing about the result unless they are
+        tied together.
+
+        Withheld when the body contains an explicit (return ...):
+        _get_return_expr only sees the trailing expression, and equating
+        $result with it would claim the other exit cannot happen.
+        """
+        if self._contains_any_form(fn_body, ('return',)):
+            return []
+        ret_expr = self._get_return_expr(fn_body)
+        if not isinstance(ret_expr, Symbol):
+            return []
+        result_seq = translator.list_seqs.get('$result')
+        ret_seq = translator.list_seqs.get(ret_expr.name)
+        if result_seq is None or ret_seq is None or z3.eq(result_seq, ret_seq):
+            return []
+        return [result_seq == ret_seq]
+
     def _unconditional_push_count(self, body: SExpr, list_name: str) -> int:
         """How many pushes to `list_name` are certain to happen exactly once.
 
@@ -3032,13 +3055,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # too, or a @loop-invariant stated about the local proves nothing about
         # the result.
         if fn_body is not None and translator.use_seq_encoding:
-            ret_expr = self._get_return_expr(fn_body)
-            if isinstance(ret_expr, Symbol):
-                result_seq = translator.list_seqs.get('$result')
-                ret_seq = translator.list_seqs.get(ret_expr.name)
-                if (result_seq is not None and ret_seq is not None
-                        and not z3.eq(result_seq, ret_seq)):
-                    solver.add(result_seq == ret_seq)
+            for equality in self._result_sequence_equality(fn_body, translator):
+                solver.add(equality)
 
         # Vacuity guard (issue #115)
         #
@@ -3127,13 +3145,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # Loop invariants reference the local variable (e.g., 'result'),
                     # while properties reference '$result' - these are different Z3 seqs
                     if fn_body is not None and translator.use_seq_encoding:
-                        return_expr = self._get_return_expr(fn_body)
-                        if isinstance(return_expr, Symbol):
-                            ret_name = return_expr.name
-                            result_seq = translator.list_seqs.get('$result')
-                            ret_seq = translator.list_seqs.get(ret_name)
-                            if result_seq is not None and ret_seq is not None and not z3.eq(result_seq, ret_seq):
-                                prop_solver.add(result_seq == ret_seq)
+                        for equality in self._result_sequence_equality(fn_body, translator):
+                            prop_solver.add(equality)
 
                     # Add pattern axioms (filter/map/fold axioms derived from loop analysis)
                     # These are needed for properties that reason about collection contents
