@@ -3678,29 +3678,23 @@ class TestArrayEncoding:
         assert z3.is_bool(result)
 
     def test_list_new_with_array_encoding(self):
-        """Test list-new with array encoding creates proper axioms"""
+        """A body that is just (list-new ...) returns an empty list."""
         from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator
         from slop.parser import parse
         import z3
 
         env = MinimalTypeEnv()
         translator = Z3Translator(env, use_array_encoding=True)
-
-        # Declare $result
         translator.declare_variable('$result', z3.IntSort())
+        translator._create_list_array('$result')
 
         verifier = ContractVerifier(env)
 
-        # Extract axioms for list-new
-        list_new_expr = parse("(list-new arena Triple)")[0]
-        axioms = verifier._extract_list_new_axioms(list_new_expr, translator)
+        body = parse("(list-new arena Triple)")[0]
+        axioms = verifier._result_length_axioms(body, translator)
 
-        # Should have created array for $result
         assert '$result' in translator.list_arrays
-
-        # Should have axiom that length is 0
         assert len(axioms) >= 1
-        # First axiom should be length == 0 (may be normalized to 0 == length)
         has_length_zero = any("== 0" in str(a) or "0 ==" in str(a) for a in axioms)
         assert has_length_zero, f"Expected length == 0 axiom, got: {axioms}"
 
@@ -6965,3 +6959,258 @@ class TestMatchArmPostconditionPropagation:
         verifier = ContractVerifier(env, function_registry=registry)
         result = verifier.verify_function(fn_form)
         assert result.status == "verified", f"Expected verified, got {result.status}: {result.message}"
+
+
+# ============================================================================
+# Issue #115: a self-contradictory axiom set discharges every contract
+# ============================================================================
+
+_PUSH_BODY_SHAPES = {
+    # name -> (body, params, expected length bound as (lower, upper|None))
+    'no_pushes': ('''
+        (let ((mut r (list-new arena Msg)))
+          r)''', 0, 0),
+    'one_unconditional_push': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (list-push r (record-new Msg (v 1) (to root))) r))''', 1, 1),
+    'two_unconditional_pushes': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (list-push r (record-new Msg (v 1) (to root)))
+              (list-push r (record-new Msg (v 2) (to root)))
+              r))''', 2, 2),
+    'push_under_when': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (when (> root 0) (list-push r (record-new Msg (v 1) (to root)))) r))''', 0, 1),
+    'push_in_one_match_arm': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (match ax
+                ((a n) (list-push r (record-new Msg (v n) (to root))))
+                ((b _) (do)))
+              r))''', 0, 1),
+    'push_in_both_match_arms': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (match ax
+                ((a n) (list-push r (record-new Msg (v n) (to root))))
+                ((b n) (list-push r (record-new Msg (v n) (to root)))))
+              r))''', 0, 2),
+    'guarded_and_unguarded': ('''
+        (let ((mut r (list-new arena Msg)))
+          (do (list-push r (record-new Msg (v 1) (to root)))
+              (when (> root 0) (list-push r (record-new Msg (v 2) (to root))))
+              r))''', 1, 2),
+}
+
+
+def _push_shape_source(body, post):
+    """A list-returning function over Msg/Ax with `post` as its @post."""
+    return '''
+    (module probe
+      (type Msg (record (v Int) (to Int)))
+      (type Ax  (union (a Int) (b Int)))
+
+      (fn build ((arena Arena) (ax Ax) (root Int))
+        (@spec ((Arena Ax Int) -> (List Msg)))
+        (@alloc arena)
+        (@post %s)
+        %s))
+    ''' % (post, body)
+
+
+class TestResultLengthBounds:
+    """Issue #115: the length of a push-built result, derived from its push sites.
+
+    Two axioms used to be emitted about it independently - a flat
+    field_len($result) == 0 from the (mut r (list-new ...)) binding and a
+    field_len($result) >= push_count from the push count - and the pair was
+    unsatisfiable, so every postcondition on such a function reported verified
+    without being proved. These pin the bound that replaced them.
+    """
+
+    @pytest.mark.parametrize("shape", sorted(_PUSH_BODY_SHAPES))
+    def test_lower_bound_holds(self, shape):
+        from slop.verifier import verify_source
+        body, lower, _ = _PUSH_BODY_SHAPES[shape]
+        src = _push_shape_source(body, "{(list-len $result) >= %d}" % lower)
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status == 'verified', f"{shape}: {result.message}"
+
+    @pytest.mark.parametrize("shape", sorted(_PUSH_BODY_SHAPES))
+    def test_upper_bound_holds(self, shape):
+        from slop.verifier import verify_source
+        body, _, upper = _PUSH_BODY_SHAPES[shape]
+        src = _push_shape_source(body, "{(list-len $result) <= %d}" % upper)
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status == 'verified', f"{shape}: {result.message}"
+
+    @pytest.mark.parametrize("shape", sorted(_PUSH_BODY_SHAPES))
+    def test_below_lower_bound_fails(self, shape):
+        """A length claim the body does not support must not verify."""
+        from slop.verifier import verify_source
+        body, lower, _ = _PUSH_BODY_SHAPES[shape]
+        src = _push_shape_source(body, "{(list-len $result) == %d}" % (lower - 1))
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status != 'verified', f"{shape}: {result.message}"
+
+    @pytest.mark.parametrize("shape", sorted(_PUSH_BODY_SHAPES))
+    def test_above_upper_bound_fails(self, shape):
+        from slop.verifier import verify_source
+        body, _, upper = _PUSH_BODY_SHAPES[shape]
+        src = _push_shape_source(body, "{(list-len $result) == %d}" % (upper + 1))
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status != 'verified', f"{shape}: {result.message}"
+
+    def test_map_loop_length_equals_source(self):
+        """One unconditional push per source element: len($result) == len(source)."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn transform ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (== (list-len $result) (list-len items)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result (item-new arena x)))
+            result))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+    def test_map_loop_length_is_not_zero(self):
+        """The same body must not prove the result empty."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn transform ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (== (list-len $result) 0))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (list-push result (item-new arena x)))
+            result))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+    def test_filter_loop_length_bounded_by_source(self):
+        """A guarded push per element: len($result) <= len(source)."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn keep-positive ((arena Arena) (items (List Int)))
+          (@spec ((Arena (List Int)) -> (List Int)))
+          (@post (<= (list-len $result) (list-len items)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (when (> x 0)
+                (list-push result x)))
+            result))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+
+class TestVacuityGuard:
+    """Issue #115: nothing may be reported verified on a contradictory context."""
+
+    def test_false_length_postcondition_is_not_verified(self):
+        from slop.verifier import verify_source
+        body, _, _ = _PUSH_BODY_SHAPES['one_unconditional_push']
+        for claim in ("== 0", "== 99", ">= 2"):
+            src = _push_shape_source(body, "{(list-len $result) %s}" % claim)
+            result = verify_source(src, filename="probe.slop")[0]
+            assert result.status == 'failed', f"len {claim}: {result.status} {result.message}"
+
+    def test_true_length_postcondition_still_verifies(self):
+        """The guard must not blanket-downgrade contracts that do hold."""
+        from slop.verifier import verify_source
+        body, _, _ = _PUSH_BODY_SHAPES['one_unconditional_push']
+        src = _push_shape_source(body, "{(list-len $result) == 1}")
+        assert verify_source(src, filename="probe.slop")[0].status == 'verified'
+
+    def test_unsatisfiable_precondition_is_reported_as_such(self):
+        """An impossible @pre is a user error, not a verifier defect - the two
+        make the base context unsat for different reasons and must not be
+        reported with the same message."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn impossible ((n Int))
+          (@spec ((Int) -> Int))
+          (@pre (> n 10))
+          (@pre (< n 5))
+          (@post (== $result n))
+          n)
+        '''
+        result = verify_source(src)[0]
+        assert result.status == 'failed'
+        assert 'unsatisfiable' in result.message.lower()
+        assert 'verifier defect' not in result.message
+
+    def test_no_fixture_produces_a_contradictory_context(self):
+        """The invariant behind the guard, checked directly.
+
+        Every contract is discharged by asking whether (axioms AND NOT post) is
+        satisfiable. If the axioms alone are unsat that answer is "no" for any
+        post, so the contract reports verified having proved nothing. This walks
+        a corpus of shapes and re-checks each base context standalone. It does
+        not go through the guard, so it still fires if the guard is removed.
+        """
+        import z3 as _z3
+        from slop.verifier import verify_source
+
+        snapshots = []
+        orig_push = _z3.Solver.push
+        orig_check = _z3.Solver.check
+
+        def push(self, *a, **k):
+            # At this point the goal has not been pushed yet, so the assertions
+            # are exactly the axioms.
+            self._slop_base = list(self.assertions())
+            return orig_push(self, *a, **k)
+
+        def check(self, *a, **k):
+            if self.num_scopes() > 0:
+                base = getattr(self, '_slop_base', None)
+                if base is not None:
+                    snapshots.append(base)
+            else:
+                # A check outside any scope is the guard's own consistency
+                # check. Recording it here keeps this test independent of the
+                # guard: remove the guard and the same set still gets examined
+                # on the push below.
+                snapshots.append(list(self.assertions()))
+            return orig_check(self, *a, **k)
+
+        _z3.Solver.push, _z3.Solver.check = push, check
+        try:
+            for shape, (body, lower, upper) in sorted(_PUSH_BODY_SHAPES.items()):
+                for post in ("{(list-len $result) >= %d}" % lower,
+                             "{(list-len $result) <= %d}" % upper,
+                             "{(list-len $result) == %d}" % (upper + 1)):
+                    verify_source(_push_shape_source(body, post), filename="probe.slop")
+        finally:
+            _z3.Solver.push, _z3.Solver.check = orig_push, orig_check
+
+        assert snapshots, "instrumentation caught no solver contexts"
+        for base in snapshots:
+            solver = _z3.Solver()
+            solver.set("timeout", 5000)
+            for assertion in base:
+                solver.add(assertion)
+            assert solver.check() != _z3.unsat, (
+                "axiom set is self-contradictory, so every contract on this "
+                "function would discharge without being proved:\n  "
+                + "\n  ".join(str(a) for a in base)
+            )
+
+    def test_contradictory_assumptions_are_reported_as_such(self):
+        """@assume is trusted, so a contradictory set would discharge anything.
+
+        That is the author's error, not a verifier defect, and the guard has to
+        say which - otherwise the report sends them to the wrong place.
+        """
+        from slop.verifier import verify_source
+        src = '''
+        (fn contradictory ((n Int))
+          (@spec ((Int) -> Int))
+          (@assume (== n 1))
+          (@assume (== n 2))
+          (@post (== $result 42))
+          n)
+        '''
+        result = verify_source(src)[0]
+        assert result.status == 'failed'
+        assert 'Assumptions are contradictory' in result.message

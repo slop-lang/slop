@@ -28,6 +28,128 @@ if TYPE_CHECKING:
 class AxiomGenerationMixin:
     """Mixin providing axiom generation methods."""
 
+    def _length_terms_for(self, expr: 'SExpr', translator: 'Z3Translator'):
+        """Every length term for the list denoted by `expr`, plus links between them.
+
+        A list can carry more than one length representation at once (see
+        Z3Translator.list_length_terms). Callers assert a bound on all of them
+        and add the links, so the fact is visible whichever one the contract
+        happened to translate to.
+        """
+        terms: List[z3.ArithRef] = []
+
+        name = None
+        if isinstance(expr, Symbol):
+            name = expr.name
+        elif is_form(expr, '.') and len(expr) >= 3:
+            obj, fld = expr[1], expr[2]
+            if isinstance(obj, Symbol) and isinstance(fld, Symbol):
+                # Same naming as _extract_map_push_axioms / _get_or_create_collection_seq
+                name = f"_field_{obj.name}_{fld.name}"
+        if name is not None:
+            terms.extend(translator.list_length_terms(name))
+
+        handle = translator.translate_expr(expr)
+        if handle is not None and z3.is_expr(handle) and handle.sort() == z3.IntSort():
+            func = translator.variables.get("field_len")
+            if func is None:
+                func = z3.Function("field_len", z3.IntSort(), z3.IntSort())
+                translator.variables["field_len"] = func
+            field_len = func(handle)
+            if not any(z3.eq(field_len, t) for t in terms):
+                terms.append(field_len)
+
+        links = [terms[0] == t for t in terms[1:]]
+        return terms, links
+
+    def _result_length_axioms(self, fn_body: SExpr,
+                              translator: 'Z3Translator') -> List[z3.BoolRef]:
+        """Sound bounds on the length of the list this function returns.
+
+        This replaces two axioms that used to be emitted independently and
+        contradicted each other on any body that pushes (issue #115): a flat
+        `field_len($result) == 0` derived from the `(mut r (list-new ...))`
+        binding, which ignored every push, and a `field_len($result) >= n`
+        derived from the push count, which was itself wrong for a conditional
+        or looping push. An unsatisfiable pair makes every postcondition
+        discharge without being proved.
+
+        What the push sites support:
+
+            no pushes                                 len == 0
+            n straight-line unconditional pushes      len == n
+            n sites, some conditional, none in a loop 0 <= len <= n
+            unconditional push in a map loop          len == len(source)
+            guarded push in a filter loop             0 <= len <= len(source)
+            any other loop push                       no bound
+
+        A push under a `match` arm or a `when`/`if` guard is conditional: it
+        contributes to the upper bound but not the lower. A push inside a loop
+        runs an unknown number of times, so the site count bounds nothing - only
+        a recognised map/filter shape gives a bound there, from the length of
+        the collection being iterated.
+        """
+        terms = translator.list_length_terms('$result')
+        if not terms:
+            return []
+
+        axioms: List[z3.BoolRef] = list(translator.link_list_length_terms('$result'))
+
+        return_expr = self._get_return_expr(fn_body)
+
+        # A bare (list-new ...) return is empty, with no body to push from.
+        if is_form(return_expr, 'list-new'):
+            axioms.extend(t == z3.IntVal(0) for t in terms)
+            return axioms
+
+        if not isinstance(return_expr, Symbol):
+            return axioms
+
+        sites = self._collect_push_sites([fn_body], return_expr.name)
+
+        if any(site.loop_depth > 0 for site in sites):
+            loop_axioms = self._loop_result_length_axioms(fn_body, terms, translator)
+            axioms.extend(loop_axioms)
+            return axioms
+
+        upper = len(sites)
+        lower = sum(
+            1 for site in sites
+            if not site.guard_conditions and not site.in_match_arm
+        )
+        for t in terms:
+            if lower == upper:
+                axioms.append(t == z3.IntVal(lower))
+            else:
+                axioms.append(t >= z3.IntVal(lower))
+                axioms.append(t <= z3.IntVal(upper))
+        return axioms
+
+    def _loop_result_length_axioms(self, fn_body: SExpr, terms: List[z3.ArithRef],
+                                   translator: 'Z3Translator') -> List[z3.BoolRef]:
+        """Length bound for a result built by pushing inside a loop.
+
+        Only the two recognised shapes give one: a map pushes exactly once per
+        source element, a filter at most once. Anything else - a while loop, a
+        nested join, several pushes per iteration - gets no bound, which leaves
+        the length unconstrained beyond the non-negativity the type carries.
+        """
+        map_pattern = self._detect_map_pattern(fn_body)
+        if map_pattern is not None:
+            src_terms, links = self._length_terms_for(map_pattern.collection, translator)
+            if src_terms:
+                return links + [t == src_terms[0] for t in terms]
+            return []
+
+        filter_pattern = self._detect_filter_pattern(fn_body)
+        if filter_pattern is not None:
+            src_terms, links = self._length_terms_for(filter_pattern.collection, translator)
+            if src_terms:
+                return links + [t <= src_terms[0] for t in terms]
+            return []
+
+        return []
+
     def _extract_seq_push_axioms(self, fn_body: SExpr, postconditions: List[SExpr],
                                   translator: 'Z3Translator') -> List[z3.BoolRef]:
         """Generate axioms connecting pushed elements to their source.

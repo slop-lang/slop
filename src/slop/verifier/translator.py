@@ -249,6 +249,53 @@ class Z3Translator:
         """Get the Seq variable for a list."""
         return self.list_seqs.get(name)
 
+    # ------------------------------------------------------------------
+    # Length vocabulary
+    #
+    # One list can end up with three different Z3 terms for its length:
+    # field_len(x) from the uninterpreted-accessor encoding, Length(seq) under
+    # Seq encoding, and the length component under array encoding. Which one
+    # (list-len x) translates to depends on the encoding flags and on the order
+    # things were registered, so an axiom asserted about one of them is
+    # invisible to a goal written in terms of another. That split is what makes
+    # a @property (which turns Seq encoding on) break an unrelated @post about
+    # list-len in the same function - issue #69.
+    # ------------------------------------------------------------------
+
+    def field_len_term(self, name: str) -> Optional[z3.ArithRef]:
+        """field_len(x) for the variable `name`, if that variable exists."""
+        var = self.variables.get(name)
+        if var is None or not z3.is_expr(var) or var.sort() != z3.IntSort():
+            return None
+        func = self.variables.get("field_len")
+        if func is None:
+            func = z3.Function("field_len", z3.IntSort(), z3.IntSort())
+            self.variables["field_len"] = func
+        return func(var)
+
+    def list_length_terms(self, name: str) -> List[z3.ArithRef]:
+        """Every Z3 term that currently represents the length of list `name`."""
+        terms: List[z3.ArithRef] = []
+        field_len = self.field_len_term(name)
+        if field_len is not None:
+            terms.append(field_len)
+        seq = self.list_seqs.get(name)
+        if seq is not None:
+            terms.append(z3.Length(seq))
+        arr_entry = self.list_arrays.get(name)
+        if arr_entry is not None:
+            terms.append(arr_entry[1])
+        return terms
+
+    def link_list_length_terms(self, name: str) -> List[z3.BoolRef]:
+        """Equalities tying together every length representation of `name`.
+
+        Asserting these lets a length fact stated in one vocabulary discharge a
+        goal written in another.
+        """
+        terms = self.list_length_terms(name)
+        return [terms[0] == other for other in terms[1:]]
+
     def _translate_list_len_seq(self, lst_expr: SExpr) -> Optional[z3.ArithRef]:
         """Translate (list-len lst) using Seq encoding.
 

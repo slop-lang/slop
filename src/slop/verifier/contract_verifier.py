@@ -1168,6 +1168,21 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return self._get_return_expr(expr.items[-1])
         return expr
 
+    def _unsatisfiable_precondition_message(
+        self, preconditions: List[Tuple[Optional[str], SExpr]]
+    ) -> str:
+        """Message for a @pre set that no input can satisfy, naming each one."""
+        from slop.parser import pretty_print
+        if not preconditions:
+            return "Preconditions are unsatisfiable"
+        details = []
+        for pre_name, pre_expr in preconditions:
+            pre_str = pretty_print(pre_expr)
+            details.append(f"'{pre_name}': {pre_str}" if pre_name else pre_str)
+        if len(details) == 1:
+            return f"Precondition is unsatisfiable: {details[0]}"
+        return "Preconditions are unsatisfiable:\n" + "\n".join(f"  • {d}" for d in details)
+
     def _propagate_properties_as_loop_invariants(
         self, fn_body: SExpr, properties: List[Tuple[Optional[str], SExpr]]
     ) -> List[SExpr]:
@@ -1500,8 +1515,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         # Translate the pushed item
                         item_z3 = translator.translate_expr(item_expr)
                         if item_z3 is not None:
-                            # After push: length increases by 1
-                            axioms.append(length >= 1)
+                            # A push only raises the lower bound if it is
+                            # actually taken: one guarded by a when/if or sitting
+                            # in a match arm may not be, and one inside a loop
+                            # over an empty collection runs zero times. An
+                            # unconditional `length >= 1` here was the same
+                            # unsound shape as issue #115.
+                            taken = self._unconditional_push_count(body, lst_name)
+                            if taken >= 1:
+                                axioms.append(length >= taken)
 
                             # Key axiom for element properties:
                             # The pushed element exists somewhere in the array
@@ -1540,100 +1562,53 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                             # This works because all elements are pushed with type-pred
                             continue  # Use fallback axioms for length tracking
 
-            # Fallback: length-based axioms
-            # Get or create the field_len function
-            func_name = "field_len"
-            if func_name not in translator.variables:
-                func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
-                translator.variables[func_name] = func
-            else:
-                func = translator.variables[func_name]
+            # Fallback: nothing sound to say about this list's length here.
+            #
+            # This used to introduce a fresh _list_pre_len_N with
+            #   pre_len == field_len(lst); post_len == pre_len + 1; post_len >= 1
+            # Nothing ever read post_len, and pre_len was fresh, so the three
+            # together said only field_len(lst) >= 0 - which the translator
+            # already asserts. The length of the *returned* list is derived
+            # from its push sites by _result_length_axioms, which is the only
+            # place that knows which pushes are conditional or in a loop.
+            #
+            # A push through an alias, e.g. (list-push (. c items) x), cannot be
+            # expressed at all while field_len is a function of the handle: the
+            # pushed-to list keeps its identity, so its pre- and post-lengths
+            # would have to be two values of one term.
+            pass
 
-            # Create a "pre-push length" variable for tracking
-            pre_len_name = f"_list_pre_len_{id(list_expr)}"
-            if pre_len_name not in translator.variables:
-                pre_len = z3.Int(pre_len_name)
-                translator.variables[pre_len_name] = pre_len
-
-                # The pre-push length equals what field_len returns for the list
-                axioms.append(pre_len == func(lst_z3))
-
-                # After the push, the length is pre_len + 1
-                # We need to constrain future references to this list's length
-                # Create a "post-push" marker
-                post_len_name = f"_list_post_len_{id(list_expr)}"
-                post_len = z3.Int(post_len_name)
-                translator.variables[post_len_name] = post_len
-                axioms.append(post_len == pre_len + 1)
-                axioms.append(post_len >= 1)  # After push, length is at least 1
-
-        # Connect returned list to $result
-        # If the function returns a list variable that had push called on it,
-        # add axiom: field_len($result) >= number_of_pushes
-        result_var = translator.variables.get('$result')
-        if result_var is not None and push_calls:
-            # Find the return expression
-            return_expr = self._get_return_expr(body)
-            if isinstance(return_expr, Symbol):
-                # Check if this variable had push calls
-                for list_expr, _ in push_calls:
-                    if isinstance(list_expr, Symbol) and list_expr.name == return_expr.name:
-                        # The returned variable is the one we pushed to
-                        func_name = "field_len"
-                        if func_name in translator.variables:
-                            func = translator.variables[func_name]
-                            # Count pushes to this list
-                            push_count = sum(
-                                1 for lst, _ in push_calls
-                                if isinstance(lst, Symbol) and lst.name == return_expr.name
-                            )
-                            # $result is the list after all pushes, so length >= push_count
-                            axioms.append(func(result_var) >= push_count)
-
-            elif isinstance(return_expr, SList) and is_form(return_expr, 'record-new'):
-                # record-new return: connect field-pushed lists to $result fields
-                # For (record-new Type (field1 val1) (field2 val2) ...),
-                # check if any field value matches a push target.
-                # If so: field_len(field_X($result)) == field_len(push_target) + push_count
-                from slop.parser import pretty_print
-                func_name = "field_len"
-                if func_name not in translator.variables:
-                    func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
-                    translator.variables[func_name] = func
-                else:
-                    func = translator.variables[func_name]
-
-                # Build a map of push target repr -> count
-                push_target_counts: Dict[str, int] = {}
-                push_target_exprs: Dict[str, SExpr] = {}
-                for list_expr, _ in push_calls:
-                    key = pretty_print(list_expr)
-                    push_target_counts[key] = push_target_counts.get(key, 0) + 1
-                    push_target_exprs[key] = list_expr
-
-                for field_pair in return_expr.items[2:]:  # Skip 'record-new' and TypeName
-                    if isinstance(field_pair, SList) and len(field_pair) >= 2:
-                        field_name_sym = field_pair[0]
-                        field_value = field_pair[1]
-                        if isinstance(field_name_sym, Symbol):
-                            field_value_str = pretty_print(field_value)
-                            if field_value_str in push_target_counts:
-                                # This field references a list that was pushed to
-                                field_name = field_name_sym.name
-                                accessor_name = f"field_{field_name}"
-                                if accessor_name not in translator.variables:
-                                    accessor = z3.Function(accessor_name, z3.IntSort(), z3.IntSort())
-                                    translator.variables[accessor_name] = accessor
-                                else:
-                                    accessor = translator.variables[accessor_name]
-
-                                push_count = push_target_counts[field_value_str]
-                                lst_z3 = translator.translate_expr(push_target_exprs[field_value_str])
-                                if lst_z3 is not None:
-                                    # field_len(field_X($result)) == field_len(push_target) + push_count
-                                    axioms.append(func(accessor(result_var)) == func(lst_z3) + push_count)
+        # Nothing is asserted here about the length of the returned list.
+        #
+        # Two axioms used to be, and both were unsound (issue #115):
+        #
+        #   field_len($result) >= push_count
+        #     wrong whenever a push is conditional or inside a loop that may
+        #     run zero times, and it contradicted the flat field_len == 0 that
+        #     Phase 3.5 derived from the (mut r (list-new ...)) binding.
+        #     _result_length_axioms now derives one bound from the push sites.
+        #
+        #   field_len(field_X($result)) == field_len(push_target) + push_count
+        #     emitted when a record field held the pushed-to list. It fired
+        #     only when the field value *was* the push target, and in exactly
+        #     that case Phase 3 has already asserted
+        #     field_X($result) == push_target - so the pair reads X == X + 1.
+        #     push mutates the list in place; with field_len a function of the
+        #     handle there is no second term to carry the pre-push length.
 
         return axioms
+
+    def _unconditional_push_count(self, body: SExpr, list_name: str) -> int:
+        """How many pushes to `list_name` are certain to happen exactly once.
+
+        Sites under a when/if guard or inside a match arm may not run, and
+        sites inside a loop run an unknown number of times, so neither
+        contributes to a lower bound on the length.
+        """
+        return sum(
+            1 for site in self._collect_push_sites([body], list_name)
+            if site.loop_depth == 0 and not site.guard_conditions and not site.in_match_arm
+        )
 
     def _extract_conditional_record_axioms(self, cond_expr: SList, translator: Z3Translator) -> List:
         """Extract axioms for conditional with record-new in either branch.
@@ -1965,38 +1940,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                                             field_val[1], translator, base_accessor=payload_func(field_func)
                                         )
                                         axioms.extend(nested)
-        return axioms
-
-    def _extract_list_new_axioms(self, list_new_expr: SList, translator: Z3Translator) -> List:
-        """Extract axiom: field_len($result) == 0 for list-new
-
-        When list-new is called, the resulting list has length 0.
-        This allows proving postconditions like {(list-len $result) == 0}.
-
-        With array encoding enabled, also sets up the array representation.
-        """
-        axioms = []
-        result_var = translator.variables.get('$result')
-        if result_var is None:
-            return axioms
-
-        # With array encoding, set up array for $result
-        if translator.use_array_encoding:
-            arr, length = translator._create_list_array('$result')
-            # Empty list: length == 0
-            axioms.append(length == z3.IntVal(0))
-            return axioms
-
-        # Get or create field_len function (fallback for non-array encoding)
-        func_name = "field_len"
-        if func_name not in translator.variables:
-            func = z3.Function(func_name, z3.IntSort(), z3.IntSort())
-            translator.variables[func_name] = func
-        else:
-            func = translator.variables[func_name]
-
-        # list-new returns empty list: len == 0
-        axioms.append(func(result_var) == z3.IntVal(0))
         return axioms
 
     def _extract_record_field_range_axioms(self, translator: Z3Translator) -> List:
@@ -2649,27 +2592,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
             result = solver.check()
             if result == z3.unsat:
-                # Build message with precondition names/details
-                from slop.parser import pretty_print
-                if preconditions:
-                    pre_details = []
-                    for pre_name, pre_expr in preconditions:
-                        pre_str = pretty_print(pre_expr)
-                        if pre_name:
-                            pre_details.append(f"'{pre_name}': {pre_str}")
-                        else:
-                            pre_details.append(pre_str)
-                    if len(preconditions) == 1:
-                        message = f"Precondition is unsatisfiable: {pre_details[0]}"
-                    else:
-                        message = "Preconditions are unsatisfiable:\n" + "\n".join(f"  • {p}" for p in pre_details)
-                else:
-                    message = "Preconditions are unsatisfiable"
                 return VerificationResult(
                     name=fn_name,
                     verified=False,
                     status="failed",
-                    message=message,
+                    message=self._unsatisfiable_precondition_message(preconditions),
                     location=SourceLocation(self.filename, fn_form.line, fn_form.col)
                 )
             return VerificationResult(
@@ -2743,12 +2670,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for axiom in field_axioms:
                 solver.add(axiom)
 
-        # Phase 3.5: Add list-new axioms if body is list-new
-        # For (list-new arena Type), add: field_len($result) == 0
+        # Phase 3.5: Length of a returned list, derived from its push sites.
+        # This used to assert a flat field_len($result) == 0 whenever the body
+        # bound a list with (mut r (list-new ...)), ignoring every push, which
+        # contradicted the push-count axiom in Phase 7 - issue #115.
         if fn_body is not None and self._is_list_new(fn_body):
-            return_expr = self._get_return_expr(fn_body)
-            list_axioms = self._extract_list_new_axioms(return_expr, translator)
-            for axiom in list_axioms:
+            if translator.use_array_encoding:
+                # Array encoding needs the representation to exist; the length
+                # claim itself comes from _result_length_axioms below.
+                translator._create_list_array('$result')
+            for axiom in self._result_length_axioms(fn_body, translator):
                 solver.add(axiom)
 
         # Phase 4: Add union tag axiom if body is union-new
@@ -3095,6 +3026,76 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # WP computation failed - continue with standard verification
                     pass
 
+        # Under Seq encoding the returned local and $result get separate Seq
+        # constants, so a fact about one is invisible to the other. The property
+        # solver below already equates them; the postcondition solver needs it
+        # too, or a @loop-invariant stated about the local proves nothing about
+        # the result.
+        if fn_body is not None and translator.use_seq_encoding:
+            ret_expr = self._get_return_expr(fn_body)
+            if isinstance(ret_expr, Symbol):
+                result_seq = translator.list_seqs.get('$result')
+                ret_seq = translator.list_seqs.get(ret_expr.name)
+                if (result_seq is not None and ret_seq is not None
+                        and not z3.eq(result_seq, ret_seq)):
+                    solver.add(result_seq == ret_seq)
+
+        # Vacuity guard (issue #115)
+        #
+        # Every postcondition below is discharged by asking whether
+        # (axioms AND NOT post) is satisfiable. If the axioms alone are already
+        # unsatisfiable that question answers "no" for *any* post, so every
+        # contract on this function reports verified without having been proved.
+        # Two different things make the base context unsat and they need
+        # different messages: an unsatisfiable @pre, which is the caller
+        # contract being impossible, and axioms we generated that contradict
+        # each other, which is a defect in this verifier.
+        if solver.check() == z3.unsat:
+            # Narrow it down: the @pre set alone, then @pre plus @assume, then
+            # everything. The first two are the author's own contracts being
+            # impossible and are reported as such; only what is left over is
+            # ours.
+            layer = z3.Solver()
+            layer.set("timeout", self.timeout_ms)
+            for c in translator.constraints:
+                layer.add(c)
+            for p in pre_z3:
+                layer.add(p)
+            if layer.check() == z3.unsat:
+                return VerificationResult(
+                    name=fn_name,
+                    verified=False,
+                    status="failed",
+                    message=self._unsatisfiable_precondition_message(preconditions),
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                )
+            for a in assume_z3:
+                layer.add(a)
+            if layer.check() == z3.unsat:
+                return VerificationResult(
+                    name=fn_name,
+                    verified=False,
+                    status="failed",
+                    message=(
+                        "Assumptions are contradictory: the @assume set cannot hold "
+                        "together with the preconditions, so it would discharge any "
+                        "postcondition. @assume is trusted, not checked - narrow it."
+                    ),
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                )
+            return VerificationResult(
+                name=fn_name,
+                verified=False,
+                status="unknown",
+                message=(
+                    "Verification context is inconsistent: the axioms generated for this "
+                    "function contradict each other, so nothing can be proved from them. "
+                    "This is a verifier defect, not a problem with the contract - please "
+                    "report it with the function body."
+                ),
+                location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+            )
+
         # First try all postconditions together (fast path)
         solver.push()
         solver.add(z3.Not(z3.And(*post_z3)))
@@ -3178,12 +3179,21 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     if emptiness_verified:
                         continue
 
+                    prop_str = pretty_print(prop_expr)
+
+                    # Vacuity guard (issue #115): the property solver carries a
+                    # different axiom subset from the postcondition solver, so it
+                    # needs its own consistency check. An unsat base context here
+                    # would make every property "hold" without being proved.
+                    if prop_solver.check() == z3.unsat:
+                        unknown_properties.append((prop_name, prop_str,
+                            "verification context is inconsistent (verifier defect)"))
+                        continue
+
                     # Check if NOT property is satisfiable
                     prop_solver.add(z3.Not(prop_z3_expr))
 
                     prop_result = prop_solver.check()
-
-                    prop_str = pretty_print(prop_expr)
 
                     if prop_result == z3.sat:
                         model = prop_solver.model()

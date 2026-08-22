@@ -37,6 +37,8 @@ class PushSiteInfo:
     pushed_expr: 'SExpr'                # The expression being pushed
     guard_conditions: List['SExpr']     # Enclosing when/if conditions (innermost last)
     bindings: Dict[str, 'SExpr']        # Variable bindings in scope at this push
+    in_match_arm: bool = False          # Inside a match clause, so not always taken
+    loop_depth: int = 0                 # Enclosing while/for-each nesting depth
 
 
 @dataclass
