@@ -3088,10 +3088,23 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             layer.set("timeout", self.timeout_ms)
             for c in translator.constraints[:pre_constraint_count]:
                 layer.add(c)
-            for p in pre_z3:
-                layer.add(p)
+            if layer.check() == z3.unsat and not pre_z3:
+                # Unsat before any @pre was added: the parameter or result types
+                # themselves admit no value, e.g. an empty range (Int 5 .. 3).
+                return VerificationResult(
+                    name=fn_name,
+                    verified=False,
+                    status="failed",
+                    message=(
+                        "Parameter or result types admit no value: their constraints "
+                        "cannot all hold, so the function can never be called. An "
+                        "empty range type such as (Int 5 .. 3) does this."
+                    ),
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col)
+                )
+
             authored = [
-                (self._unsatisfiable_precondition_message(preconditions), []),
+                (self._unsatisfiable_precondition_message(preconditions), pre_z3),
                 (
                     "Type invariants are contradictory: no value of the parameter "
                     "types can satisfy them together with the preconditions, so the "

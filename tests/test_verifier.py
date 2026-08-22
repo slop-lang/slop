@@ -7494,3 +7494,57 @@ class TestInconsistencyAttribution:
         assert r.status == 'failed'
         assert 'well-defined' in r.message
         assert 'Precondition' not in r.message
+
+    def test_field_source_owner_reassigned(self):
+        """A field source is only as stable as the value it reads from.
+
+        `(set! report other)` never mentions `(. report results)`, so a check
+        keyed on the printed source expression alone does not see it.
+        """
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep) (other Rep))
+            (@spec ((Arena Rep Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len (. report results))))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x))
+                  (set! report other)
+                  r))))
+        '''
+        assert verify_source(src)[0].status != 'verified'
+
+    def test_field_source_owner_untouched_still_bounds(self):
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Rep (record (results (List Int))))
+          (fn f ((arena Arena) (report Rep))
+            (@spec ((Arena Rep) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) (list-len (. report results))))
+            (let ((mut r (list-new arena Int)))
+              (do (for-each (x (. report results)) (list-push r x)) r))))
+        '''
+        assert verify_source(src)[0].status == 'verified'
+
+
+class TestBaselineTypeContradiction:
+    def test_empty_range_type_is_not_blamed_on_preconditions(self):
+        """The layer is unsat before any @pre is added, and the function has
+        none - reporting them as unsatisfiable names something that is not there."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Empty (Int 5 .. 3))
+          (fn f ((n Empty))
+            (@spec ((Empty) -> Int))
+            (@post (== $result 1))
+            1))
+        '''
+        r = verify_source(src)[0]
+        assert r.status == 'failed'
+        assert 'admit no value' in r.message
+        assert 'Precondition' not in r.message

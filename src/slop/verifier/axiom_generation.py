@@ -127,10 +127,38 @@ class AxiomGenerationMixin:
         """True if the returned list `name` is used in a way that hides its length."""
         return self._uses_outside(expr, name, self._accumulator_use_is_safe)
 
+    @staticmethod
+    def _owner_use_is_safe(parent_head, index, returns_value) -> bool:
+        """Contexts in which the owner of a field-valued collection is only read.
+
+        For a source like `(. report results)`, `report` itself has to stay put:
+        a `(set! report other)` after the loop, or handing `report` to a callee
+        that replaces its list, changes which collection the bound is read
+        against without touching the printed source expression at all.
+        """
+        return parent_head == '.' and index == 1
+
     def _source_escapes(self, fn_body: 'SExpr', coll: 'SExpr') -> bool:
         """True if the loop's source collection is anything but read in this body."""
         from slop.parser import pretty_print
-        return self._uses_outside(fn_body, pretty_print(coll), self._source_use_is_safe)
+        if self._uses_outside(fn_body, pretty_print(coll), self._source_use_is_safe):
+            return True
+        # A field access is only as stable as the value it reads from.
+        if is_form(coll, '.') and len(coll) >= 2:
+            for owner in self._owner_expressions(coll):
+                if self._uses_outside(fn_body, owner, self._owner_use_is_safe):
+                    return True
+        return False
+
+    def _owner_expressions(self, coll: 'SExpr') -> List[str]:
+        """The printed sub-expressions a field-access source depends on."""
+        from slop.parser import pretty_print
+        owners: List[str] = []
+        node = coll
+        while is_form(node, '.') and len(node) >= 2:
+            node = node[1]
+            owners.append(pretty_print(node))
+        return owners
 
     def _contains_any_form(self, expr: 'SExpr', heads) -> bool:
         """True if `expr` contains a call to any of `heads`."""
