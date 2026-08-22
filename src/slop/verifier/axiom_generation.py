@@ -283,6 +283,10 @@ class AxiomGenerationMixin:
                     return True
                 if expr[0].name == 'fn':
                     return False
+                # Quoted forms are data. A (return ...) inside one is a symbol
+                # the function never executes.
+                if expr[0].name == 'quote':
+                    return False
             for item in expr.items:
                 if self._contains_any_form(item, heads):
                     return True

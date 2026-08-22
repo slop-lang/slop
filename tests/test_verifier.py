@@ -8689,3 +8689,21 @@ class TestEarlyExits:
         ''', filename="probe.slop")[0]
         assert result.status == 'failed'
         assert 'verifier defect' not in result.message
+
+    def test_a_return_inside_a_quoted_form_is_data(self):
+        """`(quote (return 1))` is a symbol the function never executes, so it
+        must not make the body look like it has a second exit."""
+        from slop.verifier import verify_source
+        src = '''
+        (module m
+          (type Item (record (v Int)))
+          (type F (record (xs (List Item))))
+          (fn q ((arena Arena))
+            (@spec ((Arena) -> F))
+            (@alloc arena)
+            (@post {(list-len (. $result xs)) == 0})
+            (let ((tag (quote (return 1)))
+                  (e (list-new arena Item)))
+              (record-new F (xs e)))))
+        '''
+        assert verify_source(src, filename="probe.slop")[0].status == 'verified'
