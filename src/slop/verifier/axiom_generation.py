@@ -2825,6 +2825,10 @@ class AxiomGenerationMixin:
         if not (z3.is_expr(counted) and counted.sort() == z3.IntSort()):
             return axioms
         if body is not None:
+            # An early return yields something the loop never counted, and the
+            # bound is asserted about $result on every path.
+            if self._contains_any_form(body, ('return',)):
+                return axioms
             returned = self._get_return_expr(body)
             if not (isinstance(returned, Symbol) and returned.name == pattern.count_var):
                 return axioms

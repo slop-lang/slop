@@ -3560,7 +3560,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None:
             count_pattern = self._detect_count_pattern(fn_body)
             if count_pattern is not None:
-                count_axioms = self._generate_count_axioms(count_pattern, translator, fn_body)
+                # combined_body, not fn_body: an early return in a form before
+                # the trailing one is another exit, and this bound is asserted
+                # about $result on every path.
+                count_axioms = self._generate_count_axioms(
+                    count_pattern, translator, combined_body)
                 for axiom in count_axioms:
                     solver.add(axiom)
 

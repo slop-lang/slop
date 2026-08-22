@@ -8948,3 +8948,34 @@ class TestLoopVariableVersions:
                 (quote (set! i (+ i 1))))
               i)))
         ''').status == 'verified'
+
+    def test_a_count_bound_does_not_cover_an_early_return(self):
+        """The bound is asserted about $result on every path, and an early
+        return yields something the loop never counted."""
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)) (flag Bool))
+            (@spec (((List Int) Bool) -> Int))
+            (@pre flag)
+            (@post (<= $result (list-len items)))
+            (when flag (return 100))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              count)))
+        ''').status != 'verified'
+
+    def test_a_write_nested_in_an_assigned_value(self):
+        """`(set! i (do (set! j 1) (+ i 1)))` writes j as well, and stopping at
+        the outer set! left j tied to what it was bound to."""
+        assert self._result('''
+        (module m
+          (fn w ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@pre (> n 0))
+            (@post (== $result 0))
+            (let ((mut i 0)
+                  (mut j 0))
+              (while (< i n)
+                (set! i (do (set! j 1) (+ i 1))))
+              j)))
+        ''').status != 'verified'

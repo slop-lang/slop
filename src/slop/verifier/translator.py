@@ -2042,6 +2042,9 @@ class Z3Translator:
                     continue
                 if head.name == 'set!' and len(stmt) >= 3 and isinstance(stmt[1], Symbol):
                     assigned.setdefault(stmt[1].name, []).append(stmt[2])
+                    # The assigned value can itself assign: keep walking it, or
+                    # a write nested there keeps its pre-loop constant.
+                    self._collect_assignments([stmt[2]], assigned)
                     continue
             self._collect_assignments(stmt.items, assigned)
 
