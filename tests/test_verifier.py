@@ -8979,3 +8979,47 @@ class TestLoopVariableVersions:
                 (set! i (do (set! j 1) (+ i 1))))
               j)))
         ''').status != 'verified'
+
+    def test_a_write_nested_in_the_counters_own_value(self):
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (set! count (do (set! count 100) 0)))
+              count)))
+        ''').status != 'verified'
+
+    def test_a_quoted_assignment_outside_a_loop_is_data(self):
+        assert self._result('''
+        (module m
+          (fn q ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 0))
+            (let ((mut i 0))
+              (quote (set! i 5))
+              i)))
+        ''').status == 'verified'
+
+    def test_either_operand_order_counts_as_a_step(self):
+        """The detector accepts `(+ 1 count)`; the checks on top of it have to
+        as well, or a valid counter is recognised and then denied its bound."""
+        assert self._result('''
+        (module m
+          (fn c ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ 1 count))))
+              count)))
+        ''').status == 'verified'
+        assert self._result('''
+        (module m
+          (fn d ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (>= $result 0))
+            (let ((mut i 0))
+              (while (< i n) (set! i (+ 1 i)))
+              i)))
+        ''').status == 'verified'

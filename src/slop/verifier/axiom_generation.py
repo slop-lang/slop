@@ -2768,9 +2768,31 @@ class AxiomGenerationMixin:
         head, left, right = value[0], value[1], value[2]
         if not (isinstance(head, Symbol) and head.name == '+'):
             return False
+        if isinstance(left, Number) and left.value == 1:
+            # (+ 1 count), which the detector accepts as well
+            left, right = right, left
         if not (isinstance(left, Symbol) and left.name == name):
             return False
         if not (isinstance(right, Number) and right.value == 1):
+            return False
+        # The assigned value may itself assign - `(do (set! count 100) 0)` looks
+        # like one write from outside.
+        nested: List = []
+
+        def nested_walk(node):
+            if not isinstance(node, SList) or len(node) < 1:
+                return
+            head_sym = node[0]
+            if isinstance(head_sym, Symbol):
+                if head_sym.name in ('fn', 'quote'):
+                    return
+                if head_sym.name == 'set!' and len(node) >= 3:
+                    nested.append(node)
+            for item in node.items:
+                nested_walk(item)
+
+        nested_walk(value)
+        if nested:
             return False
         return self._binding_starts_at_zero(body, name)
 

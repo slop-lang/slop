@@ -73,6 +73,7 @@ class Z3Translator:
         self._unconditional_loops: Set[int] = set()
         self._unconditional_assignments: Set[int] = set()
         self._in_loop_body = False
+        self._in_quoted_form = False
         self._record_new_counter = 0  # Counter for unique record-new values
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
         self._build_enum_map()
@@ -1329,8 +1330,16 @@ class Z3Translator:
                         quoted_name = f"'{name}"
                         if quoted_name in self.enum_values:
                             return z3.IntVal(self.enum_values[quoted_name])
-                    # If not found in enums, return the translated inner expression
-                    return self.translate_expr(inner)
+                    # If not found in enums, return the translated inner expression.
+                    # Whatever it looks like, it is data: an assignment or loop
+                    # inside a quote is not executed, so it must not version
+                    # anything.
+                    was_quoted = self._in_quoted_form
+                    self._in_quoted_form = True
+                    try:
+                        return self.translate_expr(inner)
+                    finally:
+                        self._in_quoted_form = was_quoted
 
                 # Control flow - path sensitive analysis
                 if op == 'if':
@@ -1865,6 +1874,8 @@ class Z3Translator:
         that only ever does `(set! i (+ i k))` for non-negative k cannot lower i,
         however many times it runs - including none - so i_after >= i_before.
         """
+        if self._in_quoted_form:
+            return None
         loop_id = id(expr)
         unconditional = loop_id in self._unconditional_loops
         body_items = expr.items[2:]
@@ -1976,7 +1987,7 @@ class Z3Translator:
         gave every name it assigns a fresh constant, and one more here would
         replace it.
         """
-        if self._in_loop_body:
+        if self._in_loop_body or self._in_quoted_form:
             return None
         target = expr[1]
         # A `set!` in a branch runs only if that branch does, and both arms are
@@ -2058,6 +2069,9 @@ class Z3Translator:
             if not (isinstance(head, Symbol) and head.name in ('+', '-')):
                 return 0
             left, right = value[1], value[2]
+            if head.name == '+' and isinstance(left, Number) and left.value >= 0:
+                # (+ 1 i) is the same step as (+ i 1)
+                left, right = right, left
             if not (isinstance(left, Symbol) and left.name == name):
                 return 0
             if not isinstance(right, Number) or right.value < 0:
