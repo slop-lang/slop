@@ -1281,6 +1281,10 @@
                     ((string-eq op "list-push")
                       (do (check-builtin-args env "list-push" 2 (- len 1) line col)
                           (infer-builtin-args env expr)
+                          (match (list-get items 1)
+                            ((some list-arg)
+                              (check-list-target env "list-push" list-arg line col))
+                            ((none) (do)))
                           (env-get-unit-type env)))
                     ;; list-set expects 3 args: list, index, value. Returns Bool
                     ;; rather than Unit: an index past the end is a bug the
@@ -1289,6 +1293,10 @@
                     ((string-eq op "list-set")
                       (do (check-builtin-args env "list-set" 3 (- len 1) line col)
                           (infer-builtin-args env expr)
+                          (match (list-get items 1)
+                            ((some list-arg)
+                              (check-list-target env "list-set" list-arg line col))
+                            ((none) (do)))
                           (env-get-bool-type env)))
                     ;; list-pop expects 1 arg: list
                     ((string-eq op "list-pop")
@@ -1671,6 +1679,34 @@
                       (env-add-error env msg line col)))))
               ((none) (do)))))
         ((none) (do)))))
+
+  (fn is-assignable-list-target ((expr (Ptr SExpr)))
+    (@intent "Whether the C for this expression is something we can take the address of")
+    (@spec (((Ptr SExpr)) -> Bool))
+    ;; list-push and list-set both lower to `&(<list>)`, so the list has to be a
+    ;; place, not a value. A variable, a field of one, or a dereferenced pointer
+    ;; is; the result of a call is not, and `&(f(...))` is an error cc catches
+    ;; rather than the checker.
+    (if (not (sexpr-is-list expr))
+      true
+      (let ((head (sexpr-list-get expr 0)))
+        (match head
+          ((some h)
+            (let ((name (sexpr-get-symbol-name h)))
+              (or (string-eq name ".") (string-eq name "deref"))))
+          ((none) false)))))
+
+  (fn check-list-target ((env (Ptr TypeEnv)) (op String) (expr (Ptr SExpr))
+                         (line Int) (col Int))
+    (@intent "Report a list argument that cannot be written through")
+    (@spec (((Ptr TypeEnv) String (Ptr SExpr) Int Int) -> Unit))
+    (@pre (!= env nil))
+    (when (not (is-assignable-list-target expr))
+      (let ((arena (env-arena env))
+            (msg (string-concat arena "'"
+                   (string-concat arena op
+                     "' needs a list it can write through: a variable, a field, or a dereferenced pointer - not the result of a call"))))
+        (env-add-error env msg line col))))
 
   (fn check-builtin-args ((env (Ptr TypeEnv)) (op String) (expected Int) (actual Int)
                            (line Int) (col Int))

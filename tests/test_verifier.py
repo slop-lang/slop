@@ -9382,3 +9382,19 @@ class TestListSet:
 
     def test_the_provenance_claim_does_not_survive_a_set(self):
         assert self._status(self.FILTER % '(list-set result 0 -5)') != 'verified'
+
+    def test_an_array_encoded_element_claim_does_not_survive_a_set(self):
+        """The array path adds its own element-property axioms, earlier than the
+        sequence ones - so the guard has to be computed before all of them."""
+        assert self._status('''
+        (module m
+          (type Triple (record (predicate Int)))
+          (fn build ((arena Arena) (p Int))
+            (@spec ((Arena Int) -> (List Triple)))
+            (@alloc arena)
+            (@post (all-triples-have-predicate $result p))
+            (let ((mut result (list-new arena Triple)))
+              (do (list-push result (record-new Triple (predicate p)))
+                  (list-set result 0 (record-new Triple (predicate 999)))
+                  result))))
+        ''') != 'verified'

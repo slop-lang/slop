@@ -1558,14 +1558,14 @@ void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_
 }
 
 uint8_t collect_is_reserved_builtin_name(slop_string name) {
-    return (string_eq(name, SLOP_STR("is-none")) || string_eq(name, SLOP_STR("is-some")));
+    return ((string_eq(name, SLOP_STR("is-none"))) || (string_eq(name, SLOP_STR("is-some"))) || (string_eq(name, SLOP_STR("list-set"))));
 }
 
 void collect_report_reserved_name(env_TypeEnv* env, slop_string name, slop_string what, int64_t line, int64_t col) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type arena = env_env_arena(env);
-        __auto_type msg = string_concat(arena, SLOP_STR("'"), string_concat(arena, name, string_concat(arena, SLOP_STR("' is a builtin predicate and cannot be redefined as a "), string_concat(arena, what, SLOP_STR(" - rename it, or use match if you want the payload")))));
+        __auto_type msg = string_concat(arena, SLOP_STR("'"), string_concat(arena, name, string_concat(arena, SLOP_STR("' is a builtin and cannot be redefined as a "), string_concat(arena, what, SLOP_STR(" - rename it")))));
         env_env_add_error(env, msg, line, col);
     }
 }

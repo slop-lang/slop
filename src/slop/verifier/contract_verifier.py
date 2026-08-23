@@ -3763,6 +3763,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 for axiom in emptiness_axioms:
                     solver.add(axiom)
 
+        # A list-set overwrites an element the provenance axioms claim to
+        # describe - "every element came from the source and satisfies the
+        # predicate" stops holding the moment one is replaced. The push sites
+        # still bound the length, which a set does not change; it is the
+        # contents that stop being derivable.
+        contents_rewritten = (fn_body is not None
+                              and self._contains_any_form(combined_body, ('list-set',)))
+
         # Phase 14: List element property invariants (with array encoding)
         # For postconditions like (all-triples-have-predicate $result RDF_TYPE),
         # detect that all pushed elements have the required property and add
@@ -3776,21 +3784,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         pattern_axioms.extend(exists_search_axioms)
         pattern_axioms.extend(emptiness_axioms)
 
-        if fn_body is not None and translator.use_array_encoding:
+        if (fn_body is not None and translator.use_array_encoding
+                and not contents_rewritten):
             element_property_axioms = self._extract_list_element_property_axioms(
                 fn_body, postconditions, translator
             )
             for axiom in element_property_axioms:
                 solver.add(axiom)
                 pattern_axioms.append(axiom)
-
-        # A list-set overwrites an element the provenance axioms below claim to
-        # describe - "every element came from the source and satisfies the
-        # predicate" stops holding the moment one is replaced. The push sites
-        # still bound the length, which a set does not change; it is the
-        # contents that stop being derivable.
-        contents_rewritten = (fn_body is not None
-                              and self._contains_any_form(combined_body, ('list-set',)))
 
         # Phase 14b: Sequence push provenance axioms (with Seq encoding)
         # For filter patterns that build lists via list-push, generate axioms

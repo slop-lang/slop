@@ -1185,8 +1185,16 @@
     ;; resolves it nowhere at all; that is #110.
     (@example ("is-none") -> true)
     (@example ("is-some") -> true)
+    (@example ("list-set") -> true)
     (@example ("is-empty") -> false)
-    (or (string-eq name "is-none") (string-eq name "is-some")))
+    (@example ("list-push") -> false)
+    (or (string-eq name "is-none")
+        (string-eq name "is-some")
+        ;; list-set is new, so nothing can already be relying on defining it.
+        ;; The older list operations are not listed: a definition of list-push
+        ;; has always been able to shadow the builtin, and refusing it now would
+        ;; break code that compiles today. That whole family is #110.
+        (string-eq name "list-set")))
 
   (fn report-reserved-name ((env (Ptr TypeEnv)) (name String) (what String)
                             (line Int) (col Int))
@@ -1196,9 +1204,9 @@
     (let ((arena (env-arena env))
           (msg (string-concat arena "'"
                  (string-concat arena name
-                   (string-concat arena "' is a builtin predicate and cannot be redefined as a "
+                   (string-concat arena "' is a builtin and cannot be redefined as a "
                      (string-concat arena what
-                       " - rename it, or use match if you want the payload"))))))
+                       " - rename it"))))))
       (env-add-error env msg line col)))
 
   (fn is-integer-type-name ((name String))
