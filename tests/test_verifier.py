@@ -9398,3 +9398,26 @@ class TestListSet:
                   (list-set result 0 (record-new Triple (predicate 999)))
                   result))))
         ''') != 'verified'
+
+    def test_a_set_on_an_argument_does_not_carry_its_precondition(self):
+        """The parameter and the result share one sequence, so a @pre about what
+        the caller passed in would describe a list the body has since altered -
+        the contents version of what #116 fixed for lengths."""
+        assert self._status('''
+        (module m
+          (fn f ((xs (List Int)))
+            (@spec (((List Int)) -> (List Int)))
+            (@pre (forall (x xs) (> x 0)))
+            (@post (forall (x $result) (> x 0)))
+            (do (list-set xs 0 -5) xs)))
+        ''') != 'verified'
+
+    def test_without_a_set_the_precondition_does_carry(self):
+        assert self._status('''
+        (module m
+          (fn g ((xs (List Int)))
+            (@spec (((List Int)) -> (List Int)))
+            (@pre (forall (x xs) (> x 0)))
+            (@post (forall (x $result) (> x 0)))
+            xs))
+        ''') == 'verified'

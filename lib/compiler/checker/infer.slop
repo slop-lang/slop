@@ -1296,7 +1296,7 @@
                     ;; called list-set is an ordinary callable, and locals are
                     ;; module-scoped so the lookup answers exactly.
                     ((and (string-eq op "list-set")
-                          (match (env-lookup-var env op) ((some v) false) ((none) true)))
+                          (match (env-lookup-callable env op) ((some v) false) ((none) true)))
                       (do (check-builtin-args env "list-set" 3 (- len 1) line col)
                           (infer-builtin-args env expr)
                           (match (list-get items 1)
@@ -1547,7 +1547,7 @@
                             ;; does not recognise - so a (Fn ...) parameter
                             ;; called list-set was reported as an unknown
                             ;; builtin rather than called.
-                            (match (env-lookup-var env op)
+                            (match (env-lookup-callable env op)
                               ((some var-type)
                                 ;; It's a local variable being called - infer args but don't error
                                 (do (infer-builtin-args env expr)
@@ -1673,6 +1673,21 @@
               ((none) (do)))))
         ((none) (do)))))
 
+  (fn env-lookup-callable ((env (Ptr TypeEnv)) (name String))
+    (@intent "A local of this name that can actually be called")
+    (@spec (((Ptr TypeEnv) String) -> (Option (Ptr ResolvedType))))
+    (@pre (!= env nil))
+    ;; A local shadows a builtin only if it is something to call. `(let
+    ;; ((list-foo 3)) (list-foo 1))` is not, and letting it through produced
+    ;; "called object type 'int' is not a function" from cc.
+    (match (env-lookup-var env name)
+      ((some var-type)
+        (if (or (== (. (deref var-type) kind) 'rk-function)
+                (string-eq (. (deref var-type) name) "Unknown"))
+          (some var-type)
+          (none)))
+      ((none) (none))))
+
   (fn types-incompatible ((expected (Ptr ResolvedType)) (actual (Ptr ResolvedType)))
     (@intent "Whether these two types are definitely wrong together")
     (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
@@ -1773,7 +1788,17 @@
         (match head
           ((some h)
             (let ((name (sexpr-get-symbol-name h)))
-              (or (string-eq name ".") (string-eq name "deref"))))
+              (cond
+                ;; A dereferenced pointer is a place whatever produced it.
+                ((string-eq name "deref") true)
+                ;; A field is only a place if what it is a field of is one:
+                ;; `(. (make arena) xs)` lowers to `&(make(...).xs)`, which is
+                ;; still the address of a temporary.
+                ((string-eq name ".")
+                  (match (sexpr-list-get expr 1)
+                    ((some base) (is-assignable-list-target base))
+                    ((none) false)))
+                (else false))))
           ((none) false)))))
 
   (fn check-list-target ((env (Ptr TypeEnv)) (op String) (expr (Ptr SExpr))

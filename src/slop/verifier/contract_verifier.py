@@ -1881,7 +1881,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return axioms
 
     def _result_sequence_equality(self, fn_body: SExpr,
-                                  translator: Z3Translator) -> List:
+                                  translator: Z3Translator,
+                                  contents_rewritten: bool = False) -> List:
         """Equate $result's Seq with the returned local's, when they must agree.
 
         Under Seq encoding the two get separate constants, so a @loop-invariant
@@ -1891,7 +1892,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         Withheld when the body contains an explicit (return ...):
         _get_return_expr only sees the trailing expression, and equating
         $result with it would claim the other exit cannot happen.
+
+        Withheld too when a list-set rewrote the contents. The two names would
+        otherwise share one sequence, so a @pre about what the caller passed in
+        would carry over to the result the body has since altered - the
+        contents version of the problem #116 fixed for lengths.
         """
+        if contents_rewritten:
+            return []
         if self._contains_any_form(fn_body, ('return',)):
             return []
         ret_expr = self._get_return_expr(fn_body)
@@ -3910,7 +3918,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # too, or a @loop-invariant stated about the local proves nothing about
         # the result.
         if fn_body is not None and translator.use_seq_encoding:
-            for equality in self._result_sequence_equality(fn_body, translator):
+            for equality in self._result_sequence_equality(
+                    fn_body, translator, contents_rewritten):
                 solver.add(equality)
 
         # First try all postconditions together (fast path)
@@ -3955,7 +3964,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # Loop invariants reference the local variable (e.g., 'result'),
                     # while properties reference '$result' - these are different Z3 seqs
                     if fn_body is not None and translator.use_seq_encoding:
-                        for equality in self._result_sequence_equality(fn_body, translator):
+                        for equality in self._result_sequence_equality(
+                                fn_body, translator, contents_rewritten):
                             prop_solver.add(equality)
 
                     # Add pattern axioms (filter/map/fold axioms derived from loop analysis)
