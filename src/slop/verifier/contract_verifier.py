@@ -3738,12 +3738,20 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         for axiom in inv_axioms:
                             solver.add(axiom)
 
+        # A list-set overwrites an element the provenance axioms claim to
+        # describe - "every element came from the source and satisfies the
+        # predicate" stops holding the moment one is replaced. The push sites
+        # still bound the length, which a set does not change; it is the
+        # contents that stop being derivable.
+        contents_rewritten = (fn_body is not None
+                              and self._contains_any_form(combined_body, ('list-set',)))
+
         # Phase 13b: Exists-search pattern axioms
         # Detect (let ((mut found false)) (for-each (v coll) (when pred (set! found true)))
         #   (if found branch-a branch-b))
         # and generate: union_tag($result) == found_tag ↔ ∃v ∈ coll: pred(v)
         exists_search_axioms: List[z3.BoolRef] = []
-        if fn_body is not None:
+        if fn_body is not None and not contents_rewritten:
             exists_pattern = self._detect_exists_search_pattern(fn_body)
             if exists_pattern is not None:
                 exists_search_axioms = self._generate_exists_search_axioms(exists_pattern, translator)
@@ -3754,7 +3762,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Detect nested for-each with conditional push via enum match and generate:
         #   Length($result) == 0 ↔ ForAll v,o: condition(v,o)
         emptiness_axioms: List[z3.BoolRef] = []
-        if fn_body is not None:
+        if fn_body is not None and not contents_rewritten:
             cond_push_pattern = self._detect_conditional_push_pattern(fn_body)
             if cond_push_pattern is not None:
                 emptiness_axioms = self._generate_emptiness_universality_axioms(
@@ -3762,14 +3770,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 )
                 for axiom in emptiness_axioms:
                     solver.add(axiom)
-
-        # A list-set overwrites an element the provenance axioms claim to
-        # describe - "every element came from the source and satisfies the
-        # predicate" stops holding the moment one is replaced. The push sites
-        # still bound the length, which a set does not change; it is the
-        # contents that stop being derivable.
-        contents_rewritten = (fn_body is not None
-                              and self._contains_any_form(combined_body, ('list-set',)))
 
         # Phase 14: List element property invariants (with array encoding)
         # For postconditions like (all-triples-have-predicate $result RDF_TYPE),

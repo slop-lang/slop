@@ -105,6 +105,22 @@
         ((none) (set! fails (+ fails 1))))
       fails))
 
+  (fn call-local ((list-set (Fn (Int Int Int) Bool)))
+    (@intent "A (Fn ...) parameter named list-set is an ordinary callable")
+    (@spec (((Fn (Int Int Int) Bool)) -> Bool))
+    (list-set 1 2 3))
+
+  (fn always-false ((a Int) (b Int) (c Int))
+    (@intent "Something to pass under that name")
+    (@spec ((Int Int Int) -> Bool))
+    false)
+
+  (fn check-local-shadow ((arena Arena))
+    (@intent "A local of the name wins over the builtin, as for is-none")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (if (call-local always-false) 1 0))
+
   (fn main ()
     (@intent "Entry point: non-zero exit if any check failed")
     (@spec (() -> Int))
@@ -115,4 +131,5 @@
         (set! fails (+ fails (check-records arena)))
         (set! fails (+ fails (check-side-effect-order arena)))
         (set! fails (+ fails (check-reverse arena)))
+        (set! fails (+ fails (check-local-shadow arena)))
         (do (println (int-to-string arena fails)) fails)))))

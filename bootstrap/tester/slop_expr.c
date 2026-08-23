@@ -1239,8 +1239,6 @@ slop_string expr_get_runtime_function_name(slop_string fn_name) {
         return SLOP_STR("list_push");
     } else if (string_eq(fn_name, SLOP_STR("list-get"))) {
         return SLOP_STR("list_get");
-    } else if (string_eq(fn_name, SLOP_STR("list-set"))) {
-        return SLOP_STR("list_set");
     } else if (string_eq(fn_name, SLOP_STR("bytes-len"))) {
         return SLOP_STR("bytes_len");
     } else if (string_eq(fn_name, SLOP_STR("bytes-new"))) {
@@ -3917,7 +3915,7 @@ slop_string expr_transpile_list_expr(context_TranspileContext* ctx, slop_list_ty
                                     return SLOP_STR("0");
                                 }
                                 SLOP_UNREACHABLE();
-                            } else if (string_eq(op, SLOP_STR("list-set")) && (len >= 4)) {
+                            } else if ((string_eq(op, SLOP_STR("list-set"))) && ((len >= 4)) && (({ __auto_type _mv = context_ctx_lookup_var(ctx, op); _mv.has_value ? ({ __auto_type v = _mv.value; 0; }) : (1); }))) {
                                 __auto_type _mv_283 = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                 if (_mv_283.has_value) {
                                     __auto_type list_expr = _mv_283.value;

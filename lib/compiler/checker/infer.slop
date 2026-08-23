@@ -1285,18 +1285,25 @@
                             ((some list-arg)
                               (check-list-target env "list-push" list-arg line col))
                             ((none) (do)))
+                          (check-list-operands env "list-push" items false line col)
                           (env-get-unit-type env)))
                     ;; list-set expects 3 args: list, index, value. Returns Bool
                     ;; rather than Unit: an index past the end is a bug the
                     ;; caller can see, the way list-get returns an Option rather
                     ;; than trapping. False means nothing was written.
-                    ((string-eq op "list-set")
+                    ;; A local of the name wins, the way it does for is-none and
+                    ;; is-some (#107): a (Fn ...) parameter or a let binding
+                    ;; called list-set is an ordinary callable, and locals are
+                    ;; module-scoped so the lookup answers exactly.
+                    ((and (string-eq op "list-set")
+                          (match (env-lookup-var env op) ((some v) false) ((none) true)))
                       (do (check-builtin-args env "list-set" 3 (- len 1) line col)
                           (infer-builtin-args env expr)
                           (match (list-get items 1)
                             ((some list-arg)
                               (check-list-target env "list-set" list-arg line col))
                             ((none) (do)))
+                          (check-list-operands env "list-set" items true line col)
                           (env-get-bool-type env)))
                     ;; list-pop expects 1 arg: list
                     ((string-eq op "list-pop")
@@ -1533,22 +1540,28 @@
                               (env-add-error env msg line col)
                               (env-get-unknown-type env)))
                           ((none)
-                            ;; Check if it looks like a builtin (set-, map-, list-, etc.)
-                            (if (or (starts-with op "set-")
-                                    (or (starts-with op "map-")
-                                        (or (starts-with op "list-")
-                                            (starts-with op "arena-"))))
-                              (let ((msg (string-concat arena "Unknown builtin: '"
-                                           (string-concat arena op "'"))))
-                                (env-add-error env msg line col)
-                                (env-get-unknown-type env))
-                              ;; Check if it's a local variable (function pointer call)
-                              (match (env-lookup-var env op)
-                                ((some var-type)
-                                  ;; It's a local variable being called - infer args but don't error
-                                  (infer-builtin-args env expr)
-                                  var-type)
-                                ((none)
+                            ;; A local of the name is an ordinary callable and
+                            ;; wins over any guess made from the name. Asked
+                            ;; before the looks-like-a-builtin heuristic below,
+                            ;; which claims every list-/set-/map-/arena- name it
+                            ;; does not recognise - so a (Fn ...) parameter
+                            ;; called list-set was reported as an unknown
+                            ;; builtin rather than called.
+                            (match (env-lookup-var env op)
+                              ((some var-type)
+                                ;; It's a local variable being called - infer args but don't error
+                                (do (infer-builtin-args env expr)
+                                    var-type))
+                              ((none)
+                                ;; Check if it looks like a builtin (set-, map-, list-, etc.)
+                                (if (or (starts-with op "set-")
+                                        (or (starts-with op "map-")
+                                            (or (starts-with op "list-")
+                                                (starts-with op "arena-"))))
+                                  (let ((msg (string-concat arena "Unknown builtin: '"
+                                               (string-concat arena op "'"))))
+                                    (env-add-error env msg line col)
+                                    (env-get-unknown-type env))
                                   ;; Check if it looks like a SLOP function (contains hyphen)
                                   ;; If so, emit error - likely missing import
                                   (if (string-contains-char op 45)  ;; 45 = '-'
@@ -1648,27 +1661,7 @@
                   ;; - Range types compatible with their base type (e.g., Score vs Int)
                   ;; - Any Ptr_* matching Ptr_Void (C void* compatibility)
                   ;; - Integer types compatible with each other (FFI compatibility)
-                  (when (and (not (types-equal expected-type actual-type))
-                             (not (string-eq actual-name "Unknown"))
-                             (not (string-eq actual-name "T"))
-                             (not (string-eq expected-name "Unknown"))
-                             (not (string-eq expected-name "T"))
-                             ;; Allow Option_T to match any Option_* type (not non-Option types - caught above)
-                             (not (and (string-eq actual-name "Option_T")
-                                       (starts-with expected-name "Option_")))
-                             ;; Allow Ptr_T to match any Ptr type
-                             (not (string-eq actual-name "Ptr_T"))
-                             ;; Allow generic List/Ptr mismatches for now
-                             (not (starts-with actual-name "Ptr_Ptr_"))
-                             ;; Allow Unit (nil) to match pointer types
-                             (not (and (string-eq actual-name "Unit")
-                                       (starts-with expected-name "Ptr_")))
-                             ;; Allow any Ptr_* to match Ptr_Void (C void* compatibility)
-                             (not (and (starts-with actual-name "Ptr_")
-                                       (string-eq expected-name "Ptr_Void")))
-                             ;; Allow integer types to be compatible (FFI compatibility)
-                             (not (and (is-integer-type actual-name)
-                                       (is-integer-type expected-name))))
+                  (when (types-incompatible expected-type actual-type)
                     (let ((msg (string-concat arena "argument "
                                  (string-concat arena (int-to-string arena (+ arg-idx 1))
                                    (string-concat arena " to '"
@@ -1679,6 +1672,93 @@
                       (env-add-error env msg line col)))))
               ((none) (do)))))
         ((none) (do)))))
+
+  (fn types-incompatible ((expected (Ptr ResolvedType)) (actual (Ptr ResolvedType)))
+    (@intent "Whether these two types are definitely wrong together")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
+    ;; Everything the checker lets through deliberately lives here, so a builtin
+    ;; that wants to check an operand asks the same question a call does rather
+    ;; than growing its own, stricter idea of what matches.
+    ;;
+    ;; Skipped: Unknown or generic T on either side; Option_T against any
+    ;; Option_*; Ptr_T against any pointer; a generic Ptr_Ptr_*; Unit for a
+    ;; pointer; any pointer for Ptr_Void; and any integer width for another,
+    ;; which FFI needs.
+    (let ((expected-name (. (deref expected) name))
+          (actual-name (. (deref actual) name)))
+      (and (not (types-equal expected actual))
+           (not (string-eq actual-name "Unknown"))
+           (not (string-eq actual-name "T"))
+           (not (string-eq expected-name "Unknown"))
+           (not (string-eq expected-name "T"))
+           (not (and (string-eq actual-name "Option_T")
+                     (starts-with expected-name "Option_")))
+           (not (string-eq actual-name "Ptr_T"))
+           (not (starts-with actual-name "Ptr_Ptr_"))
+           (not (and (string-eq actual-name "Unit")
+                     (starts-with expected-name "Ptr_")))
+           (not (and (starts-with actual-name "Ptr_")
+                     (string-eq expected-name "Ptr_Void")))
+           (not (and (is-integer-type actual-name)
+                     (is-integer-type expected-name))))))
+
+  (fn report-operand-mismatch ((env (Ptr TypeEnv)) (op String) (what String)
+                               (expected String) (actual String) (line Int) (col Int))
+    (@intent "Report a builtin operand whose type is wrong")
+    (@spec (((Ptr TypeEnv) String String String String Int Int) -> Unit))
+    (@pre (!= env nil))
+    (let ((arena (env-arena env))
+          (parts (list-new arena String)))
+      (list-push parts "'")
+      (list-push parts op)
+      (list-push parts "' ")
+      (list-push parts what)
+      (list-push parts ": expected ")
+      (list-push parts expected)
+      (list-push parts ", got ")
+      (list-push parts actual)
+      (env-add-error env (string-build arena parts) line col)))
+
+  (fn check-list-operands ((env (Ptr TypeEnv)) (op String) (items (List (Ptr SExpr)))
+                           (has-index Bool) (line Int) (col Int))
+    (@intent "Check a list builtin's target, index and element operands")
+    (@spec (((Ptr TypeEnv) String (List (Ptr SExpr)) Bool Int Int) -> Unit))
+    (@pre (!= env nil))
+    ;; Without this the wrong operand type is caught by cc: assigning a
+    ;; slop_string into an int64_t field, or indexing with one.
+    (match (list-get items 1)
+      ((some list-arg)
+        (let ((list-type (infer-expr env list-arg))
+              (list-name (. (deref list-type) name)))
+          (if (and (!= (. (deref list-type) kind) 'rk-list)
+                   (not (string-eq list-name "Unknown"))
+                   (not (string-eq list-name "T")))
+            (report-operand-mismatch env op "needs a list" "List" list-name line col)
+            (let ((elem-index (if has-index 3 2)))
+              (when has-index
+                (match (list-get items 2)
+                  ((some idx-arg)
+                    (let ((idx-type (infer-expr env idx-arg))
+                          (idx-name (. (deref idx-type) name)))
+                      (when (and (not (is-integer-type idx-name))
+                                 (not (string-eq idx-name "Unknown"))
+                                 (not (string-eq idx-name "T")))
+                        (report-operand-mismatch env op "needs an integer index"
+                                                 "Int" idx-name line col))))
+                  ((none) (do))))
+              (match (. (deref list-type) inner-type)
+                ((some elem-type)
+                  (match (list-get items elem-index)
+                    ((some value-arg)
+                      (let ((value-type (infer-expr env value-arg)))
+                        (when (types-incompatible elem-type value-type)
+                          (report-operand-mismatch env op "element type"
+                                                   (. (deref elem-type) name)
+                                                   (. (deref value-type) name)
+                                                   line col))))
+                    ((none) (do))))
+                ((none) (do)))))))
+      ((none) (do))))
 
   (fn is-assignable-list-target ((expr (Ptr SExpr)))
     (@intent "Whether the C for this expression is something we can take the address of")

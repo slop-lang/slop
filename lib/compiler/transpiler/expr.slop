@@ -906,7 +906,6 @@
       ((string-eq fn-name "list-new") "list_new")
       ((string-eq fn-name "list-push") "list_push")
       ((string-eq fn-name "list-get") "list_get")
-      ((string-eq fn-name "list-set") "list_set")
       ;; Bytes operations
       ((string-eq fn-name "bytes-len") "bytes_len")
       ((string-eq fn-name "bytes-new") "bytes_new")
@@ -2894,7 +2893,10 @@
                     ;; The value is evaluated before the bounds test, so its side
                     ;; effects happen whether or not the write lands - the same
                     ;; order the reader sees in the source.
-                    ((and (string-eq op "list-set") (>= len 4))
+                    ;; A local of the name wins, as for is-none and is-some:
+                    ;; ctx-lookup-var is module-scoped, so it answers exactly.
+                    ((and (string-eq op "list-set") (>= len 4)
+                          (match (ctx-lookup-var ctx op) ((some v) false) ((none) true)))
                       (match (list-get items 1)
                         ((some list-expr)
                           (match (list-get items 2)
