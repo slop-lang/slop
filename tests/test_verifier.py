@@ -8707,3 +8707,628 @@ class TestEarlyExits:
               (record-new F (xs e)))))
         '''
         assert verify_source(src, filename="probe.slop")[0].status == 'verified'
+
+
+class TestLoopVariableVersions:
+    """Issue #116: one Z3 constant per name cannot hold both what a counter
+    started at and what it ended at.
+
+    `(let ((mut i 0)) (while (< i 10) (set! i (+ i 1))) i)` asserted i == 0 and,
+    from the loop's exit, not(i < 10) - a contradiction, so every contract on
+    the function discharged without being proved.
+    """
+
+    @staticmethod
+    def _result(src):
+        from slop.verifier import verify_source
+        return verify_source(src, filename="probe.slop")[0]
+
+    COUNTER = '''
+        (module m
+          (fn f ((arena Arena)%s)
+            (@spec ((Arena%s) -> Int))
+            %s
+            (@post %s)
+            (let ((mut i 0))
+              (while (< i %s)
+                (set! i (+ i 1)))
+              i)))
+        '''
+
+    def _counter(self, post, bound="10", params="", spec="", pre=""):
+        return self._result(self.COUNTER % (params, spec, pre, post, bound))
+
+    def test_the_context_is_no_longer_contradictory(self):
+        result = self._counter("(== $result 42)")
+        assert result.status == 'failed'
+        assert 'inconsistent' not in result.message
+
+    def test_the_exit_condition_describes_the_value_after_the_loop(self):
+        assert self._counter("(>= $result 10)").status == 'verified'
+
+    def test_a_counter_that_only_rises_cannot_end_below_its_start(self):
+        """The loop may run zero times, so this is >= rather than >."""
+        assert self._counter("(>= $result 0)", bound="n",
+                             params=" (n Int)", spec=" Int").status == 'verified'
+
+    def test_the_starting_value_is_not_the_ending_value(self):
+        result = self._counter("(== $result 0)", bound="n", params=" (n Int)",
+                               spec=" Int", pre="(@pre (> n 5))")
+        assert result.status == 'failed'
+        assert 'inconsistent' not in result.message
+
+    def test_a_counter_that_only_falls(self):
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (<= $result 100))
+            (let ((mut i 100))
+              (while (> i n)
+                (set! i (- i 1)))
+              i)))
+        ''').status == 'verified'
+
+    def test_a_counter_moving_both_ways_keeps_no_direction(self):
+        """The loop is driven by k, so only the direction of the writes to i
+        could establish this - and there is no single direction."""
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (n Int) (c Bool))
+            (@spec ((Arena Int Bool) -> Int))
+            (@post (>= $result 5))
+            (let ((mut i 5)
+                  (mut k 0))
+              (while (< k n)
+                (set! k (+ k 1))
+                (if c (set! i (+ i 1)) (set! i (- i 1))))
+              i)))
+        ''').status != 'verified'
+
+    def test_a_counter_moving_one_way_keeps_its_direction(self):
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (>= $result 5))
+            (let ((mut i 5)
+                  (mut k 0))
+              (while (< k n)
+                (set! k (+ k 1))
+                (set! i (+ i 1)))
+              i)))
+        ''').status == 'verified'
+
+    def test_a_loop_that_never_runs_leaves_its_variables_alone(self):
+        assert self._result('''
+        (module m
+          (fn z ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@pre (<= n 0))
+            (@post (== $result 0))
+            (let ((mut i 0))
+              (while (< i n) (set! i (+ i 1)))
+              i)))
+        ''').status == 'verified'
+
+    def test_a_variable_the_loop_does_not_touch_keeps_its_value(self):
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (== $result 5))
+            (let ((k 5)
+                  (mut i 0))
+              (while (< i n)
+                (set! i (+ i 1)))
+              k)))
+        ''').status == 'verified'
+
+    def test_a_loop_inside_a_branch_says_nothing_about_after(self):
+        """It may not run, so neither its exit condition nor the direction of
+        its counters describes the state that follows."""
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (flag Bool))
+            (@spec ((Arena Bool) -> Int))
+            (@pre (not flag))
+            (@post (>= $result 5))
+            (let ((mut i 0))
+              (if flag (while (< i 5) (set! i (+ i 1))) 0)
+              i)))
+        ''').status != 'verified'
+
+    def test_an_assignment_after_the_loop_replaces_its_result(self):
+        assert self._result('''
+        (module m
+          (fn g ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (>= $result 5))
+            (let ((mut i 0))
+              (while (< i 5) (set! i (+ i 1)))
+              (set! i 0)
+              i)))
+        ''').status != 'verified'
+
+    def test_an_assignment_after_the_loop_is_what_the_result_is(self):
+        assert self._result('''
+        (module m
+          (fn g ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 0))
+            (let ((mut i 0))
+              (while (< i 5) (set! i (+ i 1)))
+              (set! i 0)
+              i)))
+        ''').status == 'verified'
+
+    def test_a_binding_made_before_the_loop_keeps_its_value(self):
+        """`(j (ident i))` was called with i's starting value. Re-translating
+        that argument later reads the version the loop produced."""
+        from slop.verifier import verify_source
+        results = verify_source('''
+        (module m
+          (fn ident ((x Int)) (@spec ((Int) -> Int)) (@post (== $result x)) x)
+          (fn h ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (>= $result 5))
+            (let ((mut i 0)
+                  (j (ident i)))
+              (while (< i 5) (set! i (+ i 1)))
+              j)))
+        ''', filename="probe.slop")
+        h = [r for r in results if r.name == 'h']
+        assert len(h) == 1
+        assert h[0].status != 'verified'
+
+    def test_a_parameter_cannot_be_mistaken_for_a_loop_constant(self):
+        assert self._result('''
+        (module m
+          (fn k ((arena Arena) (i_after_loop_1 Int))
+            (@spec ((Arena Int) -> Int))
+            (@pre (== i_after_loop_1 42))
+            (@post (== $result i_after_loop_1))
+            (let ((mut i 0))
+              (while (< i 5) (set! i (+ i 1)))
+              i)))
+        ''').status != 'verified'
+
+    def test_a_loop_that_can_break_has_no_exit_fact(self):
+        """`(break)` leaves the loop with its condition still true."""
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (>= $result 10))
+            (let ((mut i 0))
+              (while (< i 10) (set! i (+ i 1)) (break))
+              i)))
+        ''').status != 'verified'
+
+    def test_a_branch_local_assignment_does_not_become_the_value(self):
+        """Both arms are translated into one shared map, so the last one would
+        otherwise be current whatever the condition said."""
+        assert self._result('''
+        (module m
+          (fn g ((arena Arena) (flag Bool))
+            (@spec ((Arena Bool) -> Int))
+            (@pre flag)
+            (@post (== $result 2))
+            (let ((mut i 0))
+              (if flag (set! i 1) (set! i 2))
+              i)))
+        ''').status != 'verified'
+
+    def test_an_unconditional_assignment_is_the_value(self):
+        assert self._result('''
+        (module m
+          (fn s ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 3))
+            (let ((mut i 0))
+              (set! i 3)
+              i)))
+        ''').status == 'verified'
+
+    def test_a_count_bound_belongs_to_the_counter(self):
+        """The count pattern only recognises a count-shaped loop; it does not
+        check that the function returns the counter."""
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              100)))
+        ''').status != 'verified'
+
+    def test_a_counter_written_twice_is_not_bounded_by_one_per_element(self):
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (set! count (+ count 1)) (set! count (+ count 1)))
+              count)))
+        ''').status != 'verified'
+
+    def test_a_counter_overwritten_in_the_loop(self):
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count 100)))
+              count)))
+        ''').status != 'verified'
+
+    def test_a_quoted_assignment_in_a_loop_body_is_data(self):
+        assert self._result('''
+        (module m
+          (fn q ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (== $result 0))
+            (let ((mut i 0)
+                  (mut k 0))
+              (while (< k n)
+                (set! k (+ k 1))
+                (quote (set! i (+ i 1))))
+              i)))
+        ''').status == 'verified'
+
+    def test_a_count_bound_does_not_cover_an_early_return(self):
+        """The bound is asserted about $result on every path, and an early
+        return yields something the loop never counted."""
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)) (flag Bool))
+            (@spec (((List Int) Bool) -> Int))
+            (@pre flag)
+            (@post (<= $result (list-len items)))
+            (when flag (return 100))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              count)))
+        ''').status != 'verified'
+
+    def test_a_write_nested_in_an_assigned_value(self):
+        """`(set! i (do (set! j 1) (+ i 1)))` writes j as well, and stopping at
+        the outer set! left j tied to what it was bound to."""
+        assert self._result('''
+        (module m
+          (fn w ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@pre (> n 0))
+            (@post (== $result 0))
+            (let ((mut i 0)
+                  (mut j 0))
+              (while (< i n)
+                (set! i (do (set! j 1) (+ i 1))))
+              j)))
+        ''').status != 'verified'
+
+    def test_a_write_nested_in_the_counters_own_value(self):
+        assert self._result('''
+        (module m
+          (fn h ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (set! count (do (set! count 100) 0)))
+              count)))
+        ''').status != 'verified'
+
+    def test_a_quoted_assignment_outside_a_loop_is_data(self):
+        assert self._result('''
+        (module m
+          (fn q ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 0))
+            (let ((mut i 0))
+              (quote (set! i 5))
+              i)))
+        ''').status == 'verified'
+
+    def test_either_operand_order_counts_as_a_step(self):
+        """The detector accepts `(+ 1 count)`; the checks on top of it have to
+        as well, or a valid counter is recognised and then denied its bound."""
+        assert self._result('''
+        (module m
+          (fn c ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ 1 count))))
+              count)))
+        ''').status == 'verified'
+        assert self._result('''
+        (module m
+          (fn d ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (>= $result 0))
+            (let ((mut i 0))
+              (while (< i n) (set! i (+ 1 i)))
+              i)))
+        ''').status == 'verified'
+
+    def test_a_break_does_not_reverse_a_counter(self):
+        """It stops the loop early; it does not undo the steps already taken."""
+        assert self._result('''
+        (module m
+          (fn b ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@post (>= $result 0))
+            (let ((mut i 0))
+              (while (< i n) (set! i (+ i 1)) (break))
+              i)))
+        ''').status == 'verified'
+
+    def test_an_inner_break_belongs_to_the_inner_loop(self):
+        assert self._result('''
+        (module m
+          (fn o ((arena Arena) (n Int) (m Int))
+            (@spec ((Arena Int Int) -> Int))
+            (@post (>= $result n))
+            (let ((mut i 0)
+                  (mut j 0))
+              (while (< i n)
+                (while (< j m) (set! j (+ j 1)) (break))
+                (set! i (+ i 1)))
+              i)))
+        ''').status == 'verified'
+
+    def test_the_alternative_mutable_spelling_is_a_counter_too(self):
+        assert self._result('''
+        (module m
+          (fn c ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let (((mut count) 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              count)))
+        ''').status == 'verified'
+
+    def test_a_pattern_axiom_does_not_read_a_later_assignment(self):
+        """The filter excluded `target` before `(set! target 999)`, but the
+        pattern phases run afterwards, when the name holds its final version."""
+        assert self._result('''
+        (module m
+          (fn f ((arena Arena) (items (List Int)) (mut target Int))
+            (@spec ((Arena (List Int) Int) -> (List Int)))
+            (@alloc arena)
+            (@post (forall (x $result) (!= x 999)))
+            (let ((mut r (list-new arena Int)))
+              (for-each (x items) (when (!= x target) (list-push r x)))
+              (set! target 999)
+              r)))
+        ''').status != 'verified'
+
+    def test_a_loop_invariant_still_sees_the_value_the_loop_left(self):
+        """Contracts are translated before the freeze: a @loop-invariant is
+        about the value the loop leaves behind, so it wants the final version."""
+        assert self._result('''
+        (module test
+          (fn filter-positive ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (>= $result 0))
+            (let ((mut count 0))
+              (for-each (x items)
+                (@loop-invariant (>= count 0))
+                (when (> x 0)
+                  (set! count (+ count 1))))
+              count)))
+        ''').status == 'verified'
+
+    def test_a_trailing_return_of_the_counter(self):
+        """`(return count)` at the end is how the function ends, not an early
+        exit - rejecting every return denied this its bound."""
+        assert self._result('''
+        (module m
+          (fn c ((items (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@post (<= $result (list-len items)))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              (return count))))
+        ''').status == 'verified'
+
+    def test_an_early_return_alongside_a_trailing_one(self):
+        assert self._result('''
+        (module m
+          (fn c ((items (List Int)) (flag Bool))
+            (@spec (((List Int) Bool) -> Int))
+            (@pre flag)
+            (@post (<= $result (list-len items)))
+            (when flag (return 100))
+            (let ((mut count 0))
+              (for-each (x items) (if true (set! count (+ count 1))))
+              (return count))))
+        ''').status != 'verified'
+
+    def test_an_exit_guard_reads_the_value_it_was_written_against(self):
+        """`(when (== i 0) (return -1))` before the loop tests i's starting
+        value. Translating it after the body would test what the loop left."""
+        assert self._result('''
+        (module m
+          (fn g ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> Int))
+            (@pre (> n 3))
+            (@post (>= $result 2))
+            (let ((mut i 1))
+              (when (== i 0) (return -1))
+              (while (< i n) (set! i (+ i 1)))
+              i)))
+        ''').status == 'verified'
+
+    def test_a_guard_past_a_reassignment_is_withdrawn(self):
+        """Guards are read as they stood at the top. Past an assignment the
+        name they test may have changed, and there is no program point here to
+        say which version was meant - so the modelling is given up, and with it
+        the claim that the trailing form is the only result."""
+        assert self._result('''
+        (module m
+          (fn h ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 5))
+            (let ((mut i 0))
+              (set! i 5)
+              (when (== i 0) (return -1))
+              i)))
+        ''').status != 'verified'
+
+    def test_a_guard_before_any_reassignment_is_exact(self):
+        assert self._result('''
+        (module m
+          (fn h ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 7))
+            (let ((mut i 1))
+              (when (> i 0) (return 7))
+              (set! i 5)
+              i)))
+        ''').status == 'verified'
+
+    def test_a_fresh_version_keeps_its_type_bounds(self):
+        """A fresh constant is fresh in every sense, including the constraints
+        the declaration put on the first one. A U8 stays non-negative."""
+        assert self._result('''
+        (module m
+          (fn u ((arena Arena) (flag Bool) (mut x U8))
+            (@spec ((Arena Bool U8) -> U8))
+            (@post (>= $result 0))
+            (do (if flag (set! x 5) 0) x)))
+        ''').status == 'verified'
+
+    def test_a_range_bound_survives_a_loop(self):
+        assert self._result('''
+        (module m
+          (type Small (Int 0 .. 9))
+          (fn r ((arena Arena) (n Int) (mut x Small))
+            (@spec ((Arena Int Small) -> Small))
+            (@post (<= $result 9))
+            (let ((mut k 0))
+              (while (< k n) (set! k (+ k 1)) (set! x 3))
+              x)))
+        ''').status == 'verified'
+
+    def test_a_for_each_over_an_unknown_collection_may_change_things(self):
+        assert self._result('''
+        (module m
+          (fn e ((arena Arena) (xs (List Int)))
+            (@spec ((Arena (List Int)) -> Int))
+            (@post (== $result 0))
+            (let ((mut i 0))
+              (for-each (x xs) (set! i 1))
+              i)))
+        ''').status != 'verified'
+
+    def test_a_postcondition_reads_the_state_the_function_ends_in(self):
+        """A @post about a mutable parameter means the value it was left with.
+        Translating postconditions before the body bound them to the version
+        the function started with, while the returned expression used the one it
+        finished with - so the two could disagree and still 'verify'."""
+        assert self._result('''
+        (module m
+          (fn f ((mut x Int))
+            (@spec ((Int) -> Int))
+            (@pre (== x 0))
+            (@post (!= $result x))
+            (let () (set! x 1) x)))
+        ''').status != 'verified'
+
+    def test_a_postcondition_true_of_the_final_state(self):
+        assert self._result('''
+        (module m
+          (fn g ((mut x Int))
+            (@spec ((Int) -> Int))
+            (@pre (== x 0))
+            (@post (== $result x))
+            (let () (set! x 1) x)))
+        ''').status == 'verified'
+
+    def test_a_local_cannot_shadow_a_parameter_in_a_postcondition(self):
+        """A contract cannot name a local, so leaving the body's bindings in
+        place while translating one lets a local stand in for a parameter."""
+        assert self._result('''
+        (module m
+          (fn f ((x Int))
+            (@spec ((Int) -> Int))
+            (@post x)
+            (let ((x true)) 1)))
+        ''').status != 'verified'
+
+    def test_a_local_named_like_a_verifier_accessor(self):
+        """`field_len` is the verifier's own length accessor and a legal local
+        name; a `list-len` postcondition must not be handed the local."""
+        assert self._result('''
+        (module m
+          (fn fl ((arena Arena) (xs (List Int)))
+            (@spec ((Arena (List Int)) -> Int))
+            (@post (>= (list-len xs) 0))
+            (let ((field_len 3)) field_len)))
+        ''').status == 'verified'
+
+    def test_an_assignment_a_return_never_reaches(self):
+        """`(set! x (do (return 0) 1))` never completes. The weakest-precondition
+        pass substituted the value anyway and its result asserted the
+        postcondition outright, so it is kept away from bodies that return."""
+        assert self._result('''
+        (module m
+          (fn f ((mut x Int))
+            (@spec ((Int) -> Int))
+            (@pre (== x 0))
+            (@post (== x 1))
+            (let () (set! x (do (return 0) 1)) x)))
+        ''').status != 'verified'
+
+    def test_a_local_of_another_sort_shadowing_a_bounded_parameter(self):
+        """The outer declaration's bounds do not apply to it, and asking Z3 to
+        compare a Bool with 0 raises rather than failing to verify."""
+        assert self._result('''
+        (module m
+          (fn s ((mut x U8))
+            (@spec ((U8) -> Int))
+            (@post (>= $result 0))
+            (let ((mut x false))
+              (set! x false)
+              1)))
+        ''').status == 'verified'
+
+    def test_a_loop_wrapped_in_a_block_still_runs(self):
+        assert self._result('''
+        (module m
+          (fn w ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (>= $result 5))
+            (let ((mut i 0))
+              (do (while (< i 5) (set! i (+ i 1))))
+              i)))
+        ''').status == 'verified'
+
+    def test_a_local_does_not_inherit_a_shadowed_parameters_bounds(self):
+        """The declared type belongs to the binding, not the spelling. Keeping
+        an outer `(Int 0 .. 9)` on an ordinary local made assigning 20 to it a
+        contradiction rather than a fact."""
+        assert self._result('''
+        (module m
+          (type Small (Int 0 .. 9))
+          (fn f ((x Small))
+            (@spec ((Small) -> Int))
+            (@post (== $result 20))
+            (let ((mut x 0))
+              (set! x 20)
+              x)))
+        ''').status == 'verified'
+
+    def test_a_parameter_keeps_its_own_bound(self):
+        assert self._result('''
+        (module m
+          (type Small (Int 0 .. 9))
+          (fn g ((x Small))
+            (@spec ((Small) -> Int))
+            (@post (<= x 9))
+            1))
+        ''').status == 'verified'

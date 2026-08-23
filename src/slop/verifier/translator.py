@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import hashlib
 import struct
-from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
+from contextlib import contextmanager
+from typing import Dict, List, Optional, Set, Tuple, Any, TYPE_CHECKING
 
 from slop.parser import SList, Symbol, String, Number, is_form
 from slop.types import (
@@ -61,6 +62,22 @@ class Z3Translator:
         self.use_seq_encoding = use_seq_encoding
         self.list_seqs: Dict[str, z3.SeqRef] = {}
         self._seq_counter = 0  # Counter for unique seq names
+        # Post-loop versions of the names a loop assigns, keyed by (loop, name),
+        # so re-translating the same loop reuses them.
+        self._loop_versions: Dict[Tuple[int, str], z3.ExprRef] = {}
+        self._loop_version_counter = 0
+        self._pre_loop_variables: Dict[str, z3.ExprRef] = {}
+        self.versioned_loops: Set[int] = set()
+        # Loops that run whenever the function body does. Empty until
+        # note_body() says otherwise, so a loop nobody has placed is treated as
+        # conditional and gets no facts attached to it.
+        self._unconditional_loops: Set[int] = set()
+        self._unconditional_assignments: Set[int] = set()
+        self._in_loop_body = False
+        self._in_quoted_form = False
+        self._versions_frozen = False
+        self._prefer_initial_versions = False
+        self._declared_types: Dict[str, Any] = {}
         self._record_new_counter = 0  # Counter for unique record-new values
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
         self._build_enum_map()
@@ -1094,7 +1111,30 @@ class Z3Translator:
             var = z3.Int(name)
 
         self.variables[name] = var
+        self._declared_types[name] = typ
         return var
+
+    def _apply_declared_bounds(self, name: str, var: z3.ExprRef) -> None:
+        """Re-state a name's type bounds for a new version of it.
+
+        A fresh constant is fresh in every sense, including the constraints the
+        declaration put on the first one. A `U8` stays non-negative across an
+        assignment; forgetting that loses the type, not just the value.
+        """
+        typ = self._declared_types.get(name)
+        if typ is None:
+            return
+        # A local may shadow a parameter of another sort entirely; the outer
+        # declaration's bounds do not apply to it, and asking Z3 to compare a
+        # Bool with 0 raises rather than failing to verify.
+        if not (z3.is_expr(var) and var.sort() == z3.IntSort()):
+            return
+        if isinstance(typ, PrimitiveType) and typ.name.startswith('U'):
+            self.constraints.append(var >= 0)
+        elif isinstance(typ, RangeType):
+            self._add_range_constraints(var, typ.bounds)
+        elif isinstance(typ, PtrType):
+            self.constraints.append(var >= 0)
 
     def _add_range_constraints(self, var: z3.ArithRef, bounds: RangeBounds):
         """Add constraints for range type bounds"""
@@ -1317,8 +1357,16 @@ class Z3Translator:
                         quoted_name = f"'{name}"
                         if quoted_name in self.enum_values:
                             return z3.IntVal(self.enum_values[quoted_name])
-                    # If not found in enums, return the translated inner expression
-                    return self.translate_expr(inner)
+                    # If not found in enums, return the translated inner expression.
+                    # Whatever it looks like, it is data: an assignment or loop
+                    # inside a quote is not executed, so it must not version
+                    # anything.
+                    was_quoted = self._in_quoted_form
+                    self._in_quoted_form = True
+                    try:
+                        return self.translate_expr(inner)
+                    finally:
+                        self._in_quoted_form = was_quoted
 
                 # Control flow - path sensitive analysis
                 if op == 'if':
@@ -1342,6 +1390,13 @@ class Z3Translator:
                 # let binding - declare variables and translate body
                 if op == 'let' and len(expr) >= 3:
                     return self._translate_let(expr)
+
+                # A loop gives the variables it assigns a new value
+                if op in ('while', 'for-each') and len(expr) >= 2:
+                    return self._translate_loop(expr)
+
+                if op == 'set!' and len(expr) >= 3:
+                    return self._translate_assignment(expr)
 
                 # Option constructors with semantic axioms
                 if op == 'some' and len(expr) == 2:
@@ -1403,6 +1458,17 @@ class Z3Translator:
     def _translate_symbol(self, sym: Symbol) -> Optional[z3.ExprRef]:
         """Translate a symbol reference"""
         name = sym.name
+
+        # Once the body has been walked, `variables` holds each name's final
+        # version, and the pattern phases that run afterwards re-translate
+        # expressions from anywhere in it. A name a loop or an assignment
+        # replaced has no single value to give them - the filter that excluded
+        # `target` did so before `(set! target 999)`, not after - so it is
+        # refused rather than answered with the wrong one (issue #116).
+        if self._prefer_initial_versions and name in self._pre_loop_variables:
+            return self._pre_loop_variables[name]
+        if self._versions_frozen and name in self._pre_loop_variables:
+            return None
 
         # Quoted enum variant: 'Fizz -> IntVal(0)
         if name.startswith("'"):
@@ -1800,6 +1866,13 @@ class Z3Translator:
                     init_value = binding[1]
 
                 if var_name and init_value is not None:
+                    # A new binding of the name, whatever the old one was: the
+                    # type it was declared with and the version it held before
+                    # any assignment both belong to that other binding. Keeping
+                    # them re-states an outer parameter's bounds on this local,
+                    # which can make the context contradictory (#118).
+                    self._declared_types.pop(var_name, None)
+                    self._pre_loop_variables.pop(var_name, None)
                     # Translate initial value
                     init_z3 = self.translate_expr(init_value)
                     if init_z3 is not None:
@@ -1827,6 +1900,329 @@ class Z3Translator:
             result = self.translate_expr(body_expr)
 
         return result
+
+    def _translate_loop(self, expr: SList) -> Optional[z3.ExprRef]:
+        """Give the variables a loop assigns a value of their own after it.
+
+        One Z3 constant per name cannot hold both what a counter started at and
+        what it ended at. `(let ((mut i 0)) (while (< i 10) (set! i (+ i 1))) i)`
+        asserted i == 0 and, from the loop's exit, not(i < 10) - a contradiction,
+        which discharges every contract on the function (issue #116).
+
+        So the assigned names are re-bound to fresh constants here, at the point
+        in the body where the loop runs. Reads before the loop keep the old
+        constant, reads after see the new one, and the exit condition is stated
+        about the new one because that is what it constrains.
+
+        Nothing is claimed about what the loop computed, with one exception: a
+        counter every assignment moves the same way keeps its direction. A body
+        that only ever does `(set! i (+ i k))` for non-negative k cannot lower i,
+        however many times it runs - including none - so i_after >= i_before.
+        """
+        if self._in_quoted_form:
+            return None
+        if self._in_loop_body:
+            # The enclosing loop's havoc already covered everything this one
+            # assigns; versioning again would replace those constants.
+            return None
+        loop_id = id(expr)
+        unconditional = loop_id in self._unconditional_loops
+        body_items = expr.items[2:]
+
+        assigned: Dict[str, List['SExpr']] = {}
+        self._collect_assignments(body_items, assigned)
+
+        # The condition as it reads on entry. If it is false there the body
+        # never runs, and every name it assigns keeps the value it came in with.
+        entry_condition = None
+        if is_form(expr, 'while') and len(expr) >= 2:
+            entry_condition = self.translate_expr(expr[1])
+            if entry_condition is not None and not z3.is_bool(entry_condition):
+                entry_condition = None
+        elif is_form(expr, 'for-each') and len(expr) >= 2:
+            # The same idea for a collection loop: no elements, no iterations.
+            binder = expr[1]
+            collection = binder[1] if isinstance(binder, SList) and len(binder) >= 2 else None
+            if collection is not None:
+                length = self._collection_length_term(collection)
+                if length is not None:
+                    entry_condition = length > 0
+
+        for name, values in assigned.items():
+            before = self.variables.get(name)
+            if before is None or not z3.is_expr(before):
+                continue
+            self._pre_loop_variables.setdefault(name, before)
+            key = (loop_id, name)
+            after = self._loop_versions.get(key)
+            if after is None:
+                # Fresh rather than a name of our own construction:
+                # `i_after_loop_1` is a legal SLOP identifier, and colliding
+                # with a parameter of that name would tie the loop's result to
+                # an unrelated input.
+                prefix = f"{name}_after_loop"
+                if z3.is_bool(before):
+                    after = z3.FreshBool(prefix)
+                elif z3.is_real(before):
+                    after = z3.FreshReal(prefix)
+                else:
+                    after = z3.FreshInt(prefix)
+                self._loop_versions[key] = after
+                self._apply_declared_bounds(name, after)
+                if unconditional:
+                    direction = self._assignment_direction(name, values)
+                    if direction > 0:
+                        self.constraints.append(after >= before)
+                    elif direction < 0:
+                        self.constraints.append(after <= before)
+                if entry_condition is not None:
+                    self.constraints.append(
+                        z3.Implies(z3.Not(entry_condition), after == before))
+            self.variables[name] = after
+
+        # The exit condition constrains the post-loop values, so it is stated
+        # here rather than by a later pass that would not know which version of
+        # each name a given loop ended with.
+        # A `break` in this loop, or a `return` anywhere in it, can leave with
+        # the condition still true - so the exit rule does not apply. Neither
+        # changes the direction a counter moves, which is kept.
+        exits_early = (self._contains_own_break(body_items)
+                       or self._contains_return(body_items))
+
+        if unconditional and not exits_early and is_form(expr, 'while') and len(expr) >= 2:
+            cond_z3 = self.translate_expr(expr[1])
+            if cond_z3 is not None and z3.is_bool(cond_z3):
+                self.constraints.append(z3.Not(cond_z3))
+        self.versioned_loops.add(loop_id)
+
+        # The body still gets walked so its inner bindings are declared, but its
+        # assignments have already been accounted for by the havoc above and
+        # must not version anything again.
+        was_in_loop = self._in_loop_body
+        self._in_loop_body = True
+        try:
+            for item in body_items:
+                self.translate_expr(item)
+        finally:
+            self._in_loop_body = was_in_loop
+        return None
+
+    def note_body(self, body: 'SExpr') -> None:
+        """Record which loops in `body` run unconditionally.
+
+        A loop inside an `if` arm may not run at all, so its exit condition and
+        the direction of its counters say nothing about the state afterwards.
+        Only a loop on the body's own statement path can contribute those.
+        """
+        node = body
+        while True:
+            if is_form(node, 'let') and len(node) >= 3:
+                statements = node.items[2:]
+            elif is_form(node, 'do') and len(node) >= 2:
+                statements = node.items[1:]
+            else:
+                statements = [node]
+            for statement in statements:
+                self._note_statement(statement)
+            if len(statements) <= 1 and statements and statements[0] is node:
+                return
+            node = statements[-1]
+
+    def _note_statement(self, statement: 'SExpr') -> None:
+        """Mark one statement, and anything a plain block wraps.
+
+        A `do` or a `let` in statement position runs whenever its enclosing
+        block does, so a loop inside one is as unconditional as a bare one.
+        """
+        if is_form(statement, 'while') or is_form(statement, 'for-each'):
+            self._unconditional_loops.add(id(statement))
+        elif is_form(statement, 'set!'):
+            self._unconditional_assignments.add(id(statement))
+        elif is_form(statement, 'do') and len(statement) >= 2:
+            for inner in statement.items[1:]:
+                self._note_statement(inner)
+        elif is_form(statement, 'let') and len(statement) >= 3:
+            for inner in statement.items[2:]:
+                self._note_statement(inner)
+
+    @contextmanager
+    def initial_versions(self):
+        """Read every name as it stood before any loop or assignment.
+
+        For a pass that runs after the body has been walked but is asking about
+        something written near the top of it - an early-return guard, say, which
+        tests the values in scope where it appears.
+        """
+        was = self._prefer_initial_versions
+        self._prefer_initial_versions = True
+        try:
+            yield
+        finally:
+            self._prefer_initial_versions = was
+
+    def freeze_versions(self) -> None:
+        """Stop answering for names that have more than one version.
+
+        Called once the body has been walked. See _translate_symbol.
+        """
+        self._versions_frozen = True
+
+    def initial_variable(self, name: str):
+        """The constant `name` held before any loop or assignment replaced it.
+
+        A phase that re-derives a binding's *initial* value has to attach it to
+        that constant. Reading `variables` instead picks up whatever version is
+        current, which after a loop or a `set!` means asserting the starting
+        value of the thing that replaced it.
+        """
+        return self._pre_loop_variables.get(name, self.variables.get(name))
+
+    def is_loop_versioned(self, name: str) -> bool:
+        """True if a loop or a `set!` replaced `name`, so it has more than one value."""
+        return name in self._pre_loop_variables
+
+    def _translate_assignment(self, expr: SList) -> Optional[z3.ExprRef]:
+        """`(set! name value)` outside a loop: the name takes a new value.
+
+        Without this the name keeps whatever constant it had, so a `set!` after
+        a loop left the loop's facts attached to a variable the program has
+        since overwritten. Inside a loop body nothing is done - the loop already
+        gave every name it assigns a fresh constant, and one more here would
+        replace it.
+        """
+        if self._in_loop_body or self._in_quoted_form:
+            return None
+        target = expr[1]
+        # A `set!` in a branch runs only if that branch does, and both arms are
+        # translated into one shared map - so the last one translated would
+        # otherwise become the current value whatever the condition said. The
+        # name is still given a new constant, just an unconstrained one.
+        carries_value = id(expr) in self._unconditional_assignments
+        if not isinstance(target, Symbol):
+            return None
+        name = target.name
+        before = self.variables.get(name)
+        value_z3 = self.translate_expr(expr[2])
+        if before is None or not z3.is_expr(before):
+            return None
+        # The constant it held before this assignment, so a phase that later
+        # re-derives the binding's initial value attaches it there rather than
+        # to what the assignment produced.
+        self._pre_loop_variables.setdefault(name, before)
+        # `(set! x (do (return 0) 1))` never completes: the return leaves the
+        # function before the assignment lands.
+        if self._contains_return([expr[2]]):
+            carries_value = False
+        prefix = f"{name}_after_set"
+        if z3.is_bool(before):
+            after = z3.FreshBool(prefix)
+        elif z3.is_real(before):
+            after = z3.FreshReal(prefix)
+        else:
+            after = z3.FreshInt(prefix)
+        self._apply_declared_bounds(name, after)
+        self.variables[name] = after
+        if carries_value and value_z3 is not None and value_z3.sort() == after.sort():
+            self.constraints.append(after == value_z3)
+        return None
+
+    def _contains_own_break(self, stmts) -> bool:
+        """True if these statements break out of *this* loop.
+
+        Stops at a nested loop, whose break belongs to that one, and at a
+        `(fn ...)` or `(quote ...)`.
+        """
+        for stmt in stmts:
+            if not isinstance(stmt, SList) or len(stmt) < 1:
+                continue
+            head = stmt[0]
+            if isinstance(head, Symbol):
+                if head.name == 'break':
+                    return True
+                if head.name in ('fn', 'quote', 'while', 'for-each'):
+                    continue
+            if self._contains_own_break(stmt.items):
+                return True
+        return False
+
+    def _contains_return(self, stmts) -> bool:
+        """True if these statements can return from the function.
+
+        A `return` leaves every enclosing loop, so nested ones are walked.
+        """
+        for stmt in stmts:
+            if not isinstance(stmt, SList) or len(stmt) < 1:
+                continue
+            head = stmt[0]
+            if isinstance(head, Symbol):
+                if head.name == 'return':
+                    return True
+                if head.name in ('fn', 'quote'):
+                    continue
+            if self._contains_return(stmt.items):
+                return True
+        return False
+
+    def _collection_length_term(self, collection: 'SExpr'):
+        """A length term for a loop's collection, if one can be named."""
+        if isinstance(collection, Symbol):
+            seq = self.list_seqs.get(collection.name)
+            if seq is not None:
+                return z3.Length(seq)
+        handle = self.translate_expr(collection)
+        if handle is None or not z3.is_expr(handle) or handle.sort() != z3.IntSort():
+            return None
+        func = self.variables.get("field_len")
+        if func is None:
+            func = z3.Function("field_len", z3.IntSort(), z3.IntSort())
+            self.variables["field_len"] = func
+        if not isinstance(func, z3.FuncDeclRef) or func.arity() != 1:
+            return None
+        return func(handle)
+
+    def _collect_assignments(self, stmts, assigned: Dict[str, List]):
+        """Every `(set! name value)` under `stmts`, grouped by name.
+
+        Stops at a nested `(fn ...)`: a callback's assignments are its own.
+        """
+        for stmt in stmts:
+            if not isinstance(stmt, SList) or len(stmt) < 1:
+                continue
+            head = stmt[0]
+            if isinstance(head, Symbol):
+                # A callback's assignments are its own, and a quoted form is
+                # data - neither assigns anything here.
+                if head.name in ('fn', 'quote'):
+                    continue
+                if head.name == 'set!' and len(stmt) >= 3 and isinstance(stmt[1], Symbol):
+                    assigned.setdefault(stmt[1].name, []).append(stmt[2])
+                    # The assigned value can itself assign: keep walking it, or
+                    # a write nested there keeps its pre-loop constant.
+                    self._collect_assignments([stmt[2]], assigned)
+                    continue
+            self._collect_assignments(stmt.items, assigned)
+
+    def _assignment_direction(self, name: str, values) -> int:
+        """+1 if every assignment to `name` can only raise it, -1 to lower, else 0."""
+        directions = set()
+        for value in values:
+            if not (isinstance(value, SList) and len(value) == 3):
+                return 0
+            head = value[0]
+            if not (isinstance(head, Symbol) and head.name in ('+', '-')):
+                return 0
+            left, right = value[1], value[2]
+            if head.name == '+' and isinstance(left, Number) and left.value >= 0:
+                # (+ 1 i) is the same step as (+ i 1)
+                left, right = right, left
+            if not (isinstance(left, Symbol) and left.name == name):
+                return 0
+            if not isinstance(right, Number) or right.value < 0:
+                return 0
+            directions.add(1 if head.name == '+' else -1)
+        if len(directions) != 1:
+            return 0
+        return directions.pop()
 
     def _translate_match(self, expr: SList) -> Optional[z3.ExprRef]:
         """Translate match expression for union and enum types.

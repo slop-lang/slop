@@ -2741,8 +2741,110 @@ class AxiomGenerationMixin:
 
         return False
 
+    def _counter_rises_by_one(self, body: 'SExpr', name: str) -> bool:
+        """True if `name` starts at zero and every write adds exactly one."""
+        writes: List = []
+
+        def walk(node):
+            if not isinstance(node, SList) or len(node) < 1:
+                return
+            head = node[0]
+            if isinstance(head, Symbol):
+                if head.name in ('fn', 'quote'):
+                    return
+                if head.name == 'set!' and len(node) >= 3 and isinstance(node[1], Symbol):
+                    if node[1].name == name:
+                        writes.append(node[2])
+                    return
+            for item in node.items:
+                walk(item)
+
+        walk(body)
+        if len(writes) != 1:
+            return False
+        value = writes[0]
+        if not (isinstance(value, SList) and len(value) == 3):
+            return False
+        head, left, right = value[0], value[1], value[2]
+        if not (isinstance(head, Symbol) and head.name == '+'):
+            return False
+        if isinstance(left, Number) and left.value == 1:
+            # (+ 1 count), which the detector accepts as well
+            left, right = right, left
+        if not (isinstance(left, Symbol) and left.name == name):
+            return False
+        if not (isinstance(right, Number) and right.value == 1):
+            return False
+        # The assigned value may itself assign - `(do (set! count 100) 0)` looks
+        # like one write from outside.
+        nested: List = []
+
+        def nested_walk(node):
+            if not isinstance(node, SList) or len(node) < 1:
+                return
+            head_sym = node[0]
+            if isinstance(head_sym, Symbol):
+                if head_sym.name in ('fn', 'quote'):
+                    return
+                if head_sym.name == 'set!' and len(node) >= 3:
+                    nested.append(node)
+            for item in node.items:
+                nested_walk(item)
+
+        nested_walk(value)
+        if nested:
+            return False
+        return self._binding_starts_at_zero(body, name)
+
+    def _binding_starts_at_zero(self, body: 'SExpr', name: str) -> bool:
+        """True if every `let` binding of `name` initialises it to 0."""
+        found = False
+
+        def walk(node):
+            nonlocal found
+            if not isinstance(node, SList):
+                return True
+            if is_form(node, 'let') and len(node) >= 2 and isinstance(node[1], SList):
+                for binding in node[1].items:
+                    if not (isinstance(binding, SList) and len(binding) >= 2):
+                        continue
+                    first = binding[0]
+                    if isinstance(first, Symbol) and first.name == 'mut' and len(binding) >= 3:
+                        bound, init = binding[1], binding[2]
+                    elif isinstance(first, Symbol):
+                        bound, init = first, binding[1]
+                    elif (isinstance(first, SList) and len(first) >= 2
+                          and isinstance(first[0], Symbol) and first[0].name == 'mut'):
+                        # ((mut name) init), the third spelling _translate_let takes
+                        bound, init = first[1], binding[1]
+                    else:
+                        continue
+                    if isinstance(bound, Symbol) and bound.name == name:
+                        found = True
+                        if not (isinstance(init, Number) and init.value == 0):
+                            return False
+            for item in node.items:
+                if not walk(item):
+                    return False
+            return True
+
+        return walk(body) and found
+
+    def _count_returns(self, expr: 'SExpr') -> int:
+        """How many `(return ...)` forms this function body has of its own."""
+        if not isinstance(expr, SList) or len(expr) < 1:
+            return 0
+        head = expr[0]
+        if isinstance(head, Symbol):
+            if head.name in ('fn', 'quote'):
+                return 0
+            if head.name == 'return':
+                return 1 + sum(self._count_returns(item) for item in expr.items[1:])
+        return sum(self._count_returns(item) for item in expr.items)
+
     def _generate_count_axioms(self, pattern: CountPatternInfo,
-                               translator: Z3Translator) -> List:
+                               translator: Z3Translator,
+                               body: Optional['SExpr'] = None) -> List:
         """Generate Z3 axioms for detected count pattern.
 
         Axioms:
@@ -2750,8 +2852,37 @@ class AxiomGenerationMixin:
         2. Count is bounded by collection size: $result <= (list-len collection)
         """
         axioms = []
+        # The bound describes the counter. _detect_count_pattern only finds a
+        # count-shaped loop; it does not check that the function returns the
+        # counter, and a function that returns something else would otherwise
+        # inherit the bound.
+        counted = translator.variables.get(pattern.count_var)
         result_var = translator.variables.get('$result')
-        if result_var is None:
+        if counted is None or result_var is None:
+            return axioms
+        if not (z3.is_expr(counted) and counted.sort() == z3.IntSort()):
+            return axioms
+        if body is not None:
+            returned = self._get_return_expr(body)
+            # A trailing `(return count)` is not an early exit - it is how the
+            # function ends. Unwrap it, then require that nothing else returns:
+            # any other exit yields something the loop never counted, and this
+            # bound is asserted about $result on every path.
+            trailing_return = is_form(returned, 'return') and len(returned) >= 2
+            if trailing_return:
+                returned = returned[1]
+            other_returns = self._count_returns(body) > (1 if trailing_return else 0)
+            if other_returns:
+                return axioms
+            if not (isinstance(returned, Symbol) and returned.name == pattern.count_var):
+                return axioms
+            # The bound is one element at most, so the counter has to be raised
+            # by exactly one at exactly one place. _detect_count_pattern matches
+            # the first increment it finds and says nothing about the rest, so a
+            # second one - or a (set! count 100) - would go unnoticed.
+            if not self._counter_rises_by_one(body, pattern.count_var):
+                return axioms
+        elif not z3.eq(counted, result_var):
             return axioms
 
         # Only add numeric axioms if result is an integer type
@@ -2761,20 +2892,14 @@ class AxiomGenerationMixin:
         # Axiom 1: Count is non-negative
         axioms.append(result_var >= 0)
 
-        # Axiom 2: Count is bounded by collection size
-        # Translate the collection to get its Z3 representation
-        collection_z3 = translator.translate_expr(pattern.collection)
-        if collection_z3 is not None:
-            # Get or create list-len function
-            list_len_func_name = "fn_list-len_1"
-            if list_len_func_name not in translator.variables:
-                list_len_func = z3.Function(list_len_func_name, z3.IntSort(), z3.IntSort())
-                translator.variables[list_len_func_name] = list_len_func
-            else:
-                list_len_func = translator.variables[list_len_func_name]
-
-            collection_len = list_len_func(collection_z3)
-            axioms.append(result_var <= collection_len)
+        # Axiom 2: Count is bounded by collection size.
+        # Stated with the same length terms `(list-len collection)` translates
+        # to in a contract - fn_list-len_1 was a fourth spelling that no goal
+        # ever mentioned, so the bound was unusable (see #115's length bridge).
+        length_terms, links = self._length_terms_for(pattern.collection, translator)
+        axioms.extend(links)
+        for term in length_terms:
+            axioms.append(result_var <= term)
 
         return axioms
 

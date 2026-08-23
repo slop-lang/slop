@@ -179,6 +179,12 @@ class LoopAnalysisMixin:
         while_loops = self._analyze_while_loops(body)
 
         for ctx in while_loops:
+            # A loop the translator versioned already stated its own exit
+            # condition, about the post-loop constants. Restating it here would
+            # use whichever version of each name happened to be current, which
+            # after two loops is the wrong one.
+            if id(ctx.loop_expr) in getattr(translator, 'versioned_loops', ()):
+                continue
             # Translate the loop condition
             cond_z3 = translator.translate_expr(ctx.condition)
             if cond_z3 is not None:
