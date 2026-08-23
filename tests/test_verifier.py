@@ -9421,3 +9421,39 @@ class TestListSet:
             (@post (forall (x $result) (> x 0)))
             xs))
         ''') == 'verified'
+
+    def test_a_postcondition_about_the_mutated_list_itself(self):
+        """Not just $result: a @post naming the parameter reads the same
+        sequence the @pre did unless the set gives the list a new one."""
+        assert self._status('''
+        (module m
+          (fn f ((xs (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@pre (forall (x xs) (> x 0)))
+            (@post (forall (x xs) (> x 0)))
+            (do (list-set xs 0 -5) 0)))
+        ''') != 'verified'
+
+    def test_a_set_carries_the_length_across(self):
+        """It replaces an element; it does not add or remove one."""
+        assert self._status('''
+        (module m
+          (fn k ((xs (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@pre (== (list-len xs) 3))
+            (@post (== (list-len xs) 3))
+            (do (list-set xs 0 -5) 0)))
+        ''') == 'verified'
+
+    def test_a_statement_before_the_last_one_in_a_do_is_walked(self):
+        """A do block returned only its final expression's translation, so an
+        assignment anywhere but the end never happened as far as the verifier
+        was concerned."""
+        assert self._status('''
+        (module m
+          (fn f ((mut x Int))
+            (@spec ((Int) -> Int))
+            (@pre (== x 0))
+            (@post (== x 0))
+            (do (set! x 5) 1)))
+        ''') != 'verified'

@@ -2755,7 +2755,7 @@
                     ;; every module in the build.
                     ((and (or (string-eq op "is-none") (string-eq op "is-some"))
                           (>= len 2)
-                          (match (ctx-lookup-var ctx op) ((some v) false) ((none) true)))
+                          (not (local-callable-shadows ctx op)))
                       (match (list-get items 1)
                         ((some opt-expr)
                           (let ((opt-c (transpile-expr ctx opt-expr))
@@ -2896,7 +2896,7 @@
                     ;; A local of the name wins, as for is-none and is-some:
                     ;; ctx-lookup-var is module-scoped, so it answers exactly.
                     ((and (string-eq op "list-set") (>= len 4)
-                          (match (ctx-lookup-var ctx op) ((some v) false) ((none) true)))
+                          (not (local-callable-shadows ctx op)))
                       (match (list-get items 1)
                         ((some list-expr)
                           (match (list-get items 2)
@@ -5150,6 +5150,20 @@
               (ctx-add-error-at ctx (ctx-str ctx op ": no arena in scope")
                 (ctx-list-first-line items) (ctx-list-first-col items))
               "arena"))))))
+
+  (fn local-callable-shadows ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Whether a local of this name is something the call could mean")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    ;; The checker only lets a local shadow a builtin if it can be called, so
+    ;; this has to ask the same question: a local of the name that is not a
+    ;; function would otherwise disable the builtin here and be emitted as a
+    ;; call through an integer, which cc reports and the checker never saw.
+    (match (ctx-lookup-var ctx name)
+      ((some entry)
+        (or (. entry is-closure)
+            (starts-with (. entry slop-type) "(Fn")))
+      ((none) false)))
 
   (fn get-arena-for-list-push-expr ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)) (list-c String))
     (@intent "Get arena source for list-push by analyzing list expression")
