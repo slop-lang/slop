@@ -185,7 +185,11 @@ class AxiomGenerationMixin:
         """
         if parent_head == 'list-push' and index == 1:
             return True
-        if parent_head in ('list-len', 'list-get') and index == 1:
+        # list-set is a read as far as the length goes: it overwrites an element
+        # in place and leaves the count alone. It does change the contents,
+        # which is a separate question, handled by withholding the provenance
+        # axioms for a body that uses it.
+        if parent_head in ('list-len', 'list-get', 'list-set') and index == 1:
             return True
         if parent_head == 'mut' and index == 1:
             return True
@@ -202,7 +206,7 @@ class AxiomGenerationMixin:
         """
         if parent_head == '@for-each-binder' and index == 1:
             return True
-        return parent_head in ('list-len', 'list-get') and index == 1
+        return parent_head in ('list-len', 'list-get', 'list-set') and index == 1
 
     def _list_escapes(self, expr: 'SExpr', target: 'SExpr') -> bool:
         """True if the returned list is used in a way that hides its length."""

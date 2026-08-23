@@ -906,6 +906,7 @@
       ((string-eq fn-name "list-new") "list_new")
       ((string-eq fn-name "list-push") "list_push")
       ((string-eq fn-name "list-get") "list_get")
+      ((string-eq fn-name "list-set") "list_set")
       ;; Bytes operations
       ((string-eq fn-name "bytes-len") "bytes_len")
       ((string-eq fn-name "bytes-new") "bytes_new")
@@ -2889,6 +2890,39 @@
                           (do
                             (ctx-add-error-at ctx "missing list-push list" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
+                    ;; list-set: (list-set list idx value) -> inline bounded write
+                    ;; The value is evaluated before the bounds test, so its side
+                    ;; effects happen whether or not the write lands - the same
+                    ;; order the reader sees in the source.
+                    ((and (string-eq op "list-set") (>= len 4))
+                      (match (list-get items 1)
+                        ((some list-expr)
+                          (match (list-get items 2)
+                            ((some idx-expr)
+                              (match (list-get items 3)
+                                ((some val-expr)
+                                  (let ((list-c (transpile-expr ctx list-expr))
+                                        (idx-c (transpile-expr ctx idx-expr))
+                                        (val-c (transpile-expr ctx val-expr)))
+                                    (let ((s1 (ctx-str ctx "({ __auto_type _set_lst = &(" list-c))
+                                          (s2 (ctx-str ctx s1 "); size_t _set_idx = (size_t)("))
+                                          (s3 (ctx-str ctx s2 idx-c))
+                                          (s4 (ctx-str ctx s3 "); __auto_type _set_val = ("))
+                                          (s5 (ctx-str ctx s4 val-c))
+                                          (s6 (ctx-str ctx s5 "); bool _set_ok = _set_idx < _set_lst->len; if (_set_ok) { _set_lst->data[_set_idx] = _set_val; } _set_ok; })")))
+                                      s6)))
+                                ((none)
+                                  (do
+                                    (ctx-add-error-at ctx "missing list-set value" (ctx-list-first-line items) (ctx-list-first-col items))
+                                    "0"))))
+                            ((none)
+                              (do
+                                (ctx-add-error-at ctx "missing list-set index" (ctx-list-first-line items) (ctx-list-first-col items))
+                                "0"))))
+                        ((none)
+                          (do
+                            (ctx-add-error-at ctx "missing list-set list" (ctx-list-first-line items) (ctx-list-first-col items))
+                            "0"))))
                     ;; none constructor: (none) -> typed none if return type is known
                     ((and (string-eq op "none") (= len 1))
                       ;; Try to use function's return type for typed none
@@ -4152,6 +4186,9 @@
                         ;; list-push returns void
                         ((string-eq op "list-push")
                           "void")
+                        ;; list-set reports whether the index was in range
+                        ((string-eq op "list-set")
+                          "bool")
                         ;; set! returns void
                         ((string-eq op "set!")
                           "void")

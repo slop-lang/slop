@@ -723,6 +723,7 @@ Language primitives that are always available without imports.
 (list-push list item) -> Unit
 (list-pop list) -> (Option T)
 (list-get list idx) -> (Option T)
+(list-set list idx value) -> Bool       ; Overwrite in place; false if out of range
 (list-len list) -> (Int 0 ..)
 
 ### Maps
@@ -976,6 +977,7 @@ These string/list functions are BUILTINS - do NOT import from strlib:
 | `(int-to-string arena n)` | Convert int to string |
 | `(list-len list)` | Get list length |
 | `(list-get list idx)` | Get element at index |
+| `(list-set list idx value)` | Overwrite element at index |
 | `(list-push list item)` | Append to list |
 
 These ARE in strlib and need `(import strlib ...)`:

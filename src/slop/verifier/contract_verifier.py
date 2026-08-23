@@ -3784,11 +3784,19 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 solver.add(axiom)
                 pattern_axioms.append(axiom)
 
+        # A list-set overwrites an element the provenance axioms below claim to
+        # describe - "every element came from the source and satisfies the
+        # predicate" stops holding the moment one is replaced. The push sites
+        # still bound the length, which a set does not change; it is the
+        # contents that stop being derivable.
+        contents_rewritten = (fn_body is not None
+                              and self._contains_any_form(combined_body, ('list-set',)))
+
         # Phase 14b: Sequence push provenance axioms (with Seq encoding)
         # For filter patterns that build lists via list-push, generate axioms
         # connecting result elements to their source collection and predicate.
         # This enables proving postconditions like (forall (t $result) (pred t)).
-        if fn_body is not None and translator.use_seq_encoding:
+        if fn_body is not None and translator.use_seq_encoding and not contents_rewritten:
             seq_push_axioms = self._extract_seq_push_axioms(
                 fn_body, postconditions, translator
             )
@@ -3801,7 +3809,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # of constructor expressions, generate axioms connecting result fields
         # to source fields. This enables proving postconditions like:
         #   (forall (t $result) (exists (dt source) (field-relationship t dt)))
-        if fn_body is not None and translator.use_seq_encoding:
+        if fn_body is not None and translator.use_seq_encoding and not contents_rewritten:
             map_push_axioms = self._extract_map_push_axioms(
                 fn_body, postconditions, translator
             )
@@ -3815,7 +3823,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # axioms from constant fields in constructors and guard conditions.
         has_only_structural_axioms = False
         structural_axiom_list: List[z3.BoolRef] = []
-        if fn_body is not None and translator.use_seq_encoding:
+        if fn_body is not None and translator.use_seq_encoding and not contents_rewritten:
             if not pattern_axioms and self._body_has_list_push_to_result(fn_body):
                 return_expr = self._get_return_expr(fn_body)
                 if isinstance(return_expr, Symbol):
@@ -3850,6 +3858,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # (b) push axioms exist but there are extra push sites outside the
         #     detected pattern that the axioms don't model (unsound axiom).
         has_unaxiomatized_pushes = False
+        if contents_rewritten:
+            has_unaxiomatized_pushes = True
         if fn_body is not None and translator.use_seq_encoding:
             if self._body_has_list_push_to_result(fn_body):
                 if not pattern_axioms:

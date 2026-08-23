@@ -1556,6 +1556,10 @@ types_ResolvedType* infer_infer_special_form(env_TypeEnv* env, types_SExpr* expr
                         infer_check_builtin_args(env, SLOP_STR("list-push"), 2, (len - 1), line, col);
                         infer_infer_builtin_args(env, expr);
                         return env_env_get_unit_type(env);
+                    } else if (string_eq(op, SLOP_STR("list-set"))) {
+                        infer_check_builtin_args(env, SLOP_STR("list-set"), 3, (len - 1), line, col);
+                        infer_infer_builtin_args(env, expr);
+                        return env_env_get_bool_type(env);
                     } else if (string_eq(op, SLOP_STR("list-pop"))) {
                         infer_check_builtin_args(env, SLOP_STR("list-pop"), 1, (len - 1), line, col);
                         return env_env_make_option_type(env, NULL);

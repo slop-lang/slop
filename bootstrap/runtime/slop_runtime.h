@@ -548,6 +548,12 @@ static inline slop_bytes slop_bytes_from(slop_arena* arena, const uint8_t* src, 
     static inline T* Name##_get(Name* list, size_t i) { \
         SLOP_PRE(i < list->len, "list index in bounds"); \
         return &list->data[i]; \
+    } \
+    \
+    static inline bool Name##_set(Name* list, size_t i, T item) { \
+        if (i >= list->len) { return false; } \
+        list->data[i] = item; \
+        return true; \
     }
 
 /* SLOP_LIST_DEFINE: combined declare + impl (original convenience macro) */

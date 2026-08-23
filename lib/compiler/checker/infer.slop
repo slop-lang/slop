@@ -1282,6 +1282,14 @@
                       (do (check-builtin-args env "list-push" 2 (- len 1) line col)
                           (infer-builtin-args env expr)
                           (env-get-unit-type env)))
+                    ;; list-set expects 3 args: list, index, value. Returns Bool
+                    ;; rather than Unit: an index past the end is a bug the
+                    ;; caller can see, the way list-get returns an Option rather
+                    ;; than trapping. False means nothing was written.
+                    ((string-eq op "list-set")
+                      (do (check-builtin-args env "list-set" 3 (- len 1) line col)
+                          (infer-builtin-args env expr)
+                          (env-get-bool-type env)))
                     ;; list-pop expects 1 arg: list
                     ((string-eq op "list-pop")
                       (do (check-builtin-args env "list-pop" 1 (- len 1) line col)

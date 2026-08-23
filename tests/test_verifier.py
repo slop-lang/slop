@@ -9332,3 +9332,53 @@ class TestLoopVariableVersions:
             (@post (<= x 9))
             1))
         ''').status == 'verified'
+
+
+class TestListSet:
+    """`list-set` overwrites an element in place.
+
+    It leaves the length alone, so the bounds derived from the push sites still
+    hold across one. It does change the contents, so the provenance axioms - the
+    ones that say every element came from the source and satisfies the loop's
+    predicate - stop describing the list the moment an element is replaced.
+    """
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        return verify_source(src, filename="probe.slop")[0].status
+
+    FILTER = '''
+        (fn filter-positive ((items (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (forall (t $result) (> t 0)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (when (> x 0)
+                (list-push result x)))
+            %s
+            result))
+        '''
+
+    def test_a_length_bound_survives_a_set(self):
+        assert self._status('''
+        (module m
+          (fn f ((arena Arena))
+            (@spec ((Arena) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) 2))
+            (let ((mut r (list-new arena Int)))
+              (do (list-push r 1)
+                  (list-push r 2)
+                  (list-set r 0 9)
+                  r))))
+        ''') == 'verified'
+
+    def test_the_provenance_claim_holds_without_a_set(self):
+        """The control: this shape does prove its contents claim, so the case
+        below is testing that the set took it away rather than that it was
+        never there."""
+        assert self._status(self.FILTER % '') == 'verified'
+
+    def test_the_provenance_claim_does_not_survive_a_set(self):
+        assert self._status(self.FILTER % '(list-set result 0 -5)') != 'verified'
