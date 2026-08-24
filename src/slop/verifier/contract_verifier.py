@@ -4223,7 +4223,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                                      or (result_length_unmodelled
                                          and self._expr_references_result_length(prop_expr)))
                                 and not self._failure_survives_any_result(
-                                    prop_axioms, prop_z3_expr,
+                                    list(prop_axioms) + list(result_length_axioms),
+                                    prop_z3_expr,
                                     self._result_terms(translator))):
                             unknown_properties.append((prop_name, prop_str,
                                 "the body's pushes are not modelled, so nothing is known "

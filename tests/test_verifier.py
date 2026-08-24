@@ -9693,3 +9693,38 @@ class TestUnmodelledResultContents:
             (do (let ((mut r (list-new arena Int))) (list-push r 1))
                 r)))
         ''', filename="probe.slop")[0].status == 'failed'
+
+    def test_a_property_sees_the_length_facts_too(self):
+        """The property recheck was given the property solver's axioms alone,
+        which omit the push-derived length - so a @property and an equivalent
+        @post disagreed about a result the pushes guarantee is non-empty."""
+        from slop.verifier import verify_source
+        assert verify_source('''
+        (module m
+          (type Ax (union (a Int) (b Int)))
+          (fn g ((arena Arena) (ax Ax))
+            (@spec ((Arena Ax) -> (List Int)))
+            (@alloc arena)
+            (@property p (forall (x $result) false))
+            (let ((mut r (list-new arena Int)))
+              (do (list-push r 1)
+                  (match ax ((a n) (list-push r n)) ((b _) (do)))
+                  r))))
+        ''', filename="probe.slop")[0].status == 'failed'
+
+    def test_a_push_before_an_unbounded_loop_keeps_its_floor(self):
+        """The loop bounds nothing, but the push before it happened and a loop
+        only ever adds - so the result is not empty, whatever the loop did."""
+        from slop.verifier import verify_source
+        assert verify_source('''
+        (module m
+          (fn k ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) 0))
+            (let ((mut r (list-new arena Int))
+                  (mut i 0))
+              (do (list-push r 1)
+                  (while (< i n) (list-push r i) (set! i (+ i 1)))
+                  r))))
+        ''', filename="probe.slop")[0].status == 'failed'
