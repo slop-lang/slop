@@ -547,20 +547,26 @@ class TestOptionPredicates:
 
         assert rc != 0, combined
         assert (
-            "'is-none' is a builtin predicate and cannot be redefined as a function"
+            "'is-none' is a builtin and cannot be redefined as a function"
         ) in combined, combined
         assert (
-            "'is-some' is a builtin predicate and cannot be redefined as a type"
+            "'is-some' is a builtin and cannot be redefined as a type"
         ) in combined, combined
         # An FFI declaration registers its signature directly, bypassing the
         # (fn ...) path, so it needs the same refusal.
         assert (
-            "'is-some' is a builtin predicate and cannot be redefined as a foreign function"
+            "'is-some' is a builtin and cannot be redefined as a foreign function"
+        ) in combined, combined
+        # list-set is reserved on the same grounds and for the same reason: the
+        # transpiler lowers it by name. It could be, because it is new - the
+        # older list operations could not without breaking code (#110).
+        assert (
+            "'list-set' is a builtin and cannot be redefined as a function"
         ) in combined, combined
         # ffi-struct declares a type and the checker registers nothing for it,
         # so it was the last declaration form that could claim one of the names.
         assert (
-            "'is-none' is a builtin predicate and cannot be redefined as a foreign struct"
+            "'is-none' is a builtin and cannot be redefined as a foreign struct"
         ) in combined, combined
 
     def test_lowering_is_a_tag_test(self):

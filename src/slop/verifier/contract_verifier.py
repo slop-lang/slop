@@ -1881,7 +1881,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return axioms
 
     def _result_sequence_equality(self, fn_body: SExpr,
-                                  translator: Z3Translator) -> List:
+                                  translator: Z3Translator,
+                                  contents_rewritten: bool = False) -> List:
         """Equate $result's Seq with the returned local's, when they must agree.
 
         Under Seq encoding the two get separate constants, so a @loop-invariant
@@ -1891,7 +1892,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         Withheld when the body contains an explicit (return ...):
         _get_return_expr only sees the trailing expression, and equating
         $result with it would claim the other exit cannot happen.
+
+        Withheld too when a list-set rewrote the contents. The two names would
+        otherwise share one sequence, so a @pre about what the caller passed in
+        would carry over to the result the body has since altered - the
+        contents version of the problem #116 fixed for lengths.
         """
+        if contents_rewritten:
+            return []
         if self._contains_any_form(fn_body, ('return',)):
             return []
         ret_expr = self._get_return_expr(fn_body)
@@ -3738,12 +3746,20 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         for axiom in inv_axioms:
                             solver.add(axiom)
 
+        # A list-set overwrites an element the provenance axioms claim to
+        # describe - "every element came from the source and satisfies the
+        # predicate" stops holding the moment one is replaced. The push sites
+        # still bound the length, which a set does not change; it is the
+        # contents that stop being derivable.
+        contents_rewritten = (fn_body is not None
+                              and self._contains_any_form(combined_body, ('list-set',)))
+
         # Phase 13b: Exists-search pattern axioms
         # Detect (let ((mut found false)) (for-each (v coll) (when pred (set! found true)))
         #   (if found branch-a branch-b))
         # and generate: union_tag($result) == found_tag ↔ ∃v ∈ coll: pred(v)
         exists_search_axioms: List[z3.BoolRef] = []
-        if fn_body is not None:
+        if fn_body is not None and not contents_rewritten:
             exists_pattern = self._detect_exists_search_pattern(fn_body)
             if exists_pattern is not None:
                 exists_search_axioms = self._generate_exists_search_axioms(exists_pattern, translator)
@@ -3754,7 +3770,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Detect nested for-each with conditional push via enum match and generate:
         #   Length($result) == 0 ↔ ForAll v,o: condition(v,o)
         emptiness_axioms: List[z3.BoolRef] = []
-        if fn_body is not None:
+        if fn_body is not None and not contents_rewritten:
             cond_push_pattern = self._detect_conditional_push_pattern(fn_body)
             if cond_push_pattern is not None:
                 emptiness_axioms = self._generate_emptiness_universality_axioms(
@@ -3776,7 +3792,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         pattern_axioms.extend(exists_search_axioms)
         pattern_axioms.extend(emptiness_axioms)
 
-        if fn_body is not None and translator.use_array_encoding:
+        if (fn_body is not None and translator.use_array_encoding
+                and not contents_rewritten):
             element_property_axioms = self._extract_list_element_property_axioms(
                 fn_body, postconditions, translator
             )
@@ -3788,7 +3805,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # For filter patterns that build lists via list-push, generate axioms
         # connecting result elements to their source collection and predicate.
         # This enables proving postconditions like (forall (t $result) (pred t)).
-        if fn_body is not None and translator.use_seq_encoding:
+        if fn_body is not None and translator.use_seq_encoding and not contents_rewritten:
             seq_push_axioms = self._extract_seq_push_axioms(
                 fn_body, postconditions, translator
             )
@@ -3801,7 +3818,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # of constructor expressions, generate axioms connecting result fields
         # to source fields. This enables proving postconditions like:
         #   (forall (t $result) (exists (dt source) (field-relationship t dt)))
-        if fn_body is not None and translator.use_seq_encoding:
+        if fn_body is not None and translator.use_seq_encoding and not contents_rewritten:
             map_push_axioms = self._extract_map_push_axioms(
                 fn_body, postconditions, translator
             )
@@ -3815,7 +3832,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # axioms from constant fields in constructors and guard conditions.
         has_only_structural_axioms = False
         structural_axiom_list: List[z3.BoolRef] = []
-        if fn_body is not None and translator.use_seq_encoding:
+        if fn_body is not None and translator.use_seq_encoding and not contents_rewritten:
             if not pattern_axioms and self._body_has_list_push_to_result(fn_body):
                 return_expr = self._get_return_expr(fn_body)
                 if isinstance(return_expr, Symbol):
@@ -3850,6 +3867,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # (b) push axioms exist but there are extra push sites outside the
         #     detected pattern that the axioms don't model (unsound axiom).
         has_unaxiomatized_pushes = False
+        if contents_rewritten:
+            has_unaxiomatized_pushes = True
         if fn_body is not None and translator.use_seq_encoding:
             if self._body_has_list_push_to_result(fn_body):
                 if not pattern_axioms:
@@ -3899,7 +3918,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # too, or a @loop-invariant stated about the local proves nothing about
         # the result.
         if fn_body is not None and translator.use_seq_encoding:
-            for equality in self._result_sequence_equality(fn_body, translator):
+            for equality in self._result_sequence_equality(
+                    fn_body, translator, contents_rewritten):
                 solver.add(equality)
 
         # First try all postconditions together (fast path)
@@ -3944,7 +3964,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # Loop invariants reference the local variable (e.g., 'result'),
                     # while properties reference '$result' - these are different Z3 seqs
                     if fn_body is not None and translator.use_seq_encoding:
-                        for equality in self._result_sequence_equality(fn_body, translator):
+                        for equality in self._result_sequence_equality(
+                                fn_body, translator, contents_rewritten):
                             prop_solver.add(equality)
 
                     # Add pattern axioms (filter/map/fold axioms derived from loop analysis)

@@ -745,6 +745,7 @@ Minimal runtime (~500 lines of C):
 (list-new arena Type) -> (List Type)   ; Type parameter required for type safety
 (list-push list item) -> Unit
 (list-get list index) -> (Option T)
+(list-set list index value) -> Bool    ; Overwrite in place; false if out of range
 (list-pop list) -> (Option T)          ; Remove and return last element
 (list-len list) -> (Int 0 ..)
 

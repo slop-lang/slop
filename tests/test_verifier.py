@@ -9332,3 +9332,128 @@ class TestLoopVariableVersions:
             (@post (<= x 9))
             1))
         ''').status == 'verified'
+
+
+class TestListSet:
+    """`list-set` overwrites an element in place.
+
+    It leaves the length alone, so the bounds derived from the push sites still
+    hold across one. It does change the contents, so the provenance axioms - the
+    ones that say every element came from the source and satisfies the loop's
+    predicate - stop describing the list the moment an element is replaced.
+    """
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        return verify_source(src, filename="probe.slop")[0].status
+
+    FILTER = '''
+        (fn filter-positive ((items (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (forall (t $result) (> t 0)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (when (> x 0)
+                (list-push result x)))
+            %s
+            result))
+        '''
+
+    def test_a_length_bound_survives_a_set(self):
+        assert self._status('''
+        (module m
+          (fn f ((arena Arena))
+            (@spec ((Arena) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) 2))
+            (let ((mut r (list-new arena Int)))
+              (do (list-push r 1)
+                  (list-push r 2)
+                  (list-set r 0 9)
+                  r))))
+        ''') == 'verified'
+
+    def test_the_provenance_claim_holds_without_a_set(self):
+        """The control: this shape does prove its contents claim, so the case
+        below is testing that the set took it away rather than that it was
+        never there."""
+        assert self._status(self.FILTER % '') == 'verified'
+
+    def test_the_provenance_claim_does_not_survive_a_set(self):
+        assert self._status(self.FILTER % '(list-set result 0 -5)') != 'verified'
+
+    def test_an_array_encoded_element_claim_does_not_survive_a_set(self):
+        """The array path adds its own element-property axioms, earlier than the
+        sequence ones - so the guard has to be computed before all of them."""
+        assert self._status('''
+        (module m
+          (type Triple (record (predicate Int)))
+          (fn build ((arena Arena) (p Int))
+            (@spec ((Arena Int) -> (List Triple)))
+            (@alloc arena)
+            (@post (all-triples-have-predicate $result p))
+            (let ((mut result (list-new arena Triple)))
+              (do (list-push result (record-new Triple (predicate p)))
+                  (list-set result 0 (record-new Triple (predicate 999)))
+                  result))))
+        ''') != 'verified'
+
+    def test_a_set_on_an_argument_does_not_carry_its_precondition(self):
+        """The parameter and the result share one sequence, so a @pre about what
+        the caller passed in would describe a list the body has since altered -
+        the contents version of what #116 fixed for lengths."""
+        assert self._status('''
+        (module m
+          (fn f ((xs (List Int)))
+            (@spec (((List Int)) -> (List Int)))
+            (@pre (forall (x xs) (> x 0)))
+            (@post (forall (x $result) (> x 0)))
+            (do (list-set xs 0 -5) xs)))
+        ''') != 'verified'
+
+    def test_without_a_set_the_precondition_does_carry(self):
+        assert self._status('''
+        (module m
+          (fn g ((xs (List Int)))
+            (@spec (((List Int)) -> (List Int)))
+            (@pre (forall (x xs) (> x 0)))
+            (@post (forall (x $result) (> x 0)))
+            xs))
+        ''') == 'verified'
+
+    def test_a_postcondition_about_the_mutated_list_itself(self):
+        """Not just $result: a @post naming the parameter reads the same
+        sequence the @pre did unless the set gives the list a new one."""
+        assert self._status('''
+        (module m
+          (fn f ((xs (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@pre (forall (x xs) (> x 0)))
+            (@post (forall (x xs) (> x 0)))
+            (do (list-set xs 0 -5) 0)))
+        ''') != 'verified'
+
+    def test_a_set_carries_the_length_across(self):
+        """It replaces an element; it does not add or remove one."""
+        assert self._status('''
+        (module m
+          (fn k ((xs (List Int)))
+            (@spec (((List Int)) -> Int))
+            (@pre (== (list-len xs) 3))
+            (@post (== (list-len xs) 3))
+            (do (list-set xs 0 -5) 0)))
+        ''') == 'verified'
+
+    def test_a_statement_before_the_last_one_in_a_do_is_walked(self):
+        """A do block returned only its final expression's translation, so an
+        assignment anywhere but the end never happened as far as the verifier
+        was concerned."""
+        assert self._status('''
+        (module m
+          (fn f ((mut x Int))
+            (@spec ((Int) -> Int))
+            (@pre (== x 0))
+            (@post (== x 0))
+            (do (set! x 5) 1)))
+        ''') != 'verified'

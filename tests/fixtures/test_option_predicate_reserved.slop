@@ -27,4 +27,12 @@
   (fn is-none ((n Int))
     (@intent "A function of a reserved name")
     (@spec ((Int) -> Bool))
-    (== n 0)))
+    (== n 0))
+
+  ;; list-set joined the reserved names when it became a builtin (#121). The
+  ;; older list operations did not: a definition of list-push has always been
+  ;; able to shadow one, and refusing it now would break code that compiles.
+  (fn list-set ((xs (List Int)) (i Int) (v Int))
+    (@intent "A function of a reserved name")
+    (@spec (((List Int) Int Int) -> Bool))
+    true))

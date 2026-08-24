@@ -101,11 +101,11 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                 int64_t total = 0;
                 int64_t i = 0;
                 while (i < len) {
-                    __auto_type _mv_1653 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                    if (_mv_1653.has_value) {
-                        __auto_type line = _mv_1653.value;
+                    __auto_type _mv_1657 = ({ __auto_type _lst = lines; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    if (_mv_1657.has_value) {
+                        __auto_type line = _mv_1657.value;
                         total = (total + (((int64_t)(line.len)) + 1));
-                    } else if (!_mv_1653.has_value) {
+                    } else if (!_mv_1657.has_value) {
                     }
                     i = (i + 1);
                 }
@@ -114,9 +114,9 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                     int64_t pos = 0;
                     int64_t j = 0;
                     while (j < len) {
-                        __auto_type _mv_1654 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                        if (_mv_1654.has_value) {
-                            __auto_type line = _mv_1654.value;
+                        __auto_type _mv_1658 = ({ __auto_type _lst = lines; size_t _idx = (size_t)j; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                        if (_mv_1658.has_value) {
+                            __auto_type line = _mv_1658.value;
                             {
                                 __auto_type line_len = ((int64_t)(line.len));
                                 __auto_type line_data = line.data;
@@ -129,7 +129,7 @@ slop_string tester_main_lines_to_string(slop_arena* arena, slop_list_string line
                                 buf[pos] = 10;
                                 pos = (pos + 1);
                             }
-                        } else if (!_mv_1654.has_value) {
+                        } else if (!_mv_1658.has_value) {
                         }
                         j = (j + 1);
                     }
@@ -162,11 +162,11 @@ slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, 
         while (i < argc) {
             {
                 __auto_type path_ptr = ((char*)(argv[i]));
-                __auto_type _mv_1655 = tester_main_read_file(arena, path_ptr);
-                if (_mv_1655.has_value) {
-                    __auto_type source = _mv_1655.value;
+                __auto_type _mv_1659 = tester_main_read_file(arena, path_ptr);
+                if (_mv_1659.has_value) {
+                    __auto_type source = _mv_1659.value;
                     ({ __auto_type _lst_p = &(sources); __auto_type _item = (source); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                } else if (!_mv_1655.has_value) {
+                } else if (!_mv_1659.has_value) {
                 }
             }
             i = (i + 1);
@@ -196,9 +196,9 @@ int main(int argc, char** _c_argv) {
             SLOP_PRE(_arena.base != NULL, "arena allocation failed");
             #endif
             slop_arena* arena = &_arena;
-            __auto_type _mv_1656 = tester_main_read_file(arena, ((char*)(argv[1])));
-            if (_mv_1656.has_value) {
-                __auto_type source = _mv_1656.value;
+            __auto_type _mv_1660 = tester_main_read_file(arena, ((char*)(argv[1])));
+            if (_mv_1660.has_value) {
+                __auto_type source = _mv_1660.value;
                 {
                     __auto_type import_sources = tester_main_read_import_files(arena, argc, argv);
                     __auto_type result = tester_generate_tests_with_imports(arena, source, import_sources, strlib_cstring_to_string(argv[1]));
@@ -225,7 +225,7 @@ int main(int argc, char** _c_argv) {
                         return 1;
                     }
                 }
-            } else if (!_mv_1656.has_value) {
+            } else if (!_mv_1660.has_value) {
                 tester_main_print_str(((char*)(SLOP_STR("{\"error\":\"Could not read file\"}\n").data)));
                 return 1;
             }

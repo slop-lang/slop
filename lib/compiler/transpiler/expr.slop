@@ -2755,7 +2755,7 @@
                     ;; every module in the build.
                     ((and (or (string-eq op "is-none") (string-eq op "is-some"))
                           (>= len 2)
-                          (match (ctx-lookup-var ctx op) ((some v) false) ((none) true)))
+                          (not (local-callable-shadows ctx op)))
                       (match (list-get items 1)
                         ((some opt-expr)
                           (let ((opt-c (transpile-expr ctx opt-expr))
@@ -2888,6 +2888,42 @@
                         ((none)
                           (do
                             (ctx-add-error-at ctx "missing list-push list" (ctx-list-first-line items) (ctx-list-first-col items))
+                            "0"))))
+                    ;; list-set: (list-set list idx value) -> inline bounded write
+                    ;; The value is evaluated before the bounds test, so its side
+                    ;; effects happen whether or not the write lands - the same
+                    ;; order the reader sees in the source.
+                    ;; A local of the name wins, as for is-none and is-some:
+                    ;; ctx-lookup-var is module-scoped, so it answers exactly.
+                    ((and (string-eq op "list-set") (>= len 4)
+                          (not (local-callable-shadows ctx op)))
+                      (match (list-get items 1)
+                        ((some list-expr)
+                          (match (list-get items 2)
+                            ((some idx-expr)
+                              (match (list-get items 3)
+                                ((some val-expr)
+                                  (let ((list-c (transpile-expr ctx list-expr))
+                                        (idx-c (transpile-expr ctx idx-expr))
+                                        (val-c (transpile-expr ctx val-expr)))
+                                    (let ((s1 (ctx-str ctx "({ __auto_type _set_lst = &(" list-c))
+                                          (s2 (ctx-str ctx s1 "); size_t _set_idx = (size_t)("))
+                                          (s3 (ctx-str ctx s2 idx-c))
+                                          (s4 (ctx-str ctx s3 "); __auto_type _set_val = ("))
+                                          (s5 (ctx-str ctx s4 val-c))
+                                          (s6 (ctx-str ctx s5 "); bool _set_ok = _set_idx < _set_lst->len; if (_set_ok) { _set_lst->data[_set_idx] = _set_val; } _set_ok; })")))
+                                      s6)))
+                                ((none)
+                                  (do
+                                    (ctx-add-error-at ctx "missing list-set value" (ctx-list-first-line items) (ctx-list-first-col items))
+                                    "0"))))
+                            ((none)
+                              (do
+                                (ctx-add-error-at ctx "missing list-set index" (ctx-list-first-line items) (ctx-list-first-col items))
+                                "0"))))
+                        ((none)
+                          (do
+                            (ctx-add-error-at ctx "missing list-set list" (ctx-list-first-line items) (ctx-list-first-col items))
                             "0"))))
                     ;; none constructor: (none) -> typed none if return type is known
                     ((and (string-eq op "none") (= len 1))
@@ -4152,6 +4188,9 @@
                         ;; list-push returns void
                         ((string-eq op "list-push")
                           "void")
+                        ;; list-set reports whether the index was in range
+                        ((string-eq op "list-set")
+                          "bool")
                         ;; set! returns void
                         ((string-eq op "set!")
                           "void")
@@ -5111,6 +5150,20 @@
               (ctx-add-error-at ctx (ctx-str ctx op ": no arena in scope")
                 (ctx-list-first-line items) (ctx-list-first-col items))
               "arena"))))))
+
+  (fn local-callable-shadows ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Whether a local of this name is something the call could mean")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    ;; The checker only lets a local shadow a builtin if it can be called, so
+    ;; this has to ask the same question: a local of the name that is not a
+    ;; function would otherwise disable the builtin here and be emitted as a
+    ;; call through an integer, which cc reports and the checker never saw.
+    (match (ctx-lookup-var ctx name)
+      ((some entry)
+        (or (. entry is-closure)
+            (starts-with (. entry slop-type) "(Fn")))
+      ((none) false)))
 
   (fn get-arena-for-list-push-expr ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)) (list-c String))
     (@intent "Get arena source for list-push by analyzing list expression")

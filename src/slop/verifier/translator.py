@@ -1384,8 +1384,15 @@ class Z3Translator:
 
                 # do block - value is the last expression
                 if op == 'do' and len(expr) >= 2:
-                    # The value of a do block is its last expression
-                    return self.translate_expr(expr.items[-1])
+                    # Every statement is walked, not just the last. The value of
+                    # a do is its final expression, but the ones before it are
+                    # where the assignments live - skipping them meant a `set!`
+                    # or a `list-set` in a do block never versioned anything.
+                    # _translate_let has always walked its body this way.
+                    result = None
+                    for item in expr.items[1:]:
+                        result = self.translate_expr(item)
+                    return result
 
                 # let binding - declare variables and translate body
                 if op == 'let' and len(expr) >= 3:
@@ -1397,6 +1404,9 @@ class Z3Translator:
 
                 if op == 'set!' and len(expr) >= 3:
                     return self._translate_assignment(expr)
+
+                if op == 'list-set' and len(expr) >= 4:
+                    return self._translate_list_set(expr)
 
                 # Option constructors with semantic axioms
                 if op == 'some' and len(expr) == 2:
@@ -2179,6 +2189,33 @@ class Z3Translator:
         if not isinstance(func, z3.FuncDeclRef) or func.arity() != 1:
             return None
         return func(handle)
+
+    def _translate_list_set(self, expr: SList) -> Optional[z3.ExprRef]:
+        """`(list-set xs i v)` replaces an element, so xs gets a new sequence.
+
+        Without this the list before and after share one Seq constant, and a
+        @pre about what the caller passed in describes the list the body has
+        since altered. The same shape as a counter holding its start and end at
+        once (#116), for contents rather than length.
+
+        The length is carried across, because a set does not change it.
+        """
+        if self._in_quoted_form:
+            return None
+        for item in expr.items[1:]:
+            self.translate_expr(item)
+        target = expr[1]
+        if not isinstance(target, Symbol):
+            return None
+        before = self.list_seqs.get(target.name)
+        if before is None:
+            return None
+        self._loop_version_counter += 1
+        after = z3.Const(
+            f"_seq_{target.name}_after_set_{self._loop_version_counter}", before.sort())
+        self.list_seqs[target.name] = after
+        self.constraints.append(z3.Length(after) == z3.Length(before))
+        return None
 
     def _collect_assignments(self, stmts, assigned: Dict[str, List]):
         """Every `(set! name value)` under `stmts`, grouped by name.
