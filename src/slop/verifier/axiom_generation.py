@@ -432,8 +432,21 @@ class AxiomGenerationMixin:
             if not starts_empty:
                 return axioms
             early_exit = self._contains_any_form(scope, ('break', 'continue'))
-            axioms.extend(self._loop_result_length_axioms(
-                scope, sites, terms, translator, early_exit))
+            loop_axioms = self._loop_result_length_axioms(
+                scope, sites, terms, translator, early_exit)
+            if loop_axioms:
+                axioms.extend(loop_axioms)
+                return axioms
+            # No bound from the loop, but the pushes outside it still happened
+            # and a loop only ever adds - so the floor they set holds whatever
+            # the loop did. Without this a straight push before a while loop
+            # left the result looking possibly empty.
+            floor = sum(
+                1 for site in sites
+                if site.loop_depth == 0
+                and not site.guard_conditions and not site.conditional)
+            if floor:
+                axioms.extend(t >= z3.IntVal(floor) for t in terms)
             return axioms
 
         upper = len(sites)
