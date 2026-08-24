@@ -9457,3 +9457,121 @@ class TestListSet:
             (@post (== x 0))
             (do (set! x 5) 1)))
         ''') != 'verified'
+
+
+_UNMODELLED_PUSH = '''
+(module probe
+  (type Msg (record (v Int) (to Int)))
+  (type Ax  (union (a Int) (b Int)))
+
+  (fn build ((arena Arena) (ax Ax) (root Int))
+    (@spec ((Arena Ax Int) -> (List Msg)))
+    (@alloc arena)
+%s
+    (let ((mut r (list-new arena Msg)))
+      (do (match ax
+            ((a n) (list-push r (record-new Msg (v n) (to root))))
+            ((b _) (do)))
+          r))))
+'''
+
+
+class TestUnmodelledResultContents:
+    """Issue #69: a counterexample drawn from a result nothing describes.
+
+    A push in a `match` arm is not a shape any pattern detector recognises, so
+    the elements of the result are unconstrained. Z3 then produces a model where
+    they are anything at all, and reporting that as a contract violation sends
+    the author to rewrite code that is correct. The `unsat` direction was
+    already downgraded to unknown for this reason; `sat` was not, so the same
+    missing axioms read as a pass one way and a failure the other.
+
+    The gate is narrow on purpose: it covers what quantifies over the elements,
+    not what the length model can still decide.
+    """
+
+    @staticmethod
+    def _result(contracts):
+        from slop.verifier import verify_source
+        results = verify_source(_UNMODELLED_PUSH % contracts, filename="probe.slop")
+        assert len(results) == 1
+        return results[0]
+
+    def test_a_property_over_the_elements_is_unknown(self):
+        result = self._result(
+            "    (@property addressed (forall (m $result) (== (. m to) root)))")
+        assert result.status == 'unknown', result.message
+        assert 'not modelled' in result.message
+
+    def test_a_postcondition_over_the_elements_is_unknown(self):
+        result = self._result("    (@post (forall (m $result) (== (. m to) root)))")
+        assert result.status == 'unknown', result.message
+        assert 'not modelled' in result.message
+
+    def test_a_length_claim_that_holds_still_verifies(self):
+        """The length model does describe this result, so its claims are
+        decidable and must not be swept into the same unknown."""
+        assert self._result("    (@post {(list-len $result) <= 1})").status == 'verified'
+
+    def test_a_length_claim_that_is_false_still_fails(self):
+        result = self._result("    (@post {(list-len $result) == 5})")
+        assert result.status == 'failed', result.message
+
+    def test_the_two_together_report_the_property(self):
+        """issue #69's q3: the @post holds and the @property is unknown, so the
+        function reports the property rather than blaming the postcondition."""
+        result = self._result(
+            "    (@post {(list-len $result) <= 1})\n"
+            "    (@property addressed (forall (m $result) (== (. m to) root)))")
+        assert result.status == 'unknown', result.message
+        assert 'addressed' in result.message
+
+    def test_a_modelled_result_still_reports_a_real_failure(self):
+        """A filter loop is a shape the provenance axioms do describe, so a
+        false claim about its elements is a genuine counterexample."""
+        from slop.verifier import verify_source
+        src = '''
+        (fn filter-positive ((items (List Int)))
+          (@spec (((List Int)) -> (List Int)))
+          (@post (forall (t $result) (< t 0)))
+          (let ((mut result (list-new arena Int)))
+            (for-each (x items)
+              (when (> x 0)
+                (list-push result x)))
+            result))
+        '''
+        assert verify_source(src)[0].status == 'failed'
+
+    def test_a_length_claim_over_an_unbounded_result(self):
+        """A while loop gives the length no bound, so a counterexample about it
+        says as little as one about the elements. snarl's find-subclasses is
+        this shape: the claim is true, and nothing here can derive it."""
+        from slop.verifier import verify_source
+        result = verify_source('''
+        (module m
+          (fn f ((arena Arena) (n Int))
+            (@spec ((Arena Int) -> (List Int)))
+            (@alloc arena)
+            (@post (>= (list-len $result) 1))
+            (let ((mut r (list-new arena Int))
+                  (mut i 0))
+              (do (while (< i n) (list-push r i) (set! i (+ i 1))) r))))
+        ''', filename="probe.slop")[0]
+        assert result.status == 'unknown', result.message
+
+    def test_a_length_claim_about_a_field_of_the_result(self):
+        """snarl's report-add-result: the list is reached through a field of the
+        returned record, and pushing through an alias is not modelled at all."""
+        from slop.verifier import verify_source
+        result = verify_source('''
+        (module m
+          (type Report (record (results (List Int))))
+          (fn add ((arena Arena) (report Report) (v Int))
+            (@spec ((Arena Report Int) -> Report))
+            (@alloc arena)
+            (@post (== (list-len (. $result results))
+                       (+ (list-len (. report results)) 1)))
+            (do (list-push (. report results) v)
+                (record-new Report (results (. report results))))))
+        ''', filename="probe.slop")[0]
+        assert result.status == 'unknown', result.message
