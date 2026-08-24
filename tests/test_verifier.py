@@ -9634,3 +9634,33 @@ class TestUnmodelledResultContents:
         result = self._result(
             "    (@post (and (> root 0) (forall (m $result) (== (. m to) root))))")
         assert result.status == 'failed', result.message
+
+    def test_a_scratch_list_set_does_not_cloud_the_result(self):
+        """A list-set does not change a length, so it has no bearing on whether
+        the result's length is known - least of all when it touches some other
+        list entirely."""
+        from slop.verifier import verify_source
+        assert verify_source('''
+        (module m
+          (fn f ((arena Arena) (xs (List Int)))
+            (@spec ((Arena (List Int)) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) 4))
+            (let ((scratch (list-new arena Int)))
+              (do (list-set scratch 0 1) xs))))
+        ''', filename="probe.slop")[0].status == 'failed'
+
+    def test_a_push_through_an_alias_leaves_the_length_unknown(self):
+        """The push analysis withholds a bound when the list escapes into an
+        alias, so the length is as unknown there as for a push to the name."""
+        from slop.verifier import verify_source
+        assert verify_source('''
+        (module m
+          (fn g ((arena Arena))
+            (@spec ((Arena) -> (List Int)))
+            (@alloc arena)
+            (@post (>= (list-len $result) 1))
+            (let ((mut r (list-new arena Int)))
+              (let ((alias r))
+                (do (list-push alias 1) r)))))
+        ''', filename="probe.slop")[0].status == 'unknown'

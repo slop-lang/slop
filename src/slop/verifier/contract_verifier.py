@@ -253,6 +253,19 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         solver.add(contract)
         return solver.check() == z3.unsat
 
+    def _result_is_pushed_to(self, body: SExpr) -> bool:
+        """True if anything pushes onto the list this body returns.
+
+        Through an alias too: `_result_length_axioms` withholds a bound when the
+        list escapes into one, so the length is as unknown there as it is for a
+        push to the name itself.
+        """
+        returned = self._get_return_expr(body)
+        if not isinstance(returned, Symbol):
+            return False
+        names = [returned.name] + self._aliases_of(body, returned.name)
+        return any(self._count_push_to_var([body], name) > 0 for name in names)
+
     def _expr_references_result_length(self, expr: SExpr) -> bool:
         """True if `expr` constrains the length of $result, or of a field of it."""
         if not isinstance(expr, SList):
@@ -3840,11 +3853,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # parameter derives no numeric bound and needs none - the result is that
         # list. It is a push the analysis could not account for that leaves the
         # length genuinely unknown.
+        # A list-set does not change a length, so it has no bearing here even
+        # for the returned list, let alone for some scratch one.
         result_length_unmodelled = (
             not result_length_bounded
             and fn_body is not None
-            and (contents_rewritten
-                 or self._body_has_list_push_to_result(combined_body)))
+            and self._result_is_pushed_to(combined_body))
 
         # Phase 14: List element property invariants (with array encoding)
         # For postconditions like (all-triples-have-predicate $result RDF_TYPE),
@@ -4116,9 +4130,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         # that nothing was said about the elements (issue #69).
                         # Both directions have to be gated, or the same missing
                         # axioms read as a pass one way and a failure the other.
-                        if (has_unaxiomatized_pushes
-                                and self._is_single_claim(prop_expr)
-                                and self._expr_references_result_collection(prop_expr)
+                        # The same two ways the result can describe nothing as
+                        # on the postcondition path: unmodelled elements, or a
+                        # length no push analysis could bound. A @property and
+                        # an equivalent @post should not disagree about which.
+                        if (self._is_single_claim(prop_expr)
+                                and ((has_unaxiomatized_pushes
+                                      and self._expr_references_result_collection(prop_expr))
+                                     or (result_length_unmodelled
+                                         and self._expr_references_result_length(prop_expr)))
                                 and not self._contract_is_refuted(prop_axioms, prop_z3_expr)):
                             unknown_properties.append((prop_name, prop_str,
                                 "the body's pushes are not modelled, so nothing is known "
