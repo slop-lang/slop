@@ -9664,3 +9664,32 @@ class TestUnmodelledResultContents:
               (let ((alias r))
                 (do (list-push alias 1) r)))))
         ''', filename="probe.slop")[0].status == 'unknown'
+
+    def test_a_failure_that_does_not_depend_on_the_result(self):
+        """`(== (+ (list-len $result) root) (list-len $result))` reduces to
+        root == 0: false for every other input whatever the length is."""
+        from slop.verifier import verify_source
+        assert verify_source('''
+        (module m
+          (fn k ((arena Arena) (n Int) (root Int))
+            (@spec ((Arena Int Int) -> (List Int)))
+            (@alloc arena)
+            (@post (== (+ (list-len $result) root) (list-len $result)))
+            (let ((mut r (list-new arena Int))
+                  (mut i 0))
+              (do (while (< i n) (list-push r i) (set! i (+ i 1))) r))))
+        ''', filename="probe.slop")[0].status == 'failed'
+
+    def test_a_shadowed_name_pushed_elsewhere_is_not_the_result(self):
+        """An earlier `let` may bind the same name to a different list, and what
+        happens to that one says nothing about what is returned."""
+        from slop.verifier import verify_source
+        assert verify_source('''
+        (module m
+          (fn g ((arena Arena) (r (List Int)))
+            (@spec ((Arena (List Int)) -> (List Int)))
+            (@alloc arena)
+            (@post (== (list-len $result) 4))
+            (do (let ((mut r (list-new arena Int))) (list-push r 1))
+                r)))
+        ''', filename="probe.slop")[0].status == 'failed'

@@ -236,22 +236,68 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return expr[0].name not in self._LOGICAL_CONNECTIVES
         return True
 
-    def _contract_is_refuted(self, axioms, contract) -> bool:
-        """True if the axioms rule the contract out, not merely fail to imply it.
+    def _failure_survives_any_result(self, axioms, contract, result_terms) -> bool:
+        """True if the contract fails whatever the unmodelled result turns out to be.
 
-        A counterexample on its own does not distinguish the two. When the
-        axioms permit the contract as well as its negation they simply do not
-        decide it, and calling that a violation sends the author to rewrite code
-        that may be correct (issue #69). When they refute it, the contract is
-        false on every model they admit and the failure stands however little
-        else is known.
+        A counterexample on its own does not say whether it depends on the part
+        that is unmodelled. `(forall (m $result) ...)` on a result nothing
+        describes does - pick the right elements and it holds - and reporting
+        that as a violation sends the author to rewrite correct code (issue
+        #69). `(== (+ (list-len $result) root) (list-len $result))` does not: it
+        reduces to root == 0 and is false for every other input, whatever the
+        length.
+
+        Asked by replacing the result's terms with a bound variable, in the
+        goal and in whichever axioms mention them - keeping the axioms that
+        constrain it, such as a push-derived lower bound, in force - and asking
+        whether the negation then holds for every value:
+
+            other axioms  and  forall r. (axioms about r -> not contract)
+
+        Satisfiable means no result would have saved the contract. Anything
+        else - including a solver that cannot say - leaves the failure resting
+        on what is not modelled.
         """
+        if not result_terms:
+            return False
+
+        bound = []
+        substitutions = []
+        for i, term in enumerate(result_terms):
+            placeholder = z3.FreshConst(term.sort(), '_any_result')
+            bound.append(placeholder)
+            substitutions.append((term, placeholder))
+
+        def mentions_result(expr) -> bool:
+            return any(not z3.eq(z3.substitute(expr, sub), expr)
+                       for sub in substitutions)
+
+        about_result = []
+        independent = []
+        for axiom in axioms:
+            (about_result if mentions_result(axiom) else independent).append(axiom)
+
+        goal = z3.Not(contract)
+        premise = z3.And(*about_result) if about_result else z3.BoolVal(True)
+        quantified = z3.ForAll(
+            bound,
+            z3.Implies(z3.substitute(premise, *substitutions),
+                       z3.substitute(goal, *substitutions)))
+
         solver = z3.Solver()
         solver.set("timeout", self.timeout_ms)
-        for axiom in axioms:
+        for axiom in independent:
             solver.add(axiom)
-        solver.add(contract)
-        return solver.check() == z3.unsat
+        solver.add(quantified)
+        return solver.check() == z3.sat
+
+    def _result_terms(self, translator: Z3Translator) -> List:
+        """The Z3 terms standing for the result's length and contents."""
+        terms = list(translator.list_length_terms('$result'))
+        seq = translator.list_seqs.get('$result')
+        if seq is not None and not any(z3.eq(seq, t) for t in terms):
+            terms.append(seq)
+        return terms
 
     def _result_is_pushed_to(self, body: SExpr) -> bool:
         """True if anything pushes onto the list this body returns.
@@ -260,11 +306,36 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         list escapes into one, so the length is as unknown there as it is for a
         push to the name itself.
         """
+        return self._result_is_touched_by(body, 'list-push')
+
+    def _result_is_touched_by(self, body: SExpr, op: str) -> bool:
+        """True if `op` is applied to the returned list, or to an alias of it.
+
+        Scoped the way _result_length_axioms scopes its push scan: an earlier
+        `let` may bind the same name to a different list, and what happens to
+        that one says nothing about the result.
+        """
         returned = self._get_return_expr(body)
         if not isinstance(returned, Symbol):
             return False
-        names = [returned.name] + self._aliases_of(body, returned.name)
-        return any(self._count_push_to_var([body], name) > 0 for name in names)
+        _, scope = self._binding_in_scope_at_tail(body, returned.name)
+        names = [returned.name] + self._aliases_of(scope, returned.name)
+        return any(self._count_op_on_var([scope], name, op) > 0 for name in names)
+
+    def _count_op_on_var(self, stmts: list, var_name: str, op: str) -> int:
+        """How many times `op` is applied to `var_name` in these statements."""
+        count = 0
+        for stmt in stmts:
+            if not isinstance(stmt, SList):
+                continue
+            if is_form(stmt, op) and len(stmt) >= 2:
+                target = stmt[1]
+                if isinstance(target, Symbol) and target.name == var_name:
+                    count += 1
+            for item in stmt.items:
+                if isinstance(item, SList):
+                    count += self._count_op_on_var([item], var_name, op)
+        return count
 
     def _expr_references_result_length(self, expr: SExpr) -> bool:
         """True if `expr` constrains the length of $result, or of a field of it."""
@@ -3855,6 +3926,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # length genuinely unknown.
         # A list-set does not change a length, so it has no bearing here even
         # for the returned list, let alone for some scratch one.
+        # Whether the *result* was rewritten, as opposed to any list anywhere.
+        # The axiom gate above stays body-wide on purpose - a set on a loop's
+        # source, or on something aliased in from outside, invalidates the
+        # provenance just as surely and is not tracked - but a verdict should
+        # not call the result unmodelled because some scratch list was written.
+        result_contents_rewritten = (
+            fn_body is not None
+            and self._result_is_touched_by(combined_body, 'list-set'))
+
         result_length_unmodelled = (
             not result_length_bounded
             and fn_body is not None
@@ -3948,7 +4028,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # (b) push axioms exist but there are extra push sites outside the
         #     detected pattern that the axioms don't model (unsound axiom).
         has_unaxiomatized_pushes = False
-        if contents_rewritten:
+        # Only a rewrite of the returned list, or of something aliased to it,
+        # says anything about the result's elements. A list-set on some scratch
+        # list is none of the result's business.
+        if result_contents_rewritten:
             has_unaxiomatized_pushes = True
         if fn_body is not None and translator.use_seq_encoding:
             if self._body_has_list_push_to_result(fn_body):
@@ -4139,7 +4222,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                                       and self._expr_references_result_collection(prop_expr))
                                      or (result_length_unmodelled
                                          and self._expr_references_result_length(prop_expr)))
-                                and not self._contract_is_refuted(prop_axioms, prop_z3_expr)):
+                                and not self._failure_survives_any_result(
+                                    prop_axioms, prop_z3_expr,
+                                    self._result_terms(translator))):
                             unknown_properties.append((prop_name, prop_str,
                                 "the body's pushes are not modelled, so nothing is known "
                                 "about the elements either way"))
@@ -4267,8 +4352,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                             and self._expr_references_result_collection(post_expr))
                            or (result_length_unmodelled
                                and self._expr_references_result_length(post_expr)))
-                      and not self._contract_is_refuted(solver.assertions(),
-                                                        post_z3_expr)):
+                      and not self._failure_survives_any_result(
+                          solver.assertions(), post_z3_expr,
+                          self._result_terms(translator))):
                     # A counterexample drawn from a result nothing describes is
                     # not evidence the contract is false (issue #69). Two ways
                     # for it to describe nothing: the elements are unmodelled,
