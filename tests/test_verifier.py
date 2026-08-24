@@ -9559,9 +9559,13 @@ class TestUnmodelledResultContents:
         ''', filename="probe.slop")[0]
         assert result.status == 'unknown', result.message
 
-    def test_a_length_claim_about_a_field_of_the_result(self):
-        """snarl's report-add-result: the list is reached through a field of the
-        returned record, and pushing through an alias is not modelled at all."""
+    def test_a_refuted_length_claim_about_a_field_stays_a_failure(self):
+        """snarl's report-add-result. The list is reached through a field of the
+        returned record and pushing through an alias is not modelled - but the
+        record field axiom says $result.results *is* report.results, so their
+        lengths are equal and len == len + 1 is refuted outright. The contract
+        is only true if the second reads as the pre-state, which the language
+        has no way to say, so a failure is the honest verdict."""
         from slop.verifier import verify_source
         result = verify_source('''
         (module m
@@ -9574,4 +9578,39 @@ class TestUnmodelledResultContents:
             (do (list-push (. report results) v)
                 (record-new Report (results (. report results))))))
         ''', filename="probe.slop")[0]
-        assert result.status == 'unknown', result.message
+        assert result.status == 'failed', result.message
+
+    def test_what_the_axioms_refute_is_still_a_failure(self):
+        """A counterexample that does not depend on the missing part at all.
+        The precondition pins the length, so the claim is false on every model
+        the axioms admit and the unmodelled elements are beside the point."""
+        from slop.verifier import verify_source
+        assert verify_source('''
+        (module m
+          (fn f ((xs (List Int)))
+            (@spec (((List Int)) -> (List Int)))
+            (@pre (== (list-len xs) 3))
+            (@post (== (list-len $result) 4))
+            xs))
+        ''', filename="probe.slop")[0].status == 'failed'
+
+    def test_a_quantifier_false_whatever_the_elements_are(self):
+        """A straight push guarantees a non-empty result, so this is refuted
+        without knowing anything about what is in it. The same claim on a body
+        whose only push is conditional is *not* refuted - it holds vacuously of
+        the empty list - and stays unknown."""
+        from slop.verifier import verify_source
+        guaranteed = '''
+        (module m
+          (type Ax (union (a Int) (b Int)))
+          (fn g ((arena Arena) (ax Ax))
+            (@spec ((Arena Ax) -> (List Int)))
+            (@alloc arena)
+            (@post (forall (x $result) false))
+            (let ((mut r (list-new arena Int)))
+              (do (list-push r 1)
+                  (match ax ((a n) (list-push r n)) ((b _) (do)))
+                  r))))
+        '''
+        assert verify_source(guaranteed, filename="probe.slop")[0].status == 'failed'
+        assert self._result("    (@post (forall (m $result) false))").status == 'unknown'

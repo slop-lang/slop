@@ -221,6 +221,23 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     return True
         return False
 
+    def _contract_is_refuted(self, axioms, contract) -> bool:
+        """True if the axioms rule the contract out, not merely fail to imply it.
+
+        A counterexample on its own does not distinguish the two. When the
+        axioms permit the contract as well as its negation they simply do not
+        decide it, and calling that a violation sends the author to rewrite code
+        that may be correct (issue #69). When they refute it, the contract is
+        false on every model they admit and the failure stands however little
+        else is known.
+        """
+        solver = z3.Solver()
+        solver.set("timeout", self.timeout_ms)
+        for axiom in axioms:
+            solver.add(axiom)
+        solver.add(contract)
+        return solver.check() == z3.unsat
+
     def _expr_references_result_length(self, expr: SExpr) -> bool:
         """True if `expr` constrains the length of $result, or of a field of it."""
         if not isinstance(expr, SList):
@@ -4075,7 +4092,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         # Both directions have to be gated, or the same missing
                         # axioms read as a pass one way and a failure the other.
                         if (has_unaxiomatized_pushes
-                                and self._expr_references_result_collection(prop_expr)):
+                                and self._expr_references_result_collection(prop_expr)
+                                and not self._contract_is_refuted(prop_axioms, prop_z3_expr)):
                             unknown_properties.append((prop_name, prop_str,
                                 "the body's pushes are not modelled, so nothing is known "
                                 "about the elements either way"))
@@ -4198,15 +4216,19 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
                 if individual_result == z3.unsat:
                     verified_posts.append(post_str)
-                elif ((has_unaxiomatized_pushes
-                       and self._expr_references_result_collection(post_expr))
-                      or (not result_length_bounded
-                          and self._expr_references_result_length(post_expr))):
+                elif (((has_unaxiomatized_pushes
+                        and self._expr_references_result_collection(post_expr))
+                       or (not result_length_bounded
+                           and self._expr_references_result_length(post_expr)))
+                      and not self._contract_is_refuted(solver.assertions(),
+                                                        post_z3_expr)):
                     # A counterexample drawn from a result nothing describes is
                     # not evidence the contract is false (issue #69). Two ways
                     # for it to describe nothing: the elements are unmodelled,
                     # or - for a while loop, or a push through an alias - the
-                    # length was never bounded either.
+                    # length was never bounded either. Unless what *is* known
+                    # refutes the contract outright, in which case the failure
+                    # does not depend on the missing part at all.
                     unmodelled_posts.append(post_str)
                 else:
                     failed_posts.append(post_str)
