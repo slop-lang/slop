@@ -221,6 +221,21 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     return True
         return False
 
+    _LOGICAL_CONNECTIVES = ('and', 'or', 'implies', 'not')
+
+    def _is_single_claim(self, expr: SExpr) -> bool:
+        """True if the contract makes one claim rather than several joined ones.
+
+        A conjunction can fail for a reason that has nothing to do with the
+        unmodelled part - `(and (> root 0) (forall (x $result) ...))` is false
+        at root = 0 whatever the elements are - and downgrading the whole thing
+        would hide that. Only a contract that is entirely about the result is
+        undecidable because the result is.
+        """
+        if isinstance(expr, SList) and len(expr) >= 1 and isinstance(expr[0], Symbol):
+            return expr[0].name not in self._LOGICAL_CONNECTIVES
+        return True
+
     def _contract_is_refuted(self, axioms, contract) -> bool:
         """True if the axioms rule the contract out, not merely fail to imply it.
 
@@ -3821,6 +3836,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 for axiom in emptiness_axioms:
                     solver.add(axiom)
 
+        # Unmodelled is not the same as unbounded. A function that returns a
+        # parameter derives no numeric bound and needs none - the result is that
+        # list. It is a push the analysis could not account for that leaves the
+        # length genuinely unknown.
+        result_length_unmodelled = (
+            not result_length_bounded
+            and fn_body is not None
+            and (contents_rewritten
+                 or self._body_has_list_push_to_result(combined_body)))
+
         # Phase 14: List element property invariants (with array encoding)
         # For postconditions like (all-triples-have-predicate $result RDF_TYPE),
         # detect that all pushed elements have the required property and add
@@ -4092,6 +4117,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         # Both directions have to be gated, or the same missing
                         # axioms read as a pass one way and a failure the other.
                         if (has_unaxiomatized_pushes
+                                and self._is_single_claim(prop_expr)
                                 and self._expr_references_result_collection(prop_expr)
                                 and not self._contract_is_refuted(prop_axioms, prop_z3_expr)):
                             unknown_properties.append((prop_name, prop_str,
@@ -4216,10 +4242,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
                 if individual_result == z3.unsat:
                     verified_posts.append(post_str)
-                elif (((has_unaxiomatized_pushes
-                        and self._expr_references_result_collection(post_expr))
-                       or (not result_length_bounded
-                           and self._expr_references_result_length(post_expr)))
+                elif (self._is_single_claim(post_expr)
+                      and ((has_unaxiomatized_pushes
+                            and self._expr_references_result_collection(post_expr))
+                           or (result_length_unmodelled
+                               and self._expr_references_result_length(post_expr)))
                       and not self._contract_is_refuted(solver.assertions(),
                                                         post_z3_expr)):
                     # A counterexample drawn from a result nothing describes is

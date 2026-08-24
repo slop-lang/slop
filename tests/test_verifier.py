@@ -9614,3 +9614,23 @@ class TestUnmodelledResultContents:
         '''
         assert verify_source(guaranteed, filename="probe.slop")[0].status == 'failed'
         assert self._result("    (@post (forall (m $result) false))").status == 'unknown'
+
+    def test_returning_a_parameter_is_not_unmodelled(self):
+        """No numeric bound is derived and none is needed - the result is that
+        list. Unmodelled means a push the analysis could not account for, not
+        merely the absence of a fixed length."""
+        from slop.verifier import verify_source
+        assert verify_source('''
+        (module m
+          (fn f ((xs (List Int)))
+            (@spec (((List Int)) -> (List Int)))
+            (@post (== (list-len $result) 4))
+            xs))
+        ''', filename="probe.slop")[0].status == 'failed'
+
+    def test_a_conjunction_keeps_its_independently_false_clause(self):
+        """`(and (> root 0) (forall ...))` is false at root = 0 whatever the
+        elements are, so downgrading the whole contract would hide it."""
+        result = self._result(
+            "    (@post (and (> root 0) (forall (m $result) (== (. m to) root))))")
+        assert result.status == 'failed', result.message
