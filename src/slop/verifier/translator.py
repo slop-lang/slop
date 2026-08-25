@@ -78,6 +78,12 @@ class Z3Translator:
         self._versions_frozen = False
         self._prefer_initial_versions = False
         self._prefer_final_versions = False
+        # Indices into `constraints` of the ones that are *obligations* rather
+        # than facts: a divisor being non-zero is something the code has to
+        # establish, not something a contract may assume. They sit in the same
+        # list as the semantic facts - a string's length, a constructor's tag -
+        # so anything wanting to tell the two apart reads this (#133).
+        self.definedness_constraints: set = set()
         self._final_version_names: set = set()
         self._declared_types: Dict[str, Any] = {}
         self._record_new_counter = 0  # Counter for unique record-new values
@@ -1534,7 +1540,15 @@ class Z3Translator:
 
         # Look up in variables
         if name in self.variables:
-            return self.variables[name]
+            bound = self.variables[name]
+            # A function declaration is not a value. `variables` holds user
+            # bindings and the verifier's own helpers in one namespace, so a
+            # name may have been claimed for an accessor since the binding was
+            # made. Handing that back leaves Z3 a declaration where a term
+            # belongs, which raises rather than answering.
+            if isinstance(bound, z3.FuncDeclRef):
+                return None
+            return bound
 
         # Try to look up type and create variable
         typ = self.type_env.lookup_var(name)
@@ -1696,12 +1710,12 @@ class Z3Translator:
         if op == '/':
             # Add constraint that divisor is non-zero
             if isinstance(right, z3.ArithRef):
-                self.constraints.append(right != 0)
+                self.add_definedness_constraint(right != 0)
             return left / right
         if op == '%':
             # Add constraint that divisor is non-zero
             if isinstance(right, z3.ArithRef):
-                self.constraints.append(right != 0)
+                self.add_definedness_constraint(right != 0)
             return left % right
 
         return None
@@ -1771,11 +1785,20 @@ class Z3Translator:
         is_bool_field = field_name.startswith('is-') or field_name.startswith('has-') or field_name in ('open', 'closed', 'valid', 'enabled', 'active')
         return_sort = z3.BoolSort() if is_bool_field else z3.IntSort()
 
-        if func_name not in self.variables:
+        func = self.variables.get(func_name)
+        if func is not None and not isinstance(func, z3.FuncDeclRef):
+            # The name is taken by a user binding - `variables` holds user
+            # variables and the verifier's own accessors in one namespace, so a
+            # local called `field_x` sits exactly where this wants to be.
+            # Calling it raises and takes the whole file down, so the accessor
+            # moves aside to a name no SLOP identifier can spell. Derived the
+            # same way every time, so every phase asking about this field gets
+            # the same function. Same reasoning as field_len_term above.
+            func_name = f"{func_name}!accessor"
+            func = self.variables.get(func_name)
+        if not isinstance(func, z3.FuncDeclRef):
             func = z3.Function(func_name, z3.IntSort(), return_sort)
             self.variables[func_name] = func
-        else:
-            func = self.variables[func_name]
 
         return func(obj)
 
@@ -2118,6 +2141,16 @@ class Z3Translator:
         value of the thing that replaced it.
         """
         return self._pre_loop_variables.get(name, self.variables.get(name))
+
+    def add_definedness_constraint(self, constraint) -> None:
+        """Record a constraint the code must establish, not one it may assume.
+
+        Kept apart from the semantic facts so a universal @property can be given
+        what the body *establishes* without also being handed what it is
+        obliged to prove.
+        """
+        self.definedness_constraints.add(len(self.constraints))
+        self.constraints.append(constraint)
 
     def constructor_tag(self, name: str) -> int:
         """The tag index for a union constructor, as `match` will read it.

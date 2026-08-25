@@ -3356,6 +3356,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         # Extract loop invariants from function body and treat them as assumptions
         # @loop-invariant provides axioms that help verify loops
+        propagated_range: range = range(0)
         if fn_body is not None:
             loop_invariants = self._extract_loop_invariants(fn_body)
             if loop_invariants:
@@ -3368,6 +3369,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 propagated = self._propagate_properties_as_loop_invariants(
                     fn_body, properties
                 )
+                # Where they land, so the property solver can leave them out.
+                # A propagated invariant is a property restated with the
+                # returned local's name in place of $result; trusting it while
+                # checking that property proves it from itself (#125).
+                propagated_range = range(len(assumptions),
+                                         len(assumptions) + len(propagated))
                 assumptions.extend(propagated)
 
         # Skip if no contracts to verify
@@ -3391,10 +3398,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 location=SourceLocation(self.filename, fn_form.line, fn_form.col)
             )
 
-        # Determine if array or sequence encoding is needed for postconditions or properties
-        use_array_encoding = self._needs_array_encoding(postconditions)
-        # Check both postconditions and properties for seq encoding need
+        # Determine if array or sequence encoding is needed for postconditions or
+        # properties. Both annotations, for both encodings: a property gets the
+        # same list model as the postcondition making the same claim, or the two
+        # disagree about a claim only because of how it was spelled (#125).
         property_exprs = [prop_expr for _, prop_expr in properties]
+        use_array_encoding = (self._needs_array_encoding(postconditions) or
+                              self._needs_array_encoding(property_exprs))
         use_seq_encoding = (self._needs_seq_encoding(postconditions) or
                            self._needs_seq_encoding(property_exprs))
 
@@ -3423,8 +3433,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     param_type = _parse_type_expr_simple(param_type_expr, self.type_env.type_registry)
                     translator.declare_variable(param_name, param_type)
 
-        # Declare $result for postconditions and assumptions
-        if postconditions or assumptions:
+        # Declare $result for postconditions, assumptions and properties.
+        #
+        # A @property is a claim about the result just as a @post is, and one
+        # naming $result is the ordinary case - the length of a list a function
+        # returns is among the most basic things to state about it. Without
+        # this the name has nothing behind it, translate_expr answers None, and
+        # every such property reports "Could not translate", which reads as a
+        # verifier failure rather than an unsupported form (#125).
+        if postconditions or assumptions or properties:
             if spec_return_type:
                 # For enum return types, use Int and constrain to valid range
                 if isinstance(spec_return_type, EnumType):
@@ -3505,7 +3522,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for form in (list(all_body_exprs[:-1]) + [fn_body]
                          if all_body_exprs else [fn_body]):
                 translator.note_body(form)
-        if fn_body is not None and postconditions:
+        # Properties too: a @property naming $result needs the body behind it
+        # exactly as a @post does, and the property solver already wires the
+        # equality up - it just never had a body to wire (#125). What the body
+        # *establishes* is what a property gets; the side conditions translating
+        # it raised stay behind, filtered out where the property solver is built.
+        if fn_body is not None and (postconditions or properties):
             body_z3 = translator.translate_expr(fn_body)
         body_constraint_end = len(translator.constraints)
 
@@ -3564,11 +3586,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Translate assumptions (trusted axioms) - AFTER body so local vars are declared
         assume_constraint_start = len(translator.constraints)
         assume_z3: List[z3.BoolRef] = []
+        # Whether each translated assumption is a propagated property. Kept
+        # alongside rather than as indices into `assumptions`, because one that
+        # does not translate is dropped and the positions no longer line up.
+        assume_is_propagated: List[bool] = []
         failed_assumes: List[SExpr] = []
-        for assume in assumptions:
+        for assume_index, assume in enumerate(assumptions):
             z3_assume = translator.translate_expr(assume)
             if z3_assume is not None:
                 assume_z3.append(self._ensure_bool(z3_assume))
+                assume_is_propagated.append(assume_index in propagated_range)
             else:
                 failed_assumes.append(assume)
         assume_constraint_end = len(translator.constraints)
@@ -3577,12 +3604,61 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # properties is List[Tuple[Optional[str], SExpr]] - (name, expr) tuples
         prop_z3: List[z3.BoolRef] = []
         failed_props: List[Tuple[Optional[str], SExpr]] = []
-        for prop_name, prop_expr in properties:
-            z3_prop = translator.translate_expr(prop_expr)
-            if z3_prop is not None:
-                prop_z3.append(self._ensure_bool(z3_prop))
+        # Body locals go away again, as they do for postconditions: a contract
+        # cannot name one. They were put back for the assumptions above, where a
+        # @loop-invariant is written about them. Without this a property-only
+        # function - whose body is now translated, so its locals exist - could
+        # state `(== x 1)` about a local and have it verify, and a local called
+        # `field_len` would shadow the accessor and take translation down.
+        for local in body_locals:
+            # A local may shadow a parameter, and a contract naming it means the
+            # parameter. Putting the outer value back is what makes `(== x x)`
+            # about the parameter rather than untranslatable.
+            outer = scope_before_body.get(local)
+            if outer is None:
+                translator.variables.pop(local, None)
             else:
-                failed_props.append((prop_name, prop_expr))
+                translator.variables[local] = outer
+        try:
+            for prop_name, prop_expr in properties:
+                # Each property gets the namespace back as it found it. A
+                # property may bind names of its own - `(let (($result 1)) ...)`
+                # - or make the translator claim one for an accessor, and either
+                # would otherwise outlive it: the next property, the body
+                # equality and the axiom phases all read the same dict. The
+                # constraints it raised stay, since the property solver is built
+                # from them; only the bindings are rolled back.
+                scope_before_property = dict(translator.variables)
+                try:
+                    z3_prop = translator.translate_expr(prop_expr)
+                finally:
+                    # The bindings go, the declarations stay. Translating a
+                    # property may claim a name for a function the phases below
+                    # also need - `fn_foo-eq_2` for a reflexivity axiom, an
+                    # accessor for a field - and those are the translator's, not
+                    # the property's.
+                    declared = {name: value
+                                for name, value in translator.variables.items()
+                                if name not in scope_before_property
+                                and isinstance(value, z3.FuncDeclRef)}
+                    translator.variables.clear()
+                    translator.variables.update(scope_before_property)
+                    translator.variables.update(declared)
+                if z3_prop is not None:
+                    prop_z3.append(self._ensure_bool(z3_prop))
+                else:
+                    failed_props.append((prop_name, prop_expr))
+        finally:
+            for local, value in body_locals.items():
+                # Not over a declaration. `variables` holds user bindings and
+                # the verifier's own helpers in one namespace, so a local named
+                # like one - `fn_foo-eq_2` - would be restored where a phase
+                # below expects something callable. Losing such a local costs
+                # precision on a name nobody writes; calling an ArithRef costs
+                # the file.
+                if isinstance(translator.variables.get(local), z3.FuncDeclRef):
+                    continue
+                translator.variables[local] = value
 
         # Report translation failures
         if failed_pres:
@@ -3705,11 +3781,31 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # The tail's own side conditions - a non-zero divisor, a string length -
         # only hold because the tail ran. An early return bypasses it, so they
         # travel under the same guard as everything else derived from it.
-        constraint_terms = list(translator.constraints)
-        if reached_guard is not None:
-            for i in range(body_constraint_start, min(body_constraint_end,
-                                                      len(constraint_terms))):
-                constraint_terms[i] = z3.Implies(reached_guard, constraint_terms[i])
+        def guard_body_constraints(terms) -> List[z3.BoolRef]:
+            """`terms` with the tail's own side conditions put under its guard.
+
+            Index-based because that is the only record of which constraints the
+            body contributed; every solver built from translator.constraints has
+            to apply it, or it assumes a divisor is non-zero on a path that
+            never reached the division.
+            """
+            guarded = list(terms)
+            if reached_guard is None:
+                return guarded
+            for i in range(body_constraint_start,
+                           min(body_constraint_end, len(guarded))):
+                guarded[i] = z3.Implies(reached_guard, guarded[i])
+            return guarded
+
+        constraint_terms = guard_body_constraints(translator.constraints)
+        # Which of them are obligations rather than facts, positionally. The
+        # index into constraint_terms is not the index into
+        # translator.constraints for long - the phases below append to the
+        # latter - so the flags travel alongside rather than being looked up.
+        constraint_is_obligation = [
+            i in translator.definedness_constraints
+            and not (assume_constraint_start <= i < assume_constraint_end)
+            for i in range(len(constraint_terms))]
 
         # Check: can we satisfy preconditions but violate postconditions?
         # If (pre AND NOT post) is SAT, then contract can be violated
@@ -3727,6 +3823,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Add assumptions as trusted axioms
         for a in assume_z3:
             solver.add(a)
+
+        # Everything asserted from here to the end of the body phases is what
+        # the body establishes. A @property omits the preconditions - that is
+        # what makes it universal rather than conditional - but not these, and
+        # the property solver below is built from them (#125). The mark sits
+        # after the assumptions too, so the property solver picks which of those
+        # it takes rather than receiving them all through here.
+        pre_mark = len(solver.assertions())
 
         # Phase 1: Add type invariants for parameters
         # For (type T (record ...) (@invariant cond)), when param has type T,
@@ -3751,6 +3855,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Add body constraint for path-sensitive analysis
         # This constrains $result to equal the translated function body
         body_equality: List[z3.BoolRef] = []
+        # Definedness obligations an early exit's value raised, guarded with that
+        # exit. They go to the solver like everything else, but a universal
+        # property must not read them as evidence.
+        guarded_definedness: List[z3.BoolRef] = []
         # early_exits is None when the body returns somewhere this cannot guard,
         # or when a guard turned out to name something later reassigned. Either
         # way the trailing form is not the only thing $result can be, so it is
@@ -3765,6 +3873,25 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                             else z3.Implies(reached_guard, result_var == body_z3))
                 body_equality.append(equality)
                 solver.add(equality)
+
+        def add_tail_axiom(axiom):
+            """Assert a fact taken from the trailing form, if it describes $result.
+
+            The trailing form is only what the function returns on the path that
+            gets there; an early `(return ...)` yields something else. The value
+            equality above already carries that guard - the structural facts
+            taken from the same form need it too, or a claim true only of the
+            trailing constructor is asserted for every exit (#132).
+
+            `early_exits is None` means a return the analysis could not guard,
+            and then the trailing form is not known to describe the result at
+            all. body_equality drops the value equality outright in that case;
+            these are dropped for the same reason.
+            """
+            if early_exits is None:
+                return
+            solver.add(axiom if reached_guard is None
+                       else z3.Implies(reached_guard, axiom))
 
         # What each early exit yields is $result on its own path.
         if early_exits:
@@ -3782,13 +3909,20 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     # would otherwise assert n != 0 for the path that did not.
                     before = len(translator.constraints)
                     value_z3 = translator.translate_expr(value)
-                    for constraint in translator.constraints[before:]:
+                    for offset, constraint in enumerate(translator.constraints[before:]):
                         guarded_constraint = z3.Implies(guard, constraint)
+                        if before + offset in translator.definedness_constraints:
+                            # Still asserted, because the postcondition solver
+                            # has always had it (#133) - but noted, so it is not
+                            # copied into the property solver as evidence.
+                            guarded_definedness.append(guarded_constraint)
                         solver.add(guarded_constraint)
                         # constraint_terms is what the inconsistency diagnosis
                         # replays; a condition only the solver knows about would
                         # come out as a verifier defect.
                         constraint_terms.append(guarded_constraint)
+                        constraint_is_obligation.append(
+                            before + offset in translator.definedness_constraints)
                     if value_z3 is None or value_z3.sort() != result_var.sort():
                         continue
                     exit_equality = z3.Implies(guard, result_var == value_z3)
@@ -3810,8 +3944,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         # Phase 2: Add reflexivity axioms for equality functions
         # For any function ending in -eq, add axiom: fn_eq(x, x) == true
-        # Include -eq functions from both postconditions AND body
-        eq_funcs = self._find_eq_function_calls(postconditions)
+        # Include -eq functions from the postconditions, the properties and the
+        # body; without the function's own reflexivity nothing knows that
+        # (foo-eq x x) holds.
+        eq_funcs = self._find_eq_function_calls(list(postconditions) + list(property_exprs))
         if fn_body is not None:
             eq_funcs = eq_funcs.union(self._find_eq_function_calls([fn_body]))
         for eq_fn in eq_funcs:
@@ -3870,11 +4006,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             return_expr = self._get_return_expr(fn_body)
             tag_axiom = self._extract_union_tag_axiom(return_expr, translator)
             if tag_axiom is not None:
-                solver.add(tag_axiom)
+                add_tail_axiom(tag_axiom)
             # Also add field axioms for record-new payloads
             field_axioms = self._extract_union_new_field_axioms(return_expr, translator)
             for axiom in field_axioms:
-                solver.add(axiom)
+                add_tail_axiom(axiom)
 
         # Phase 4.5: Add union constructor axioms for (ok result), (error e), etc.
         # For the final return, add UNCONDITIONAL axioms (tag == X, payload == value).
@@ -3882,46 +4018,100 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None and self._is_union_constructor(fn_body):
             constructor_axioms = self._extract_union_constructor_axioms(fn_body, translator)
             for axiom in constructor_axioms:
-                solver.add(axiom)
+                add_tail_axiom(axiom)
 
         # Phase 4.6: Add CONDITIONAL axioms for early return statements
         # For functions with multiple return paths like cax-dw:
         #   (return (some (record-new ...))) ... (none)
         # Add conditional axioms: tag == some => field_reason(...) == "..."
         # This allows Z3 to use the axioms when exploring the 'some' case.
+        #
+        # Conditional in the name only, until now: the tag an early return
+        # yields was asserted flat, so it described every path. That used to
+        # contradict the trailing form's own flat tag, which #115's guard caught
+        # as an inconsistent context - so guarding the tail (above) without
+        # guarding these would leave the early one standing alone and proving
+        # what only its path establishes.
         if fn_body is not None:
+            exit_guards = {id(value): guard
+                           for guard, value, *_ in (early_exits or [])
+                           if value is not None}
             all_returns = self._collect_all_return_exprs(fn_body)
             final_return = self._get_return_expr(fn_body)
+            # _collect_all_return_exprs also yields the arms of a trailing
+            # `match`. Those are not early exits and have no entry in
+            # early_exits; their own guards would be the match's arm conditions,
+            # which nothing here derives. Left as they were - asserted flat -
+            # rather than dropped, which would lose the facts every arm agrees
+            # on. Same family as #132.
+            trailing_arms = set()
+            if not is_form(final_return, 'return') and is_form(final_return, 'match') \
+                    and len(final_return) >= 3:
+                for branch in final_return.items[2:]:
+                    if isinstance(branch, SList) and len(branch) >= 2:
+                        trailing_arms.add(id(self._get_return_expr(branch[-1])))
+            def union_axioms_for(return_expr) -> List:
+                """The tag, payload and field facts one return path establishes."""
+                if not isinstance(return_expr, SList) or not return_expr.items:
+                    return []
+                head = return_expr[0]
+                if not isinstance(head, Symbol):
+                    return []
+                if head.name in {'ok', 'error', 'some', 'none'}:
+                    return list(self._extract_union_constructor_axioms_for_expr(
+                        return_expr, translator))
+                if head.name == 'union-new':
+                    found = []
+                    tag_axiom = self._extract_union_tag_axiom(return_expr, translator)
+                    if tag_axiom is not None:
+                        found.append(tag_axiom)
+                    found.extend(self._extract_union_new_field_axioms(return_expr, translator))
+                    return found
+                return []
+
             for return_expr in all_returns:
-                # Skip the final return (already handled by Phase 4.5)
-                if return_expr is final_return:
+                # Skip the final return (already handled by Phase 4.5), and the
+                # arms of a trailing match, which are dealt with together below.
+                if return_expr is final_return or id(return_expr) in trailing_arms:
                     continue
-                # Check if this return is a union constructor or union-new
-                if isinstance(return_expr, SList) and len(return_expr) >= 1:
-                    head = return_expr[0]
-                    if isinstance(head, Symbol):
-                        if head.name in {'ok', 'error', 'some', 'none'}:
-                            constructor_axioms = self._extract_union_constructor_axioms_for_expr(
-                                return_expr, translator
-                            )
-                            for axiom in constructor_axioms:
-                                solver.add(axiom)
-                        elif head.name == 'union-new':
-                            # Handle union-new returns from match branches
-                            tag_axiom = self._extract_union_tag_axiom(return_expr, translator)
-                            if tag_axiom is not None:
-                                solver.add(tag_axiom)
-                            field_axioms = self._extract_union_new_field_axioms(return_expr, translator)
-                            for axiom in field_axioms:
-                                solver.add(axiom)
+                exit_guard = exit_guards.get(id(return_expr))
+                if exit_guard is None:
+                    # An early return _early_exits could not guard. What it
+                    # yields is $result on some path, and nothing here can say
+                    # which.
+                    continue
+                for axiom in union_axioms_for(return_expr):
+                    solver.add(z3.Implies(exit_guard, axiom))
+
+            # A trailing match's arms are alternatives: what they establish holds
+            # as a disjunction, and asserting each conjunctively makes them
+            # contradict one another - one arm's `tag == a` against another's
+            # `tag == b`. Under a shared guard that is worse than useless, since
+            # Z3 concludes the guard is false and the tail unreachable, which
+            # proves whatever the early exits yield. Only what every arm agrees
+            # on describes the tail.
+            if trailing_arms:
+                per_arm = [union_axioms_for(r) for r in all_returns
+                           if id(r) in trailing_arms]
+                if per_arm:
+                    common = per_arm[0]
+                    for other in per_arm[1:]:
+                        elsewhere = {str(axiom) for axiom in other}
+                        common = [axiom for axiom in common
+                                  if str(axiom) in elsewhere]
+                    for axiom in common:
+                        add_tail_axiom(axiom)
 
         # Phase 4.7: Add match exhaustiveness constraints
         # For match postconditions like (match $result ((none) true) ((some r) cond)),
         # add constraint: union_tag($result) == none_tag OR union_tag($result) == some_tag
         # This prevents Z3 from finding counterexamples with invalid tag values.
-        if postconditions:
+        # Properties as well: `(match $result ...)` is as ordinary a shape for
+        # one as for a postcondition, and without this Z3 may answer with a tag
+        # no constructor produces.
+        if postconditions or property_exprs:
             exhaustiveness_constraints = self._extract_match_exhaustiveness_constraints(
-                postconditions, translator
+                list(postconditions) + list(property_exprs), translator
             )
             for constraint in exhaustiveness_constraints:
                 solver.add(constraint)
@@ -3938,6 +4128,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 if union_new_form is not None:
                     tag_axiom = self._extract_union_tag_axiom(union_new_form, translator)
                     if tag_axiom is not None:
+                        # Not a tail axiom: the (set! (deref v) (union-new ...))
+                        # this comes from runs before either exit, so the tag
+                        # holds whichever one the call takes.
                         solver.add(tag_axiom)
 
         # Phase 5: Add conditional record-new axioms
@@ -4040,8 +4233,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Phase 12b: String operation axioms
         # Add semantic connections between string-concat, starts-with, and string-len.
         # Without these, Z3 treats them as uninterpreted functions with no relationships.
-        if fn_body is not None and postconditions:
-            string_axioms = self._generate_string_operation_axioms(fn_body, postconditions, translator)
+        if fn_body is not None and (postconditions or property_exprs):
+            string_axioms = self._generate_string_operation_axioms(
+                fn_body, list(postconditions) + list(property_exprs), translator)
             for axiom in string_axioms:
                 solver.add(axiom)
 
@@ -4230,6 +4424,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     if total_pushes > pattern_pushes:
                         has_unaxiomatized_pushes = True
 
+        # The body phases are done; what follows is about the postconditions
+        # themselves.
+        obligations = {str(axiom) for axiom in guarded_definedness}
+        body_axioms = [axiom for axiom in list(solver.assertions())[pre_mark:]
+                       if str(axiom) not in obligations]
+
         # Phase 15: Weakest Precondition Calculus
         # Use backward reasoning to generate stronger verification conditions.
         # WP(body, postcondition) computes what must be true before the body
@@ -4300,12 +4500,35 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     prop_solver = z3.Solver()
                     prop_solver.set("timeout", self.timeout_ms)
 
-                    # Add type constraints only (not preconditions)
-                    for c in translator.constraints:
+                    # The same constraint set the postcondition solver got -
+                    # type constraints with the tail's side conditions under the
+                    # guard that reaches them, and each early exit's under its
+                    # own. Not a fresh read of translator.constraints: the
+                    # phases below appended to it after this list was built, and
+                    # taking those live would assume unguarded what the solver
+                    # above asserts guarded.
+                    for j, c in enumerate(constraint_terms):
+                        # Not what the body is obliged to establish. A divisor
+                        # being non-zero is a proof obligation, not a fact, and
+                        # a universal property must not take it as given (#133)
+                        # - while the semantic facts beside it in the same list,
+                        # a string's length or a constructor's tag, are exactly
+                        # what a property about the result needs.
+                        #
+                        # Unless a trusted assumption raised it: `(@assume
+                        # (== (/ n n) 1))` is taken as given, and it cannot be
+                        # unless its own divisor is non-zero.
+                        if constraint_is_obligation[j]:
+                            continue
                         prop_solver.add(c)
 
-                    # Add assumptions (including loop invariants) as trusted axioms
-                    for a in assume_z3:
+                    # Add assumptions (including loop invariants) as trusted
+                    # axioms - but not a property propagated into one. That copy
+                    # is a claim restated about the returned local, so trusting
+                    # it here lets a property be proved from itself.
+                    for a, is_propagated in zip(assume_z3, assume_is_propagated):
+                        if is_propagated:
+                            continue
                         prop_solver.add(a)
 
                     # Equate $result sequence with the actual return variable's sequence
@@ -4315,6 +4538,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         for equality in self._result_sequence_equality(
                                 fn_body, translator, contents_rewritten):
                             prop_solver.add(equality)
+
+                    # Everything the body establishes: the length of the list
+                    # it returns, the fields of the record it builds, the tag of
+                    # the constructor it applies. Without these a property could
+                    # only ever be as strong as the type constraints, so the
+                    # same claim verified as a @post and failed as a @property.
+                    for axiom in body_axioms:
+                        prop_solver.add(axiom)
 
                     # Add pattern axioms (filter/map/fold axioms derived from loop analysis)
                     # These are needed for properties that reason about collection contents
@@ -4349,11 +4580,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     for axiom in imported_postcond_axioms:
                         prop_solver.add(axiom)
 
-                    # Add body constraint to connect $result to function body
-                    if body_z3 is not None:
-                        result_var = translator.variables.get('$result')
-                        if result_var is not None:
-                            prop_solver.add(result_var == body_z3)
+                    # Connect $result to the body - the same guarded
+                    # equalities the postcondition solver got, not a fresh
+                    # unconditional one. The trailing form is only $result on
+                    # the path that reaches it, and each early (return ...)
+                    # yields it on its own (#119); asserting `$result == body`
+                    # flat proved whatever the trailing form yields even for a
+                    # call that returned earlier.
+                    for equality in body_equality:
+                        prop_solver.add(equality)
 
                     prop_str = pretty_print(prop_expr)
 

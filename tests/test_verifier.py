@@ -10073,3 +10073,516 @@ class TestUnmodelledResultContents:
                   (while (< i n) (list-push r i) (set! i (+ i 1)))
                   r))))
         ''', filename="probe.slop")[0].status == 'failed'
+
+
+class TestPropertyAboutResult:
+    """Issue #125: a @property naming $result.
+
+    $result was declared only when a function had a @post or an @assume, so a
+    function carrying nothing but a @property had no such variable. Every
+    property mentioning it reported "Could not translate", which reads as a
+    verifier failure rather than as an unsupported form - and it meant the two
+    annotations disagreed about the same claim, one giving a verdict and the
+    other not getting far enough to be judged.
+
+    The body follows: it was translated only when there were postconditions, so
+    even with the name declared nothing connected it to what the function
+    returns.
+    """
+
+    @staticmethod
+    def _result(body):
+        from slop.verifier import verify_source
+        results = verify_source("(module m\n%s)\n" % body, filename="probe.slop")
+        assert len(results) == 1
+        return results[0]
+
+    def _status(self, body):
+        return self._result(body).status
+
+    LIST_FN = '''
+  (fn f ((arena Arena))
+    (@spec ((Arena) -> (List Int)))
+    (@alloc arena)
+    %s
+    (list-new arena Int))'''
+
+    def test_issue_125_repro_is_not_a_translation_failure(self):
+        """The issue's own probe. `unknown` is the honest answer - the pushes
+        are not modelled - but it has to be reached, not reported as an
+        untranslatable form."""
+        result = self._result('''
+  (fn h ((arena Arena) (n Int))
+    (@spec ((Arena Int) -> (List Int)))
+    (@alloc arena)
+    (@property one (>= (list-len $result) 1))
+    (let ((mut r (list-new arena Int))
+          (mut i 0))
+      (do (while (< i n) (list-push r i) (set! i (+ i 1))) r)))''')
+        assert result.status == 'unknown'
+        assert 'Could not translate' not in (result.message or '')
+
+    def test_the_two_annotations_agree(self):
+        """Whatever the verdict, a @property and the same claim as a @post
+        should reach it together."""
+        claims = ['(== (list-len $result) 0)',
+                  '(>= (list-len $result) 0)',
+                  '(== (list-len $result) 5)']
+        for claim in claims:
+            as_property = self._status(self.LIST_FN % ('(@property p %s)' % claim))
+            as_post = self._status(self.LIST_FN % ('(@post %s)' % claim))
+            assert as_property == as_post, (claim, as_property, as_post)
+
+    def test_a_true_length_property_verifies(self):
+        assert self._status(
+            self.LIST_FN % '(@property p (== (list-len $result) 0))') == 'verified'
+
+    def test_a_false_length_property_fails(self):
+        assert self._status(
+            self.LIST_FN % '(@property p (== (list-len $result) 5))') != 'verified'
+
+    def test_a_scalar_result_property(self):
+        assert self._status('''
+  (fn d ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (== $result 7))
+    7)''') == 'verified'
+        assert self._status('''
+  (fn e ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (== $result 8))
+    7)''') != 'verified'
+
+    def test_a_property_naming_no_result_still_works(self):
+        assert self._status('''
+  (fn a ((n (Int 0 .. 9)))
+    (@spec (((Int 0 .. 9)) -> Int))
+    (@property p (>= n 0))
+    1)''') == 'verified'
+
+    def test_an_early_return_is_another_path_to_the_result(self):
+        """The body equality has to be the guarded one the postcondition solver
+        uses. Asserting `$result == body` flat proves whatever the trailing form
+        yields even for a call that returned earlier (#119) - which nothing had
+        exercised on this path, because the property solver never had a body."""
+        assert self._status('''
+  (fn g ((flag Bool))
+    (@spec ((Bool) -> Int))
+    (@property p (== $result 7))
+    (do (when flag (return 3)) 7))''') != 'verified'
+
+    def test_a_side_condition_of_the_tail_travels_under_its_guard(self):
+        """`(/ 7 n)` asserts n != 0, and it does so only because the tail ran.
+        Assuming it flat proves a claim about a path the early return took."""
+        assert self._status('''
+  (fn s ((flag Bool) (n Int))
+    (@spec ((Bool Int) -> Int))
+    (@property p (implies flag (and (== $result 3) (!= n 0))))
+    (do (when flag (return 3)) (/ 7 n)))''') != 'verified'
+
+    def test_a_record_field_property(self):
+        """A property omits the preconditions, not what the body establishes.
+        The record's field axioms went to the postcondition solver alone, so
+        this claim verified as a @post and failed as a @property."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (type Pair (record (x Int)))
+  (fn r ((arena Arena) (n Int))
+    (@spec ((Arena Int) -> Pair))
+    (@alloc arena)
+    (@property p (== (. $result x) %s))
+    (record-new Pair (x n))))
+'''
+        assert verify_source(src % 'n', filename="probe.slop")[0].status == 'verified'
+        assert verify_source(src % '(+ n 1)', filename="probe.slop")[0].status != 'verified'
+
+    def test_an_equality_function_is_reflexive_for_a_property_too(self):
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn int-eq ((a Int) (b Int))
+    (@spec ((Int Int) -> Bool))
+    (== a b))
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (int-eq $result $result))
+    n))
+'''
+        results = [r for r in verify_source(src, filename="probe.slop")
+                   if r.name == 'f']
+        assert results[0].status == 'verified'
+
+    def test_a_property_is_not_proved_from_its_own_propagated_invariant(self):
+        """With no explicit @loop-invariant, a @property is auto-propagated as
+        one, with the returned local's name in place of $result. Trusting that
+        copy while checking the property proves it from itself - and once the
+        body is translated, the local is tied to $result, so anything at all
+        would verify."""
+        assert self._status('''
+  (fn f ((arena Arena) (xs (List Int)))
+    (@spec ((Arena (List Int)) -> Int))
+    (@alloc arena)
+    (@property p (== $result 999))
+    (let ((mut result 0))
+      (for-each (x xs)
+        (set! result (+ result 1)))
+      result))''') != 'verified'
+
+    def test_the_trailing_constructor_does_not_speak_for_an_early_exit(self):
+        """The structural facts taken from the trailing form - its union tag,
+        its payload - hold only on the path that reaches it, exactly as the
+        value equality does. Both annotations, because both read the same
+        axioms (#132)."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn h ((flag Bool))
+    (@spec ((Bool) -> (Option Int)))
+    %s
+    (do (when flag (return %s)) (some 7))))
+'''
+        claim = "(match $result ((some v) (== v 7)) ((none) false))"
+        for annotation in ["(@post %s)" % claim, "(@property p %s)" % claim]:
+            for early in ["(some 1)", "(none)"]:
+                status = verify_source(src % (annotation, early),
+                                       filename="probe.slop")[0].status
+                assert status != 'verified', (annotation, early, status)
+
+    def test_a_return_the_analysis_cannot_guard_withholds_the_tail(self):
+        """`early_exits is None` means a return in a shape the guard analysis
+        does not model. The trailing form is then not known to describe the
+        result at all, so its facts are dropped rather than asserted flat."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn h ((flag Bool))
+    (@spec ((Bool) -> (Option Int)))
+    %s
+    (do (while flag (return (none))) (some 7))))
+'''
+        claim = "(match $result ((some v) (== v 7)) ((none) false))"
+        for annotation in ["(@post %s)" % claim, "(@property p %s)" % claim]:
+            status = verify_source(src % annotation, filename="probe.slop")[0].status
+            assert status != 'verified', (annotation, status)
+
+    def test_a_property_naming_no_result_does_not_get_the_body(self):
+        """Translating a body raises its own side conditions - here `n != 0`
+        for the division. A @post takes those as given (#133); a @property is
+        universal, so it must not."""
+        assert self._status('''
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (!= n 0))
+    (/ 1 n))''') != 'verified'
+
+    def test_a_union_set_before_the_exits_still_describes_both(self):
+        """Phase 4.8's tag comes from a `set!` that dominates every exit, not
+        from the trailing form, so it is not one of the facts that travel under
+        the tail's guard."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (type Payload (record (v Int)))
+  (type Node (union (leaf Payload) (branch Payload)))
+  (fn build ((arena Arena) (flag Bool))
+    (@spec ((Arena Bool) -> (Ptr Node)))
+    (@alloc arena)
+    (@post (match (deref $result) ((leaf _) true) ((branch _) false)))
+    (let ((n (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+      (set! (deref n) (union-new Node leaf (record-new Payload (v 1))))
+      (when flag (return n))
+      n)))
+'''
+        assert verify_source(src, filename="probe.slop")[0].status == 'verified'
+
+    def test_a_property_that_binds_the_name_is_not_about_the_result(self):
+        """`(forall ($result Int) ...)` talks about its own variable, and the
+        division's `n != 0` is not something a universal property may assume
+        however the name is spelled."""
+        assert self._status('''
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (forall ($result Int) (!= n 0)))
+    (/ 1 n))''') != 'verified'
+
+    def test_a_free_result_inside_a_quantifier_still_counts(self):
+        """The source a quantifier ranges over is read in the outer scope, so
+        `(forall (v $result) ...)` is about the result after all."""
+        assert self._status('''
+  (fn g ((arena Arena))
+    (@spec ((Arena) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (v $result) (>= v 0)))
+    (list-new arena Int))''') == 'verified'
+
+    def test_a_sibling_property_does_not_hand_over_the_body(self):
+        """The body is translated once for the function. What it *establishes*
+        every property may use; the side conditions raised on the way are not
+        facts any of them may assume."""
+        assert self._status('''
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@property q (== $result $result))
+    (@property p (!= n 0))
+    (/ 1 n))''') != 'verified'
+
+    def test_the_quantifier_shorthand_binds_too(self):
+        """`(forall var body)` with no source to range over."""
+        assert self._status('''
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (forall $result (!= n 0)))
+    (/ 1 n))''') != 'verified'
+
+    def test_a_property_keeps_the_constraints_it_raised_itself(self):
+        """Only the body's own side conditions are withheld. What translating
+        the property raised - a let binding's value, a constructor's tag - lands
+        after them and is the property's own."""
+        assert self._status('''
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (let ((x 1)) (== x 1)))
+    n)''') == 'verified'
+
+    def test_an_early_returns_tag_describes_only_its_own_path(self):
+        """Phase 4.6 is named for conditional axioms but asserted them flat. That
+        used to contradict the trailing form's own flat tag, which #115's guard
+        reported as an inconsistent context - so guarding the tail without
+        guarding these would leave the early one standing alone."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (type Tag (union (a Int) (b Int)))
+  (fn pick ((flag Bool))
+    (@spec ((Bool) -> Tag))
+    %s
+    (do
+      (when flag (return (union-new Tag a 1)))
+      (union-new Tag b 2))))
+'''
+        only_a = "(match $result ((a _) true) ((b _) false))"
+        either = "(match $result ((a _) true) ((b _) true))"
+        for annotation in ["(@post %s)", "(@property p %s)"]:
+            assert verify_source(src % (annotation % only_a),
+                                 filename="probe.slop")[0].status != 'verified'
+            assert verify_source(src % (annotation % either),
+                                 filename="probe.slop")[0].status == 'verified'
+
+    def test_a_binding_of_the_name_is_not_a_use_of_it(self):
+        """A binding of the name is not a use of it, and either way the
+        division's side condition is not the property's to assume."""
+        for binding in ["(mut $result 1)", "($result 1)"]:
+            assert self._status('''
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (let (%s) (!= n 0)))
+    (/ 1 n))''' % binding) != 'verified'
+
+    def test_a_binding_whose_value_is_the_result_does_count(self):
+        assert self._status('''
+  (fn g ((arena Arena))
+    (@spec ((Arena) -> (List Int)))
+    (@alloc arena)
+    (@property p (let ((x $result)) (== (list-len x) 0)))
+    (list-new arena Int))''') == 'verified'
+
+    def test_the_arms_of_a_trailing_match_are_not_early_exits(self):
+        """_collect_all_return_exprs also yields them, and they have no entry in
+        early_exits - their guards would be the arm conditions, which nothing
+        here derives. Dropping them would lose what every arm agrees on."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (type V (record (v Int)))
+  (type Tag (enum lo hi))
+  (fn pick ((arena Arena) (t Tag))
+    (@spec ((Arena Tag) -> (Option V)))
+    (@alloc arena)
+    (@post (match $result ((some r) {(. r v) == 9}) ((none) true)))
+    (match t
+      ('lo (some (record-new V (v 9))))
+      ('hi (some (record-new V (v 9)))))))
+'''
+        assert verify_source(src, filename="probe.slop")[0].status == 'verified'
+
+    def test_trailing_arms_that_disagree_contribute_nothing(self):
+        """Arms are alternatives: what they establish holds as a disjunction.
+        Asserting each conjunctively sets one arm's `tag == a` against another's
+        `tag == b`, and under a shared guard Z3 concludes the guard is false and
+        the tail unreachable - which proves whatever the early exit yields. On
+        `origin/main` the same function reports an inconsistent context."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (type Tag (union (a Int) (b Int)))
+  (type Sel (enum lo hi))
+  (fn pick ((flag Bool) (s Sel))
+    (@spec ((Bool Sel) -> Tag))
+    (@post (match $result ((a _) true) ((b _) false)))
+    (do
+      (when flag (return (union-new Tag a 1)))
+      (match s
+        ('lo (union-new Tag a 2))
+        ('hi (union-new Tag b 3))))))
+'''
+        assert verify_source(src, filename="probe.slop")[0].status == 'failed'
+
+    def test_a_payloadless_constructor_is_a_fact_about_the_result(self):
+        """`(none)` carries no payload, and _is_union_constructor wanted two
+        elements - so Phase 4.5 skipped it and its tag stayed in the raw body
+        constraints, which a property does not take."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn f ()
+    (@spec (() -> (Option Int)))
+    %s
+    %s))
+'''
+        claim = "(match $result ((none) true) ((some _) false))"
+        for annotation in ["(@post %s)" % claim, "(@property p %s)" % claim]:
+            assert verify_source(src % (annotation, "(none)"),
+                                 filename="probe.slop")[0].status == 'verified'
+            assert verify_source(src % (annotation, "(some 1)"),
+                                 filename="probe.slop")[0].status != 'verified'
+
+    def test_a_trusted_assumption_keeps_its_own_definedness(self):
+        """`(@assume (== (/ n n) 1))` is taken as given, and it cannot be unless
+        its divisor is non-zero. Only the obligations the *body* raises are
+        withheld."""
+        assert self._status('''
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@assume (== (/ n n) 1))
+    (@property p (!= n 0))
+    n)''') == 'verified'
+        assert self._status('''
+  (fn g ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (!= n 0))
+    (/ 1 n))''') != 'verified'
+
+    def test_a_property_cannot_name_a_body_local(self):
+        """Contracts speak about parameters and the result. Postconditions
+        already translate with the locals put away; once the body is translated
+        for a property-only function, its locals exist and properties need the
+        same treatment."""
+        assert self._status('''
+  (fn f ()
+    (@spec (() -> Int))
+    (@property p (== x 1))
+    (let ((x 1)) x))''') != 'verified'
+
+    def test_an_early_exits_definedness_is_not_evidence(self):
+        """The obligation is guarded with that exit and still asserted, because
+        the postcondition solver has always had it (#133) - but it must not
+        reach a universal property through the body axioms."""
+        assert self._status('''
+  (fn g ((flag Bool) (n Int))
+    (@spec ((Bool Int) -> Int))
+    (@property p (implies flag (!= n 0)))
+    (do (when flag (return (/ 1 n))) 7))''') != 'verified'
+
+    def test_a_local_shadowing_a_parameter_leaves_the_parameter(self):
+        """Putting the locals away must put the outer value back, or a property
+        naming a parameter the body happens to shadow cannot be translated."""
+        assert self._status('''
+  (fn f ((x Int))
+    (@spec ((Int) -> Int))
+    (@property p (== x x))
+    (let ((x 1)) x))''') == 'verified'
+
+    def test_a_property_binding_does_not_outlive_it(self):
+        """`translate_expr` writes into the translator's one namespace, and the
+        next property, the body equality and every axiom phase read the same
+        dict. What a property binds is the property's."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn f ()
+    (@spec (() -> Int))
+    (@property p (let (($result 1)) true))
+    7))
+'''
+        # Whatever the verdict, `$result == 1` must not have leaked into it.
+        assert verify_source(src, filename="probe.slop")[0].status in {
+            'verified', 'failed', 'unknown'}
+
+    def test_a_local_named_like_a_helper_does_not_take_it_down(self):
+        """`variables` holds user bindings and the verifier's own helpers in one
+        namespace, so a local can land where a phase expects something
+        callable."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn int-eq ((a Int) (b Int))
+    (@spec ((Int Int) -> Bool))
+    (== a b))
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@property p (int-eq $result $result))
+    (let ((fn_int-eq_2 n)) fn_int-eq_2)))
+'''
+        results = [r for r in verify_source(src, filename="probe.slop")
+                   if r.name == 'f']
+        assert results[0].status in {'verified', 'failed', 'unknown'}
+
+    def test_a_local_named_like_an_accessor_does_not_take_it_down(self):
+        """Translating the property may claim `field_x` for the record
+        accessor. Restoring a local of that name over it leaves the phases below
+        calling an ArithRef."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (type R (record (x Int)))
+  (fn g ((arena Arena) (n Int))
+    (@spec ((Arena Int) -> R))
+    (@alloc arena)
+    (@property p (== (. $result x) n))
+    (let ((field_x n)) (record-new R (x field_x)))))
+'''
+        # The verdict is not the point - not raising is.
+        assert verify_source(src, filename="probe.slop")[0].status in {
+            'verified', 'failed', 'unknown'}
+
+    def test_a_trailing_arm_does_not_speak_for_an_earlier_return(self):
+        """The arms of a trailing match run only if no early return fired, so
+        what they agree on holds under the tail's guard, not flat."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (type V (record (v Int)))
+  (type Tag (enum lo hi))
+  (fn pick ((arena Arena) (t Tag) (flag Bool))
+    (@spec ((Arena Tag Bool) -> (Option V)))
+    (@alloc arena)
+    (@post (match $result ((some r) {(. r v) == 7}) ((none) true)))
+    (do
+      (when flag (return (some (record-new V (v 1)))))
+      (match t
+        ('lo (some (record-new V (v 7))))
+        ('hi (some (record-new V (v 7))))))))
+'''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+    def test_a_sibling_propertys_side_conditions_stay_its_own(self):
+        """One property's division must not tell another that the divisor is
+        non-zero. They are facts at all only because of #133."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn f ((n Int))
+    (@spec ((Int) -> Int))
+    (@property a (== (/ 1 n) (/ 1 n)))
+    (@property b (!= n 0))
+    n))
+'''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+    def test_an_early_return_that_satisfies_the_property_too(self):
+        assert self._status('''
+  (fn h ((flag Bool))
+    (@spec ((Bool) -> Int))
+    (@property p (>= $result 3))
+    (do (when flag (return 3)) 7))''') == 'verified'
