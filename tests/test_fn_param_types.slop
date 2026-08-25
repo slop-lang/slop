@@ -1,0 +1,192 @@
+(module test-fn-param-types
+  (@intent "A (Fn ...) parameter is called through a cast built from its own argument types")
+
+  ;; The closure cast used to assume int64_t for every argument, so any callback
+  ;; over a list, option, map or other compound type was invoked through a
+  ;; signature the callee never had (#122). Each shape below is reached through a
+  ;; (Fn ...) parameter, which is the only path that builds that cast, and the
+  ;; answer is compared against what a direct call returns.
+
+  (type Point (record (x Int) (y Int)))
+  (type Byte (Int 0 .. 255))
+  (type Nodes (List Int))
+  (type Tag (enum tag-a tag-b))
+
+  (fn point-sum ((p Point))
+    (@intent "Callback over a record passed by value")
+    (@spec ((Point) -> Int))
+    (+ (. p x) (. p y)))
+
+  (fn point-ptr-sum ((p (Ptr Point)))
+    (@intent "Callback over a pointer to a record")
+    (@spec (((Ptr Point)) -> Int))
+    (+ (. (deref p) x) (. (deref p) y)))
+
+  (fn str-len ((s String))
+    (@intent "Callback over a String")
+    (@spec ((String) -> Int))
+    (cast Int (string-len s)))
+
+  (fn opt-or-zero ((o (Option Int)))
+    (@intent "Callback over an Option")
+    (@spec (((Option Int)) -> Int))
+    (match o
+      ((some v) v)
+      ((none) 0)))
+
+  (fn list-total ((xs (List Int)))
+    (@intent "Callback over a list")
+    (@spec (((List Int)) -> Int))
+    (let ((mut total 0))
+      (for-each (v xs)
+        (set! total (+ total v)))
+      total))
+
+  (fn head-equals ((xs (List Int)) (i Int) (v Int))
+    (@intent "Callback whose first argument is a list and the rest scalars")
+    (@spec (((List Int) Int Int) -> Bool))
+    (match (list-get xs (cast (Int 0 ..) i))
+      ((some found) (== found v))
+      ((none) false)))
+
+  (fn byte-plus ((b Byte))
+    (@intent "Callback over a range type, which narrows to a smaller C type")
+    (@spec ((Byte) -> Int))
+    (+ (cast Int b) 1))
+
+  (fn nodes-len ((ns Nodes))
+    (@intent "Callback over an alias for a container type")
+    (@spec ((Nodes) -> Int))
+    (cast Int (list-len ns)))
+
+  (fn tag-is-a ((t Tag))
+    (@intent "Callback over an enum")
+    (@spec ((Tag) -> Bool))
+    (== t 'tag-a))
+
+  (fn twice ((f (Fn (Int) Int)) (n Int))
+    (@intent "Callback whose own argument is a callback")
+    (@spec (((Fn (Int) Int) Int) -> Int))
+    (f (f n)))
+
+  (fn always-seven ()
+    (@intent "Callback with no arguments at all")
+    (@spec (() -> Int))
+    7)
+
+  (fn inc ((n Int))
+    (@intent "Scalar callback, the shape that already worked")
+    (@spec ((Int) -> Int))
+    (+ n 1))
+
+  (fn apply-point ((f (Fn (Point) Int)) (p Point))
+    (@intent "Invoke a record-taking callback")
+    (@spec (((Fn (Point) Int) Point) -> Int))
+    (f p))
+
+  (fn apply-point-ptr ((f (Fn ((Ptr Point)) Int)) (p (Ptr Point)))
+    (@intent "Invoke a pointer-taking callback")
+    (@spec (((Fn ((Ptr Point)) Int) (Ptr Point)) -> Int))
+    (f p))
+
+  (fn apply-str ((f (Fn (String) Int)) (s String))
+    (@intent "Invoke a String-taking callback")
+    (@spec (((Fn (String) Int) String) -> Int))
+    (f s))
+
+  (fn apply-opt ((f (Fn ((Option Int)) Int)) (o (Option Int)))
+    (@intent "Invoke an Option-taking callback")
+    (@spec (((Fn ((Option Int)) Int) (Option Int)) -> Int))
+    (f o))
+
+  (fn apply-list ((f (Fn ((List Int)) Int)) (xs (List Int)))
+    (@intent "Invoke a list-taking callback")
+    (@spec (((Fn ((List Int)) Int) (List Int)) -> Int))
+    (f xs))
+
+  (fn apply-list-probe ((f (Fn ((List Int) Int Int) Bool)) (xs (List Int)))
+    (@intent "Invoke a mixed list-and-scalar callback")
+    (@spec (((Fn ((List Int) Int Int) Bool) (List Int)) -> Bool))
+    (f xs 1 20))
+
+  (fn apply-byte ((f (Fn (Byte) Int)) (b Byte))
+    (@intent "Invoke a range-typed callback")
+    (@spec (((Fn (Byte) Int) Byte) -> Int))
+    (f b))
+
+  (fn apply-nodes ((f (Fn (Nodes) Int)) (ns Nodes))
+    (@intent "Invoke an alias-typed callback")
+    (@spec (((Fn (Nodes) Int) Nodes) -> Int))
+    (f ns))
+
+  (fn apply-tag ((f (Fn (Tag) Bool)) (t Tag))
+    (@intent "Invoke an enum-typed callback")
+    (@spec (((Fn (Tag) Bool) Tag) -> Bool))
+    (f t))
+
+  (fn apply-higher ((f (Fn ((Fn (Int) Int) Int) Int)) (g (Fn (Int) Int)) (n Int))
+    (@intent "Invoke a callback that itself takes a callback")
+    (@spec (((Fn ((Fn (Int) Int) Int) Int) (Fn (Int) Int) Int) -> Int))
+    (f g n))
+
+  (fn apply-nullary ((f (Fn () Int)))
+    (@intent "Invoke a callback that takes only the closure environment")
+    (@spec (((Fn () Int)) -> Int))
+    (f))
+
+  (fn apply-short ((f (Fn Int)))
+    (@intent "Invoke through the (Fn ret) nullary shorthand, which omits the argument list")
+    (@spec (((Fn Int)) -> Int))
+    (f))
+
+  (fn apply-arrow ((f (Fn (Int) -> Int)) (n Int))
+    (@intent "Invoke through the arrow spelling spec/LANGUAGE.md documents")
+    (@spec (((Fn (Int) -> Int) Int) -> Int))
+    (f n))
+
+  (fn check-callbacks ((arena Arena))
+    (@intent "Every callback shape returns what a direct call would")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((mut fails 0)
+          (p (record-new Point (x 3) (y 4)))
+          (pp (cast (Ptr Point) (arena-alloc arena (sizeof Point))))
+          (xs (list-new arena Int)))
+      (set! (deref pp) (record-new Point (x 5) (y 6)))
+      (list-push xs 10)
+      (list-push xs 20)
+      (when (!= (apply-point point-sum p) 7)
+        (set! fails (+ fails 1)))
+      (when (!= (apply-point-ptr point-ptr-sum pp) 11)
+        (set! fails (+ fails 1)))
+      (when (!= (apply-str str-len "abcd") 4)
+        (set! fails (+ fails 1)))
+      (when (!= (apply-opt opt-or-zero (some 9)) 9)
+        (set! fails (+ fails 1)))
+      (when (!= (apply-list list-total xs) 30)
+        (set! fails (+ fails 1)))
+      (when (not (apply-list-probe head-equals xs))
+        (set! fails (+ fails 1)))
+      (when (!= (apply-byte byte-plus (cast Byte 9)) 10)
+        (set! fails (+ fails 1)))
+      (when (!= (apply-nodes nodes-len xs) 2)
+        (set! fails (+ fails 1)))
+      (when (not (apply-tag tag-is-a 'tag-a))
+        (set! fails (+ fails 1)))
+      (when (apply-tag tag-is-a 'tag-b)
+        (set! fails (+ fails 1)))
+      (when (!= (apply-higher twice inc 5) 7)
+        (set! fails (+ fails 1)))
+      (when (!= (apply-nullary always-seven) 7)
+        (set! fails (+ fails 1)))
+      (when (!= (apply-short always-seven) 7)
+        (set! fails (+ fails 1)))
+      (when (!= (apply-arrow inc 1) 2)
+        (set! fails (+ fails 1)))
+      fails))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any callback shape was called wrongly")
+    (@spec (() -> Int))
+    (with-arena 262144
+      (check-callbacks arena))))
