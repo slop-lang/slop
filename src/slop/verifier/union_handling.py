@@ -75,10 +75,7 @@ class UnionHandlingMixin:
 
         # Use the same tag index calculation as _translate_match
         # Check enum_values first, fall back to hash
-        tag_idx = translator.enum_values.get(
-            constructor_name,
-            translator.enum_values.get(f"'{constructor_name}", hash(constructor_name) % 256)
-        )
+        tag_idx = translator.constructor_tag(constructor_name)
 
         # Get or create union_tag function
         tag_func_name = "union_tag"
@@ -112,31 +109,15 @@ class UnionHandlingMixin:
 
                 axioms.append(payload_func(result_var) == payload_z3)
 
-                # Axiom 3: If payload is a record-new, propagate field axioms
-                # For (some (record-new Type (field1 val1) ...)), add:
-                #   field_field1(union_payload_some($result)) == val1
-                #   string_len(field_field1(union_payload_some($result))) == len if val1 is string
-                if is_form(payload_expr, 'record-new') and len(payload_expr) >= 3:
-                    payload_var = payload_func(result_var)  # This is union_payload_some($result)
-                    for item in payload_expr.items[2:]:  # Skip 'record-new' and Type
-                        if isinstance(item, SList) and len(item) >= 2:
-                            field_name = item[0].name if isinstance(item[0], Symbol) else None
-                            if field_name:
-                                field_func = translator._translate_field_for_obj(payload_var, field_name)
-                                field_value = translator.translate_expr(item[1])
-                                if field_value is not None:
-                                    axioms.append(field_func == field_value)
-
-                                # If field value is a string literal, add string_len axiom
-                                if isinstance(item[1], String):
-                                    str_len_func_name = "string_len"
-                                    if str_len_func_name not in translator.variables:
-                                        str_len_func = z3.Function(str_len_func_name, z3.IntSort(), z3.IntSort())
-                                        translator.variables[str_len_func_name] = str_len_func
-                                    else:
-                                        str_len_func = translator.variables[str_len_func_name]
-                                    actual_len = len(item[1].value)
-                                    axioms.append(str_len_func(field_func) == z3.IntVal(actual_len))
+                # Axiom 3: whatever is known about the payload, known about it
+                # under the payload accessor. _record_value_axioms is the one
+                # reading of a value the rest of this file uses, so a payload
+                # that is a record picks up its nested records, its list-new
+                # field lengths and its string lengths, and a payload that
+                # chooses between records with an `if` is read through the
+                # guards rather than dropped (#123).
+                axioms.extend(self._record_value_axioms(
+                    payload_func(result_var), payload_expr, translator, {}, None))
 
         return axioms
 
@@ -172,10 +153,7 @@ class UnionHandlingMixin:
             return axioms
 
         # Get tag index using same calculation as _translate_match
-        tag_idx = translator.enum_values.get(
-            constructor_name,
-            translator.enum_values.get(f"'{constructor_name}", hash(constructor_name) % 256)
-        )
+        tag_idx = translator.constructor_tag(constructor_name)
 
         # Get or create union_tag function
         tag_func_name = "union_tag"

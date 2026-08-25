@@ -1808,6 +1808,138 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return_expr = self._get_return_expr(expr)
         return is_form(return_expr, 'record-new')
 
+    @staticmethod
+    def _is_union_ctor_form(expr: SExpr) -> bool:
+        """True for (ok X) / (error X) / (some X) / (none)."""
+        if isinstance(expr, SList) and len(expr) >= 1:
+            head = expr[0]
+            return isinstance(head, Symbol) and head.name in {'ok', 'error', 'some', 'none'}
+        return False
+
+    @classmethod
+    def _union_ctor_payload(cls, expr: SExpr) -> Optional[SExpr]:
+        """The payload of (ok X) / (error X) / (some X), or None."""
+        if cls._is_union_ctor_form(expr) and len(expr) == 2:
+            return expr[1]
+        return None
+
+    @staticmethod
+    def _conditional_branch_exprs(expr: SExpr) -> List[SExpr]:
+        """The branch bodies of an `if` or `cond`; empty for anything else.
+
+        Structural, so it can be asked before there is a translator to turn the
+        guards into terms.
+        """
+        if is_form(expr, 'if') and len(expr) >= 3:
+            return list(expr.items[2:])
+        if is_form(expr, 'cond') and len(expr) >= 2:
+            return [clause[-1] for clause in expr.items[1:]
+                    if isinstance(clause, SList) and len(clause) >= 2]
+        return []
+
+    def _builds_record(self, expr: SExpr) -> bool:
+        """True when a branch ends in a record, however it is wrapped.
+
+        A branch may build the record directly, wrap it in a union constructor -
+        `(ok (record-new ...))`, which is how a function returning a Result
+        states its answer - or defer to a further conditional whose own branches
+        do either. Only the bare form counted before, so a function whose
+        branches were all wrapped contributed no field axioms at all, and
+        nothing was known about the record inside its result (#123).
+        """
+        return_expr = self._get_return_expr(expr)
+        if is_form(return_expr, 'record-new'):
+            return True
+        payload = self._union_ctor_payload(return_expr)
+        if payload is not None and self._builds_record(payload):
+            return True
+        return any(self._builds_record(branch)
+                   for branch in self._conditional_branch_exprs(return_expr))
+
+    def _names_settled_before_tail(self, body: SExpr, tail: SExpr,
+                                   translator: Z3Translator) -> Set[str]:
+        """Names whose value at the tail is the one `variables` holds.
+
+        The body is translated as one straight line with no program points, so a
+        write the run skips - inside an `if`, a `cond`, a `match`, a `when` -
+        still leaves its version behind. Reading that at the tail would attach
+        whatever the branch established to a path that never entered it.
+
+        A write on the spine is different: the `do`/`let` chain leading to the
+        tail runs on every path, and a loop there is already modelled as
+        possibly not running. Those names, and only those, are safe to read.
+        Written as a collection of the safe ones rather than an exclusion of the
+        unsafe, so an unrecognised form is refused rather than trusted.
+        """
+        settled: Set[str] = set()
+        conditional: Set[str] = set()
+
+        def writes(node) -> Set[str]:
+            found: Dict[str, List] = {}
+            translator._collect_assignments([node], found)
+            return set(found)
+
+        # The tail's own arms are one case of it: an arm with a loop in it
+        # leaves that arm's version current, which its siblings must not read.
+        conditional.update(writes(tail))
+
+        def spine(node):
+            if node is tail or not isinstance(node, SList) or len(node) < 1:
+                return
+            head = node[0]
+            if isinstance(head, Symbol):
+                if head.name in ('let', 'let*') and len(node) >= 3:
+                    conditional.update(writes(node[1]))
+                    for item in node.items[2:]:
+                        spine(item)
+                    return
+                if head.name == 'do':
+                    for item in node.items[1:]:
+                        spine(item)
+                    return
+                if head.name == 'set!' and len(node) >= 3 and isinstance(node[1], Symbol):
+                    settled.add(node[1].name)
+                    conditional.update(writes(node[2]))
+                    return
+                if head.name in ('while', 'for-each'):
+                    settled.update(writes(node))
+                    return
+            conditional.update(writes(node))
+
+        spine(body)
+        return settled - conditional
+
+    def _states_own_shape(self, branch: SExpr) -> bool:
+        """True when a branch says what the result *is*, not which value it is.
+
+        A union constructor and a conditional between constructors both do: the
+        tag, the payload and any record inside are all readable from the branch
+        itself. A plain name or a call does not - all that is known there is
+        that the result equals it, which is what the passthrough equalities say.
+        """
+        return_expr = self._get_return_expr(branch)
+        return (self._is_union_ctor_form(return_expr)
+                or bool(self._conditional_branch_exprs(return_expr)))
+
+    def _branch_record_forms(self, branch: SExpr) -> Tuple[int, ...]:
+        """Every record-new a branch may end up building.
+
+        _nested_record_forms already looks through a union constructor, but not
+        through a further `if`/`cond` - and a chain of those, in either order, is
+        the ordinary way to choose between results. Missing one means the
+        records it builds are not counted as part of the returned value, so a
+        list stored in one of them looks reachable afterwards and the binding
+        that made it is rejected as unstable.
+        """
+        return_expr = self._get_return_expr(branch)
+        forms = self._nested_record_forms(return_expr)
+        for sub in self._conditional_branch_exprs(return_expr):
+            forms += self._branch_record_forms(sub)
+        payload = self._union_ctor_payload(return_expr)
+        if payload is not None:
+            forms += self._branch_record_forms(payload)
+        return forms
+
     def _is_list_new(self, expr: SExpr) -> bool:
         """Check if expression is list-new or contains a result bound to list-new"""
         return_expr = self._get_return_expr(expr)
@@ -1858,19 +1990,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return False
 
     def _is_conditional_with_record_new(self, expr: SExpr) -> bool:
-        """True for an `if` or `cond` with a record-new in at least one branch.
+        """True for an `if` or `cond` with a record-building branch.
 
         `cond` counts: it is the same shape, and a function that assembles its
         result differently under three conditions rather than two should not
-        lose its field axioms for it.
+        lose its field axioms for it. A branch counts whether it constructs the
+        record itself or wraps it - see _builds_record.
         """
-        if is_form(expr, 'if') and len(expr) >= 3:
-            return any(self._is_record_new(branch) for branch in expr.items[2:])
-        if is_form(expr, 'cond') and len(expr) >= 2:
-            return any(self._is_record_new(clause[-1])
-                       for clause in expr.items[1:]
-                       if isinstance(clause, SList) and len(clause) >= 2)
-        return False
+        branches = self._conditional_branch_exprs(expr)
+        return any(self._builds_record(branch) for branch in branches)
 
     def _find_list_push_calls(self, expr: SExpr, result: List[Tuple[SExpr, SExpr]]):
         """Find all (list-push lst item) calls in expression.
@@ -2086,8 +2214,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # to reach the list again.
         result_forms: Tuple[int, ...] = ()
         for _, branch in branches:
-            if self._is_record_new(branch):
-                result_forms += self._nested_record_forms(self._get_return_expr(branch))
+            result_forms += self._branch_record_forms(branch)
         bindings = self._tail_bindings(fn_body, param_names, result_forms=result_forms)
         # A branch-local name may shadow an enclosing binding, which shares its
         # Z3 constant. Sibling arms do not: their axioms carry mutually
@@ -2114,7 +2241,38 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     path_cond=self._conjoin(reached_guard, guard),
                     bindings=branch_bindings))
             else:
-                passthrough.append((guard, branch))
+                # The record may be wrapped - `(ok (record-new ...))` - or
+                # chosen by a further conditional, and a branch that yields no
+                # record at all still fixes the union tag, which is what makes
+                # the other branches' claims conditional on reaching them.
+                #
+                # _record_value_axioms already reads exactly these shapes for a
+                # record-valued *field*: it emits the union tag and payload,
+                # recurses into a record payload with the payload accessor as
+                # the base, and conjoins a nested conditional's guards on the
+                # way down. Handing it $result asks the same question about the
+                # result. Fields found that way hang off
+                # union_payload_ok($result) rather than $result, so they are
+                # deliberately not added to field_names - the passthrough
+                # equalities below are about the bare accessor.
+                wrapped: List = []
+                if self._states_own_shape(branch):
+                    branch_bindings = dict(bindings)
+                    branch_bindings.update(self._tail_bindings(
+                        branch, enclosing_names, stability_body=fn_body,
+                        result_forms=result_forms))
+                    # The trailing form, not the branch: an arm that binds
+                    # locals before constructing is a `let` or a `do`, and the
+                    # constructor is what states the shape. The bare path above
+                    # already reads it this way. The bindings collected from the
+                    # whole branch stay, so the locals are still followable.
+                    wrapped = self._record_value_axioms(
+                        result_var, self._get_return_expr(branch), translator,
+                        branch_bindings, self._conjoin(reached_guard, guard))
+                if wrapped:
+                    axioms.extend(wrapped)
+                else:
+                    passthrough.append((guard, branch))
 
         # A branch that yields an existing record: under its guard the result is
         # that value, so the fields the other branches name agree with it.
@@ -2700,8 +2858,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             head = resolved[0]
             if isinstance(head, Symbol) and head.name in {'some', 'none', 'ok', 'error'}:
                 constructor = head.name
-                # Tag index mapping (matches translator.py lines 54-92)
-                tag_idx = {'none': 0, 'some': 1, 'ok': 0, 'error': 1}.get(constructor, 0)
+                # The same map _translate_match reads, not a copy of the
+                # built-in order: a user union may declare its own `ok`/`error`
+                # or `some`/`none` the other way round, and then a fixed index
+                # here contradicts the tag the postcondition's match tests -
+                # which makes the arm unreachable and its claim vacuous.
+                tag_idx = translator.constructor_tag(constructor)
                 if "union_tag" not in translator.variables:
                     tag_func = z3.Function("union_tag", z3.IntSort(), z3.IntSort())
                     translator.variables["union_tag"] = tag_func
@@ -2709,7 +2871,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     tag_func = translator.variables["union_tag"]
                 add(tag_func(field_func) == z3.IntVal(tag_idx))
 
-                if len(resolved) >= 2 and constructor != 'none':
+                # len, not the constructor name: the built-in `(none)` carries
+                # no payload, but a user union may declare `(none Int)` and
+                # return `(none 7)`, and that 7 is as much a fact as any other
+                # payload.
+                if len(resolved) >= 2:
                     payload = translator.translate_expr(resolved[1])
                     if payload is not None:
                         payload_func_name = f"union_payload_{constructor}"
@@ -2721,11 +2887,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                             payload_func = translator.variables[payload_func_name]
                         add(payload_func(field_func) == payload)
 
-                        if is_form(resolved[1], 'record-new'):
-                            axioms.extend(self._extract_record_field_axioms(
-                                resolved[1], translator,
-                                base_accessor=payload_func(field_func),
-                                path_cond=path_cond, bindings=bindings))
+                        # Whatever is known about the payload is known about it
+                        # under the payload accessor. Recursing rather than
+                        # testing for record-new picks up a payload that is
+                        # itself a conditional between constructors, a nested
+                        # wrapper, a fresh list or a string literal - all of
+                        # which this function already reads one level up.
+                        axioms.extend(self._record_value_axioms(
+                            payload_func(field_func), resolved[1], translator,
+                            bindings, path_cond))
         return axioms
 
     @staticmethod
@@ -3776,9 +3946,23 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None and body_has_one_exit:
             return_expr = self._get_return_expr(fn_body)
             if self._is_conditional_with_record_new(return_expr):
-                cond_axioms = self._extract_conditional_record_axioms(
-                    return_expr, translator, combined_body, declared_param_names,
-                    reached_guard)
+                # The tail runs after every loop in the body, so a name a loop
+                # reassigned means its final version here. freeze_versions
+                # refuses those by default because most phases re-translate
+                # expressions from anywhere in the body and cannot tell which
+                # version was meant (#116) - this one only ever reads the tail.
+                #
+                # Only for a name every write to which is on the spine that
+                # leads here. A write the run may skip - in an arm of the tail
+                # itself, or in an `if` earlier in the body - still leaves its
+                # version current, so reading it here would put a branch's facts
+                # on a path that never took it.
+                with translator.final_versions(
+                        self._names_settled_before_tail(
+                            combined_body, return_expr, translator)):
+                    cond_axioms = self._extract_conditional_record_axioms(
+                        return_expr, translator, combined_body, declared_param_names,
+                        reached_guard)
                 for axiom in cond_axioms:
                     solver.add(axiom)
 
