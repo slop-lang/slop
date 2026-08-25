@@ -77,6 +77,8 @@ class Z3Translator:
         self._in_quoted_form = False
         self._versions_frozen = False
         self._prefer_initial_versions = False
+        self._prefer_final_versions = False
+        self._final_version_names: set = set()
         self._declared_types: Dict[str, Any] = {}
         self._record_new_counter = 0  # Counter for unique record-new values
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
@@ -1423,7 +1425,8 @@ class Z3Translator:
                             self.variables[tag_func_name] = tag_func
                         else:
                             tag_func = self.variables[tag_func_name]
-                        self.constraints.append(tag_func(result) == z3.IntVal(1))
+                        self.constraints.append(
+                            tag_func(result) == z3.IntVal(self.constructor_tag('some')))
 
                         payload_func_name = "union_payload_some"
                         if payload_func_name not in self.variables:
@@ -1443,7 +1446,8 @@ class Z3Translator:
                             self.variables[tag_func_name] = tag_func
                         else:
                             tag_func = self.variables[tag_func_name]
-                        self.constraints.append(tag_func(result) == z3.IntVal(0))
+                        self.constraints.append(
+                            tag_func(result) == z3.IntVal(self.constructor_tag('none')))
                     return result
 
                 # arena-alloc always returns non-nil pointer (runtime aborts on OOM)
@@ -1477,7 +1481,9 @@ class Z3Translator:
         # refused rather than answered with the wrong one (issue #116).
         if self._prefer_initial_versions and name in self._pre_loop_variables:
             return self._pre_loop_variables[name]
-        if self._versions_frozen and name in self._pre_loop_variables:
+        if (self._versions_frozen and name in self._pre_loop_variables
+                and not (self._prefer_final_versions
+                         and name in self._final_version_names)):
             return None
 
         # Quoted enum variant: 'Fizz -> IntVal(0)
@@ -2070,6 +2076,32 @@ class Z3Translator:
         finally:
             self._prefer_initial_versions = was
 
+    @contextmanager
+    def final_versions(self, names):
+        """Read `names` as they stand once the whole body has run.
+
+        The counterpart to initial_versions. freeze_versions refuses a
+        loop-versioned name because a pattern phase re-translating an arbitrary
+        body expression cannot know which version it meant (issue #116). For a
+        name written only where every run passes, the value at the end of the
+        body is unambiguous, and it is what `variables` holds.
+
+        An allow-list rather than a deny-list, because the unsafe case is the
+        quiet one: the body is translated as one straight line with no program
+        points, so a write the run skips still leaves its version in
+        `variables`. The caller decides which names are safe; everything else
+        keeps the refusal.
+        """
+        was_prefer = self._prefer_final_versions
+        was_names = self._final_version_names
+        self._prefer_final_versions = True
+        self._final_version_names = set(names or ())
+        try:
+            yield
+        finally:
+            self._prefer_final_versions = was_prefer
+            self._final_version_names = was_names
+
     def freeze_versions(self) -> None:
         """Stop answering for names that have more than one version.
 
@@ -2086,6 +2118,19 @@ class Z3Translator:
         value of the thing that replaced it.
         """
         return self._pre_loop_variables.get(name, self.variables.get(name))
+
+    def constructor_tag(self, name: str) -> int:
+        """The tag index for a union constructor, as `match` will read it.
+
+        enum_values carries the built-in Option/Result order until a user union
+        declares variants of the same names, which the checker warns about but
+        allows - and then that union's order wins here and in _translate_match.
+        Everything that asserts a tag has to read the same map, or an arm the
+        postcondition tests becomes unreachable and its claim discharges
+        vacuously.
+        """
+        return self.enum_values.get(
+            name, self.enum_values.get(f"'{name}", hash(name) % 256))
 
     def is_loop_versioned(self, name: str) -> bool:
         """True if a loop or a `set!` replaced `name`, so it has more than one value."""

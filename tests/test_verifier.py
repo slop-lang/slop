@@ -8512,6 +8512,351 @@ class TestConditionalRecordFields:
         assert verify_source(src, filename="probe.slop")[0].status != 'verified'
 
 
+_UNION_RECORD_PROBE = '''
+(module probe
+  (type Item (record (v Int)))
+  (type F (record (flag Bool) (xs (List Item)) (ys (List Item))))
+  (type St (record (iteration Int)))
+  (type G (record (state St) (tag Int)))
+  (type E (enum bad))
+
+  (fn opaque? ((n Int))
+    (@spec ((Int) -> Bool))
+    (> n 3))
+
+  (fn step ((arena Arena) (s St))
+    (@spec ((Arena St) -> St))
+    (@alloc arena)
+    (record-new St (iteration (+ (. s iteration) 1))))
+
+%s)
+'''
+
+
+class TestUnionWrappedRecordFields:
+    """Issue #123: a record a branch wraps in a union constructor.
+
+    #70 gave a branch that *is* a record-new its field axioms. A branch that
+    wraps one - `(ok (record-new ...))`, which is how a function returning a
+    Result states its answer - contributed nothing, so nothing was known about
+    the record inside the result. The nested `if` that picks between two of them
+    was not recognised as conditional at all.
+
+    Two halves: seeing through the wrapper, and reading the tail with the
+    versions a loop left behind rather than refusing a loop-versioned name.
+    """
+
+    EMPTY = "(xs (list-new arena Item)) (ys (list-new arena Item))"
+    POST = ("(@post (match $result ((ok r) {(list-len (. r xs)) == 0}) "
+            "((error _) true)))")
+
+    @staticmethod
+    def _status(fn_source, name):
+        from slop.verifier import verify_source
+        results = [r for r in verify_source(_UNION_RECORD_PROBE % fn_source,
+                                            filename="probe.slop")
+                   if r.name == name]
+        assert len(results) == 1
+        return results[0].status
+
+    def test_both_arms_wrap_a_record(self):
+        assert self._status('''
+  (fn w1 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (if c (ok (record-new F (flag true) %s))
+          (ok (record-new F (flag false) %s))))''' % (self.POST, self.EMPTY, self.EMPTY),
+                            'w1') == 'verified'
+
+    def test_a_nested_if_under_an_error_arm(self):
+        """HOWL's `saturate`: cancel first, then pick between two results. The
+        outer `if` has no record-new in either branch, so the whole analysis
+        used to be skipped."""
+        assert self._status('''
+  (fn w2 ((arena Arena) (c Bool) (d Bool))
+    (@spec ((Arena Bool Bool) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (if c (error 'bad)
+          (if d (ok (record-new F (flag true) %s))
+                (ok (record-new F (flag false) %s)))))'''
+                            % (self.POST, self.EMPTY, self.EMPTY), 'w2') == 'verified'
+
+    def test_an_option_wrapper(self):
+        """`(none)` carries a tag and no payload, and that tag is what makes the
+        `(some r)` arm's claim conditional on reaching it."""
+        assert self._status('''
+  (fn w3 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> (Option F)))
+    (@alloc arena)
+    (@post (match $result ((some r) {(list-len (. r xs)) == 0}) ((none) true)))
+    (if c (some (record-new F (flag true) %s))
+          (none)))''' % self.EMPTY, 'w3') == 'verified'
+
+    def test_an_opaque_condition_between_wrapped_records(self):
+        assert self._status('''
+  (fn w4 ((arena Arena) (n Int))
+    (@spec ((Arena Int) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (if (opaque? n) (ok (record-new F (flag true) %s))
+                    (ok (record-new F (flag false) %s))))'''
+                            % (self.POST, self.EMPTY, self.EMPTY), 'w4') == 'verified'
+
+    def test_a_loop_invariant_reaches_the_wrapped_record(self):
+        """The tail runs after the loop, so `st` there means the version the
+        loop left behind. freeze_versions refuses a loop-versioned name by
+        default - correctly, for a pass re-translating an arbitrary body
+        expression - which severed the invariant from the field it describes."""
+        assert self._status('''
+  (fn w5 ((arena Arena) (s0 St) (cap Int) (bail Bool))
+    (@spec ((Arena St Int Bool) -> (Result G E)))
+    (@alloc arena)
+    (@post (match $result ((ok r) {(. (. r state) iteration) <= cap}) ((error _) true)))
+    (let ((mut st s0)
+          (mut stop false))
+      (do
+        (while (not stop)
+          (@loop-invariant {(. st iteration) <= cap})
+          (do
+            (if (>= (. st iteration) cap)
+              (set! stop true)
+              (set! st (step arena st)))))
+        (if bail
+          (error 'bad)
+          (if stop
+            (ok (record-new G (state st) (tag 1)))
+            (ok (record-new G (state st) (tag 2))))))))''', 'w5') == 'verified'
+
+    def test_an_arm_that_binds_locals_before_constructing(self):
+        """The constructor states the shape; the `let` around it is just where
+        the arm keeps its locals."""
+        assert self._status('''
+  (fn w6 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (if c (let ((e (list-new arena Item))) (ok (record-new F (flag true) (xs e) (ys e))))
+          (let ((e (list-new arena Item))) (ok (record-new F (flag false) (xs e) (ys e))))))'''
+                            % self.POST, 'w6') == 'verified'
+
+    def test_a_payload_conditional_over_records_holding_a_bound_list(self):
+        """The records inside a payload conditional are part of the returned
+        value too. Not counting them leaves the local `e` looking reachable
+        after the return, so the binding that made it is rejected as
+        unstable and its length is lost."""
+        assert self._status('''
+  (fn w8 ((arena Arena) (c Bool) (d Bool))
+    (@spec ((Arena Bool Bool) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (let ((e (list-new arena Item)))
+      (if c (error 'bad)
+            (ok (if d (record-new F (flag true) (xs e) (ys e))
+                      (record-new F (flag false) (xs e) (ys e)))))))'''
+                            % self.POST, 'w8') == 'verified'
+
+    def test_the_whole_result_is_one_constructor_over_a_conditional(self):
+        """No outer `if` at all: `(ok (if ...))`. Phase 4.5 handles a top-level
+        constructor, and it read only a bare record-new payload."""
+        assert self._status('''
+  (fn w9 ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (ok (if c (record-new F (flag true) %s)
+              (record-new F (flag false) %s))))'''
+                            % (self.POST, self.EMPTY, self.EMPTY), 'w9') == 'verified'
+
+    def test_a_payload_that_is_itself_a_conditional(self):
+        """`(ok (if ...))` rather than `(if ... (ok ...) (ok ...))`. The tag is
+        the same either way and the fields still belong to the payload."""
+        assert self._status('''
+  (fn w7 ((arena Arena) (c Bool) (d Bool))
+    (@spec ((Arena Bool Bool) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (if c (error 'bad)
+          (ok (if d (record-new F (flag true) %s)
+                    (record-new F (flag false) %s)))))'''
+                            % (self.POST, self.EMPTY, self.EMPTY), 'w7') == 'verified'
+
+    # --- the guards have to be exact, not just present --------------------
+
+    def test_an_arm_binding_locals_with_one_arm_not_empty(self):
+        assert self._status('''
+  (fn n4 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (if c (let ((e (list-new arena Item))) (ok (record-new F (flag true) (xs e) (ys e))))
+          (let ((e zs)) (ok (record-new F (flag false) (xs e) (ys e))))))'''
+                            % self.POST, 'n4') != 'verified'
+
+    def test_a_payload_conditional_over_a_bound_list_with_one_arm_not_empty(self):
+        assert self._status('''
+  (fn n7 ((arena Arena) (c Bool) (d Bool) (zs (List Item)))
+    (@spec ((Arena Bool Bool (List Item)) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (let ((e (list-new arena Item)))
+      (if c (error 'bad)
+            (ok (if d (record-new F (flag true) (xs e) (ys e))
+                      (record-new F (flag false) (xs zs) (ys e)))))))'''
+                            % self.POST, 'n7') != 'verified'
+
+    def test_a_union_that_declares_its_tags_the_other_way_round(self):
+        """A user union may name its variants `error` then `ok`. The tag index
+        has to come from the same map the postcondition's match reads, or the
+        arm is unreachable and its claim discharges vacuously."""
+        from slop.verifier import verify_source
+        src = '''
+(module probe
+  (type V (record (v Int)))
+  (type Backwards (union (error Int) (ok V)))
+  (fn t ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> Backwards))
+    (@alloc arena)
+    (@post (match $result ((ok r) {(. r v) == %d}) ((error _) true)))
+    (if c (ok (record-new V (v 9)))
+          (ok (record-new V (v 9))))))
+'''
+        assert verify_source(src % 9, filename="probe.slop")[0].status == 'verified'
+        assert verify_source(src % 1, filename="probe.slop")[0].status != 'verified'
+
+    def test_a_union_that_reverses_some_and_none(self):
+        """The translator asserted `some`'s tag from the built-in order while
+        the match read the user's, so the two contradicted each other and the
+        context came out inconsistent rather than verified."""
+        from slop.verifier import verify_source
+        src = '''
+(module probe
+  (type V (record (v Int)))
+  (type Rev (union (some V) (none Int)))
+  (fn t ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> Rev))
+    (@alloc arena)
+    (@post (match $result ((some r) {(. r v) == %d}) ((none _) true)))
+    (if c (some (record-new V (v 9)))
+          (some (record-new V (v 9))))))
+'''
+        assert verify_source(src % 9, filename="probe.slop")[0].status == 'verified'
+        assert verify_source(src % 1, filename="probe.slop")[0].status != 'verified'
+
+    def test_a_top_level_constructor_conditional_with_one_arm_not_empty(self):
+        assert self._status('''
+  (fn n9 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (ok (if c (record-new F (flag true) %s)
+              (record-new F (flag false) (xs zs) (ys (list-new arena Item))))))'''
+                            % (self.POST, self.EMPTY), 'n9') != 'verified'
+
+    def test_a_conditional_payload_with_one_arm_not_empty(self):
+        assert self._status('''
+  (fn n5 ((arena Arena) (c Bool) (d Bool) (zs (List Item)))
+    (@spec ((Arena Bool Bool (List Item)) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (if c (error 'bad)
+          (ok (if d (record-new F (flag true) %s)
+                    (record-new F (flag false) (xs zs) (ys (list-new arena Item)))))))'''
+                            % (self.POST, self.EMPTY), 'n5') != 'verified'
+
+    def test_one_wrapped_arm_that_is_not_empty(self):
+        assert self._status('''
+  (fn n1 ((arena Arena) (c Bool) (zs (List Item)))
+    (@spec ((Arena Bool (List Item)) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (if c (ok (record-new F (flag true) %s))
+          (ok (record-new F (flag false) (xs zs) (ys (list-new arena Item))))))'''
+                            % (self.POST, self.EMPTY), 'n1') != 'verified'
+
+    def test_a_nested_arm_that_is_not_empty(self):
+        assert self._status('''
+  (fn n2 ((arena Arena) (c Bool) (d Bool) (zs (List Item)))
+    (@spec ((Arena Bool Bool (List Item)) -> (Result F E)))
+    (@alloc arena)
+    %s
+    (if c (error 'bad)
+          (if d (ok (record-new F (flag true) %s))
+                (ok (record-new F (flag false) (xs zs) (ys (list-new arena Item)))))))'''
+                            % (self.POST, self.EMPTY), 'n2') != 'verified'
+
+    def test_a_conditional_loop_before_the_tail_is_not_final(self):
+        """The loop sits in an `if` the run skips. Its post-loop constant is
+        still what `variables` holds, because the body is translated as one
+        straight line - so the tail must not read it."""
+        assert self._status('''
+  (fn n8 ((arena Arena) (s0 St) (cap Int) (c Bool) (d Bool))
+    (@spec ((Arena St Int Bool Bool) -> (Result G E)))
+    (@alloc arena)
+    (@pre (not c))
+    (@post (match $result ((ok r) {(. (. r state) iteration) <= cap}) ((error _) true)))
+    (let ((mut st s0)
+          (mut stop false))
+      (do
+        (if c
+          (while (not stop)
+            (@loop-invariant {(. st iteration) <= cap})
+            (do
+              (if (>= (. st iteration) cap)
+                (set! stop true)
+                (set! st (step arena st)))))
+          (do))
+        (if d
+          (ok (record-new G (state st) (tag 1)))
+          (ok (record-new G (state st) (tag 2)))))))''', 'n8') != 'verified'
+
+    def test_a_loop_in_one_arm_does_not_describe_its_sibling(self):
+        """`variables` holds whichever arm was translated last, so a loop inside
+        the returned conditional leaves that arm's version there. The `c` arm
+        reads `st` before any of it runs, and nothing bounds it."""
+        assert self._status('''
+  (fn n6 ((arena Arena) (s0 St) (cap Int) (c Bool))
+    (@spec ((Arena St Int Bool) -> (Result G E)))
+    (@alloc arena)
+    (@pre c)
+    (@post (match $result ((ok r) {(. (. r state) iteration) <= cap}) ((error _) true)))
+    (let ((mut st s0)
+          (mut stop false))
+      (if c
+        (ok (record-new G (state st) (tag 1)))
+        (do
+          (while (not stop)
+            (@loop-invariant {(. st iteration) <= cap})
+            (do
+              (if (>= (. st iteration) cap)
+                (set! stop true)
+                (set! st (step arena st)))))
+          (ok (record-new G (state st) (tag 2)))))))''', 'n6') != 'verified'
+
+    def test_the_invariant_is_not_stronger_than_it_says(self):
+        """`<= cap` must not discharge `< cap`."""
+        assert self._status('''
+  (fn n3 ((arena Arena) (s0 St) (cap Int) (bail Bool))
+    (@spec ((Arena St Int Bool) -> (Result G E)))
+    (@alloc arena)
+    (@post (match $result ((ok r) {(. (. r state) iteration) < cap}) ((error _) true)))
+    (let ((mut st s0)
+          (mut stop false))
+      (do
+        (while (not stop)
+          (@loop-invariant {(. st iteration) <= cap})
+          (do
+            (if (>= (. st iteration) cap)
+              (set! stop true)
+              (set! st (step arena st)))))
+        (if bail
+          (error 'bad)
+          (if stop
+            (ok (record-new G (state st) (tag 1)))
+            (ok (record-new G (state st) (tag 2))))))))''', 'n3') != 'verified'
+
+
 class TestEarlyExits:
     """An early `(return ...)` is a second path to $result.
 
