@@ -32,7 +32,12 @@ class UnionHandlingMixin:
         Handles do blocks by checking the return expression.
         """
         return_expr = self._get_return_expr(expr)
-        if not isinstance(return_expr, SList) or len(return_expr) < 2:
+        # One element is enough: `(none)` carries no payload, and its tag is as
+        # much a fact about the result as `(some x)`'s is. Requiring two meant
+        # Phase 4.5 skipped it, leaving the tag only in translator.constraints -
+        # where the postcondition solver picked it up and the property solver,
+        # which does not take the body's raw constraints, could not (#125).
+        if not isinstance(return_expr, SList) or not return_expr.items:
             return False
 
         head = return_expr[0]
