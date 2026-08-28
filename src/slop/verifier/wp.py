@@ -6,6 +6,7 @@ backward reasoning for verification.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
 from typing import Optional, TYPE_CHECKING
 
 from slop.parser import SList, Symbol, Number, String, is_form
@@ -111,10 +112,22 @@ class WeakestPrecondition:
         if not body_exprs:
             return Q
 
-        # First compute WP of body (process body as a sequence)
+        # First compute WP of body (process body as a sequence), with the
+        # bindings in scope. A `set!` inside substitutes the name it assigns,
+        # and for a binding that shadows a parameter that name means the *local*
+        # - a contract cannot name a local, so the occurrence in Q is the
+        # parameter and nothing inside the scope may rewrite it (#118).
         inner_wp = Q
-        for body_item in reversed(body_exprs):
-            inner_wp = self.wp(body_item, inner_wp)
+        with ExitStack() as scope:
+            for binding in bindings.items:
+                if not (isinstance(binding, SList) and len(binding) >= 2):
+                    continue
+                name = self._binding_name(binding)
+                if name:
+                    scope.enter_context(
+                        self.translator.binding_in_scope(binding, name, final=True))
+            for body_item in reversed(body_exprs):
+                inner_wp = self.wp(body_item, inner_wp)
 
         # Then substitute each binding (in reverse order for nested let)
         for binding in reversed(bindings.items):
@@ -140,7 +153,7 @@ class WeakestPrecondition:
 
                 if var_name and init_expr is not None:
                     inner_wp = self._substitute_var_with_expr(
-                        inner_wp, var_name, init_expr
+                        inner_wp, var_name, init_expr, binding
                     )
 
         return inner_wp
@@ -411,12 +424,36 @@ class WeakestPrecondition:
             return pattern.name == '_'
         return False
 
+    @staticmethod
+    def _binding_name(binding: 'SList') -> Optional[str]:
+        """The name a `let` binding introduces, across the three spellings."""
+        head = binding[0]
+        if isinstance(head, Symbol):
+            if head.name == 'mut' and len(binding) >= 3:
+                target = binding[1]
+            else:
+                target = head
+        elif isinstance(head, SList) and len(head) >= 2:
+            if not (isinstance(head[0], Symbol) and head[0].name == 'mut'):
+                return None
+            target = head[1]
+        else:
+            return None
+        return target.name if isinstance(target, Symbol) else None
+
     def _substitute_var_with_expr(
-        self, formula: 'z3.BoolRef', var_name: str, expr: 'SExpr'
+        self, formula: 'z3.BoolRef', var_name: str, expr: 'SExpr',
+        binding: 'Optional[SExpr]' = None
     ) -> 'z3.BoolRef':
         """Substitute a variable with an expression in a Z3 formula.
 
         This is the core of WP: Q[x/e] replaces all occurrences of x with e.
+
+        `binding` is the `let` binding the substitution comes from, when there
+        is one. A binding that shadows a parameter has a constant of its own,
+        and the `x` in a postcondition is the parameter - a contract cannot name
+        a local. Substituting the local's value there would rewrite a claim
+        about the parameter into one about the local (#118).
         """
         self._substitution_depth += 1
         if self._substitution_depth > self._max_substitution_depth:
@@ -425,7 +462,10 @@ class WeakestPrecondition:
 
         try:
             # Get the Z3 variable to replace
-            old_var = self.translator.variables.get(var_name)
+            if binding is not None:
+                old_var = self.translator.binding_constant(binding, var_name)
+            else:
+                old_var = self.translator.variables.get(var_name)
             if old_var is None:
                 return formula
 

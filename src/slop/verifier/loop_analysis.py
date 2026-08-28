@@ -29,21 +29,54 @@ class LoopAnalysisMixin:
         and collects the invariant conditions.
         """
         result: List[SExpr] = []
+        self._invariant_scopes: Dict[int, List] = {}
         self._collect_loop_invariants(expr, result)
         return result
 
-    def _collect_loop_invariants(self, expr: SExpr, result: List[SExpr]):
-        """Recursively collect @loop-invariant conditions from expressions"""
+    def invariant_scope(self, invariant: SExpr) -> List:
+        """The `let` bindings an invariant was written inside, innermost last."""
+        return getattr(self, '_invariant_scopes', {}).get(id(invariant), [])
+
+    def _collect_loop_invariants(self, expr: SExpr, result: List[SExpr],
+                                 enclosing: Optional[List] = None):
+        """Recursively collect @loop-invariant conditions from expressions.
+
+        `enclosing` accumulates the (binding, name) pairs of the `let` scopes an
+        invariant sits inside. An invariant may be written about a local that
+        shadows a parameter, and it is translated long after that scope ended -
+        so where it came from has to travel with it (#118).
+        """
+        if enclosing is None:
+            enclosing = []
+        if not hasattr(self, '_invariant_scopes'):
+            self._invariant_scopes = {}
         if isinstance(expr, SList) and len(expr) > 0:
             head = expr[0]
             if isinstance(head, Symbol):
                 # Check for @loop-invariant annotation
                 if head.name == '@loop-invariant' and len(expr) >= 2:
                     result.append(expr[1])
+                    self._invariant_scopes[id(expr[1])] = list(enclosing)
                 # Recurse into for-each, let, do, if, etc.
+            if is_form(expr, 'let') and len(expr) >= 3 and isinstance(expr[1], SList):
+                # An initializer is evaluated before its own binding exists, and
+                # before any binding after it - so each is walked with only what
+                # came before, and the whole scope applies to the body alone.
+                inner = list(enclosing)
+                for binding in expr[1].items:
+                    if not (isinstance(binding, SList) and len(binding) >= 2):
+                        continue
+                    for item in binding.items[1:]:
+                        self._collect_loop_invariants(item, result, inner)
+                    name = self._binding_name(binding)
+                    if name:
+                        inner.append((binding, name))
+                for item in expr.items[2:]:
+                    self._collect_loop_invariants(item, result, inner)
+                return
             # Recurse into subexpressions
             for item in expr.items:
-                self._collect_loop_invariants(item, result)
+                self._collect_loop_invariants(item, result, enclosing)
 
     def _analyze_loops(self, body: SExpr) -> List[LoopContext]:
         """Analyze function body to extract information about all for-each loops.

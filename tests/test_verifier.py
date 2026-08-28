@@ -10586,3 +10586,439 @@ class TestPropertyAboutResult:
     (@spec ((Bool) -> Int))
     (@property p (>= $result 3))
     (do (when flag (return 3)) 7))''') == 'verified'
+
+
+class TestShadowedBindings:
+    """Issue #118: a binding that shadows one already in scope.
+
+    Every binding of a name shared one Z3 constant, so an inner `let`'s
+    initializer was a claim about the outer binding - or about a parameter. The
+    issue called itself latent; a shadowed *parameter* reaches it in three lines,
+    and `(@post (== x 1))` verified for an unconstrained `x`.
+
+    Two halves, and both were needed: the constant itself, and the weakest
+    precondition, which substitutes a binding's value into the postcondition and
+    was rewriting a claim about the parameter into one about the local.
+    """
+
+    @staticmethod
+    def _status(body, prelude=""):
+        from slop.verifier import verify_source
+        results = verify_source("(module m\n%s%s)\n" % (prelude, body),
+                                filename="probe.slop")
+        assert len(results) == 1
+        return results[0].status
+
+    def test_a_local_shadowing_a_parameter_says_nothing_about_it(self):
+        assert self._status('''
+  (fn f ((x Int))
+    (@spec ((Int) -> Int))
+    (@post (== x 1))
+    (let ((x 1)) x))''') != 'verified'
+
+    def test_the_result_is_still_the_locals_value(self):
+        assert self._status('''
+  (fn g ((x Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result 1))
+    (let ((x 1)) x))''') == 'verified'
+
+    def test_an_inner_binding_shadows_the_outer(self):
+        assert self._status('''
+  (fn h ((n Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result 2))
+    (let ((y n)) (let ((y 2)) y)))''') == 'verified'
+        assert self._status('''
+  (fn k ((n Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result n))
+    (let ((y n)) (let ((y 2)) y)))''') != 'verified'
+
+    def test_the_outer_binding_comes_back_after_the_inner_scope(self):
+        """A shadowing binding is put away when its body ends. One that shadows
+        nothing stays: the phases that run after the body re-translate
+        expressions from inside it and read the locals out of `variables`."""
+        assert self._status('''
+  (fn p ((n Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result n))
+    (let ((y n))
+      (do (let ((y 2)) y) y)))''') == 'verified'
+        assert self._status('''
+  (fn q ((n Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result 2))
+    (let ((y n))
+      (do (let ((y 2)) y) y)))''') != 'verified'
+
+    def test_an_unshadowed_binding_still_reaches_the_postcondition(self):
+        """The renaming is for shadowing bindings only, so the ordinary case is
+        unchanged - including the weakest precondition's substitution."""
+        assert self._status('''
+  (fn r ((n Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result (+ n 1)))
+    (let ((y (+ n 1))) y))''') == 'verified'
+
+    def test_an_initializer_reads_the_name_it_shadows(self):
+        """`(let ((x (+ x 1))) ...)` is the outer x plus one - the new binding is
+        not in scope in its own initializer."""
+        assert self._status('''
+  (fn s ((x Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result (+ x 1)))
+    (let ((x (+ x 1))) x))''') == 'verified'
+
+    def test_a_callee_postcondition_lands_on_the_shadowing_binding(self):
+        """`(let ((x (one))) x)` gets `one`'s promise. The pass that propagates
+        it substitutes $result with the bound *name*, and by then the scope has
+        ended and the name means the parameter again."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn one ()
+    (@spec (() -> Int))
+    (@post (== $result 1))
+    1)
+  (fn f ((x Int))
+    (@spec ((Int) -> Int))
+    (@post %s)
+    (let ((x (one))) x)))
+'''
+        def status(claim):
+            return [r for r in verify_source(src % claim, filename="probe.slop")
+                    if r.name == 'f'][0].status
+        assert status('(== $result 1)') == 'verified'
+        assert status('(== $result 2)') != 'verified'
+        # ...and it says nothing about the parameter it shadows.
+        assert status('(== x 1)') != 'verified'
+
+    def test_a_loop_inside_a_shadowing_scope_keeps_its_invariant(self):
+        """The scope is put away when its body ends, which is before the phases
+        that translate an extracted @loop-invariant run."""
+        assert self._status('''
+  (fn g ((x Int) (n Int))
+    (@spec ((Int Int) -> Int))
+    (@post (>= $result 0))
+    (do
+      (let ((mut x 0)
+            (mut i 0))
+        (while (< i n)
+          (@loop-invariant (>= x 0))
+          (do (set! x (+ x 1)) (set! i (+ i 1))))
+        x)
+      0))''') == 'verified'
+
+    def test_an_assignment_inside_a_shadowing_scope_stays_there(self):
+        """`(set! x ...)` on a shadowing local changes the local. Both the
+        postcondition propagation and the weakest precondition resolve the
+        target by name, and by then the name means the parameter again."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn one ()
+    (@spec (() -> Int))
+    (@post (== $result 1))
+    1)
+  (fn f ((x Int))
+    (@spec ((Int) -> Int))
+    (@post %s)
+    (let ((mut x 0)) (set! x (one)) x)))
+'''
+        def status(claim):
+            return [r for r in verify_source(src % claim, filename="probe.slop")
+                    if r.name == 'f'][0].status
+        assert status('(== $result 1)') == 'verified'
+        assert status('(== x 1)') != 'verified'
+
+    def test_an_assignment_to_an_unshadowed_local_still_reaches_the_result(self):
+        assert self._status('''
+  (fn h ((n Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result 5))
+    (let ((mut y 0)) (set! y 5) y))''') == 'verified'
+
+    def test_a_call_argument_naming_an_enclosing_local(self):
+        """The propagation walk happens after the body was translated, so it has
+        to put the enclosing scope back to read the argument."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn inc ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result (+ a 1)))
+    (+ a 1))
+  (fn k ((y Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result 3))
+    (let ((y 2)) (let ((x (inc y))) x))))
+'''
+        assert [r for r in verify_source(src, filename="probe.slop")
+                if r.name == 'k'][0].status == 'verified'
+
+    def test_a_later_binding_sees_an_earlier_one(self):
+        """`(let ((x 1) (y (inc x))) y)` - the second initializer reads the
+        first binding, not the parameter it shadows."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn inc ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result (+ a 1)))
+    (+ a 1))
+  (fn f ((x Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result 2))
+    (let ((x 1) (y (inc x))) y)))
+'''
+        assert [r for r in verify_source(src, filename="probe.slop")
+                if r.name == 'f'][0].status == 'verified'
+
+    def test_an_invariant_about_a_shadowing_local_survives_its_scope(self):
+        """The invariant is extracted from inside the scope and translated long
+        after it ended, so where it came from travels with it."""
+        assert self._status('''
+  (fn g ((x Int) (n Int))
+    (@spec ((Int Int) -> Int))
+    (@post (>= $result 0))
+    (let ((mut x 0) (mut i 0))
+      (while (< i n)
+        (@loop-invariant (>= x 0))
+        (do (set! x 0) (set! i (+ i 1))))
+      x))''') == 'verified'
+
+    def test_a_call_reads_the_value_in_scope_where_it_runs(self):
+        """`(let ((y (inc x))) (set! x 5) y)` calls with x = 1, not 5. There are
+        no program points here, so the walk replays each binding's *initial*
+        value - the one that cannot be wrong in that direction - and only a
+        `set!` target takes the end-of-scope one."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn inc ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result (+ a 1)))
+    (+ a 1))
+  (fn f ((x Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result %s))
+    (let ((mut x 1)) (let ((y (inc x))) (set! x 5) y))))
+'''
+        def status(claim):
+            return [r for r in verify_source(src % claim, filename="probe.slop")
+                    if r.name == 'f'][0].status
+        assert status('2') == 'verified'
+        assert status('6') != 'verified'
+
+    def test_a_call_after_an_assignment_does_not_read_the_earlier_value(self):
+        """The mirror of the case above. Ordering within a statement sequence is
+        the only program point this pass has; before a `set!` the binding still
+        holds what it was given, after one it holds something this pass cannot
+        pin down, and the guards that already refuse such a name take over."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn relay ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result a))
+    a)
+  (fn f ((x Int) (z Int))
+    (@spec ((Int Int) -> Int))
+    (@post (== $result z))
+    (let ((mut x z)) (set! x 5) (relay x))))
+'''
+        assert [r for r in verify_source(src, filename="probe.slop")
+                if r.name == 'f'][0].status != 'verified'
+
+    def test_an_argument_is_read_outside_the_binding_it_initialises(self):
+        """`(let ((x (relay x))) x)` - the argument is the outer x. Reading both
+        it and $result as the new binding made the axiom a tautology."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn relay ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result a))
+    a)
+  (fn f ((x Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result x))
+    (let ((x (relay x))) x)))
+'''
+        assert [r for r in verify_source(src, filename="probe.slop")
+                if r.name == 'f'][0].status == 'verified'
+
+    def test_a_when_body_is_a_sequence_like_any_other(self):
+        """Every multi-form body tracks its own assignments, not just `do`."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn relay ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result a))
+    a)
+  (fn f ((z Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result z))
+    (let ((mut x z) (mut y 0))
+      (when true (set! x 5) (set! y (relay x)))
+      y)))
+'''
+        assert [r for r in verify_source(src, filename="probe.slop")
+                if r.name == 'f'][0].status != 'verified'
+
+    def test_a_builtins_arguments_are_read_outside_the_binding(self):
+        """`(let ((x (make-triple arena s x o))) ...)` passes the outer x."""
+        assert self._status('''
+  (fn mk ((arena Arena) (s Int) (x Int) (o Int))
+    (@spec ((Arena Int Int Int) -> Triple))
+    (@alloc arena)
+    (@post (== (. $result predicate) x))
+    (let ((x (make-triple arena s x o))) x))''',
+            prelude="  (type Triple (record (subject Int) (predicate Int) (object Int)))\n") == 'verified'
+
+    def test_a_string_operand_is_read_in_its_own_scope(self):
+        """The string axioms are generated after the body was translated, so an
+        operand naming a shadowing local needs the scope back."""
+        assert self._status('''
+  (fn f ((arena Arena) (x String))
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (@post (starts-with $result "?"))
+    (let ((x "?")) (string-concat arena x "tail")))''') == 'verified'
+
+    def test_an_initializer_that_assigns_the_name_it_shadows(self):
+        """`(let ((x (do (set! x 1) 1))) ...)` changes the outer binding on its
+        way past. Separating the two needs a program point this has no way to
+        place, so the name keeps one constant rather than the rename quietly
+        losing the assignment."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn f ((mut x Int))
+    (@spec ((Int) -> Int))
+    (@pre (== x 5))
+    (@post (== x 5))
+    (let ((x (do (set! x 1) 1))) 0)))
+'''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+    def test_shadowing_a_name_an_assignment_versioned(self):
+        """The outer binding's version marker is about the outer value. Leaving
+        it in place while the inner binding is current has the frozen-version
+        check refuse an ordinary reference to the inner one."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn relay ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result a))
+    a)
+  (fn g ((mut x Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result 0))
+    (do (set! x 9) (let ((x 0)) (relay x)))))
+'''
+        assert [r for r in verify_source(src, filename="probe.slop")
+                if r.name == 'g'][0].status == 'verified'
+
+    def test_a_nested_rebinding_is_not_an_assignment_to_the_outer(self):
+        """The scan for "does this initializer assign the name it shadows" has
+        to respect scopes, or a nested `let` of the same name gives up the
+        rename for a binding that never touches the outer value."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn f ((x Int))
+    (@spec ((Int) -> Int))
+    (@post (== x 1))
+    (let ((x (let ((mut x 0)) (set! x 1) 1))) 0)))
+'''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+    def test_a_mutation_between_initializers_is_seen(self):
+        """Sequential initializers are a statement sequence too: the second is
+        read past whatever the first assigned."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn relay ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result a))
+    a)
+  (fn g ((q Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result 0))
+    (let ((mut x 0))
+      (let ((a (do (set! x 5) 0))
+            (y (relay x)))
+        y))))
+'''
+        assert [r for r in verify_source(src, filename="probe.slop")
+                if r.name == 'g'][0].status != 'verified'
+
+    def test_a_nested_scope_inherits_what_was_already_assigned(self):
+        """Entering a `let` does not undo a `set!` that happened before it."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn relay ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result a))
+    a)
+  (fn f ((x Int) (z Int))
+    (@spec ((Int Int) -> Int))
+    (@post (== $result z))
+    (let ((mut x z)) (set! x 5) (let ((y (relay x))) y))))
+'''
+        assert [r for r in verify_source(src, filename="probe.slop")
+                if r.name == 'f'][0].status != 'verified'
+
+    def test_a_rebinding_earlier_in_the_same_list_takes_the_assignment(self):
+        """`(let ((mut x 0) (a (do (set! x 1) 0))) ...)` assigns the new x, not
+        the one being shadowed."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn g ((x Int))
+    (@spec ((Int) -> Int))
+    (@post (== x 1))
+    (let ((x (let ((mut x 0) (a (do (set! x 1) 0))) 1))) 0)))
+'''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+    def test_every_nested_statement_form_inherits_it(self):
+        """`do`, `when`, `if` and `for-each` bodies too, not just a nested
+        `let`."""
+        from slop.verifier import verify_source
+        src = '''
+(module m
+  (fn relay ((a Int))
+    (@spec ((Int) -> Int))
+    (@post (== $result a))
+    a)
+  (fn f ((x Int) (z Int))
+    (@spec ((Int Int) -> Int))
+    (@post (== $result z))
+    (let ((mut x z)) (set! x 5) (do (let ((y (relay x))) y)))))
+'''
+        assert [r for r in verify_source(src, filename="probe.slop")
+                if r.name == 'f'][0].status != 'verified'
+
+    def test_issue_118_verbatim(self):
+        from slop.verifier import verify_source
+        src = '''
+(module probe
+  (type Item (record (v Int)))
+  (type F (record (flag Bool) (xs (List Item))))
+
+  (fn shadow ((arena Arena) (zs (List Item)))
+    (@spec ((Arena (List Item)) -> F))
+    (@alloc arena)
+    (@post {(list-len zs) == 0})
+    (let ((x zs))
+      (let ((x (list-new arena Item)))
+        (record-new F (flag true) (xs x))))))
+'''
+        assert verify_source(src, filename="probe.slop")[0].status != 'verified'

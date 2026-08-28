@@ -65,6 +65,20 @@ class Z3Translator:
         # Post-loop versions of the names a loop assigns, keyed by (loop, name),
         # so re-translating the same loop reuses them.
         self._loop_versions: Dict[Tuple[int, str], z3.ExprRef] = {}
+        # One constant per shadowing `let` binding, keyed by the binding node so
+        # a phase re-translating the same tree gets the same one back (#118).
+        self._let_versions: Dict[Tuple[int, str], z3.ExprRef] = {}
+        # What each shadowing binding's name held where its scope ended - after
+        # any `set!` inside it. The initial constant above is what the binding
+        # was *given*; this is what code further down the scope reads.
+        self._let_final: Dict[Tuple[int, str], z3.ExprRef] = {}
+        # Bindings something assigned inside their own scope. The name then has
+        # more than one value there, and a pass with no program points cannot
+        # say which one a given call saw.
+        self._let_assigned: Set[Tuple[int, str]] = set()
+        # Bindings that shadow one already in scope. Only these have a constant
+        # of their own, and only these need their scope replayed.
+        self._let_shadowing: Set[Tuple[int, str]] = set()
         self._loop_version_counter = 0
         self._pre_loop_variables: Dict[str, z3.ExprRef] = {}
         self.versioned_loops: Set[int] = set()
@@ -1882,6 +1896,12 @@ class Z3Translator:
         if not isinstance(bindings, SList):
             return None
 
+        # What each shadowing binding covers up, to be put back when the body
+        # ends. A binding that shadows nothing is left in place: the phases that
+        # run after the body re-translate expressions from inside it and read
+        # its locals out of `variables`.
+        shadowed: List[Tuple[str, Any, Any, Any]] = []
+
         # Process bindings - declare each variable
         for binding in bindings.items:
             if isinstance(binding, SList) and len(binding) >= 2:
@@ -1910,24 +1930,66 @@ class Z3Translator:
                     # any assignment both belong to that other binding. Keeping
                     # them re-states an outer parameter's bounds on this local,
                     # which can make the context contradictory (#118).
+                    key = (id(binding), var_name)
+                    outer = self.variables.get(var_name)
+                    # `outer is not None` alone would call this binding a
+                    # shadowing one on a *re-translation*: a binding that shadows
+                    # nothing is deliberately left in `variables` when its scope
+                    # ends, so the second walk over the same tree finds it there.
+                    # It is only shadowing if what is there belongs to someone
+                    # else.
+                    shadowing = outer is not None and outer is not self._let_versions.get(key)
+                    if shadowing and self._assigns_name(init_value, var_name):
+                        # The initializer assigns the very name it is about to
+                        # shadow. Whatever that did to the outer binding happens
+                        # before this one exists, and separating the two needs a
+                        # program point this has no way to place - so the name
+                        # keeps one constant, as it did before, rather than the
+                        # rename quietly losing the assignment.
+                        shadowing = False
+                    if shadowing:
+                        self._let_shadowing.add(key)
+                        shadowed.append((var_name, outer,
+                                         self._declared_types.get(var_name),
+                                         self._pre_loop_variables.get(var_name),
+                                         key))
                     self._declared_types.pop(var_name, None)
                     self._pre_loop_variables.pop(var_name, None)
-                    # Translate initial value
+                    # Translate initial value, while the name still means
+                    # whatever it meant outside: `(let ((x (+ x 1))) ...)` reads
+                    # the outer x.
                     init_z3 = self.translate_expr(init_value)
+                    # A binding that shadows one already in scope needs a
+                    # constant of its own. Sharing `z3.Int(name)` with the outer
+                    # binding makes this initializer a claim about *that* value -
+                    # so `(let ((x 1)) x)` in a function taking a parameter x
+                    # asserted the parameter is 1, and any contract saying so
+                    # verified (#118). Keyed by the binding node, so a phase
+                    # re-translating the same tree gets the same constant.
+                    fresh = shadowing
                     if init_z3 is not None:
                         # Declare variable with same sort as initial value
                         if z3.is_bool(init_z3):
-                            var = z3.Bool(var_name)
+                            var = (self._shadow_constant(key, var_name, z3.BoolSort())
+                                   if fresh else z3.Bool(var_name))
                         elif z3.is_real(init_z3):
-                            var = z3.Real(var_name)
+                            var = (self._shadow_constant(key, var_name, z3.RealSort())
+                                   if fresh else z3.Real(var_name))
                         else:
-                            var = z3.Int(var_name)
+                            var = (self._shadow_constant(key, var_name, z3.IntSort())
+                                   if fresh else z3.Int(var_name))
                         self.variables[var_name] = var
                         # Add constraint that variable equals initial value
                         self.constraints.append(var == init_z3)
                     else:
                         # Can't translate init value - just declare as Int
-                        self.variables[var_name] = z3.Int(var_name)
+                        self.variables[var_name] = (
+                            self._shadow_constant(key, var_name, z3.IntSort())
+                            if fresh else z3.Int(var_name))
+                    # Recorded whether or not it is shadowing, so a second walk
+                    # over the same tree can tell that this variable is this
+                    # binding's own.
+                    self._let_versions[key] = self.variables[var_name]
 
         # Translate body expressions - value is the last one
         body_exprs = expr.items[2:]
@@ -1938,7 +2000,188 @@ class Z3Translator:
         for body_expr in body_exprs:
             result = self.translate_expr(body_expr)
 
+        # The names this scope covered up mean what they meant again - and only
+        # that. An assignment or a loop inside the scope may have given the
+        # *local* a pre-loop entry or a declared type of its own; leaving those
+        # behind would have `initial_versions()` read the local's starting value
+        # for code that runs after the scope.
+        for var_name, outer, declared, pre_loop, key in reversed(shadowed):
+            current = self.variables.get(var_name)
+            if current is not None:
+                self._let_final[key] = current
+                if current is not self._let_versions.get(key):
+                    self._let_assigned.add(key)
+            self.variables[var_name] = outer
+            if declared is None:
+                self._declared_types.pop(var_name, None)
+            else:
+                self._declared_types[var_name] = declared
+            if pre_loop is None:
+                self._pre_loop_variables.pop(var_name, None)
+            else:
+                self._pre_loop_variables[var_name] = pre_loop
+
         return result
+
+    @contextmanager
+    def binding_in_scope(self, binding, name: str, final: bool = False,
+                         after_assignment: bool = False):
+        """Read `name` as this binding meant it, for the length of the block.
+
+        For a pass that re-derives what a binding was given long after its scope
+        ended - `variables` holds whichever binding of the name is in scope where
+        that pass happens to be looking, which for a shadowing binding is the one
+        it shadowed (#118).
+
+        `final` picks the value the name held where the scope *ended*, after any
+        `set!` inside it, rather than what the binding was initialised to. A pass
+        deriving what the binding was given wants the other.
+
+        `after_assignment` says the reader is past a `set!` to this name. The
+        binding then has more than one value and this pass has no program points
+        fine enough to say which, so the name is marked versioned and the guards
+        that already refuse a name in that state take over (#116's machinery).
+        """
+        key = (id(binding), name)
+        if final:
+            # Only a shadowing binding records one, and only that case needs
+            # moving: for anything else `variables` already holds the right
+            # version - the one a loop or an assignment left behind, which is
+            # exactly what a pass over the whole scope should read.
+            own = self._let_final.get(key)
+        else:
+            own = self._let_versions.get(key)
+        if own is None:
+            yield
+            return
+        had = name in self.variables
+        outer = self.variables.get(name)
+        # If something assigned this binding inside its own scope, the name has
+        # more than one value there and nothing here can say which one a given
+        # expression saw. Marking it versioned puts it behind the guards that
+        # already refuse a name in that state - the same ones a loop's
+        # reassignment goes behind (#116).
+        assigned = after_assignment and key in self._let_assigned
+        had_pre_loop = name in self._pre_loop_variables
+        outer_pre_loop = self._pre_loop_variables.get(name)
+        self.variables[name] = own
+        # The outer binding's version marker goes with it. Leaving it would have
+        # the frozen-version check refuse a perfectly ordinary reference to the
+        # *inner* binding, which nothing assigned.
+        # Only a shadowing binding has a scope to replay, and only for one is
+        # the outer binding's version marker about a different value. For any
+        # other binding the marker is its own and must stay.
+        shadowing = key in self._let_shadowing
+        touched_marker = shadowing
+        if shadowing:
+            if assigned:
+                self._pre_loop_variables[name] = self._let_versions.get(key, own)
+            else:
+                # Nothing assigned this binding, so the name has one value here
+                # and the outer binding's marker does not describe it. Leaving
+                # it would have the frozen-version check refuse a perfectly
+                # ordinary reference to the inner binding.
+                self._pre_loop_variables.pop(name, None)
+        try:
+            yield
+        finally:
+            if had:
+                self.variables[name] = outer
+            else:
+                self.variables.pop(name, None)
+            # Only if entering touched it; otherwise something inside the
+            # block owns whatever is there now.
+            if touched_marker:
+                if had_pre_loop:
+                    self._pre_loop_variables[name] = outer_pre_loop
+                else:
+                    self._pre_loop_variables.pop(name, None)
+
+    def binding_constant(self, binding, name: str):
+        """The constant a particular `let` binding of `name` was given.
+
+        A binding that shadows one already in scope has a constant of its own,
+        so a phase re-deriving what it was initialised to has to attach that to
+        the right one - `variables` holds whichever binding of the name is in
+        scope where the phase happens to be looking (#118).
+        """
+        own = self._let_versions.get((id(binding), name))
+        if own is not None:
+            return own
+        return self.initial_variable(name)
+
+    def _assigns_name(self, expr, name: str) -> bool:
+        """Whether anything under `expr` assigns the `name` bound *here*.
+
+        A nested binding of the same name is a different variable, so an
+        assignment under it is not to this one - and treating it as one would
+        give up the rename for a binding that never touches the outer value.
+        """
+        if not isinstance(expr, SList) or not expr.items:
+            return False
+        head = expr[0]
+        if isinstance(head, Symbol):
+            if head.name in ('fn', 'quote'):
+                # A callback's assignments are its own; a quoted form is data.
+                return False
+            if head.name == 'set!' and len(expr) >= 3:
+                target = expr[1]
+                if isinstance(target, Symbol) and target.name == name:
+                    return True
+                return self._assigns_name(expr[2], name)
+            if head.name in ('let', 'let*') and len(expr) >= 3 and isinstance(expr[1], SList):
+                rebinds = False
+                for binding in expr[1].items:
+                    if not (isinstance(binding, SList) and len(binding) >= 2):
+                        continue
+                    # Only until the name is rebound: after that an assignment
+                    # in a later initializer targets the new binding.
+                    if not rebinds:
+                        for item in binding.items[1:]:
+                            if self._assigns_name(item, name):
+                                return True
+                    if self._bound_name(binding) == name:
+                        rebinds = True
+                if rebinds:
+                    return False
+                return any(self._assigns_name(item, name) for item in expr.items[2:])
+            if (head.name == 'for-each' and len(expr) >= 2
+                    and isinstance(expr[1], SList) and expr[1].items
+                    and isinstance(expr[1][0], Symbol)
+                    and expr[1][0].name == name):
+                return False
+        return any(self._assigns_name(item, name) for item in expr.items)
+
+    @staticmethod
+    def _bound_name(binding) -> Optional[str]:
+        """The name a `let` binding introduces, across the three spellings."""
+        head = binding[0]
+        if isinstance(head, Symbol):
+            target = binding[1] if head.name == 'mut' and len(binding) >= 3 else head
+        elif isinstance(head, SList) and len(head) >= 2:
+            if not (isinstance(head[0], Symbol) and head[0].name == 'mut'):
+                return None
+            target = head[1]
+        else:
+            return None
+        return target.name if isinstance(target, Symbol) else None
+
+    def _shadow_constant(self, key, name: str, sort) -> z3.ExprRef:
+        """A constant of this binding's own, stable across re-translations."""
+        existing = self._let_versions.get(key)
+        if existing is not None and existing.sort() == sort:
+            return existing
+        # Fresh rather than a name of our own construction: `x_shadow_1` is a
+        # legal SLOP identifier, and colliding with a binding of that name would
+        # tie the two together - the very thing this is here to prevent.
+        if sort == z3.BoolSort():
+            fresh = z3.FreshBool(f"{name}_shadowed")
+        elif sort == z3.RealSort():
+            fresh = z3.FreshReal(f"{name}_shadowed")
+        else:
+            fresh = z3.FreshInt(f"{name}_shadowed")
+        self._let_versions[key] = fresh
+        return fresh
 
     def _translate_loop(self, expr: SList) -> Optional[z3.ExprRef]:
         """Give the variables a loop assigns a value of their own after it.

@@ -13,6 +13,7 @@ functionality:
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
 from typing import Dict, List, Optional, Set, Tuple, Any, TYPE_CHECKING
 
 from slop.parser import SList, Symbol, String, Number, is_form
@@ -546,7 +547,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         axioms: list = []
 
         # Collect all string-concat calls from body
-        concat_calls: List[SList] = []
+        concat_calls: List[Tuple[SList, List]] = []
         self._collect_string_concat_calls(fn_body, concat_calls)
 
         if not concat_calls and not self._postconditions_use_string_ops(postconditions):
@@ -569,16 +570,19 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             sl_func = translator.variables[sl_key]
 
         # For each string-concat call, add ground axioms
-        for concat_call in concat_calls:
+        for concat_call, concat_scope in concat_calls:
             if len(concat_call) < 4:
                 continue
 
             first_arg = concat_call[2]   # a in (string-concat arena a b)
             second_arg = concat_call[3]  # b
 
-            concat_z3 = translator.translate_expr(concat_call)
-            first_z3 = translator.translate_expr(first_arg)
-            second_z3 = translator.translate_expr(second_arg)
+            with ExitStack() as scope:
+                for binding, name in concat_scope:
+                    scope.enter_context(translator.binding_in_scope(binding, name))
+                concat_z3 = translator.translate_expr(concat_call)
+                first_z3 = translator.translate_expr(first_arg)
+                second_z3 = translator.translate_expr(second_arg)
 
             if concat_z3 is None or first_z3 is None:
                 continue
@@ -626,12 +630,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Axiom 5: Transitivity — starts-with(a, prefix) → starts-with(concat(arena, a, ...), prefix)
         # For each concat call and each prefix used in postcondition starts-with calls
         post_prefixes = self._extract_starts_with_prefix_z3(postconditions, translator)
-        for concat_call in concat_calls:
+        for concat_call, concat_scope in concat_calls:
             if len(concat_call) < 4:
                 continue
             first_arg = concat_call[2]
-            first_z3 = translator.translate_expr(first_arg)
-            concat_z3 = translator.translate_expr(concat_call)
+            with ExitStack() as scope:
+                for binding, name in concat_scope:
+                    scope.enter_context(translator.binding_in_scope(binding, name))
+                first_z3 = translator.translate_expr(first_arg)
+                concat_z3 = translator.translate_expr(concat_call)
             if first_z3 is None or concat_z3 is None:
                 continue
             for prefix_z3 in post_prefixes:
@@ -644,17 +651,42 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         return axioms
 
-    def _collect_string_concat_calls(self, expr: SExpr, result: List):
-        """Recursively collect all (string-concat ...) call expressions from AST."""
+    def _collect_string_concat_calls(self, expr: SExpr, result: List,
+                                     enclosing: Optional[List] = None):
+        """Recursively collect all (string-concat ...) call expressions from AST.
+
+        Each is paired with the `let` bindings it sits inside. The axioms are
+        generated long after the body was translated, when a shadowing scope has
+        been put away, so an operand naming one of its locals would otherwise be
+        read as whatever that local shadowed (#118).
+        """
+        if enclosing is None:
+            enclosing = []
         if not isinstance(expr, SList) or len(expr) == 0:
             return
         head = expr[0]
         if isinstance(head, Symbol) and head.name == 'string-concat' and len(expr) >= 4:
-            result.append(expr)
+            result.append((expr, list(enclosing)))
+        if is_form(expr, 'let') and len(expr) >= 3 and isinstance(expr[1], SList):
+            # An initializer runs before its own binding exists.
+            inner = list(enclosing)
+            for binding in expr[1].items:
+                if not (isinstance(binding, SList) and len(binding) >= 2):
+                    continue
+                for item in binding.items[1:]:
+                    if isinstance(item, SList):
+                        self._collect_string_concat_calls(item, result, inner)
+                name = self._binding_name(binding)
+                if name:
+                    inner.append((binding, name))
+            for item in expr.items[2:]:
+                if isinstance(item, SList):
+                    self._collect_string_concat_calls(item, result, inner)
+            return
         # Recurse into subexpressions
         for item in expr.items:
             if isinstance(item, SList):
-                self._collect_string_concat_calls(item, result)
+                self._collect_string_concat_calls(item, result, enclosing)
 
     def _collect_string_literals(self, expr: SExpr, result: List[str]):
         """Recursively collect all string literal values from AST."""
@@ -733,8 +765,47 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         self._collect_call_postconditions(body, translator, axioms)
         return axioms
 
-    def _collect_call_postconditions(self, expr: SExpr, translator: Z3Translator, axioms: List):
-        """Recursively collect postcondition axioms from let-bound function calls."""
+    def _walk_scope_body(self, items, translator: Z3Translator, axioms: List,
+                         enclosing: List, assigned: Optional[Set[str]] = None):
+        """Walk a statement sequence, keeping track of what has been assigned.
+
+        The enclosing bindings are put back for each statement, but only as they
+        stood *there*: a call before a `set!` to the same name reads the value
+        the binding was given, and one after it reads a value this pass cannot
+        pin down. Ordering within the sequence is the only program point
+        available, and it is enough to tell those two apart (#118).
+        """
+        assigned = set(assigned or ())
+        for item in items:
+            with ExitStack() as scope:
+                for binding, name in enclosing:
+                    scope.enter_context(translator.binding_in_scope(
+                        binding, name,
+                        final=name in assigned,
+                        after_assignment=name in assigned))
+                self._collect_call_postconditions(item, translator, axioms,
+                                                  enclosing, assigned)
+            written: Dict[str, List] = {}
+            translator._collect_assignments([item], written)
+            assigned.update(written)
+
+    def _collect_call_postconditions(self, expr: SExpr, translator: Z3Translator,
+                                     axioms: List, enclosing: Optional[List] = None,
+                                     assigned: Optional[Set[str]] = None):
+        """Recursively collect postcondition axioms from let-bound function calls.
+
+        `enclosing` is the `let` bindings this expression sits inside, innermost
+        last. This walk happens long after the body was translated, when
+        `variables` holds whatever was in scope at the end of it - so the scope
+        is rebuilt as the walk descends (#118).
+
+        `assigned` is what those scopes have assigned by the time this
+        expression runs. A nested `let` inherits it: entering one does not undo
+        a `set!` that happened before it.
+        """
+        if enclosing is None:
+            enclosing = []
+        assigned = set(assigned or ())
         if not isinstance(expr, SList) or len(expr) < 1:
             return
 
@@ -756,39 +827,70 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Handle let expressions
         if head.name == 'let' and len(expr) >= 3:
             bindings = expr[1]
+            # The body runs inside these bindings' scope, and so does each
+            # binding after the first: a call there may take an argument naming
+            # an earlier one, and a `set!` may target one. This walk happens
+            # long after the body was translated, when `variables` holds
+            # whatever was in scope at the *end* - so the scope is rebuilt as
+            # the walk descends (#118).
+            inner = list(enclosing)
             if isinstance(bindings, SList):
                 for binding in bindings.items:
-                    self._process_let_binding(binding, translator, axioms)
-            # Recurse into body expressions
-            for body_expr in expr.items[2:]:
-                self._collect_call_postconditions(body_expr, translator, axioms)
+                    # Each initializer is read where it is: inside the bindings
+                    # before it, and past whatever those assigned.
+                    with ExitStack() as so_far:
+                        for b, n in inner:
+                            so_far.enter_context(translator.binding_in_scope(
+                                b, n, final=n in assigned,
+                                after_assignment=n in assigned))
+                        self._process_let_binding(binding, translator, axioms)
+                    written: Dict[str, List] = {}
+                    translator._collect_assignments([binding], written)
+                    assigned.update(written)
+                    if not (isinstance(binding, SList) and len(binding) >= 2):
+                        continue
+                    name = self._binding_name(binding)
+                    if name:
+                        inner.append((binding, name))
+                        assigned.discard(name)
+            self._walk_scope_body(expr.items[2:], translator, axioms, inner, assigned)
 
         # Handle set! expressions: (set! var (fn-call ...))
         elif head.name == 'set!' and len(expr) >= 3:
             var_sym = expr[1]
             value_expr = expr[2]
             if isinstance(var_sym, Symbol) and isinstance(value_expr, SList):
-                self._process_set_binding(var_sym.name, value_expr, translator, axioms)
+                # What the assignment produces is the name's *later* version, so
+                # this one wants the end-of-scope value rather than the binding's
+                # initial one. Only the target: the arguments are read where the
+                # assignment is.
+                target = None
+                for binding, name in reversed(enclosing):
+                    if name == var_sym.name:
+                        target = binding
+                        break
+                with ExitStack() as assigned:
+                    if target is not None:
+                        assigned.enter_context(translator.binding_in_scope(
+                            target, var_sym.name, final=True))
+                    self._process_set_binding(var_sym.name, value_expr, translator, axioms)
 
         # Handle do blocks
         elif head.name == 'do':
-            for item in expr.items[1:]:
-                self._collect_call_postconditions(item, translator, axioms)
+            self._walk_scope_body(expr.items[1:], translator, axioms, enclosing, assigned)
 
         # Handle for-each loops
         elif head.name == 'for-each' and len(expr) >= 3:
-            for item in expr.items[2:]:
-                self._collect_call_postconditions(item, translator, axioms)
+            self._walk_scope_body(expr.items[2:], translator, axioms, enclosing, assigned)
 
         # Handle if expressions
         elif head.name == 'if':
             for item in expr.items[2:]:
-                self._collect_call_postconditions(item, translator, axioms)
+                self._walk_scope_body([item], translator, axioms, enclosing, assigned)
 
         # Handle when expressions
         elif head.name == 'when' and len(expr) >= 3:
-            for item in expr.items[2:]:
-                self._collect_call_postconditions(item, translator, axioms)
+            self._walk_scope_body(expr.items[2:], translator, axioms, enclosing, assigned)
 
         # Handle match expressions - recurse into arm bodies
         # This enables postcondition propagation for dispatch functions like:
@@ -798,14 +900,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for clause in expr.items[2:]:
                 if isinstance(clause, SList) and len(clause) >= 2:
                     arm_body = clause[-1]
-                    self._collect_call_postconditions(arm_body, translator, axioms)
+                    self._collect_call_postconditions(arm_body, translator, axioms,
+                                                      enclosing, assigned)
 
         # Handle cond expressions - recurse into branch bodies
         elif head.name == 'cond':
             for clause in expr.items[1:]:
                 if isinstance(clause, SList) and len(clause) >= 2:
                     arm_body = clause[-1]
-                    self._collect_call_postconditions(arm_body, translator, axioms)
+                    self._collect_call_postconditions(arm_body, translator, axioms,
+                                                      enclosing, assigned)
 
     def _process_let_binding(self, binding: SExpr, translator: Z3Translator, axioms: List):
         """Process a single let binding, extracting postcondition axioms if it's a function call.
@@ -850,7 +954,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Add axiom: var == init_expr
         if not isinstance(init_expr, SList) or len(init_expr) < 1:
             # Simple value binding (number, symbol)
-            self._add_binding_axiom(var_name, init_expr, translator, axioms)
+            self._add_binding_axiom(var_name, init_expr, translator, axioms, binding)
             return
 
         # Check if init_expr is a function call
@@ -865,7 +969,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         operators = {'+', '-', '*', '/', 'mod', '.', 'and', 'or', 'not',
                      '==', '!=', '<', '<=', '>', '>='}
         if fn_name in operators:
-            self._add_binding_axiom(var_name, init_expr, translator, axioms)
+            self._add_binding_axiom(var_name, init_expr, translator, axioms, binding)
             return
 
         # Check local functions first
@@ -887,8 +991,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 params = imported_sig.params
 
         if not postconditions:
-            # Handle built-in functions with known semantics
-            self._add_builtin_function_axioms(var_name, fn_name, init_expr, translator, axioms)
+            # Handle built-in functions with known semantics. The *result* takes
+            # this binding's constant; the arguments beside it are read where
+            # the call is, outside the new binding - `(let ((x (make-triple
+            # arena s x o))) ...)` passes the outer x (#118).
+            self._add_builtin_function_axioms(
+                var_name, fn_name, init_expr, translator, axioms,
+                translator.binding_constant(binding, var_name))
             return
 
         # Get the actual arguments to the function call
@@ -898,10 +1007,41 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if len(call_args) != len(params):
             return
 
-        # For each postcondition, substitute $result and parameters, then translate
+        # For each postcondition, substitute $result and parameters, then
+        # translate. $result becomes the bound *name*, so the translation has to
+        # happen with that name meaning this binding - after a shadowing scope
+        # ends it means whatever it shadowed (#118).
+        # $result becomes the bound *name*, so the translation has to happen with
+        # that name meaning this binding - after a shadowing scope ends it means
+        # whatever it shadowed (#118). The arguments are substituted in too, and
+        # they are read where the *call* is, outside the new binding: for
+        # `(let ((x (relay x))) ...)` the argument is the outer x, and binding
+        # both would make the axiom the tautology `x_local == x_local`. So the
+        # arguments go in first, in the outer scope, and only what is left -
+        # $result - is translated inside.
+        result_z3 = translator.binding_constant(binding, var_name)
         for post in postconditions:
-            subst_post = self._substitute_postcondition(post, var_name, params, call_args)
-            z3_axiom = translator.translate_expr(subst_post)
+            # $result is left as $result and bound to this binding's constant,
+            # rather than substituted with the bound *name*. The name would be
+            # read wherever the translation happens, and after a shadowing scope
+            # ends it means whatever it shadowed - while the arguments beside it
+            # are read where the *call* is. For `(let ((x (relay x))) ...)` the
+            # two are different values, and substituting the name for both made
+            # the axiom the tautology `x_local == x_local` (#118).
+            subst_post = self._substitute_postcondition(
+                post, '$result', params, call_args)
+            had = '$result' in translator.variables
+            outer_result = translator.variables.get('$result')
+            if result_z3 is not None:
+                translator.variables['$result'] = result_z3
+            try:
+                z3_axiom = translator.translate_expr(subst_post)
+            finally:
+                if result_z3 is not None:
+                    if had:
+                        translator.variables['$result'] = outer_result
+                    else:
+                        translator.variables.pop('$result', None)
             if z3_axiom is not None:
                 axioms.append(z3_axiom)
 
@@ -949,7 +1089,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                        for item in expr.items)
         return False
 
-    def _add_binding_axiom(self, var_name: str, expr: SExpr, translator: Z3Translator, axioms: List):
+    def _add_binding_axiom(self, var_name: str, expr: SExpr, translator: Z3Translator,
+                           axioms: List, binding: Optional[SExpr] = None):
         """Add axiom: var == expr for simple let bindings.
 
         This enables tracking of computed values like:
@@ -964,7 +1105,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # The constant the name held before any loop reassigned it: this is the
         # binding's *initial* value, and after a loop `variables` holds the
         # version the loop produced instead (issue #116).
-        var_z3 = translator.initial_variable(var_name)
+        var_z3 = translator.binding_constant(binding, var_name)
         if var_z3 is None:
             return
 
@@ -982,7 +1123,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
     def _add_builtin_function_axioms(self, var_name: str, fn_name: str,
                                       call_expr: SList, translator: Z3Translator,
-                                      axioms: List):
+                                      axioms: List, result_z3=None):
         """Add axioms for built-in functions with known semantics.
 
         For make-triple: field_predicate(var) == predicate_arg
@@ -994,7 +1135,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if var_name not in translator.variables:
                 translator.declare_variable(var_name, PrimitiveType('Int'))
 
-            var_z3 = translator.variables.get(var_name)
+            var_z3 = result_z3 if result_z3 is not None else translator.variables.get(var_name)
             if var_z3 is None:
                 return
 
@@ -1020,7 +1161,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if var_name not in translator.variables:
                 translator.declare_variable(var_name, PrimitiveType('Int'))
 
-            var_z3 = translator.variables.get(var_name)
+            var_z3 = result_z3 if result_z3 is not None else translator.variables.get(var_name)
             if var_z3 is None:
                 return
 
@@ -3592,7 +3733,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         assume_is_propagated: List[bool] = []
         failed_assumes: List[SExpr] = []
         for assume_index, assume in enumerate(assumptions):
-            z3_assume = translator.translate_expr(assume)
+            # A @loop-invariant may be written about a local that shadows a
+            # parameter, and this runs long after that scope ended (#118).
+            with ExitStack() as invariant_scope:
+                for binding, name in self.invariant_scope(assume):
+                    invariant_scope.enter_context(
+                        translator.binding_in_scope(binding, name, final=True))
+                z3_assume = translator.translate_expr(assume)
             if z3_assume is not None:
                 assume_z3.append(self._ensure_bool(z3_assume))
                 assume_is_propagated.append(assume_index in propagated_range)
