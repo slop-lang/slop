@@ -651,8 +651,16 @@ class OpenApiConverter:
 
         # For stub/map modes, add state as first parameter
         if self.storage_mode in ('stub', 'map') and self.resource_types:
-            # POST operations need arena for state-insert-*
-            if method.lower() == 'post':
+            # POST operations need arena for state-insert-*, and a collection
+            # GET needs one for state-list-*: listing builds a new (List T)
+            # out of the map, so it allocates just as inserting does (#83).
+            is_collection_get = (
+                method.lower() == 'get'
+                and not any(
+                    p.get('in') == 'path' for p in operation.get('parameters', [])
+                )
+            )
+            if method.lower() == 'post' or is_collection_get:
                 params.append(('arena', 'Arena'))
                 context.append('arena')
             params.append(('state', '(Ptr State)'))
@@ -847,7 +855,12 @@ class OpenApiConverter:
         # Basic postcondition: success result is non-nil for object returns
         if return_type not in ('Unit', 'Bool', 'Int', 'Float', 'String'):
             if return_type.startswith('(List'):
-                posts.append(f"(match $result ((ok list) (>= (len list) 0)) ((error _) true))")
+                # list-len, not len: `len` is not a builtin in the checker, the
+                # transpiler or the runtime. And the binding is `xs` rather
+                # than `list`, which is a reserved form name (#83).
+                posts.append(
+                    "(match $result ((ok xs) (>= (list-len xs) 0)) ((error _) true))"
+                )
             else:
                 posts.append(f"(match $result ((ok val) (!= val nil)) ((error _) true))")
 
@@ -1033,7 +1046,9 @@ class OpenApiConverter:
             delete_ret = storage_types.get(delete_fn, "Bool")
 
             lines.append(f"  ({get_fn} ((state (Ptr State)) (id {resource}Id)) -> {get_ret})")
-            lines.append(f"  ({list_fn} ((state (Ptr State)) (limit (Option Int))) -> {list_ret})")
+            lines.append(
+                f"  ({list_fn} ((arena Arena) (state (Ptr State)) (limit (Option Int))) -> {list_ret})"
+            )
             lines.append(f"  ({insert_fn} ((arena Arena) (state (Ptr State)) (item (Ptr New{resource}))) -> {insert_ret})")
             lines.append(f"  ({delete_fn} ((state (Ptr State)) (id {resource}Id)) -> {delete_ret})")
 
@@ -1075,7 +1090,11 @@ class OpenApiConverter:
 
         for resource in self.resource_types:
             resource_lower = self._to_kebab(resource)
-            lines.append(f"    (set! s {resource_lower}s (map-empty))")
+            # (map-new arena K V), not (map-empty): the latter has never
+            # existed in the checker, the transpiler or the runtime (#83).
+            lines.append(
+                f"    (set! s {resource_lower}s (map-new arena {resource}Id {resource}))"
+            )
             lines.append(f"    (set! s next-{resource_lower}-id 1)")
         lines.append("    s))")
         lines.append("")
@@ -1122,11 +1141,21 @@ class OpenApiConverter:
   (@pure)
   (map-get (. state {resource_lower}s) id))
 """)
-            lines.append(f"""(fn {list_fn} ((state (Ptr State)) (limit (Option Int)))
+            # map-values is not an implemented builtin -- it has no checker
+            # entry and no transpiler lowering, only a for-each element-type
+            # helper. map-keys plus map-get is the same walk using builtins
+            # that exist. It allocates, so the function takes the arena and is
+            # no longer @pure (#83).
+            lines.append(f"""(fn {list_fn} ((arena Arena) (state (Ptr State)) (limit (Option Int)))
   (@intent "List all {resource_lower}s from state")
-  (@spec (((Ptr State) (Option Int)) -> {list_ret}))
-  (@pure)
-  (map-values (. state {resource_lower}s)))
+  (@spec ((Arena (Ptr State) (Option Int)) -> {list_ret}))
+  (@alloc arena)
+  (let ((out (list-new arena {resource})))
+    (for-each (k (map-keys (. state {resource_lower}s)))
+      (match (map-get (. state {resource_lower}s) k)
+        ((some v) (list-push out v))
+        ((none) (do))))
+    out))
 """)
             lines.append(f"""(fn {insert_fn} ((arena Arena) (state (Ptr State)) (item (Ptr New{resource})))
   (@intent "Insert new {resource_lower} into state")

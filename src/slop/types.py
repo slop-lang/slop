@@ -529,20 +529,36 @@ ARENA = PrimitiveType('Arena')
 # Built-in Function Names (single source of truth)
 # ============================================================================
 
+# Every name here must be callable from a hole with no import, all the way
+# through: accepted by the checker, lowered by the transpiler, and compiled by
+# cc. Being in the checker is not enough on its own -- `char-at`, `string-copy`
+# and `string-slice` are registered builtins the transpiler has no lowering for,
+# so a hole using one still fails; and it is not necessary either, since `min`
+# and `max` are lowered without the checker dispatching them at all.
+#
+# That is why this list is pinned by a conformance test rather than by reading
+# the checker's tables: tests/test_builtin_functions.slop and
+# tests/test_container_builtins.slop call every name below, and
+# tests/test_builtin_function_table.py fails if a name here is not exercised by
+# one of them. A hand-maintained second table drifting from the compiler is
+# what produced #83 -- `map-empty` was listed here and has never existed
+# anywhere, while `map-keys`, `map-remove` and every `set-*` were missing.
 BUILTIN_FUNCTIONS = {
     # I/O
     'print', 'println',
     # String operations
-    'string-len', 'string-concat', 'string-eq', 'string-new', 'string-slice',
-    'string-split', 'int-to-string',
+    'string-len', 'string-concat', 'string-eq', 'string-new',
+    'string-push-char', 'int-to-string',
     # Arena/memory operations
     'arena-new', 'arena-alloc', 'arena-free',
     # List operations
-    'list-new', 'list-push', 'list-get', 'list-len',
+    'list-new', 'list-push', 'list-get', 'list-len', 'list-pop', 'list-set',
     # Map operations
-    'map-new', 'map-put', 'map-get', 'map-has', 'map-empty',
-    # Result operations
-    'is-ok', 'unwrap',
+    'map-new', 'map-put', 'map-get', 'map-has', 'map-keys', 'map-remove',
+    # Set operations
+    'set-new', 'set-put', 'set-has', 'set-remove', 'set-elements',
+    # Option operations
+    'is-none', 'is-some', 'unwrap',
     # Time
     'now-ms', 'sleep-ms',
     # Math

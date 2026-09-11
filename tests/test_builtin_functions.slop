@@ -1,0 +1,109 @@
+;; ============================================================
+;; Test: every builtin BUILTIN_FUNCTIONS claims, that is not
+;; already covered by tests/test_container_builtins.slop
+;;
+;; src/slop/types.py calls BUILTIN_FUNCTIONS the "single source of
+;; truth", and hole_filler.py unions it into the allow-list that decides
+;; whether LLM-generated code is valid. It had drifted badly (#83): it
+;; listed map-empty, which has never existed in the checker, the
+;; transpiler or the runtime, while omitting map-keys, map-remove, every
+;; set-* builtin, list-pop and string-push-char -- so a hole that
+;; correctly wrote (set-put s x) was rejected and one that wrote
+;; (map-empty) was waved through.
+;;
+;; Being in the checker's table is not the standard. char-at,
+;; string-copy and string-slice are all registered there and have no
+;; transpiler lowering, so a hole using one still fails; min and max are
+;; lowered with no checker dispatch at all. The standard is that a call
+;; compiles and runs, which is what this file establishes.
+;;
+;; Together with test_container_builtins.slop it must mention every name
+;; in BUILTIN_FUNCTIONS -- test_builtin_function_table.py enforces that.
+;; ============================================================
+
+(module test-builtin-functions
+
+  (fn strings ((arena Arena))
+    (@intent "string builtins reachable with no import")
+    (@spec ((Arena) -> Bool))
+    (@alloc arena)
+    (let ((s (string-concat arena "ab" "cd"))
+          (n (int-to-string arena 42))
+          (p (string-push-char arena "a" 98)))
+      (and (== (string-len s) 4)
+           (and (string-eq s "abcd")
+                (and (string-eq n "42")
+                     (string-eq p "ab"))))))
+
+  (fn cstrings ((arena Arena))
+    (@intent "string-new takes a (Ptr U8), not a String")
+    (@spec ((Arena) -> Bool))
+    (@alloc arena)
+    ;; The only builtin here whose argument is a raw C string, which is
+    ;; why it is exercised apart from the rest.
+    (let ((s (string-new arena (cast (Ptr U8) (c-inline "\"xy\"")))))
+      (string-eq s "xy")))
+
+  (fn options ()
+    (@intent "is-none, is-some and unwrap")
+    (@spec (() -> Bool))
+    (let ((a (Option Int) (some 5))
+          (b (Option Int) (none)))
+      (and (is-some a)
+           (and (is-none b)
+                (and (not (is-none a))
+                     (== (unwrap a) 5))))))
+
+  (fn list-mutation ()
+    (@intent "list-pop and list-set, which the container test does not reach")
+    (@spec (() -> Bool))
+    (with-arena 65536
+      (let ((xs (list-new arena Int)))
+        (list-push xs 1)
+        (list-push xs 2)
+        (list-set xs 0 9)
+        (and (match (list-get xs 0) ((some v) (== v 9)) ((none) false))
+             (and (match (list-pop xs) ((some v) (== v 2)) ((none) false))
+                  (== (list-len xs) 1))))))
+
+  (fn arenas ()
+    (@intent "arena-new, arena-alloc and arena-free as explicit calls")
+    (@spec (() -> Bool))
+    ;; with-arena covers the scoped form; these are the manual ones.
+    (let ((a (arena-new 4096)))
+      (let ((p (arena-alloc a 16)))
+        (do (arena-free a) (!= p nil)))))
+
+  (fn timing ()
+    (@intent "now-ms and sleep-ms")
+    (@spec (() -> Bool))
+    (let ((t0 (now-ms)))
+      (do (sleep-ms 1) (>= (now-ms) t0))))
+
+  (fn math ()
+    (@intent "min and max - lowered with no checker dispatch behind them")
+    (@spec (() -> Bool))
+    (and (== (min 2 5) 2) (== (max 2 5) 5)))
+
+  (fn main ()
+    (@intent "Run the builtin conformance checks")
+    (@spec (() -> Int))
+    (with-arena 262144
+      (let ((mut failures 0))
+        (when (not (strings arena))
+          (do (println "strings: FAIL") (set! failures (+ failures 1))))
+        (when (not (cstrings arena))
+          (do (println "cstrings: FAIL") (set! failures (+ failures 1))))
+        (when (not (options))
+          (do (println "options: FAIL") (set! failures (+ failures 1))))
+        (when (not (list-mutation))
+          (do (println "list-mutation: FAIL") (set! failures (+ failures 1))))
+        (when (not (arenas))
+          (do (println "arenas: FAIL") (set! failures (+ failures 1))))
+        (when (not (timing))
+          (do (println "timing: FAIL") (set! failures (+ failures 1))))
+        (when (not (math))
+          (do (println "math: FAIL") (set! failures (+ failures 1))))
+        (if (== failures 0)
+          (do (println "All builtin checks passed!") 0)
+          (do (print failures) (println " check(s) failed") 1))))))

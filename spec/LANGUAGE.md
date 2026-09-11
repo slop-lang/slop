@@ -751,8 +751,8 @@ Minimal runtime (~500 lines of C):
 (string-len s) -> (Int 0 ..)
 (string-concat arena a b) -> String
 (string-eq a b) -> Bool
-(string-slice s start end) -> (Slice U8)
-(string-split arena s delimiter) -> (List String)  ; delimiter must be single char
+(string-slice s start end) -> (Slice U8)   ; NOT IMPLEMENTED (#83)
+(string-split arena s delimiter) -> (List String)  ; NOT IMPLEMENTED (#83)
 (string-push-char arena s c) -> String             ; append a U8 char to a string
 (int-to-string arena n) -> String                  ; Convert integer to string
 

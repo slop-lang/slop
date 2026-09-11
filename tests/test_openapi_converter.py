@@ -258,9 +258,12 @@ class TestOpenApiConverter:
 
         output = OpenApiConverter().convert(spec)
 
-        # Check postcondition for list result uses len
+        # The postcondition measures the list with list-len. `len` is not a
+        # builtin in the checker, the transpiler or the runtime, and `list` is
+        # a reserved form name, so the old spelling could not compile (#83).
         assert "@post" in output
-        assert "(len list)" in output
+        assert "(list-len xs)" in output
+        assert "(len list)" not in output
 
     def test_operation_tier_assignment(self):
         spec = {
@@ -456,6 +459,57 @@ class TestStorageModes:
         assert "fn state-delete-pet" in output
         # No @requires block in map mode
         assert "(@requires storage" not in output
+
+    def test_generated_storage_calls_only_real_builtins(self):
+        """derive must not emit builtins the compiler does not have (#83).
+
+        `map-empty` was emitted by state-new and has never existed in the
+        checker, the transpiler or the runtime. `map-values` was emitted by
+        state-list-*; it has a for-each element-type helper and a runtime
+        macro, but no checker entry and no lowering, so it is not callable.
+        `len` in the generated @post is not a builtin either.
+
+        The result was that `slop derive --storage map` could not produce a
+        module that even type-checks.
+        """
+        spec = self._get_petstore_spec()
+        output = OpenApiConverter(storage_mode='map').convert(spec)
+
+        assert "map-empty" not in output
+        assert "map-values" not in output
+        # `len` only ever appeared as the bare call; list-len is the builtin.
+        assert "(len " not in output
+
+        # state-new builds the map with the real constructor.
+        assert "(map-new arena PetId Pet)" in output
+        # Listing walks the keys and reads each value, using builtins that
+        # exist. It allocates, so it takes the arena and is not @pure.
+        assert "(map-keys (. state pets))" in output
+        assert "(map-get (. state pets) k)" in output
+        assert "fn state-list-pets ((arena Arena) (state (Ptr State))" in output
+
+    def test_list_operations_thread_an_arena(self):
+        """A collection GET allocates, so the arena reaches it (#83).
+
+        state-list-* builds a new (List T) out of the map. Before, it claimed
+        to be @pure and took no arena, which only worked because the builtin it
+        called did not exist. The declared storage contract and the handler
+        signature have to agree with the implementation.
+        """
+        spec = self._get_petstore_spec()
+
+        stub = OpenApiConverter(storage_mode='stub').convert(spec)
+        assert (
+            "(state-list-pets ((arena Arena) (state (Ptr State)) "
+            "(limit (Option Int)))" in stub
+        )
+
+        mapped = OpenApiConverter(storage_mode='map').convert(spec)
+        # The collection GET handler gets the arena and offers it to the hole.
+        assert "fn get-pets ((arena Arena) (state (Ptr State))" in mapped
+        assert ":context (arena state state-list-pets)" in mapped
+        # A single-item GET still does not allocate, so it gains nothing.
+        assert "fn get-pets-by-id ((state (Ptr State))" in mapped
 
     def test_none_mode_no_storage_context(self):
         spec = self._get_petstore_spec()

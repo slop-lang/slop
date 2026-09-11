@@ -880,7 +880,13 @@ def build_prompt(
         "1. ONLY use functions listed in the Built-in Functions above",
         "2. DO NOT invent functions - these DO NOT exist in SLOP:",
         "   - json-parse, json-get-*, parse-json (no JSON library)",
-        "   - string-find, string-index, substring (use string-slice or string-split)",
+        # string-slice and string-split were recommended here, but neither
+        # survives transpilation: string-slice is registered in the checker
+        # with no lowering behind it, and string-split is in neither. A hole
+        # that took the advice burned its retries on a call the validator now
+        # rejects (#83). substring is real, but it lives in strlib.
+        "   - string-find, string-index, string-slice, string-split",
+        "     (substring exists but needs (import strlib (substring)))",
         "   - parse-int, atoi, str-to-int (use FFI if needed)",
         "   - read, write (use recv, send for sockets)",
         "   - ref (no references - use deref for pointer dereferencing)",
