@@ -4001,9 +4001,10 @@
           ((none) "0")))))
 
   (fn transpile-branch-body-with-binding ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr))
-                                          (branch-items (List (Ptr SExpr))) (binding-name String))
+                                          (branch-items (List (Ptr SExpr))) (binding-name String)
+                                          (inner-slop-type String))
     (@intent "Transpile branch body with proper variable binding in scope")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) (List (Ptr SExpr)) String String) -> String))
     (@pre {ctx != nil})
     (@pre {scrutinee != nil})
     ;; Push scope to contain the binding
@@ -4012,9 +4013,21 @@
     (when (not (string-eq binding-name ""))
       (let ((arena (. (deref ctx) arena))
             (c-name (to-c-name arena binding-name))
-            ;; Infer the inner SLOP type from the scrutinee for proper map/set iteration
-            (inner-slop-type (infer-option-inner-slop-type ctx scrutinee)))
-        (ctx-bind-var ctx (VarEntry binding-name c-name "auto" inner-slop-type false false false "" ""))))
+            ;; A (Ptr T) payload has to be registered as one, or field access
+            ;; on the binding emits `.` and cc rejects it. The statement-
+            ;; position branches have always done this; here every payload was
+            ;; bound as a non-pointer `auto`, which is why the same match
+            ;; compiled as a function body and failed in a let initializer or
+            ;; a @post (#80).
+            ;;
+            ;; The payload type comes from the caller because this is shared by
+            ;; the some, ok, error and union-variant arms, and only the caller
+            ;; knows which one it is holding. It used to ask for the Option
+            ;; inner type regardless, so a Result's error payload was described
+            ;; by its ok type.
+            (is-ptr (starts-with inner-slop-type "(Ptr "))
+            (c-type (if is-ptr (slop-value-type-to-c-type ctx inner-slop-type) "auto")))
+        (ctx-bind-var ctx (VarEntry binding-name c-name c-type inner-slop-type is-ptr false false "" ""))))
     ;; Transpile body expression
     (let ((result (get-match-branch-body ctx branch-items)))
       ;; Pop scope
@@ -4071,7 +4084,8 @@
                                 ((some name)
                                   (set! some-binding name)
                                   ;; Transpile body with binding in scope, passing scrutinee for type inference
-                                  (set! some-body (transpile-branch-body-with-binding ctx scrutinee branch-items name)))
+                                  (set! some-body (transpile-branch-body-with-binding ctx scrutinee branch-items name
+                                                    (infer-option-inner-slop-type ctx scrutinee))))
                                 ((none)
                                   ;; No binding - transpile normally
                                   (set! some-body (get-match-branch-body ctx branch-items)))))
@@ -4572,7 +4586,8 @@
                                     ((some name)
                                       (set! ok-binding name)
                                       ;; Transpile body with binding in scope
-                                      (set! ok-body (transpile-branch-body-with-binding ctx scrutinee branch-items name)))
+                                      (set! ok-body (transpile-branch-body-with-binding ctx scrutinee branch-items name
+                                                      (infer-result-ok-slop-type ctx scrutinee))))
                                     ((none)
                                       ;; No binding - transpile normally
                                       (set! ok-body (get-match-branch-body ctx branch-items)))))
@@ -4582,7 +4597,8 @@
                                     ((some name)
                                       (set! err-binding name)
                                       ;; Transpile body with binding in scope
-                                      (set! err-body (transpile-branch-body-with-binding ctx scrutinee branch-items name)))
+                                      (set! err-body (transpile-branch-body-with-binding ctx scrutinee branch-items name
+                                                       (infer-result-err-slop-type ctx scrutinee))))
                                     ((none)
                                       ;; No binding - transpile normally
                                       (set! err-body (get-match-branch-body ctx branch-items)))))
@@ -4866,7 +4882,11 @@
                   ((some binding-name)
                     ;; Has binding - need to bind variable and transpile body with scope
                     (let ((c-binding (to-c-name arena binding-name))
-                          (body (typed-none ctx result-type (transpile-branch-body-with-binding ctx scrutinee branch-items binding-name)))
+                          (payload-slop-type (match (ctx-lookup-field-slop-type ctx type-name tag)
+                                               ((some st) st)
+                                               ((none) "")))
+                          (body (typed-none ctx result-type (transpile-branch-body-with-binding ctx scrutinee branch-items binding-name
+                                                              payload-slop-type)))
                           (s1 (ctx-str ctx cases "case "))
                           (s2 (ctx-str ctx s1 case-label))
                           (s3 (ctx-str ctx s2 ": { __auto_type "))

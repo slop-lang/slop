@@ -1,0 +1,103 @@
+(module test-match-ptr-binding
+  (@intent "A pointer payload bound by a match arm is a pointer in every position")
+
+  ;; Statement-position match arms have always registered a (Ptr T) payload as
+  ;; a pointer, so `(. d root)` emits `d->root`. The expression-position
+  ;; builders -- the ones a match in a let initializer, an argument, or a
+  ;; @post goes through -- bound every payload as a non-pointer `auto`, so the
+  ;; identical match emitted `d.root` and cc rejected it (#80).
+  ;;
+  ;; Each check below runs the same match twice: once as the function body and
+  ;; once inside a let, which is what made the original report look like a
+  ;; contract-only problem.
+
+  (type Doc (record (root Int) (depth Int)))
+  ;; The error payload is a pointer to a *different* record, so an arm wearing
+  ;; the ok side's type would read the wrong field offset or fail to compile.
+  (type Err (record (code Int)))
+  (type Held (union (doc (Ptr Doc)) (empty Int)))
+
+  (fn make-doc ((arena Arena) (n Int))
+    (@intent "A heap Doc, so the payload really is a pointer")
+    (@spec ((Arena Int) -> (Ptr Doc)))
+    (@alloc arena)
+    (let ((p (cast (Ptr Doc) (arena-alloc arena (sizeof Doc)))))
+      (set! (deref p) (record-new Doc (root n) (depth 2)))
+      p))
+
+  (fn make-err ((arena Arena) (c Int))
+    (@intent "A heap Err, so the error payload is a pointer too")
+    (@spec ((Arena Int) -> (Ptr Err)))
+    (@alloc arena)
+    (let ((p (cast (Ptr Err) (arena-alloc arena (sizeof Err)))))
+      (set! (deref p) (record-new Err (code c)))
+      p))
+
+  (fn ok-doc ((arena Arena) (n Int))
+    (@intent "A Result whose ok payload is a pointer")
+    (@spec ((Arena Int) -> (Result (Ptr Doc) (Ptr Err))))
+    (@alloc arena)
+    (ok (make-doc arena n)))
+
+  (fn err-doc ((arena Arena))
+    (@intent "The error side of the same Result")
+    (@spec ((Arena) -> (Result (Ptr Doc) (Ptr Err))))
+    (@alloc arena)
+    (error (make-err arena 9)))
+
+  (fn some-doc ((arena Arena) (n Int))
+    (@intent "An Option whose payload is a pointer")
+    (@spec ((Arena Int) -> (Option (Ptr Doc))))
+    (@alloc arena)
+    (some (make-doc arena n)))
+
+  (fn result-in-body ((arena Arena) (n Int))
+    (@intent "Result match as the function body - the path that always worked")
+    (@spec ((Arena Int) -> Int))
+    (@alloc arena)
+    (match (ok-doc arena n)
+      ((ok d) (. d root))
+      ((error _) 0)))
+
+  (fn result-in-expression ((arena Arena) (n Int))
+    (@intent "The identical match, as a let initializer")
+    (@spec ((Arena Int) -> Int))
+    (@alloc arena)
+    (let ((r (match (ok-doc arena n) ((ok d) (. d root)) ((error _) 0))))
+      r))
+
+  (fn option-in-expression ((arena Arena) (n Int))
+    (@intent "An Option pointer payload, as a let initializer")
+    (@spec ((Arena Int) -> Int))
+    (@alloc arena)
+    (let ((r (match (some-doc arena n) ((some d) (. d depth)) ((none) 0))))
+      r))
+
+  (fn union-in-expression ((arena Arena) (n Int))
+    (@intent "A union variant whose payload is a pointer, as a let initializer")
+    (@spec ((Arena Int) -> Int))
+    (@alloc arena)
+    (let ((h (union-new Held doc (make-doc arena n)))
+          (r (match h ((doc d) (. d root)) ((empty v) v))))
+      r))
+
+  (fn error-arm-in-expression ((arena Arena))
+    (@intent "The error arm binds its own payload type, not the ok one")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    ;; This binding used to be described by infer-option-inner-slop-type
+    ;; whichever side it was on, so a Result's error payload wore its ok type.
+    (let ((r (match (err-doc arena) ((ok d) (. d root)) ((error e) (. e code)))))
+      r))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any arm lost its pointer-ness")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((mut fails 0))
+        (when (!= (result-in-body arena 5) 5) (set! fails (+ fails 1)))
+        (when (!= (result-in-expression arena 5) 5) (set! fails (+ fails 1)))
+        (when (!= (option-in-expression arena 5) 2) (set! fails (+ fails 1)))
+        (when (!= (union-in-expression arena 6) 6) (set! fails (+ fails 1)))
+        (when (!= (error-arm-in-expression arena) 9) (set! fails (+ fails 1)))
+        fails))))

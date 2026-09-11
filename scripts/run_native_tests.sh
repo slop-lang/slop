@@ -191,6 +191,13 @@ run_lib_test "$REPO_ROOT/lib/std/json/tests/json_test.slop" "json" \
 run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml" \
     -I "$REPO_ROOT/lib/std/xml" -I "$REPO_ROOT/lib/std/strlib"
 
+# The same suite with contracts compiled in. xml's @post matches on $result and
+# reads a field of the (Ptr Document) it binds, which is the shape that made
+# --debug unbuildable for anything importing xml (#80). Contracts are no-ops in
+# an ordinary build, so only this invocation covers the postcondition path.
+run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml-contracts" \
+    -I "$REPO_ROOT/lib/std/xml" -I "$REPO_ROOT/lib/std/strlib" --debug
+
 # A multi-module build. Two header passes emit SLOP_LIST_DEFINE for the same type
 # -- the struct-key pass and the ordinary list pass -- and ctx-is-type-emitted
 # only interlocks them within one module. Across modules the #ifndef guard is all

@@ -1073,8 +1073,15 @@
         ;; Declare _retval if needed for postconditions
         (when needs-retval
           (ctx-emit ctx (ctx-str ctx actual-return " _retval = {0};"))
-          ;; Bind $result to _retval for postcondition field access
-          (ctx-bind-var ctx (VarEntry "$result" "_retval" actual-return "" (ends-with actual-return "*") false false "" "")))
+          ;; Bind $result to _retval for postcondition field access.
+          ;; The SLOP return type goes in too: a @post that matches on $result
+          ;; asks the binding for the payload type, and with it empty a
+          ;; (Ptr T) payload was bound as a non-pointer, so (. d root) in the
+          ;; contract emitted `d.root` while the same match in a body emitted
+          ;; `d->root` (#80).
+          (ctx-bind-var ctx (VarEntry "$result" "_retval" actual-return
+                              (get-slop-return-type ctx items)
+                              (ends-with actual-return "*") false false "" "")))
         ;; Set capture mode if we need _retval
         (when needs-retval
           (ctx-set-capture-retval ctx true))
