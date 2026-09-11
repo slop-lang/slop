@@ -1,0 +1,115 @@
+(module test-container-alias-field
+  (@intent "A record field typed by an alias to a container compiles and works")
+
+  ;; A container alias sits between two things the sorted type pass emits: the
+  ;; container it names, and any record whose field names the alias. Before
+  ;; #113 it was emitted by a pass on either side of that sort, so a record
+  ;; field naming one silently lost its struct body and cc reported an
+  ;; incomplete type. Each alias here becomes emittable at a different point:
+  ;; PointList only once Point's list exists, MaybeByte once the primitive
+  ;; Option pass has run, MaybeString and Names immediately.
+
+  (type Point (record (x Int) (y Int)))
+  (type PointList (List Point))
+  (type MaybeByte (Option U8))
+  (type MaybeString (Option String))
+  (type Names (List String))
+
+  (type Box (record (label String)
+                    (xs PointList)
+                    (b MaybeByte)
+                    (s MaybeString)
+                    (ns Names)))
+
+  ;; The alias is declared before the type it names, so the sort has to reach
+  ;; it on a later iteration rather than in source order.
+  (type EdgeList (List Edge))
+  (type Edge (record (a Int) (b Int)))
+  (type Graph (record (es EdgeList)))
+
+  ;; A union variant naming an alias, and an alias to a list of a record that
+  ;; itself has alias-typed fields.
+  (type Shape (union (points PointList) (count Int)))
+  (type BoxList (List Box))
+  (type Crate (record (boxes BoxList)))
+
+  (fn wrap-byte ((v U8))
+    (@intent "Build the aliased Option where the declared return type supplies it")
+    (@spec ((U8) -> MaybeByte))
+    (some v))
+
+  (fn wrap-string ((v String))
+    (@intent "Likewise for the String Option, keeping this test off #142's path")
+    (@spec ((String) -> MaybeString))
+    (some v))
+
+  (fn make-box ((arena Arena))
+    (@intent "A record whose every field is an aliased container")
+    (@spec ((Arena) -> Box))
+    (@alloc arena)
+    (let ((xs (list-new arena Point))
+          (ns (list-new arena String)))
+      (list-push xs (Point 1 2))
+      (list-push xs (Point 3 4))
+      (list-push ns "a")
+      (Box "b" xs (wrap-byte 7) (wrap-string "s") ns)))
+
+  (fn check-box ((arena Arena))
+    (@intent "Every aliased field round-trips")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((mut fails 0)
+          (b (make-box arena)))
+      (when (!= (cast Int (list-len (. b xs))) 2)
+        (set! fails (+ fails 1)))
+      (match (list-get (. b xs) 1)
+        ((some p) (when (!= (. p y) 4) (set! fails (+ fails 1))))
+        ((none) (set! fails (+ fails 1))))
+      (match (. b b)
+        ((some v) (when (!= (cast Int v) 7) (set! fails (+ fails 1))))
+        ((none) (set! fails (+ fails 1))))
+      (match (. b s)
+        ((some s) (when (not (string-eq s "s")) (set! fails (+ fails 1))))
+        ((none) (set! fails (+ fails 1))))
+      (when (!= (cast Int (list-len (. b ns))) 1)
+        (set! fails (+ fails 1)))
+      fails))
+
+  (fn check-forward-alias ((arena Arena))
+    (@intent "An alias declared before the record it names")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((mut fails 0)
+          (es (list-new arena Edge)))
+      (list-push es (Edge 1 2))
+      (let ((g (Graph es)))
+        (when (!= (cast Int (list-len (. g es))) 1)
+          (set! fails (+ fails 1))))
+      fails))
+
+  (fn check-union-and-nesting ((arena Arena))
+    (@intent "An alias as a union payload, and a list of records that use aliases")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((mut fails 0)
+          (xs (list-new arena Point))
+          (boxes (list-new arena Box)))
+      (list-push xs (Point 5 6))
+      (match (union-new Shape points xs)
+        ((points ps) (when (!= (cast Int (list-len ps)) 1) (set! fails (+ fails 1))))
+        ((count _) (set! fails (+ fails 1))))
+      (list-push boxes (make-box arena))
+      (let ((c (Crate boxes)))
+        (when (!= (cast Int (list-len (. c boxes))) 1)
+          (set! fails (+ fails 1))))
+      fails))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any aliased field was mis-emitted")
+    (@spec (() -> Int))
+    (with-arena 262144
+      (let ((mut fails 0))
+        (set! fails (+ fails (check-box arena)))
+        (set! fails (+ fails (check-forward-alias arena)))
+        (set! fails (+ fails (check-union-and-nesting arena)))
+        fails))))
