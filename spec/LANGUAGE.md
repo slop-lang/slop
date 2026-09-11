@@ -768,8 +768,8 @@ Minimal runtime (~500 lines of C):
 ; not be compared even in principle. Use match when you need the value; these
 ; are for the case where you do not.
 ;
-; Both names are reserved: a function or type of either name is a compile error.
-; They are lowered by name, so a definition could not take effect anyway.
+; Both names are reserved, like every other builtin - see "Reserved names" at
+; the end of this section.
 
 ; Sets (homogeneous, type-safe)
 (set-new arena ElementType) -> (Set ElementType)  ; Create empty set
@@ -802,6 +802,25 @@ operations (starts-with, contains, trim, parse-int, etc.), import from strlib:
 ```
 (import strlib (starts-with ends-with contains trim parse-int float-to-string))
 ```
+
+**Reserved names.** Every builtin above is lowered *by name*: the transpiler
+decides what a call means from the head symbol, before it consults the function
+registry. So a definition of one could never take effect, and defining a
+function, type, FFI function or `ffi-struct` with one of these names is a
+compile error:
+
+```
+(fn list-len ((n Int))                   ; error: 'list-len' is a builtin and
+  (@intent "...")                        ;        cannot be redefined as a
+  (@spec ((Int) -> Int))                 ;        function - rename it
+  (+ n 1))
+```
+
+The reserved set is every name the transpiler dispatches on, which is all of the
+above together with the syntactic forms (`if`, `let`, `match`, `for-each`,
+`with-arena`, `cast`, `deref`, `quote`, and the rest). Names in an imported
+library - `starts-with`, `substring`, `join`, `spawn` and so on - are ordinary
+functions and are **not** reserved; only what the transpiler lowers itself is.
 
 ### 8.1 Concurrency (thread library)
 

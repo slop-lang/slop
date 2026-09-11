@@ -756,8 +756,13 @@ is-some/is-none read the tag only, never the payload, so they work for any T.
 Use match when you need the value. == on an (Option T) is an error -- it is a
 container, like (List T).
 
-Both names are reserved; defining a function or type called is-none or is-some
-is a compile error.
+Both names are reserved, like every other builtin. Every builtin is lowered by
+name -- the transpiler decides what a call means from the head symbol, before it
+consults the function registry -- so a definition could never take effect.
+Defining a function, type, FFI function or ffi-struct called list-len, map-get,
+record-new, with-arena or any other builtin is a compile error. Library
+functions such as starts-with or substring are ordinary functions and are not
+reserved.
 
 ### Results
 (ok val) -> (Result T E)

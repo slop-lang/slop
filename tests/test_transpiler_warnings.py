@@ -557,9 +557,6 @@ class TestOptionPredicates:
         assert (
             "'is-some' is a builtin and cannot be redefined as a foreign function"
         ) in combined, combined
-        # list-set is reserved on the same grounds and for the same reason: the
-        # transpiler lowers it by name. It could be, because it is new - the
-        # older list operations could not without breaking code (#110).
         assert (
             "'list-set' is a builtin and cannot be redefined as a function"
         ) in combined, combined
@@ -568,6 +565,58 @@ class TestOptionPredicates:
         assert (
             "'is-none' is a builtin and cannot be redefined as a foreign struct"
         ) in combined, combined
+        # The rest of the family, one from each group of the dispatch (#110).
+        # A name dropped from the list shows up here rather than in cc.
+        for name in ("list-push", "map-get", "record-new", "arena-new", "with-arena"):
+            assert (
+                f"'{name}' is a builtin and cannot be redefined as a function"
+            ) in combined, combined
+
+    def test_every_dispatched_name_is_reserved(self):
+        """The reserved list has to be the whole dispatch, not a sample of it.
+
+        transpile-list-expr decides what a call means from the head symbol
+        alone, so any name it tests for is one a definition cannot override.
+        This reads that list out of the transpiler source and checks each one
+        is refused, so a builtin added there without a matching entry in
+        is-reserved-builtin-name fails here instead of in cc (#110).
+        """
+        source = (REPO_ROOT / "lib/compiler/transpiler/expr.slop").read_text()
+        lines = source.split("\n")
+        start = next(i for i, l in enumerate(lines)
+                     if l.startswith("  (fn transpile-list-expr "))
+        end = next(i for i in range(start + 1, len(lines))
+                   if lines[i].startswith("  (fn "))
+        dispatched = []
+        for line in lines[start:end]:
+            for m in re.finditer(r'\(string-eq op "([^"]+)"\)', line):
+                if m.group(1) not in dispatched:
+                    dispatched.append(m.group(1))
+        assert len(dispatched) > 40, dispatched
+
+        template = (
+            "(module reservedprobe\n"
+            "  (fn {name} ((n Int))\n"
+            '    (@intent "A user function shadowing a builtin name")\n'
+            "    (@spec ((Int) -> Int))\n"
+            "    n))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.slop"
+            unreserved = []
+            for name in dispatched:
+                probe.write_text(template.format(name=name))
+                result = subprocess.run(
+                    [str(REPO_ROOT / "bin" / "slop-compiler"), "check", str(probe)],
+                    capture_output=True, text=True,
+                )
+                if "is a builtin and cannot be redefined" not in (
+                    result.stdout + result.stderr
+                ):
+                    unreserved.append(name)
+        assert not unreserved, (
+            "dispatched by transpile-list-expr but not reserved: %s" % unreserved
+        )
 
     def test_lowering_is_a_tag_test(self):
         """No payload access, and no call into a generated equality function."""
