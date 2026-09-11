@@ -106,7 +106,7 @@ uint8_t expr_is_enum_expr_patterns(context_TranspileContext* ctx, slop_list_type
 uint8_t expr_is_union_expr_patterns(context_TranspileContext* ctx, slop_list_types_SExpr_ptr patterns);
 slop_option_string expr_get_expr_binding_name(types_SExpr* pat_expr);
 slop_string expr_get_match_branch_body(context_TranspileContext* ctx, slop_list_types_SExpr_ptr branch_items);
-slop_string expr_transpile_branch_body_with_binding(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_list_types_SExpr_ptr branch_items, slop_string binding_name);
+slop_string expr_transpile_branch_body_with_binding(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_list_types_SExpr_ptr branch_items, slop_string binding_name, slop_string inner_slop_type);
 void expr_unsupported_payload_literal(context_TranspileContext* ctx, types_SExpr* pattern);
 slop_string expr_build_option_match_expr(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
 slop_string expr_build_option_match_no_binding(context_TranspileContext* ctx, slop_string scrutinee_c, slop_string some_body, slop_string none_body, slop_string result_type);
@@ -5451,7 +5451,7 @@ slop_string expr_get_match_branch_body(context_TranspileContext* ctx, slop_list_
     }
 }
 
-slop_string expr_transpile_branch_body_with_binding(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_list_types_SExpr_ptr branch_items, slop_string binding_name) {
+slop_string expr_transpile_branch_body_with_binding(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_list_types_SExpr_ptr branch_items, slop_string binding_name, slop_string inner_slop_type) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     SLOP_PRE(((scrutinee != NULL)), "(!= scrutinee nil)");
     context_ctx_push_scope(ctx);
@@ -5459,8 +5459,9 @@ slop_string expr_transpile_branch_body_with_binding(context_TranspileContext* ct
         {
             __auto_type arena = (*ctx).arena;
             __auto_type c_name = ctype_to_c_name(arena, binding_name);
-            __auto_type inner_slop_type = expr_infer_option_inner_slop_type(ctx, scrutinee);
-            context_ctx_bind_var(ctx, (context_VarEntry){binding_name, c_name, SLOP_STR("auto"), inner_slop_type, 0, 0, 0, SLOP_STR(""), SLOP_STR("")});
+            __auto_type is_ptr = strlib_starts_with(inner_slop_type, SLOP_STR("(Ptr "));
+            __auto_type c_type = ((is_ptr) ? expr_slop_value_type_to_c_type(ctx, inner_slop_type) : SLOP_STR("auto"));
+            context_ctx_bind_var(ctx, (context_VarEntry){binding_name, c_name, c_type, inner_slop_type, is_ptr, 0, 0, SLOP_STR(""), SLOP_STR("")});
         }
     }
     {
@@ -5514,7 +5515,7 @@ slop_string expr_build_option_match_expr(context_TranspileContext* ctx, types_SE
                                             if (_mv_371.has_value) {
                                                 __auto_type name = _mv_371.value;
                                                 some_binding = name;
-                                                some_body = expr_transpile_branch_body_with_binding(ctx, scrutinee, branch_items, name);
+                                                some_body = expr_transpile_branch_body_with_binding(ctx, scrutinee, branch_items, name, expr_infer_option_inner_slop_type(ctx, scrutinee));
                                             } else if (!_mv_371.has_value) {
                                                 some_body = expr_get_match_branch_body(ctx, branch_items);
                                             }
@@ -6222,7 +6223,7 @@ slop_string expr_build_result_match_expr(context_TranspileContext* ctx, types_SE
                                             if (_mv_402.has_value) {
                                                 __auto_type name = _mv_402.value;
                                                 ok_binding = name;
-                                                ok_body = expr_transpile_branch_body_with_binding(ctx, scrutinee, branch_items, name);
+                                                ok_body = expr_transpile_branch_body_with_binding(ctx, scrutinee, branch_items, name, expr_infer_result_ok_slop_type(ctx, scrutinee));
                                             } else if (!_mv_402.has_value) {
                                                 ok_body = expr_get_match_branch_body(ctx, branch_items);
                                             }
@@ -6232,7 +6233,7 @@ slop_string expr_build_result_match_expr(context_TranspileContext* ctx, types_SE
                                             if (_mv_403.has_value) {
                                                 __auto_type name = _mv_403.value;
                                                 err_binding = name;
-                                                err_body = expr_transpile_branch_body_with_binding(ctx, scrutinee, branch_items, name);
+                                                err_body = expr_transpile_branch_body_with_binding(ctx, scrutinee, branch_items, name, expr_infer_result_err_slop_type(ctx, scrutinee));
                                             } else if (!_mv_403.has_value) {
                                                 err_body = expr_get_match_branch_body(ctx, branch_items);
                                             }
@@ -6560,7 +6561,8 @@ slop_string expr_build_union_case_expr(context_TranspileContext* ctx, slop_arena
                         __auto_type binding_name = _mv_415.value;
                         {
                             __auto_type c_binding = ctype_to_c_name(arena, binding_name);
-                            __auto_type body = expr_typed_none(ctx, result_type, expr_transpile_branch_body_with_binding(ctx, scrutinee, branch_items, binding_name));
+                            __auto_type payload_slop_type = ({ __auto_type _mv = context_ctx_lookup_field_slop_type(ctx, type_name, tag); _mv.has_value ? ({ __auto_type st = _mv.value; st; }) : (SLOP_STR("")); });
+                            __auto_type body = expr_typed_none(ctx, result_type, expr_transpile_branch_body_with_binding(ctx, scrutinee, branch_items, binding_name, payload_slop_type));
                             __auto_type s1 = context_ctx_str(ctx, cases, SLOP_STR("case "));
                             __auto_type s2 = context_ctx_str(ctx, s1, case_label);
                             __auto_type s3 = context_ctx_str(ctx, s2, SLOP_STR(": { __auto_type "));
