@@ -646,7 +646,7 @@ tier-4: 70B+ models   ; Complex algorithms, multi-step logic
 
 ### Slices (Borrowed Views)
 (Slice T)                        ; Non-owning view into array/list
-(string-slice s start end)       ; Create slice from string
+(string-slice s start end)       ; NOT IMPLEMENTED (#83) - see strlib substring
 """,
 
     'ffi': """## FFI (Foreign Function Interface)
@@ -712,8 +712,8 @@ Language primitives that are always available without imports.
 (string-len s) -> (Int 0 ..)
 (string-concat arena a b) -> String
 (string-eq a b) -> Bool
-(string-slice s start end) -> (Slice U8)
-(string-split arena s delim) -> (List String)
+(string-slice s start end) -> (Slice U8)          ; NOT IMPLEMENTED (#83)
+(string-split arena s delim) -> (List String)     ; NOT IMPLEMENTED (#83)
 (string-push-char arena s c) -> String             ; append a U8 char to a string
 (int-to-string arena n) -> String
 
@@ -983,8 +983,8 @@ These string/list functions are BUILTINS - do NOT import from strlib:
 | `(string-concat arena a b)` | Concatenate strings |
 | `(string-eq a b)` | Compare strings |
 | `(string-new arena cstr)` | Create string from C string |
-| `(string-slice s start end)` | Get substring slice |
-| `(string-split arena s delim)` | Split string |
+| `(string-slice s start end)` | **Not implemented** (#83) - use strlib `substring` |
+| `(string-split arena s delim)` | **Not implemented** (#83) |
 | `(int-to-string arena n)` | Convert int to string |
 | `(list-len list)` | Get list length |
 | `(list-get list idx)` | Get element at index |

@@ -74,8 +74,8 @@ All definitions must be inside the module form:
 (string-len s)            ; String -> Int
 (string-concat arena a b) ; String String -> String
 (string-eq a b)           ; String String -> Bool
-(string-slice s start end) ; Substring
-(string-split arena s delim) ; Split by delimiter (single char)
+(string-slice s start end) ; NOT IMPLEMENTED (#83) - use strlib's substring
+(string-split arena s delim) ; NOT IMPLEMENTED (#83)
 ```
 
 ### Memory
