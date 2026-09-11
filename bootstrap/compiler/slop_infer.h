@@ -81,6 +81,8 @@ types_ResolvedType* infer_infer_cond_expr(env_TypeEnv* env, types_SExpr* expr, t
 void infer_bind_match_pattern(env_TypeEnv* env, types_ResolvedType* scrutinee_type, types_SExpr* pattern);
 slop_string infer_match_pattern_head(types_SExpr* pattern);
 uint8_t infer_is_wildcard_head(slop_string head);
+uint8_t infer_pattern_item_is_literal(types_SExpr* item);
+uint8_t infer_pattern_is_constrained(types_SExpr* pattern);
 uint8_t infer_string_list_contains(slop_list_string names, slop_string name);
 slop_list_string infer_match_expected_variants(slop_arena* arena, types_ResolvedType* scrutinee_type);
 void infer_check_match_exhaustive(env_TypeEnv* env, types_ResolvedType* scrutinee_type, slop_list_string covered, uint8_t has_wildcard, int64_t line, int64_t col);

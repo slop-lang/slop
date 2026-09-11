@@ -10,6 +10,9 @@
     transpile-expr
     ;; Helpers
     transpile-literal transpile-symbol
+    ;; Literal pattern helpers, shared with match (which imports this module)
+    pattern-is-string-literal literal-pattern-cond pattern-has-literal-payload
+    unsupported-payload-literal
     transpile-call transpile-binop
     ;; Operator helpers
     is-binop is-unop is-comparison-op
@@ -216,6 +219,59 @@
         (transpile-symbol ctx (. sym name)))
       ((lst _)
         "/* error: list is not a literal */")))
+
+  (fn pattern-is-string-literal ((expr (Ptr SExpr)))
+    (@intent "Is this pattern a string literal, which == cannot compare?")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {expr != nil})
+    (@pure)
+    (match (deref expr)
+      ((str _) true)
+      (else false)))
+
+  (fn literal-pattern-cond ((ctx (Ptr TranspileContext)) (lhs String)
+                            (pattern (Ptr SExpr)) (literal-c String))
+    (@intent "A C condition testing lhs against a literal pattern")
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) String) -> String))
+    (@pre {ctx != nil})
+    (@pre {pattern != nil})
+    ;; slop_string is a struct, so == is not C for it -- string_eq compares by
+    ;; value. Every other literal pattern is a scalar and keeps the comparison
+    ;; it already had (#91). This lives here rather than in match because match
+    ;; imports expr, so only this direction is available to both.
+    ;; slop_string_eq, not the string_eq alias: the alias shares a C name with
+    ;; whatever a local spelled `string-eq` would lower to, and the == lowering
+    ;; a few hundred lines up already calls the internal one.
+    (if (pattern-is-string-literal pattern)
+      (ctx-str5 ctx "slop_string_eq(" lhs ", " literal-c ")")
+      (ctx-str3 ctx lhs " == " literal-c)))
+
+  (fn pattern-has-literal-payload ((pattern (Ptr SExpr)))
+    (@intent "Does (tag p1 ...) pin a payload to a literal rather than bind it?")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre {pattern != nil})
+    (@pure)
+    (match (deref pattern)
+      ((lst lst)
+        (let ((items (. lst items))
+              (n (list-len items))
+              (mut i 1)
+              (mut found false))
+          (while (and (< i n) (not found))
+            (match (list-get items i)
+              ((some item)
+                (match (deref item)
+                  ((num _) (set! found true))
+                  ((str _) (set! found true))
+                  ((sym s)
+                    (let ((nm (. s name)))
+                      (when (or (string-eq nm "true") (string-eq nm "false"))
+                        (set! found true))))
+                  (else (do))))
+              ((none) (do)))
+            (set! i (+ i 1)))
+          found))
+      (else false)))
 
   (fn transpile-symbol ((ctx (Ptr TranspileContext)) (name String))
     (@intent "Transpile a symbol to C code")
@@ -3965,6 +4021,20 @@
       (ctx-pop-scope ctx)
       result))
 
+  (fn unsupported-payload-literal ((ctx (Ptr TranspileContext)) (pattern (Ptr SExpr)))
+    (@intent "Refuse a literal payload pattern the Option/Result lowering cannot guard")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (@pre {pattern != nil})
+    ;; Option and Result lower to a has_value / is_ok test with the payload
+    ;; bound after it, so there is nowhere for a payload guard to go. Emitting
+    ;; the branch anyway made (some "a") match every some, silently. A union
+    ;; with a named variant does support this - see transpile-union-match-with-
+    ;; literals - so the message points at the way round it (#91).
+    (ctx-add-error-at ctx
+      "a literal pattern in an Option or Result payload is not supported; bind the payload and test it in the body"
+      (ctx-sexpr-line pattern) (ctx-sexpr-col pattern)))
+
   (fn build-option-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build Option match as GCC statement expression")
     (@spec (((Ptr TranspileContext) (Ptr SExpr) String (List (Ptr SExpr))) -> String))
@@ -3975,6 +4045,12 @@
           (mut some-body "0")
           (mut none-body "0")
           (mut some-binding "")
+          ;; A wildcard arm stands in for whichever side is not spelled out.
+          ;; It used to fall through the silent (else (do)) below, so
+          ;; (match o ((some x) x) (_ 7)) returned the "0" default (#91).
+          (mut else-body "")
+          (mut saw-some false)
+          (mut saw-none false)
           (mut i 2))
       (while (< i len)
         (match (list-get items i)
@@ -3987,7 +4063,10 @@
                       ((some pattern)
                         (let ((tag (get-expr-pattern-tag pattern)))
                           (cond
+                            ((pattern-has-literal-payload pattern)
+                              (unsupported-payload-literal ctx pattern))
                             ((string-eq tag "some")
+                              (set! saw-some true)
                               (match (get-expr-binding-name pattern)
                                 ((some name)
                                   (set! some-binding name)
@@ -3997,12 +4076,19 @@
                                   ;; No binding - transpile normally
                                   (set! some-body (get-match-branch-body ctx branch-items)))))
                             ((string-eq tag "none")
+                              (set! saw-none true)
                               (set! none-body (get-match-branch-body ctx branch-items)))
+                            ((or (string-eq tag "else") (string-eq tag "_"))
+                              (set! else-body (get-match-branch-body ctx branch-items)))
                             (else (do)))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
         (set! i (+ i 1)))
+      ;; Fill whichever side the wildcard arm stands in for.
+      (when (not (string-eq else-body ""))
+        (when (not saw-some) (set! some-body else-body))
+        (when (not saw-none) (set! none-body else-body)))
       ;; Infer result type for proper none handling
       (let ((result-type (infer-match-result-c-type ctx items)))
         ;; Build the output string based on whether there's a binding
@@ -4462,6 +4548,10 @@
           (mut err-body "0")
           (mut ok-binding "")
           (mut err-binding "")
+          ;; As for Option: a wildcard arm fills whichever side is unspoken.
+          (mut else-body "")
+          (mut saw-ok false)
+          (mut saw-err false)
           (mut i 2))
       (do (while (< i len)
             (match (list-get items i)
@@ -4474,7 +4564,10 @@
                           ((some pattern)
                             (let ((tag (get-expr-pattern-tag pattern)))
                               (cond
+                                ((pattern-has-literal-payload pattern)
+                                  (unsupported-payload-literal ctx pattern))
                                 ((string-eq tag "ok")
+                                  (set! saw-ok true)
                                   (match (get-expr-binding-name pattern)
                                     ((some name)
                                       (set! ok-binding name)
@@ -4484,6 +4577,7 @@
                                       ;; No binding - transpile normally
                                       (set! ok-body (get-match-branch-body ctx branch-items)))))
                                 ((string-eq tag "error")
+                                  (set! saw-err true)
                                   (match (get-expr-binding-name pattern)
                                     ((some name)
                                       (set! err-binding name)
@@ -4492,11 +4586,16 @@
                                     ((none)
                                       ;; No binding - transpile normally
                                       (set! err-body (get-match-branch-body ctx branch-items)))))
+                                ((or (string-eq tag "else") (string-eq tag "_"))
+                                  (set! else-body (get-match-branch-body ctx branch-items)))
                                 (else (do)))))
                           ((none) (do))))))
                   (else (do))))
               ((none) (do)))
             (set! i (+ i 1)))
+          (when (not (string-eq else-body ""))
+            (when (not saw-ok) (set! ok-body else-body))
+            (when (not saw-err) (set! err-body else-body)))
           ;; Build GCC statement expression with if/else
       ;; ({ __auto_type _mv = scrutinee; <type> _mr;
       ;;    if (_mv.is_ok) { ok_bind _mr = ok_body; } else { err_bind _mr = err_body; } _mr; })
@@ -4618,7 +4717,14 @@
                   (when (>= (list-len branch-items) 2)
                     (match (list-get branch-items 0)
                       ((some pattern)
-                        (set! cases (build-union-case-expr ctx arena cases scrutinee pattern branch-items result-type)))
+                        ;; This lowerer switches on the tag alone, so a payload
+                        ;; literal would emit the same case label twice. Say so
+                        ;; rather than leave it to cc (#91).
+                        (if (pattern-has-literal-payload pattern)
+                          (ctx-add-error-at ctx
+                            "a literal pattern in a variant payload is not supported for a match in expression position; bind the payload and test it in the body"
+                            (ctx-sexpr-line pattern) (ctx-sexpr-col pattern))
+                          (set! cases (build-union-case-expr ctx arena cases scrutinee pattern branch-items result-type))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -4819,15 +4925,17 @@
                               (set! first-branch false))
                             ;; Subsequent branches - wrap in ternary
                             (else
-                              (let ((pattern-c (transpile-expr ctx pattern)))
-                                ;; Build: ((scrutinee == pattern) ? body : result)
+                              (let ((pattern-c (transpile-expr ctx pattern))
+                                    (cond-c (literal-pattern-cond ctx scrutinee-c pattern pattern-c)))
+                                ;; Build: (<cond> ? body : result). A string pattern
+                                ;; needs string_eq here too - this is the lowerer a
+                                ;; match in a let initializer or an argument goes
+                                ;; through (#91).
                                 (set! result (ctx-str ctx
-                                  (ctx-str ctx "((" scrutinee-c)
-                                  (ctx-str ctx " == "
-                                    (ctx-str ctx pattern-c
-                                      (ctx-str ctx ") ? "
-                                        (ctx-str ctx body
-                                          (ctx-str ctx " : " (ctx-str ctx result ")")))))))))))))
+                                  (ctx-str ctx "(" cond-c)
+                                  (ctx-str ctx " ? "
+                                    (ctx-str ctx body
+                                      (ctx-str ctx " : " (ctx-str ctx result ")")))))))))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))

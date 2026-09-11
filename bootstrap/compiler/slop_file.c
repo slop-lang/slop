@@ -17,7 +17,7 @@ slop_result_int_file_FileError file_file_size(slop_string path);
 slop_result_file_File_file_FileError file_file_open(slop_string path, file_FileMode mode) {
     SLOP_PRE(((path.len > 0)), "(> (. path len) 0)");
     {
-        __auto_type mode_str = ((mode == file_FileMode_read) ? SLOP_STR("r") : ((mode == file_FileMode_write) ? SLOP_STR("w") : ((mode == file_FileMode_append) ? SLOP_STR("a") : ((mode == file_FileMode_read_write) ? SLOP_STR("r+") : ((mode == file_FileMode_write_read) ? SLOP_STR("w+") : SLOP_STR("a+"))))));
+        __auto_type mode_str = (mode == file_FileMode_read ? SLOP_STR("r") : (mode == file_FileMode_write ? SLOP_STR("w") : (mode == file_FileMode_append ? SLOP_STR("a") : (mode == file_FileMode_read_write ? SLOP_STR("r+") : (mode == file_FileMode_write_read ? SLOP_STR("w+") : SLOP_STR("a+"))))));
         {
             __auto_type handle = fopen(((uint8_t*)(path.data)), ((uint8_t*)(mode_str.data)));
             if (handle == NULL) {

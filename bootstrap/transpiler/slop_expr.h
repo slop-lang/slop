@@ -28,6 +28,9 @@ uint8_t expr_is_equality_op(slop_string op);
 uint8_t expr_is_unop(slop_string op);
 slop_option_string expr_extract_symbol_name(types_SExpr* expr);
 slop_string expr_transpile_literal(context_TranspileContext* ctx, types_SExpr* expr);
+uint8_t expr_pattern_is_string_literal(types_SExpr* expr);
+slop_string expr_literal_pattern_cond(context_TranspileContext* ctx, slop_string lhs, types_SExpr* pattern, slop_string literal_c);
+uint8_t expr_pattern_has_literal_payload(types_SExpr* pattern);
 slop_string expr_transpile_symbol(context_TranspileContext* ctx, slop_string name);
 slop_string expr_get_prefixed_enum_value(context_TranspileContext* ctx, slop_string enum_name, slop_string variant_name);
 slop_string expr_binop_to_c(slop_string op);
@@ -123,6 +126,7 @@ uint8_t expr_is_union_expr_patterns(context_TranspileContext* ctx, slop_list_typ
 slop_option_string expr_get_expr_binding_name(types_SExpr* pat_expr);
 slop_string expr_get_match_branch_body(context_TranspileContext* ctx, slop_list_types_SExpr_ptr branch_items);
 slop_string expr_transpile_branch_body_with_binding(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_list_types_SExpr_ptr branch_items, slop_string binding_name);
+void expr_unsupported_payload_literal(context_TranspileContext* ctx, types_SExpr* pattern);
 slop_string expr_build_option_match_expr(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
 slop_string expr_build_option_match_no_binding(context_TranspileContext* ctx, slop_string scrutinee_c, slop_string some_body, slop_string none_body, slop_string result_type);
 slop_string expr_build_option_match_with_binding(context_TranspileContext* ctx, slop_arena* arena, slop_string scrutinee_c, slop_string binding, slop_string some_body, slop_string none_body, slop_string result_type);

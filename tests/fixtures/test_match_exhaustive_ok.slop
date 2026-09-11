@@ -9,6 +9,10 @@
 (module match-exhaustive-ok
 
   (type Colour (union red green blue))
+  (type Tok (union (word String) (num Int)))
+  (type Flagged (union (flag Bool) (count Int)))
+  (type Bit (Int 0 .. 1))
+  (type Cell (union (bit Bit) (other Int)))
 
   (fn all-arms ((c Colour))
     (@intent "every variant named")
@@ -39,6 +43,25 @@
     (@intent "a literal match has no finite variant set, so it is never reported")
     (@spec ((Int) -> Int))
     (match n (1 10) (2 20) (else 0)))
+
+  (fn guarded-then-open ((t Tok))
+    (@intent "a guarded arm plus an open one for the same variant is covered (#91)")
+    (@spec ((Tok) -> Int))
+    (match t ((word "hi") 1) ((word _) 2) ((num 0) 3) ((num n) n)))
+
+  (fn bool-payload-pair ((x Flagged))
+    (@intent "both Bool literals cover the variant, so nothing is missing (#91)")
+    (@spec ((Flagged) -> Int))
+    ;; A Bool payload has exactly two values, so these arms do cover `flag`.
+    ;; Only a String literal is treated as unable to exhaust its variant, and
+    ;; that is because its domain is infinite rather than because it is a
+    ;; literal -- see pattern-item-is-literal.
+    (match x ((flag true) 1) ((flag false) 2) ((count n) n)))
+
+  (fn range-payload-enumerated ((c Cell))
+    (@intent "a bounded Int payload enumerated in full is covered too (#91)")
+    (@spec ((Cell) -> Int))
+    (match c ((bit 0) 10) ((bit 1) 11) ((other n) n)))
 
   (fn main ()
     (@intent "Unused entry point; the fixture is never run")

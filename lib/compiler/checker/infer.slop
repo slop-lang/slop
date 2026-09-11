@@ -2204,6 +2204,50 @@
     (or (string-eq head "_")
         (string-eq head "else")))
 
+  (fn pattern-item-is-literal ((item (Ptr SExpr)))
+    (@intent "Does this pattern position pin a value no set of arms could exhaust?")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre (!= item nil))
+    (@pure)
+    ;; Strings only, and the reason is the domain rather than the syntax. A
+    ;; String has no finite set of values, so an arm naming one can never be
+    ;; part of a group that covers the variant -- which makes this decidable
+    ;; here with no bookkeeping at all.
+    ;;
+    ;; Numbers and booleans are literals to the transpiler, which guards on
+    ;; them, but their domains can be enumerated: (flag true) with (flag
+    ;; false), or (bit 0) with (bit 1) for a (Int 0 .. 1) payload, do cover
+    ;; their variant. Counting those as constraining reported a complete match
+    ;; as missing -- the false positive this whole check is written to avoid.
+    ;; Proving such a group complete needs per-variant domain tracking this
+    ;; pass does not carry, so a lone (bit 0) goes unreported, in the same way
+    ;; as every other case it cannot reason about.
+    (match (deref item)
+      ((str _) true)
+      (else false)))
+
+  (fn pattern-is-constrained ((pattern (Ptr SExpr)))
+    (@intent "Does this arm guard particular payload values rather than the whole variant?")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (@pre (!= pattern nil))
+    ;; (word "hi") selects one String out of the variant, so it does not cover
+    ;; `word`; (word w) and (word _) do. Before #91 a string in that position
+    ;; was dropped from the emitted guard, which is why counting it as full
+    ;; coverage went unnoticed.
+    (if (sexpr-is-list pattern)
+      (let ((n (sexpr-list-len pattern))
+            (mut i 1)
+            (mut found false))
+        (while (and (< i n) (not found))
+          (match (sexpr-list-get pattern i)
+            ((some item)
+              (when (pattern-item-is-literal item)
+                (set! found true)))
+            ((none) (do)))
+          (set! i (+ i 1)))
+        found)
+      false))
+
   (fn string-list-contains ((names (List String)) (name String))
     (@intent "Check if a list of names contains the given name")
     (@spec (((List String) String) -> Bool))
@@ -2332,7 +2376,10 @@
                         (let ((head (match-pattern-head pattern)))
                           (if (is-wildcard-head head)
                             (set! has-wildcard true)
-                            (list-push covered head))))
+                            ;; An arm that guards particular payload values
+                            ;; does not cover its variant (#91).
+                            (when (not (pattern-is-constrained pattern))
+                              (list-push covered head)))))
                       ((none) (do))))
                   (when (> clause-len 1)
                     ;; Push scope for this clause's pattern bindings

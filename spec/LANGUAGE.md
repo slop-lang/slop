@@ -487,6 +487,21 @@ are bindings (capture the value), not value matches.
   (_ (println "other")))       ; Wildcard
 ```
 
+**String matching**: String literal patterns compare by value. They work both as
+a whole pattern and in a variant's payload position.
+
+```lisp
+(match token
+  ("U64" 64)
+  ("U32" 32)
+  (_ 0))                       ; Wildcard
+
+(match tok
+  ((word "if") 'keyword)       ; Literal in a payload position
+  ((word _) 'identifier)
+  ((num _) 'number))
+```
+
 **Exhaustiveness**: Match expressions must be exhaustive—all variants of the
 matched type must be covered, or a wildcard (`_` or `else`) must be present.
 

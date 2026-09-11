@@ -1,0 +1,171 @@
+(module test-string-match-patterns
+  (@intent "String literal patterns match by value, and _ is a wildcard arm")
+
+  ;; The pattern grammar has listed string literals and `_` since the spec was
+  ;; written, but neither was implemented. A bare string arm emitted
+  ;; `_mv == SLOP_STR(...)`, which is `==` on a struct; a `_` arm emitted
+  ;; `_mv == _`; and a string literal in a variant payload was not recognised
+  ;; as a literal at all, so its guard was dropped and the arm matched every
+  ;; value of that variant. That last one compiled and silently returned the
+  ;; wrong answer, which is why each shape below checks a value that only the
+  ;; *second* matching arm should claim (#91).
+
+  (type Tok (union (word String) (num Int)))
+  (type Pair (union (kv String Int) (nil Int)))
+
+  (fn width ((s String))
+    (@intent "Bare string literal patterns with a wildcard arm")
+    (@spec ((String) -> Int))
+    (match s
+      ("U64" 64)
+      ("U32" 32)
+      (_ 0)))
+
+  (fn width-else ((s String))
+    (@intent "The same, spelled with else")
+    (@spec ((String) -> Int))
+    (match s
+      ("U64" 64)
+      ("U32" 32)
+      (else 0)))
+
+  (fn kind ((t Tok))
+    (@intent "A string literal beside a numeric one in payload position")
+    (@spec ((Tok) -> Int))
+    (match t
+      ((word "hi") 1)
+      ((word _) 2)
+      ((num 0) 3)
+      ((num _) 4)))
+
+  (fn only-strings ((t Tok))
+    (@intent "A match whose only literals are strings still needs the guard chain")
+    (@spec ((Tok) -> Int))
+    (match t
+      ((word "hi") 1)
+      ((word _) 2)
+      ((num _) 3)))
+
+  (fn pair-kind ((p Pair))
+    (@intent "A string literal in a multi-field variant, guarded alongside a binding")
+    (@spec ((Pair) -> Int))
+    (match p
+      ((kv "a" 1) 1)
+      ((kv "a" _) 2)
+      ((kv _ _) 3)
+      ((nil _) 4)))
+
+  (fn check-bare ()
+    (@intent "Both spellings of the wildcard arm")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (!= (width "U64") 64) (set! fails (+ fails 1)))
+      (when (!= (width "U32") 32) (set! fails (+ fails 1)))
+      (when (!= (width "I8") 0) (set! fails (+ fails 1)))
+      (when (!= (width "") 0) (set! fails (+ fails 1)))
+      (when (!= (width-else "U64") 64) (set! fails (+ fails 1)))
+      (when (!= (width-else "nope") 0) (set! fails (+ fails 1)))
+      fails))
+
+  (fn check-payload ()
+    (@intent "A literal guard must not claim the whole variant")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (!= (kind (union-new Tok word "hi")) 1) (set! fails (+ fails 1)))
+      (when (!= (kind (union-new Tok word "no")) 2) (set! fails (+ fails 1)))
+      (when (!= (kind (union-new Tok num 0)) 3) (set! fails (+ fails 1)))
+      (when (!= (kind (union-new Tok num 9)) 4) (set! fails (+ fails 1)))
+      (when (!= (only-strings (union-new Tok word "hi")) 1) (set! fails (+ fails 1)))
+      (when (!= (only-strings (union-new Tok word "no")) 2) (set! fails (+ fails 1)))
+      (when (!= (only-strings (union-new Tok num 1)) 3) (set! fails (+ fails 1)))
+      fails))
+
+  (fn check-multi-field ()
+    (@intent "A string literal in one field, a binding in the other")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (!= (pair-kind (union-new Pair kv "a" 1)) 1) (set! fails (+ fails 1)))
+      (when (!= (pair-kind (union-new Pair kv "a" 2)) 2) (set! fails (+ fails 1)))
+      (when (!= (pair-kind (union-new Pair kv "b" 1)) 3) (set! fails (+ fails 1)))
+      (when (!= (pair-kind (union-new Pair nil 0)) 4) (set! fails (+ fails 1)))
+      fails))
+
+  (fn width-in-expression-position ((s String))
+    (@intent "A match in a let initializer lowers through the ternary chain")
+    (@spec ((String) -> Int))
+    ;; Expression position is a different lowerer, which emitted == on the
+    ;; struct just as the statement one did (#91).
+    (let ((r (match s ("U64" 64) ("U32" 32) (_ 0))))
+      r))
+
+  (fn option-wildcard ((o (Option Int)))
+    (@intent "_ is the wildcard arm of an Option match, not an unknown tag")
+    (@spec (((Option Int)) -> Int))
+    (match o ((some x) x) (_ 7)))
+
+  (fn result-wildcard ((r (Result Int String)))
+    (@intent "and of a Result match")
+    (@spec (((Result Int String)) -> Int))
+    (match r ((ok v) v) (_ 7)))
+
+  (fn make-ok ((v Int))
+    (@intent "Build the Result where a declared return type supplies its type")
+    (@spec ((Int) -> (Result Int String)))
+    (ok v))
+
+  (fn make-error ((e String))
+    (@intent "Likewise for the error side, keeping this test off #146's path")
+    (@spec ((String) -> (Result Int String)))
+    (error e))
+
+  (fn option-wildcard-expr ((o (Option Int)))
+    (@intent "_ arm of an Option match in expression position")
+    (@spec (((Option Int)) -> Int))
+    ;; A different builder again: this one collects a some-body and a none-body
+    ;; and used to drop the wildcard, leaving the unset side at its "0" default.
+    (let ((r (match o ((some x) x) (_ 7))))
+      r))
+
+  (fn result-wildcard-expr ((r (Result Int String)))
+    (@intent "and of a Result match in expression position")
+    (@spec (((Result Int String)) -> Int))
+    (let ((v (match r ((ok x) x) (_ 7))))
+      v))
+
+  (fn shadowed-comparator ((string-eq String))
+    (@intent "a local whose C name is the runtime comparator's alias")
+    (@spec ((String) -> Int))
+    ;; `string-eq` is not a reserved name, so a parameter may be spelled that
+    ;; way and lowers to `string_eq`. The guard calls slop_string_eq, the
+    ;; internal name, which nothing in SLOP source can shadow.
+    (match string-eq ("U64" 64) (_ 0)))
+
+  (fn check-other-lowerers ()
+    (@intent "The paths a match reaches when it is not a statement-position union")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (!= (width-in-expression-position "U64") 64) (set! fails (+ fails 1)))
+      (when (!= (width-in-expression-position "U32") 32) (set! fails (+ fails 1)))
+      (when (!= (width-in-expression-position "I8") 0) (set! fails (+ fails 1)))
+      (when (!= (option-wildcard (some 3)) 3) (set! fails (+ fails 1)))
+      ;; The arm that used to be dropped, sending none to SLOP_UNREACHABLE.
+      (when (!= (option-wildcard (none)) 7) (set! fails (+ fails 1)))
+      (when (!= (result-wildcard (make-ok 4)) 4) (set! fails (+ fails 1)))
+      (when (!= (result-wildcard (make-error "e")) 7) (set! fails (+ fails 1)))
+      (when (!= (option-wildcard-expr (some 3)) 3) (set! fails (+ fails 1)))
+      (when (!= (option-wildcard-expr (none)) 7) (set! fails (+ fails 1)))
+      (when (!= (result-wildcard-expr (make-ok 4)) 4) (set! fails (+ fails 1)))
+      (when (!= (result-wildcard-expr (make-error "e")) 7) (set! fails (+ fails 1)))
+      (when (!= (shadowed-comparator "U64") 64) (set! fails (+ fails 1)))
+      (when (!= (shadowed-comparator "x") 0) (set! fails (+ fails 1)))
+      fails))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any arm claimed the wrong value")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (set! fails (+ fails (check-bare)))
+      (set! fails (+ fails (check-payload)))
+      (set! fails (+ fails (check-multi-field)))
+      (set! fails (+ fails (check-other-lowerers)))
+      fails)))

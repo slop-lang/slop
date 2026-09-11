@@ -888,6 +888,12 @@ literal                     ; Literal match (number, string)
   ('inactive ...)
   (_ ...))                  ; Wildcard for default
 
+### String Matching (compares by value)
+(match token
+  ("U64" 64)
+  ("U32" 32)
+  (_ 0))                    ; Wildcard for default
+
 ### Structured Patterns
 (array p1 p2...)           ; Array destructuring
 (list p1 p2... | rest)     ; List with rest binding

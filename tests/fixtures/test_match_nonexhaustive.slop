@@ -13,6 +13,7 @@
 
   (type Colour (union red green blue))
   (type Fault (union (io-fault String) (parse-fault String Int)))
+  (type Tok (union (word String) (num Int)))
 
   (fn union-partial ((c Colour))
     (@intent "two of three arms - the third must be named in the message")
@@ -34,6 +35,14 @@
     (@intent "ok with no error arm")
     (@spec (((Result Int String)) -> Int))
     (match r ((ok v) v)))
+
+  (fn guarded-arm-is-not-coverage ((t Tok))
+    (@intent "a literal in payload position guards one value, not the variant (#91)")
+    (@spec ((Tok) -> Int))
+    ;; Before #91 the string was dropped from the emitted guard, so this arm
+    ;; really did match every word and counting it as coverage was consistent
+    ;; with the code. Now the guard is real, and (word "bye") reaches the trap.
+    (match t ((word "hi") 1) ((num n) n)))
 
   (fn main ()
     (@intent "Unused entry point; the fixture is never run")
