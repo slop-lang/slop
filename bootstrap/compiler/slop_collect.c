@@ -43,6 +43,12 @@ slop_list_types_ParamInfo collect_collect_ffi_params(env_TypeEnv* env, slop_aren
 types_ResolvedType* collect_get_ffi_return_type(env_TypeEnv* env, slop_arena* arena, types_SExpr* func_decl);
 void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_SExpr* fn_form);
 uint8_t collect_is_reserved_builtin_name(slop_string name);
+uint8_t collect_is_reserved_special_form(slop_string name);
+uint8_t collect_is_reserved_special_form_rest(slop_string name);
+uint8_t collect_is_reserved_collection_name(slop_string name);
+uint8_t collect_is_reserved_collection_name_rest(slop_string name);
+uint8_t collect_is_reserved_constructor_name(slop_string name);
+uint8_t collect_is_reserved_memory_name(slop_string name);
 void collect_report_reserved_name(env_TypeEnv* env, slop_string name, slop_string what, int64_t line, int64_t col);
 uint8_t collect_is_integer_type_name(slop_string name);
 void collect_validate_main_params(env_TypeEnv* env, types_SExpr* fn_form, slop_list_types_ParamInfo params);
@@ -1558,7 +1564,31 @@ void collect_collect_single_function(env_TypeEnv* env, slop_arena* arena, types_
 }
 
 uint8_t collect_is_reserved_builtin_name(slop_string name) {
-    return ((string_eq(name, SLOP_STR("is-none"))) || (string_eq(name, SLOP_STR("is-some"))) || (string_eq(name, SLOP_STR("list-set"))));
+    return (collect_is_reserved_special_form(name) || (collect_is_reserved_collection_name(name) || (collect_is_reserved_constructor_name(name) || collect_is_reserved_memory_name(name))));
+}
+
+uint8_t collect_is_reserved_special_form(slop_string name) {
+    return (string_eq(name, SLOP_STR("!=")) || (string_eq(name, SLOP_STR("not")) || (string_eq(name, SLOP_STR("if")) || (string_eq(name, SLOP_STR("let")) || (string_eq(name, SLOP_STR("let*")) || (string_eq(name, SLOP_STR("while")) || (string_eq(name, SLOP_STR("break")) || (string_eq(name, SLOP_STR("continue")) || (string_eq(name, SLOP_STR("@")) || (string_eq(name, SLOP_STR("do")) || (string_eq(name, SLOP_STR("when")) || (string_eq(name, SLOP_STR("set!")) || collect_is_reserved_special_form_rest(name)))))))))))));
+}
+
+uint8_t collect_is_reserved_special_form_rest(slop_string name) {
+    return (string_eq(name, SLOP_STR("match")) || (string_eq(name, SLOP_STR("deref")) || (string_eq(name, SLOP_STR(".")) || (string_eq(name, SLOP_STR("cast")) || (string_eq(name, SLOP_STR("c-inline")) || (string_eq(name, SLOP_STR("sizeof")) || (string_eq(name, SLOP_STR("addr")) || (string_eq(name, SLOP_STR("quote")) || (string_eq(name, SLOP_STR("cond")) || (string_eq(name, SLOP_STR("for")) || (string_eq(name, SLOP_STR("for-each")) || (string_eq(name, SLOP_STR("fn")) || (string_eq(name, SLOP_STR("with-arena")) || string_eq(name, SLOP_STR("?")))))))))))))));
+}
+
+uint8_t collect_is_reserved_collection_name(slop_string name) {
+    return (string_eq(name, SLOP_STR("list")) || (string_eq(name, SLOP_STR("list-new")) || (string_eq(name, SLOP_STR("list-len")) || (string_eq(name, SLOP_STR("list-get")) || (string_eq(name, SLOP_STR("list-pop")) || (string_eq(name, SLOP_STR("list-push")) || (string_eq(name, SLOP_STR("list-set")) || (string_eq(name, SLOP_STR("map-new")) || (string_eq(name, SLOP_STR("map-put")) || (string_eq(name, SLOP_STR("map-get")) || collect_is_reserved_collection_name_rest(name)))))))))));
+}
+
+uint8_t collect_is_reserved_collection_name_rest(slop_string name) {
+    return (string_eq(name, SLOP_STR("map-has")) || (string_eq(name, SLOP_STR("map-keys")) || (string_eq(name, SLOP_STR("map-remove")) || (string_eq(name, SLOP_STR("set")) || (string_eq(name, SLOP_STR("set-new")) || (string_eq(name, SLOP_STR("set-put")) || (string_eq(name, SLOP_STR("set-has")) || (string_eq(name, SLOP_STR("set-remove")) || string_eq(name, SLOP_STR("set-elements"))))))))));
+}
+
+uint8_t collect_is_reserved_constructor_name(slop_string name) {
+    return (string_eq(name, SLOP_STR("some")) || (string_eq(name, SLOP_STR("none")) || (string_eq(name, SLOP_STR("ok")) || (string_eq(name, SLOP_STR("error")) || (string_eq(name, SLOP_STR("record-new")) || (string_eq(name, SLOP_STR("union-new")) || (string_eq(name, SLOP_STR("is-none")) || string_eq(name, SLOP_STR("is-some")))))))));
+}
+
+uint8_t collect_is_reserved_memory_name(slop_string name) {
+    return (string_eq(name, SLOP_STR("arena-alloc")) || (string_eq(name, SLOP_STR("arena-new")) || string_eq(name, SLOP_STR("arena-free"))));
 }
 
 void collect_report_reserved_name(env_TypeEnv* env, slop_string name, slop_string what, int64_t line, int64_t col) {

@@ -1170,31 +1170,139 @@
     (@intent "Names the transpiler lowers by name, which a definition cannot override")
     (@spec ((String) -> Bool))
     (@pure)
-    ;; is-none / is-some are dispatched on the name in transpile-expr, the same
-    ;; way every other builtin there is. The checker resolves a user function or
-    ;; type FIRST, so a definition of one of these names type-checks against the
-    ;; definition and then lowers to the builtin -- an error that surfaces in cc.
+    ;; transpile-list-expr dispatches on the head symbol before it ever consults
+    ;; the function registry, so a call to one of these names becomes the
+    ;; builtin whatever else is in scope. The checker resolves a user function
+    ;; or type FIRST, so a definition of one type-checks against the definition
+    ;; and then lowers to the builtin -- an error that surfaces in cc, or worse
+    ;; does not surface at all and quietly calls something else (#110).
     ;;
-    ;; The transpiler cannot tell the two apart on its own: its FuncEntry carries
-    ;; no module, so a lookup finds definitions from every module in the build,
-    ;; including ones the current module never imported. A dependency defining
-    ;; the name would silently disable the builtin somewhere else entirely.
+    ;; The transpiler cannot tell the two apart on its own: its FuncEntry
+    ;; carries no module, so a lookup finds definitions from every module in the
+    ;; build, including ones the current module never imported. A dependency
+    ;; defining the name would silently disable the builtin somewhere else
+    ;; entirely. So the definition is refused here instead, where module-name is
+    ;; known and the message can be precise.
     ;;
-    ;; So the definition is refused here instead, where module-name is known and
-    ;; the message can be precise. Every other builtin has the same conflict and
-    ;; resolves it nowhere at all; that is #110.
+    ;; The list is every name transpile-list-expr dispatches, grouped only for
+    ;; reading. Nothing under lib/, tests/ or examples/ defines one, nor does
+    ;; snarl, howl, growl or slop-rdf.
     (@example ("is-none") -> true)
-    (@example ("is-some") -> true)
-    (@example ("list-set") -> true)
+    (@example ("list-push") -> true)
+    (@example ("map-get") -> true)
+    (@example ("arena-new") -> true)
+    (@example ("with-arena") -> true)
     (@example ("is-empty") -> false)
-    (@example ("list-push") -> false)
-    (or (string-eq name "is-none")
-        (string-eq name "is-some")
-        ;; list-set is new, so nothing can already be relying on defining it.
-        ;; The older list operations are not listed: a definition of list-push
-        ;; has always been able to shadow the builtin, and refusing it now would
-        ;; break code that compiles today. That whole family is #110.
-        (string-eq name "list-set")))
+    (@example ("list-first") -> false)
+    (or (is-reserved-special-form name)
+        (or (is-reserved-collection-name name)
+            (or (is-reserved-constructor-name name)
+                (is-reserved-memory-name name)))))
+
+  (fn is-reserved-special-form ((name String))
+    (@intent "Syntax the transpiler lowers by name")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("if") -> true)
+    (@example ("set!") -> true)
+    (@example ("iff") -> false)
+    (or (string-eq name "!=")
+        (or (string-eq name "not")
+            (or (string-eq name "if")
+                (or (string-eq name "let")
+                    (or (string-eq name "let*")
+                        (or (string-eq name "while")
+                            (or (string-eq name "break")
+                                (or (string-eq name "continue")
+                                    (or (string-eq name "@")
+                                        (or (string-eq name "do")
+                                            (or (string-eq name "when")
+                                                (or (string-eq name "set!")
+                                                    (is-reserved-special-form-rest name))))))))))))))
+
+  (fn is-reserved-special-form-rest ((name String))
+    (@intent "The rest of the syntax list, split to keep each chain readable")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("match") -> true)
+    (@example ("with-arena") -> true)
+    (@example ("matches") -> false)
+    (or (string-eq name "match")
+        (or (string-eq name "deref")
+            (or (string-eq name ".")
+                (or (string-eq name "cast")
+                    (or (string-eq name "c-inline")
+                        (or (string-eq name "sizeof")
+                            (or (string-eq name "addr")
+                                (or (string-eq name "quote")
+                                    (or (string-eq name "cond")
+                                        (or (string-eq name "for")
+                                            (or (string-eq name "for-each")
+                                                (or (string-eq name "fn")
+                                                    (or (string-eq name "with-arena")
+                                                        (string-eq name "?")))))))))))))))
+
+  (fn is-reserved-collection-name ((name String))
+    (@intent "List, map and set operations the transpiler lowers by name")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("list-len") -> true)
+    (@example ("map-get") -> true)
+    (@example ("list-first") -> false)
+    (or (string-eq name "list")
+        (or (string-eq name "list-new")
+            (or (string-eq name "list-len")
+                (or (string-eq name "list-get")
+                    (or (string-eq name "list-pop")
+                        (or (string-eq name "list-push")
+                            (or (string-eq name "list-set")
+                                (or (string-eq name "map-new")
+                                    (or (string-eq name "map-put")
+                                        (or (string-eq name "map-get")
+                                            (is-reserved-collection-name-rest name))))))))))))
+
+  (fn is-reserved-collection-name-rest ((name String))
+    (@intent "The rest of the collection list, split to keep each chain readable")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("map-has") -> true)
+    (@example ("set-elements") -> true)
+    (@example ("set-union") -> false)
+    (or (string-eq name "map-has")
+        (or (string-eq name "map-keys")
+            (or (string-eq name "map-remove")
+                (or (string-eq name "set")
+                    (or (string-eq name "set-new")
+                        (or (string-eq name "set-put")
+                            (or (string-eq name "set-has")
+                                (or (string-eq name "set-remove")
+                                    (string-eq name "set-elements"))))))))))
+
+  (fn is-reserved-constructor-name ((name String))
+    (@intent "Constructors and tag predicates the transpiler lowers by name")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("record-new") -> true)
+    (@example ("is-some") -> true)
+    (@example ("is-empty") -> false)
+    (or (string-eq name "some")
+        (or (string-eq name "none")
+            (or (string-eq name "ok")
+                (or (string-eq name "error")
+                    (or (string-eq name "record-new")
+                        (or (string-eq name "union-new")
+                            (or (string-eq name "is-none")
+                                (string-eq name "is-some")))))))))
+
+  (fn is-reserved-memory-name ((name String))
+    (@intent "Arena operations the transpiler lowers by name")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("arena-alloc") -> true)
+    (@example ("arena-reset") -> false)
+    (or (string-eq name "arena-alloc")
+        (or (string-eq name "arena-new")
+            (string-eq name "arena-free"))))
 
   (fn report-reserved-name ((env (Ptr TypeEnv)) (name String) (what String)
                             (line Int) (col Int))
