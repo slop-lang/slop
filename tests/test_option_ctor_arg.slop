@@ -1,0 +1,85 @@
+(module test-option-ctor-arg
+  (@intent "A constructor under (some ...) infers its Option type in any position")
+
+  ;; (some X) infers its Option type from X's head. A function's head is in the
+  ;; function registry, but a constructor's head is not: (Point 1 2) is the
+  ;; type's own name, and (record-new T ...) / (union-new T variant v) name the
+  ;; type in argument 1. In return position the declared type stands in for the
+  ;; inference, so the gap only showed in argument position (#112).
+
+  (type Point (record (x Int) (y Int)))
+  (type Wrapped (record (p Point)))
+  (type Shape (union (circle Int) (square Int)))
+
+  (fn make-point ((x Int) (y Int))
+    (@intent "A real function, whose head the registry does know")
+    (@spec ((Int Int) -> Point))
+    (Point x y))
+
+  (fn takes-point ((m (Option Point)))
+    (@intent "Option of a record, as a parameter")
+    (@spec (((Option Point)) -> Int))
+    (match m ((some p) (. p x)) ((none) 0)))
+
+  (fn takes-shape ((m (Option Shape)))
+    (@intent "Option of a union, as a parameter")
+    (@spec (((Option Shape)) -> Int))
+    (match m
+      ((some s) (match s ((circle r) r) ((square w) w)))
+      ((none) 0)))
+
+  (fn check-argument-position ()
+    (@intent "Every constructor spelling as a call argument")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (!= (takes-point (some (Point 1 2))) 1)
+        (set! fails (+ fails 1)))
+      (when (!= (takes-point (some (record-new Point (x 2) (y 3)))) 2)
+        (set! fails (+ fails 1)))
+      (when (!= (takes-shape (some (union-new Shape circle 5))) 5)
+        (set! fails (+ fails 1)))
+      (when (!= (takes-point (some (make-point 4 5))) 4)
+        (set! fails (+ fails 1)))
+      (when (!= (takes-point (none)) 0)
+        (set! fails (+ fails 1)))
+      fails))
+
+  (fn point-or-none ((want Bool))
+    (@intent "Constructor under some against a declared return type")
+    (@spec ((Bool) -> (Option Point)))
+    (if want (some (Point 6 7)) (none)))
+
+  (fn check-return-position ()
+    (@intent "Return position, where the declared type already covered the gap")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (match (point-or-none true)
+        ((some p) (when (!= (. p y) 7) (set! fails (+ fails 1))))
+        ((none) (set! fails (+ fails 1))))
+      (match (point-or-none false)
+        ((some _) (set! fails (+ fails 1)))
+        ((none) (do)))
+      fails))
+
+  (fn check-no-expected-type ()
+    (@intent "A let binding and a nested constructor, with nothing to infer from")
+    (@spec (() -> Int))
+    (let ((mut fails 0)
+          (m (some (Point 8 9)))
+          (w (some (Wrapped (Point 10 11)))))
+      (match m
+        ((some p) (when (!= (. p y) 9) (set! fails (+ fails 1))))
+        ((none) (set! fails (+ fails 1))))
+      (match w
+        ((some ww) (when (!= (. (. ww p) x) 10) (set! fails (+ fails 1))))
+        ((none) (set! fails (+ fails 1))))
+      fails))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any position inferred wrongly")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (set! fails (+ fails (check-argument-position)))
+      (set! fails (+ fails (check-return-position)))
+      (set! fails (+ fails (check-no-expected-type)))
+      fails)))
