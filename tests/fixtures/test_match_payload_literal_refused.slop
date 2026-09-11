@@ -1,0 +1,46 @@
+;; Fixture for the two match lowerings that cannot guard a payload literal (#91).
+;;
+;; Statement-position union matching does support it -- see
+;; transpile-union-match-with-literals -- but two other lowerings cannot, and
+;; both used to fail late rather than say so:
+;;
+;;   Option/Result branches test has_value / is_ok and then bind the payload,
+;;   with nowhere for a guard to go. The branch was emitted anyway, so
+;;   (some "a") matched every some and returned the first arm's body.
+;;
+;;   A union match in expression position switches on the tag alone, so two
+;;   arms for one variant emitted the same case label and cc reported
+;;   `duplicate case value`.
+;;
+;; Lives under fixtures/ because it must produce diagnostics, and
+;; run_native_tests.sh builds every top-level tests/*.slop.
+(module match-payload-literal-refused
+
+  (type Tok (union (word String) (num Int)))
+
+  (fn option-payload-literal ((o (Option String)))
+    (@intent "a literal in an Option payload - silently matched every some")
+    (@spec (((Option String)) -> Int))
+    (match o ((some "a") 1) ((some _) 2) ((none) 3)))
+
+  (fn result-payload-literal ((r (Result Int String)))
+    (@intent "the same on the ok side")
+    (@spec (((Result Int String)) -> Int))
+    (match r ((ok 1) 1) ((ok _) 2) ((error _) 3)))
+
+  (fn option-payload-literal-in-expression-position ((o (Option String)))
+    (@intent "the Option case again, through the expression-position builder")
+    (@spec (((Option String)) -> Int))
+    (let ((r (match o ((some "a") 1) ((some _) 2) ((none) 3))))
+      r))
+
+  (fn union-payload-literal-in-expression-position ((t Tok))
+    (@intent "a union payload literal where the match is a let initializer")
+    (@spec ((Tok) -> Int))
+    (let ((r (match t ((word "hi") 1) ((word _) 2) ((num n) n))))
+      r))
+
+  (fn main ()
+    (@intent "Unused entry point; the fixture is never run")
+    (@spec (() -> Int))
+    0))

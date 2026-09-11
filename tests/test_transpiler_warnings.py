@@ -240,6 +240,11 @@ class TestMatchExhaustiveness:
         # The case C cannot see: an Option match is an if-chain, never a switch.
         assert "non-exhaustive match on Option_Int: missing none" in combined, combined
         assert "non-exhaustive match on Result: missing error" in combined, combined
+        # An arm that guards a payload value covers that value, not the variant
+        # (#91). Before string patterns worked, the guard was dropped and the
+        # arm really did match every `word`, so counting it as coverage was
+        # consistent; now the guard is real and the gap is reachable.
+        assert "non-exhaustive match on Tok: missing word" in combined, combined
 
         # Positioned at the match, not at the module.
         assert re.search(r"test_match_nonexhaustive\.slop:\d+:\d+: warning:", combined), combined
@@ -250,11 +255,60 @@ class TestMatchExhaustiveness:
         A false positive on a new diagnostic is what gets it suppressed and then
         ignored -- exactly how the -Wreturn-type noise it replaces was ignored.
         Covers: all arms named, `_`, `else`, complete Option, complete Result,
-        and a literal match (no finite variant set, so never reportable).
+        a literal match (no finite variant set, so never reportable), and a
+        guarded arm sitting alongside an open arm for the same variant (#91) --
+        the shape that must not be mistaken for the gap above.
         """
         rc, stdout, stderr = slop_check("fixtures/test_match_exhaustive_ok.slop")
         combined = stdout + stderr
         assert "non-exhaustive" not in combined, combined
+
+
+class TestMatchPayloadLiteralRefused:
+    """Two match lowerings cannot guard a payload literal, and say so (#91).
+
+    Statement-position union matching does support it. These two did not, and
+    both used to fail late: an Option/Result branch tests has_value / is_ok and
+    binds the payload, so the guard had nowhere to go and `(some "a")` matched
+    every `some`; and a union match in expression position switches on the tag
+    alone, so two arms for one variant emitted the same case label.
+
+    Refusing is the lesser of the three -- a silent wrong answer and a cc error
+    are both worse than a diagnostic that names the way round it.
+    """
+
+    def test_option_and_result_payload_literals_are_refused(self, tmp_path):
+        output = str(tmp_path / "refused.c")
+        rc, stdout, stderr = slop_transpile(
+            "fixtures/test_match_payload_literal_refused.slop", output
+        )
+        combined = stdout + stderr
+
+        assert rc != 0, combined
+        assert "literal pattern in an Option or Result payload" in combined, combined
+        # Both sides, not just the one that happens to come first.
+        assert combined.count("Option or Result payload") >= 2, combined
+
+    def test_expression_position_union_payload_literal_is_refused(self, tmp_path):
+        output = str(tmp_path / "refused.c")
+        rc, stdout, stderr = slop_transpile(
+            "fixtures/test_match_payload_literal_refused.slop", output
+        )
+        combined = stdout + stderr
+
+        assert "not supported for a match in expression position" in combined, combined
+
+    def test_each_refusal_is_positioned(self, tmp_path):
+        """A diagnostic without a position is a diagnostic people learn to skip."""
+        output = str(tmp_path / "refused.c")
+        rc, stdout, stderr = slop_transpile(
+            "fixtures/test_match_payload_literal_refused.slop", output
+        )
+        combined = stdout + stderr
+
+        assert re.search(
+            r"test_match_payload_literal_refused\.slop:\d+:\d+: error:", combined
+        ), combined
 
 
 class TestMatchFallthroughTrap:

@@ -23,7 +23,9 @@
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
   (import strlib (starts-with ends-with char-at))
   (import ctype (to-c-name to-c-type sexpr-to-type-string))
-  (import expr (transpile-expr infer-expr-c-type infer-expr-slop-type infer-option-inner-slop-type infer-result-ok-slop-type infer-result-err-slop-type c-type-to-option-type-name
+  (import expr (pattern-is-string-literal literal-pattern-cond pattern-has-literal-payload
+                unsupported-payload-literal
+                transpile-expr infer-expr-c-type infer-expr-slop-type infer-option-inner-slop-type infer-result-ok-slop-type infer-result-err-slop-type c-type-to-option-type-name
                 resolve-type-alias infer-collection-element-slop-type is-set-type is-map-type deref-container-c
                 extract-set-elem-from-slop-type extract-map-key-from-slop-type extract-map-value-from-slop-type
                 slop-value-type-to-c-type is-pointer-expr set-is-self-assign))
@@ -286,17 +288,27 @@
                       ((some pattern)
                         (let ((tag (get-pattern-tag pattern)))
                           (cond
+                            ;; An Option branch tests has_value only, so a
+                            ;; payload literal would match every some (#91).
+                            ((pattern-has-literal-payload pattern)
+                              (unsupported-payload-literal ctx pattern))
                             ((string-eq tag "some")
                               (emit-option-some-branch ctx scrutinee-c scrutinee-expr pattern branch-items is-return first)
                               (set! first false))
                             ((string-eq tag "none")
                               (emit-option-none-branch ctx scrutinee-c branch-items is-return first)
                               (set! first false))
-                            ((string-eq tag "else")
+                            ;; `_` is a wildcard arm here as much as in a
+                            ;; literal match; it used to fall to the silent
+                            ;; (else (do)) below and be dropped (#91).
+                            ((or (string-eq tag "else") (string-eq tag "_"))
                               (emit-else-branch ctx branch-items is-return first)
                               (set! has-else true)
                               (set! first false))
-                            (else (do)))))
+                            (else
+                              (ctx-add-error-at ctx
+                                (ctx-str3 ctx "unknown pattern '" tag "' in Option match")
+                                (ctx-sexpr-line pattern) (ctx-sexpr-col pattern))))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -375,17 +387,23 @@
                       ((some pattern)
                         (let ((tag (get-pattern-tag pattern)))
                           (cond
+                            ;; As for Option: the branch tests is_ok only.
+                            ((pattern-has-literal-payload pattern)
+                              (unsupported-payload-literal ctx pattern))
                             ((string-eq tag "ok")
                               (emit-result-ok-branch ctx scrutinee-c scrutinee-expr pattern branch-items is-return first)
                               (set! first false))
                             ((string-eq tag "error")
                               (emit-result-error-branch ctx scrutinee-c scrutinee-expr pattern branch-items is-return first)
                               (set! first false))
-                            ((string-eq tag "else")
+                            ((or (string-eq tag "else") (string-eq tag "_"))
                               (emit-else-branch ctx branch-items is-return first)
                               (set! has-else true)
                               (set! first false))
-                            (else (do)))))
+                            (else
+                              (ctx-add-error-at ctx
+                                (ctx-str3 ctx "unknown pattern '" tag "' in Result match")
+                                (ctx-sexpr-line pattern) (ctx-sexpr-col pattern))))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -538,8 +556,10 @@
                   (when (>= (list-len branch-items) 2)
                     (match (list-get branch-items 0)
                       ((some pattern)
-                        (when (string-eq (get-pattern-tag pattern) "else")
-                          (set! has-else true))
+                        (let ((pattern-tag (get-pattern-tag pattern)))
+                          (when (or (string-eq pattern-tag "else")
+                                    (string-eq pattern-tag "_"))
+                            (set! has-else true)))
                         (emit-literal-case ctx scrutinee-c pattern branch-items is-return first)
                         (set! first false))
                       ((none) (do))))))
@@ -558,7 +578,9 @@
     (@pre {pattern != nil})
     (let ((arena (. (deref ctx) arena))
           (tag (get-pattern-tag pattern)))
-      (if (string-eq tag "else")
+      ;; A wildcard arm is an else arm. Emitting it as a comparison produced
+      ;; `_mv_0 == _`, an undeclared identifier (#91).
+      (if (or (string-eq tag "else") (string-eq tag "_"))
         (do
           (if first
             (ctx-emit ctx "{")
@@ -567,10 +589,11 @@
           (emit-branch-body ctx branch-items is-return)
           (ctx-dedent ctx))
         (do
-          (let ((literal-c (transpile-expr ctx pattern)))
+          (let ((literal-c (transpile-expr ctx pattern))
+                (cond-c (literal-pattern-cond ctx scrutinee-c pattern literal-c)))
             (if first
-              (ctx-emit ctx (ctx-str5 ctx "if (" scrutinee-c " == " literal-c ") {"))
-              (ctx-emit ctx (ctx-str5 ctx "} else if (" scrutinee-c " == " literal-c ") {")))
+              (ctx-emit ctx (ctx-str3 ctx "if (" cond-c ") {"))
+              (ctx-emit ctx (ctx-str3 ctx "} else if (" cond-c ") {")))
             (ctx-indent ctx)
             (emit-branch-body ctx branch-items is-return)
             (ctx-dedent ctx))))))
@@ -1942,6 +1965,11 @@
         (let ((name (. sym name)))
           (or (string-eq name "true") (string-eq name "false"))))
       ((num _) true)
+      ;; A string literal is a pattern, not a binding name. Without this a
+      ;; (word "hi") arm silently loses its guard, and a match whose only
+      ;; literals are strings is routed to a switch that then emits two
+      ;; identical case labels (#91).
+      ((str _) true)
       (else false)))
 
   (fn pattern-literal-to-c ((expr (Ptr SExpr)))
@@ -2008,14 +2036,18 @@
               (match (list-get pat-items bi)
                 ((some item)
                   (when (is-pattern-literal item)
-                    (let ((lit-c (pattern-literal-to-c item))
-                          (field-idx (- bi 1)))
-                      (if is-multi
-                        (let ((field-name (ctx-str ctx "f" (int-to-string arena field-idx)))
-                              (guard-str (ctx-str4 ctx ".data." c-tag "." (ctx-str3 ctx field-name " == " lit-c))))
-                          (set! cond (ctx-str ctx cond (ctx-str3 ctx " && " scrutinee-c guard-str))))
-                        (let ((guard-str (ctx-str3 ctx ".data." c-tag (ctx-str ctx " == " lit-c))))
-                          (set! cond (ctx-str ctx cond (ctx-str3 ctx " && " scrutinee-c guard-str))))))))
+                    ;; pattern-literal-to-c is @pure and so cannot escape a
+                    ;; string; transpile-literal takes the ctx that needs (#91).
+                    (let ((lit-c (if (pattern-is-string-literal item)
+                                   (transpile-literal ctx item)
+                                   (pattern-literal-to-c item)))
+                          (field-idx (- bi 1))
+                          (lhs (if is-multi
+                                 (ctx-str5 ctx scrutinee-c ".data." c-tag "."
+                                   (ctx-str ctx "f" (int-to-string arena field-idx)))
+                                 (ctx-str4 ctx scrutinee-c ".data." c-tag ""))))
+                      (set! cond (ctx-str3 ctx cond " && "
+                                   (literal-pattern-cond ctx lhs item lit-c))))))
                 ((none) (do))))
             cond))
         (else tag-cond))))
