@@ -66,6 +66,8 @@ slop_string expr_transpile_error(context_TranspileContext* ctx, slop_string valu
 slop_string expr_infer_option_type(context_TranspileContext* ctx, types_SExpr* val_expr);
 slop_string expr_c_type_to_option_type_name(context_TranspileContext* ctx, slop_string c_type);
 slop_string expr_infer_field_c_type_from_items(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
+slop_option_string expr_option_type_for_type_name(context_TranspileContext* ctx, slop_string name);
+slop_string expr_option_type_from_ctor_arg(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, slop_string op);
 slop_string expr_infer_list_expr_option_type(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_strip_pointer_suffix(slop_arena* arena, slop_string s);
 slop_string expr_extract_chan_elem_type(context_TranspileContext* ctx, slop_string chan_type);

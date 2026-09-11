@@ -1136,6 +1136,42 @@
               ((none) "__auto_type")))
           ((none) "__auto_type")))))
 
+  (fn option-type-for-type-name ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Option type name for a registered type, none if the name is not one")
+    (@spec (((Ptr TranspileContext) String) -> (Option String)))
+    (@pre {ctx != nil})
+    (match (ctx-lookup-type ctx name)
+      ((some type-entry) (some (ctx-str3 ctx "slop_option_" (. type-entry c-name) "")))
+      ((none) none)))
+
+  (fn option-type-from-ctor-arg ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (op String))
+    (@intent "Option type for a constructor form that names its type in the first argument")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) String) -> String))
+    (@pre {ctx != nil})
+    ;; (record-new T ...) and (union-new T variant v) both carry the type name
+    ;; in argument 1 rather than the head, so the registry is asked about that.
+    (let ((line (ctx-list-first-line items))
+          (col (ctx-list-first-col items)))
+      (match (list-get items 1)
+        ((some type-expr)
+          (match (deref type-expr)
+            ((sym type-sym)
+              (let ((type-name (. type-sym name)))
+                (match (option-type-for-type-name ctx type-name)
+                  ((some opt-type) opt-type)
+                  ((none)
+                    (do
+                      (ctx-add-error-at ctx (ctx-str3 ctx "Unknown type '" type-name "' for Option type inference") (ctx-sexpr-line type-expr) (ctx-sexpr-col type-expr))
+                      "__type_error__")))))
+            (else
+              (do
+                (ctx-add-error-at ctx (ctx-str3 ctx "Non-symbol type name in '" op "' for Option type inference") (ctx-sexpr-line type-expr) (ctx-sexpr-col type-expr))
+                "__type_error__"))))
+        ((none)
+          (do
+            (ctx-add-error-at ctx (ctx-str3 ctx "Missing type name in '" op "' for Option type inference") line col)
+            "__type_error__")))))
+
   (fn infer-list-expr-option-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Infer Option type for a list expression (field access, function call, etc.)")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
@@ -1202,6 +1238,10 @@
                              (or (string-eq op "int-to-string")
                                  (string-eq op "substring"))))
                       "slop_option_string")
+                    ;; (record-new T ...) and (union-new T variant v) name their
+                    ;; type in the first argument rather than in the head (#112).
+                    ((or (string-eq op "record-new") (string-eq op "union-new"))
+                      (option-type-from-ctor-arg ctx items op))
                     ;; Check function registry for return type
                     (else
                       (match (ctx-lookup-func ctx op)
@@ -1228,11 +1268,17 @@
                                 (do
                                   (ctx-add-error-at ctx (ctx-str3 ctx "Cannot infer Option type for function '" op "' - no return type info") line col)
                                   "__type_error__")))))
-                        ;; Unknown function - emit error
+                        ;; Not a function. A record constructor is not one
+                        ;; either - (Point 1 2) is the type's own name, which
+                        ;; lives in the type registry rather than the function
+                        ;; one - so that is asked before giving up (#112).
                         ((none)
-                          (do
-                            (ctx-add-error-at ctx (ctx-str3 ctx "Unknown function '" op "' for Option type inference") line col)
-                            "__type_error__")))))))
+                          (match (option-type-for-type-name ctx op)
+                            ((some opt-type) opt-type)
+                            ((none)
+                              (do
+                                (ctx-add-error-at ctx (ctx-str3 ctx "Unknown function '" op "' for Option type inference") line col)
+                                "__type_error__")))))))))
               (else
                 (do
                   (ctx-add-error-at ctx "Non-symbol head in option type inference" (ctx-sexpr-line head-expr) (ctx-sexpr-col head-expr))
