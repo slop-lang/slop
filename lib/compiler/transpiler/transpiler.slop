@@ -2116,6 +2116,24 @@
           (is-runtime-list-type c-type)
           (ctx-is-type-emitted ctx c-type))))
 
+  (fn alias-node-emittable ((ctx (Ptr TranspileContext)) (item (Ptr SExpr)))
+    (@intent "Is this a container alias the sorted pass should emit now?")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Bool))
+    (@pre {ctx != nil})
+    (@pre {item != nil})
+    ;; A container alias sits between two things the sorted pass emits: the
+    ;; container it names, and any record whose field names the alias. The
+    ;; early pass takes the aliases whose target is available by then, and the
+    ;; late pass takes Result aliases, whose slop_result_* is emitted after
+    ;; this one. What is left is an alias whose target only becomes available
+    ;; as the sort makes progress -- so it has to be a node in the sort rather
+    ;; than a pass on either side of it (#113).
+    (and (is-type-def item)
+         (is-type-alias-def item)
+         (is-result-type-alias-def item)
+         (not (ctx-is-type-emitted ctx (alias-own-c-name ctx item)))
+         (container-alias-ready ctx item)))
+
   (fn emit-type-alias-to-header ((ctx (Ptr TranspileContext)) (type-def (Ptr SExpr)))
     (@intent "Emit a type alias definition to header as typedef")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
@@ -4190,7 +4208,13 @@
                       (emit-type-to-header ctx item)
                       (list-push emitted i)
                       (set! current-count (+ current-count 1))
-                      (emit-option-list-for-type ctx item))))
+                      (emit-option-list-for-type ctx item)))
+                  ;; A container alias becomes emittable mid-sort, once the
+                  ;; container it names has been emitted just above (#113).
+                  (when (alias-node-emittable ctx item)
+                    (emit-type-alias-to-header ctx item)
+                    (list-push emitted i)
+                    (set! current-count (+ current-count 1))))
                 ((none) (do))))
             (set! i (+ i 1)))))
       ;; Cycle-breaking: if types remain unemitted, try breaking list-type cycles
@@ -4213,7 +4237,13 @@
                         (emit-type-to-header ctx item)
                         (list-push emitted i)
                         (set! current-count (+ current-count 1))
-                        (emit-option-list-for-type ctx item))))
+                        (emit-option-list-for-type ctx item)))
+                    ;; Likewise after cycle-breaking: a record stalled on an
+                    ;; alias needs the alias re-checked here too (#113).
+                    (when (alias-node-emittable ctx item)
+                      (emit-type-alias-to-header ctx item)
+                      (list-push emitted i)
+                      (set! current-count (+ current-count 1))))
                   ((none) (do))))
               (set! i (+ i 1))))))))
 

@@ -70,6 +70,7 @@ uint8_t transpiler_is_result_type_alias_def(types_SExpr* item);
 slop_string transpiler_alias_target_c_type(context_TranspileContext* ctx, types_SExpr* type_def);
 slop_string transpiler_alias_own_c_name(context_TranspileContext* ctx, types_SExpr* type_def);
 uint8_t transpiler_container_alias_ready(context_TranspileContext* ctx, types_SExpr* type_def);
+uint8_t transpiler_alias_node_emittable(context_TranspileContext* ctx, types_SExpr* item);
 void transpiler_emit_type_alias_to_header(context_TranspileContext* ctx, types_SExpr* type_def);
 uint8_t transpiler_is_array_type_body(types_SExpr* body_expr);
 void transpiler_emit_array_typedef_to_header(context_TranspileContext* ctx, slop_string c_name, types_SExpr* body_expr);
@@ -3353,6 +3354,12 @@ uint8_t transpiler_container_alias_ready(context_TranspileContext* ctx, types_SE
     }
 }
 
+uint8_t transpiler_alias_node_emittable(context_TranspileContext* ctx, types_SExpr* item) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    SLOP_PRE(((item != NULL)), "(!= item nil)");
+    return ((transpiler_is_type_def(item)) && (transpiler_is_type_alias_def(item)) && (transpiler_is_result_type_alias_def(item)) && (!(context_ctx_is_type_emitted(ctx, transpiler_alias_own_c_name(ctx, item)))) && (transpiler_container_alias_ready(ctx, item)));
+}
+
 void transpiler_emit_type_alias_to_header(context_TranspileContext* ctx, types_SExpr* type_def) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     SLOP_PRE(((type_def != NULL)), "(!= type-def nil)");
@@ -5612,6 +5619,11 @@ void transpiler_emit_struct_union_types_sorted(context_TranspileContext* ctx, sl
                                     transpiler_emit_option_list_for_type(ctx, item);
                                 }
                             }
+                            if (transpiler_alias_node_emittable(ctx, item)) {
+                                transpiler_emit_type_alias_to_header(ctx, item);
+                                ({ __auto_type _lst_p = &(emitted); __auto_type _item = (i); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                                current_count = (current_count + 1);
+                            }
                         } else if (!_mv_1570.has_value) {
                         }
                     }
@@ -5640,6 +5652,11 @@ void transpiler_emit_struct_union_types_sorted(context_TranspileContext* ctx, sl
                                         current_count = (current_count + 1);
                                         transpiler_emit_option_list_for_type(ctx, item);
                                     }
+                                }
+                                if (transpiler_alias_node_emittable(ctx, item)) {
+                                    transpiler_emit_type_alias_to_header(ctx, item);
+                                    ({ __auto_type _lst_p = &(emitted); __auto_type _item = (i); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                                    current_count = (current_count + 1);
                                 }
                             } else if (!_mv_1571.has_value) {
                             }

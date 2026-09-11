@@ -173,6 +173,7 @@ uint8_t transpiler_is_result_type_alias_def(types_SExpr* item);
 slop_string transpiler_alias_target_c_type(context_TranspileContext* ctx, types_SExpr* type_def);
 slop_string transpiler_alias_own_c_name(context_TranspileContext* ctx, types_SExpr* type_def);
 uint8_t transpiler_container_alias_ready(context_TranspileContext* ctx, types_SExpr* type_def);
+uint8_t transpiler_alias_node_emittable(context_TranspileContext* ctx, types_SExpr* item);
 void transpiler_emit_type_alias_to_header(context_TranspileContext* ctx, types_SExpr* type_def);
 uint8_t transpiler_is_array_type_body(types_SExpr* body_expr);
 void transpiler_emit_array_typedef_to_header(context_TranspileContext* ctx, slop_string c_name, types_SExpr* body_expr);
