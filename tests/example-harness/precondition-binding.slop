@@ -32,6 +32,14 @@
     (@example ((Inner 7)) -> 7)
     (. i n))
 
+  (fn make-ctx ((arena Arena) (v Int))
+    (@intent "A heap Ctx, so an example argument can be a pointer")
+    (@spec ((Arena Int) -> (Ptr Ctx)))
+    (@alloc arena)
+    (let ((p (cast (Ptr Ctx) (arena-alloc arena (sizeof Ctx)))))
+      (set! (deref p) (record-new Ctx (state (Inner v)) (tag 1)))
+      p))
+
   (fn one-dot ((ctx Ctx))
     (@intent "A @pre using p.field shorthand")
     (@spec ((Ctx) -> Int))
@@ -67,6 +75,15 @@
     (@pre {(inner-n ctx.state) == 11})
     (@example ((Ctx (Inner 11) _)) -> 11)
     (. (. ctx state) n))
+
+  (fn ptr-param-dot ((o (Ptr Ctx)))
+    (@intent "Shorthand on a pointer parameter, where the argument is a call")
+    (@spec (((Ptr Ctx)) -> Int))
+    ;; The rewrite is the same, but the argument is a pointer-returning call,
+    ;; so the emitted field access has to pick -> (#157).
+    (@pre {(inner-n o.state) == 21})
+    (@example ((make-ctx arena 21)) -> 21)
+    (. (. o state) n))
 
   (fn shadowing-field-name ((s Inner) (n Int))
     (@intent "A parameter named like a field must not rewrite the field position")

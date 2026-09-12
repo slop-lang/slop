@@ -1,0 +1,129 @@
+(module test-pointer-call-field
+  (@intent "Field access on a call that returns a pointer emits ->, not .")
+
+  ;; is-pointer-expr knew about deref, addr, arena-alloc and cast, and treated
+  ;; everything else as a value -- a call included. So the head of
+  ;; (. (make-outer arena 7) inner) was not a pointer expression and the access
+  ;; emitted `.`, which cc rejects. Binding the call to a variable first always
+  ;; worked, because the binding carries its own pointer-ness, which is why this
+  ;; went unnoticed: the idiomatic spelling is the one that works.
+  ;;
+  ;; The registry knew the answer all along. FuncEntry carries returns-pointer,
+  ;; and both places that register a function hardcoded it to false -- so the
+  ;; branch in transpiler/infer.slop that already asked the question always got
+  ;; `no` (#157).
+
+  ;; div returns div_t by value. FFI registration used to claim every FFI
+  ;; function returned a pointer, which was harmless only while nothing read
+  ;; the flag -- reading it turned this into `div(7, 2)->quot`.
+  (ffi-struct "stdlib.h" div_t (quot I32) (rem I32))
+  (ffi "stdlib.h" (div ((a I32) (b I32)) div_t))
+
+  (type Inner (record (n Int) (label String)))
+  (type Outer (record (inner Inner) (tag Int)))
+
+  (fn make-inner ((arena Arena) (v Int))
+    (@intent "A heap Inner")
+    (@spec ((Arena Int) -> (Ptr Inner)))
+    (@alloc arena)
+    (let ((p (cast (Ptr Inner) (arena-alloc arena (sizeof Inner)))))
+      (set! (deref p) (record-new Inner (n v) (label "x")))
+      p))
+
+  (fn make-outer ((arena Arena) (v Int))
+    (@intent "A heap Outer, so a call result is a pointer")
+    (@spec ((Arena Int) -> (Ptr Outer)))
+    (@alloc arena)
+    (let ((p (cast (Ptr Outer) (arena-alloc arena (sizeof Outer)))))
+      (set! (deref p) (record-new Outer (inner (Inner v "x")) (tag 3)))
+      p))
+
+  (fn make-value ((v Int))
+    (@intent "The same shape by value, which must keep using `.`")
+    (@spec ((Int) -> Outer))
+    (Outer (Inner v "x") 3))
+
+  (fn check-direct ((arena Arena))
+    (@intent "One field off a pointer-returning call")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((mut fails 0))
+      (when (!= (. (make-outer arena 7) tag) 3) (set! fails (+ fails 1)))
+      (when (!= (. (make-inner arena 5) n) 5) (set! fails (+ fails 1)))
+      fails))
+
+  (fn check-nested ((arena Arena))
+    (@intent "A second access on the value the first one yields")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    ;; The outer access is on a pointer, the inner one on a value field, so
+    ;; this only compiles if each is decided independently.
+    (let ((mut fails 0))
+      (when (!= (. (. (make-outer arena 9) inner) n) 9) (set! fails (+ fails 1)))
+      (when (not (string-eq (. (. (make-outer arena 1) inner) label) "x"))
+        (set! fails (+ fails 1)))
+      fails))
+
+  (fn check-value-call-unchanged ()
+    (@intent "A call returning a value still uses `.`")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (!= (. (make-value 4) tag) 3) (set! fails (+ fails 1)))
+      (when (!= (. (. (make-value 6) inner) n) 6) (set! fails (+ fails 1)))
+      fails))
+
+  (fn check-binding-still-works ((arena Arena))
+    (@intent "The spelling that always worked keeps working")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((o (make-outer arena 8))
+          (mut fails 0))
+      (when (!= (. o tag) 3) (set! fails (+ fails 1)))
+      (when (!= (. (. o inner) n) 8) (set! fails (+ fails 1)))
+      fails))
+
+  (fn value-factory ((n Int))
+    (@intent "Passed as the closure below; returns a record by value")
+    (@spec ((Int) -> Inner))
+    (Inner n "x"))
+
+  (fn ptr-factory ((n Int))
+    (@intent "A global with the same name and arity as shadowed-callable's parameter")
+    (@spec ((Int) -> (Ptr Inner)))
+    ;; The arity has to match the parameter's, or the checker rejects the call
+    ;; before the transpiler ever chooses an operator.
+    (with-arena 4096 (make-inner arena n)))
+
+  (fn shadowed-callable ((ptr-factory (Fn (Int) Inner)))
+    (@intent "A (Fn ...) parameter shadowing a pointer-returning global")
+    (@spec (((Fn (Int) Inner)) -> Int))
+    ;; The call goes to the parameter, not the global, so the global's return
+    ;; type must not decide the operator here. Asking the registry would say
+    ;; pointer and emit `->` on a value.
+    (. (ptr-factory 4) n))
+
+  (fn check-shadowed-callable ()
+    (@intent "A local callable wins over a same-named global")
+    (@spec (() -> Int))
+    (if (== (shadowed-callable value-factory) 4) 0 1))
+
+  (fn check-ffi-by-value ()
+    (@intent "A by-value FFI result keeps `.`")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (!= (cast Int (. (div 7 2) quot)) 3) (set! fails (+ fails 1)))
+      (when (!= (cast Int (. (div 7 2) rem)) 1) (set! fails (+ fails 1)))
+      fails))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any access picked the wrong operator")
+    (@spec (() -> Int))
+    (with-arena 262144
+      (let ((mut fails 0))
+        (set! fails (+ fails (check-direct arena)))
+        (set! fails (+ fails (check-nested arena)))
+        (set! fails (+ fails (check-value-call-unchanged)))
+        (set! fails (+ fails (check-binding-still-works arena)))
+        (set! fails (+ fails (check-ffi-by-value)))
+        (set! fails (+ fails (check-shadowed-callable)))
+        fails))))
