@@ -19,7 +19,7 @@
                   sexpr-list-len sexpr-list-get sexpr-get-symbol-name
                   sexpr-number-string sexpr-string-value pretty-print))
   (import extract (TestCase))
-  (import strlib (contains to-lower string-build starts-with substring))
+  (import strlib (contains to-lower string-build starts-with substring index-of))
   (import type-extract (TypeRegistry TstTypeEntry TstTypeEntryKind TstFieldEntry VariantEntry ImportEntry
                         registry-lookup registry-lookup-variant registry-lookup-enum-value
                         registry-lookup-import
@@ -507,6 +507,73 @@
               ((none) "")))))
       ((none) "")))
 
+  (fn dotted-symbol-head ((arena Arena) (sym-name String))
+    (@intent "The segment before the first dot of a shorthand field access")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (@pure)
+    (@example (arena "ctx.state") -> "ctx")
+    (@example (arena "ctx.ttl-ctx.state") -> "ctx")
+    (@example (arena "ctx") -> "")
+    (@example (arena "") -> "")
+    (match (index-of sym-name ".")
+      ((some d) (substring arena sym-name 0 d))
+      ((none) "")))
+
+  (fn dotted-symbol-tail ((arena Arena) (sym-name String))
+    (@intent "Everything after the first dot of a shorthand field access")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    (@pure)
+    (@example (arena "ctx.state") -> "state")
+    (@example (arena "ctx.ttl-ctx.state") -> "ttl-ctx.state")
+    (@example (arena "ctx") -> "")
+    (match (index-of sym-name ".")
+      ((some d)
+        (let ((start (+ (cast Int d) 1))
+              (n (string-len sym-name)))
+          (substring arena sym-name (cast (Int 0 ..) start) (cast (Int 0 ..) (- n start)))))
+      ((none) "")))
+
+  (fn make-field-access ((arena Arena) (obj (Ptr SExpr)) (field String))
+    (@intent "Build the explicit (. obj field) form")
+    (@spec ((Arena (Ptr SExpr) String) -> (Ptr SExpr)))
+    (@alloc arena)
+    (@pre {obj != nil})
+    (let ((items (list-new arena (Ptr SExpr))))
+      (list-push items (make-sexpr-sym arena "."))
+      (list-push items obj)
+      (list-push items (make-sexpr-sym arena field))
+      (make-sexpr-list arena items)))
+
+  (fn substitute-dotted-symbol ((arena Arena) (sym-name String) (name String) (replacement (Ptr SExpr)))
+    (@intent "Rewrite p.f.g as field access on the replacement, when p is the bound parameter")
+    (@spec ((Arena String String (Ptr SExpr)) -> (Option (Ptr SExpr))))
+    (@alloc arena)
+    (@pre {replacement != nil})
+    ;; Dot shorthand parses as ONE symbol, so a @pre written
+    ;;   (@pre {(state-peek ctx.state) == 60})
+    ;; holds the single symbol `ctx.state`, not (. ctx state). Comparing that
+    ;; against the parameter name `ctx` never matches, so the symbol survived
+    ;; substitution and the transpiler's unknown-symbol fallback emitted it as
+    ;; the undeclared C identifier ctx_state. The function's own SLOP_PRE is
+    ;; unaffected, because there `ctx` really is a variable; only the test's
+    ;; up-front check is rewritten in terms of the example's arguments.
+    (if (not (string-eq (dotted-symbol-head arena sym-name) name))
+      (none)
+      (let ((mut acc replacement)
+            (mut rest (dotted-symbol-tail arena sym-name)))
+        ;; Nest outward, so ctx.ttl-ctx.state becomes
+        ;; (. (. <replacement> ttl-ctx) state).
+        (while (> (string-len rest) 0)
+          (let ((seg (dotted-symbol-head arena rest)))
+            (if (string-eq seg "")
+              (do (set! acc (make-field-access arena acc rest))
+                  (set! rest ""))
+              (do (set! acc (make-field-access arena acc seg))
+                  (set! rest (dotted-symbol-tail arena rest))))))
+        (some acc))))
+
   (fn substitute-symbol ((arena Arena) (expr (Ptr SExpr)) (name String) (replacement (Ptr SExpr)))
     (@intent "Replace every occurrence of a bare symbol with another expression")
     (@spec ((Arena (Ptr SExpr) String (Ptr SExpr)) -> (Ptr SExpr)))
@@ -514,7 +581,14 @@
     (@pre {expr != nil})
     (@pre {replacement != nil})
     (match (deref expr)
-      ((sym s) (if (string-eq (. s name) name) replacement expr))
+      ((sym s)
+        (if (string-eq (. s name) name)
+          replacement
+          ;; Not a bare match, but `p.field` shorthand is one symbol and still
+          ;; refers to the parameter -- see substitute-dotted-symbol.
+          (match (substitute-dotted-symbol arena (. s name) name replacement)
+            ((some rewritten) rewritten)
+            ((none) expr))))
       ((lst l)
         (let ((items (. l items))
               (len (list-len items))
@@ -564,7 +638,16 @@
               (set! result (substitute-symbol arena result pname (make-sexpr-sym arena "arena")))
               (let ((arg-idx (if (and needs-arena (> i arena-pos)) (- i 1) i)))
                 (match (list-get args arg-idx)
-                  ((some arg) (set! result (substitute-symbol arena result pname arg)))
+                  ;; replace-wildcards first: the call renders `_` through
+                  ;; transpile-expr-safe, but build-precondition-check uses
+                  ;; transpile-expr deliberately, so a raw `_` substituted into
+                  ;; the condition was reported as an unknown symbol and the
+                  ;; whole example went unrunnable. The marker resolves because
+                  ;; init-transpile-context binds it to the {0} initializer, and
+                  ;; rewriting only the argument leaves the condition's own "."
+                  ;; operator alone.
+                  ((some arg) (set! result (substitute-symbol arena result pname
+                                             (replace-wildcards arena arg))))
                   ((none) (do)))))))
         (set! i (+ i 1)))
       result))

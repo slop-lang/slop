@@ -1,0 +1,78 @@
+;; ============================================================
+;; Test: a @pre is rewritten correctly in terms of an @example's
+;; arguments before it becomes the test's up-front check
+;;
+;; The @example precondition check (#71) transpiles each @pre with the
+;; example's arguments substituted for the parameters. Two shapes were
+;; substituted wrongly, and both took down whole files in slop-rdf:
+;;
+;;   `p.field` shorthand parses as ONE symbol, so comparing it to the
+;;   parameter name never matched. The symbol survived into the emitted C
+;;   as an undeclared identifier -- `ctx.state` came out as `ctx_state`.
+;;
+;;   An argument containing `_` was substituted raw. The call renders `_`
+;;   through transpile-expr-safe, but the condition is transpiled with
+;;   plain transpile-expr, so the wildcard was reported as an unknown
+;;   symbol and the example never ran.
+;;
+;; Run by scripts/run_native_tests.sh through `slop test`, not `slop build`:
+;; the assertions live in the @example blocks, so there is no main.
+;; ============================================================
+
+(module precondition-binding
+
+  (type Inner (record (n Int)))
+  (type Ctx (record (state Inner) (tag Int)))
+  (type Nested (record (ctx Ctx) (depth Int)))
+  (type Triple (record (a Int) (b Int) (c Int)))
+
+  (fn inner-n ((i Inner))
+    (@intent "Read the inner value, so a @pre can call something")
+    (@spec ((Inner) -> Int))
+    (@example ((Inner 7)) -> 7)
+    (. i n))
+
+  (fn one-dot ((ctx Ctx))
+    (@intent "A @pre using p.field shorthand")
+    (@spec ((Ctx) -> Int))
+    (@pre {(inner-n ctx.state) == 60})
+    (@example ((Ctx (Inner 60) 1)) -> 60)
+    (. (. ctx state) n))
+
+  (fn two-dots ((nest Nested))
+    (@intent "A @pre using p.field.field shorthand, which nests outward")
+    (@spec ((Nested) -> Int))
+    (@pre {(inner-n nest.ctx.state) == 42})
+    (@example ((Nested (Ctx (Inner 42) 9) 3)) -> 42)
+    (. (. (. nest ctx) state) n))
+
+  (fn dot-among-others ((ctx Ctx) (bump Int))
+    (@intent "Shorthand beside an ordinary parameter and an explicit field access")
+    (@spec ((Ctx Int) -> Int))
+    (@pre {(inner-n ctx.state) > bump})
+    (@pre {(. ctx tag) == 1})
+    (@example ((Ctx (Inner 5) 1) 2) -> 7)
+    (+ (. (. ctx state) n) bump))
+
+  (fn wildcard-arg ((t Triple))
+    (@intent "A @pre whose example supplies _ for fields it does not constrain")
+    (@spec ((Triple) -> Int))
+    (@pre {(. t a) == 5})
+    (@example ((Triple 5 _ _)) -> 5)
+    (. t a))
+
+  (fn wildcard-and-dot ((ctx Ctx))
+    (@intent "Both shapes at once: shorthand in the @pre, _ in the argument")
+    (@spec ((Ctx) -> Int))
+    (@pre {(inner-n ctx.state) == 11})
+    (@example ((Ctx (Inner 11) _)) -> 11)
+    (. (. ctx state) n))
+
+  (fn shadowing-field-name ((s Inner) (n Int))
+    (@intent "A parameter named like a field must not rewrite the field position")
+    (@spec ((Inner Int) -> Int))
+    ;; (. s n) reads the field `n`, not the parameter `n`. substitute-symbol
+    ;; has always guarded this; the dotted rewrite must not undo it.
+    (@pre {(. s n) == 3})
+    (@example ((Inner 3) 99) -> 102)
+    (+ (. s n) n)))
