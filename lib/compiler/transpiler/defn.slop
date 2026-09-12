@@ -1110,7 +1110,14 @@
               (slop-ret-type (get-slop-return-type ctx items))
               (empty-type-params (list-new arena String))
               (no-source (Option (Ptr SExpr)) none))
-          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return slop-ret-type false (string-eq actual-return "slop_string") param-types false empty-type-params no-source)))
+          ;; returns-pointer was hardcoded false here, so every consumer of it
+          ;; got the same answer for every function. infer.slop's "does this
+          ;; call return a pointer" branch reads it, which is why field access
+          ;; on a pointer-returning call emitted `.` (#157).
+          (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return slop-ret-type
+                                   (ends-with actual-return "*")
+                                   (string-eq actual-return "slop_string")
+                                   param-types false empty-type-params no-source)))
         ;; Clear current result type and return type
         (ctx-clear-current-result-type ctx)
         (ctx-clear-current-return-type ctx))))

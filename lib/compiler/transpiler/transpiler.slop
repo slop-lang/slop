@@ -402,7 +402,12 @@
                         (type-params (. generic-info type-params))
                         (no-source (Option (Ptr SExpr)) none))
                     ;; Register function with the clean name (c-name)
-                    (ctx-register-func ctx (FuncEntry fn-name c-name return-type slop-ret-type false returns-str param-types is-generic type-params no-source)))
+                    ;; returns-pointer, not a hardcoded false: this is the
+                    ;; prescan every consumer of the registry sees first, the
+                    ;; tester's own context included (#157).
+                    (ctx-register-func ctx (FuncEntry fn-name c-name return-type slop-ret-type
+                                             (ends-with return-type "*")
+                                             returns-str param-types is-generic type-params no-source)))
                   ;; Scan param types for List/Option generics
                   (prescan-fn-params ctx items)
                   ;; Check for Result type and other generics in @spec
@@ -1090,7 +1095,15 @@
                             (ret-is-string (string-eq ret-type "slop_string"))
                             (empty-type-params (list-new arena String))
                             (no-source (Option (Ptr SExpr)) none))
-                        (ctx-register-func ctx (FuncEntry fn-name c-name ret-type "" true ret-is-string param-types false empty-type-params no-source))))
+                        ;; From the declared return type, not a blanket true.
+                        ;; Every FFI function claimed to return a pointer,
+                        ;; which was harmless only while nothing read the flag;
+                        ;; once is-pointer-expr did, a by-value FFI result took
+                        ;; `->` (#157).
+                        (ctx-register-func ctx (FuncEntry fn-name c-name ret-type ""
+                                                 (ends-with ret-type "*")
+                                                 ret-is-string param-types false
+                                                 empty-type-params no-source))))
                     (else (do))))
                 ((none) (do))))))
         (else (do)))))

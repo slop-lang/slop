@@ -2284,7 +2284,26 @@
                           (match (list-get items 1)
                             ((some type-expr) (is-pointer-type-expr type-expr))
                             ((none) false)))
-                        (else false))))
+                        ;; A call returning (Ptr T). Without this the head of
+                        ;; (. (make-outer arena 7) inner) was not a pointer
+                        ;; expression, so field access on it emitted `.` and cc
+                        ;; rejected it (#157). Binding the call to a variable
+                        ;; first always worked, because the binding carries its
+                        ;; own pointer-ness.
+                        (else
+                          ;; A local (Fn ...) binding shadows the global of the
+                          ;; same name and is what transpile-call invokes, so
+                          ;; the registry would be describing a different
+                          ;; function. Fall back to the conservative answer for
+                          ;; those rather than the global's return type -- which
+                          ;; is what this branch did for every call before, so a
+                          ;; closure keeps exactly the behaviour it had (#157).
+                          (match (ctx-lookup-var ctx op)
+                            ((some _) false)
+                            ((none)
+                              (match (ctx-lookup-func ctx op)
+                                ((some entry) (. entry returns-pointer))
+                                ((none) false))))))))
                   (_ false)))
               ((none) false))
             false)))
