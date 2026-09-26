@@ -11166,3 +11166,43 @@ class TestMatchPayloadBinding:
     (match t ((pair a b) 0) ((none) 0)))
 ''')
         assert result.status == 'verified', result.message
+
+    # A quoted enum arm, 'red, reaches the verifier as (quote red). Read as a
+    # list pattern its tag was `quote`, every quoted arm tested one made-up
+    # index, and all but the first were unreachable.
+    _ENUM = '''
+  (type Color (enum red green blue))
+  (fn f ((c Color))
+    (@spec ((Color) -> Int))
+    (@pure)
+    (@post {P})
+    (match c ('red 1) ('green 2) ('blue 3)))
+'''
+
+    def test_quoted_enum_arms_are_all_reachable(self):
+        from slop.verifier import verify_source
+        src = "(module probe\n" + self._ENUM.replace('{P}', '(!= $result 2)') + ")\n"
+        result = [r for r in verify_source(src, filename="probe.slop") if r.name == 'f'][0]
+        assert result.status == 'failed', result.message
+
+    def test_quoted_enum_arms_read_their_own_tags(self):
+        from slop.verifier import verify_source
+        src = "(module probe\n" + self._ENUM.replace(
+            '{P}', "(and (implies (== c 'green) (== $result 2)) (implies (== c 'blue) (== $result 3)))") + ")\n"
+        result = [r for r in verify_source(src, filename="probe.slop") if r.name == 'f'][0]
+        assert result.status == 'verified', result.message
+
+    def test_an_unknown_tag_proves_nothing(self):
+        # `nothing` is no variant of anything declared, so the match cannot be
+        # translated; before, it was tested against a hash of its name.
+        from slop.verifier import verify_source
+        src = '''(module probe
+  (type T (union (a Int) (b Int)))
+  (fn f ((t T))
+    (@spec ((T) -> Int))
+    (@pure)
+    (@post (!= $result 7))
+    (match t ((a n) 1) ((nothing n) 7) ((b n) 2))))
+'''
+        result = [r for r in verify_source(src, filename="probe.slop") if r.name == 'f'][0]
+        assert result.status != 'verified', result.message

@@ -2476,6 +2476,33 @@ class Z3Translator:
         # are all modelled as Int identities.
         return z3.IntSort()
 
+    @staticmethod
+    def _unquote_pattern(pattern: SExpr) -> SExpr:
+        """A match pattern with a quoted tag, `(quote red)`, as the plain tag.
+
+        The native parser reads `'red` in pattern position as (quote red). Taken
+        as a list pattern its tag was `quote`, which is no variant, so every
+        quoted arm tested the same made-up index and all but the first were
+        unreachable: `(match c ('red 1) ('green 2) ('blue 3))` "never" returned
+        2, and a postcondition saying so verified.
+        """
+        if (isinstance(pattern, SList) and len(pattern) == 2
+                and isinstance(pattern[0], Symbol) and pattern[0].name == 'quote'
+                and isinstance(pattern[1], Symbol)):
+            return pattern[1]
+        return pattern
+
+    def is_known_tag(self, tag: str) -> bool:
+        """True if `tag` names a variant whose index this translator knows.
+
+        constructor_tag falls back to a hash for anything else. An arm tested
+        against a hash is an arm tested against nothing the program means - and
+        when two unknown tags hash alike, or one hashes onto a real index, arms
+        shadow each other and contracts about them verify vacuously. A match
+        with an unknown tag is therefore not translated at all.
+        """
+        return tag in self.enum_values or f"'{tag}" in self.enum_values
+
     def union_payload_accessor(self, tag: str, index: int = 0,
                                sort: Optional[z3.SortRef] = None) -> z3.FuncDeclRef:
         """The accessor for payload `index` of union variant `tag`.
@@ -2754,7 +2781,7 @@ class Z3Translator:
             if not isinstance(clause, SList) or len(clause) < 2:
                 continue
 
-            pattern = clause[0]
+            pattern = self._unquote_pattern(clause[0])
             body = clause[1]
 
             if isinstance(pattern, Symbol) and pattern.name == '_':
@@ -2772,6 +2799,8 @@ class Z3Translator:
                     tag = inner.name if isinstance(inner, Symbol) else None
 
                 if tag:
+                    if not self.is_known_tag(tag):
+                        return None
                     tag_idx = self.constructor_tag(tag)
 
                     # Every named payload position, each to its own accessor,
@@ -2802,7 +2831,9 @@ class Z3Translator:
                         result = z3.If(tag_value == tag_idx, body_z3, result)
             elif isinstance(pattern, Symbol):
                 # Simple tag pattern without variable binding
-                tag = pattern.name
+                tag = pattern.name.lstrip("'")
+                if not self.is_known_tag(tag):
+                    return None
                 tag_idx = self.constructor_tag(tag)
 
                 body_z3 = self.translate_expr(body)
@@ -2829,7 +2860,7 @@ class Z3Translator:
         for clause in expr.items[2:]:
             if not isinstance(clause, SList) or len(clause) < 2:
                 continue
-            pattern = clause[0]
+            pattern = self._unquote_pattern(clause[0])
             if isinstance(pattern, Symbol):
                 if pattern.name == '_':
                     continue
