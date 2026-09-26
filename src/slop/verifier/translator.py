@@ -98,6 +98,12 @@ class Z3Translator:
         self._versions_frozen = False
         self._prefer_initial_versions = False
         self._prefer_final_versions = False
+        # Constructor nodes the exact push model (exact_push.py) has given a
+        # constant of its own, keyed by node identity. Translating such a node
+        # returns that constant, so the element stored in the result sequence
+        # is the very term the constructor's field axioms describe - where a
+        # plain translation would mint a fresh, unconstrained record_new_N.
+        self._pinned_terms: Dict[int, z3.ExprRef] = {}
         # Indices into `constraints` of the ones that are *obligations* rather
         # than facts: a divisor being non-zero is something the code has to
         # establish, not something a contract may assume. They sit in the same
@@ -1173,6 +1179,10 @@ class Z3Translator:
 
     def translate_expr(self, expr: SExpr) -> Optional[z3.ExprRef]:
         """Translate SLOP expression to Z3 expression"""
+        if self._pinned_terms:
+            pinned = self._pinned_terms.get(id(expr))
+            if pinned is not None:
+                return pinned
         # Normalize native parser infix-in-parens pattern: ((a) op (b)) -> (op (a) (b))
         # Native parser can produce ((list-len ...) == 0) instead of (== (list-len ...) 0)
         if isinstance(expr, SList) and len(expr) == 3:
@@ -2998,7 +3008,12 @@ class Z3Translator:
                               fn_name.startswith('is-') or fn_name.endswith('-contains') or
                               '-contains-' in fn_name or  # matches string-contains-newline etc
                               fn_name == 'graph-contains' or fn_name == 'contains' or
-                              fn_name.startswith('has-'))
+                              fn_name.startswith('has-') or
+                              # Builtin membership tests. As Ints they could not
+                              # stand as a guard, so a branch on one fell back
+                              # to a fresh Bool unrelated to the same test in a
+                              # contract.
+                              fn_name in ('set-has', 'map-has'))
                 if is_predicate:
                     return_sort = z3.BoolSort()
 
