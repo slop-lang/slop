@@ -312,6 +312,11 @@ class UnionType(Type):
     """Tagged union: (union (tag1 T1) (tag2) ...)"""
     name: str
     variants: Dict[str, Optional[Type]]  # tag -> payload type (None if no payload)
+    # Every payload type of each variant, in order. `variants` keeps only the
+    # first, which is all a single-payload variant has; a variant declared
+    # (pair Int Float) needs the second too, or a verifier that reads it as an
+    # Int proves things about 0.5 that are false. Empty when not recorded.
+    payload_types: Dict[str, Tuple[Optional[Type], ...]] = field(default_factory=dict, compare=False)
 
     def __str__(self) -> str:
         return self.name

@@ -104,16 +104,19 @@ def _register_type(type_form: SList, registry: Dict[str, Type]):
     elif is_form(body, 'union'):
         # (type Name (union (tag1 T1) (tag2) ...))
         union_variants: Dict[str, Optional[Type]] = {}
+        payload_types: Dict[str, tuple] = {}
         for variant in body.items[1:]:
             if isinstance(variant, SList) and len(variant) >= 1:
                 tag = variant[0].name if isinstance(variant[0], Symbol) else None
                 if tag:
-                    payload = _parse_type_expr_simple(variant[1], registry) if len(variant) > 1 else None
-                    union_variants[tag] = payload
+                    payloads = tuple(_parse_type_expr_simple(p, registry) for p in variant.items[1:])
+                    union_variants[tag] = payloads[0] if payloads else None
+                    payload_types[tag] = payloads
             elif isinstance(variant, Symbol):
                 # Tag without payload
                 union_variants[variant.name] = None
-        registry[name] = UnionType(name, union_variants)
+                payload_types[variant.name] = ()
+        registry[name] = UnionType(name, union_variants, payload_types)
 
     elif is_form(body, 'Int') or (isinstance(body, SList) and len(body) >= 3):
         # Range type: (type Name (Int min .. max)) or (type Name (Int min ..))

@@ -11022,3 +11022,187 @@ class TestShadowedBindings:
         (record-new F (flag true) (xs x))))))
 '''
         assert verify_source(src, filename="probe.slop")[0].status != 'verified'
+
+
+class TestMatchPayloadBinding:
+    """#166: every payload position of a match arm is bound, and only for that arm.
+
+    Binding just the first position, and never undoing it, let a name in one
+    arm read another arm's payload - arms are translated last to first - so a
+    postcondition naming the wrong field could verify.
+    """
+
+    _TYPE = "  (type T (union (triple Int Int Int) (one Int)))\n"
+
+    def _status(self, fn_src, name="f"):
+        from slop.verifier import verify_source
+        src = "(module probe\n" + self._TYPE + fn_src + ")\n"
+        results = [r for r in verify_source(src, filename="probe.slop") if r.name == name]
+        assert results, "no result for " + name
+        return results[0]
+
+    def test_a_claim_about_the_wrong_field_fails(self):
+        # The #166 repro: the triple arm returns its SECOND field, the
+        # postcondition claims the third. It verified while `b` and `c` in the
+        # triple arm both read the `one` arm's payload.
+        result = self._status('''
+  (fn f ((t T))
+    (@spec ((T) -> Int))
+    (@pure)
+    (@post (match t ((triple a b c) (== $result c)) ((one c) (== $result c))))
+    (match t ((triple a b c) b) ((one b) b)))
+''')
+        assert result.status == 'failed', result.message
+
+    def test_a_later_payload_is_bound(self):
+        # The true claim about the second field. With only the first position
+        # bound, `b` had no meaning in the triple arm of either the body or the
+        # contract, and nothing about it could be proved.
+        result = self._status('''
+  (fn f ((t T))
+    (@spec ((T) -> Int))
+    (@pure)
+    (@post (match t ((triple a b c) (== $result b)) ((one d) (== $result d))))
+    (match t ((triple a b c) b) ((one b) b)))
+''')
+        assert result.status == 'verified', result.message
+
+    def test_each_position_has_its_own_accessor(self):
+        # a, b and c must be three different terms: a claim that the second
+        # field equals the first is false and must not verify.
+        result = self._status('''
+  (fn f ((t T))
+    (@spec ((T) -> Int))
+    (@pure)
+    (@post (match t ((triple a b c) (== $result a)) ((one d) (== $result d))))
+    (match t ((triple a b c) b) ((one b) b)))
+''')
+        assert result.status == 'failed', result.message
+
+    def test_a_shadowed_name_is_restored_after_the_arm(self):
+        # `a` is a parameter; the triple arm shadows it with the first field.
+        # After the match, `a` must be the parameter again.
+        result = self._status('''
+  (fn f ((t T) (a Int))
+    (@spec ((T Int) -> Int))
+    (@pure)
+    (@post (== $result a))
+    (do (match t ((triple a b c) a) ((one x) x)) a))
+''')
+        assert result.status == 'verified', result.message
+
+    def test_a_wildcard_position_binds_nothing(self):
+        from slop.verifier import Z3Translator, MinimalTypeEnv
+        from slop.verifier.type_builder import build_type_registry_from_ast
+        from slop.parser import parse
+        env = MinimalTypeEnv()
+        env.type_registry.update(build_type_registry_from_ast(
+            parse("(type T (union (triple Int Int Int) (one Int)))")))
+        translator = Z3Translator(env)
+        translator.variables['t'] = z3.Int('t')
+        expr = parse("(match t ((triple _ b _) b) ((one x) x))")[0]
+        assert translator.translate_expr(expr) is not None
+        assert '_' not in translator.variables
+        # `b` came from one arm only, so it keeps that arm's (correct) meaning;
+        # it is position 1 of the triple, not position 0.
+        assert str(translator.variables['b']) == 'union_payload_triple#1(t)'
+
+    # Codex review of the #166 fix: a payload read at the wrong sort proves
+    # false things. Read as an Int, a Float payload never equals 0.5, so the
+    # implication below held vacuously and verified - at position 0 on main
+    # already, and at position 1 once later positions were bound at all.
+    _FLOAT_CLAIM = '''
+  (fn f ((t T))
+    (@spec ((T) -> Int))
+    (@pure)
+    (@post (match t ((pair a b) (implies (== {x} 0.5) (== $result 1))) ((none) true)))
+    (match t ((pair a b) 0) ((none) 0)))
+'''
+
+    def _status_with_type(self, type_src, fn_src):
+        from slop.verifier import verify_source
+        src = "(module probe\n" + type_src + fn_src + ")\n"
+        return [r for r in verify_source(src, filename="probe.slop") if r.name == 'f'][0]
+
+    def test_a_float_payload_at_position_1_is_real(self):
+        result = self._status_with_type(
+            "  (type T (union (pair Int Float) (none)))\n", self._FLOAT_CLAIM.replace('{x}', 'b'))
+        assert result.status == 'failed', result.message
+
+    def test_a_float_payload_at_position_0_is_real(self):
+        result = self._status_with_type(
+            "  (type T (union (pair Float Int) (none)))\n", self._FLOAT_CLAIM.replace('{x}', 'a'))
+        assert result.status == 'failed', result.message
+
+    def test_a_single_float_payload_is_real(self):
+        result = self._status_with_type(
+            "  (type T (union (pair Float) (none)))\n",
+            self._FLOAT_CLAIM.replace('(pair a b)', '(pair a)').replace('{x}', 'a'))
+        assert result.status == 'failed', result.message
+
+    def test_a_forward_aliased_float_payload_is_real(self):
+        # Codex, second round: the payload type named an alias declared after
+        # the union, parsed as a bare type name and read as an Int.
+        result = self._status_with_type(
+            "  (type T (union (pair Int Alias) (none)))\n  (type Alias Float)\n",
+            self._FLOAT_CLAIM.replace('{x}', 'b'))
+        assert result.status == 'failed', result.message
+
+    def test_an_unresolvable_payload_type_proves_nothing(self):
+        # A payload whose type names nothing known cannot be read at any sort,
+        # so the true-looking claim is not provable either.
+        result = self._status_with_type(
+            "  (type T (union (pair Int Mystery) (none)))\n",
+            self._FLOAT_CLAIM.replace('{x}', 'b'))
+        assert result.status != 'verified', result.message
+
+    def test_a_true_float_claim_still_verifies(self):
+        result = self._status_with_type(
+            "  (type T (union (pair Int Float) (none)))\n", '''
+  (fn f ((t T))
+    (@spec ((T) -> Int))
+    (@pure)
+    (@post (match t ((pair a b) (implies (== b 0.5) (== $result 0))) ((none) true)))
+    (match t ((pair a b) 0) ((none) 0)))
+''')
+        assert result.status == 'verified', result.message
+
+    # A quoted enum arm, 'red, reaches the verifier as (quote red). Read as a
+    # list pattern its tag was `quote`, every quoted arm tested one made-up
+    # index, and all but the first were unreachable.
+    _ENUM = '''
+  (type Color (enum red green blue))
+  (fn f ((c Color))
+    (@spec ((Color) -> Int))
+    (@pure)
+    (@post {P})
+    (match c ('red 1) ('green 2) ('blue 3)))
+'''
+
+    def test_quoted_enum_arms_are_all_reachable(self):
+        from slop.verifier import verify_source
+        src = "(module probe\n" + self._ENUM.replace('{P}', '(!= $result 2)') + ")\n"
+        result = [r for r in verify_source(src, filename="probe.slop") if r.name == 'f'][0]
+        assert result.status == 'failed', result.message
+
+    def test_quoted_enum_arms_read_their_own_tags(self):
+        from slop.verifier import verify_source
+        src = "(module probe\n" + self._ENUM.replace(
+            '{P}', "(and (implies (== c 'green) (== $result 2)) (implies (== c 'blue) (== $result 3)))") + ")\n"
+        result = [r for r in verify_source(src, filename="probe.slop") if r.name == 'f'][0]
+        assert result.status == 'verified', result.message
+
+    def test_an_unknown_tag_proves_nothing(self):
+        # `nothing` is no variant of anything declared, so the match cannot be
+        # translated; before, it was tested against a hash of its name.
+        from slop.verifier import verify_source
+        src = '''(module probe
+  (type T (union (a Int) (b Int)))
+  (fn f ((t T))
+    (@spec ((T) -> Int))
+    (@pure)
+    (@post (!= $result 7))
+    (match t ((a n) 1) ((nothing n) 7) ((b n) 2))))
+'''
+        result = [r for r in verify_source(src, filename="probe.slop") if r.name == 'f'][0]
+        assert result.status != 'verified', result.message
