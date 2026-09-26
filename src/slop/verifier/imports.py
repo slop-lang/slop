@@ -86,6 +86,7 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
 
     param_types: List[Type] = []
     param_names: List[str] = []
+    param_modes: List[Optional[str]] = []
     return_type: Type = UNKNOWN
 
     # Extract param types and names from parameter list
@@ -97,19 +98,25 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
                 # Mode is explicit: (in name Type)
                 param_name = param[1].name if isinstance(param[1], Symbol) else None
                 type_expr = param[2] if len(param) > 2 else None
+                mode = first.name
             else:
                 # No mode: (name Type)
                 param_name = first.name if isinstance(first, Symbol) else None
                 type_expr = param[1]
+                mode = None
             if param_name:
                 param_names.append(param_name)
+                param_modes.append(mode)
             if type_expr:
                 param_types.append(_parse_type_expr_simple(type_expr, registry))
 
     # Look for @spec to get return type, @post for postconditions, @assume for assumptions
     postconditions: List['SExpr'] = []
+    preconditions: List['SExpr'] = []
+    properties: List['SExpr'] = []
     assumptions: List['SExpr'] = []
     callback_assumptions: List[CallbackAssumption] = []
+    is_pure = False
     for item in fn_form.items[3:]:
         if is_form(item, '@spec') and len(item) > 1:
             spec = item[1]
@@ -123,6 +130,13 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
                         break
         elif is_form(item, '@post') and len(item) > 1:
             postconditions.append(item[1])
+        elif is_form(item, '@pre') and len(item) > 1:
+            preconditions.append(item[1])
+        elif is_form(item, '@pure'):
+            is_pure = True
+        elif is_form(item, '@property') and len(item) > 1:
+            # (@property name expr) or (@property expr)
+            properties.append(item[2] if (len(item) > 2 and isinstance(item[1], Symbol)) else item[1])
         elif is_form(item, '@assume') and len(item) > 1:
             assumptions.append(item[1])
         elif is_form(item, '@callback-assume') and len(item) >= 3:
@@ -131,7 +145,8 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
                     CallbackAssumption(item[1].name, item[2])
                 )
 
-    return FunctionSignature(name, param_types, return_type, param_names, postconditions, assumptions, callback_assumptions)
+    return FunctionSignature(name, param_types, return_type, param_names, postconditions, assumptions,
+                             callback_assumptions, preconditions, is_pure, param_modes, properties)
 
 
 def _extract_const_value(expr: 'SExpr') -> Any:

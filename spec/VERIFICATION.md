@@ -64,9 +64,59 @@ The verifier knows that `(record-new Type (field value))` produces a value where
 
 The body is translated to Z3 with full path sensitivity. `if`/`match`/`cond` branches create separate Z3 paths, each with the appropriate conditions.
 
+A `match` arm binds every payload position to its own accessor, at the sort the variant's declaration gives it (Real for `Float`, Bool for `Bool`, Int otherwise), and only for that arm. A quoted enum arm, `('red ...)`, is read by its tag. A match naming a tag the verifier has no index for is not translated.
+
+### Push-Built Results
+
+A result built by pushes with no loop is modelled exactly: the verifier knows which elements it contains and in what order, as a function of the branch conditions. The shape is
+
+```lisp
+(let ((mut r (list-new arena T)))
+  ... (list-push r e) inside do / let / when / if / cond / match ...
+  r)
+```
+
+Each push under its path condition contributes `If(g, Concat(s, Unit(e)), s)`. A pushed `record-new` or `union-new` carries its fields and payloads. A callee's `@post`s and `@property`s are assumed where the call runs and its `@pre` holds.
+
+Calls in the modelled terms follow three rules:
+- **A `@pure` callee** is an uninterpreted function: the same arguments give the same value.
+- **Any other callee** is allowed only if every parameter is a plain value (no list, map, set or pointer anywhere inside it, and no `mut`/`out` mode). Each such call is its own value, so two calls to a counter never collapse into one.
+- **Anything else abandons the model.** That includes a builtin or function the verifier has no signature for, such as `arena-new`. So both directions of a claim about the elements are decidable:
+
+```lisp
+(fn cr1 ((arena Arena) (ctx Context) (b Node) (ax Ax))
+  (@spec ((Arena Context Node Ax) -> (List Msg)))
+  (@alloc arena)
+  ;; nothing unlicensed is emitted
+  (@property sound (forall (m $result) (== (. m to) (. ctx root))))
+  ;; nothing licensed is missing
+  (@property complete
+    (match ax ((sub-name b2 a) (or (not (node-eq b b2))
+                                   (exists (m $result) (== (. m to) (. ctx root)))))
+              (_ true)))
+  (let ((mut result (list-new arena Msg)))
+    (do (match ax
+          ((sub-name b2 a)
+            (when (node-eq b b2) (list-push result (record-new Msg (to (. ctx root)) (v 1)))))
+          (_ (do)))
+        result)))
+```
+
+Write completeness as `exists` over field equalities, or as `list-contains` of a name: a `record-new` in a *contract* is a fresh value that no pushed element can equal.
+
+The model is all or nothing. The body falls back to the loop patterns of section 3 (or to `unknown`, section 10) if any of these appear:
+- a loop, `return`, `break`, lambda, `with-arena` or `c-inline`;
+- a mutation of anything other than a local the body binds: `list-set`, `list-pop`, `set-put`, `map-put` and the like, or `set!` of a parameter;
+- the result list passed to a call, aliased, read in a guard, or rebound;
+- a push to another list, or a push inside a `let` initializer;
+- a call made for its effect in statement position, or a call to a function that is neither `@pure` nor value-only;
+- a guard that is not a Bool, or a term that cannot be translated.
+
+A body that reads collection state (`set-has`, `map-get`, `list-len` and so on) must also call only `@pure` functions, since those reads are uninterpreted functions of the collection.
+
 ## 3. Automatic Loop Analysis
 
-The verifier recognizes six loop patterns and generates Z3 axioms automatically. No `@loop-invariant` is needed for these patterns.
+The verifier recognizes six loop patterns and generates Z3 axioms automatically. No `@loop-invariant` is needed for these patterns. A push-built result with no loop at all is modelled exactly instead (section 2, Push-Built Results).
 
 ### Filter
 
@@ -396,6 +446,8 @@ Example usage in a postcondition:
 
 Since `list-contains` is verifier-only, it cannot appear in runtime code — only in contract annotations.
 
+`(list-contains $result x)` reads the result as a sequence, exactly as `(forall (m $result) ...)` does, so for a push-built result (section 2) it is proved or refuted rather than left uninterpreted. The element is compared by identity: `x` should be a name or a field of one. A `record-new` in the contract is a fresh value, so use `exists` over its fields instead.
+
 ## 10. Troubleshooting Verification Failures
 
 ### timeout
@@ -431,6 +483,7 @@ Z3 could not determine satisfiability.
 **Common causes:**
 - Non-linear arithmetic (`*`, `/`, `mod` on symbolic values)
 - Complex quantifier instantiation patterns
+- "the body's pushes are not modelled": a claim about a push-built result's elements, where the body is neither a recognized loop pattern (section 3) nor loop-free (section 2, Push-Built Results). The listed fallback shapes are the usual reasons.
 
 ### "Could not translate"
 

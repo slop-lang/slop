@@ -43,13 +43,14 @@ from .pattern_detection import PatternDetectionMixin
 from .axiom_generation import AxiomGenerationMixin
 from .loop_analysis import LoopAnalysisMixin
 from .union_handling import UnionHandlingMixin
+from .exact_push import ExactPushModelMixin
 
 if TYPE_CHECKING:
     from slop.parser import SExpr
 
 
-class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin, 
-                       LoopAnalysisMixin, UnionHandlingMixin):
+class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
+                       LoopAnalysisMixin, UnionHandlingMixin, ExactPushModelMixin):
     """Verifies @pre/@post contracts for functions.
     
     Inherits specialized functionality from mixins:
@@ -200,6 +201,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if isinstance(expr, SList) and len(expr) > 0:
             head = expr[0]
             if isinstance(head, Symbol):
+                # (list-contains $result x) reads the result as a sequence too.
+                # Without the encoding it was an uninterpreted Bool, which no
+                # body could ever make true (#170).
+                if self._is_result_list_contains(expr):
+                    return True
                 # Check for collection-bound forall/exists
                 if head.name in ('forall', 'exists') and len(expr) >= 3:
                     binding = expr[1]
@@ -362,11 +368,19 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 return True
         return False
 
+    @staticmethod
+    def _is_result_list_contains(expr: SExpr) -> bool:
+        """True for (list-contains $result x)."""
+        return (is_form(expr, 'list-contains') and len(expr) >= 3
+                and isinstance(expr[1], Symbol) and expr[1].name == '$result')
+
     def _expr_references_result_collection(self, expr: SExpr) -> bool:
         """Check if expression references $result as a collection."""
         if isinstance(expr, SList) and len(expr) > 0:
             head = expr[0]
             if isinstance(head, Symbol):
+                if self._is_result_list_contains(expr):
+                    return True
                 if head.name in ('forall', 'exists') and len(expr) >= 3:
                     binding = expr[1]
                     if isinstance(binding, SList) and len(binding) == 2:
@@ -2366,54 +2380,61 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         passthrough: List = []
 
         for guard, branch in branches:
-            if self._is_record_new(branch):
-                record_new = self._get_return_expr(branch)
-                # An arm may bind its own locals before constructing.
-                branch_bindings = dict(bindings)
-                branch_bindings.update(self._tail_bindings(
-                    branch, enclosing_names, stability_body=fn_body,
-                    result_forms=result_forms))
-                for item in record_new.items[2:]:
-                    if isinstance(item, SList) and len(item) >= 2 and isinstance(item[0], Symbol):
-                        if item[0].name not in field_names:
-                            field_names.append(item[0].name)
-                axioms.extend(self._extract_record_field_axioms(
-                    record_new, translator, base_accessor=result_var,
-                    path_cond=self._conjoin(reached_guard, guard),
-                    bindings=branch_bindings))
-            else:
-                # The record may be wrapped - `(ok (record-new ...))` - or
-                # chosen by a further conditional, and a branch that yields no
-                # record at all still fixes the union tag, which is what makes
-                # the other branches' claims conditional on reaching them.
-                #
-                # _record_value_axioms already reads exactly these shapes for a
-                # record-valued *field*: it emits the union tag and payload,
-                # recurses into a record payload with the payload accessor as
-                # the base, and conjoins a nested conditional's guards on the
-                # way down. Handing it $result asks the same question about the
-                # result. Fields found that way hang off
-                # union_payload_ok($result) rather than $result, so they are
-                # deliberately not added to field_names - the passthrough
-                # equalities below are about the bare accessor.
-                wrapped: List = []
-                if self._states_own_shape(branch):
+            # A branch may bind its own locals before constructing, and they
+            # can shadow a name the enclosing scope binds: read the branch's
+            # values inside its own let scopes, not the enclosing ones.
+            with ExitStack() as branch_scope:
+                for binding, name in self._tail_scope(branch):
+                    branch_scope.enter_context(
+                        translator.binding_in_scope(binding, name, final=True))
+                if self._is_record_new(branch):
+                    record_new = self._get_return_expr(branch)
+                    # An arm may bind its own locals before constructing.
                     branch_bindings = dict(bindings)
                     branch_bindings.update(self._tail_bindings(
                         branch, enclosing_names, stability_body=fn_body,
                         result_forms=result_forms))
-                    # The trailing form, not the branch: an arm that binds
-                    # locals before constructing is a `let` or a `do`, and the
-                    # constructor is what states the shape. The bare path above
-                    # already reads it this way. The bindings collected from the
-                    # whole branch stay, so the locals are still followable.
-                    wrapped = self._record_value_axioms(
-                        result_var, self._get_return_expr(branch), translator,
-                        branch_bindings, self._conjoin(reached_guard, guard))
-                if wrapped:
-                    axioms.extend(wrapped)
+                    for item in record_new.items[2:]:
+                        if isinstance(item, SList) and len(item) >= 2 and isinstance(item[0], Symbol):
+                            if item[0].name not in field_names:
+                                field_names.append(item[0].name)
+                    axioms.extend(self._extract_record_field_axioms(
+                        record_new, translator, base_accessor=result_var,
+                        path_cond=self._conjoin(reached_guard, guard),
+                        bindings=branch_bindings))
                 else:
-                    passthrough.append((guard, branch))
+                    # The record may be wrapped - `(ok (record-new ...))` - or
+                    # chosen by a further conditional, and a branch that yields no
+                    # record at all still fixes the union tag, which is what makes
+                    # the other branches' claims conditional on reaching them.
+                    #
+                    # _record_value_axioms already reads exactly these shapes for a
+                    # record-valued *field*: it emits the union tag and payload,
+                    # recurses into a record payload with the payload accessor as
+                    # the base, and conjoins a nested conditional's guards on the
+                    # way down. Handing it $result asks the same question about the
+                    # result. Fields found that way hang off
+                    # union_payload_ok($result) rather than $result, so they are
+                    # deliberately not added to field_names - the passthrough
+                    # equalities below are about the bare accessor.
+                    wrapped: List = []
+                    if self._states_own_shape(branch):
+                        branch_bindings = dict(bindings)
+                        branch_bindings.update(self._tail_bindings(
+                            branch, enclosing_names, stability_body=fn_body,
+                            result_forms=result_forms))
+                        # The trailing form, not the branch: an arm that binds
+                        # locals before constructing is a `let` or a `do`, and the
+                        # constructor is what states the shape. The bare path above
+                        # already reads it this way. The bindings collected from the
+                        # whole branch stay, so the locals are still followable.
+                        wrapped = self._record_value_axioms(
+                            result_var, self._get_return_expr(branch), translator,
+                            branch_bindings, self._conjoin(reached_guard, guard))
+                    if wrapped:
+                        axioms.extend(wrapped)
+                    else:
+                        passthrough.append((guard, branch))
 
         # A branch that yields an existing record: under its guard the result is
         # that value, so the fields the other branches name agree with it.
@@ -2815,6 +2836,31 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             else:
                 return names
 
+    def _tail_scope(self, body: SExpr) -> List:
+        """(binding, name) for every `let` along the tail, outermost first.
+
+        The tail constructor's facts are derived after the body is translated,
+        when a shadowing local's scope has been put away: a field written as
+        `(n x)` under `(let ((x 2)) ...)` was read as the PARAMETER x, and a
+        postcondition claiming the field equals the parameter verified. Entering
+        each of these with binding_in_scope reads every name as the tail saw it.
+        """
+        scope: List = []
+        node = body
+        while True:
+            if is_form(node, 'let') and len(node) >= 3:
+                if isinstance(node[1], SList):
+                    for binding in node[1].items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            name = self._binding_name(binding)
+                            if name:
+                                scope.append((binding, name))
+                node = node.items[-1]
+            elif is_form(node, 'do') and len(node) >= 2:
+                node = node.items[-1]
+            else:
+                return scope
+
     def _tail_bindings(self, body: SExpr,
                        param_names: Optional[Set[str]] = None,
                        stability_body: Optional[SExpr] = None,
@@ -3037,6 +3083,29 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         axioms.extend(self._record_value_axioms(
                             payload_func(field_func), resolved[1], translator,
                             bindings, path_cond))
+
+        # A user union built in place: its tag, and every payload at the sort
+        # its declaration gives it - the same accessors a contract's `match`
+        # reads (#166). A payload that does not reach its declared sort, or a
+        # tag with no known index, gives nothing rather than a guess.
+        if (is_form(resolved, 'union-new') and len(resolved) >= 3
+                and isinstance(resolved[2], Symbol)
+                and translator.is_known_tag(resolved[2].name)):
+            tag = resolved[2].name
+            tag_func = translator.variables.get("union_tag")
+            if not isinstance(tag_func, z3.FuncDeclRef):
+                tag_func = z3.Function("union_tag", z3.IntSort(), z3.IntSort())
+                translator.variables["union_tag"] = tag_func
+            add(tag_func(field_func) == z3.IntVal(translator.constructor_tag(tag)))
+            for index, payload in enumerate(resolved.items[3:]):
+                sort = translator.payload_sort(tag, index)
+                value = translator.translate_expr(payload)
+                if sort is None or value is None or value.sort() != sort:
+                    continue
+                accessor = translator.union_payload_accessor(tag, index, sort)
+                add(accessor(field_func) == value)
+                axioms.extend(self._record_value_axioms(
+                    accessor(field_func), payload, translator, bindings, path_cond))
         return axioms
 
     @staticmethod
@@ -4111,12 +4180,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None and body_has_one_exit and self._is_record_new(fn_body):
             # Get the actual record-new form (may be inside a do block)
             return_expr = self._get_return_expr(fn_body)
-            field_axioms = self._extract_record_field_axioms(
-                return_expr, translator,
-                path_cond=reached_guard,
-                bindings=self._tail_bindings(
-                    combined_body, declared_param_names,
-                    result_forms=self._nested_record_forms(return_expr)))
+            with ExitStack() as tail_scope:
+                for binding, name in self._tail_scope(combined_body):
+                    tail_scope.enter_context(
+                        translator.binding_in_scope(binding, name, final=True))
+                field_axioms = self._extract_record_field_axioms(
+                    return_expr, translator,
+                    path_cond=reached_guard,
+                    bindings=self._tail_bindings(
+                        combined_body, declared_param_names,
+                        result_forms=self._nested_record_forms(return_expr)))
             for axiom in field_axioms:
                 solver.add(axiom)
 
@@ -4299,7 +4372,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 # on a path that never took it.
                 with translator.final_versions(
                         self._names_settled_before_tail(
-                            combined_body, return_expr, translator)):
+                            combined_body, return_expr, translator)), \
+                        ExitStack() as tail_scope:
+                    for binding, name in self._tail_scope(combined_body):
+                        tail_scope.enter_context(
+                            translator.binding_in_scope(binding, name, final=True))
                     cond_axioms = self._extract_conditional_record_axioms(
                         return_expr, translator, combined_body, declared_param_names,
                         reached_guard)
@@ -4368,11 +4445,24 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for axiom in union_eq_axioms:
                 solver.add(axiom)
 
+        # Phase 11b: Exact model of a loop-free push-built result (#170).
+        # A body that builds its result only by guarded pushes, with no loop,
+        # denotes a list fixed by its branch conditions; exact_push.py computes
+        # it as a sequence. None means the body does not qualify, and nothing
+        # below changes. The model instantiates callee postconditions itself,
+        # under each call's path condition and precondition, so Phase 12's
+        # unconditional instantiation (#169) is skipped when it applies.
+        exact_model = None
+        if (fn_body is not None and translator.use_seq_encoding
+                and '$result' in translator.list_seqs and early_exits == []
+                and not self._contains_any_form(combined_body, ('list-set',))):
+            exact_model = self._exact_push_model(combined_body, translator)
+
         # Phase 12: Postcondition propagation from called functions
         # When a function is called and its result is bound to a variable,
         # add the called function's postconditions as axioms with substituted values.
         # This enables reasoning about properties of intermediate results.
-        if fn_body is not None:
+        if fn_body is not None and exact_model is None:
             call_postcond_axioms = self._extract_call_postcondition_axioms(fn_body, translator)
             for axiom in call_postcond_axioms:
                 solver.add(axiom)
@@ -4463,6 +4553,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         result_length_unmodelled = (
             not result_length_bounded
             and fn_body is not None
+            and exact_model is None
             and self._result_is_pushed_to(combined_body))
 
         # Phase 14: List element property invariants (with array encoding)
@@ -4512,6 +4603,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 solver.add(axiom)
                 pattern_axioms.append(axiom)
 
+        # Phase 14c': the exact model, when Phase 11b built one. Asserted as
+        # pattern axioms, so the property solver sees it too and 14d - which
+        # only runs when nothing else described the pushes - stands down.
+        if exact_model is not None:
+            exact_axioms = list(exact_model.axioms)
+            exact_axioms.append(translator.list_seqs['$result'] == exact_model.seq)
+            for axiom in exact_axioms:
+                solver.add(axiom)
+                pattern_axioms.append(axiom)
+
         # Phase 14d: Structural push-site axioms
         # For functions where loop patterns aren't detected (while loops,
         # deeply nested callbacks), analyze push sites directly to generate
@@ -4558,7 +4659,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # list is none of the result's business.
         if result_contents_rewritten:
             has_unaxiomatized_pushes = True
-        if fn_body is not None and translator.use_seq_encoding:
+        if fn_body is not None and translator.use_seq_encoding and exact_model is None:
             if self._body_has_list_push_to_result(fn_body):
                 if not pattern_axioms:
                     # Case (a): no axioms at all

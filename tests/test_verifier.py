@@ -9804,7 +9804,11 @@ class TestListSet:
         ''') != 'verified'
 
 
-_UNMODELLED_PUSH = '''
+# A push in a match arm, and nothing else. #69 used this shape as the example
+# of a result nothing describes; since #170 it is modelled exactly (see
+# TestExactPushModel), and it stays here for the length claims, which the
+# length model decides either way.
+_MATCH_ARM_PUSH = '''
 (module probe
   (type Msg (record (v Int) (to Int)))
   (type Ax  (union (a Int) (b Int)))
@@ -9817,6 +9821,28 @@ _UNMODELLED_PUSH = '''
       (do (match ax
             ((a n) (list-push r (record-new Msg (v n) (to root))))
             ((b _) (do)))
+          r))))
+'''
+
+# The same push inside a `while`: a loop no pattern detector recognises and the
+# exact model (#170) does not follow, so the result's elements are still
+# described by nothing. This is what #69's unknown is for now.
+_UNMODELLED_PUSH = '''
+(module probe
+  (type Msg (record (v Int) (to Int)))
+  (type Ax  (union (a Int) (b Int)))
+
+  (fn build ((arena Arena) (ax Ax) (root Int))
+    (@spec ((Arena Ax Int) -> (List Msg)))
+    (@alloc arena)
+%s
+    (let ((mut r (list-new arena Msg))
+          (mut i 0))
+      (do (while (< i 2)
+            (do (match ax
+                  ((a n) (list-push r (record-new Msg (v n) (to root))))
+                  ((b _) (do)))
+                (set! i (+ i 1))))
           r))))
 '''
 
@@ -9836,9 +9862,10 @@ class TestUnmodelledResultContents:
     """
 
     @staticmethod
-    def _result(contracts):
+    def _result(contracts, fixture=None):
         from slop.verifier import verify_source
-        results = verify_source(_UNMODELLED_PUSH % contracts, filename="probe.slop")
+        source = (fixture or _UNMODELLED_PUSH) % contracts
+        results = verify_source(source, filename="probe.slop")
         assert len(results) == 1
         return results[0]
 
@@ -9856,17 +9883,18 @@ class TestUnmodelledResultContents:
     def test_a_length_claim_that_holds_still_verifies(self):
         """The length model does describe this result, so its claims are
         decidable and must not be swept into the same unknown."""
-        assert self._result("    (@post {(list-len $result) <= 1})").status == 'verified'
+        assert self._result("    (@post {(list-len $result) <= 1})",
+                            _MATCH_ARM_PUSH).status == 'verified'
 
     def test_a_length_claim_that_is_false_still_fails(self):
-        result = self._result("    (@post {(list-len $result) == 5})")
+        result = self._result("    (@post {(list-len $result) == 5})", _MATCH_ARM_PUSH)
         assert result.status == 'failed', result.message
 
     def test_the_two_together_report_the_property(self):
         """issue #69's q3: the @post holds and the @property is unknown, so the
         function reports the property rather than blaming the postcondition."""
         result = self._result(
-            "    (@post {(list-len $result) <= 1})\n"
+            "    (@post {(list-len $result) >= 0})\n"
             "    (@property addressed (forall (m $result) (== (. m to) root)))")
         assert result.status == 'unknown', result.message
         assert 'addressed' in result.message
@@ -11206,3 +11234,662 @@ class TestMatchPayloadBinding:
 '''
         result = [r for r in verify_source(src, filename="probe.slop") if r.name == 'f'][0]
         assert result.status != 'verified', result.message
+
+def _status_of(src, name='f'):
+    from slop.verifier import verify_source
+    results = [r for r in verify_source(src, filename="probe.slop") if r.name == name]
+    assert results, "no result for " + name
+    return results[0]
+
+
+# A completion-rule shape (howl CR1): a match arm whose guarded push builds a
+# record carrying a union. {C} is the contract.
+_RULE_SHAPE = '''
+(module probe
+  (type Node (union (cn Int) (fresh Int)))
+  (type Derived (union (dsub Node) (dsucc Int Node)))
+  (type Addressed (record (to Node) (what Derived)))
+  (type Ax (union (sub-name Node Node) (sub-and Node Node Node)))
+  (type Context (record (root Node) (subsumers Int)))
+  (fn node-eq ((a Node) (b Node)) (@spec ((Node Node) -> Bool)) (@pure) (== a b))
+  (fn f ((arena Arena) (ctx Context) (b Node) (ax Ax))
+    (@spec ((Arena Context Node Ax) -> (List Addressed)))
+    (@alloc arena)
+    {C}
+    (let ((mut result (list-new arena Addressed)))
+      (do
+        (match ax
+          ((sub-name b2 a)
+            (when (node-eq b b2)
+              (list-push result
+                (record-new Addressed (to (. ctx root)) (what (union-new Derived dsub a))))))
+          ((sub-and _ _ _) (do)))
+        result))))
+'''
+
+_RULE_SOUND = ("(@property sound (forall (m $result) (and (== (. m to) (. ctx root)) "
+               "(match ax ((sub-name b2 a) (and (node-eq b b2) (match (. m what) "
+               "((dsub y) (== y a)) ((dsucc _ _) false)))) ((sub-and _ _ _) false)))))")
+_RULE_COMPLETE = ("(@property complete (match ax ((sub-name b2 a) (or (not (node-eq b b2)) "
+                  "(exists (m $result) (and (== (. m to) (. ctx root)) (match (. m what) "
+                  "((dsub y) (== y a)) ((dsucc _ _) false)))))) ((sub-and _ _ _) true)))")
+
+
+class TestExactPushModel:
+    """#170: a loop-free push-built result is modelled exactly.
+
+    Each push under its branch's path condition is `If(g, Concat(s, Unit(e)), s)`,
+    so a claim quantifying over the result's elements - soundness as `forall`,
+    completeness as `exists` or `list-contains` - verifies or fails on its
+    merits instead of coming back unknown (or, for list-contains, failed).
+    Anything outside the shape keeps its old status: _EXACT_BAIL_SHAPES.
+    """
+
+    # --- the rule shape, both directions, true and false -------------------
+
+    def test_rule_soundness_verifies(self):
+        assert _status_of(_RULE_SHAPE.replace('{C}', _RULE_SOUND)).status == 'verified'
+
+    def test_rule_completeness_verifies(self):
+        assert _status_of(_RULE_SHAPE.replace('{C}', _RULE_COMPLETE)).status == 'verified'
+
+    def test_false_soundness_fails(self):
+        result = _status_of(_RULE_SHAPE.replace(
+            '{C}', "(@property s (forall (m $result) (== (. m to) b)))"))
+        assert result.status == 'failed', result.message
+
+    def test_false_completeness_fails(self):
+        # Claims the pushed payload is the axiom's first node, not its second.
+        result = _status_of(_RULE_SHAPE.replace('{C}', _RULE_COMPLETE.replace('(== y a)', '(== y b2)')))
+        assert result.status == 'failed', result.message
+
+    def test_completeness_without_the_guard_fails(self):
+        # Nothing is pushed when node-eq fails, so an unguarded exists is false.
+        result = _status_of(_RULE_SHAPE.replace('{C}', (
+            "(@property c (match ax ((sub-name b2 a) (exists (m $result) (== (. m to) (. ctx root))))"
+            " ((sub-and _ _ _) true)))")))
+        assert result.status == 'failed', result.message
+
+    def test_a_quantifier_false_of_any_element_is_refuted(self):
+        # The counterpart of #69's vacuity case: the match-arm body pushes when
+        # ax is `a`, so `forall ... false` has a counterexample.
+        from slop.verifier import verify_source
+        result = verify_source(_MATCH_ARM_PUSH % "    (@post (forall (m $result) false))",
+                               filename="probe.slop")[0]
+        assert result.status == 'failed', result.message
+
+    def test_the_match_arm_fixture_verifies(self):
+        from slop.verifier import verify_source
+        for contract in ("    (@property addressed (forall (m $result) (== (. m to) root)))",
+                         "    (@post (forall (m $result) (== (. m to) root)))",
+                         "    (@post {(list-len $result) <= 1})\n"
+                         "    (@property addressed (forall (m $result) (== (. m to) root)))"):
+            result = verify_source(_MATCH_ARM_PUSH % contract, filename="probe.slop")[0]
+            assert result.status == 'verified', (contract, result.message)
+
+    # --- list-contains ----------------------------------------------------
+
+    _CONTAINS = '''
+(module probe
+  (fn f ((arena Arena) (n Int) (c Bool))
+    (@spec ((Arena Int Bool) -> (List Int)))
+    (@alloc arena)
+    (@property p {P})
+    (let ((mut r (list-new arena Int)))
+      (do (when c (list-push r n)) r))))
+'''
+
+    def test_list_contains_completeness_verifies(self):
+        # The #170 repro.
+        result = _status_of(self._CONTAINS.replace('{P}', '(or (not c) (list-contains $result n))'))
+        assert result.status == 'verified', result.message
+
+    def test_list_contains_without_the_guard_fails(self):
+        result = _status_of(self._CONTAINS.replace('{P}', '(list-contains $result n)'))
+        assert result.status == 'failed', result.message
+
+    # --- two pushes from a helper's result (howl CR3/CR6) -------------------
+
+    _TWO_HALVES = '''
+(module probe
+  (type Half (record (to Int) (other Int)))
+  (type Pair (record (succ-half Half) (pred-half Half)))
+  (type Edge (record (from Int) (target Int)))
+  (fn emit ((arena Arena) (e Edge))
+    (@spec ((Arena Edge) -> Pair))
+    (@alloc arena)
+    (@post (== (. (. $result succ-half) to) (. e from)))
+    (@post (== (. (. $result pred-half) to) (. e target)))
+    (record-new Pair (succ-half (record-new Half (to (. e from)) (other (. e target))))
+                     (pred-half (record-new Half (to (. e target)) (other (. e from))))))
+  (fn f ((arena Arena) (x Int) (y Int) (c Bool))
+    (@spec ((Arena Int Int Bool) -> (List Half)))
+    (@alloc arena)
+    {C}
+    (let ((mut r (list-new arena Half)))
+      (do (when c
+            (let ((pair (emit arena (record-new Edge (from x) (target y)))))
+              (do (list-push r (. pair succ-half))
+                  (list-push r (. pair pred-half)))))
+          r))))
+'''
+
+    def test_both_halves_are_described(self):
+        result = _status_of(self._TWO_HALVES.replace(
+            '{C}', "(@property p (forall (m $result) (or (== (. m to) x) (== (. m to) y))))"))
+        assert result.status == 'verified', result.message
+
+    def test_both_halves_are_present(self):
+        result = _status_of(self._TWO_HALVES.replace('{C}', (
+            "(@property p (or (not c) (and (exists (m $result) (== (. m to) x))"
+            " (exists (m $result) (== (. m to) y)))))")))
+        assert result.status == 'verified', result.message
+
+    def test_not_every_half_goes_to_the_source(self):
+        result = _status_of(self._TWO_HALVES.replace(
+            '{C}', "(@property p (forall (m $result) (== (. m to) x)))"))
+        assert result.status == 'failed', result.message
+
+    def test_the_length_bound_still_verifies_alongside(self):
+        result = _status_of(self._TWO_HALVES.replace('{C}', (
+            "(@post {(list-len $result) <= 2})\n"
+            "    (@property p (forall (m $result) (or (== (. m to) x) (== (. m to) y))))")))
+        assert result.status == 'verified', result.message
+
+    # --- a flag and a set-has guard (howl CR2) ------------------------------
+
+    _FLAG = '''
+(module probe
+  (type Ctx (record (subsumers (Set Int)) (root Int)))
+  (fn f ((arena Arena) (ctx Ctx) (b Int) (a1 Int) (a2 Int) (a Int))
+    (@spec ((Arena Ctx Int Int Int Int) -> (List Int)))
+    (@alloc arena)
+    {C}
+    (let ((mut result (list-new arena Int))
+          (mut fire false))
+      (do
+        (if (== b a1)
+          (when (set-has (. ctx subsumers) a2) (set! fire true))
+          (when (== b a2)
+            (when (set-has (. ctx subsumers) a1) (set! fire true))))
+        (when fire (list-push result a))
+        result))))
+'''
+
+    def test_flag_soundness_verifies(self):
+        result = _status_of(self._FLAG.replace('{C}', (
+            "(@property s (forall (m $result) (and (== m a) (or (and (== b a1) "
+            "(set-has (. ctx subsumers) a2)) (and (== b a2) (set-has (. ctx subsumers) a1))))))")))
+        assert result.status == 'verified', result.message
+
+    def test_flag_completeness_verifies(self):
+        result = _status_of(self._FLAG.replace('{C}', (
+            "(@property c (or (not (== b a2)) (not (set-has (. ctx subsumers) a1))"
+            " (list-contains $result a)))")))
+        assert result.status == 'verified', result.message
+
+    def test_flag_completeness_with_the_wrong_premise_fails(self):
+        # The second branch tests a1, not a2.
+        result = _status_of(self._FLAG.replace('{C}', (
+            "(@property c (or (not (== b a2)) (not (set-has (. ctx subsumers) a2))"
+            " (list-contains $result a)))")))
+        assert result.status == 'failed', result.message
+
+    # --- callee postconditions are guarded ---------------------------------
+
+    _CALLEE = '''
+(module probe
+  (fn dec ((x Int))
+    (@spec ((Int) -> Int))
+    (@pure)
+    (@pre (>= x 1))
+    (@post (>= $result 0))
+    (@post (== $result (- x 1)))
+    (- x 1))
+  (fn f ((arena Arena) (x Int))
+    (@spec ((Arena Int) -> (List Int)))
+    (@alloc arena)
+    {C}
+    (let ((mut r (list-new arena Int)))
+      (do {BODY} r))))
+'''
+
+    def test_a_callee_post_holds_only_on_its_branch(self):
+        # #169's shape: the call runs only when x > 0. Assuming its posts on
+        # every path would force x >= 1 everywhere and verify this; the result
+        # is empty when x <= 0, so it is false. (The claim quantifies over the
+        # result so that the model is built: a claim that does not is verified
+        # the old way, where #169 still applies.)
+        result = _status_of(self._CALLEE.replace('{BODY}', '(when (> x 0) (let ((y (dec x))) (list-push r y)))')
+                            .replace('{C}', '(@property p (or (> x 0) (exists (v $result) true)))'))
+        assert result.status == 'failed', result.message
+
+    def test_a_callee_post_is_used_where_it_holds(self):
+        result = _status_of(self._CALLEE.replace('{BODY}', '(when (> x 0) (let ((y (dec x))) (list-push r y)))')
+                            .replace('{C}', '(@property p (forall (v $result) (== v (- x 1))))'))
+        assert result.status == 'verified', result.message
+
+    def test_a_callee_post_needs_its_precondition(self):
+        # Called on every path but with no guarantee that x >= 1: the post is
+        # only a fact where the @pre holds, so nothing about v follows.
+        result = _status_of(self._CALLEE.replace('{BODY}', '(let ((y (dec x))) (list-push r y))')
+                            .replace('{C}', '(@property p (forall (v $result) (>= v 0)))'))
+        assert result.status != 'verified', result.message
+
+    # --- branching forms --------------------------------------------------
+
+    def test_enum_match_arms(self):
+        src = '''
+(module probe
+  (type Color (enum red green blue))
+  (fn f ((arena Arena) (c Color))
+    (@spec ((Arena Color) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (v $result) (and (== v 2) (== c 'green))))
+    (let ((mut r (list-new arena Int)))
+      (do (match c ('red (do)) ('green (list-push r 2)) ('blue (do))) r))))
+'''
+        assert _status_of(src).status == 'verified'
+        wrong = src.replace("(== c 'green)", "(== c 'blue)")
+        assert _status_of(wrong).status == 'failed'
+
+    def test_a_wildcard_arm_runs_only_when_no_other_matches(self):
+        src = '''
+(module probe
+  (type Ax (union (a Int) (b Int) (c Int)))
+  (fn f ((arena Arena) (ax Ax))
+    (@spec ((Arena Ax) -> (List Int)))
+    (@alloc arena)
+    (@property p {P})
+    (let ((mut r (list-new arena Int)))
+      (do (match ax ((a n) (list-push r 1)) (_ (list-push r 2))) r))))
+'''
+        assert _status_of(src.replace('{P}', '(match ax ((a n) (forall (v $result) (== v 1))) (_ (forall (v $result) (== v 2))))')).status == 'verified'
+        assert _status_of(src.replace('{P}', '(match ax ((a n) (list-contains $result 2)) (_ true))')).status == 'failed'
+
+    def test_cond_clauses_are_exclusive(self):
+        src = '''
+(module probe
+  (fn f ((arena Arena) (x Int))
+    (@spec ((Arena Int) -> (List Int)))
+    (@alloc arena)
+    (@property p {P})
+    (let ((mut r (list-new arena Int)))
+      (do (cond ((> x 10) (list-push r 1))
+                ((> x 5) (list-push r 2))
+                (else (list-push r 3)))
+          r))))
+'''
+        # x = 20 satisfies both tests; only the first clause runs.
+        assert _status_of(src.replace('{P}', '(or (<= x 10) (not (list-contains $result 2)))')).status == 'verified'
+        assert _status_of(src.replace('{P}', (
+            '(and (== (list-len $result) 1) (forall (v $result) (or (== v 1) (== v 2) (== v 3))))'))).status == 'verified'
+        assert _status_of(src.replace('{P}', '(or (<= x 10) (list-contains $result 2))')).status == 'failed'
+
+    def test_sibling_lets_of_one_name_do_not_capture(self):
+        src = '''
+(module probe
+  (fn f ((arena Arena) (x Int) (c Bool))
+    (@spec ((Arena Int Bool) -> (List Int)))
+    (@alloc arena)
+    (@property p {P})
+    (let ((mut r (list-new arena Int)))
+      (do (if c
+            (let ((y 1)) (list-push r y))
+            (let ((y 2)) (list-push r y)))
+          r))))
+'''
+        assert _status_of(src.replace('{P}', '(forall (v $result) (== v (if c 1 2)))')).status == 'verified'
+        assert _status_of(src.replace('{P}', '(forall (v $result) (== v 1))')).status == 'failed'
+
+    def test_records_on_different_branches_are_different_values(self):
+        src = '''
+(module probe
+  (type Msg (record (v Int)))
+  (fn f ((arena Arena) (c Bool))
+    (@spec ((Arena Bool) -> (List Msg)))
+    (@alloc arena)
+    (@property p {P})
+    (let ((mut r (list-new arena Msg)))
+      (do (if c (list-push r (record-new Msg (v 1))) (list-push r (record-new Msg (v 2))))
+          r))))
+'''
+        assert _status_of(src.replace('{P}', '(forall (m $result) (== (. m v) (if c 1 2)))')).status == 'verified'
+        assert _status_of(src.replace('{P}', '(forall (m $result) (== (. m v) 1))')).status == 'failed'
+
+    @pytest.mark.parametrize("shape", sorted(_PUSH_BODY_SHAPES))
+    def test_the_model_agrees_with_the_length_bounds(self, shape):
+        """Both describe the same list; asserting them together must neither
+        contradict (the #115 guard) nor weaken either one."""
+        body, lower, upper = _PUSH_BODY_SHAPES[shape]
+        prop = "(forall (m $result) (== (. m to) root))"
+        from slop.verifier import verify_source
+        src = _push_shape_source(body, "{(list-len $result) >= %d}" % lower).replace(
+            "(@post", "(@property p %s)\n        (@post" % prop, 1)
+        result = verify_source(src, filename="probe.slop")[0]
+        assert result.status == 'verified', (shape, result.message)
+        assert 'inconsistent' not in (result.message or '').lower()
+
+
+class TestExactPushModelCalls:
+    """Codex review of #170: a call inside a modelled body.
+
+    Each false claim below verified with the first version of the model; each
+    must not, and with the model switched off none of them did.
+    """
+
+    def test_two_calls_to_a_state_changing_function_are_not_one_value(self):
+        src = '''
+(module probe
+  (fn next ((m (Map Int Int)))
+    (@spec (((Map Int Int)) -> Int))
+    (let ((x (map-get m 0)))
+      (do (map-put m 0 (+ x 1)) x)))
+  (fn f ((arena Arena) (m (Map Int Int)))
+    (@spec ((Arena (Map Int Int)) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (a $result) (forall (b $result) (== a b))))
+    (let ((mut r (list-new arena Int)))
+      (do (let ((x (next m))) (list-push r x))
+          (let ((y (next m))) (list-push r y))
+          r))))
+'''
+        assert _status_of(src).status != 'verified'
+
+    def test_posts_about_a_mutated_parameter_are_not_one_state(self):
+        src = '''
+(module probe
+  (fn inc1 ((m (Map Int Int)))
+    (@spec (((Map Int Int)) -> Int))
+    (@post (== $result (map-get m 0)))
+    (do (map-put m 0 (+ (map-get m 0) 1)) (map-get m 0)))
+  (fn inc2 ((m (Map Int Int)))
+    (@spec (((Map Int Int)) -> Int))
+    (@post (== $result (map-get m 0)))
+    (do (map-put m 0 (+ (map-get m 0) 2)) (map-get m 0)))
+  (fn f ((arena Arena) (m (Map Int Int)))
+    (@spec ((Arena (Map Int Int)) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (a $result) (forall (b $result) (== a b))))
+    (let ((mut r (list-new arena Int)))
+      (do (let ((x (inc1 m))) (list-push r x))
+          (let ((y (inc2 m))) (list-push r y))
+          r))))
+'''
+        assert _status_of(src).status != 'verified'
+
+    def test_a_callee_precondition_is_not_assumed_defined(self):
+        src = '''
+(module probe
+  (fn g ((x Int))
+    (@spec ((Int) -> Int))
+    (@pre (== (/ 1 x) 1))
+    (@post (== $result 1))
+    1)
+  (fn f ((arena Arena) (x Int))
+    (@spec ((Arena Int) -> (List Int)))
+    (@alloc arena)
+    (@property p (or (!= x 0) (not (list-contains $result 1))))
+    (let ((mut r (list-new arena Int)))
+      (do (let ((v (g x))) (list-push r 1)) r))))
+'''
+        assert _status_of(src).status != 'verified'
+
+    def test_two_calls_to_an_impure_value_function_may_differ(self):
+        # Not @pure, only value parameters: modelled, but each call is its own
+        # value - a counter or a clock would differ between the two.
+        src = '''
+(module probe
+  (fn tick ((x Int)) (@spec ((Int) -> Int)) x)
+  (fn f ((arena Arena) (x Int))
+    (@spec ((Arena Int) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (a $result) (forall (b $result) (== a b))))
+    (let ((mut r (list-new arena Int)))
+      (do (list-push r (tick x)) (list-push r (tick x)) r))))
+'''
+        assert _status_of(src).status != 'verified'
+
+    def test_two_calls_to_a_pure_function_are_one_value(self):
+        src = '''
+(module probe
+  (fn same ((x Int)) (@spec ((Int) -> Int)) (@pure) (+ x 1))
+  (fn f ((arena Arena) (x Int))
+    (@spec ((Arena Int) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (a $result) (forall (b $result) (== a b))))
+    (let ((mut r (list-new arena Int)))
+      (do (list-push r (same x)) (list-push r (same x)) r))))
+'''
+        assert _status_of(src).status == 'verified'
+
+
+_EDGE_HELPER = '''
+(module probe
+  (type Node (union (cn Int) (fresh Int)))
+  (type Derived (union (dsub Node) (dsucc Int Node) (dpred Int Node)))
+  (type Addressed (record (to Node) (what Derived)))
+  (type Edge (record (from Node) (role Int) (to Node)))
+  (type Pair (record (succ-half Addressed) (pred-half Addressed)))
+  (fn emit ((arena Arena) (e Edge))
+    (@spec ((Arena Edge) -> Pair))
+    (@alloc arena)
+    (@post (== (. (. $result succ-half) to) (. e from)))
+    (@post {POST})
+    (record-new Pair
+      (succ-half (record-new Addressed (to (. e from)) (what (union-new Derived dsucc (. e role) (. e to)))))
+      (pred-half (record-new Addressed (to (. e to)) (what (union-new Derived dpred (. e role) (. e from)))))))
+  (fn f ((arena Arena) (x Node) (r Int) (y Node))
+    (@spec ((Arena Node Int Node) -> (List Addressed)))
+    (@alloc arena)
+    (@property p (exists (m $result) (and (== (. m to) x)
+      (match (. m what) ((dsucc rr yy) (and (== rr r) (== yy y))) (_ false)))))
+    (let ((mut out (list-new arena Addressed)))
+      (let ((pair (emit arena (record-new Edge (from x) (role r) (to y)))))
+        (do (list-push out (. pair succ-half)) (list-push out (. pair pred-half)) out)))))
+'''
+_EDGE_POST = "(match (. (. $result succ-half) what) ((dsucc r y) (and (== r (. e role)) (== y (. e to)))) (_ false))"
+
+
+class TestNestedUnionFields:
+    """A union-new inside a returned record-new carries its tag and every
+    payload, at the declared sorts, under the accessors a contract's match
+    reads - and a caller's exact push model can use the resulting @post,
+    whose match arms bind names the caller's scope does not have."""
+
+    def test_the_payloads_of_a_nested_union_are_known(self):
+        assert _status_of(_EDGE_HELPER.replace('{POST}', _EDGE_POST), 'emit').status == 'verified'
+
+    def test_a_wrong_payload_claim_fails(self):
+        wrong = _EDGE_POST.replace('(== y (. e to))', '(== y (. e from))')
+        assert _status_of(_EDGE_HELPER.replace('{POST}', wrong), 'emit').status == 'failed'
+
+    def test_a_caller_uses_the_payload_post(self):
+        assert _status_of(_EDGE_HELPER.replace('{POST}', _EDGE_POST), 'f').status == 'verified'
+
+
+class TestTailConstructorScope:
+    """A returned constructor's facts are read in the scope the tail sees.
+
+    They are derived after the body is translated, when a shadowing local's
+    scope is gone: under `(let ((x 2)) ...)` a field `(n x)` was read as the
+    PARAMETER x, and a postcondition equating the field with the parameter
+    verified. Found by Codex reviewing #170; the plain-field and `some` cases
+    were already wrong on main."""
+
+    _SRC = '''
+(module probe
+  (type U (union (a Int) (b Int)))
+  (type R (record (n Int) (o (Option Int)) (u U)))
+  (fn f ((x Int) (c Bool))
+    (@spec ((Int Bool) -> R))
+    (@post {POST})
+    (let ((x 2)) {BODY})))
+'''
+    _R = "(record-new R (n x) (o (some x)) (u (union-new U a x)))"
+
+    @pytest.mark.parametrize("post,expected", [
+        ("(== (. $result n) x)", 'failed'),
+        ("(== (. $result n) 2)", 'verified'),
+        ("(match (. $result o) ((some v) (== v x)) ((none) false))", 'failed'),
+        ("(match (. $result u) ((a v) (== v x)) (_ false))", 'failed'),
+        ("(match (. $result u) ((a v) (== v 2)) (_ false))", 'verified'),
+    ])
+    def test_a_tail_record(self, post, expected):
+        src = self._SRC.replace('{POST}', post).replace('{BODY}', self._R)
+        assert _status_of(src).status == expected, post
+
+    def test_a_branch_local_shadow_is_read_in_its_branch(self):
+        # Codex, third review: the enclosing scope was replayed but not the
+        # branch's own let, so the c-branch's x read as the outer 2.
+        src = '''
+(module probe
+  (type R (record (n Int)))
+  (fn f ((x Int) (c Bool))
+    (@spec ((Int Bool) -> R))
+    (@post {POST})
+    (let ((x 2))
+      (if c
+        (let ((x 3)) (record-new R (n x)))
+        (record-new R (n x))))))
+'''
+        assert _status_of(src.replace('{POST}', '(== (. $result n) 2)')).status == 'failed'
+        assert _status_of(src.replace('{POST}', '(== (. $result n) (if c 3 2))')).status == 'verified'
+
+    @pytest.mark.parametrize("post,expected", [
+        ("(== (. $result n) x)", 'failed'),
+        ("(== (. $result n) 2)", 'verified'),
+    ])
+    def test_a_record_under_an_if(self, post, expected):
+        src = self._SRC.replace('{POST}', post).replace('{BODY}', "(if c %s %s)" % (self._R, self._R))
+        assert _status_of(src).status == expected, post
+
+
+class TestExactPushModelBuiltins:
+    def test_two_allocations_are_not_one_value(self):
+        # An unlisted builtin is not pure: two (arena-new 32) calls allocate
+        # two arenas. Codex, second review of #170.
+        src = '''
+(module probe
+  (fn f ((arena Arena))
+    (@spec ((Arena) -> (List Arena)))
+    (@alloc arena)
+    (@property p (forall (a $result) (forall (b $result) (== a b))))
+    (let ((mut r (list-new arena Arena)))
+      (do (list-push r (arena-new 32))
+          (list-push r (arena-new 32))
+          r))))
+'''
+        assert _status_of(src).status != 'verified'
+
+    def test_a_user_function_named_like_a_builtin_is_not_the_builtin(self):
+        # Codex, third review: a user `set-len` that mutates a map passed as a
+        # pure state read, and two reads of the map across it became one value.
+        src = '''
+(module probe
+  (fn set-len ((m (Map Int Int)))
+    (@spec (((Map Int Int)) -> Int))
+    (do (map-put m 0 2) 0))
+  (fn f ((arena Arena) (m (Map Int Int)))
+    (@spec ((Arena (Map Int Int)) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (a $result) (forall (b $result) (== a b))))
+    (let ((mut r (list-new arena Int)))
+      (do (list-push r (map-get m 0))
+          (let ((ignored (set-len m))) (do))
+          (list-push r (map-get m 0))
+          r))))
+'''
+        assert _status_of(src).status != 'verified'
+
+    @pytest.mark.parametrize("src", [
+        # Codex, fourth review: a user list-push that pushes nothing...
+        '''
+(module probe
+  (fn list-push ((xs (List Int)) (x Int)) (@spec (((List Int) Int) -> Unit)) (do))
+  (fn f ((arena Arena))
+    (@spec ((Arena) -> (List Int)))
+    (@alloc arena)
+    (@property p (list-contains $result 1))
+    (let ((mut r (list-new arena Int))) (do (list-push r 1) r))))
+''',
+        # ...and a @pure user string-len the translator read as the builtin.
+        '''
+(module probe
+  (fn string-len ((s String)) (@spec ((String) -> Int)) (@pure) 0)
+  (fn f ((arena Arena))
+    (@spec ((Arena) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (v $result) (== v 3)))
+    (let ((mut r (list-new arena Int))) (do (list-push r (string-len "abc")) r))))
+'''])
+    def test_a_redefined_builtin_is_not_modelled(self, src):
+        assert _status_of(src).status != 'verified'
+
+    def test_a_callee_property_is_assumed_at_the_call(self):
+        # A fact a callee states as a @property holds of every call.
+        src = '''
+(module probe
+  (fn half ((x Int))
+    (@spec ((Int) -> Int))
+    (@pure)
+    (@property doubled (== (* 2 $result) (- x (mod x 2))))
+    (/ x 2))
+  (fn f ((arena Arena) (x Int))
+    (@spec ((Arena Int) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (v $result) (== (* 2 v) (- x (mod x 2)))))
+    (let ((mut r (list-new arena Int)))
+      (do (list-push r (half x)) r))))
+'''
+        assert _status_of(src).status == 'verified'
+
+
+# Shapes the exact model does not follow. Each must keep the behaviour it had
+# before #170, and in particular a false claim about the elements must never
+# come back verified. {C} is the contract.
+_EXACT_BAIL_SHAPES = {
+    'for_each': '(for-each (x xs) (list-push r x))',
+    'while': '(let ((mut i 0)) (while (< i 2) (do (list-push r 1) (set! i (+ i 1)))))',
+    'list_set': '(do (list-push r 1) (list-set r 0 5))',
+    'alias': '(let ((q r)) (list-push q 1))',
+    'passed_to_a_call': '(do (list-push r 1) (sink r))',
+    'push_to_another_list': '(let ((mut other (list-new arena Int))) (list-push other 1))',
+    'push_in_a_let_initializer': '(let ((z (list-push r 1))) (do))',
+    'length_in_a_guard': '(do (list-push r 1) (when (> (list-len r) 0) (list-push r 2)))',
+    'set_of_a_parameter': '(do (set! n 5) (list-push r n))',
+    'effectful_statement': '(do (sink xs) (list-push r 1))',
+    'non_bool_guard': '(when (count xs) (list-push r 1))',
+}
+
+
+class TestExactPushModelFallsBack:
+    _SRC = '''
+(module probe
+  (fn sink ((xs (List Int))) (@spec (((List Int)) -> Int)) 0)
+  (fn count ((xs (List Int))) (@spec (((List Int)) -> Int)) 0)
+  (fn f ((arena Arena) (xs (List Int)) (n Int))
+    (@spec ((Arena (List Int) Int) -> (List Int)))
+    (@alloc arena)
+    {C}
+    (let ((mut r (list-new arena Int)))
+      (do {BODY} r))))
+'''
+
+    @pytest.mark.parametrize("shape", sorted(_EXACT_BAIL_SHAPES))
+    def test_a_false_claim_never_verifies(self, shape):
+        src = self._SRC.replace('{BODY}', _EXACT_BAIL_SHAPES[shape]).replace(
+            '{C}', '(@property p (exists (v $result) (== v 12345)))')
+        assert _status_of(src).status != 'verified', shape
+
+    @pytest.mark.parametrize("shape", sorted(_EXACT_BAIL_SHAPES))
+    def test_the_status_is_what_it_was_before(self, shape, monkeypatch):
+        """With the model switched off entirely, the same claim reports the
+        same status: a shape the model does not follow is verified exactly as
+        it was before #170."""
+        from slop.verifier.contract_verifier import ContractVerifier
+        src = self._SRC.replace('{BODY}', _EXACT_BAIL_SHAPES[shape]).replace(
+            '{C}', '(@property p (forall (v $result) (== v 1)))')
+        with_model = _status_of(src).status
+        monkeypatch.setattr(ContractVerifier, '_exact_push_model', lambda self, body, tr: None)
+        assert _status_of(src).status == with_model, shape

@@ -78,6 +78,10 @@ class FunctionSignature:
     postconditions: List['SExpr'] = field(default_factory=list)  # @post annotations
     assumptions: List['SExpr'] = field(default_factory=list)  # @assume annotations
     callback_assumptions: List[CallbackAssumption] = field(default_factory=list)  # @callback-assume annotations
+    preconditions: List['SExpr'] = field(default_factory=list)  # @pre annotations
+    is_pure: bool = False  # declared @pure
+    param_modes: List[Optional[str]] = field(default_factory=list)  # 'in'/'out'/'mut' or None, per param
+    properties: List['SExpr'] = field(default_factory=list)  # @property expressions (name dropped)
 
 
 @dataclass

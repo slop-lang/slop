@@ -28,6 +28,13 @@ class FunctionDef:
     is_pure: bool = True
     postconditions: List['SExpr'] = field(default_factory=list)
     properties: List[Tuple[Optional[str], 'SExpr']] = field(default_factory=list)  # @property - (name, expr) tuples
+    # @pre, so a caller can assume a postcondition only where the call's
+    # precondition holds.
+    preconditions: List['SExpr'] = field(default_factory=list)
+    # Each parameter's declared type expression and mode ('in', 'out', 'mut'
+    # or None), so a caller can tell whether a call can change state it holds.
+    param_type_exprs: List[Optional['SExpr']] = field(default_factory=list)
+    param_modes: List[Optional[str]] = field(default_factory=list)
 
 
 class FunctionRegistry:
@@ -61,6 +68,8 @@ class FunctionRegistry:
 
         # Extract parameter names
         params = []
+        param_type_exprs: List[Optional['SExpr']] = []
+        param_modes: List[Optional[str]] = []
         param_list = fn_form[2] if isinstance(fn_form[2], SList) else SList([])
         for param in param_list:
             if isinstance(param, SList) and len(param) >= 2:
@@ -68,16 +77,21 @@ class FunctionRegistry:
                 if isinstance(first, Symbol) and first.name in ('in', 'out', 'mut'):
                     # Mode is explicit: (in name Type)
                     param_name = param[1].name if isinstance(param[1], Symbol) else None
+                    mode, type_expr = first.name, (param[2] if len(param) > 2 else None)
                 else:
                     # No mode: (name Type)
                     param_name = first.name if isinstance(first, Symbol) else None
+                    mode, type_expr = None, param[1]
                 if param_name:
                     params.append(param_name)
+                    param_type_exprs.append(type_expr)
+                    param_modes.append(mode)
 
         # Extract body, postconditions, properties (skip other annotations and :keywords)
         body = None
         is_pure = False
         postconditions: List['SExpr'] = []
+        preconditions: List['SExpr'] = []
         properties: List[Tuple[Optional[str], 'SExpr']] = []
         annotation_forms = {'@intent', '@spec', '@pre', '@post', '@assume', '@pure',
                            '@alloc', '@example', '@deprecated', '@property',
@@ -108,6 +122,10 @@ class FunctionRegistry:
                 postconditions.append(item[1])
                 skip_next_string = False
                 continue
+            elif is_form(item, '@pre') and len(item) > 1:
+                preconditions.append(item[1])
+                skip_next_string = False
+                continue
             elif is_form(item, '@property') and len(item) > 1:
                 # Extract property (universal assertion)
                 # Named: (@property name expr) or Unnamed: (@property expr)
@@ -129,7 +147,9 @@ class FunctionRegistry:
 
         self.functions[name] = FunctionDef(name=name, params=params, body=body,
                                            is_pure=is_pure, postconditions=postconditions,
-                                           properties=properties)
+                                           properties=properties, preconditions=preconditions,
+                                           param_type_exprs=param_type_exprs,
+                                           param_modes=param_modes)
 
     def is_simple_accessor(self, name: str) -> bool:
         """Check if function is a simple field accessor: (. param field)"""
