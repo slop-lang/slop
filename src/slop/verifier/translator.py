@@ -35,6 +35,12 @@ def _str_hash(s: str) -> int:
     return struct.unpack('<I', hashlib.md5(s.encode()).digest()[:4])[0] % (2**31)
 
 
+# A binding that makes a name translate to nothing. `_translate_symbol` refuses
+# a function declaration where a value belongs, so binding one is how a match
+# arm says "this name exists, and nothing can be proved about it".
+_UNTRANSLATABLE = z3.Function('#untranslatable', z3.IntSort(), z3.IntSort()) if Z3_AVAILABLE else None
+
+
 class Z3Translator:
     """Translates SLOP AST expressions to Z3 constraints"""
 
@@ -2408,6 +2414,93 @@ class Z3Translator:
         return self.enum_values.get(
             name, self.enum_values.get(f"'{name}", hash(name) % 256))
 
+    def payload_sort(self, tag: str, index: int) -> Optional[z3.SortRef]:
+        """The Z3 sort of payload `index` of variant `tag`, or None if unknown.
+
+        A payload read at the wrong sort is not merely imprecise. Read as an Int,
+        a Float payload can never equal 0.5, so `(implies (== b 0.5) ...)` holds
+        vacuously and a false contract verifies. So the sort comes from the
+        declaration, and a variant this cannot pin down - declared by two unions,
+        or with fewer payloads than the pattern names - gets None, and its names
+        stay untranslatable.
+
+        The built-in Option/Result constructors keep the Int reading every other
+        site gives them; their payload type is a type parameter this cannot see.
+        """
+        owners = {}
+        for typ in list(self.type_env.type_registry.values()) + list(self.imported_defs.types.values()):
+            if isinstance(typ, UnionType) and tag in typ.variants:
+                owners[typ.name] = typ
+        if not owners:
+            return z3.IntSort() if tag in ('some', 'none', 'ok', 'error') else None
+        if len(owners) != 1:
+            return None
+        union = next(iter(owners.values()))
+        payloads = union.payload_types.get(tag)
+        if payloads is None:
+            first = union.variants.get(tag)
+            payloads = (first,) if first is not None else ()
+        if index >= len(payloads) or payloads[index] is None:
+            return None
+        return self._sort_of_type(payloads[index])
+
+    _INT_PRIMITIVES = frozenset(('Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64',
+                                 'String', 'Unit', 'Void', 'Arena'))
+
+    def _sort_of_type(self, typ: Type, depth: int = 0) -> Optional[z3.SortRef]:
+        """The Z3 sort a value of `typ` is read at, or None if `typ` is unresolved.
+
+        A type name declared after its first use - `(type T (union (pair Alias)))`
+        before `(type Alias Float)` - is parsed as a bare PrimitiveType('Alias'),
+        and reading that as an Int is exactly the wrong-sort read that proves
+        false things about Floats. So a name that is not a built-in primitive is
+        looked up again here, after every declaration is registered, and one
+        that resolves to nothing gives None.
+        """
+        if depth > 16:
+            return None
+        if isinstance(typ, PrimitiveType):
+            if typ.name == 'Bool':
+                return z3.BoolSort()
+            if typ.name in ('Float', 'F32', 'F64'):
+                return z3.RealSort()
+            if typ.name in self._INT_PRIMITIVES:
+                return z3.IntSort()
+            target = self.type_env.type_registry.get(typ.name)
+            if target is None:
+                target = self.imported_defs.types.get(typ.name)
+            if target is None or target is typ:
+                return None
+            return self._sort_of_type(target, depth + 1)
+        # Ranges are integers; records, unions, enums, collections and pointers
+        # are all modelled as Int identities.
+        return z3.IntSort()
+
+    def union_payload_accessor(self, tag: str, index: int = 0,
+                               sort: Optional[z3.SortRef] = None) -> z3.FuncDeclRef:
+        """The accessor for payload `index` of union variant `tag`.
+
+        Position 0 keeps the historical name `union_payload_<tag>`, which
+        `unwrap`, the Option/Result axioms and union_handling all read, so a
+        single-payload variant means what it always meant. Later positions are
+        `union_payload_<tag>#<i>`: `#` cannot occur in a SLOP symbol, so no user
+        name and no other variant's accessor can collide with one (a suffix like
+        `_1` would, with a variant named `foo_1`). A payload that is not an Int
+        gets its own accessor, suffixed `:<sort>`, rather than reusing an
+        Int-ranged one some other site created under the plain name.
+        """
+        if sort is None:
+            sort = z3.IntSort()
+        name = f"union_payload_{tag}" if index == 0 else f"union_payload_{tag}#{index}"
+        if sort != z3.IntSort():
+            name = f"{name}:{sort}"
+        func = self.variables.get(name)
+        if isinstance(func, z3.FuncDeclRef) and func.arity() == 1 and func.range() == sort:
+            return func
+        func = z3.Function(name, z3.IntSort(), sort)
+        self.variables[name] = func
+        return func
+
     def is_loop_versioned(self, name: str) -> bool:
         """True if a loop or a `set!` replaced `name`, so it has more than one value."""
         return name in self._pre_loop_variables
@@ -2614,7 +2707,48 @@ class Z3Translator:
                 tag_func = self.variables[tag_func_name]
             tag_value = tag_func(scrutinee)
 
+        # EVERY PAYLOAD POSITION IS BOUND, AND ONLY FOR ITS OWN ARM (#166).
+        # Binding just pattern[1], and never undoing it, let a name in one arm
+        # read another arm's payload: arms are translated in reverse, so in
+        # `(match t ((triple a b c) b) ((one b) b))` the triple arm's `b` and
+        # `c` were both `union_payload_one(t)`, and a postcondition claiming
+        # the third field was returned verified against a body returning the
+        # second. Now each arm binds all of its positions, a name the match
+        # shadowed is restored after every arm, and a name more than one arm
+        # binds is removed once the match is done - left in place it would
+        # still read whichever arm happened to be translated last.
+        _missing = object()
+        entry_values: Dict[str, Any] = {}
+        arm_binders: Dict[str, int] = {}
+
+        def bind_arm(names_and_terms: List[Tuple[str, Any]]) -> None:
+            for var_name, term in names_and_terms:
+                if var_name not in entry_values:
+                    entry_values[var_name] = self.variables.get(var_name, _missing)
+                arm_binders[var_name] = arm_binders.get(var_name, 0) + 1
+                self.variables[var_name] = term
+
+        def end_arm(names_and_terms: List[Tuple[str, Any]]) -> None:
+            for var_name, _ in names_and_terms:
+                previous = entry_values[var_name]
+                if previous is not _missing:
+                    self.variables[var_name] = previous
+
         # Process clauses in reverse to build nested If
+        result: Optional[z3.ExprRef] = None
+        try:
+            result = self._translate_match_clauses(expr, scrutinee, tag_value, bind_arm, end_arm)
+        finally:
+            for var_name, previous in entry_values.items():
+                if previous is not _missing:
+                    self.variables[var_name] = previous
+                elif arm_binders.get(var_name, 0) > 1:
+                    self.variables.pop(var_name, None)
+        return result
+
+    def _translate_match_clauses(self, expr: SList, scrutinee: z3.ExprRef, tag_value: z3.ExprRef,
+                                 bind_arm, end_arm) -> Optional[z3.ExprRef]:
+        """The arms of `_translate_match`, last to first, as a nested If."""
         result: Optional[z3.ExprRef] = None
         for clause in reversed(expr.items[2:]):
             if not isinstance(clause, SList) or len(clause) < 2:
@@ -2638,23 +2772,27 @@ class Z3Translator:
                     tag = inner.name if isinstance(inner, Symbol) else None
 
                 if tag:
-                    # Look up tag index from enum_values or hash it
-                    tag_idx = self.enum_values.get(tag, self.enum_values.get(f"'{tag}", hash(tag) % 256))
+                    tag_idx = self.constructor_tag(tag)
 
-                    # If the pattern has a variable binding, declare it
-                    if len(pattern) >= 2 and isinstance(pattern[1], Symbol):
-                        var_name = pattern[1].name
-                        # Create uninterpreted function to extract the payload
-                        payload_func_name = f"union_payload_{tag}"
-                        if payload_func_name not in self.variables:
-                            payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
-                            self.variables[payload_func_name] = payload_func
-                        else:
-                            payload_func = self.variables[payload_func_name]
-                        # Bind the variable to the payload extraction
-                        self.variables[var_name] = payload_func(scrutinee)
-
-                    body_z3 = self.translate_expr(body)
+                    # Every named payload position, each to its own accessor,
+                    # at the sort its declaration gives it. A position whose sort
+                    # cannot be pinned is bound to a marker that translates to
+                    # nothing: leaving the name unbound would let it read an
+                    # outer binding of the same name instead.
+                    bindings: List[Tuple[str, Any]] = []
+                    for position, binder in enumerate(pattern.items[1:]):
+                        if isinstance(binder, Symbol) and binder.name != '_':
+                            sort = self.payload_sort(tag, position)
+                            if sort is None:
+                                bindings.append((binder.name, _UNTRANSLATABLE))
+                                continue
+                            accessor = self.union_payload_accessor(tag, position, sort)
+                            bindings.append((binder.name, accessor(scrutinee)))
+                    bind_arm(bindings)
+                    try:
+                        body_z3 = self.translate_expr(body)
+                    finally:
+                        end_arm(bindings)
                     if body_z3 is None:
                         return None
 
@@ -2665,7 +2803,7 @@ class Z3Translator:
             elif isinstance(pattern, Symbol):
                 # Simple tag pattern without variable binding
                 tag = pattern.name
-                tag_idx = self.enum_values.get(tag, self.enum_values.get(f"'{tag}", hash(tag) % 256))
+                tag_idx = self.constructor_tag(tag)
 
                 body_z3 = self.translate_expr(body)
                 if body_z3 is None:
