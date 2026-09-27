@@ -603,7 +603,8 @@ slop_option_types_FnSignature_ptr env_env_lookup_function_direct(env_TypeEnv* en
 slop_option_types_FnSignature_ptr env_env_lookup_function(env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
-        __auto_type own = ({ __auto_type _mv = env_env_get_module(env); _mv.has_value ? ({ __auto_type mod = _mv.value; env_env_lookup_function_direct(env, string_concat(env_env_arena(env), mod, string_concat(env_env_arena(env), SLOP_STR(":"), name))); }) : (((slop_option_types_FnSignature_ptr){.has_value = false})); });
+        __auto_type arena = env_env_arena(env);
+        __auto_type own = ({ __auto_type _mv = env_env_get_module(env); _mv.has_value ? ({ __auto_type mod = _mv.value; env_env_lookup_function_direct(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3 }; _ll.data[0] = mod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }))); }) : (((slop_option_types_FnSignature_ptr){.has_value = false})); });
         __auto_type _mv_42 = own;
         if (_mv_42.has_value) {
             __auto_type _ = _mv_42.value;

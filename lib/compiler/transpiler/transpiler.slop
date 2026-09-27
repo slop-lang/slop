@@ -51,7 +51,7 @@
   (import stmt (transpile-stmt))
   (import expr (transpile-expr))
   (import match (transpile-match))
-  (import strlib (starts-with ends-with substring char-at))
+  (import strlib (starts-with ends-with substring char-at string-build))
   (import parser (pretty-print))
 
   ;; ============================================================
@@ -919,19 +919,20 @@
     (@intent "Report an import of name from source-mod that the current module already defines or imports from elsewhere")
     (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> Unit))
     (@pre {ctx != nil})
-    (let ((cur (ctx-current-module-name ctx)))
+    (let ((arena (. (deref ctx) arena))
+          (cur (ctx-current-module-name ctx)))
       (match (ctx-lookup-func-in-module ctx name cur)
         ((some entry)
           (let ((from (. entry imported-from)))
             (if (== (string-len from) 0)
               (ctx-add-error-at ctx
-                (ctx-str5 ctx "'" name "' is defined in module '" cur
-                          (ctx-str3 ctx "' and also imported from '" source-mod "'"))
+                (string-build arena (list String "'" name "' is defined in module '" cur
+                                                 "' and also imported from '" source-mod "'"))
                 (ctx-sexpr-line at) (ctx-sexpr-col at))
               (when (not (string-eq from source-mod))
                 (ctx-add-error-at ctx
-                  (ctx-str5 ctx "'" name "' is imported from both '" from
-                            (ctx-str3 ctx "' and '" source-mod "'"))
+                  (string-build arena (list String "'" name "' is imported from both '" from
+                                                   "' and '" source-mod "'"))
                   (ctx-sexpr-line at) (ctx-sexpr-col at))))))
         ((none) (do)))))
 
@@ -939,12 +940,13 @@
     (@intent "Report a definition of name in the current module that the module also imports")
     (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> Unit))
     (@pre {ctx != nil})
-    (let ((cur (ctx-current-module-name ctx)))
+    (let ((arena (. (deref ctx) arena))
+          (cur (ctx-current-module-name ctx)))
       (match (ctx-find-import-entry ctx name cur)
         ((some entry)
           (ctx-add-error-at ctx
-            (ctx-str5 ctx "'" name "' is defined in module '" cur
-                      (ctx-str3 ctx "' and also imported from '" (. entry imported-from) "'"))
+            (string-build arena (list String "'" name "' is defined in module '" cur
+                                             "' and also imported from '" (. entry imported-from) "'"))
             (ctx-sexpr-line at) (ctx-sexpr-col at)))
         ((none) (do)))))
 

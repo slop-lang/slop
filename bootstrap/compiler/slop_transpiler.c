@@ -1555,6 +1555,7 @@ uint8_t transpiler_is_type_name(slop_string name) {
 void transpiler_report_import_collision(context_TranspileContext* ctx, slop_string name, slop_string source_mod, types_SExpr* at) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
+        __auto_type arena = (*ctx).arena;
         __auto_type cur = context_ctx_current_module_name(ctx);
         __auto_type _mv_1381 = context_ctx_lookup_func_in_module(ctx, name, cur);
         if (_mv_1381.has_value) {
@@ -1562,10 +1563,10 @@ void transpiler_report_import_collision(context_TranspileContext* ctx, slop_stri
             {
                 __auto_type from = entry.imported_from;
                 if (string_len(from) == 0) {
-                    context_ctx_add_error_at(ctx, context_ctx_str5(ctx, SLOP_STR("'"), name, SLOP_STR("' is defined in module '"), cur, context_ctx_str3(ctx, SLOP_STR("' and also imported from '"), source_mod, SLOP_STR("'"))), context_ctx_sexpr_line(at), context_ctx_sexpr_col(at));
+                    context_ctx_add_error_at(ctx, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("' is defined in module '"); _ll.data[3] = cur; _ll.data[4] = SLOP_STR("' and also imported from '"); _ll.data[5] = source_mod; _ll.data[6] = SLOP_STR("'"); _ll; })), context_ctx_sexpr_line(at), context_ctx_sexpr_col(at));
                 } else {
                     if (!(string_eq(from, source_mod))) {
-                        context_ctx_add_error_at(ctx, context_ctx_str5(ctx, SLOP_STR("'"), name, SLOP_STR("' is imported from both '"), from, context_ctx_str3(ctx, SLOP_STR("' and '"), source_mod, SLOP_STR("'"))), context_ctx_sexpr_line(at), context_ctx_sexpr_col(at));
+                        context_ctx_add_error_at(ctx, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("' is imported from both '"); _ll.data[3] = from; _ll.data[4] = SLOP_STR("' and '"); _ll.data[5] = source_mod; _ll.data[6] = SLOP_STR("'"); _ll; })), context_ctx_sexpr_line(at), context_ctx_sexpr_col(at));
                     }
                 }
             }
@@ -1577,11 +1578,12 @@ void transpiler_report_import_collision(context_TranspileContext* ctx, slop_stri
 void transpiler_report_imported_definition(context_TranspileContext* ctx, slop_string name, types_SExpr* at) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
+        __auto_type arena = (*ctx).arena;
         __auto_type cur = context_ctx_current_module_name(ctx);
         __auto_type _mv_1382 = context_ctx_find_import_entry(ctx, name, cur);
         if (_mv_1382.has_value) {
             __auto_type entry = _mv_1382.value;
-            context_ctx_add_error_at(ctx, context_ctx_str5(ctx, SLOP_STR("'"), name, SLOP_STR("' is defined in module '"), cur, context_ctx_str3(ctx, SLOP_STR("' and also imported from '"), entry.imported_from, SLOP_STR("'"))), context_ctx_sexpr_line(at), context_ctx_sexpr_col(at));
+            context_ctx_add_error_at(ctx, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("' is defined in module '"); _ll.data[3] = cur; _ll.data[4] = SLOP_STR("' and also imported from '"); _ll.data[5] = entry.imported_from; _ll.data[6] = SLOP_STR("'"); _ll; })), context_ctx_sexpr_line(at), context_ctx_sexpr_col(at));
         } else if (!_mv_1382.has_value) {
         }
     }

@@ -1590,10 +1590,8 @@
                                             (match (. (deref sig) module-name)
                                               ((some def-mod)
                                                 (env-add-error env
-                                                  (string-concat arena "function '"
-                                                    (string-concat arena op
-                                                      (string-concat arena "' is defined in module '"
-                                                        (string-concat arena def-mod "' but not imported"))))
+                                                  (string-build arena (list String "function '" op "' is defined in module '"
+                                                                           def-mod "' but not imported"))
                                                   line col))
                                               ((none) (do))))
                                           ((none) (do)))

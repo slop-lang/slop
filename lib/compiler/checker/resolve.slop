@@ -18,6 +18,7 @@
                env-set-module env-get-module env-get-current-file
                env-add-error env-lookup-function-direct
                env-lookup-constant-in-module))
+  (import strlib (string-build))
   (import path (path-dirname path-join))
   (import file (file-exists))
 
@@ -133,18 +134,14 @@
         ;; Defined here and imported: the import could never be reached
         (match (env-get-module env)
           ((some cur)
-            (let ((own-qualified (string-concat arena cur (string-concat arena ":" local-name))))
+            (let ((own-qualified (string-build arena (list String cur ":" local-name))))
               (when (and (not (string-eq own-qualified qualified-name))
                          (match (env-lookup-function-direct env own-qualified)
                            ((some _) true)
                            ((none) false)))
                 (env-add-error env
-                  (string-concat arena "'"
-                    (string-concat arena local-name
-                      (string-concat arena "' is defined in module '"
-                        (string-concat arena cur
-                          (string-concat arena "' and also imported from '"
-                            (string-concat arena source-mod "'"))))))
+                  (string-build arena (list String "'" local-name "' is defined in module '" cur
+                                                   "' and also imported from '" source-mod "'"))
                   (sexpr-line name-expr) (sexpr-col name-expr)))))
           ((none) (do)))
         ;; Imported from two modules: neither may be picked silently
@@ -156,12 +153,8 @@
                   (match (. (deref prev-sig) module-name)
                     ((some prev-mod)
                       (env-add-error env
-                        (string-concat arena "'"
-                          (string-concat arena local-name
-                            (string-concat arena "' is imported from both '"
-                              (string-concat arena prev-mod
-                                (string-concat arena "' and '"
-                                  (string-concat arena source-mod "'"))))))
+                        (string-build arena (list String "'" local-name "' is imported from both '" prev-mod
+                                                         "' and '" source-mod "'"))
                         (sexpr-line name-expr) (sexpr-col name-expr)))
                     ((none) (do))))
                 ((none) (do)))))

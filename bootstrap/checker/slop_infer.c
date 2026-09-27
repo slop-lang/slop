@@ -1940,7 +1940,7 @@ types_ResolvedType* infer_infer_special_form(env_TypeEnv* env, types_SExpr* expr
                                                 __auto_type _mv_339 = (*sig).module_name;
                                                 if (_mv_339.has_value) {
                                                     __auto_type def_mod = _mv_339.value;
-                                                    env_env_add_error(env, string_concat(arena, SLOP_STR("function '"), string_concat(arena, op, string_concat(arena, SLOP_STR("' is defined in module '"), string_concat(arena, def_mod, SLOP_STR("' but not imported"))))), line, col);
+                                                    env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5 }; _ll.data[0] = SLOP_STR("function '"); _ll.data[1] = op; _ll.data[2] = SLOP_STR("' is defined in module '"); _ll.data[3] = def_mod; _ll.data[4] = SLOP_STR("' but not imported"); _ll; })), line, col);
                                                 } else if (!_mv_339.has_value) {
                                                 }
                                             } else if (!_mv_338.has_value) {

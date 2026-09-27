@@ -7,6 +7,7 @@
 #include "slop_parser.h"
 #include "slop_types.h"
 #include "slop_env.h"
+#include "slop_strlib.h"
 #include "slop_path.h"
 #include "slop_file.h"
 

@@ -145,9 +145,9 @@ void resolve_check_import_collision(env_TypeEnv* env, slop_string local_name, sl
             if (_mv_1885.has_value) {
                 __auto_type cur = _mv_1885.value;
                 {
-                    __auto_type own_qualified = string_concat(arena, cur, string_concat(arena, SLOP_STR(":"), local_name));
+                    __auto_type own_qualified = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3 }; _ll.data[0] = cur; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = local_name; _ll; }));
                     if (!(string_eq(own_qualified, qualified_name)) && ({ __auto_type _mv = env_env_lookup_function_direct(env, own_qualified); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) {
-                        env_env_add_error(env, string_concat(arena, SLOP_STR("'"), string_concat(arena, local_name, string_concat(arena, SLOP_STR("' is defined in module '"), string_concat(arena, cur, string_concat(arena, SLOP_STR("' and also imported from '"), string_concat(arena, source_mod, SLOP_STR("'"))))))), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
+                        env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is defined in module '"); _ll.data[3] = cur; _ll.data[4] = SLOP_STR("' and also imported from '"); _ll.data[5] = source_mod; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
                     }
                 }
             } else if (!_mv_1885.has_value) {
@@ -162,7 +162,7 @@ void resolve_check_import_collision(env_TypeEnv* env, slop_string local_name, sl
                         __auto_type _mv_1888 = (*prev_sig).module_name;
                         if (_mv_1888.has_value) {
                             __auto_type prev_mod = _mv_1888.value;
-                            env_env_add_error(env, string_concat(arena, SLOP_STR("'"), string_concat(arena, local_name, string_concat(arena, SLOP_STR("' is imported from both '"), string_concat(arena, prev_mod, string_concat(arena, SLOP_STR("' and '"), string_concat(arena, source_mod, SLOP_STR("'"))))))), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
+                            env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is imported from both '"); _ll.data[3] = prev_mod; _ll.data[4] = SLOP_STR("' and '"); _ll.data[5] = source_mod; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
                         } else if (!_mv_1888.has_value) {
                         }
                     } else if (!_mv_1887.has_value) {
