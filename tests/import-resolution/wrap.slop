@@ -1,17 +1,19 @@
 ;; A wrapper named after the FFI function it calls, and a self-recursive f
 ;; while alpha and beta also define f: inside each, the call must resolve
 ;; within this module -- to the FFI declaration, and to itself.
+;; labs is in libc proper, so this links everywhere; a math.h function
+;; would need -lm on Linux, which slop build does not pass.
 
 (module wrap
-  (export sqrt depth)
+  (export labs depth)
 
-  (ffi "math.h"
-    (sqrt ((x Float)) Float))
+  (ffi "stdlib.h"
+    (labs ((x Int)) Int))
 
-  (fn sqrt ((x Float))
-    (@intent "Wrap the C sqrt under the same name")
-    (@spec ((Float) -> Float))
-    (sqrt x))
+  (fn labs ((x Int))
+    (@intent "Wrap the C labs under the same name")
+    (@spec ((Int) -> Int))
+    (labs x))
 
   (fn f ((n Int))
     (@intent "Count down to zero recursively")

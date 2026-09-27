@@ -4,7 +4,7 @@
 ;; main.slop's imports in reverse, so the build order reverses too.
 
 (module main
-  (import wrap (sqrt depth))
+  (import wrap (labs depth))
   (import tasks (join))
   (import user (pair))
   (import beta (f))
@@ -24,7 +24,7 @@
                     (+ (check "alpha's g calls alpha's f" (== (g 1) 2))
                     (+ (check "imported join is tasks'" (== (join 3) 6))
                     (+ (check "user's join is strs'" (== (pair 1 2) 12))
-                    (+ (check "FFI-named wrapper reaches the FFI" (== (sqrt 16.0) 4.0))
+                    (+ (check "FFI-named wrapper reaches the FFI" (== (labs -7) 7))
                        (check "recursion stays in its module" (== (depth 5) 5)))))))))
       (println "")
       (if (== failures 0)
