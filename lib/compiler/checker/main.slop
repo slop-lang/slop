@@ -25,7 +25,6 @@
                env-get-string-type env-get-unit-type env-get-arena-type
                env-set-module env-add-error env-clear-imports))
   (import collect (collect-module))
-  (import resolve (resolve-imports))
   (import infer (infer-fn-body infer-expr resolve-complex-type-expr resolve-simple-type))
   (import file (FileMode FileError File
                 file-open file-close file-read-all))
@@ -62,10 +61,8 @@
     (@pre (> (list-len ast) 0))
     ;; Create type environment with builtins
     (let ((env (env-new arena)))
-      ;; Phase 1: Collect all type and function definitions
+      ;; Phase 1: Collect types, imports, constants and function signatures
       (collect-module env ast)
-      ;; Phase 2: Resolve imports
-      (resolve-imports env ast)
       ;; Phase 3: Type check function bodies
       (check-all-functions env ast)
       ;; Return populated environment
@@ -76,10 +73,8 @@
     (@spec (((Ptr TypeEnv) (List (Ptr SExpr))) -> Unit))
     (@pre (!= env nil))
     (@pre (> (list-len ast) 0))
-    ;; Phase 1: Collect all type and function definitions
+    ;; Phase 1: Collect types, imports, constants and function signatures
     (collect-module env ast)
-    ;; Phase 2: Resolve imports
-    (resolve-imports env ast)
     ;; Phase 3: Type check function bodies
     (check-all-functions env ast))
 
@@ -600,7 +595,6 @@
                   ((ok context-ast)
                     (do
                       (collect-module env context-ast)
-                      (resolve-imports env context-ast)
                       (env-clear-diagnostics env)))
                   ((error _) (do)))))))))
     ;; 2. Push scope and bind params if provided

@@ -1,0 +1,21 @@
+;; alpha and beta each define Pt, Color and Shape, differently. A module
+;; importing one of them must get that one, whichever was registered first.
+
+(module alpha
+  (export Pt Color Shape make-a hue-code)
+
+  (type Pt (record (x Int)))
+  (type Color (enum red green))
+  (type Shape (union (dot Int) (box Int)))
+
+  (fn make-a ((v Int))
+    (@intent "alpha's one-field Pt")
+    (@spec ((Int) -> Pt))
+    (Pt v))
+
+  (fn hue-code ((c Color))
+    (@intent "Number alpha's colors")
+    (@spec ((Color) -> Int))
+    (match c
+      ((red) 1)
+      ((green) 2))))

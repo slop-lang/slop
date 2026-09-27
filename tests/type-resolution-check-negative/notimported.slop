@@ -1,0 +1,8 @@
+;; alpha is in the build and defines Pt, but main imports only make-a
+(module main
+  (import alpha (make-a))
+  (fn main ()
+    (@intent "Check must fail")
+    (@spec (() -> Int))
+    (let ((p (Pt 1)))
+      0)))

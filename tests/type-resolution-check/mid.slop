@@ -1,0 +1,4 @@
+;; Re-exports beta's Pt and make-b: an import of Pt from mid is beta's Pt
+(module mid
+  (export Pt make-b)
+  (import beta (Pt make-b)))

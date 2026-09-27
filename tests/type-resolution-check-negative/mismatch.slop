@@ -1,0 +1,8 @@
+;; alpha's Pt passed where beta's Pt is expected: both print as Pt
+(module main
+  (import alpha (make-a))
+  (import beta (show-b))
+  (fn main ()
+    (@intent "Check must fail")
+    (@spec (() -> Int))
+    (show-b (make-a 1))))

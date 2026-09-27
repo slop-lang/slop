@@ -54,6 +54,11 @@ types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature
 uint8_t infer_is_unwrappable_container(types_ResolvedType* t);
 uint8_t infer_container_inners_equal(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b);
+uint8_t infer_types_module_conflict(types_ResolvedType* a, types_ResolvedType* b);
+uint8_t infer_inner_module_conflict(slop_option_types_ResolvedType_ptr a, slop_option_types_ResolvedType_ptr b);
+uint8_t infer_pointees_module_conflict(types_ResolvedType* a, types_ResolvedType* b);
+uint8_t infer_result_inners_module_conflict(types_ResolvedType* a, types_ResolvedType* b);
+slop_string infer_type_display_name(slop_arena* arena, types_ResolvedType* t, types_ResolvedType* other);
 uint8_t infer_types_compatible_with_range(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_type_is_null_pointer(types_ResolvedType* t);
 types_ResolvedType* infer_unify_branch_types(env_TypeEnv* env, types_ResolvedType* a, types_ResolvedType* b, int64_t line, int64_t col);
@@ -99,6 +104,7 @@ types_ResolvedType* infer_resolve_complex_type_expr(env_TypeEnv* env, types_SExp
 types_ResolvedType* infer_resolve_option_inner_type(env_TypeEnv* env, types_SExpr* type_expr);
 types_ResolvedType* infer_resolve_ptr_inner_type(env_TypeEnv* env, types_SExpr* type_expr);
 types_ResolvedType* infer_resolve_type_lenient(env_TypeEnv* env, slop_string type_name);
+uint8_t infer_report_type_not_imported(env_TypeEnv* env, slop_string type_name, int64_t line, int64_t col);
 types_ResolvedType* infer_resolve_simple_type(env_TypeEnv* env, slop_string type_name);
 void infer_bind_let_binding(env_TypeEnv* env, types_SExpr* binding_form);
 types_ResolvedType* infer_infer_let_expr(env_TypeEnv* env, types_SExpr* expr);

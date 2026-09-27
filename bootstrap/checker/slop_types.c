@@ -201,14 +201,14 @@ slop_option_int types_resolved_type_get_variant_index(types_ResolvedType* t, slo
         uint8_t done = 0;
         slop_option_int found = (slop_option_int){.has_value = false};
         while ((i < len) && !(done)) {
-            __auto_type _mv_0 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_0.has_value) {
-                __auto_type v = _mv_0.value;
+            __auto_type _mv_5 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_5.has_value) {
+                __auto_type v = _mv_5.value;
                 if (string_eq(v.name, name)) {
                     done = 1;
                     found = (slop_option_int){.has_value = 1, .value = v.index};
                 }
-            } else if (!_mv_0.has_value) {
+            } else if (!_mv_5.has_value) {
             }
             i = (i + 1);
         }
@@ -226,14 +226,14 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_variant_payload(types
             uint8_t done = 0;
             slop_option_types_ResolvedType_ptr found = (slop_option_types_ResolvedType_ptr){.has_value = false};
             while ((i < len) && !(done)) {
-                __auto_type _mv_1 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                if (_mv_1.has_value) {
-                    __auto_type v = _mv_1.value;
+                __auto_type _mv_6 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                if (_mv_6.has_value) {
+                    __auto_type v = _mv_6.value;
                     if (string_eq(v.name, name)) {
                         done = 1;
                         found = v.payload_type;
                     }
-                } else if (!_mv_1.has_value) {
+                } else if (!_mv_6.has_value) {
                 }
                 i = (i + 1);
             }
@@ -254,14 +254,14 @@ slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_a
             uint8_t done = 0;
             slop_list_types_ResolvedType_ptr found = ((slop_list_types_ResolvedType_ptr){ .data = (types_ResolvedType**)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedType*)), .len = 0, .cap = 16 });
             while ((i < len) && !(done)) {
-                __auto_type _mv_2 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-                if (_mv_2.has_value) {
-                    __auto_type v = _mv_2.value;
+                __auto_type _mv_7 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                if (_mv_7.has_value) {
+                    __auto_type v = _mv_7.value;
                     if (string_eq(v.name, name)) {
                         done = 1;
                         found = v.payload_types;
                     }
-                } else if (!_mv_2.has_value) {
+                } else if (!_mv_7.has_value) {
                 }
                 i = (i + 1);
             }
@@ -281,13 +281,13 @@ uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name) {
         int64_t i = 0;
         uint8_t found = 0;
         while ((i < len) && !(found)) {
-            __auto_type _mv_3 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_3.has_value) {
-                __auto_type f = _mv_3.value;
+            __auto_type _mv_8 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_8.has_value) {
+                __auto_type f = _mv_8.value;
                 if (string_eq(f.name, name)) {
                     found = 1;
                 }
-            } else if (!_mv_3.has_value) {
+            } else if (!_mv_8.has_value) {
             }
             i = (i + 1);
         }
@@ -304,14 +304,14 @@ slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_Reso
         uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         while ((i < len) && !(found)) {
-            __auto_type _mv_4 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_4.has_value) {
-                __auto_type f = _mv_4.value;
+            __auto_type _mv_9 = ({ __auto_type _lst = fields; size_t _idx = (size_t)i; slop_option_types_ResolvedField _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_9.has_value) {
+                __auto_type f = _mv_9.value;
                 if (string_eq(f.name, name)) {
                     found = 1;
                     result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = f.field_type};
                 }
-            } else if (!_mv_4.has_value) {
+            } else if (!_mv_9.has_value) {
             }
             i = (i + 1);
         }
@@ -326,88 +326,88 @@ slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_Resolved
         {
             __auto_type kind = (*t).kind;
             __auto_type name = (*t).name;
-            __auto_type _mv_5 = kind;
-            if (_mv_5 == types_ResolvedTypeKind_rk_primitive) {
+            __auto_type _mv_10 = kind;
+            if (_mv_10 == types_ResolvedTypeKind_rk_primitive) {
                 return name;
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_record) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_record) {
                 return name;
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_enum) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_enum) {
                 return name;
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_union) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_union) {
                 return name;
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_function) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_function) {
                 return name;
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_range) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_range) {
                 return name;
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_option) {
-                __auto_type _mv_6 = (*t).inner_type;
-                if (_mv_6.has_value) {
-                    __auto_type inner = _mv_6.value;
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_option) {
+                __auto_type _mv_11 = (*t).inner_type;
+                if (_mv_11.has_value) {
+                    __auto_type inner = _mv_11.value;
                     return string_concat(arena, SLOP_STR("(Option "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
-                } else if (!_mv_6.has_value) {
+                } else if (!_mv_11.has_value) {
                     return SLOP_STR("Option");
                 }
                 SLOP_UNREACHABLE();
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_ptr) {
-                __auto_type _mv_7 = (*t).inner_type;
-                if (_mv_7.has_value) {
-                    __auto_type inner = _mv_7.value;
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_ptr) {
+                __auto_type _mv_12 = (*t).inner_type;
+                if (_mv_12.has_value) {
+                    __auto_type inner = _mv_12.value;
                     return string_concat(arena, SLOP_STR("(Ptr "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
-                } else if (!_mv_7.has_value) {
+                } else if (!_mv_12.has_value) {
                     return SLOP_STR("Ptr");
                 }
                 SLOP_UNREACHABLE();
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_list) {
-                __auto_type _mv_8 = (*t).inner_type;
-                if (_mv_8.has_value) {
-                    __auto_type inner = _mv_8.value;
-                    return string_concat(arena, SLOP_STR("(List "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
-                } else if (!_mv_8.has_value) {
-                    return SLOP_STR("List");
-                }
-                SLOP_UNREACHABLE();
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_map) {
-                __auto_type _mv_9 = (*t).inner_type;
-                if (_mv_9.has_value) {
-                    __auto_type key_type = _mv_9.value;
-                    __auto_type _mv_10 = (*t).inner_type2;
-                    if (_mv_10.has_value) {
-                        __auto_type val_type = _mv_10.value;
-                        return string_concat(arena, SLOP_STR("(Map "), string_concat(arena, types_resolved_type_to_slop_string(arena, key_type), string_concat(arena, SLOP_STR(" "), string_concat(arena, types_resolved_type_to_slop_string(arena, val_type), SLOP_STR(")")))));
-                    } else if (!_mv_10.has_value) {
-                        return string_concat(arena, SLOP_STR("(Map "), string_concat(arena, types_resolved_type_to_slop_string(arena, key_type), SLOP_STR(")")));
-                    }
-                    SLOP_UNREACHABLE();
-                } else if (!_mv_9.has_value) {
-                    return SLOP_STR("Map");
-                }
-                SLOP_UNREACHABLE();
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_result) {
-                __auto_type _mv_11 = (*t).inner_type;
-                if (_mv_11.has_value) {
-                    __auto_type ok_type = _mv_11.value;
-                    __auto_type _mv_12 = (*t).inner_type2;
-                    if (_mv_12.has_value) {
-                        __auto_type err_type = _mv_12.value;
-                        return string_concat(arena, SLOP_STR("(Result "), string_concat(arena, types_resolved_type_to_slop_string(arena, ok_type), string_concat(arena, SLOP_STR(" "), string_concat(arena, types_resolved_type_to_slop_string(arena, err_type), SLOP_STR(")")))));
-                    } else if (!_mv_12.has_value) {
-                        return string_concat(arena, SLOP_STR("(Result "), string_concat(arena, types_resolved_type_to_slop_string(arena, ok_type), SLOP_STR(")")));
-                    }
-                    SLOP_UNREACHABLE();
-                } else if (!_mv_11.has_value) {
-                    return SLOP_STR("Result");
-                }
-                SLOP_UNREACHABLE();
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_array) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_list) {
                 __auto_type _mv_13 = (*t).inner_type;
                 if (_mv_13.has_value) {
                     __auto_type inner = _mv_13.value;
-                    return string_concat(arena, SLOP_STR("(Array "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
+                    return string_concat(arena, SLOP_STR("(List "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
                 } else if (!_mv_13.has_value) {
+                    return SLOP_STR("List");
+                }
+                SLOP_UNREACHABLE();
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_map) {
+                __auto_type _mv_14 = (*t).inner_type;
+                if (_mv_14.has_value) {
+                    __auto_type key_type = _mv_14.value;
+                    __auto_type _mv_15 = (*t).inner_type2;
+                    if (_mv_15.has_value) {
+                        __auto_type val_type = _mv_15.value;
+                        return string_concat(arena, SLOP_STR("(Map "), string_concat(arena, types_resolved_type_to_slop_string(arena, key_type), string_concat(arena, SLOP_STR(" "), string_concat(arena, types_resolved_type_to_slop_string(arena, val_type), SLOP_STR(")")))));
+                    } else if (!_mv_15.has_value) {
+                        return string_concat(arena, SLOP_STR("(Map "), string_concat(arena, types_resolved_type_to_slop_string(arena, key_type), SLOP_STR(")")));
+                    }
+                    SLOP_UNREACHABLE();
+                } else if (!_mv_14.has_value) {
+                    return SLOP_STR("Map");
+                }
+                SLOP_UNREACHABLE();
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_result) {
+                __auto_type _mv_16 = (*t).inner_type;
+                if (_mv_16.has_value) {
+                    __auto_type ok_type = _mv_16.value;
+                    __auto_type _mv_17 = (*t).inner_type2;
+                    if (_mv_17.has_value) {
+                        __auto_type err_type = _mv_17.value;
+                        return string_concat(arena, SLOP_STR("(Result "), string_concat(arena, types_resolved_type_to_slop_string(arena, ok_type), string_concat(arena, SLOP_STR(" "), string_concat(arena, types_resolved_type_to_slop_string(arena, err_type), SLOP_STR(")")))));
+                    } else if (!_mv_17.has_value) {
+                        return string_concat(arena, SLOP_STR("(Result "), string_concat(arena, types_resolved_type_to_slop_string(arena, ok_type), SLOP_STR(")")));
+                    }
+                    SLOP_UNREACHABLE();
+                } else if (!_mv_16.has_value) {
+                    return SLOP_STR("Result");
+                }
+                SLOP_UNREACHABLE();
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_array) {
+                __auto_type _mv_18 = (*t).inner_type;
+                if (_mv_18.has_value) {
+                    __auto_type inner = _mv_18.value;
+                    return string_concat(arena, SLOP_STR("(Array "), string_concat(arena, types_resolved_type_to_slop_string(arena, inner), SLOP_STR(")")));
+                } else if (!_mv_18.has_value) {
                     return SLOP_STR("Array");
                 }
                 SLOP_UNREACHABLE();
-            } else if (_mv_5 == types_ResolvedTypeKind_rk_typevar) {
+            } else if (_mv_10 == types_ResolvedTypeKind_rk_typevar) {
                 return name;
             } else {
                 return name;

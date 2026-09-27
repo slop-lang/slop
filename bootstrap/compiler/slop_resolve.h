@@ -11,6 +11,8 @@
 #include "slop_path.h"
 #include "slop_file.h"
 
+typedef struct resolve_ImportSite resolve_ImportSite;
+
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
@@ -22,12 +24,39 @@ SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #endif
 
+struct resolve_ImportSite {
+    slop_string source;
+    slop_string name;
+    types_SExpr* name_expr;
+};
+typedef struct resolve_ImportSite resolve_ImportSite;
+
+#ifndef SLOP_OPTION_RESOLVE_IMPORTSITE_DEFINED
+#define SLOP_OPTION_RESOLVE_IMPORTSITE_DEFINED
+SLOP_OPTION_DEFINE(resolve_ImportSite, slop_option_resolve_ImportSite)
+#endif
+
+#ifndef SLOP_LIST_RESOLVE_IMPORTSITE_DEFINED
+#define SLOP_LIST_RESOLVE_IMPORTSITE_DEFINED
+#define SLOP_LIST_RESOLVE_IMPORTSITE_IMPL_DEFINED
+SLOP_LIST_DEFINE(resolve_ImportSite, slop_list_resolve_ImportSite)
+#endif
+
 void resolve_resolve_imports(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
-void resolve_resolve_module_imports(env_TypeEnv* env, types_SExpr* module_form);
 void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form);
-void resolve_check_import_collision(env_TypeEnv* env, slop_string local_name, slop_string source_mod, slop_string qualified_name, types_SExpr* name_expr);
+slop_list_resolve_ImportSite resolve_collect_import_sites(slop_arena* arena, slop_list_types_SExpr_ptr ast);
+slop_list_resolve_ImportSite resolve_push_import_sites(slop_arena* arena, slop_list_resolve_ImportSite sites, types_SExpr* import_form);
+slop_option_string resolve_resolve_import_target(env_TypeEnv* env, slop_string src, slop_string name);
+void resolve_resolve_import_name(env_TypeEnv* env, resolve_ImportSite site);
+slop_string resolve_qualified_module_part(slop_arena* arena, slop_string qualified);
+void resolve_check_import_shadowing(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 uint8_t resolve_contains_slash(slop_string s);
 slop_option_string resolve_resolve_module_file(slop_arena* arena, slop_string module_name, slop_option_string from_file);
+
+#ifndef SLOP_OPTION_RESOLVE_IMPORTSITE_DEFINED
+#define SLOP_OPTION_RESOLVE_IMPORTSITE_DEFINED
+SLOP_OPTION_DEFINE(resolve_ImportSite, slop_option_resolve_ImportSite)
+#endif
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED

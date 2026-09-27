@@ -1,0 +1,21 @@
+;; A type, field, variant or constructor resolves within the module: its
+;; own, then what it imports. Before, the checker took the first module to
+;; register the name, so the answer changed with build order.
+;; Imports in this order register alpha's types first.
+
+(module main
+  (import alpha (make-a))
+  (import mid (Pt make-b))
+  (import beta (show-b paint Color Shape area))
+
+  (fn main ()
+    (@intent "Use beta's Pt, Color and Shape next to alpha's make-a")
+    (@spec (() -> Int))
+    (let ((p (make-b 1))
+          (q (Pt 3 4))
+          (a (make-a 5)))
+      (+ (. p y)
+         (+ (show-b q)
+            (+ (. a x)
+               (+ (paint 'red)
+                  (area (union-new Shape ring 2)))))))))
