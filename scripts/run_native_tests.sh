@@ -264,6 +264,69 @@ run_negative_build_test "$NEG/unimported.slop" "import-unimported" \
 run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_push_no_arena.slop" "list-push-no-arena" \
     "list_push_no_arena.slop:9:6: error: list-push: no arena in scope"
 
+# The checker's half of the same rule, for types, variants and re-exports.
+# `slop build` drops checker diagnostics (#93), so these run `slop check`.
+run_check_clean_test() {
+    local test_file="$1"
+    local test_name="$2"
+    shift 2
+
+    echo -n "Testing $test_name (check)... "
+    local output
+    output=$(uv run slop check "$test_file" "$@" 2>&1)
+    local exit_code=$?
+
+    if [ $exit_code -eq 0 ] && ! echo "$output" | grep -q ': error:'; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} (expected no errors)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# A check that must fail with exactly one error: the expected message at the
+# expected file:line:col.
+run_negative_check_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local expected="$3"
+    shift 3
+
+    echo -n "Testing $test_name (check, expected to fail)... "
+    local output
+    output=$(uv run slop check "$test_file" "$@" 2>&1)
+    local exit_code=$?
+    local problem=""
+
+    if [ $exit_code -eq 0 ]; then
+        problem="expected the check to fail"
+    elif ! echo "$output" | grep -qF "$expected"; then
+        problem="expected: $expected"
+    elif [ "$(echo "$output" | grep -c ': error:')" -ne 1 ]; then
+        problem="expected exactly one error"
+    fi
+
+    if [ -z "$problem" ]; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} ($problem)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+
+echo ""
+
+# A @generic call's return type is specialised from its arguments. The
+# bindings used to be pushed onto List parameters (copies) and lost, so T was
+# never replaced and anything passed through a generic call type-checked (#180).
+run_negative_check_test "$REPO_ROOT/tests/generic-negative/first_or.slop" "generic-return-specialised" \
+    "first_or.slop:21:9: error: argument 1 to 'string-len': expected String, got Int"
+
 echo ""
 
 # ============================================================
