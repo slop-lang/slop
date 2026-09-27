@@ -2701,7 +2701,8 @@ def cmd_build(args):
             elif native_compiler_bin:
                 c_code, success = transpile_native(str(input_path))
                 if not success:
-                    print(f"  Native transpiler failed: {c_code}", file=sys.stderr)
+                    # transpile_native has already forwarded the errors to stderr
+                    print("  Native transpiler failed", file=sys.stderr)
                     return 1
 
         c_file = f"{output}.c"

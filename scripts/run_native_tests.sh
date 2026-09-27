@@ -259,6 +259,11 @@ run_negative_build_test "$NEG/unimported.slop" "import-unimported" \
     "unimported.slop:9:15: error: undefined function 'f' - check imports" \
     -I "$NEG" -I "$REPO_ROOT/tests/import-resolution"
 
+# list-push grows its list in an arena; with none in scope it used to emit the
+# bare identifier `arena`, which only the C compiler caught (#179).
+run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_push_no_arena.slop" "list-push-no-arena" \
+    "list_push_no_arena.slop:9:6: error: list-push: no arena in scope"
+
 echo ""
 
 # ============================================================
