@@ -170,9 +170,9 @@ Types can declare invariants that must hold for all values:
   body)
 
 ; Parameter modes
-(fn name ((in param Type)      ; Read-only (default) - pass by value
-          (out param (Ptr T))  ; Write-only - output pointer
-          (mut param Type))    ; Mutable - value or pointer depending on Type
+(fn name ((param Type)         ; Read-only (default; `in` says so explicitly)
+          (mut param Type)     ; A mutable local copy of a value type
+          (param (Ptr T)))     ; Change the caller's value: pass (addr x)
   ...)
 
 ; Memory context (explicit when needed)
@@ -186,6 +186,42 @@ Types can declare invariants that must hold for all values:
   body
   :c-name "parse_int")  ; Emits as parse_int() in C
 ```
+
+#### Parameters and mutability
+
+Every parameter is passed by value. What a function may do with one depends on
+its mode, and both `slop check` and `slop build` enforce it:
+
+- **Unmarked (or `in`)**: the parameter's own value is read-only. Reassigning it
+  (`(set! p v)`), changing a field of it (`(set! p f v)`, `(set! (. p f) v)`),
+  and `list-push` / `list-pop` on it or on a List field of it are errors: each
+  would change only the function's copy, and the change would be lost.
+  Storage the value merely points to stays writable: the contents of a Map or
+  Set (they are handles), a List's elements through `list-set`, and anything
+  reached through a pointer, `deref` or `@`.
+- **`mut`**: the parameter is a mutable local copy. The function may reassign
+  it and change its fields -- for example push onto a copy of a record's list
+  and return the record -- but the caller never sees the change. `mut` is for
+  value types (scalars, records, unions, Option, Result, Ptr); on a List, Map
+  or Set it is an error, because a copy of one shares the caller's storage.
+  A closure captures a `mut` parameter by reference, like a `mut` local.
+- **Changing the caller's value**: take a `(Ptr T)` and have the caller pass
+  `(addr x)`; write through it with `deref` or a field access.
+
+```
+(fn with-item ((arena Arena) (mut b Bag) (x Int))   ; functional update of a copy
+  (@spec ((Arena Bag Int) -> Bag))
+  (list-push (. b items) x)
+  b)
+
+(fn push-to ((arena Arena) (xs (Ptr (List Int))) (x Int))   ; changes the caller's list
+  (@spec ((Arena (Ptr (List Int)) Int) -> Unit))
+  (list-push (deref xs) x))
+; caller: (push-to arena (addr ys) 4)
+```
+
+`out` is not a mode (use a `(Ptr T)` parameter), and neither is any other word
+in the first position of a three-element parameter form.
 
 The `:c-name` attribute allows specifying a clean C name for external code to call.
 The transpiler emits both the clean name and a #define alias for the SLOP-prefixed name.
@@ -262,10 +298,12 @@ true false nil           ; Boolean and nil
 
 ; Variables and binding
 identifier               ; Variable reference
-(let ((name expr)...) body)           ; Immutable bindings (set! disallowed)
+(let ((name expr)...) body)           ; Immutable bindings (set! disallowed; pushing onto its own list is fine)
 (let ((mut name expr)...) body)       ; Mutable bindings (set! allowed)
 (let ((mut name Type expr)...) body)  ; Mutable with explicit type
 (let* ((name expr)...) body)          ; Sequential bindings
+; Names bound by for, for-each, match and with-arena are immutable too;
+; copy one into (let ((mut name ...))) to change it. Constants cannot be set!.
 
 ; Control flow
 (if cond then else)

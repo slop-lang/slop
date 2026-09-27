@@ -1,0 +1,10 @@
+;; Set a field of a record let binding declared without mut: an error in both slop check and slop build (#180).
+
+(module main
+  (type Pt (record (x Int) (y Int)))
+  (const LIMIT Int 10)
+
+  (fn main ()
+    (@intent "Set a field of a record let binding declared without mut")
+    (@spec (() -> Int))
+    (let ((p (Pt 1 2))) (set! p x 3) (. p x))))

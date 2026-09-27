@@ -1088,8 +1088,9 @@ def extract_documentation(ast) -> dict:
             for p in params_list.items:
                 if isinstance(p, SList) and len(p) >= 2:
                     # Handle different param forms: (name Type), (in name Type), (out name Type)
-                    if isinstance(p[0], Symbol) and p[0].name in ('in', 'out', 'inout'):
-                        # Directional param: (in name Type)
+                    if len(p) >= 3 and isinstance(p[0], Symbol):
+                        # Mode param: (mode name Type), as the compiler reads any
+                        # three-element form (in and mut are the modes)
                         pname = p[1].name if isinstance(p[1], Symbol) else str(p[1])
                         ptype = pretty_print(p[2]) if len(p) > 2 else 'Unknown'
                         fn_info['params'].append({'name': pname, 'type': ptype, 'direction': p[0].name})

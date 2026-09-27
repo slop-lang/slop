@@ -1,0 +1,10 @@
+;; Assign to a constant: an error in both slop check and slop build (#180).
+
+(module main
+  (type Pt (record (x Int) (y Int)))
+  (const LIMIT Int 10)
+
+  (fn main ()
+    (@intent "Assign to a constant")
+    (@spec (() -> Int))
+    (do (set! LIMIT 11) LIMIT)))

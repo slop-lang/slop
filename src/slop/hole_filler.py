@@ -750,8 +750,9 @@ def _extract_param_names(params_str: str) -> List[str]:
                 first = param[0]
                 if isinstance(first, Symbol):
                     # Check if first element is an annotation (in/out/inout/mut)
-                    if first.name in ('in', 'out', 'inout', 'mut') and len(param) >= 2:
-                        # Format: (in name Type) - extract second element
+                    if len(param) >= 3:
+                        # Format: (mode name Type), any three-element form, as
+                        # the compiler reads it - extract second element
                         if isinstance(param[1], Symbol):
                             names.append(param[1].name)
                     else:

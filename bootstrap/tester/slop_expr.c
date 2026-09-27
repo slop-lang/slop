@@ -88,6 +88,7 @@ uint8_t expr_is_pointer_step(context_TranspileContext* ctx, types_SExpr* expr);
 expr_CMutPath expr_c_mutation_path(context_TranspileContext* ctx, types_SExpr* expr);
 expr_CMutPath expr_c_mutation_path_field(context_TranspileContext* ctx, expr_CMutPath base, types_SExpr* base_expr);
 uint8_t expr_c_mutation_forbidden(context_VarEntry entry, expr_CMutPath path, types_MutationKind kind);
+uint8_t expr_is_known_value_c_type(slop_string c_type);
 uint8_t expr_check_c_mutation(context_TranspileContext* ctx, types_SExpr* target, expr_CMutPath path, types_MutationKind kind);
 uint8_t expr_check_set_target_c(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t len);
 uint8_t expr_is_pointer_expr(context_TranspileContext* ctx, types_SExpr* expr);
@@ -3357,7 +3358,11 @@ expr_CMutPath expr_c_mutation_path_field(context_TranspileContext* ctx, expr_CMu
 }
 
 uint8_t expr_c_mutation_forbidden(context_VarEntry entry, expr_CMutPath path, types_MutationKind kind) {
-    return ((!(entry.is_mutable)) && (!(path.through)) && ((entry.origin == types_BindingOrigin_origin_param)) && ((((path.depth != 0)) || ((kind == types_MutationKind_mut_assign)) || (strlib_starts_with(entry.c_type, SLOP_STR("slop_list_"))))));
+    return ((!(entry.is_mutable)) && (!(path.through)) && ((((entry.origin == types_BindingOrigin_origin_param)) ? (((path.depth != 0)) || ((kind == types_MutationKind_mut_assign)) || (strlib_starts_with(entry.c_type, SLOP_STR("slop_list_")))) : ((kind == types_MutationKind_mut_assign) ? 1 : ((kind == types_MutationKind_mut_field) ? expr_is_known_value_c_type(entry.c_type) : 0)))));
+}
+
+uint8_t expr_is_known_value_c_type(slop_string c_type) {
+    return (((string_len(c_type) > 0)) && (!(strlib_ends_with(c_type, SLOP_STR("*")))) && (!(string_eq(c_type, SLOP_STR("auto")))) && (!(string_eq(c_type, SLOP_STR("__auto_type")))));
 }
 
 uint8_t expr_check_c_mutation(context_TranspileContext* ctx, types_SExpr* target, expr_CMutPath path, types_MutationKind kind) {
@@ -6987,7 +6992,7 @@ void expr_register_let_binding_in_context(context_TranspileContext* ctx, types_S
                                             __auto_type var_name = name_sym.name;
                                             __auto_type c_name = ctype_to_c_name(arena, var_name);
                                             __auto_type c_type = ((has_type) ? ({ __auto_type _mv = ({ __auto_type _lst = items; size_t _idx = (size_t)type_idx; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type type_expr = _mv.value; context_to_c_type_prefixed(ctx, type_expr); }) : (SLOP_STR("int64_t")); }) : ({ __auto_type _mv = ({ __auto_type _lst = items; size_t _idx = (size_t)init_idx; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type init_expr = _mv.value; ({ __auto_type _mv = ctype_get_node_resolved_type(init_expr); _mv.has_value ? ({ __auto_type rt = _mv.value; ctype_resolved_type_to_c(arena, rt); }) : (SLOP_STR("int64_t")); }); }) : (SLOP_STR("int64_t")); }));
-                                            context_ctx_bind_var(ctx, (context_VarEntry){var_name, c_name, c_type, SLOP_STR(""), 0, 0, 0, SLOP_STR(""), SLOP_STR(""), types_BindingOrigin_origin_local});
+                                            context_ctx_bind_var(ctx, (context_VarEntry){var_name, c_name, c_type, SLOP_STR(""), strlib_ends_with(c_type, SLOP_STR("*")), has_mut, 0, SLOP_STR(""), SLOP_STR(""), types_BindingOrigin_origin_local});
                                         }
                                         break;
                                     }

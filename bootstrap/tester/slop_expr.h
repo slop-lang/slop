@@ -122,6 +122,7 @@ uint8_t expr_is_pointer_step(context_TranspileContext* ctx, types_SExpr* expr);
 expr_CMutPath expr_c_mutation_path(context_TranspileContext* ctx, types_SExpr* expr);
 expr_CMutPath expr_c_mutation_path_field(context_TranspileContext* ctx, expr_CMutPath base, types_SExpr* base_expr);
 uint8_t expr_c_mutation_forbidden(context_VarEntry entry, expr_CMutPath path, types_MutationKind kind);
+uint8_t expr_is_known_value_c_type(slop_string c_type);
 uint8_t expr_check_c_mutation(context_TranspileContext* ctx, types_SExpr* target, expr_CMutPath path, types_MutationKind kind);
 uint8_t expr_check_set_target_c(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t len);
 uint8_t expr_is_pointer_expr(context_TranspileContext* ctx, types_SExpr* expr);

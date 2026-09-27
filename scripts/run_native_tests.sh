@@ -358,6 +358,22 @@ PM_CASES
 run_check_clean_test "$REPO_ROOT/tests/test_param_modes.slop" "param-modes"
 run_check_clean_test "$REPO_ROOT/tests/test_mutation_allowed.slop" "mutation-allowed"
 
+# Immutable bindings (#180): a let without mut, a for / for-each / match /
+# with-arena name, and a constant cannot be set!, in check and build alike.
+# Pushing onto a local's own list stays allowed (tests/test_mutation_allowed).
+LMN="$REPO_ROOT/tests/let-mutability-negative"
+while IFS='|' read -r lm_name lm_expected <&3; do
+    run_negative_check_test "$LMN/$lm_name.slop" "binding-$lm_name" "$lm_expected"
+    run_negative_build_test "$LMN/$lm_name.slop" "binding-$lm_name" "$lm_expected"
+done 3<<'LM_CASES'
+const_reassign|const_reassign.slop:10:15: error: cannot assign to constant 'LIMIT'
+for_each_field_set|for_each_field_set.slop:10:104: error: cannot change a field of 'p' - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut p ...)))
+for_reassign|for_reassign.slop:10:45: error: cannot assign to 'i' - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut i ...)))
+let_field_set|let_field_set.slop:10:31: error: cannot change a field of 'p' - it is immutable; declare it (let ((mut p ...)))
+let_reassign|let_reassign.slop:10:24: error: cannot assign to 'x' - it is immutable; declare it (let ((mut x ...)))
+match_reassign|match_reassign.slop:10:37: error: cannot assign to 'v' - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut v ...)))
+LM_CASES
+
 # ============================================================
 # Cleanup and Summary
 # ============================================================
