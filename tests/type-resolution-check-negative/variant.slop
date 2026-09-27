@@ -1,0 +1,9 @@
+;; red is a variant of both imported types
+(module main
+  (import alpha (Color))
+  (import paints (Paint))
+  (fn main ()
+    (@intent "Check must fail")
+    (@spec (() -> Int))
+    (let ((c 'red))
+      0)))

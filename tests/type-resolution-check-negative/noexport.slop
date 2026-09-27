@@ -1,0 +1,9 @@
+;; beta defines Qt, alpha does not: importing it from alpha is an error
+;; even though another module in the build has the name
+(module main
+  (import alpha (Qt))
+  (import beta (make-b))
+  (fn main ()
+    (@intent "Check must fail")
+    (@spec (() -> Int))
+    0))

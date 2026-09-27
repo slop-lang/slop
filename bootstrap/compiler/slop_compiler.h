@@ -8,7 +8,6 @@
 #include "slop_types.h"
 #include "slop_env.h"
 #include "slop_collect.h"
-#include "slop_resolve.h"
 #include "slop_infer.h"
 #include "slop_ctype.h"
 #include "slop_context.h"

@@ -1,0 +1,8 @@
+;; Pt from two modules: neither may be picked silently
+(module main
+  (import alpha (Pt))
+  (import beta (Pt))
+  (fn main ()
+    (@intent "Check must fail")
+    (@spec (() -> Int))
+    0))

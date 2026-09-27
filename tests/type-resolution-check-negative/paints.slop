@@ -1,0 +1,4 @@
+;; Shares the variant name red with alpha's Color
+(module paints
+  (export Paint)
+  (type Paint (enum red cool)))

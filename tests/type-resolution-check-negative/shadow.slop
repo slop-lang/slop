@@ -1,0 +1,8 @@
+;; main defines Pt and imports it too: the import could never be reached
+(module main
+  (import beta (Pt))
+  (type Pt (record (z Int)))
+  (fn main ()
+    (@intent "Check must fail")
+    (@spec (() -> Int))
+    0))

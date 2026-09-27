@@ -10,6 +10,7 @@
 typedef struct env_VarBinding env_VarBinding;
 typedef struct env_ConstBinding env_ConstBinding;
 typedef struct env_ImportEntry env_ImportEntry;
+typedef struct env_ModuleImport env_ModuleImport;
 typedef struct env_CheckerScope env_CheckerScope;
 typedef struct env_VariantMapping env_VariantMapping;
 typedef struct env_BindingAnnotation env_BindingAnnotation;
@@ -122,6 +123,24 @@ SLOP_OPTION_DEFINE(env_ImportEntry, slop_option_env_ImportEntry)
 SLOP_LIST_DEFINE(env_ImportEntry, slop_list_env_ImportEntry)
 #endif
 
+struct env_ModuleImport {
+    slop_string module;
+    slop_string local;
+    slop_string qualified;
+};
+typedef struct env_ModuleImport env_ModuleImport;
+
+#ifndef SLOP_OPTION_ENV_MODULEIMPORT_DEFINED
+#define SLOP_OPTION_ENV_MODULEIMPORT_DEFINED
+SLOP_OPTION_DEFINE(env_ModuleImport, slop_option_env_ModuleImport)
+#endif
+
+#ifndef SLOP_LIST_ENV_MODULEIMPORT_DEFINED
+#define SLOP_LIST_ENV_MODULEIMPORT_DEFINED
+#define SLOP_LIST_ENV_MODULEIMPORT_IMPL_DEFINED
+SLOP_LIST_DEFINE(env_ModuleImport, slop_list_env_ModuleImport)
+#endif
+
 struct env_CheckerScope {
     slop_list_env_VarBinding bindings;
 };
@@ -135,6 +154,7 @@ SLOP_OPTION_DEFINE(env_CheckerScope, slop_option_env_CheckerScope)
 struct env_VariantMapping {
     slop_string variant_name;
     slop_string enum_name;
+    types_ResolvedType* enum_type;
     slop_option_string module_name;
 };
 typedef struct env_VariantMapping env_VariantMapping;
@@ -192,6 +212,7 @@ struct env_TypeEnv {
     slop_list_string loaded_modules;
     types_ResolvedType* never_type;
     slop_list_string fn_type_params;
+    slop_list_env_ModuleImport module_imports;
 };
 typedef struct env_TypeEnv env_TypeEnv;
 
@@ -220,18 +241,20 @@ int64_t env_find_colon_pos(slop_string name);
 slop_option_types_ResolvedType_ptr env_lookup_type_by_qualified_name(env_TypeEnv* env, slop_string qualified_name);
 slop_option_types_ResolvedType_ptr env_env_lookup_type(env_TypeEnv* env, slop_string name);
 slop_option_types_ResolvedType_ptr env_env_lookup_type_qualified(env_TypeEnv* env, slop_string module_name, slop_string type_name);
-uint8_t env_env_is_type_visible(env_TypeEnv* env, types_ResolvedType* t);
+slop_option_types_ResolvedType_ptr env_env_lookup_own_type(env_TypeEnv* env, slop_string name);
+slop_option_types_ResolvedType_ptr env_env_lookup_type_builtin(env_TypeEnv* env, slop_string name);
+slop_option_types_ResolvedType_ptr env_env_lookup_type_elsewhere(env_TypeEnv* env, slop_string name);
 uint8_t env_env_is_function_visible(env_TypeEnv* env, types_FnSignature* sig);
 void env_env_register_function(env_TypeEnv* env, types_FnSignature* sig);
 slop_option_types_FnSignature_ptr env_env_lookup_function_direct(env_TypeEnv* env, slop_string name);
 slop_option_types_FnSignature_ptr env_env_lookup_function(env_TypeEnv* env, slop_string name);
 void env_env_add_import(env_TypeEnv* env, slop_string local_name, slop_string qualified_name);
 slop_option_string env_env_resolve_import(env_TypeEnv* env, slop_string local_name);
+slop_option_string env_env_lookup_module_import(env_TypeEnv* env, slop_string mod_name, slop_string local_name);
 void env_env_clear_imports(env_TypeEnv* env);
-void env_env_register_variant(env_TypeEnv* env, slop_string variant_name, slop_string enum_name);
-uint8_t env_env_variant_matches_module(env_VariantMapping v, slop_string mod_name);
-uint8_t env_env_variant_is_builtin(env_VariantMapping v);
-slop_option_string env_env_lookup_variant(env_TypeEnv* env, slop_string variant_name);
+void env_env_register_variant(env_TypeEnv* env, slop_string variant_name, types_ResolvedType* enum_type);
+uint8_t env_env_imports_variant_type(env_TypeEnv* env, env_VariantMapping v, slop_string vmod);
+slop_option_types_ResolvedType_ptr env_env_lookup_variant(env_TypeEnv* env, slop_string variant_name, int64_t line, int64_t col);
 void env_env_check_variant_collisions(env_TypeEnv* env);
 uint8_t env_env_same_module_opt(slop_option_string a, slop_option_string b);
 void env_env_set_module(env_TypeEnv* env, slop_option_string module_name);
@@ -278,6 +301,11 @@ SLOP_OPTION_DEFINE(env_ConstBinding, slop_option_env_ConstBinding)
 #ifndef SLOP_OPTION_ENV_IMPORTENTRY_DEFINED
 #define SLOP_OPTION_ENV_IMPORTENTRY_DEFINED
 SLOP_OPTION_DEFINE(env_ImportEntry, slop_option_env_ImportEntry)
+#endif
+
+#ifndef SLOP_OPTION_ENV_MODULEIMPORT_DEFINED
+#define SLOP_OPTION_ENV_MODULEIMPORT_DEFINED
+SLOP_OPTION_DEFINE(env_ModuleImport, slop_option_env_ModuleImport)
 #endif
 
 #ifndef SLOP_OPTION_ENV_CHECKERSCOPE_DEFINED

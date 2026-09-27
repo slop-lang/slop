@@ -259,6 +259,91 @@ run_negative_build_test "$NEG/unimported.slop" "import-unimported" \
     "unimported.slop:9:15: error: undefined function 'f' - check imports" \
     -I "$NEG" -I "$REPO_ROOT/tests/import-resolution"
 
+# The checker's half of the same rule, for types, variants and re-exports.
+# `slop build` drops checker diagnostics (#93), so these run `slop check`.
+run_check_clean_test() {
+    local test_file="$1"
+    local test_name="$2"
+    shift 2
+
+    echo -n "Testing $test_name (check)... "
+    local output
+    output=$(uv run slop check "$test_file" "$@" 2>&1)
+    local exit_code=$?
+
+    if [ $exit_code -eq 0 ] && ! echo "$output" | grep -q ': error:'; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} (expected no errors)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# A check that must fail with exactly one error: the expected message at the
+# expected file:line:col.
+run_negative_check_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local expected="$3"
+    shift 3
+
+    echo -n "Testing $test_name (check, expected to fail)... "
+    local output
+    output=$(uv run slop check "$test_file" "$@" 2>&1)
+    local exit_code=$?
+    local problem=""
+
+    if [ $exit_code -eq 0 ]; then
+        problem="expected the check to fail"
+    elif ! echo "$output" | grep -qF "$expected"; then
+        problem="expected: $expected"
+    elif [ "$(echo "$output" | grep -c ': error:')" -ne 1 ]; then
+        problem="expected exactly one error"
+    fi
+
+    if [ -z "$problem" ]; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} ($problem)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# alpha and beta each define Pt, Color and Shape. Before, the checker took
+# whichever module registered a name first: beta's own Pt could be "Unknown
+# type", its fields were appended to alpha's Pt, and an import could bind
+# the wrong module's type. Both import orders are checked.
+TRC="$REPO_ROOT/tests/type-resolution-check"
+run_check_clean_test "$TRC/main.slop" "type-resolution" -I "$TRC"
+run_check_clean_test "$TRC/main_swapped.slop" "type-resolution-swapped" -I "$TRC"
+
+TRN="$REPO_ROOT/tests/type-resolution-check-negative"
+run_negative_check_test "$TRN/both.slop" "type-imported-from-both" \
+    "both.slop:4:17: error: 'Pt' is imported from both 'alpha' and 'beta'" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/shadow.slop" "type-defined-and-imported" \
+    "shadow.slop:3:17: error: 'Pt' is defined in module 'main' and also imported from 'beta'" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/noexport.slop" "type-not-exported" \
+    "noexport.slop:4:18: error: module 'alpha' does not export 'Qt'" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/notimported.slop" "type-not-imported" \
+    "notimported.slop:7:14: error: type 'Pt' is defined in module 'alpha' but not imported" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/mismatch.slop" "type-module-mismatch" \
+    "mismatch.slop:8:5: error: argument 1 to 'beta:show-b': expected beta:Pt, got alpha:Pt" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/nofield.slop" "type-fields-not-merged" \
+    "nofield.slop:9:14: error: Record 'Pt' has no field 'y'" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/variant.slop" "variant-imported-from-both" \
+    "variant.slop:8:14: error: variant 'red' is ambiguous: imported from both" \
+    -I "$TRN" -I "$TRC"
+
 echo ""
 
 # ============================================================
