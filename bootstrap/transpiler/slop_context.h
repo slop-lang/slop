@@ -144,6 +144,8 @@ struct context_FuncEntry {
     uint8_t is_generic;
     slop_list_string type_params;
     slop_option_types_SExpr_ptr generic_source;
+    slop_string owner_module;
+    slop_string imported_from;
 };
 typedef struct context_FuncEntry context_FuncEntry;
 
@@ -504,7 +506,10 @@ slop_option_context_VarEntry context_find_arena_in_scope_chain(context_Scope* sc
 void context_ctx_register_type(context_TranspileContext* ctx, context_TypeEntry entry);
 slop_option_context_TypeEntry context_ctx_lookup_type(context_TranspileContext* ctx, slop_string name);
 void context_ctx_register_func(context_TranspileContext* ctx, context_FuncEntry entry);
+slop_string context_ctx_current_module_name(context_TranspileContext* ctx);
 slop_option_context_FuncEntry context_ctx_lookup_func(context_TranspileContext* ctx, slop_string name);
+slop_option_context_FuncEntry context_ctx_lookup_func_in_module(context_TranspileContext* ctx, slop_string name, slop_string mod);
+slop_option_context_FuncEntry context_ctx_find_import_entry(context_TranspileContext* ctx, slop_string name, slop_string mod);
 void context_ctx_register_field_type(context_TranspileContext* ctx, slop_string type_name, slop_string field_name, slop_string c_type, slop_string slop_type, uint8_t is_pointer);
 slop_option_string context_ctx_lookup_field_type(context_TranspileContext* ctx, slop_string type_name, slop_string field_name);
 slop_string context_strip_module_prefix(slop_arena* arena, slop_string type_name);

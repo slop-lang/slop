@@ -1,0 +1,28 @@
+;; A wrapper named after the FFI function it calls, and a self-recursive f
+;; while alpha and beta also define f: inside each, the call must resolve
+;; within this module -- to the FFI declaration, and to itself.
+
+(module wrap
+  (export sqrt depth)
+
+  (ffi "math.h"
+    (sqrt ((x Float)) Float))
+
+  (fn sqrt ((x Float))
+    (@intent "Wrap the C sqrt under the same name")
+    (@spec ((Float) -> Float))
+    (sqrt x))
+
+  (fn f ((n Int))
+    (@intent "Count down to zero recursively")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (if (<= n 0)
+      0
+      (+ 1 (f (- n 1)))))
+
+  (fn depth ((n Int))
+    (@intent "Recursion depth reached from n")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (f n)))

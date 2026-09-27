@@ -2916,16 +2916,15 @@
                     ;; of either name, so there is nothing for this to shadow.
                     ;;
                     ;; Gating on ctx-lookup-func/ctx-lookup-type instead was tried
-                    ;; and is wrong: FuncEntry carries no module, so those lookups
-                    ;; see every module in the build. A dependency defining the name
+                    ;; and was wrong: both lookups then saw every module in the
+                    ;; build, and ctx-lookup-type still does. A dependency defining the name
                     ;; would disable the builtin in an unrelated module that never
                     ;; imported it, and the call -- type-checked as the builtin --
                     ;; would lower to a call into the dependency. Refusing the
                     ;; definition removes the disagreement rather than tracking it.
                     ;; A local of that name wins, matching the checker. Locals are
                     ;; module-scoped, so ctx-lookup-var is safe here in a way that
-                    ;; ctx-lookup-func and ctx-lookup-type are not -- those see
-                    ;; every module in the build.
+                    ;; ctx-lookup-type is not -- it sees every module in the build.
                     ((and (or (string-eq op "is-none") (string-eq op "is-some"))
                           (>= len 2)
                           (not (local-callable-shadows ctx op)))

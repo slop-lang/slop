@@ -1,0 +1,9 @@
+;; alpha is in the build and exports f, but main imports only g from it.
+
+(module main
+  (import alpha (g))
+
+  (fn main ()
+    (@intent "Build must fail")
+    (@spec (() -> Int))
+    (+ (g 1) (f 1))))

@@ -1,0 +1,14 @@
+;; main both defines f and imports it: the import could never be reached.
+
+(module main
+  (import beta (f))
+
+  (fn f ((x Int))
+    (@intent "Shadow the imported f")
+    (@spec ((Int) -> Int))
+    (+ x 7))
+
+  (fn main ()
+    (@intent "Build must fail")
+    (@spec (() -> Int))
+    (f 1)))

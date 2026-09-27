@@ -24,6 +24,7 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 void resolve_resolve_imports(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 void resolve_resolve_module_imports(env_TypeEnv* env, types_SExpr* module_form);
 void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form);
+void resolve_check_import_collision(env_TypeEnv* env, slop_string local_name, slop_string source_mod, slop_string qualified_name, types_SExpr* name_expr);
 uint8_t resolve_contains_slash(slop_string s);
 slop_option_string resolve_resolve_module_file(slop_arena* arena, slop_string module_name, slop_option_string from_file);
 

@@ -1,0 +1,9 @@
+(module user
+  (export pair)
+  (import strs (join))
+
+  (fn pair ((a Int) (b Int))
+    (@intent "Join a and b with strs' join")
+    (@spec ((Int Int) -> Int))
+    (@pure)
+    (join a b)))

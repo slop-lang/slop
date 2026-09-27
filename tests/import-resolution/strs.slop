@@ -1,0 +1,11 @@
+;; A join with a different signature from tasks' join -- the shape HOWL hit
+;; with strlib's join and thread's join. Only user imports this one.
+
+(module strs
+  (export join)
+
+  (fn join ((a Int) (b Int))
+    (@intent "Join two digits into a two-digit number")
+    (@spec ((Int Int) -> Int))
+    (@pure)
+    (+ (* a 10) b)))

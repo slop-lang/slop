@@ -1,0 +1,7 @@
+(module main
+  (import amb-mid (h))
+
+  (fn main ()
+    (@intent "Build must fail in amb-mid, not here")
+    (@spec (() -> Int))
+    (h 1)))

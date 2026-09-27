@@ -1,0 +1,8 @@
+(module tasks
+  (export join)
+
+  (fn join ((x Int))
+    (@intent "tasks' join, with a different signature from strs' join")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (* x 2)))

@@ -19,7 +19,7 @@
                   sexpr-list-len sexpr-list-get sexpr-get-symbol-name
                   sexpr-number-string sexpr-string-value pretty-print))
   (import extract (TestCase))
-  (import strlib (contains to-lower string-build starts-with substring index-of))
+  (import strlib (contains to-lower string-build starts-with substring index-of char-at))
   (import type-extract (TypeRegistry TstTypeEntry TstTypeEntryKind TstFieldEntry VariantEntry ImportEntry
                         registry-lookup registry-lookup-variant registry-lookup-enum-value
                         registry-lookup-import

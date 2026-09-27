@@ -28,7 +28,7 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType ResolvedTypeKind))
-  (import strlib (replace replace-all starts-with ends-with substring))
+  (import strlib (replace replace-all starts-with ends-with substring char-at))
 
   ;; ============================================================
   ;; C Keywords (must be escaped in identifiers)

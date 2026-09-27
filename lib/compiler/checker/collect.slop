@@ -1177,12 +1177,12 @@
     ;; and then lowers to the builtin -- an error that surfaces in cc, or worse
     ;; does not surface at all and quietly calls something else (#110).
     ;;
-    ;; The transpiler cannot tell the two apart on its own: its FuncEntry
-    ;; carries no module, so a lookup finds definitions from every module in the
-    ;; build, including ones the current module never imported. A dependency
-    ;; defining the name would silently disable the builtin somewhere else
-    ;; entirely. So the definition is refused here instead, where module-name is
-    ;; known and the message can be precise.
+    ;; The transpiler dispatches these names before any function lookup, so a
+    ;; definition would type-check as itself and lower as the builtin. Its type
+    ;; lookup also still sees every module in the build, so gating the builtin
+    ;; on a lookup would let a dependency disable it somewhere else entirely.
+    ;; So the definition is refused here instead, where module-name is known
+    ;; and the message can be precise.
     ;;
     ;; The list is every name transpile-list-expr dispatches, grouped only for
     ;; reading. Nothing under lib/, tests/ or examples/ defines one, nor does

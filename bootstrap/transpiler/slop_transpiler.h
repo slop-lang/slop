@@ -129,6 +129,8 @@ uint8_t transpiler_is_builtin_map_key_type(slop_string name);
 void transpiler_check_and_register_result_alias(context_TranspileContext* ctx, slop_string alias_name, types_SExpr* body_expr);
 void transpiler_prescan_ffi(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 uint8_t transpiler_is_type_name(slop_string name);
+void transpiler_report_import_collision(context_TranspileContext* ctx, slop_string name, slop_string source_mod, types_SExpr* at);
+void transpiler_report_imported_definition(context_TranspileContext* ctx, slop_string name, types_SExpr* at);
 void transpiler_prescan_import(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void transpiler_register_types_module_variants(context_TranspileContext* ctx);
 void transpiler_register_file_module_variants(context_TranspileContext* ctx);

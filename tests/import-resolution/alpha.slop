@@ -1,0 +1,17 @@
+;; alpha and beta both export f. main imports f only from beta, so a call to
+;; f in main must reach beta's, while alpha's own g still calls alpha's f.
+
+(module alpha
+  (export f g)
+
+  (fn f ((x Int))
+    (@intent "alpha's f")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (+ x 1))
+
+  (fn g ((x Int))
+    (@intent "Call alpha's own f")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (f x)))

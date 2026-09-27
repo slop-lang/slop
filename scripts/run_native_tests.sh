@@ -206,6 +206,59 @@ run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml-contracts" \
 run_lib_test "$REPO_ROOT/tests/struct-key-list-guard/main.slop" "struct-key-list-guard" \
     -I "$REPO_ROOT/tests/struct-key-list-guard"
 
+# A call resolves within the calling module: its own definitions, then what it
+# imports. Several modules export f and join here; before, the one registered
+# last in the build won, whatever the caller imported, so each import order
+# broke a different call. Both orders are built.
+run_lib_test "$REPO_ROOT/tests/import-resolution/main.slop" "import-resolution" \
+    -I "$REPO_ROOT/tests/import-resolution"
+run_lib_test "$REPO_ROOT/tests/import-resolution/main_swapped.slop" "import-resolution-swapped" \
+    -I "$REPO_ROOT/tests/import-resolution"
+
+# A build that must fail with exactly one error: the expected message at the
+# expected file:line:col. Exactly one, because a module's errors used to be
+# reported again under the file name of every module transpiled after it.
+run_negative_build_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local expected="$3"
+    shift 3
+
+    echo -n "Testing $test_name (expected to fail)... "
+    local output
+    output=$(uv run slop build "$test_file" "$@" -o "$BUILD_DIR/$test_name" 2>&1)
+    local exit_code=$?
+    local problem=""
+
+    if [ $exit_code -eq 0 ]; then
+        problem="expected the build to fail"
+    elif ! echo "$output" | grep -qF "$expected"; then
+        problem="expected: $expected"
+    elif [ "$(echo "$output" | grep -c ': error:')" -ne 1 ]; then
+        problem="expected exactly one error"
+    fi
+
+    if [ -z "$problem" ]; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} ($problem)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+NEG="$REPO_ROOT/tests/import-resolution-negative"
+run_negative_build_test "$NEG/ambiguous.slop" "import-ambiguous" \
+    "amb-mid.slop:8:17: error: 'f' is imported from both 'alpha' and 'beta'" \
+    -I "$NEG" -I "$REPO_ROOT/tests/import-resolution"
+run_negative_build_test "$NEG/local-and-import.slop" "import-local-and-import" \
+    "local-and-import.slop:6:7: error: 'f' is defined in module 'main' and also imported from 'beta'" \
+    -I "$NEG" -I "$REPO_ROOT/tests/import-resolution"
+run_negative_build_test "$NEG/unimported.slop" "import-unimported" \
+    "unimported.slop:9:15: error: undefined function 'f' - check imports" \
+    -I "$NEG" -I "$REPO_ROOT/tests/import-resolution"
+
 echo ""
 
 # ============================================================
