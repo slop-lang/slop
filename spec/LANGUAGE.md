@@ -527,6 +527,40 @@ matched type must be covered, or a wildcard (`_` or `else`) must be present.
     ...))
 ```
 
+### 4.1 Name Resolution
+
+Imports are per name and per module. An unqualified call `(n ...)` in module `M`
+resolves, in order, to:
+
+1. a local binding named `n`;
+2. `M`'s own function or FFI declaration `n`;
+3. the function `n` that `M` imports, via `(import X (n))`;
+4. a builtin.
+
+Other modules in the same build are not consulted. A function that `M` neither
+defines nor imports cannot be called from `M`, even if another module in the
+build defines it. Two modules may export functions with the same name. What
+`M` calls is decided by what `M` imports, never by build order.
+
+These are errors:
+
+```
+(module m
+  (import alpha (f))
+  (import beta (f))      ; error: 'f' is imported from both 'alpha' and 'beta'
+  ...)
+
+(module m
+  (import beta (f))
+  (fn f ((x Int)) ...)   ; error: 'f' is defined in module 'm' and also imported from 'beta'
+  ...)
+```
+
+Inside a function, a call to the function's own name is recursion unless the
+module also declares an FFI function of that name. In that case the call
+reaches the FFI declaration, which is how a wrapper such as
+`(fn sqrt ((x Float)) ... (sqrt x))` calls the C `sqrt`.
+
 ## 5. Memory Model
 
 ### 5.1 Arena Allocation (Primary)

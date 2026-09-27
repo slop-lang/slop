@@ -806,6 +806,12 @@ Use `slop ref <module>` for detailed documentation, or `slop doc <path>`.
     ...))
 ```
 
+A call resolves within the calling module: a local binding, then the module's
+own function or FFI declaration, then what it imports, then a builtin. Another
+module's function is callable only if it is imported. Two errors follow from
+this: a name imported from two modules, and a name that is both defined in the
+module and imported into it.
+
 ### See Also
 
 - `slop ref builtins` - Language primitives (always available, no import needed)

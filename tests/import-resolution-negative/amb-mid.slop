@@ -1,0 +1,13 @@
+;; f imported from both alpha and beta: neither may be picked silently.
+;; A middle module, so that its error being reported under main.slop too
+;; would show up.
+
+(module amb-mid
+  (export h)
+  (import alpha (f))
+  (import beta (f))
+
+  (fn h ((x Int))
+    (@intent "Call an ambiguous f")
+    (@spec ((Int) -> Int))
+    (f x)))

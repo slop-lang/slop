@@ -4,6 +4,7 @@
 #include "../runtime/slop_runtime.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include "slop_strlib.h"
 #include "slop_types.h"
 
 typedef struct env_VarBinding env_VarBinding;

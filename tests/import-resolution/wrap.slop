@@ -1,0 +1,30 @@
+;; A wrapper named after the FFI function it calls, and a self-recursive f
+;; while alpha and beta also define f: inside each, the call must resolve
+;; within this module -- to the FFI declaration, and to itself.
+;; labs is in libc proper, so this links everywhere; a math.h function
+;; would need -lm on Linux, which slop build does not pass.
+
+(module wrap
+  (export labs depth)
+
+  (ffi "stdlib.h"
+    (labs ((x Int)) Int))
+
+  (fn labs ((x Int))
+    (@intent "Wrap the C labs under the same name")
+    (@spec ((Int) -> Int))
+    (labs x))
+
+  (fn f ((n Int))
+    (@intent "Count down to zero recursively")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (if (<= n 0)
+      0
+      (+ 1 (f (- n 1)))))
+
+  (fn depth ((n Int))
+    (@intent "Recursion depth reached from n")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (f n)))

@@ -19,11 +19,11 @@
     ctx-bind-var ctx-lookup-var
     ;; Type/function registration
     ctx-register-type ctx-lookup-type
-    ctx-register-func ctx-lookup-func
+    ctx-register-func ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry
     ctx-register-field-type ctx-lookup-field-type ctx-lookup-field-slop-type ctx-lookup-field-type-by-index ctx-get-fields-for-type
     ctx-mark-pointer-var ctx-is-pointer-var
     ;; Module context
-    ctx-set-module ctx-get-module
+    ctx-set-module ctx-get-module ctx-current-module-name
     ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
     ;; String building helpers
     ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens
@@ -163,7 +163,10 @@
       ;; Generic function support
       (is-generic Bool)                         ;; Is this a @generic function?
       (type-params (List String))               ;; Type parameter names (T, U, etc.)
-      (generic-source (Option (Ptr SExpr)))))   ;; AST for instantiation (if generic)
+      (generic-source (Option (Ptr SExpr)))     ;; AST for instantiation (if generic)
+      ;; Module-scoped resolution: a call in module M sees only entries owned by M
+      (owner-module String)                     ;; Module whose namespace binds this name ("" if none)
+      (imported-from String)))                  ;; Source module of an (import X (name)), "" for definitions/FFI
 
   ;; Field type info for record types
   (type FieldEntry
@@ -456,8 +459,10 @@
       (set! (deref ctx) inline-records (list-new arena InlineRecord))
       (set! (deref ctx) c-name-aliases (list-new arena FuncCNameAlias))
       (set! (deref ctx) struct-key-types (list-new arena String))
-      ;; Clear warnings for new module (already reported before this point)
+      ;; Clear warnings and errors for new module (already reported before this point);
+      ;; keeping errors would re-report them under the next module's filename
       (set! (deref ctx) warnings (list-new arena TranspileError))
+      (set! (deref ctx) errors (list-new arena TranspileError))
       ;; Clear deferred lambdas for new module
       (set! (deref ctx) deferred-lambdas (list-new arena String))
       ;; Clear trampoline tracking for new module UNLESS in single-output mode
@@ -904,10 +909,28 @@
     (@pre {ctx != nil})
     (list-push (. (deref ctx) funcs) entry))
 
+  (fn ctx-current-module-name ((ctx (Ptr TranspileContext)))
+    (@intent "Get the current module name, or the empty string outside any module")
+    (@spec (((Ptr TranspileContext)) -> String))
+    (@pre {ctx != nil})
+    (match (. (deref ctx) current-module)
+      ((some mod-name) mod-name)
+      ((none) "")))
+
   (fn ctx-lookup-func ((ctx (Ptr TranspileContext)) (name String))
-    (@intent "Look up a function by name, preferring non-self entries for FFI shadowing support")
+    (@intent "Look up a function callable from the current module")
     (@spec (((Ptr TranspileContext) String) -> (Option FuncEntry)))
     (@pre {ctx != nil})
+    (ctx-lookup-func-in-module ctx name (ctx-current-module-name ctx)))
+
+  (fn ctx-lookup-func-in-module ((ctx (Ptr TranspileContext)) (name String) (mod String))
+    (@intent "Look up a function bound in module mod: its own definitions and FFI declarations, then its imports")
+    (@spec (((Ptr TranspileContext) String String) -> (Option FuncEntry)))
+    (@pre {ctx != nil})
+    ;; Only entries owned by mod are visible. Among its definitions, search
+    ;; backward preferring entries that don't match current-fn-c-name, so a
+    ;; wrapper (fn sqrt ...) calling its module's (ffi ... (sqrt ...)) reaches
+    ;; the FFI entry rather than itself.
     (let ((funcs (. (deref ctx) funcs))
           (len (list-len funcs))
           (mut i (- len 1))
@@ -915,11 +938,12 @@
           (has-skip (> (string-len skip-c-name) 0))
           (mut result (Option FuncEntry) none)
           (mut self-entry (Option FuncEntry) none))
-      ;; Search backward: prefer entries that don't match current-fn-c-name
       (while (and (>= i 0) (match result ((none) true) ((some _) false)))
         (match (list-get funcs i)
           ((some entry)
-            (when (string-eq (. entry name) name)
+            (when (and (string-eq (. entry name) name)
+                       (string-eq (. entry owner-module) mod)
+                       (== (string-len (. entry imported-from)) 0))
               (if (and has-skip (string-eq (. entry c-name) skip-c-name))
                 ;; Self entry - save as fallback for genuine recursion
                 (set! self-entry (some entry))
@@ -927,10 +951,32 @@
                 (set! result (some entry)))))
           ((none) (do)))
         (set! i (- i 1)))
-      ;; If no non-self entry found, fall back to self entry (genuine recursion)
+      ;; No non-self definition: genuine recursion, else what mod imports
       (match result
         ((some _) result)
-        ((none) self-entry))))
+        ((none)
+          (match self-entry
+            ((some _) self-entry)
+            ((none) (ctx-find-import-entry ctx name mod)))))))
+
+  (fn ctx-find-import-entry ((ctx (Ptr TranspileContext)) (name String) (mod String))
+    (@intent "Find the entry module mod imports under name, most recent first")
+    (@spec (((Ptr TranspileContext) String String) -> (Option FuncEntry)))
+    (@pre {ctx != nil})
+    (let ((funcs (. (deref ctx) funcs))
+          (len (list-len funcs))
+          (mut i (- len 1))
+          (mut result (Option FuncEntry) none))
+      (while (and (>= i 0) (match result ((none) true) ((some _) false)))
+        (match (list-get funcs i)
+          ((some entry)
+            (when (and (string-eq (. entry name) name)
+                       (string-eq (. entry owner-module) mod)
+                       (> (string-len (. entry imported-from)) 0))
+              (set! result (some entry))))
+          ((none) (do)))
+        (set! i (- i 1)))
+      result))
 
   (fn ctx-register-field-type ((ctx (Ptr TranspileContext)) (type-name String) (field-name String) (c-type String) (slop-type String) (is-pointer Bool))
     (@intent "Register a field type for a record type")

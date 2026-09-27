@@ -15,9 +15,10 @@
   (import types (ResolvedType))
   (import env (TypeEnv env-arena env-add-import env-resolve-import
                env-lookup-type env-lookup-type-direct lookup-type-by-qualified-name
-               env-set-module env-get-current-file
+               env-set-module env-get-module env-get-current-file
                env-add-error env-lookup-function-direct
                env-lookup-constant-in-module))
+  (import strlib (string-build))
   (import path (path-dirname path-join))
   (import file (file-exists))
 
@@ -110,6 +111,7 @@
                                                   (string-concat arena "' does not export '"
                                                     (string-concat arena local-name "'"))))
                                               (sexpr-line name-expr) (sexpr-col name-expr)))
+                                          (check-import-collision env local-name (. mod-sym name) qualified-name name-expr)
                                           (env-add-import env local-name qualified-name)))
                                       (_ (do))))
                                   ((none) (do))))))
@@ -118,6 +120,45 @@
                   (_ (do))))
               ((none) (do)))))
         (_ (do)))))
+
+  (fn check-import-collision ((env (Ptr TypeEnv)) (local-name String) (source-mod String)
+                              (qualified-name String) (name-expr (Ptr SExpr)))
+    (@intent "Report a function import the current module already defines, or imports from another module")
+    (@spec (((Ptr TypeEnv) String String String (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= name-expr nil))
+    (let ((arena (env-arena env)))
+      (when (match (env-lookup-function-direct env qualified-name)
+              ((some _) true)
+              ((none) false))
+        ;; Defined here and imported: the import could never be reached
+        (match (env-get-module env)
+          ((some cur)
+            (let ((own-qualified (string-build arena (list String cur ":" local-name))))
+              (when (and (not (string-eq own-qualified qualified-name))
+                         (match (env-lookup-function-direct env own-qualified)
+                           ((some _) true)
+                           ((none) false)))
+                (env-add-error env
+                  (string-build arena (list String "'" local-name "' is defined in module '" cur
+                                                   "' and also imported from '" source-mod "'"))
+                  (sexpr-line name-expr) (sexpr-col name-expr)))))
+          ((none) (do)))
+        ;; Imported from two modules: neither may be picked silently
+        (match (env-resolve-import env local-name)
+          ((some prev-qualified)
+            (when (not (string-eq prev-qualified qualified-name))
+              (match (env-lookup-function-direct env prev-qualified)
+                ((some prev-sig)
+                  (match (. (deref prev-sig) module-name)
+                    ((some prev-mod)
+                      (env-add-error env
+                        (string-build arena (list String "'" local-name "' is imported from both '" prev-mod
+                                                         "' and '" source-mod "'"))
+                        (sexpr-line name-expr) (sexpr-col name-expr)))
+                    ((none) (do))))
+                ((none) (do)))))
+          ((none) (do))))))
 
   ;; ============================================================
   ;; Module File Resolution

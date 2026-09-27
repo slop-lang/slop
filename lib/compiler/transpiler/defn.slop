@@ -21,7 +21,7 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds))
   (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
-                   ctx-register-type ctx-register-func ctx-register-field-type
+                   ctx-register-type ctx-register-func ctx-register-field-type ctx-current-module-name
                    ctx-str ctx-str3 ctx-str4 ctx-str5
                    ctx-set-current-result-type ctx-clear-current-result-type
                    ctx-set-current-return-type ctx-get-current-return-type ctx-clear-current-return-type
@@ -1117,7 +1117,8 @@
           (ctx-register-func ctx (FuncEntry raw-name fn-name actual-return slop-ret-type
                                    (ends-with actual-return "*")
                                    (string-eq actual-return "slop_string")
-                                   param-types false empty-type-params no-source)))
+                                   param-types false empty-type-params no-source
+                                   (ctx-current-module-name ctx) "")))
         ;; Clear current result type and return type
         (ctx-clear-current-result-type ctx)
         (ctx-clear-current-return-type ctx))))

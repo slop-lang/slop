@@ -19,7 +19,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext context-new ctx-emit ctx-emit-header ctx-get-output ctx-get-header
                    ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
-                   ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
+                   ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry ctx-current-module-name ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
                    ctx-add-include ctx-get-includes ctx-register-enum-variant
                    ctx-register-union-variant ctx-get-union-variants UnionVariantEntry
                    ctx-register-result-type ctx-has-result-type ctx-get-result-types ResultType
@@ -51,7 +51,7 @@
   (import stmt (transpile-stmt))
   (import expr (transpile-expr))
   (import match (transpile-match))
-  (import strlib (starts-with substring char-at))
+  (import strlib (starts-with ends-with substring char-at string-build))
   (import parser (pretty-print))
 
   ;; ============================================================
@@ -405,9 +405,11 @@
                     ;; returns-pointer, not a hardcoded false: this is the
                     ;; prescan every consumer of the registry sees first, the
                     ;; tester's own context included (#157).
+                    (report-imported-definition ctx fn-name name-expr)
                     (ctx-register-func ctx (FuncEntry fn-name c-name return-type slop-ret-type
                                              (ends-with return-type "*")
-                                             returns-str param-types is-generic type-params no-source)))
+                                             returns-str param-types is-generic type-params no-source
+                                             (ctx-current-module-name ctx) "")))
                   ;; Scan param types for List/Option generics
                   (prescan-fn-params ctx items)
                   ;; Check for Result type and other generics in @spec
@@ -913,6 +915,41 @@
       (let ((first-char (char-at name 0)))
         (and (>= first-char 65) (<= first-char 90)))))  ;; 'A' = 65, 'Z' = 90
 
+  (fn report-import-collision ((ctx (Ptr TranspileContext)) (name String) (source-mod String) (at (Ptr SExpr)))
+    (@intent "Report an import of name from source-mod that the current module already defines or imports from elsewhere")
+    (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (cur (ctx-current-module-name ctx)))
+      (match (ctx-lookup-func-in-module ctx name cur)
+        ((some entry)
+          (let ((from (. entry imported-from)))
+            (if (== (string-len from) 0)
+              (ctx-add-error-at ctx
+                (string-build arena (list String "'" name "' is defined in module '" cur
+                                                 "' and also imported from '" source-mod "'"))
+                (ctx-sexpr-line at) (ctx-sexpr-col at))
+              (when (not (string-eq from source-mod))
+                (ctx-add-error-at ctx
+                  (string-build arena (list String "'" name "' is imported from both '" from
+                                                   "' and '" source-mod "'"))
+                  (ctx-sexpr-line at) (ctx-sexpr-col at))))))
+        ((none) (do)))))
+
+  (fn report-imported-definition ((ctx (Ptr TranspileContext)) (name String) (at (Ptr SExpr)))
+    (@intent "Report a definition of name in the current module that the module also imports")
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (cur (ctx-current-module-name ctx)))
+      (match (ctx-find-import-entry ctx name cur)
+        ((some entry)
+          (ctx-add-error-at ctx
+            (string-build arena (list String "'" name "' is defined in module '" cur
+                                             "' and also imported from '" (. entry imported-from) "'"))
+            (ctx-sexpr-line at) (ctx-sexpr-col at)))
+        ((none) (do)))))
+
   (fn prescan-import ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Prescan an import declaration - register imported types")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
@@ -962,8 +999,11 @@
                                                                      (match existing ((some e) (. e is-union)) ((none) false))))
                                             (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false false "" ""))))
                                         ;; Register function with module prefix
-                                        ;; Re-exports: reuse existing c-name to preserve original module prefix
-                                        (let ((existing-func (ctx-lookup-func ctx sym-name))
+                                        ;; Resolve against the named module's own namespace, not the
+                                        ;; whole build: another module's same-named function must not
+                                        ;; win. Re-exports: the source module's import entry carries
+                                        ;; the original module's c-name.
+                                        (let ((existing-func (ctx-lookup-func-in-module ctx sym-name mod-name))
                                               (c-name (match existing-func
                                                         ((some entry) (. entry c-name))
                                                         ((none) (ctx-str3 ctx c-mod-name "_" c-sym-name))))
@@ -989,7 +1029,9 @@
                                                            ((some entry) (. entry type-params))
                                                            ((none) (list-new arena String))))
                                               (no-source (Option (Ptr SExpr)) none))
-                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret ret-ptr ret-str param-types is-gen ty-params no-source))))))
+                                          (report-import-collision ctx sym-name mod-name sym-item)
+                                          (ctx-register-func ctx (FuncEntry sym-name c-name ret-type slop-ret ret-ptr ret-str param-types is-gen ty-params no-source
+                                                                   (ctx-current-module-name ctx) mod-name))))))
                                   (else (do))))
                               ((none) (do)))
                             (set! j (+ j 1)))))
@@ -1100,10 +1142,12 @@
                         ;; which was harmless only while nothing read the flag;
                         ;; once is-pointer-expr did, a by-value FFI result took
                         ;; `->` (#157).
+                        (report-imported-definition ctx fn-name name-expr)
                         (ctx-register-func ctx (FuncEntry fn-name c-name ret-type ""
                                                  (ends-with ret-type "*")
                                                  ret-is-string param-types false
-                                                 empty-type-params no-source))))
+                                                 empty-type-params no-source
+                                                 (ctx-current-module-name ctx) ""))))
                     (else (do))))
                 ((none) (do))))))
         (else (do)))))

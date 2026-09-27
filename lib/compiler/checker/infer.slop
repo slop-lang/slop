@@ -22,12 +22,12 @@
                  resolved-type-is-record resolved-type-has-field resolved-type-get-field-type))
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
                env-bind-var env-lookup-var env-lookup-type
-               env-lookup-function env-lookup-variant env-lookup-constant
+               env-lookup-function env-lookup-function-direct env-lookup-variant env-lookup-constant
                env-get-int-type env-get-bool-type env-get-float-type env-get-null-type
                env-get-string-type env-get-unit-type env-get-arena-type
                env-get-unknown-type env-get-never-type
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
-               env-add-warning env-add-error
+               env-add-warning env-add-error env-get-diagnostics
                env-set-fn-type-params env-clear-fn-type-params env-is-type-param))
   (import strlib (starts-with ends-with string-build join))
   (import ctype (is-builtin-type))
@@ -1007,6 +1007,15 @@
           (do (infer-body-exprs env expr 1)
               (env-get-int-type env)))
 
+        ;; (min a b) / (max a b) - transpiler intrinsics (a ternary, emitted
+        ;; ahead of any function lookup), so typed as their first operand
+        ((or (string-eq op "min") (string-eq op "max"))
+          (let ((a-type (match (list-get items 1)
+                          ((some a-expr) (infer-expr env a-expr))
+                          ((none) (env-get-unknown-type env)))))
+            (infer-body-exprs env expr 2)
+            a-type))
+
         ;; (deref ptr-expr) - dereference pointer, returns inner type
         ((string-eq op "deref")
           (if (>= len 2)
@@ -1573,8 +1582,20 @@
                                       ;; Still infer argument types for annotation coverage
                                       (infer-builtin-args env expr)
                                       (env-get-unknown-type env))
-                                    ;; May be an FFI function - infer args for annotation coverage
-                                    (do (infer-builtin-args env expr)
+                                    ;; Another module's function that this module neither
+                                    ;; defines nor imports is not callable here; otherwise it
+                                    ;; may be an FFI function - infer args for annotation coverage
+                                    (do (match (env-lookup-function-direct env op)
+                                          ((some sig)
+                                            (match (. (deref sig) module-name)
+                                              ((some def-mod)
+                                                (env-add-error env
+                                                  (string-build arena (list String "function '" op "' is defined in module '"
+                                                                           def-mod "' but not imported"))
+                                                  line col))
+                                              ((none) (do))))
+                                          ((none) (do)))
+                                        (infer-builtin-args env expr)
                                         (env-get-unknown-type env)))))))))))))))))))
 
   (fn check-fn-call-args ((env (Ptr TypeEnv)) (sig (Ptr FnSignature)) (expr (Ptr SExpr))

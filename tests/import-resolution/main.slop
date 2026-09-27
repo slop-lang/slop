@@ -1,0 +1,32 @@
+;; A call is resolved within the calling module: its own definitions, then
+;; what it imports. Before, the most recently registered function of that
+;; name anywhere in the build won, so which f ran depended on build order.
+;; Imports listed so the wrong-module f and join are registered last.
+
+(module main
+  (import alpha (g))
+  (import beta (f))
+  (import user (pair))
+  (import tasks (join))
+  (import wrap (labs depth))
+
+  (fn check ((name String) (ok Bool))
+    (@intent "Report one check, returning 1 if it failed")
+    (@spec ((String Bool) -> Int))
+    (if ok
+      (do (print name) (println ": PASS") 0)
+      (do (print name) (println ": FAIL") 1)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (let ((failures (+ (check "imported f is beta's" (== (f 1) 101))
+                    (+ (check "alpha's g calls alpha's f" (== (g 1) 2))
+                    (+ (check "imported join is tasks'" (== (join 3) 6))
+                    (+ (check "user's join is strs'" (== (pair 1 2) 12))
+                    (+ (check "FFI-named wrapper reaches the FFI" (== (labs -7) 7))
+                       (check "recursion stays in its module" (== (depth 5) 5)))))))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (println "test(s) failed") 1)))))

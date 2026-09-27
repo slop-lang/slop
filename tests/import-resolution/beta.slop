@@ -1,0 +1,8 @@
+(module beta
+  (export f)
+
+  (fn f ((x Int))
+    (@intent "beta's f")
+    (@spec ((Int) -> Int))
+    (@pure)
+    (+ x 100)))
