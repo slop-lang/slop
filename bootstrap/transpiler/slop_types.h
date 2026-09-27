@@ -4,6 +4,7 @@
 #include "../runtime/slop_runtime.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include "slop_strlib.h"
 
 typedef struct types_SExprSymbol types_SExprSymbol;
 typedef struct types_SExprString types_SExprString;
@@ -78,6 +79,20 @@ typedef enum {
     types_DiagnosticLevel_diag_warning,
     types_DiagnosticLevel_diag_error
 } types_DiagnosticLevel;
+
+typedef enum {
+    types_BindingOrigin_origin_param,
+    types_BindingOrigin_origin_local,
+    types_BindingOrigin_origin_bound,
+    types_BindingOrigin_origin_const
+} types_BindingOrigin;
+
+typedef enum {
+    types_MutationKind_mut_assign,
+    types_MutationKind_mut_field,
+    types_MutationKind_mut_push,
+    types_MutationKind_mut_pop
+} types_MutationKind;
 
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
@@ -404,6 +419,8 @@ slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_a
 uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name);
 slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_ResolvedType* t, slop_string name);
 slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_ResolvedType* t);
+slop_string types_mutation_error_message(slop_arena* arena, types_MutationKind kind, types_BindingOrigin origin, slop_string name, uint8_t via_field);
+slop_string types_param_mode_error_message(slop_arena* arena, slop_string mode, slop_string name);
 
 #ifndef SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
 #define SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED

@@ -32,9 +32,11 @@
     ;; Pointer detection
     is-pointer-expr
     ;; set! helpers
-    set-is-self-assign)
+    set-is-self-assign check-set-target-c)
 
-  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
+  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
+                 ResolvedType resolved-type-is-pointer
+                 BindingOrigin MutationKind mutation-error-message))
   (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
@@ -2250,6 +2252,132 @@
   ;; Pointer Expression Detection
   ;; ============================================================
 
+  ;; ============================================================
+  ;; Mutability (#180)
+  ;;
+  ;; The transpiler's half of the checker's rule, since a build drops checker
+  ;; diagnostics (#93): an unmarked parameter's own value -- itself, its
+  ;; fields, the length of a List it is or holds -- may not change. A mut
+  ;; parameter is a local copy that may, and anything reached through a
+  ;; pointer, an index, or a Map/Set handle is storage elsewhere.
+  ;; ============================================================
+
+  ;; Where a mutation lands: the variable it starts from, the steps (field,
+  ;; index, deref) leading from it, and whether one went through a pointer
+  (type CMutPath (record
+    (root String)
+    (has-root Bool)
+    (depth Int)
+    (through Bool)))
+
+  (fn is-pointer-step ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Whether a value reaches storage elsewhere: a pointer, a Map or Set, an arena")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Bool))
+    (@pre {ctx != nil})
+    (or (is-pointer-expr ctx expr)
+        ;; The checker's type for the node: a Ptr-typed field of a value, or
+        ;; a Map/Set handle, which is-pointer-expr does not see
+        (match (get-node-resolved-type expr)
+          ((some t)
+            (or (resolved-type-is-pointer t)
+                (string-eq (. (deref t) c-name) "slop_map*")))
+          ((none) false))))
+
+  (fn c-mutation-path ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
+    (@intent "Trace the place a mutation writes to back to the variable it starts from")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> CMutPath))
+    (@pre {ctx != nil})
+    (let ((no-root (CMutPath "" false 0 false)))
+      (match (deref expr)
+        ((sym s)
+          (let ((name (. s name)))
+            (match (ctx-lookup-var ctx name)
+              ((some _) (CMutPath name true 0 false))
+              ((none)
+                ;; p.f, a field of a variable p written as one symbol
+                (match (index-of name ".")
+                  ((some idx)
+                    (if (> idx 0)
+                      (let ((prefix (substring (. (deref ctx) arena) name 0 idx)))
+                        (match (ctx-lookup-var ctx prefix)
+                          ((some entry)
+                            (CMutPath prefix true 1 (or (. entry is-pointer) (ends-with (. entry c-type) "*"))))
+                          ((none) no-root)))
+                      no-root))
+                  ((none) no-root))))))
+        ((lst lst)
+          (let ((items (. lst items))
+                (len (list-len items)))
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((sym hs)
+                    (cond
+                      ;; (. Y f)
+                      ((and (string-eq (. hs name) ".") (>= len 3))
+                        (match (list-get items 1)
+                          ((some base) (c-mutation-path-field ctx (c-mutation-path ctx base) base))
+                          ((none) no-root)))
+                      ;; (deref Y) and (@ Y i) write through a pointer
+                      ((and (or (string-eq (. hs name) "deref") (string-eq (. hs name) "@")) (>= len 2))
+                        (match (list-get items 1)
+                          ((some base)
+                            (let ((inner (c-mutation-path ctx base)))
+                              (CMutPath (. inner root) (. inner has-root) (+ (. inner depth) 1) true)))
+                          ((none) no-root)))
+                      (else no-root)))
+                  (else no-root)))
+              ((none) no-root))))
+        (else no-root))))
+
+  (fn c-mutation-path-field ((ctx (Ptr TranspileContext)) (base CMutPath) (base-expr (Ptr SExpr)))
+    (@intent "Extend a mutation path by one field of base-expr")
+    (@spec (((Ptr TranspileContext) CMutPath (Ptr SExpr)) -> CMutPath))
+    (@pre {ctx != nil})
+    (CMutPath (. base root) (. base has-root) (+ (. base depth) 1)
+              (or (. base through) (is-pointer-step ctx base-expr))))
+
+  (fn c-mutation-forbidden ((entry VarEntry) (path CMutPath) (kind MutationKind))
+    (@intent "Whether a variable's declaration forbids this mutation")
+    (@spec ((VarEntry CMutPath MutationKind) -> Bool))
+    (and (not (. entry is-mutable))
+         (not (. path through))
+         (== (. entry origin) 'origin-param)
+         (or (!= (. path depth) 0)
+             (== kind 'mut-assign)
+             ;; A push or pop on the parameter itself: only a List value
+             (starts-with (. entry c-type) "slop_list_"))))
+
+  (fn check-c-mutation ((ctx (Ptr TranspileContext)) (target (Ptr SExpr)) (path CMutPath) (kind MutationKind))
+    (@intent "Report a mutation of a variable its declaration does not let change; true when allowed")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) CMutPath MutationKind) -> Bool))
+    (@pre {ctx != nil})
+    (if (not (. path has-root))
+      true
+      (match (ctx-lookup-var ctx (. path root))
+        ((some entry)
+          (if (c-mutation-forbidden entry path kind)
+            (do
+              (ctx-add-error-at ctx
+                (mutation-error-message (. (deref ctx) arena) kind (. entry origin) (. path root) (> (. path depth) 0))
+                (ctx-sexpr-line target) (ctx-sexpr-col target))
+              false)
+            true))
+        ((none) true))))
+
+  (fn check-set-target-c ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (len Int))
+    (@intent "Report a set! of a variable its declaration does not let change; true when allowed")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> Bool))
+    (@pre {ctx != nil})
+    (match (list-get items 1)
+      ((some target)
+        (if (>= len 4)
+          ;; (set! T f v) and (set! T f Type v) write field f of T
+          (check-c-mutation ctx target (c-mutation-path-field ctx (c-mutation-path ctx target) target) 'mut-field)
+          (let ((path (c-mutation-path ctx target)))
+            (check-c-mutation ctx target path (if (== (. path depth) 0) 'mut-assign 'mut-field)))))
+      ((none) true)))
+
   (fn is-pointer-expr ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
     (@intent "Check if expression evaluates to a pointer type")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Bool))
@@ -2981,7 +3109,8 @@
                     ((and (string-eq op "list-pop") (>= len 2))
                       (match (list-get items 1)
                         ((some list-expr)
-                          (let ((list-c (transpile-expr ctx list-expr))
+                          (let ((mutation-ok (check-c-mutation ctx list-expr (c-mutation-path ctx list-expr) 'mut-pop))
+                                (list-c (transpile-expr ctx list-expr))
                                 ;; Try to get the proper named option type for this list's elements
                                 (option-type (infer-list-element-option-type ctx list-expr)))
                             ;; If we have a named option type, use it; otherwise use anonymous struct
@@ -3038,7 +3167,8 @@
                         ((some list-expr)
                           (match (list-get items 2)
                             ((some item-expr)
-                              (let ((list-c (transpile-expr ctx list-expr))
+                              (let ((mutation-ok (check-c-mutation ctx list-expr (c-mutation-path ctx list-expr) 'mut-push))
+                                    (list-c (transpile-expr ctx list-expr))
                                     (item-c (transpile-expr ctx item-expr))
                                     ;; Determine arena source from the list expression
                                     ;; If it's a struct field access, use struct->arena
@@ -4045,7 +4175,7 @@
             ;; by its ok type.
             (is-ptr (starts-with inner-slop-type "(Ptr "))
             (c-type (if is-ptr (slop-value-type-to-c-type ctx inner-slop-type) "auto")))
-        (ctx-bind-var ctx (VarEntry binding-name c-name c-type inner-slop-type is-ptr false false "" ""))))
+        (ctx-bind-var ctx (VarEntry binding-name c-name c-type inner-slop-type is-ptr false false "" "" 'origin-bound))))
     ;; Transpile body expression
     (let ((result (get-match-branch-body ctx branch-items)))
       ;; Pop scope
@@ -5108,7 +5238,7 @@
                                               ((none) "int64_t")))
                                           ((none) "int64_t")))))
                           ;; Register in context so nested lambdas can find it
-                          (ctx-bind-var ctx (VarEntry var-name c-name c-type "" false false false "" ""))))
+                          (ctx-bind-var ctx (VarEntry var-name c-name c-type "" false false false "" "" 'origin-local))))
                       (else (do))))
                   ((none) (do)))))))
         (else (do)))))
@@ -5310,7 +5440,10 @@
     ;; (set! target value) -> ({ target = value; (void)0; })
     ;; or (set! (@ arr idx) value) -> ({ arr[idx] = value; (void)0; })
     (let ((arena (. (deref ctx) arena))
-          (len (list-len items)))
+          (len (list-len items))
+          ;; Before the self-assign shortcut: (set! x x) on a read-only x is
+          ;; still an assignment the checker reports
+          (mutation-ok (check-set-target-c ctx items len)))
       (if (set-is-self-assign items)
         ;; (set! x x) is a no-op — emit a void statement-expr, no self-assign
         "({ (void)0; })"
@@ -6603,7 +6736,7 @@
                                                             (ctx-str3 ctx "; " var-name "++) { ")))))
                                         ;; Bind loop variable for body expressions
                                         (ctx-push-scope ctx)
-                                        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "" false false false "" ""))
+                                        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "" false false false "" "" 'origin-bound))
                                         ;; Process body expressions
                                         (let ((mut i 2))
                                           (while (< i len)
@@ -6697,7 +6830,7 @@
       (ctx-push-scope ctx)
       (let ((is-ptr-elem (starts-with elem-slop-type "(Ptr "))
             (elem-c-type (if is-ptr-elem (slop-type-to-c-type ctx elem-slop-type) "auto")))
-        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type is-ptr-elem false false "" "")))
+        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type is-ptr-elem false false "" "" 'origin-bound)))
       ;; Process body expressions
       (let ((mut i 2))
         (while (< i len)
@@ -6739,7 +6872,7 @@
         (set! result (ctx-str3 ctx result if-part assign-part))
         ;; Bind loop variable
         (ctx-push-scope ctx)
-        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type false false false "" ""))
+        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type false false false "" "" 'origin-bound))
         ;; Process body expressions
         (let ((mut i 2))
           (while (< i len)
@@ -6781,7 +6914,7 @@
         (set! result (ctx-str3 ctx result if-part assign-part))
         ;; Bind loop variable
         (ctx-push-scope ctx)
-        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name key-c-type key-slop-type false false false "" ""))
+        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name key-c-type key-slop-type false false false "" "" 'origin-bound))
         ;; Process body expressions
         (let ((mut i 2))
           (while (< i len)
@@ -6847,8 +6980,8 @@
                                           (set! result (ctx-str4 ctx result if-part k-assign v-assign))
                                           ;; Bind both variables
                                           (ctx-push-scope ctx)
-                                          (ctx-bind-var ctx (VarEntry (. k-sym name) k-name key-c-type key-slop-type false false false "" ""))
-                                          (ctx-bind-var ctx (VarEntry (. v-sym name) v-name val-c-type val-slop-type false false false "" ""))
+                                          (ctx-bind-var ctx (VarEntry (. k-sym name) k-name key-c-type key-slop-type false false false "" "" 'origin-bound))
+                                          (ctx-bind-var ctx (VarEntry (. v-sym name) v-name val-c-type val-slop-type false false false "" "" 'origin-bound))
                                           ;; Process body expressions
                                           (let ((mut i 2))
                                             (while (< i len)
@@ -6921,7 +7054,7 @@
                       ;; slop_arena* arena = &_arena;
                       (set! result (ctx-str5 ctx result "slop_arena* " c-arena-name " = &" (ctx-str ctx c-local "; ")))
                       ;; Bind arena variable in scope
-                      (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" ""))
+                      (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" "" 'origin-bound))
                       ;; Process body expressions - all but last are side-effects
                       (let ((mut i body-start))
                         (while (< i (- len 1))
@@ -7183,6 +7316,8 @@
             (let ((c-name (to-c-name arena var-name))
                   (var-info (ctx-lookup-var ctx var-name))
                   (is-mut (match var-info ((some entry) (. entry is-mutable)) ((none) false)))
+                  ;; The capture keeps what the variable was bound as (#180)
+                  (origin (match var-info ((some entry) (. entry origin)) ((none) 'origin-bound)))
                   ;; For mutable: dereference the pointer; for immutable: direct access
                   (access-expr (if is-mut
                                  (ctx-str3 ctx "(*_env->" c-name ")")
@@ -7190,7 +7325,7 @@
                   (var-type (match var-info ((some entry) (. entry c-type)) ((none) "int64_t")))
                   (slop-type (match var-info ((some entry) (. entry slop-type)) ((none) ""))))
               ;; Bind with the access expression as the C name, preserving mutability
-              (ctx-bind-var ctx (VarEntry var-name access-expr var-type slop-type false is-mut false "" ""))))
+              (ctx-bind-var ctx (VarEntry var-name access-expr var-type slop-type false is-mut false "" "" origin))))
           ((none) (do)))
         (set! i (+ i 1)))))
 
@@ -7391,7 +7526,7 @@
                                       (c-name (to-c-name arena param-name))
                                       (c-type (to-c-type-prefixed ctx type-expr))
                                       (is-ptr (is-pointer-type-sexpr type-expr)))
-                                  (ctx-bind-var ctx (VarEntry param-name c-name c-type "" is-ptr false false "" ""))))
+                                  (ctx-bind-var ctx (VarEntry param-name c-name c-type "" is-ptr false false "" "" 'origin-param))))
                               ((none) (do))))
                           (else (do))))
                       ((none) (do))))))

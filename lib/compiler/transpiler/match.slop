@@ -341,7 +341,7 @@
                 (is-ptr (starts-with inner-slop-type "(Ptr "))
                 (inner-c-type (if is-ptr (slop-value-type-to-c-type ctx inner-slop-type) "auto")))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".value;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name inner-c-type inner-slop-type is-ptr false false "" ""))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name inner-c-type inner-slop-type is-ptr false false "" "" 'origin-bound))))
         ((none) (do)))
       ;; Emit body
       (emit-branch-body ctx branch-items is-return)
@@ -433,7 +433,7 @@
                 (is-ptr (starts-with ok-slop-type "(Ptr "))
                 (ok-c-type (if is-ptr (slop-value-type-to-c-type ctx ok-slop-type) "auto")))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.ok;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name ok-c-type ok-slop-type is-ptr false false "" ""))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name ok-c-type ok-slop-type is-ptr false false "" "" 'origin-bound))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
@@ -460,7 +460,7 @@
                 (is-ptr (starts-with err-slop-type "(Ptr "))
                 (err-c-type (if is-ptr (slop-value-type-to-c-type ctx err-slop-type) "auto")))
             (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx scrutinee-c ".data.err;")))
-            (ctx-bind-var ctx (VarEntry binding-name c-name err-c-type err-slop-type is-ptr false false "" ""))))
+            (ctx-bind-var ctx (VarEntry binding-name c-name err-c-type err-slop-type is-ptr false false "" "" 'origin-bound))))
         ((none) (do)))
       (emit-branch-body ctx branch-items is-return)
       (ctx-pop-scope ctx)
@@ -699,7 +699,7 @@
                                 (field-name (ctx-str ctx "f" (int-to-string arena field-idx))))
                             (ctx-emit ctx (ctx-str5 ctx "__auto_type " c-binding " = " scrutinee-c
                                            (ctx-str5 ctx ".data." c-tag "." field-name ";")))
-                            (ctx-bind-var ctx (VarEntry binding-name c-binding payload-c-type payload-slop-type false false false "" ""))))))
+                            (ctx-bind-var ctx (VarEntry binding-name c-binding payload-c-type payload-slop-type false false false "" "" 'origin-bound))))))
                     ((none) (do))))))
             (else (do)))
           ;; Single-field variant: original behavior
@@ -714,7 +714,7 @@
                                         ((none) ""))))
                 (ctx-emit ctx (ctx-str5 ctx "__auto_type " c-binding " = " scrutinee-c
                                (ctx-str3 ctx ".data." c-tag ";")))
-                (ctx-bind-var ctx (VarEntry binding-name c-binding payload-c-type payload-slop-type false false false "" ""))))
+                (ctx-bind-var ctx (VarEntry binding-name c-binding payload-c-type payload-slop-type false false false "" "" 'origin-bound))))
             ((none) (do)))))
       ;; Emit body
       (emit-branch-body ctx branch-items is-return)
@@ -962,7 +962,7 @@
                                                 ;; Extract SLOP type string from type expression for proper type inference
                                                 (slop-type-str (sexpr-to-type-string arena type-expr)))
                                             (ctx-emit ctx (ctx-str5 ctx c-type " " c-name " = " (ctx-str ctx final-init ";")))
-                                            (ctx-bind-var ctx (VarEntry raw-name c-name c-type slop-type-str is-ptr has-mut false "" "")))))
+                                            (ctx-bind-var ctx (VarEntry raw-name c-name c-type slop-type-str is-ptr has-mut false "" "" 'origin-local)))))
                                       ((none) (ctx-add-error-at ctx "missing value" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))
                                     ;; Not typed - middle is actually value - infer type
                                     (match (list-get items type-idx)
@@ -976,13 +976,13 @@
                                             ((some ptr-type)
                                               ;; Arena-alloc returns pointer
                                               (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                              (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut false "" "")))
+                                              (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut false "" "" 'origin-local)))
                                             ((none)
                                               ;; Infer type from expression
                                               (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                                     (is-ptr (ends-with inferred-type "*")))
                                                 (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                                (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "")))))))
+                                                (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "" 'origin-local)))))))
                                       ((none) (ctx-add-error-at ctx "missing value" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))
                                 ((none) (ctx-add-error-at ctx "missing type/value" (ctx-sexpr-line binding) (ctx-sexpr-col binding)))))
                             ;; Simple: (name init)
@@ -998,13 +998,13 @@
                                       ((some ptr-type)
                                         ;; Arena-alloc returns pointer
                                         (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                        (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut false "" "")))
+                                        (ctx-bind-var ctx (VarEntry raw-name c-name ptr-type inferred-slop-type true has-mut false "" "" 'origin-local)))
                                       ((none)
                                         ;; Infer type from expression
                                         (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                               (is-ptr (ends-with inferred-type "*")))
                                           (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
-                                          (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "")))))))
+                                          (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "" 'origin-local)))))))
                                 ((none) (ctx-add-error-at ctx "missing value" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))))
                       (else (ctx-add-error-at ctx "binding name must be symbol" (ctx-sexpr-line name-expr) (ctx-sexpr-col name-expr)))))
                   ((none) (ctx-add-error-at ctx "missing binding name" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))))
@@ -1567,7 +1567,7 @@
                     (ctx-emit ctx (ctx-str5 ctx "slop_arena* " c-arena-name " = &" c-local ";"))))
                 ((none) (ctx-add-error-at ctx "missing size" (ctx-list-first-line items) (ctx-list-first-col items))))
               ;; Bind arena variable in scope
-              (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" ""))
+              (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" "" 'origin-bound))
               ;; Process body statements
               (let ((mut i body-start))
                 (while (< i len)
@@ -1638,7 +1638,7 @@
                                         (ctx-indent ctx)
                                         ;; Bind loop variable
                                         (ctx-push-scope ctx)
-                                        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "Int" false false false "" ""))
+                                        (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "Int" false false false "" "" 'origin-bound))
                                         ;; Process body
                                         (emit-inline-body-items ctx items 2)
                                         (ctx-pop-scope ctx)
@@ -1680,7 +1680,7 @@
             (assign-part (ctx-str3 ctx assign-prefix cast-part ";")))
         (ctx-emit ctx assign-part))
       (ctx-push-scope ctx)
-      (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type false false false "" ""))
+      (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type false false false "" "" 'origin-bound))
       (emit-inline-body-items ctx items 2)
       (ctx-pop-scope ctx)
       (ctx-dedent ctx)
@@ -1719,7 +1719,7 @@
             (assign-part (ctx-str3 ctx assign-prefix cast-part ";")))
         (ctx-emit ctx assign-part))
       (ctx-push-scope ctx)
-      (ctx-bind-var ctx (VarEntry (. var-sym name) var-name key-c-type key-slop-type false false false "" ""))
+      (ctx-bind-var ctx (VarEntry (. var-sym name) var-name key-c-type key-slop-type false false false "" "" 'origin-bound))
       (emit-inline-body-items ctx items 2)
       (ctx-pop-scope ctx)
       (ctx-dedent ctx)
@@ -1783,8 +1783,8 @@
                                               (v-assign (ctx-str3 ctx v-prefix v-cast ";")))
                                           (ctx-emit ctx v-assign))
                                         (ctx-push-scope ctx)
-                                        (ctx-bind-var ctx (VarEntry (. k-sym name) k-name key-c-type key-slop-type false false false "" ""))
-                                        (ctx-bind-var ctx (VarEntry (. v-sym name) v-name val-c-type val-slop-type false false false "" ""))
+                                        (ctx-bind-var ctx (VarEntry (. k-sym name) k-name key-c-type key-slop-type false false false "" "" 'origin-bound))
+                                        (ctx-bind-var ctx (VarEntry (. v-sym name) v-name val-c-type val-slop-type false false false "" "" 'origin-bound))
                                         (emit-inline-body-items ctx items 2)
                                         (ctx-pop-scope ctx)
                                         (ctx-dedent ctx)
@@ -1857,7 +1857,7 @@
                                           (let ((elem-slop-type (infer-collection-element-slop-type ctx coll-expr))
                                                 (is-ptr-elem (starts-with elem-slop-type "(Ptr "))
                                                 (elem-c-type (if is-ptr-elem (slop-value-type-to-c-type ctx elem-slop-type) "auto")))
-                                            (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type is-ptr-elem false false "" "")))
+                                            (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type is-ptr-elem false false "" "" 'origin-bound)))
                                           (emit-inline-body-items ctx items 2)
                                           (ctx-pop-scope ctx)
                                           (ctx-dedent ctx)
@@ -2085,7 +2085,7 @@
                                 (field-name (ctx-str ctx "f" (int-to-string arena field-idx))))
                             (ctx-emit ctx (ctx-str5 ctx "__auto_type " c-binding " = " scrutinee-c
                                            (ctx-str5 ctx ".data." c-tag "." field-name ";")))
-                            (ctx-bind-var ctx (VarEntry binding-name c-binding payload-c-type payload-slop-type false false false "" "")))))))
+                            (ctx-bind-var ctx (VarEntry binding-name c-binding payload-c-type payload-slop-type false false false "" "" 'origin-bound)))))))
                   ((none) (do))))))
           (else (do)))
         ;; Single-field: bind if not literal and not wildcard
@@ -2103,7 +2103,7 @@
                                         ((none) ""))))
                 (ctx-emit ctx (ctx-str5 ctx "__auto_type " c-binding " = " scrutinee-c
                                (ctx-str3 ctx ".data." c-tag ";")))
-                (ctx-bind-var ctx (VarEntry binding-name c-binding payload-c-type payload-slop-type false false false "" "")))))
+                (ctx-bind-var ctx (VarEntry binding-name c-binding payload-c-type payload-slop-type false false false "" "" 'origin-bound)))))
           ((none) (do))))))
 
   ;; ============================================================

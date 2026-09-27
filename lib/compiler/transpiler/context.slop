@@ -99,7 +99,7 @@
     ;; Position extraction helpers
     ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col)
 
-  (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature))
+  (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature BindingOrigin))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type is-type-variable))
   (import strlib (index-of substring char-at starts-with))
 
@@ -134,7 +134,8 @@
       (is-mutable Bool)    ;; Is this mutable?
       (is-closure Bool)    ;; Is this a closure (lambda capturing variables)?
       (closure-env-type String)     ;; Env type name for closures (e.g., "mod__lambda_0_env_t")
-      (closure-lambda-name String)))  ;; Lambda function name (e.g., "mod__lambda_0")
+      (closure-lambda-name String)  ;; Lambda function name (e.g., "mod__lambda_0")
+      (origin BindingOrigin)))      ;; What bound it: decides what may change it (#180)
 
   (type TypeEntry
     (record
@@ -622,10 +623,22 @@
     (list-push (. (deref ctx) errors) (TranspileError message 0 0)))
 
   (fn ctx-add-error-at ((ctx (Ptr TranspileContext)) (message String) (line Int) (col Int))
-    (@intent "Add a transpiler error with position information")
+    (@intent "Add a transpiler error with position information, once")
     (@spec (((Ptr TranspileContext) String Int Int) -> Unit))
     (@pre {ctx != nil})
-    (list-push (. (deref ctx) errors) (TranspileError message line col)))
+    ;; A form can be transpiled more than once (a set! is both a statement
+    ;; and an expression form); its error is still one error
+    (let ((errors (. (deref ctx) errors))
+          (count (list-len errors))
+          (mut seen false))
+      (for (i 0 count)
+        (match (list-get errors i)
+          ((some e)
+            (when (and (== (. e line) line) (== (. e col) col) (string-eq (. e message) message))
+              (set! seen true)))
+          ((none) (do))))
+      (when (not seen)
+        (list-push (. (deref ctx) errors) (TranspileError message line col)))))
 
   (fn ctx-has-errors ((ctx (Ptr TranspileContext)))
     (@intent "Check if any transpiler errors have been recorded")

@@ -91,6 +91,9 @@ slop_string defn_build_result_name(slop_arena* arena, slop_string ok_type, slop_
 slop_string defn_build_param_str(context_TranspileContext* ctx, types_SExpr* params_expr);
 slop_string defn_build_single_param(context_TranspileContext* ctx, types_SExpr* param);
 uint8_t defn_is_param_mode(slop_list_types_SExpr_ptr items);
+slop_string defn_param_mode_word(slop_list_types_SExpr_ptr items);
+void defn_check_param_mode(context_TranspileContext* ctx, slop_string mode, slop_string name, slop_string slop_type, types_SExpr* at);
+uint8_t defn_is_container_slop_type(context_TranspileContext* ctx, slop_string slop_type);
 uint8_t defn_is_fn_type(types_SExpr* type_expr);
 slop_string defn_emit_fn_param_type(context_TranspileContext* ctx, types_SExpr* type_expr, slop_string param_name);
 slop_string defn_build_fn_args_str_for_param(context_TranspileContext* ctx, types_SExpr* args_expr);

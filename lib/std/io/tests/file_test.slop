@@ -237,7 +237,7 @@
     (@intent "Run all file I/O tests and return failure count (0 = all passed)")
     (@spec (() -> Int))
 
-    (let ((failures (cast Int 0)))
+    (let ((mut failures (cast Int 0)))
       (do
         (if (not (test-file-exists)) (set! failures (+ failures 1)) ())
         (if (not (test-open-close)) (set! failures (+ failures 1)) ())

@@ -19,9 +19,10 @@
                  resolved-type-is-pointer resolved-type-is-union
                  resolved-type-get-variant-index resolved-type-get-variant-payload
                  resolved-type-get-variant-payloads
-                 resolved-type-is-record resolved-type-has-field resolved-type-get-field-type))
+                 resolved-type-is-record resolved-type-has-field resolved-type-get-field-type
+                 BindingOrigin MutationKind mutation-error-message param-mode-error-message))
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
-               env-bind-var env-lookup-var env-lookup-type
+               env-bind-var env-bind-var-as env-lookup-var env-lookup-binding VarBinding env-lookup-type
                env-lookup-function env-lookup-function-direct env-lookup-variant env-lookup-constant
                env-get-int-type env-get-bool-type env-get-float-type env-get-null-type
                env-get-string-type env-get-unit-type env-get-arena-type
@@ -29,7 +30,7 @@
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
                env-add-warning env-add-error env-get-diagnostics
                env-set-fn-type-params env-clear-fn-type-params env-is-type-param))
-  (import strlib (starts-with ends-with string-build join))
+  (import strlib (starts-with ends-with string-build join index-of substring))
   (import ctype (is-builtin-type))
   (import collect (find-fn-type-params))
 
@@ -970,7 +971,8 @@
 
         ;; (set! var expr) - infer expr for error checking, returns Unit
         ((string-eq op "set!")
-          (do (cond
+          (do (check-set-target env items len)
+              (cond
                 ;; Record field update: (set! record field value) - 4 elements
                 ((>= len 4)
                   (match (list-get items 3)
@@ -1297,7 +1299,8 @@
                           (infer-builtin-args env expr)
                           (match (list-get items 1)
                             ((some list-arg)
-                              (check-list-target env "list-push" list-arg line col))
+                              (do (check-list-target env "list-push" list-arg line col)
+                                  (check-mutation env list-arg (mutation-path env list-arg) 'mut-push)))
                             ((none) (do)))
                           (check-list-operands env "list-push" items false line col)
                           (env-get-unit-type env)))
@@ -1322,6 +1325,11 @@
                     ;; list-pop expects 1 arg: list
                     ((string-eq op "list-pop")
                       (do (check-builtin-args env "list-pop" 1 (- len 1) line col)
+                          (match (list-get items 1)
+                            ((some list-arg)
+                              (do (check-list-target env "list-pop" list-arg line col)
+                                  (check-mutation env list-arg (mutation-path env list-arg) 'mut-pop)))
+                            ((none) (do)))
                           (env-make-option-type env nil)))
                     ;; list-new expects 2 args: arena, Type - returns List
                     ((string-eq op "list-new")
@@ -1838,6 +1846,193 @@
                    (string-concat arena op
                      "' needs a list it can write through: a variable, a field, or a dereferenced pointer - not the result of a call"))))
         (env-add-error env msg line col))))
+
+  ;; ============================================================
+  ;; Mutability (#180)
+  ;;
+  ;; An unmarked parameter is read-only: its own value -- itself, its fields,
+  ;; the length of a List it is or holds -- may not change, since a change to
+  ;; that copy is lost to the caller. A mut parameter is a local copy that may.
+  ;; Storage the value only points to stays writable: anything reached through
+  ;; a Ptr, a deref, an index, or a Map/Set handle.
+  ;; ============================================================
+
+  ;; Where a mutation lands: the binding it starts from, the steps (field,
+  ;; index, deref) leading from it, whether one of them went through a
+  ;; pointer, and whether every step's type was known well enough to tell.
+  (type MutPath (record
+    (root String)
+    (has-root Bool)
+    (depth Int)
+    (through Bool)
+    (known Bool)
+    (cur-type (Option (Ptr ResolvedType)))))
+
+  (type StepKind (enum step-value step-pointer step-unknown))
+
+  (fn mutation-step-kind ((t (Ptr ResolvedType)))
+    (@intent "Classify a type as a pointer to storage elsewhere, a plain value, or unknown")
+    (@spec (((Ptr ResolvedType)) -> StepKind))
+    (@pre (!= t nil))
+    (let ((r (resolve-alias-chain t))
+          (kind (. (deref r) kind))
+          (name (. (deref r) name)))
+      (cond
+        ((or (== kind 'rk-ptr) (== kind 'rk-map) (== kind 'rk-set)
+             (== kind 'rk-chan) (== kind 'rk-thread)
+             (string-eq (. (deref r) c-name) "slop_map*")
+             (string-eq name "Arena"))
+          'step-pointer)
+        ((or (== kind 'rk-record) (== kind 'rk-union) (== kind 'rk-list)
+             (== kind 'rk-option) (== kind 'rk-result) (== kind 'rk-range)
+             (== kind 'rk-enum) (== kind 'rk-array) (== kind 'rk-function))
+          'step-value)
+        ;; A builtin scalar is a value; any other primitive is a name the
+        ;; checker could not resolve (a form alias, an ffi-struct), so unknown
+        ((and (== kind 'rk-primitive) (is-builtin-type name))
+          'step-value)
+        (else 'step-unknown))))
+
+  (fn mutation-path-root ((env (Ptr TypeEnv)) (name String))
+    (@intent "Start a mutation path at a name")
+    (@spec (((Ptr TypeEnv) String) -> MutPath))
+    (@pre (!= env nil))
+    (match (env-lookup-binding env name)
+      ((some b) (MutPath name true 0 false true (some (. b var-type))))
+      ((none) (MutPath name true 0 false true (none)))))
+
+  (fn mutation-path-field ((base MutPath) (field String))
+    (@intent "Extend a mutation path by one field access")
+    (@spec ((MutPath String) -> MutPath))
+    (match (. base cur-type)
+      ((some t)
+        (let ((r (resolve-alias-chain t)))
+          (match (mutation-step-kind t)
+            ('step-pointer
+              (let ((pointee (match (. (deref r) inner-type) ((some inner) inner) ((none) r))))
+                (MutPath (. base root) (. base has-root) (+ (. base depth) 1) true (. base known)
+                         (resolved-type-get-field-type pointee field))))
+            ('step-value
+              (MutPath (. base root) (. base has-root) (+ (. base depth) 1) (. base through) (. base known)
+                       (resolved-type-get-field-type r field)))
+            ('step-unknown
+              (MutPath (. base root) (. base has-root) (+ (. base depth) 1) (. base through) false (none))))))
+      ((none)
+        (MutPath (. base root) (. base has-root) (+ (. base depth) 1) (. base through) false (none)))))
+
+  (fn mutation-path ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
+    (@intent "Trace the place a mutation writes to back to the binding it starts from")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> MutPath))
+    (@pre (!= env nil))
+    (@pre (!= expr nil))
+    (let ((no-root (MutPath "" false 0 false false (none))))
+      (if (sexpr-is-list expr)
+        (let ((head (match (sexpr-list-get expr 0) ((some h) (sexpr-get-symbol-name h)) ((none) "")))
+              (len (sexpr-list-len expr)))
+          (cond
+            ;; (. Y f)
+            ((and (string-eq head ".") (>= len 3))
+              (match (sexpr-list-get expr 1)
+                ((some base)
+                  (match (sexpr-list-get expr 2)
+                    ((some f) (mutation-path-field (mutation-path env base) (sexpr-get-symbol-name f)))
+                    ((none) no-root)))
+                ((none) no-root)))
+            ;; (deref Y) and (@ Y i) write through a pointer
+            ((and (or (string-eq head "deref") (string-eq head "@")) (>= len 2))
+              (match (sexpr-list-get expr 1)
+                ((some base)
+                  (let ((inner (mutation-path env base)))
+                    (MutPath (. inner root) (. inner has-root) (+ (. inner depth) 1) true (. inner known) (none))))
+                ((none) no-root)))
+            (else no-root)))
+        (let ((name (sexpr-get-symbol-name expr)))
+          (cond
+            ((string-eq name "") no-root)
+            ((match (env-lookup-binding env name) ((some _) true) ((none) false))
+              (mutation-path-root env name))
+            (else
+              ;; p.f, a field of a bound p written as one symbol
+              (match (index-of name ".")
+                ((some idx)
+                  (if (> idx 0)
+                    (let ((arena (env-arena env))
+                          (prefix (substring arena name 0 idx))
+                          (field (substring arena name (+ idx 1) (- (string-len name) (+ idx 1)))))
+                      (mutation-path-field (mutation-path-root env prefix) field))
+                    no-root))
+                ((none) (mutation-path-root env name)))))))))
+
+  (fn mutation-forbidden ((b VarBinding) (path MutPath) (kind MutationKind))
+    (@intent "Whether a binding's declaration forbids this mutation")
+    (@spec ((VarBinding MutPath MutationKind) -> Bool))
+    ;; Anything reached through a pointer is storage elsewhere, and a field,
+    ;; push or pop is only judged when every step's type was known
+    (and (not (. b mutable))
+         (not (. path through))
+         (== (. b origin) 'origin-param)
+         (cond
+           ((== kind 'mut-assign) true)
+           ((== kind 'mut-field) (. path known))
+           ((== (. path depth) 0)
+             ;; A push or pop on the parameter itself: only a List value
+             (== (mutation-step-kind (. b var-type)) 'step-value))
+           (else (. path known)))))
+
+  (fn check-mutation ((env (Ptr TypeEnv)) (target (Ptr SExpr)) (path MutPath) (kind MutationKind))
+    (@intent "Report a mutation of a binding its declaration does not let change")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) MutPath MutationKind) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= target nil))
+    (when (. path has-root)
+      (match (env-lookup-binding env (. path root))
+        ((some b)
+          (when (mutation-forbidden b path kind)
+            (env-add-error env
+              (mutation-error-message (env-arena env) kind (. b origin) (. path root) (> (. path depth) 0))
+              (sexpr-line target) (sexpr-col target))))
+        ((none) (do)))))
+
+  (fn check-param-mode ((env (Ptr TypeEnv)) (mode String) (name String)
+                        (param-type (Ptr ResolvedType)) (at (Ptr SExpr)))
+    (@intent "Report a parameter mode that is not allowed")
+    (@spec (((Ptr TypeEnv) String String (Ptr ResolvedType) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= param-type nil))
+    (@pre (!= at nil))
+    ;; in is the default; mut is a local copy, which for a List, Map or Set
+    ;; would share the caller's storage; anything else is not a mode
+    (when (not (or (string-eq mode "in")
+                   (and (string-eq mode "mut") (not (is-container-param-type param-type)))))
+      (env-add-error env (param-mode-error-message (env-arena env) mode name)
+        (sexpr-line at) (sexpr-col at))))
+
+  (fn is-container-param-type ((t (Ptr ResolvedType)))
+    (@intent "Whether a type is a List, Map or Set, whose copies share storage")
+    (@spec (((Ptr ResolvedType)) -> Bool))
+    (@pre (!= t nil))
+    (let ((r (resolve-alias-chain t))
+          (kind (. (deref r) kind)))
+      (or (== kind 'rk-list) (== kind 'rk-map) (== kind 'rk-set)
+          (string-eq (. (deref r) c-name) "slop_map*"))))
+
+  (fn check-set-target ((env (Ptr TypeEnv)) (items (List (Ptr SExpr))) (len Int))
+    (@intent "Report a set! of a binding its declaration does not let change")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr)) Int) -> Unit))
+    (@pre (!= env nil))
+    (match (list-get items 1)
+      ((some target)
+        (if (>= len 4)
+          ;; (set! T f v) and (set! T f Type v) write field f of T
+          (match (list-get items 2)
+            ((some f)
+              (check-mutation env target
+                (mutation-path-field (mutation-path env target) (sexpr-get-symbol-name f))
+                'mut-field))
+            ((none) (do)))
+          (let ((path (mutation-path env target)))
+            (check-mutation env target path (if (== (. path depth) 0) 'mut-assign 'mut-field)))))
+      ((none) (do))))
 
   (fn check-builtin-args ((env (Ptr TypeEnv)) (op String) (expected Int) (actual Int)
                            (line Int) (col Int))
@@ -2569,30 +2764,25 @@
     (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
     (@pre (!= env nil))
     (@pre (!= param-form nil))
-    ;; Use helper functions to avoid cross-module union matching issues
-    ;; Handle both (name Type) and (mode name Type) forms
+    ;; An unmarked or in parameter is read-only; a mut one is a local copy
     (when (and (sexpr-is-list param-form) (>= (sexpr-list-len param-form) 2))
-      (match (sexpr-list-get param-form 0)
-        ((some first-expr)
-          (let ((first-name (sexpr-get-symbol-name first-expr)))
-            ;; Check if first element is a mode annotation (in, out, mut)
-            (if (or (string-eq first-name "in")
-                    (string-eq first-name "out")
-                    (string-eq first-name "mut"))
-              ;; Mode form: (mode name Type) - get name from position 1
-              (when (>= (sexpr-list-len param-form) 3)
-                (match (sexpr-list-get param-form 1)
-                  ((some name-expr)
-                    (let ((param-name (sexpr-get-symbol-name name-expr)))
-                      (when (not (string-eq param-name ""))
-                        (let ((param-type (get-param-type-from-form env param-form)))
-                          (env-bind-var env param-name param-type)))))
-                  ((none) (do))))
-              ;; Regular form: (name Type) - first element is name
-              (when (not (string-eq first-name ""))
-                (let ((param-type (get-param-type-from-form env param-form)))
-                  (env-bind-var env first-name param-type))))))
-        ((none) (do)))))
+      (let ((first-name (match (sexpr-list-get param-form 0)
+                          ((some first-expr) (sexpr-get-symbol-name first-expr))
+                          ((none) ""))))
+        (if (>= (sexpr-list-len param-form) 3)
+          ;; (mode name Type)
+          (match (sexpr-list-get param-form 1)
+            ((some name-expr)
+              (let ((param-name (sexpr-get-symbol-name name-expr)))
+                (when (not (string-eq param-name ""))
+                  (let ((param-type (get-param-type-from-form env param-form)))
+                    (check-param-mode env first-name param-name param-type name-expr)
+                    (env-bind-var-as env param-name param-type (string-eq first-name "mut") 'origin-param)))))
+            ((none) (do)))
+          ;; (name Type)
+          (when (not (string-eq first-name ""))
+            (let ((param-type (get-param-type-from-form env param-form)))
+              (env-bind-var-as env first-name param-type false 'origin-param)))))))
 
   (fn get-param-type-from-form ((env (Ptr TypeEnv)) (param-form (Ptr SExpr)))
     (@intent "Get the type for a function parameter from its form expression")
@@ -2601,15 +2791,9 @@
     (@pre (!= param-form nil))
     ;; param-form is (param-name Type) or (mode param-name Type)
     ;; Determine type position based on whether first element is a mode
-    (let ((type-pos (match (sexpr-list-get param-form 0)
-                      ((some first-expr)
-                        (let ((first-name (sexpr-get-symbol-name first-expr)))
-                          (if (or (string-eq first-name "in")
-                                  (string-eq first-name "out")
-                                  (string-eq first-name "mut"))
-                            2  ;; Mode form: type at position 2
-                            1))) ;; Regular form: type at position 1
-                      ((none) 1))))
+    ;; Any three-element form is (mode name Type); bind-param-from-form
+    ;; reports a word in mode position that is not a mode
+    (let ((type-pos (if (>= (sexpr-list-len param-form) 3) 2 1)))
       (match (sexpr-list-get param-form type-pos)
         ((some type-expr)
           (let ((type-name (sexpr-get-symbol-name type-expr)))

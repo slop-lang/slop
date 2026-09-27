@@ -1,0 +1,16 @@
+;; Pop from an unmarked List parameter: an error in both slop check and slop build (#180).
+
+(module main
+  (type Bag (record (items (List Int)) (n Int)))
+  (type Node (record (v Int) (next (Ptr Node))))
+  (type Scores (Map String Int))
+
+  (fn f ((xs (List Int)))
+    (@intent "Pop from an unmarked List parameter")
+    (@spec (((List Int)) -> Int))
+    (list-pop xs) 0)
+
+  (fn main ()
+    (@intent "Must fail")
+    (@spec (() -> Int))
+    (with-arena 256 (f (list-new arena Int)))))

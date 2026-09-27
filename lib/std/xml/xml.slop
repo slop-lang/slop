@@ -878,11 +878,11 @@
                 (kind 'invalid-namespace) (pos 0)
                 (message (string-concat arena "Undeclared namespace prefix: " prefix))))))))))
 
-  (fn parse-attributes ((arena Arena) (p (Ptr XmlParser)) (scope (Ptr XmlNsScope)) (ns-decls (List (Ptr XmlNsDecl))))
+  (fn parse-attributes ((arena Arena) (p (Ptr XmlParser)) (scope (Ptr XmlNsScope)))
     (@intent
-      "Parse element attributes, collecting namespace declarations into scope and ns-decls. Returns resolved attribute list")
+      "Parse element attributes, collecting namespace declarations into scope. Returns resolved attribute list")
     (@spec
-      ((Arena (Ptr XmlParser) (Ptr XmlNsScope) (List (Ptr XmlNsDecl)))
+      ((Arena (Ptr XmlParser) (Ptr XmlNsScope))
         ->
         (Result (List (Ptr XmlAttribute)) XmlError)))
     (@alloc arena)
@@ -911,18 +911,10 @@
                       (parser-skip-ws p)
                       (let ((val (? (parse-attr-value arena p))))
                         (if (string-eq name "xmlns")
-                          (do
-                            (ns-scope-add arena scope "" val)
-                            (let ((decl (cast (Ptr XmlNsDecl) (arena-alloc arena (sizeof XmlNsDecl)))))
-                              (set! (deref decl) (record-new XmlNsDecl (prefix "") (uri val)))
-                              (list-push ns-decls decl)))
+                          (ns-scope-add arena scope "" val)
                           (if (starts-with name "xmlns:")
                             (let ((ns-prefix (substring arena name 6 (- (string-len name) 6))))
-                              (do
-                                (ns-scope-add arena scope ns-prefix val)
-                                (let ((decl (cast (Ptr XmlNsDecl) (arena-alloc arena (sizeof XmlNsDecl)))))
-                                  (set! (deref decl) (record-new XmlNsDecl (prefix ns-prefix) (uri val)))
-                                  (list-push ns-decls decl))))
+                              (ns-scope-add arena scope ns-prefix val))
                             (do
                               (list-push raw-names name)
                               (list-push raw-values val)))))
@@ -1022,73 +1014,72 @@
     (@alloc arena)
     (let ((tag-name (? (parse-name arena p))))
       (let ((scope (ns-scope-new arena parent-scope)))
-        (let ((ns-decls (list-new arena (Ptr XmlNsDecl))))
-          (let ((attrs (? (parse-attributes arena p scope ns-decls))))
-            (let ((resolved-qname (? (resolve-element-qname arena scope tag-name))))
-              (let ((base-uri parent-base))
-                (let ((lang-val parent-lang))
-                  (let ((attr-count (list-len attrs)))
-                    (let ((mut i 0))
-                      (let ((mut found-base parent-base))
-                        (let ((mut found-lang parent-lang))
-                          (do
-                            (while (< i attr-count)
-                              (match (list-get attrs i)
-                                ((some attr-ptr)
-                                  (do
+        (let ((attrs (? (parse-attributes arena p scope))))
+          (let ((resolved-qname (? (resolve-element-qname arena scope tag-name))))
+            (let ((base-uri parent-base))
+              (let ((lang-val parent-lang))
+                (let ((attr-count (list-len attrs)))
+                  (let ((mut i 0))
+                    (let ((mut found-base parent-base))
+                      (let ((mut found-lang parent-lang))
+                        (do
+                          (while (< i attr-count)
+                            (match (list-get attrs i)
+                              ((some attr-ptr)
+                                (do
+                                  (if (and
+                                      (string-eq
+                                        (. (. attr-ptr name) local-name)
+                                        "base")
+                                      (string-eq
+                                        (. (. attr-ptr name) prefix)
+                                        "xml"))
+                                    (set! found-base (. attr-ptr value))
                                     (if (and
                                         (string-eq
                                           (. (. attr-ptr name) local-name)
-                                          "base")
+                                          "lang")
                                         (string-eq
                                           (. (. attr-ptr name) prefix)
                                           "xml"))
-                                      (set! found-base (. attr-ptr value))
-                                      (if (and
-                                          (string-eq
-                                            (. (. attr-ptr name) local-name)
-                                            "lang")
-                                          (string-eq
-                                            (. (. attr-ptr name) prefix)
-                                            "xml"))
-                                        (set! found-lang (. attr-ptr value))
-                                        (do)))
-                                    (set! i (+ i 1))))
-                                ((none) (set! i (+ i 1)))))
-                            (let ((elem (cast (Ptr XmlElement) (arena-alloc arena (sizeof XmlElement)))))
-                              (do
-                                (let ((final-base found-base))
-                                  (let ((final-lang found-lang))
-                                    (do
-                                      (set! (deref elem) (record-new XmlElement
-                                        (tag (deref resolved-qname))
-                                        (attributes attrs)
-                                        (children (list-new arena (Ptr XmlNode)))
-                                        (ns-decls (. scope bindings))
-                                        (base-uri final-base)
-                                        (lang final-lang)))
-                                      (let ((ch (parser-peek p)))
-                                        (if (== ch 47)
-                                          (do
-                                            (parser-advance p)
-                                            (? (parser-expect p 62))
-                                            (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
-                                                (set! (deref n) (union-new XmlNode xml-elem elem))
-                                                (ok n)))
-                                          (do
-                                            (? (parser-expect p 62))
-                                            (?
-                                              (parse-child-nodes
-                                                arena
-                                                p
-                                                elem
-                                                scope
-                                                tag-name
-                                                final-base
-                                                final-lang))
-                                            (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
-                                                (set! (deref n) (union-new XmlNode xml-elem elem))
-                                                (ok n)))))))))))))))))))))))
+                                      (set! found-lang (. attr-ptr value))
+                                      (do)))
+                                  (set! i (+ i 1))))
+                              ((none) (set! i (+ i 1)))))
+                          (let ((elem (cast (Ptr XmlElement) (arena-alloc arena (sizeof XmlElement)))))
+                            (do
+                              (let ((final-base found-base))
+                                (let ((final-lang found-lang))
+                                  (do
+                                    (set! (deref elem) (record-new XmlElement
+                                      (tag (deref resolved-qname))
+                                      (attributes attrs)
+                                      (children (list-new arena (Ptr XmlNode)))
+                                      (ns-decls (. scope bindings))
+                                      (base-uri final-base)
+                                      (lang final-lang)))
+                                    (let ((ch (parser-peek p)))
+                                      (if (== ch 47)
+                                        (do
+                                          (parser-advance p)
+                                          (? (parser-expect p 62))
+                                          (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
+                                              (set! (deref n) (union-new XmlNode xml-elem elem))
+                                              (ok n)))
+                                        (do
+                                          (? (parser-expect p 62))
+                                          (?
+                                            (parse-child-nodes
+                                              arena
+                                              p
+                                              elem
+                                              scope
+                                              tag-name
+                                              final-base
+                                              final-lang))
+                                          (let ((n (cast (Ptr XmlNode) (arena-alloc arena (sizeof XmlNode)))))
+                                              (set! (deref n) (union-new XmlNode xml-elem elem))
+                                              (ok n))))))))))))))))))))))
 
   (fn parse-xml-decl ((arena Arena) (p (Ptr XmlParser)))
     (@intent
@@ -1405,7 +1396,7 @@
                 (prefix-str (. (. elem tag) prefix))
                 (attrs (. elem attributes))
                 (children (. elem children))
-                (indent-str ""))
+                (mut indent-str ""))
             (do
               (let ((mut pad ""))
                 (do

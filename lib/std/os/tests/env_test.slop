@@ -109,7 +109,7 @@
     (@intent "Run all environment variable tests and return failure count")
     (@spec (() -> Int))
 
-    (let ((failures (cast Int 0)))
+    (let ((mut failures (cast Int 0)))
       (do
         (if (not (test-get-env-existing)) (set! failures (+ failures 1)) ())
         (if (not (test-get-env-nonexistent)) (set! failures (+ failures 1)) ())

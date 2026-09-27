@@ -1,0 +1,67 @@
+;; Every way of changing a parameter's or local's data that stays allowed
+;; (#180): writes that go through a pointer, an index, or a Map/Set handle
+;; reach storage the binding only points to. Checking and building this at all
+;; is the test; main also confirms the writes landed.
+
+(module main
+  (type Node (record (v Int) (items (List Int)) (next (Ptr Node))))
+  (type Index (record (m (Map Int Int)) (s (Set Int)) (xs (List Int))))
+
+  (fn through-ptr ((arena Arena) (p (Ptr Node)))
+    (@intent "Field sets and pushes through a Ptr parameter")
+    (@spec ((Arena (Ptr Node)) -> Unit))
+    (set! p v 1)
+    (set! (. p v) 2)
+    (set! p.v 3)
+    (list-push (. p items) 4)
+    (list-push (. (deref p) items) 5)
+    (set! (deref (. p next)) (deref p)))
+
+  (fn through-ptr-list ((arena Arena) (xs (Ptr (List Int))))
+    (@intent "A push through a (Ptr (List T)) parameter")
+    (@spec ((Arena (Ptr (List Int))) -> Unit))
+    (list-push (deref xs) 6))
+
+  (fn through-handles ((arena Arena) (ix Index) (pm (Ptr (Map Int Int))))
+    (@intent "Map/Set handles and List elements of a by-value record, and a Ptr Map")
+    (@spec ((Arena Index (Ptr (Map Int Int))) -> Unit))
+    (map-put (. ix m) 1 2)
+    (set-put (. ix s) 3)
+    (list-set (. ix xs) 0 7)
+    (map-put pm 5 6))
+
+  (fn locals ((arena Arena))
+    (@intent "A local's own list, and field sets through a Ptr local")
+    (@spec ((Arena) -> Int))
+    (let ((xs (list-new arena Int))
+          (node (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+      (list-push xs 1)
+      (set! node v 8)
+      (set! node.v 9)
+      (+ (list-len xs) (. node v))))
+
+  (fn main ()
+    (@intent "Run each, and confirm the writes reached the caller's data")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((a (cast (Ptr Node) (arena-alloc arena (sizeof Node))))
+            (b (cast (Ptr Node) (arena-alloc arena (sizeof Node))))
+            (mut ys (list-new arena Int))
+            (ix (Index (map-new arena Int Int) (set-new arena Int) (list-new arena Int)))
+            (m2 (map-new arena Int Int)))
+        (set! a items (list-new arena Int))
+        (set! a next b)
+        (list-push (. ix xs) 0)
+        (through-ptr arena a)
+        (through-ptr-list arena (addr ys))
+        (through-handles arena ix (addr m2))
+        (if (and (== (. a v) 3)
+                 (== (list-len (. a items)) 2)
+                 (== (. b v) 3)
+                 (== (list-len ys) 1)
+                 (map-has (. ix m) 1)
+                 (set-has (. ix s) 3)
+                 (map-has m2 5)
+                 (== (locals arena) 10))
+          0
+          1)))))

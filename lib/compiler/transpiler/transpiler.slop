@@ -587,23 +587,12 @@
         (else "void*"))))
 
   (fn prescan-is-param-mode ((items (List (Ptr SExpr))))
-    (@intent "Check if first element is a parameter mode during prescan")
+    (@intent "Check whether a parameter form is (mode name Type) during prescan")
     (@spec (((List (Ptr SExpr))) -> Bool))
-    (if (< (list-len items) 1)
-      false
-      (match (list-get items 0)
-        ((some first)
-          (match (deref first)
-            ((sym sym)
-              (let ((name (. sym name)))
-                (cond
-                  ((string-eq name "in") true)
-                  ((string-eq name "mut") true)
-                  ((string-eq name "ref") true)
-                  ((string-eq name "out") true)
-                  (else false))))
-            (else false)))
-        ((none) false))))
+    ;; As defn's is-param-mode: any three-element form. ref is not a mode --
+    ;; a parameter may be named ref, (ref Term) -- and bind-single-param
+    ;; reports a mode word other than in or mut.
+    (>= (list-len items) 3))
 
   (fn prescan-fn-result-type ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Prescan function for Result type in @spec and register if found")
@@ -997,7 +986,7 @@
                                                                      (match existing ((some e) (. e is-enum)) ((none) false))
                                                                      (match existing ((some e) (. e is-record)) ((none) false))
                                                                      (match existing ((some e) (. e is-union)) ((none) false))))
-                                            (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false false "" ""))))
+                                            (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false false "" "" 'origin-const))))
                                         ;; Register function with module prefix
                                         ;; Resolve against the named module's own namespace, not the
                                         ;; whole build: another module's same-named function must not
@@ -1102,7 +1091,7 @@
                 (let ((const-name (. sym name))
                       (base-name (to-c-name arena const-name))
                       (c-name (ctx-prefix-type ctx base-name)))
-                  (ctx-bind-var ctx (VarEntry const-name c-name "auto" "" false false false "" ""))))
+                  (ctx-bind-var ctx (VarEntry const-name c-name "auto" "" false false false "" "" 'origin-const))))
               (else (do))))
           ((none) (do))))))
 
