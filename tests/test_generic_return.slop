@@ -1,0 +1,16 @@
+;; A @generic call used where its concrete return type matters: choose on two
+;; Ints returns an Int, which takes part in arithmetic.
+
+(module main
+  (fn choose ((a T) (b T) (first Bool))
+    (@intent "Pick one of two values of the same type")
+    (@generic (T))
+    (@spec ((T T Bool) -> T))
+    (if first a b))
+
+  (fn main ()
+    (@intent "Exit 0 when the generic results add up")
+    (@spec (() -> Int))
+    (if (== (+ (choose 40 1 true) (choose 5 2 false)) 42)
+      0
+      1)))

@@ -48,7 +48,7 @@ uint8_t infer_is_chan_op(slop_string op);
 types_ResolvedType* infer_infer_threading_builtin(env_TypeEnv* env, slop_string op, types_SExpr* expr, slop_list_types_SExpr_ptr items, int64_t len, int64_t line, int64_t col);
 uint8_t infer_has_type_params(types_FnSignature* sig);
 slop_option_types_ResolvedType_ptr infer_find_binding(slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types, slop_string name);
-void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
+void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string* bind_names, slop_list_types_ResolvedType_ptr* bind_types);
 types_ResolvedType* infer_substitute_type_vars(slop_arena* arena, types_ResolvedType* t, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
 types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t line, int64_t col);
 uint8_t infer_is_unwrappable_container(types_ResolvedType* t);

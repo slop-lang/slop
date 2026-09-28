@@ -236,22 +236,27 @@
       found))
 
   (fn unify-types ((arena Arena) (formal (Ptr ResolvedType)) (actual (Ptr ResolvedType))
-                    (bind-names (List String)) (bind-types (List (Ptr ResolvedType))))
+                    (bind-names (Ptr (List String))) (bind-types (Ptr (List (Ptr ResolvedType)))))
     (@intent "Unify a formal type with an actual type, binding type variables")
-    (@spec ((Arena (Ptr ResolvedType) (Ptr ResolvedType) (List String) (List (Ptr ResolvedType))) -> Unit))
+    (@spec ((Arena (Ptr ResolvedType) (Ptr ResolvedType) (Ptr (List String)) (Ptr (List (Ptr ResolvedType)))) -> Unit))
     (@pre (!= formal nil))
     (@pre (!= actual nil))
+    (@pre (!= bind-names nil))
+    (@pre (!= bind-types nil))
+    ;; The bindings are the caller's lists, reached through pointers: a List
+    ;; parameter is a copy, and a push onto it never reached the caller, so no
+    ;; generic call's return type was ever specialised (#180).
     (let ((f-kind (. (deref formal) kind)))
       (cond
         ;; Type variable — bind it
         ((== f-kind 'rk-typevar)
           (let ((tv-name (. (deref formal) name)))
             ;; Only bind if not already bound
-            (match (find-binding bind-names bind-types tv-name)
+            (match (find-binding (deref bind-names) (deref bind-types) tv-name)
               ((some existing) (do))  ;; Already bound, skip (could check consistency)
               ((none)
-                (do (list-push bind-names tv-name)
-                    (list-push bind-types actual))))))
+                (do (list-push (deref bind-names) tv-name)
+                    (list-push (deref bind-types) actual))))))
         ;; Ptr: recurse into inner type
         ((== f-kind 'rk-ptr)
           (when (== (. (deref actual) kind) 'rk-ptr)
@@ -410,8 +415,8 @@
     (let ((arena (env-arena env))
           (params (. (deref sig) params))
           (num-params (list-len params))
-          (bind-names (list-new arena String))
-          (bind-types (list-new arena (Ptr ResolvedType))))
+          (mut bind-names (list-new arena String))
+          (mut bind-types (list-new arena (Ptr ResolvedType))))
       ;; Infer argument types and unify with formal params
       (when (sexpr-is-list expr)
         (let ((num-args (- (sexpr-list-len expr) 1)))
@@ -433,7 +438,7 @@
                     (match (list-get params i)
                       ((some param-info)
                         (let ((formal-type (. param-info param-type)))
-                          (unify-types arena formal-type actual-type bind-names bind-types)))
+                          (unify-types arena formal-type actual-type (addr bind-names) (addr bind-types))))
                       ((none) (do)))))
                 ((none) (do)))))))
       ;; Substitute type variables in return type

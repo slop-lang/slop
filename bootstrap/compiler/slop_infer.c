@@ -16,7 +16,7 @@ uint8_t infer_is_chan_op(slop_string op);
 types_ResolvedType* infer_infer_threading_builtin(env_TypeEnv* env, slop_string op, types_SExpr* expr, slop_list_types_SExpr_ptr items, int64_t len, int64_t line, int64_t col);
 uint8_t infer_has_type_params(types_FnSignature* sig);
 slop_option_types_ResolvedType_ptr infer_find_binding(slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types, slop_string name);
-void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
+void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string* bind_names, slop_list_types_ResolvedType_ptr* bind_types);
 types_ResolvedType* infer_substitute_type_vars(slop_arena* arena, types_ResolvedType* t, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
 types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t line, int64_t col);
 uint8_t infer_is_unwrappable_container(types_ResolvedType* t);
@@ -266,20 +266,22 @@ slop_option_types_ResolvedType_ptr infer_find_binding(slop_list_string bind_name
     }
 }
 
-void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types) {
+void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string* bind_names, slop_list_types_ResolvedType_ptr* bind_types) {
     SLOP_PRE(((formal != NULL)), "(!= formal nil)");
     SLOP_PRE(((actual != NULL)), "(!= actual nil)");
+    SLOP_PRE(((bind_names != NULL)), "(!= bind-names nil)");
+    SLOP_PRE(((bind_types != NULL)), "(!= bind-types nil)");
     {
         __auto_type f_kind = (*formal).kind;
         if (f_kind == types_ResolvedTypeKind_rk_typevar) {
             {
                 __auto_type tv_name = (*formal).name;
-                __auto_type _mv_1671 = infer_find_binding(bind_names, bind_types, tv_name);
+                __auto_type _mv_1671 = infer_find_binding((*bind_names), (*bind_types), tv_name);
                 if (_mv_1671.has_value) {
                     __auto_type existing = _mv_1671.value;
                 } else if (!_mv_1671.has_value) {
-                    ({ __auto_type _lst_p = &(bind_names); __auto_type _item = (tv_name); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-                    ({ __auto_type _lst_p = &(bind_types); __auto_type _item = (actual); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                    ({ __auto_type _lst_p = &((*bind_names)); __auto_type _item = (tv_name); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                    ({ __auto_type _lst_p = &((*bind_types)); __auto_type _item = (actual); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                 }
             }
         } else if (f_kind == types_ResolvedTypeKind_rk_ptr) {
@@ -530,7 +532,7 @@ types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature
                                     __auto_type param_info = _mv_1693.value;
                                     {
                                         __auto_type formal_type = param_info.param_type;
-                                        infer_unify_types(arena, formal_type, actual_type, bind_names, bind_types);
+                                        infer_unify_types(arena, formal_type, actual_type, (&bind_names), (&bind_types));
                                     }
                                 } else if (!_mv_1693.has_value) {
                                 }
