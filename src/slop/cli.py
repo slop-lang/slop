@@ -14,6 +14,7 @@ Commands:
 import argparse
 import sys
 import os
+import shlex
 from pathlib import Path
 
 from slop.parser import parse, parse_file, pretty_print, find_holes, is_form, SList, get_imports
@@ -25,6 +26,16 @@ from slop.providers import (
 )
 from slop.resolver import ModuleResolver, ResolverError
 from slop import __version__, paths
+
+
+def _cc_command():
+    """The C compiler invocation every build step starts from.
+
+    SLOP_CFLAGS is appended verbatim (shell-split), so a whole build -- the
+    generated C and the runtime header it includes -- can be compiled with
+    extra flags, e.g. SLOP_CFLAGS="-fsanitize=address,undefined -g".
+    """
+    return ["cc"] + shlex.split(os.environ.get("SLOP_CFLAGS", ""))
 
 
 def extract_requires_blocks(ast):
@@ -2220,7 +2231,7 @@ def _build_library_from_sources(
             obj_files = []
             for c_file in c_files:
                 obj_file = c_file.replace('.c', '.o')
-                compile_cmd = ["cc", "-c", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
+                compile_cmd = _cc_command() + ["-c", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
                 if debug:
                     compile_cmd.insert(1, "-g")
                     compile_cmd.insert(2, "-DSLOP_DEBUG")
@@ -2261,7 +2272,7 @@ def _build_library_from_sources(
         elif library_mode == 'shared':
             ext = ".dylib" if sys.platform == "darwin" else ".so"
             lib_file = f"{output}{ext}" if not output.endswith(ext) else output
-            compile_cmd = ["cc", "-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir,
+            compile_cmd = _cc_command() + ["-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir,
                           "-o", lib_file] + c_files + link_flags
             if debug:
                 compile_cmd.insert(1, "-g")
@@ -2602,7 +2613,7 @@ def cmd_build(args):
                     obj_files = []
                     for c_file in c_files:
                         obj_file = c_file.replace('.c', '.o')
-                        compile_cmd = ["cc", "-c", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
+                        compile_cmd = _cc_command() + ["-c", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", obj_file, c_file]
                         if debug:
                             compile_cmd.insert(1, "-g")
                             compile_cmd.insert(2, "-DSLOP_DEBUG")
@@ -2629,7 +2640,7 @@ def cmd_build(args):
                 elif library_mode == 'shared':
                     ext = ".dylib" if sys.platform == "darwin" else ".so"
                     lib_file = f"{output}{ext}"
-                    compile_cmd = ["cc", "-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir,
+                    compile_cmd = _cc_command() + ["-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir,
                                   "-o", lib_file] + c_files + link_flags
                     if debug:
                         compile_cmd.insert(1, "-g")
@@ -2648,7 +2659,7 @@ def cmd_build(args):
 
                 else:
                     # Default: build executable
-                    compile_cmd = ["cc", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", output] + c_files + link_flags
+                    compile_cmd = _cc_command() + [f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", output] + c_files + link_flags
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
@@ -2758,7 +2769,7 @@ def cmd_build(args):
             obj_file = f"{output}.o"
             lib_file = f"{output}.a"
 
-            compile_cmd = ["cc", "-c", f"-O{opt_level}", "-I", str(runtime_path), "-o", obj_file, c_file]
+            compile_cmd = _cc_command() + ["-c", f"-O{opt_level}", "-I", str(runtime_path), "-o", obj_file, c_file]
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
@@ -2789,7 +2800,7 @@ def cmd_build(args):
             ext = ".dylib" if sys.platform == "darwin" else ".so"
             lib_file = f"{output}{ext}"
 
-            compile_cmd = ["cc", "-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path),
+            compile_cmd = _cc_command() + ["-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path),
                           "-o", lib_file, c_file] + link_flags
             if debug:
                 compile_cmd.insert(1, "-g")
@@ -2810,8 +2821,7 @@ def cmd_build(args):
 
         else:
             # Default: build executable
-            compile_cmd = [
-                "cc",
+            compile_cmd = _cc_command() + [
                 f"-O{opt_level}",
                 "-I", str(runtime_path),
                 "-o", output,
@@ -3397,8 +3407,8 @@ def cmd_test(args):
                         runtime_path = _get_runtime_path()
                         # Native transpiler combines all modules, so don't include
                         # cached deps (they'd cause redefinition errors)
-                        compile_cmd = [
-                            "cc", "-O0", "-g",
+                        compile_cmd = _cc_command() + [
+                            "-O0", "-g",
                             "-I", str(runtime_path),
                             "-o", test_bin_path,
                             test_c_path,
@@ -3611,8 +3621,8 @@ def cmd_test(args):
             # Compile
             print("  Compiling...")
             runtime_path = _get_runtime_path()
-            compile_cmd = [
-                "cc", "-O0", "-g",
+            compile_cmd = _cc_command() + [
+                "-O0", "-g",
                 "-I", str(runtime_path),
                 "-I", str(cache_dir),
                 "-o", test_bin_path,
