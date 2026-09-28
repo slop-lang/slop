@@ -309,6 +309,21 @@ Resolved Directories:
   ...
 ```
 
+### Compiler Warnings
+
+`slop build` and `slop test` print the transpiler's warnings to stderr, such as
+a closure allocated with no arena in scope, whether the build has one module
+or many. When the checker leaves an expression without a type annotation, the
+transpiler infers the type itself. It reports each place it did that only when
+asked:
+
+```bash
+SLOP_WARN_FALLBACK=1 slop build src/main.slop
+```
+
+These lines help when working on the compiler; they are not something a
+program can fix.
+
 ## Project Configuration
 
 Create a `slop.toml` file to configure your project:

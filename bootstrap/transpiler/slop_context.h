@@ -532,6 +532,7 @@ void context_ctx_indent(context_TranspileContext* ctx);
 void context_ctx_dedent(context_TranspileContext* ctx);
 void context_ctx_fail(context_TranspileContext* ctx, slop_string message);
 void context_ctx_warn_fallback(context_TranspileContext* ctx, types_SExpr* expr, slop_string desc);
+uint8_t context_fallback_warnings_enabled(void);
 void context_print_string_stdout(slop_string s);
 void context_print_string_stderr(slop_string s);
 void context_ctx_set_file(context_TranspileContext* ctx, slop_string filename);

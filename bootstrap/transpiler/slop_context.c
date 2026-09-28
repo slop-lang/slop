@@ -11,6 +11,7 @@ void context_ctx_indent(context_TranspileContext* ctx);
 void context_ctx_dedent(context_TranspileContext* ctx);
 void context_ctx_fail(context_TranspileContext* ctx, slop_string message);
 void context_ctx_warn_fallback(context_TranspileContext* ctx, types_SExpr* expr, slop_string desc);
+uint8_t context_fallback_warnings_enabled(void);
 void context_print_string_stdout(slop_string s);
 void context_print_string_stderr(slop_string s);
 void context_ctx_set_file(context_TranspileContext* ctx, slop_string filename);
@@ -347,29 +348,38 @@ void context_ctx_fail(context_TranspileContext* ctx, slop_string message) {
 }
 
 void context_ctx_warn_fallback(context_TranspileContext* ctx, types_SExpr* expr, slop_string desc) {
-    {
-        __auto_type arena = (*ctx).arena;
-        __auto_type line = context_ctx_sexpr_line(expr);
-        __auto_type col = context_ctx_sexpr_col(expr);
-        __auto_type mod_name = context_ctx_get_module(ctx);
-        __auto_type expr_head = (((expr == NULL)) ? SLOP_STR("<?>") : ({ __auto_type _mv = (*expr); slop_string _mr = {0}; switch (_mv.tag) { case types_SExpr_sym: { __auto_type s = _mv.data.sym; _mr = s.name; break; } case types_SExpr_str: { __auto_type s = _mv.data.str; _mr = SLOP_STR("<literal>"); break; } case types_SExpr_num: { __auto_type n = _mv.data.num; _mr = SLOP_STR("<literal>"); break; } case types_SExpr_lst: { __auto_type l = _mv.data.lst; _mr = ({ __auto_type items = l.items; ({ __auto_type _mv = ({ __auto_type _lst = items; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type first = _mv.value; ({ __auto_type _mv = (*first); slop_string _mr = {0}; switch (_mv.tag) { case types_SExpr_sym: { __auto_type s = _mv.data.sym; _mr = s.name; break; } case types_SExpr_str: { __auto_type s = _mv.data.str; _mr = SLOP_STR("<str>"); break; } case types_SExpr_num: { __auto_type n = _mv.data.num; _mr = SLOP_STR("<num>"); break; } case types_SExpr_lst: { __auto_type l2 = _mv.data.lst; _mr = SLOP_STR("<list>"); break; }  } _mr; }); }) : (SLOP_STR("<empty-list>")); }); }); break; }  } _mr; }));
-        slop_eprint(((char*)(SLOP_STR("warning: type inference fallback in ").data)));
-        __auto_type _mv_50 = mod_name;
-        if (_mv_50.has_value) {
-            __auto_type m = _mv_50.value;
-            context_print_string_stderr(m);
-        } else if (!_mv_50.has_value) {
-            slop_eprint(((char*)(SLOP_STR("<unknown>").data)));
+    if (context_fallback_warnings_enabled()) {
+        {
+            __auto_type arena = (*ctx).arena;
+            __auto_type line = context_ctx_sexpr_line(expr);
+            __auto_type col = context_ctx_sexpr_col(expr);
+            __auto_type mod_name = context_ctx_get_module(ctx);
+            __auto_type expr_head = (((expr == NULL)) ? SLOP_STR("<?>") : ({ __auto_type _mv = (*expr); slop_string _mr = {0}; switch (_mv.tag) { case types_SExpr_sym: { __auto_type s = _mv.data.sym; _mr = s.name; break; } case types_SExpr_str: { __auto_type s = _mv.data.str; _mr = SLOP_STR("<literal>"); break; } case types_SExpr_num: { __auto_type n = _mv.data.num; _mr = SLOP_STR("<literal>"); break; } case types_SExpr_lst: { __auto_type l = _mv.data.lst; _mr = ({ __auto_type items = l.items; ({ __auto_type _mv = ({ __auto_type _lst = items; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type first = _mv.value; ({ __auto_type _mv = (*first); slop_string _mr = {0}; switch (_mv.tag) { case types_SExpr_sym: { __auto_type s = _mv.data.sym; _mr = s.name; break; } case types_SExpr_str: { __auto_type s = _mv.data.str; _mr = SLOP_STR("<str>"); break; } case types_SExpr_num: { __auto_type n = _mv.data.num; _mr = SLOP_STR("<num>"); break; } case types_SExpr_lst: { __auto_type l2 = _mv.data.lst; _mr = SLOP_STR("<list>"); break; }  } _mr; }); }) : (SLOP_STR("<empty-list>")); }); }); break; }  } _mr; }));
+            slop_eprint(((char*)(SLOP_STR("warning: type inference fallback in ").data)));
+            __auto_type _mv_50 = mod_name;
+            if (_mv_50.has_value) {
+                __auto_type m = _mv_50.value;
+                context_print_string_stderr(m);
+            } else if (!_mv_50.has_value) {
+                slop_eprint(((char*)(SLOP_STR("<unknown>").data)));
+            }
+            slop_eprint(((char*)(SLOP_STR(" at ").data)));
+            context_print_string_stderr(int_to_string(arena, line));
+            slop_eputc(58);
+            context_print_string_stderr(int_to_string(arena, col));
+            slop_eprint(((char*)(SLOP_STR(" (").data)));
+            context_print_string_stderr(expr_head);
+            slop_eprint(((char*)(SLOP_STR(") for ").data)));
+            context_print_string_stderr(desc);
+            slop_eputc(10);
         }
-        slop_eprint(((char*)(SLOP_STR(" at ").data)));
-        context_print_string_stderr(int_to_string(arena, line));
-        slop_eputc(58);
-        context_print_string_stderr(int_to_string(arena, col));
-        slop_eprint(((char*)(SLOP_STR(" (").data)));
-        context_print_string_stderr(expr_head);
-        slop_eprint(((char*)(SLOP_STR(") for ").data)));
-        context_print_string_stderr(desc);
-        slop_eputc(10);
+    }
+}
+
+uint8_t context_fallback_warnings_enabled(void) {
+    {
+        __auto_type v = getenv(((uint8_t*)(SLOP_STR("SLOP_WARN_FALLBACK").data)));
+        return ((v != NULL) && (((int64_t)(v[0])) == 49));
     }
 }
 
