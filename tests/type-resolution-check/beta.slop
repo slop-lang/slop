@@ -22,8 +22,8 @@
     (@intent "Number beta's colors")
     (@spec ((Color) -> Int))
     (match c
-      ((red) 10)
-      ((blue) 20)))
+      ('red 10)
+      ('blue 20)))
 
   (fn area ((s Shape))
     (@intent "Size of beta's shapes")

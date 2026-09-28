@@ -77,6 +77,7 @@ struct). Use (Ptr T) or (List T) for self-referencing variants:
 ### Type Aliases
 (type UserId (Int 1 ..))
 (alias Handler (Fn (Request) -> Response))
+(type Ids (Map String Int))              ; interchangeable with (Map String Int)
 """,
 
     'functions': """## Functions
@@ -822,10 +823,11 @@ module and imported into it.
 Type names, type aliases and enum or union variants resolve the same way: the
 module's own, then what it imports, then builtins. Two modules may each define
 a `Pt` or a `red`. What a module gets is decided by what it imports, never by
-build order. A variant in a `match` arm is taken from the scrutinee's type. A
-name that reaches a module without an import is accepted only if exactly one
-module in the build defines it; otherwise the error asks you to import the
-one you mean.
+build order. A variant in a `match` arm is taken from the scrutinee's type,
+and a quoted variant the module can't see from the type expected where it
+appears (a parameter, field, typed let or return type). Any other name that
+reaches a module without an import is accepted only if exactly one module in
+the build defines it; otherwise the error asks you to import the one you mean.
 
 ### See Also
 

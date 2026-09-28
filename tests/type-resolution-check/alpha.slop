@@ -17,5 +17,5 @@
     (@intent "Number alpha's colors")
     (@spec ((Color) -> Int))
     (match c
-      ((red) 1)
-      ((green) 2))))
+      ('red 1)
+      ('green 2))))

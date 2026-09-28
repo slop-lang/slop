@@ -609,6 +609,7 @@ slop_option_string context_ctx_resolve_enum_variant_at(context_TranspileContext*
 slop_option_string context_ctx_lookup_enum_variant(context_TranspileContext* ctx, slop_string variant_name);
 uint8_t context_ctx_enum_variant_known(context_TranspileContext* ctx, slop_string variant_name);
 slop_option_string context_ctx_resolve_enum_variant_for(context_TranspileContext* ctx, slop_string variant_name, slop_string scrut_c_type, types_SExpr* at);
+slop_option_string context_ctx_resolve_enum_variant_expecting(context_TranspileContext* ctx, slop_string variant_name, slop_string expected_c_type, types_SExpr* at);
 slop_option_string context_ctx_resolve_callable_variant(context_TranspileContext* ctx, slop_string name, types_SExpr* at);
 void context_ctx_register_union_variant(context_TranspileContext* ctx, slop_string variant_name, slop_string union_name, slop_string c_variant_name, slop_string slop_type, slop_string c_type);
 slop_list_context_UnionVariantEntry context_ctx_get_union_variants(context_TranspileContext* ctx, slop_string union_name);

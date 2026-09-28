@@ -1,0 +1,43 @@
+;; A Map or Set alias is the type it names (#197). An inferred (Map String Int)
+;; used to be rejected for a parameter typed Ids -- "expected Ids, got Map" --
+;; because only the alias's name was compared.
+
+(module main
+  (type Ids (Map String Int))
+  (type Tags (Set String))
+  (type Nested (Map String Ids))
+
+  (fn count-ids ((m Ids))
+    (@intent "Read a map through its alias")
+    (@spec ((Ids) -> Int))
+    (match (map-get m "a")
+      ((some n) n)
+      ((none) 0)))
+
+  (fn has-tag ((s Tags))
+    (@intent "Read a set through its alias")
+    (@spec ((Tags) -> Bool))
+    (set-has s "x"))
+
+  (fn inner-count ((m Nested))
+    (@intent "An alias whose value type is another alias")
+    (@spec ((Nested) -> Int))
+    (match (map-get m "k")
+      ((some inner) (count-ids inner))
+      ((none) 0)))
+
+  (fn main ()
+    (@intent "Pass anonymous maps and sets where aliases are expected")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((m (map-new arena String Int))
+            (s (set-new arena String))
+            (outer (map-new arena String Ids)))
+        (map-put m "a" 7)
+        (set-put s "x")
+        (map-put outer "k" m)
+        (if (and (== (count-ids m) 7)
+                 (has-tag s)
+                 (== (inner-count outer) 7))
+          0
+          1)))))

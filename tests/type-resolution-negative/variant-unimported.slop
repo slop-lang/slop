@@ -1,10 +1,11 @@
-;; main imports neither Color nor Paint, and both have a red. The
-;; transpiler must not pick either.
+;; main imports neither Color nor Paint, both have red, and nothing here
+;; says which one p is. The transpiler must not pick either.
 (module main
   (import hue (color-code))
   (import tint (paint-code))
 
   (fn main ()
-    (@intent "Use a 'red that main never imports")
+    (@intent "Use a 'red that main never imports, with no type to take")
     (@spec (() -> Int))
-    (paint-code 'red)))
+    (let ((p 'red))
+      (paint-code p))))

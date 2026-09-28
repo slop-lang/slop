@@ -7,7 +7,7 @@
 (module expr
   (export
     ;; Main entry point
-    transpile-expr
+    transpile-expr transpile-expr-for
     ;; Helpers
     transpile-literal transpile-symbol
     ;; Literal pattern helpers, shared with match (which imports this module)
@@ -37,7 +37,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer
                  BindingOrigin MutationKind mutation-error-message))
-  (import context (TranspileContext ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-enum-variant-known
+  (import context (TranspileContext ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
@@ -353,6 +353,51 @@
                           (when (ctx-strict-unknown-symbols ctx)
                             (ctx-add-error ctx (ctx-str3 ctx "unknown symbol '" name "'")))
                           c-name))))))))))))
+
+  (fn quoted-variant-name ((arena Arena) (expr (Ptr SExpr)))
+    (@intent "The variant a quoted symbol names, 'red or (quote red), if expr is one")
+    (@spec ((Arena (Ptr SExpr)) -> (Option String)))
+    (@pre {expr != nil})
+    (match (deref expr)
+      ((sym sym)
+        (let ((name (. sym name)))
+          (if (and (starts-with name "'") (> (string-len name) 1))
+            (some (substring arena name 1 (cast (Int 0 ..) (- (string-len name) 1))))
+            none)))
+      ((lst lst)
+        (let ((items (. lst items)))
+          (if (== (list-len items) 2)
+            (match (list-get items 0)
+              ((some head)
+                (match (deref head)
+                  ((sym head-sym)
+                    (if (string-eq (. head-sym name) "quote")
+                      (match (list-get items 1)
+                        ((some v)
+                          (match (deref v)
+                            ((sym v-sym) (some (. v-sym name)))
+                            (else none)))
+                        ((none) none))
+                      none))
+                  (else none)))
+              ((none) none))
+            none)))
+      (else none)))
+
+  (fn transpile-expr-for ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (expected-type String))
+    (@intent "Transpile an expression whose C type is fixed by where it goes: an argument, an initialiser, a return")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String) -> String))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    ;; A quoted variant the module cannot see takes its type from there, as
+    ;; the checker does: (paint-code 'red) is Paint's red even with another
+    ;; red in the build and Paint not imported (#198).
+    (match (quoted-variant-name (. (deref ctx) arena) expr)
+      ((some variant-name)
+        (match (ctx-resolve-enum-variant-expecting ctx variant-name expected-type expr)
+          ((some enum-name) (get-prefixed-enum-value ctx enum-name variant-name))
+          ((none) (transpile-expr ctx expr))))
+      ((none) (transpile-expr ctx expr))))
 
   (fn get-prefixed-enum-value ((ctx (Ptr TranspileContext)) (enum-name String) (variant-name String))
     (@intent "Get fully qualified enum value - enum-name already has module prefix")
@@ -3543,9 +3588,11 @@
                   (while (< i len)
                     (match (list-get items i)
                       ((some arg)
-                        (let ((arg-c (transpile-expr ctx arg))
-                              ;; Look up field type for typed none handling
+                        (let (;; Look up field type for typed none handling
                               (field-type-opt (ctx-lookup-field-type-by-index ctx type-name field-idx))
+                              (arg-c (transpile-expr-for ctx arg (match field-type-opt
+                                                                   ((some field-type) field-type)
+                                                                   ((none) ""))))
                               (final-arg (match field-type-opt
                                            ((some field-type)
                                              (typed-none-arg ctx field-type arg-c))
@@ -3637,11 +3684,11 @@
                           (while (< i len)
                             (match (list-get items i)
                               ((some arg)
-                                (let ((arg-c (transpile-expr ctx arg))
-                                      ;; Get expected type for this parameter
+                                (let (;; Get expected type for this parameter
                                       (expected-type (match (list-get (. func-entry param-types) param-idx)
                                                        ((some p) (. (deref p) c-type))
                                                        ((none) "")))
+                                      (arg-c (transpile-expr-for ctx arg expected-type))
                                       ;; Convert none to typed Option if needed
                                       (arg-c2 (typed-none-arg ctx expected-type arg-c))
                                       ;; Wrap function references in slop_closure_t if needed
@@ -5336,7 +5383,7 @@
       ((lst lst)
         (let ((items (. lst items)))
           (if (< (list-len items) 1)
-            (transpile-expr ctx init-expr)
+            (transpile-expr-for ctx init-expr target-type)
             (match (list-get items 0)
               ((some head)
                 (match (deref head)
@@ -5346,21 +5393,21 @@
                         ;; (some value) with known Option type
                         ((string-eq op "some")
                           (if (< (list-len items) 2)
-                            (transpile-expr ctx init-expr)
+                            (transpile-expr-for ctx init-expr target-type)
                             (match (list-get items 1)
                               ((some val-expr)
                                 (let ((val-c (transpile-expr ctx val-expr)))
                                   ;; Use target type for Option construction
                                   (ctx-str5 ctx "(" target-type "){.has_value = 1, .value = " val-c "}")))
-                              ((none) (transpile-expr ctx init-expr)))))
+                              ((none) (transpile-expr-for ctx init-expr target-type)))))
                         ;; (none) with known Option type
                         ((string-eq op "none")
                           (ctx-str3 ctx "(" target-type "){.has_value = false}"))
                         ;; Other expressions - default transpilation
-                        (else (transpile-expr ctx init-expr)))))
-                  (else (transpile-expr ctx init-expr))))
-              ((none) (transpile-expr ctx init-expr))))))
-      (else (transpile-expr ctx init-expr))))
+                        (else (transpile-expr-for ctx init-expr target-type)))))
+                  (else (transpile-expr-for ctx init-expr target-type))))
+              ((none) (transpile-expr-for ctx init-expr target-type))))))
+      (else (transpile-expr-for ctx init-expr target-type))))
 
   (fn transpile-while-expr ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile while as expression (side effect only, returns 0)")
@@ -7705,14 +7752,14 @@
       (while (< i len)
         (match (list-get items i)
           ((some arg)
-            (let ((arg-c (transpile-expr ctx arg))
-                  ;; Get expected type for this parameter if available
+            (let (;; Get expected type for this parameter if available
                   (expected-type (match func-opt
                                    ((some func-entry)
                                      (match (list-get (. func-entry param-types) param-idx)
                                        ((some p) (. (deref p) c-type))
                                        ((none) "")))
                                    ((none) "")))
+                  (arg-c (transpile-expr-for ctx arg expected-type))
                   ;; Convert none to typed Option if needed
                   (final-arg (typed-none-arg ctx expected-type arg-c)))
               (if (string-eq args "")

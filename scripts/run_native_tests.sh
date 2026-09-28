@@ -294,7 +294,7 @@ run_negative_build_test "$TNEG/variant-both.slop" "variant-import-ambiguous" \
     "variant-both.slop:9:17: error: variant 'red' is ambiguous: imported from both 'tint' (Paint) and 'hue' (Color)" \
     -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
 run_negative_build_test "$TNEG/variant-unimported.slop" "variant-unimported-ambiguous" \
-    "variant-unimported.slop:10:17: error: variant 'red' belongs to types in modules 'tint' (Paint) and 'hue' (Color) - import the type you mean" \
+    "variant-unimported.slop:10:14: error: variant 'red' belongs to types in modules 'tint' (Paint) and 'hue' (Color) - import the type you mean" \
     -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
 
 # list-push grows its list in an arena; with none in scope it used to emit the
@@ -364,6 +364,12 @@ TRC="$REPO_ROOT/tests/type-resolution-check"
 run_check_clean_test "$TRC/main.slop" "type-resolution" -I "$TRC"
 run_check_clean_test "$TRC/main_swapped.slop" "type-resolution-swapped" -I "$TRC"
 
+# An enum arm is 'red: (red) used to lower as a union variant and fail in cc (#196)
+run_negative_check_test "$REPO_ROOT/tests/enum-pattern-negative/paren_arm.slop" "enum-paren-arm" \
+    "paren_arm.slop:11:8: error: a match on enum 'Paint' names a variant as 'red, not (red)"
+run_negative_build_test "$REPO_ROOT/tests/enum-pattern-negative/paren_arm.slop" "enum-paren-arm" \
+    "paren_arm.slop:11:8: error: a match on enum 'Paint' names a variant as 'red, not (red)"
+
 TRN="$REPO_ROOT/tests/type-resolution-check-negative"
 run_negative_check_test "$TRN/both.slop" "type-imported-from-both" \
     "both.slop:4:17: error: 'Pt' is imported from both 'alpha' and 'beta'" \
@@ -424,6 +430,10 @@ ref_param|ref_param.slop:8:15: error: unknown parameter mode 'ref' - write (name
 set_expr|set_expr.slop:11:24: error: cannot assign to parameter 'n' - it is read-only; declare it (mut n T) to modify a local copy, or pass a (Ptr T) to change the caller's value
 PM_CASES
 run_check_clean_test "$REPO_ROOT/tests/test_param_modes.slop" "param-modes"
+# A Map or Set alias is the type it names: an inferred (Map String Int) passes
+# where Ids is expected (#197). The build ignores that checker error, so only
+# the check catches it.
+run_check_clean_test "$REPO_ROOT/tests/test_map_alias_param.slop" "map-alias-param"
 run_check_clean_test "$REPO_ROOT/tests/test_mutation_allowed.slop" "mutation-allowed"
 
 # Immutable bindings (#180): a let without mut, a for / for-each / match /
