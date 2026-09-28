@@ -1,0 +1,58 @@
+(module test-result-field
+  (@intent "A record or union holding a (Result T E) builds: the Result's typedef precedes it")
+
+  ;; The sorted type pass took every slop_result_* for a runtime type, so a
+  ;; record with a Result field was emitted ahead of the Result's typedef and
+  ;; only cc caught it. Parsed has a Result of builtins, Moved one whose ok
+  ;; side is a record of this module, which must itself come first.
+
+  (type Pt (record (x Int) (y Int)))
+
+  (type Parsed (record
+    (text String)
+    (value (Result Int String))))
+
+  (type Moved (union
+    (to (Result Pt String))
+    (stay Int)))
+
+  (fn checked-int ((n Int))
+    (@intent "ok n for a positive n, else an error")
+    (@spec ((Int) -> (Result Int String)))
+    (if (> n 0) (ok n) (error "not a number")))
+
+  (fn parse ((arena Arena) (text String) (n Int))
+    (@intent "A Parsed holding checked-int's Result")
+    (@spec ((Arena String Int) -> Parsed))
+    (@alloc arena)
+    (Parsed text (checked-int n)))
+
+  (fn value-or ((p Parsed) (fallback Int))
+    (@intent "The parsed value, or fallback on an error")
+    (@spec ((Parsed Int) -> Int))
+    (match (. p value)
+      ((ok v) v)
+      ((error _) fallback)))
+
+  (fn move-to ((p Pt))
+    (@intent "A move to p")
+    (@spec ((Pt) -> (Result Pt String)))
+    (ok p))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if a Result field was lost")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((mut fails 0)
+            (good (parse arena "7" 7))
+            (bad (parse arena "x" 0))
+            (m (union-new Moved to (move-to (Pt 3 4)))))
+        (when (!= (value-or good -1) 7) (set! fails (+ fails 1)))
+        (when (!= (value-or bad -1) -1) (set! fails (+ fails 1)))
+        (match m
+          ((to r)
+            (match r
+              ((ok p) (when (!= (+ (. p x) (. p y)) 7) (set! fails (+ fails 1))))
+              ((error _) (set! fails (+ fails 1)))))
+          ((stay _) (set! fails (+ fails 1))))
+        fails))))

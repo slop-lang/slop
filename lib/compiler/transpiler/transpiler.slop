@@ -2774,7 +2774,9 @@
       (while (< i len)
         (match (list-get result-types i)
           ((some rt)
-            (emit-single-result-type-header ctx rt))
+            ;; Skip one the sorted pass already emitted ahead of a record using it
+            (when (not (ctx-is-type-emitted ctx (. rt c-name)))
+              (emit-single-result-type-header ctx rt)))
           ((none) (do)))
         (set! i (+ i 1)))))
 
@@ -2787,6 +2789,7 @@
           (c-name (. rt c-name))
           ;; Create guard macro name from c-name (uppercase)
           (guard-name (ctx-str3 ctx (uppercase-name ctx c-name) "_DEFINED" "")))
+      (ctx-mark-type-emitted ctx c-name)
       ;; #ifndef GUARD_DEFINED
       (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
       ;; #define GUARD_DEFINED
@@ -4268,7 +4271,13 @@
                 (emit-option-by-c-name ctx field-type))
               ;; Try to emit as list type
               (when (starts-with field-type "slop_list_")
-                (emit-list-by-c-name ctx field-type))))
+                (emit-list-by-c-name ctx field-type)))
+            (when (and (starts-with field-type "slop_result_")
+                       (not (ctx-is-type-emitted ctx field-type))
+                       (result-type-available ctx field-type))
+              (match (find-result-type ctx field-type)
+                ((some rt) (emit-single-result-type-header ctx rt))
+                ((none) (do)))))
           ((none) (do)))
         (set! i (+ i 1)))))
 
@@ -4490,15 +4499,58 @@
     ;; 5. It's been emitted (in emitted-types list)
     ;; 6. It's an imported type (from another module)
     ;; 7. It's a slop_option_*/slop_list_* whose inner type is already available
-    (or (is-primitive-type type-name)
-        (starts-with type-name "Ptr ")
-        (starts-with type-name "(Ptr")
-        (is-slop-runtime-type type-name)
-        (is-runtime-option-type type-name)
-        (is-runtime-list-type type-name)
-        (is-type-emitted-or-primitive ctx type-name)
-        (is-imported-type ctx type-name)
-        (is-emittable-container-type ctx type-name)))
+    ;; A generated slop_result_* is available once both its sides are; it is
+    ;; emitted just before the first type that needs it (emit-pending-container-deps).
+    ;; Treating it as a runtime type let a record holding a (Result T E) field be
+    ;; emitted ahead of the Result's typedef, which only cc caught.
+    (if (starts-with type-name "slop_result_")
+      (result-type-available ctx type-name)
+      (or (is-primitive-type type-name)
+          (starts-with type-name "Ptr ")
+          (starts-with type-name "(Ptr")
+          (is-slop-runtime-type type-name)
+          (is-runtime-option-type type-name)
+          (is-runtime-list-type type-name)
+          (is-type-emitted-or-primitive ctx type-name)
+          (is-imported-type ctx type-name)
+          (is-emittable-container-type ctx type-name))))
+
+  (fn find-result-type ((ctx (Ptr TranspileContext)) (c-name String))
+    (@intent "Find a registered Result type by its C name")
+    (@spec (((Ptr TranspileContext) String) -> (Option ResultType)))
+    (@pre {ctx != nil})
+    (let ((result-types (ctx-get-result-types ctx))
+          (len (list-len result-types))
+          (mut i 0)
+          (mut found (Option ResultType) (none)))
+      (while (< i len)
+        (match (list-get result-types i)
+          ((some rt)
+            (when (string-eq (. rt c-name) c-name)
+              (set! found (some rt))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn result-side-available ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Check if one side of a Result -- a C type -- is defined by now")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    (or (string-eq c-type "void")
+        (ends-with c-type "*")
+        (type-is-available ctx c-type)))
+
+  (fn result-type-available ((ctx (Ptr TranspileContext)) (c-name String))
+    (@intent "Check if a slop_result_* type is emitted, or can be because both its sides are defined")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    ;; One this module did not register is left as before: assumed provided.
+    (or (ctx-is-type-emitted ctx c-name)
+        (match (find-result-type ctx c-name)
+          ((some rt)
+            (and (result-side-available ctx (. rt ok-type))
+                 (result-side-available ctx (. rt err-type))))
+          ((none) true))))
 
   (fn is-emittable-container-type ((ctx (Ptr TranspileContext)) (type-name String))
     (@intent "Check if slop_option_*/slop_list_* type whose inner type is already available")
@@ -4705,6 +4757,23 @@
                                     (if (string-eq inner-str "")
                                       ""
                                       (ctx-str ctx "slop_list_" (type-to-identifier arena inner-str)))))
+                                ((none) ""))
+                              ""))
+                          ;; (Result T E) - slop_result_<T>_<E>, so the sort sees it
+                          ;; (type-is-available) and it is emitted ahead of this type
+                          ((string-eq kind "Result")
+                            (if (>= (list-len items) 3)
+                              (match (list-get items 1)
+                                ((some ok-expr)
+                                  (match (list-get items 2)
+                                    ((some err-expr)
+                                      (let ((ok-str (get-field-type-string ctx ok-expr))
+                                            (err-str (get-field-type-string ctx err-expr)))
+                                        (if (or (string-eq ok-str "") (string-eq err-str ""))
+                                          ""
+                                          (ctx-str4 ctx "slop_result_" (type-to-identifier arena ok-str)
+                                                    "_" (type-to-identifier arena err-str)))))
+                                    ((none) "")))
                                 ((none) ""))
                               ""))
                           ;; Other complex types - return empty (no dependency tracking)
