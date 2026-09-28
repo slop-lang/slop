@@ -18,7 +18,7 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import parser (sexpr-get-symbol-name))
-  (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
+  (import context (TranspileContext ctx-set-pos ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type
                    ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens VarEntry
                    ctx-get-current-return-type ctx-is-capture-retval ctx-is-option-c-type
@@ -1298,6 +1298,7 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr) Bool) -> Unit))
     (@pre {ctx != nil})
     (@pre {expr != nil})
+    (ctx-set-pos ctx expr)
     (match (deref expr)
       ((lst lst)
         (let ((items (. lst items)))

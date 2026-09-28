@@ -1,0 +1,10 @@
+;; Only beta's Pt has y. With beta's fields merged into alpha's Pt this
+;; used to pass.
+(module main
+  (import alpha (make-a))
+  (import beta (make-b))
+  (fn main ()
+    (@intent "Check must fail")
+    (@spec (() -> Int))
+    (let ((n (. (make-a 1) y)))
+      0)))

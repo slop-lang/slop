@@ -1,0 +1,33 @@
+(module beta
+  (export Pt Qt Color Shape make-b show-b paint area)
+
+  (type Pt (record (x Int) (y Int)))
+  (type Qt (record (q Int)))
+  (type Color (enum red blue))
+  (type Shape (union (dot String) (ring Int)))
+
+  (fn make-b ((v Int))
+    (@intent "beta's two-field Pt")
+    (@spec ((Int) -> Pt))
+    (Pt v (+ v 1)))
+
+  ;; beta's own Pt as a parameter: with alpha registered first this was
+  ;; "Unknown type: Pt", since the lookup found alpha's and rejected it
+  (fn show-b ((p Pt))
+    (@intent "Read the field only beta's Pt has")
+    (@spec ((Pt) -> Int))
+    (. p y))
+
+  (fn paint ((c Color))
+    (@intent "Number beta's colors")
+    (@spec ((Color) -> Int))
+    (match c
+      ((red) 10)
+      ((blue) 20)))
+
+  (fn area ((s Shape))
+    (@intent "Size of beta's shapes")
+    (@spec ((Shape) -> Int))
+    (match s
+      ((dot str) (string-len str))
+      ((ring n) (* n n)))))

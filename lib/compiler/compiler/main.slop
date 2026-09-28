@@ -14,7 +14,7 @@
   (export (main 2))
 
   ;; --- Parser imports ---
-  (import parser (SExpr parse is-form
+  (import parser (ParseError SExpr parse is-form
                   sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name
                   sexpr-line sexpr-col))
   ;; --- Type system imports ---
@@ -29,7 +29,6 @@
                env-get-string-type env-get-unit-type env-get-arena-type
                env-set-module env-add-error env-clear-imports))
   (import collect (collect-module))
-  (import resolve (resolve-imports))
   (import infer (infer-fn-body infer-expr resolve-complex-type-expr resolve-simple-type))
   ;; --- C type bridge imports ---
   (import ctype (get-node-resolved-type))
@@ -199,7 +198,6 @@
     (@pre (!= env nil))
     (@pre (> (list-len ast) 0))
     (collect-module env ast)
-    (resolve-imports env ast)
     (check-all-functions env ast))
 
   (fn check-all-functions ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
@@ -582,7 +580,6 @@
                   ((ok context-ast)
                     (do
                       (collect-module env context-ast)
-                      (resolve-imports env context-ast)
                       (env-clear-diagnostics env)))
                   ((error _) (do)))))))))
     (env-push-scope env)

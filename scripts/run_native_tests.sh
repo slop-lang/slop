@@ -63,6 +63,9 @@ run_unit_tests "lib/std/path" "path"
 run_unit_tests "lib/std/json" "json"
 run_unit_tests "lib/std/xml" "xml"
 run_unit_tests "tests/example-harness" "example-harness"
+# The harness prescans each module again per @example: pick's Pt is beta's
+# and its 'red is tint's (#174)
+run_unit_tests "tests/type-resolution" "type-resolution-examples"
 # The test-harness generator, covered by the mechanism it implements. Meaningful only
 # alongside the negative fixture below, which independently proves the harness still
 # tells a pass from a skip from a failure.
@@ -215,6 +218,24 @@ run_lib_test "$REPO_ROOT/tests/import-resolution/main.slop" "import-resolution" 
 run_lib_test "$REPO_ROOT/tests/import-resolution/main_swapped.slop" "import-resolution-swapped" \
     -I "$REPO_ROOT/tests/import-resolution"
 
+# A type name resolves the same way (#174): alpha and beta each define Pt,
+# delta and epsilon each define Scores. Before, the transpiler used the Pt
+# registered last in the build, and looked fields up by bare name, so
+# (. p y) on beta's Pt could be emitted against alpha's struct and cc
+# rejected it. Both import orders are built.
+run_lib_test "$REPO_ROOT/tests/type-resolution/main.slop" "type-resolution-build" \
+    -I "$REPO_ROOT/tests/type-resolution"
+run_lib_test "$REPO_ROOT/tests/type-resolution/main_swapped.slop" "type-resolution-build-swapped" \
+    -I "$REPO_ROOT/tests/type-resolution"
+# Variants and aliases too: hue and tint each have a red and a dot variant,
+# an Ids alias and a Res Result alias. The first registration in the build
+# used to win, so one module's code named the other's enum constants and
+# Result type, and a variant could take the name of a module's own function.
+run_lib_test "$REPO_ROOT/tests/type-resolution/variants.slop" "type-resolution-variants" \
+    -I "$REPO_ROOT/tests/type-resolution"
+run_lib_test "$REPO_ROOT/tests/type-resolution/variants_swapped.slop" "type-resolution-variants-swapped" \
+    -I "$REPO_ROOT/tests/type-resolution"
+
 # A build that must fail with exactly one error: the expected message at the
 # expected file:line:col. Exactly one, because a module's errors used to be
 # reported again under the file name of every module transpiled after it.
@@ -258,6 +279,23 @@ run_negative_build_test "$NEG/local-and-import.slop" "import-local-and-import" \
 run_negative_build_test "$NEG/unimported.slop" "import-unimported" \
     "unimported.slop:9:15: error: undefined function 'f' - check imports" \
     -I "$NEG" -I "$REPO_ROOT/tests/import-resolution"
+
+TNEG="$REPO_ROOT/tests/type-resolution-negative"
+run_negative_build_test "$TNEG/both.slop" "type-import-ambiguous" \
+    "both.slop:4:17: error: 'Pt' is imported from both 'alpha' and 'beta'" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
+run_negative_build_test "$TNEG/shadow.slop" "type-local-and-import" \
+    "shadow.slop:3:17: error: 'Pt' is defined in module 'main' and also imported from 'beta'" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
+run_negative_build_test "$TNEG/unimported.slop" "type-unimported-ambiguous" \
+    "unimported.slop:10:32: error: type 'Scores' is defined in modules 'epsilon' and 'delta' - import it from the one you mean" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
+run_negative_build_test "$TNEG/variant-both.slop" "variant-import-ambiguous" \
+    "variant-both.slop:9:17: error: variant 'red' is ambiguous: imported from both 'tint' (Paint) and 'hue' (Color)" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
+run_negative_build_test "$TNEG/variant-unimported.slop" "variant-unimported-ambiguous" \
+    "variant-unimported.slop:10:17: error: variant 'red' belongs to types in modules 'tint' (Paint) and 'hue' (Color) - import the type you mean" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
 
 # list-push grows its list in an arena; with none in scope it used to emit the
 # bare identifier `arena`, which only the C compiler caught (#179).
@@ -318,6 +356,36 @@ run_negative_check_test() {
     fi
 }
 
+# alpha and beta each define Pt, Color and Shape. Before, the checker took
+# whichever module registered a name first: beta's own Pt could be "Unknown
+# type", its fields were appended to alpha's Pt, and an import could bind
+# the wrong module's type. Both import orders are checked.
+TRC="$REPO_ROOT/tests/type-resolution-check"
+run_check_clean_test "$TRC/main.slop" "type-resolution" -I "$TRC"
+run_check_clean_test "$TRC/main_swapped.slop" "type-resolution-swapped" -I "$TRC"
+
+TRN="$REPO_ROOT/tests/type-resolution-check-negative"
+run_negative_check_test "$TRN/both.slop" "type-imported-from-both" \
+    "both.slop:4:17: error: 'Pt' is imported from both 'alpha' and 'beta'" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/shadow.slop" "type-defined-and-imported" \
+    "shadow.slop:3:17: error: 'Pt' is defined in module 'main' and also imported from 'beta'" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/noexport.slop" "type-not-exported" \
+    "noexport.slop:4:18: error: module 'alpha' does not export 'Qt'" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/notimported.slop" "type-not-imported" \
+    "notimported.slop:7:14: error: type 'Pt' is defined in module 'alpha' but not imported" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/mismatch.slop" "type-module-mismatch" \
+    "mismatch.slop:8:5: error: argument 1 to 'beta:show-b': expected beta:Pt, got alpha:Pt" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/nofield.slop" "type-fields-not-merged" \
+    "nofield.slop:9:14: error: Record 'Pt' has no field 'y'" \
+    -I "$TRN" -I "$TRC"
+run_negative_check_test "$TRN/variant.slop" "variant-imported-from-both" \
+    "variant.slop:8:14: error: variant 'red' is ambiguous: imported from both" \
+    -I "$TRN" -I "$TRC"
 
 echo ""
 

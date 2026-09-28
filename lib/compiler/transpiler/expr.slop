@@ -37,11 +37,11 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer
                  BindingOrigin MutationKind mutation-error-message))
-  (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
+  (import context (TranspileContext ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-enum-variant-known
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
-                   ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
+                   ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-lookup-field-type-for-slop ctx-lookup-field-slop-type-for-slop ctx-register-option-type
                    ctx-get-fields-for-type ctx-get-union-variants FieldEntry
                    ctx-register-list-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-is-option-c-type ctx-register-chan-type
@@ -332,9 +332,10 @@
           (match (ctx-lookup-var ctx name)
             ;; Found in context - use registered c-name
             ((some entry) (. entry c-name))
-            ;; Not found - check if it's an enum variant
+            ;; Not found - check if it's an enum variant, deferring to a
+            ;; function of the name over a variant the module doesn't see
             ((none)
-              (match (ctx-lookup-enum-variant ctx name)
+              (match (ctx-resolve-callable-variant ctx name nil)
                 ((some enum-name)
                   (get-prefixed-enum-value ctx enum-name name))
                 ((none)
@@ -1186,7 +1187,7 @@
                           (match (ctx-lookup-var ctx (get-var-name-from-expr obj-expr))
                             ((some var-entry)
                               (let ((obj-slop-type (. var-entry slop-type)))
-                                (match (ctx-lookup-field-type ctx obj-slop-type field-name)
+                                (match (ctx-lookup-field-type-for-slop ctx obj-slop-type field-name)
                                   ((some c-type2) c-type2)
                                   ((none) "__auto_type"))))
                             ((none) "__auto_type"))))))
@@ -1677,7 +1678,7 @@
                                                       (obj-slop-type (if (starts-with obj-slop-type-raw "(Ptr ")
                                                                        (substring arena obj-slop-type-raw 5 (- (. obj-slop-type-raw len) 6))
                                                                        obj-slop-type-raw)))
-                                                  (match (ctx-lookup-field-slop-type ctx obj-slop-type field-name)
+                                                  (match (ctx-lookup-field-slop-type-for-slop ctx obj-slop-type field-name)
                                                     ((some slop-type2) slop-type2)
                                                     ((none) ""))))))))
                                       (_ "")))
@@ -2510,6 +2511,7 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
     (@pre {ctx != nil})
     (@pre {expr != nil})
+    (ctx-set-pos ctx expr)
     (match (deref expr)
       ;; Literals
       ((num _) (transpile-literal ctx expr))
@@ -3062,14 +3064,15 @@
                     ;;
                     ;; Gating on ctx-lookup-func/ctx-lookup-type instead was tried
                     ;; and was wrong: both lookups then saw every module in the
-                    ;; build, and ctx-lookup-type still does. A dependency defining the name
+                    ;; build, and ctx-lookup-type still falls back to a type that
+                    ;; only one module defines, imported or not. A dependency defining the name
                     ;; would disable the builtin in an unrelated module that never
                     ;; imported it, and the call -- type-checked as the builtin --
                     ;; would lower to a call into the dependency. Refusing the
                     ;; definition removes the disagreement rather than tracking it.
                     ;; A local of that name wins, matching the checker. Locals are
                     ;; module-scoped, so ctx-lookup-var is safe here in a way that
-                    ;; ctx-lookup-type is not -- it sees every module in the build.
+                    ;; ctx-lookup-type is not -- that fallback reaches past the imports.
                     ((and (or (string-eq op "is-none") (string-eq op "is-some"))
                           (>= len 2)
                           (not (local-callable-shadows ctx op)))
@@ -3533,7 +3536,7 @@
                 ;; Record type: emit compound literal
                 ;; For none arguments, look up field type and generate typed compound literal
                 (let ((c-name (. type-entry c-name))
-                      (type-name fn-name)  ;; Use SLOP type name for field lookup
+                      (type-name c-name)  ;; Fields are registered under the C name (#174)
                       (mut args "")
                       (mut i 1)
                       (mut field-idx 0))
@@ -3555,8 +3558,9 @@
                     (set! i (+ i 1)))
                   (ctx-str5 ctx "(" c-name "){" args "}"))))
             ((none)
-              ;; Check if fn-name is a union variant constructor (e.g., xsd-string-val)
-              (match (ctx-lookup-enum-variant ctx fn-name)
+              ;; Check if fn-name is a union variant constructor (e.g., xsd-string-val),
+              ;; deferring to a function of the name over a variant the module doesn't see
+              (match (ctx-resolve-callable-variant ctx fn-name nil)
                 ((some type-name)
                   ;; Union variant constructor: (variant-name value) -> inline struct init
                   (let ((c-variant (to-c-name arena fn-name))
@@ -3806,7 +3810,7 @@
                                                   (let ((field-name (. field-sym name))
                                                         (obj-slop-type (infer-expr-slop-type ctx obj-expr)))
                                                     (if (> (string-len obj-slop-type) 0)
-                                                      (match (ctx-lookup-field-slop-type ctx obj-slop-type field-name)
+                                                      (match (ctx-lookup-field-slop-type-for-slop ctx obj-slop-type field-name)
                                                         ((some fst)
                                                           (cond
                                                             ((string-eq fst "String") (some "slop_string"))
@@ -4000,7 +4004,7 @@
                 ((is-result-patterns patterns)
                   (build-result-match-expr ctx scrutinee scrutinee-c items))
                 ((is-enum-expr-patterns ctx patterns)
-                  (build-enum-match-expr ctx scrutinee-c items))
+                  (build-enum-match-expr ctx scrutinee-c (infer-expr-c-type ctx scrutinee) items))
                 ((is-union-expr-patterns ctx patterns)
                   (build-union-match-expr ctx scrutinee scrutinee-c items))
                 (else
@@ -4100,9 +4104,8 @@
                 (let ((name (. s name)))
                   (when (and (not (string-eq name "else"))
                              (not (string-eq name "_")))
-                    (match (ctx-lookup-enum-variant ctx name)
-                      ((some _) (set! has-enum-variant true))
-                      ((none) (do))))))
+                    (when (ctx-enum-variant-known ctx name)
+                      (set! has-enum-variant true)))))
               (else (set! all-symbols false))))
           ((none) (do)))
         (set! i (+ i 1)))
@@ -4129,9 +4132,8 @@
                          (not (string-eq tag "error"))
                          (not (string-eq tag "else"))
                          (not (string-eq tag "_")))
-                (match (ctx-lookup-enum-variant ctx tag)
-                  ((some _) (set! has-union-variant true))
-                  ((none) (do))))))
+                (when (ctx-enum-variant-known ctx tag)
+                  (set! has-union-variant true)))))
           ((none) (do)))
         (set! i (+ i 1)))
       has-union-variant))
@@ -4808,9 +4810,9 @@
                         (ctx-str ctx "_mr = "
                           (ctx-str ctx err-body "; } _mr; })")))))))))))))
 
-  (fn build-enum-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
+  (fn build-enum-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (scrut-c-type String) (items (List (Ptr SExpr))))
     (@intent "Build enum match as GCC statement expression with switch (no .tag)")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     ;; Generate: ({ __auto_type _mv = scrutinee; <type> _mr = {0};
     ;;              switch (_mv) { case T_v: { _mr = body; break; } ... } _mr; })
@@ -4829,7 +4831,7 @@
                   (when (>= (list-len branch-items) 2)
                     (match (list-get branch-items 0)
                       ((some pattern)
-                        (set! cases (build-enum-case-expr ctx arena cases pattern branch-items result-type)))
+                        (set! cases (build-enum-case-expr ctx arena cases scrut-c-type pattern branch-items result-type)))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -4849,10 +4851,10 @@
               (s4 (ctx-str ctx s3 " } _mr; })")))
           s4))))
 
-  (fn build-enum-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String)
+  (fn build-enum-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String) (scrut-c-type String)
                              (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String))
     (@intent "Build a single enum case for expression-level match (no binding extraction)")
-    (@spec (((Ptr TranspileContext) Arena String (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
+    (@spec (((Ptr TranspileContext) Arena String String (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
     (@pre {ctx != nil})
     (let ((tag (get-expr-pattern-tag pattern))
           (is-void (string-eq result-type "void")))
@@ -4865,7 +4867,7 @@
               (ctx-str ctx cases (ctx-str3 ctx "default: { _mr = " body "; break; } ")))))
         (else
           ;; Regular enum variant case - no binding extraction
-          (match (ctx-lookup-enum-variant ctx tag)
+          (match (ctx-resolve-enum-variant-for ctx tag scrut-c-type pattern)
             ((some type-name)
               (let ((c-tag (to-c-name arena tag))
                     (case-label (ctx-str4 ctx type-name "_" c-tag ""))
@@ -5038,7 +5040,7 @@
               (ctx-str ctx cases (ctx-str3 ctx "default: { _mr = " body "; break; } ")))))
         (else
           ;; Regular variant case
-          (match (ctx-lookup-enum-variant ctx tag)
+          (match (ctx-resolve-enum-variant-for ctx tag (infer-expr-c-type ctx scrutinee) pattern)
             ((some type-name)
               (let ((c-tag (to-c-name arena tag))
                     (case-label (ctx-str4 ctx type-name "_" c-tag ""))
@@ -6051,18 +6053,7 @@
         (let ((c-name (. type-entry c-name)))
           (ctx-register-struct-key-type ctx c-name)
           (build-struct-key-info ctx c-name)))
-      ((none)
-        ;; Try with module prefix
-        (match (ctx-get-module ctx)
-          ((some mod)
-            (let ((prefixed (ctx-str3 ctx mod "_" name)))
-              (match (ctx-lookup-type ctx prefixed)
-                ((some type-entry)
-                  (let ((c-name (. type-entry c-name)))
-                    (ctx-register-struct-key-type ctx c-name)
-                    (build-struct-key-info ctx c-name)))
-                ((none) ""))))
-          ((none) "")))))
+      ((none) "")))
 
   (fn transpile-map-new ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile map-new to slop_map_new_ptr with key type info")
@@ -8213,13 +8204,12 @@
           (match (ctx-lookup-func ctx sym-name)
             ((some _) false)  ;; Known function
             ((none)
-              (match (ctx-lookup-type ctx sym-name)
-                ((some _) false)  ;; Type name
-                ((none)
-                  ;; Check if it's a variable in scope
-                  (match (ctx-lookup-var ctx sym-name)
-                    ((some _) true)  ;; It's a captured variable!
-                    ((none) false))))))))))  ;; Unknown symbol
+              (if (ctx-type-name-exists ctx sym-name)
+                false  ;; Type name
+                ;; Check if it's a variable in scope
+                (match (ctx-lookup-var ctx sym-name)
+                  ((some _) true)  ;; It's a captured variable!
+                  ((none) false)))))))))  ;; Unknown symbol
 
   (fn is-builtin-op ((name String))
     (@intent "Check if name is a builtin operator")

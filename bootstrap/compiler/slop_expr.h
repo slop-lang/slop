@@ -158,8 +158,8 @@ slop_string expr_infer_match_result_c_type(context_TranspileContext* ctx, slop_l
 slop_string expr_slop_type_to_c_type(context_TranspileContext* ctx, slop_string slop_type);
 slop_string expr_infer_expr_c_type(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string expr_build_result_match_expr(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
-slop_string expr_build_enum_match_expr(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
-slop_string expr_build_enum_case_expr(context_TranspileContext* ctx, slop_arena* arena, slop_string cases, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, slop_string result_type);
+slop_string expr_build_enum_match_expr(context_TranspileContext* ctx, slop_string scrutinee_c, slop_string scrut_c_type, slop_list_types_SExpr_ptr items);
+slop_string expr_build_enum_case_expr(context_TranspileContext* ctx, slop_arena* arena, slop_string cases, slop_string scrut_c_type, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, slop_string result_type);
 slop_string expr_build_union_match_expr(context_TranspileContext* ctx, types_SExpr* scrutinee, slop_string scrutinee_c, slop_list_types_SExpr_ptr items);
 slop_string expr_typed_none(context_TranspileContext* ctx, slop_string result_type, slop_string body);
 slop_string expr_typed_none_arg(context_TranspileContext* ctx, slop_string expected_type, slop_string arg_c);

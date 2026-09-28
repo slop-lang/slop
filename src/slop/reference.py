@@ -819,6 +819,14 @@ module's function is callable only if it is imported. Two errors follow from
 this: a name imported from two modules, and a name that is both defined in the
 module and imported into it.
 
+Type names, type aliases and enum or union variants resolve the same way: the
+module's own, then what it imports, then builtins. Two modules may each define
+a `Pt` or a `red`. What a module gets is decided by what it imports, never by
+build order. A variant in a `match` arm is taken from the scrutinee's type. A
+name that reaches a module without an import is accepted only if exactly one
+module in the build defines it; otherwise the error asks you to import the
+one you mean.
+
 ### See Also
 
 - `slop ref builtins` - Language primitives (always available, no import needed)

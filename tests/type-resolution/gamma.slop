@@ -1,0 +1,12 @@
+;; Gauge reaches main only through make-hold's result, without an import.
+;; Only gamma defines it, so the name is unique across the build.
+(module gamma
+  (export make-hold)
+
+  (type Gauge (record (level Int)))
+  (type Hold (record (g Gauge)))
+
+  (fn make-hold ((v Int))
+    (@intent "A Hold whose gauge reads v")
+    (@spec ((Int) -> Hold))
+    (Hold (Gauge v))))

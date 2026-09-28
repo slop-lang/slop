@@ -2178,12 +2178,9 @@
                                                 (is-ptr (if (sexpr-is-symbol field-type-expr)
                                                           (starts-with (sexpr-get-symbol-name field-type-expr) "Ptr")
                                                           false)))
-                                            (ctx-register-field-type tctx type-name field-name
-                                              c-type slop-type is-ptr)
-                                            (let ((c-type-name (ctx-prefix-type tctx type-name)))
-                                              (when (not (string-eq c-type-name type-name))
-                                                (ctx-register-field-type tctx c-type-name field-name
-                                                  c-type slop-type is-ptr)))))
+                                            ;; Under the C name only, as the transpiler does (#174)
+                                            (ctx-register-field-type tctx (ctx-prefix-type tctx type-name) field-name
+                                              c-type slop-type is-ptr)))
                                         ((none) (do))))))
                                 ((none) (do)))))
                           ((none) (do)))

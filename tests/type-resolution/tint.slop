@@ -1,0 +1,38 @@
+(module tint
+  (export Paint Figure Ids Res paint-code figure-size make-ids count-ids parse-len)
+
+  (type Paint (enum red blue))
+  (type Figure (union (dot String) (ring Int)))
+  (type Ids (Map String Int))
+  (type Res (Result String Int))
+
+  (fn paint-code ((p Paint))
+    (@intent "Number tint's paints")
+    (@spec ((Paint) -> Int))
+    (match p
+      ('red 10)
+      ('blue 20)))
+
+  (fn figure-size ((f Figure))
+    (@intent "Size of tint's figures")
+    (@spec ((Figure) -> Int))
+    (match f
+      ((dot s) (cast Int (string-len s)))
+      ((ring n) n)))
+
+  (fn make-ids ((arena Arena) (k String))
+    (@intent "An Ids holding one key")
+    (@spec ((Arena String) -> Ids))
+    (let ((m Ids (map-new arena String Int)))
+      (map-put m k 1)
+      m))
+
+  (fn count-ids ((m Ids))
+    (@intent "tint's Ids is a Map")
+    (@spec ((Ids) -> Int))
+    (if (map-has m "a") 1 0))
+
+  (fn parse-len ((s String))
+    (@intent "tint's Res carries a String")
+    (@spec ((String) -> Res))
+    (if (== (string-len s) 0) (error 0) (ok s))))

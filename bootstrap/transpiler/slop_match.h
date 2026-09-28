@@ -38,11 +38,11 @@ void match_emit_option_none_branch(context_TranspileContext* ctx, slop_string sc
 void match_transpile_result_match(context_TranspileContext* ctx, slop_string scrutinee_c, types_SExpr* scrutinee_expr, slop_list_types_SExpr_ptr patterns, slop_list_types_SExpr_ptr items, uint8_t is_return);
 void match_emit_result_ok_branch(context_TranspileContext* ctx, slop_string scrutinee_c, types_SExpr* scrutinee_expr, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, uint8_t is_return, uint8_t first);
 void match_emit_result_error_branch(context_TranspileContext* ctx, slop_string scrutinee_c, types_SExpr* scrutinee_expr, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, uint8_t is_return, uint8_t first);
-void match_transpile_enum_match(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr items, uint8_t is_return);
-void match_emit_enum_case(context_TranspileContext* ctx, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, uint8_t is_return);
+void match_transpile_enum_match(context_TranspileContext* ctx, slop_string scrutinee_c, slop_string scrut_c_type, slop_list_types_SExpr_ptr items, uint8_t is_return);
+void match_emit_enum_case(context_TranspileContext* ctx, slop_string scrut_c_type, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, uint8_t is_return);
 void match_transpile_literal_match(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr items, uint8_t is_return);
 void match_emit_literal_case(context_TranspileContext* ctx, slop_string scrutinee_c, types_SExpr* pattern, slop_list_types_SExpr_ptr branch_items, uint8_t is_return, uint8_t first);
-void match_transpile_union_match(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr patterns, slop_list_types_SExpr_ptr items, uint8_t is_return);
+void match_transpile_union_match(context_TranspileContext* ctx, slop_string scrutinee_c, slop_string scrut_c_type, slop_list_types_SExpr_ptr patterns, slop_list_types_SExpr_ptr items, uint8_t is_return);
 void match_emit_union_case(context_TranspileContext* ctx, slop_string scrutinee_c, types_SExpr* pattern, slop_string tag, slop_string union_type_name, slop_list_types_SExpr_ptr branch_items, uint8_t is_return);
 void match_transpile_generic_match(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr items, uint8_t is_return);
 void match_emit_match_fallthrough_trap(context_TranspileContext* ctx, uint8_t is_return, uint8_t has_else);
@@ -86,7 +86,7 @@ uint8_t match_has_literal_in_union_arm(types_SExpr* pat_expr);
 uint8_t match_has_literal_in_patterns(slop_list_types_SExpr_ptr patterns);
 slop_string match_build_literal_guard_cond(context_TranspileContext* ctx, slop_string scrutinee_c, slop_string c_tag, slop_string tag_cond, types_SExpr* pattern, uint8_t is_multi);
 void match_emit_union_literal_bindings(context_TranspileContext* ctx, slop_string scrutinee_c, types_SExpr* pattern, slop_string tag, slop_string union_type_name, slop_string c_tag, uint8_t is_multi);
-void match_transpile_union_match_with_literals(context_TranspileContext* ctx, slop_string scrutinee_c, slop_list_types_SExpr_ptr patterns, slop_list_types_SExpr_ptr items, uint8_t is_return);
+void match_transpile_union_match_with_literals(context_TranspileContext* ctx, slop_string scrutinee_c, slop_string scrut_c_type, slop_list_types_SExpr_ptr patterns, slop_list_types_SExpr_ptr items, uint8_t is_return);
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED

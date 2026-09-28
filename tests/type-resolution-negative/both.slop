@@ -1,0 +1,9 @@
+;; Pt is imported from two modules that each define a different Pt
+(module main
+  (import alpha (Pt))
+  (import beta (Pt))
+
+  (fn main ()
+    (@intent "Use an ambiguous Pt")
+    (@spec (() -> Int))
+    (. (Pt 1) x)))

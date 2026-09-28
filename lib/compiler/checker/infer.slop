@@ -24,6 +24,7 @@
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
                env-bind-var env-bind-var-as env-lookup-var env-lookup-binding VarBinding env-lookup-type
                env-lookup-function env-lookup-function-direct env-lookup-variant env-lookup-constant
+               env-lookup-type-elsewhere
                env-get-int-type env-get-bool-type env-get-float-type env-get-null-type
                env-get-string-type env-get-unit-type env-get-arena-type
                env-get-unknown-type env-get-never-type
@@ -539,6 +540,15 @@
         ((and (== a-kind 'rk-list) (== b-kind 'rk-list))
           (container-inners-equal a b))
 
+        ;; Same name from two different modules: two types that both print
+        ;; as Pt. Pointers and Results are named after their inner types
+        ;; (Ptr_Pt), so for those the modules are compared underneath.
+        ((and (string-eq a-name b-name) (types-module-conflict a b)) false)
+        ((and (string-eq a-name b-name) (== a-kind 'rk-ptr) (== b-kind 'rk-ptr))
+          (not (pointees-module-conflict a b)))
+        ((and (string-eq a-name b-name) (== a-kind 'rk-result) (== b-kind 'rk-result))
+          (not (result-inners-module-conflict a b)))
+
         ;; Same name - definitely equal
         ((string-eq a-name b-name) true)
 
@@ -574,6 +584,83 @@
 
         ;; Different names, not special case - not equal
         (else false))))
+
+  (fn types-module-conflict ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
+    (@intent "Check whether two types were defined in two different modules")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
+    (@pure)
+    (@pre (!= a nil))
+    (@pre (!= b nil))
+    ;; A type with no module -- a builtin, or a placeholder for a name the
+    ;; checker could not resolve -- conflicts with nothing
+    (match (. (deref a) module-name)
+      ((some a-mod)
+        (match (. (deref b) module-name)
+          ((some b-mod) (not (string-eq a-mod b-mod)))
+          ((none) false)))
+      ((none) false)))
+
+  (fn inner-module-conflict ((a (Option (Ptr ResolvedType))) (b (Option (Ptr ResolvedType))))
+    (@intent "Check whether two optional inner types were defined in two different modules")
+    (@spec (((Option (Ptr ResolvedType)) (Option (Ptr ResolvedType))) -> Bool))
+    (@pure)
+    (match a
+      ((some a-inner)
+        (match b
+          ((some b-inner) (types-module-conflict a-inner b-inner))
+          ((none) false)))
+      ((none) false)))
+
+  (fn pointees-module-conflict ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
+    (@intent "Check whether two pointer chains end at types from two different modules")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
+    (@pre (!= a nil))
+    (@pre (!= b nil))
+    ;; (Ptr alpha:Pt) and (Ptr beta:Pt) are both named Ptr_Pt. Bounded like
+    ;; container-inners-equal, since a pointer alias can refer to itself.
+    (let ((mut ca a)
+          (mut cb b)
+          (mut steps 0)
+          (mut done false)
+          (mut result false))
+      (while (and (not done) (< steps 32))
+        (match (. (deref ca) inner-type)
+          ((some a-inner)
+            (match (. (deref cb) inner-type)
+              ((some b-inner)
+                (if (and (== (. (deref a-inner) kind) 'rk-ptr)
+                         (== (. (deref b-inner) kind) 'rk-ptr))
+                  (do (set! ca a-inner)
+                      (set! cb b-inner))
+                  (do (set! result (types-module-conflict a-inner b-inner))
+                      (set! done true))))
+              ((none) (set! done true))))
+          ((none) (set! done true)))
+        (set! steps (+ steps 1)))
+      result))
+
+  (fn result-inners-module-conflict ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
+    (@intent "Check whether two Result types differ in the modules of their ok or error types")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
+    (@pure)
+    (@pre (!= a nil))
+    (@pre (!= b nil))
+    (or (inner-module-conflict (. (deref a) inner-type) (. (deref b) inner-type))
+        (inner-module-conflict (. (deref a) inner-type2) (. (deref b) inner-type2))))
+
+  (fn type-display-name ((arena Arena) (t (Ptr ResolvedType)) (other (Ptr ResolvedType)))
+    (@intent "Name a type for a message, qualified by its module when the other side prints the same")
+    (@spec ((Arena (Ptr ResolvedType) (Ptr ResolvedType)) -> String))
+    (@pre (!= t nil))
+    (@pre (!= other nil))
+    ;; "expected Pt, got Pt" says nothing; "expected beta:Pt, got alpha:Pt" does
+    (let ((name (. (deref t) name)))
+      (if (and (string-eq name (. (deref other) name))
+               (types-module-conflict t other))
+        (match (. (deref t) module-name)
+          ((some mod) (string-build arena (list String mod ":" name)))
+          ((none) name))
+        name)))
 
   (fn types-compatible-with-range ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
     (@intent "Check if types are compatible considering range types")
@@ -734,11 +821,8 @@
                                   type-info)
                                 ((none)
                                   ;; Try looking up as an enum variant
-                                  (match (env-lookup-variant env name)
-                                    ((some enum-name)
-                                      (match (env-lookup-type env enum-name)
-                                        ((some t) t)
-                                        ((none) (env-get-int-type env))))
+                                  (match (env-lookup-variant env name line col)
+                                    ((some enum-type) enum-type)
                                     ((none)
                                       (let ((arena (env-arena env))
                                             (msg (string-concat arena "Undefined variable: " name)))
@@ -1105,12 +1189,8 @@
                   (if (string-eq variant-name "")
                     (env-get-unknown-type env)
                     ;; Look up which enum contains this variant
-                    (match (env-lookup-variant env variant-name)
-                      ((some enum-name)
-                        ;; Look up the enum type
-                        (match (env-lookup-type env enum-name)
-                          ((some enum-type) enum-type)
-                          ((none) (env-get-unknown-type env))))
+                    (match (env-lookup-variant env variant-name line col)
+                      ((some enum-type) enum-type)
                       ((none) (env-get-unknown-type env))))))
               ((none) (env-get-unknown-type env)))
             (env-get-unknown-type env)))
@@ -1153,7 +1233,9 @@
                     (env-get-unit-type env)
                     (match (env-lookup-type env type-name)
                       ((some t) t)
-                      ((none) (env-get-unit-type env))))))
+                      ((none)
+                        (do (report-type-not-imported env type-name line col)
+                            (env-get-unit-type env)))))))
               ((none) (env-get-unit-type env)))
             (env-get-unit-type env))))
 
@@ -1173,7 +1255,9 @@
                     (env-get-unit-type env)
                     (match (env-lookup-type env type-name)
                       ((some t) t)
-                      ((none) (env-get-unit-type env))))))
+                      ((none)
+                        (do (report-type-not-imported env type-name line col)
+                            (env-get-unit-type env)))))))
               ((none) (env-get-unit-type env)))
             (env-get-unit-type env))))
 
@@ -1552,13 +1636,11 @@
                     ;; Unknown function/form - check if it's a variant being misused
                     (else
                       (let ((arena (env-arena env)))
-                        (match (env-lookup-variant env op)
+                        (match (env-lookup-variant env op line col)
                           ((some parent-type)
-                            (let ((msg (string-concat arena "'"
-                                         (string-concat arena op
-                                           (string-concat arena "' is a variant of '"
-                                             (string-concat arena parent-type
-                                               "'. Use (union-new Type variant value) syntax"))))))
+                            (let ((msg (string-build arena (list String "'" op "' is a variant of '"
+                                                                 (. (deref parent-type) name)
+                                                                 "'. Use (union-new Type variant value) syntax"))))
                               (env-add-error env msg line col)
                               (env-get-unknown-type env)))
                           ((none)
@@ -1598,16 +1680,18 @@
                                     ;; Another module's function that this module neither
                                     ;; defines nor imports is not callable here; otherwise it
                                     ;; may be an FFI function - infer args for annotation coverage
-                                    (do (match (env-lookup-function-direct env op)
-                                          ((some sig)
-                                            (match (. (deref sig) module-name)
-                                              ((some def-mod)
-                                                (env-add-error env
-                                                  (string-build arena (list String "function '" op "' is defined in module '"
-                                                                           def-mod "' but not imported"))
-                                                  line col))
-                                              ((none) (do))))
-                                          ((none) (do)))
+                                    (do (if (report-type-not-imported env op line col)
+                                          (do)
+                                          (match (env-lookup-function-direct env op)
+                                            ((some sig)
+                                              (match (. (deref sig) module-name)
+                                                ((some def-mod)
+                                                  (env-add-error env
+                                                    (string-build arena (list String "function '" op "' is defined in module '"
+                                                                             def-mod "' but not imported"))
+                                                    line col))
+                                                ((none) (do))))
+                                            ((none) (do))))
                                         (infer-builtin-args env expr)
                                         (env-get-unknown-type env)))))))))))))))))))
 
@@ -1696,13 +1780,10 @@
                   ;; - Any Ptr_* matching Ptr_Void (C void* compatibility)
                   ;; - Integer types compatible with each other (FFI compatibility)
                   (when (types-incompatible expected-type actual-type)
-                    (let ((msg (string-concat arena "argument "
-                                 (string-concat arena (int-to-string arena (+ arg-idx 1))
-                                   (string-concat arena " to '"
-                                     (string-concat arena fn-name
-                                       (string-concat arena "': expected "
-                                         (string-concat arena expected-name
-                                           (string-concat arena ", got " actual-name)))))))))
+                    (let ((msg (string-build arena (list String "argument " (int-to-string arena (+ arg-idx 1))
+                                                         " to '" fn-name
+                                                         "': expected " (type-display-name arena expected-type actual-type)
+                                                         ", got " (type-display-name arena actual-type expected-type)))))
                       (env-add-error env msg line col)))))
               ((none) (do)))))
         ((none) (do)))))
@@ -2971,6 +3052,24 @@
             ;; Unknown type - create a named primitive without error
             (else (resolved-type-new arena 'rk-primitive type-name (none) type-name)))))))
 
+  (fn report-type-not-imported ((env (Ptr TypeEnv)) (type-name String) (line Int) (col Int))
+    (@intent "Report a type that another module defines but this module does not import")
+    (@spec (((Ptr TypeEnv) String Int Int) -> Bool))
+    (@pre (!= env nil))
+    ;; True when reported. A name no module defines is left to the caller.
+    (match (env-lookup-type-elsewhere env type-name)
+      ((some t)
+        (match (. (deref t) module-name)
+          ((some def-mod)
+            (let ((arena (env-arena env)))
+              (env-add-error env
+                (string-build arena (list String "type '" type-name "' is defined in module '"
+                                                 def-mod "' but not imported"))
+                line col)
+              true))
+          ((none) false)))
+      ((none) false)))
+
   (fn resolve-simple-type ((env (Ptr TypeEnv)) (type-name String))
     (@intent "Resolve a simple type by name")
     (@spec (((Ptr TypeEnv) String) -> (Ptr ResolvedType)))
@@ -3009,10 +3108,10 @@
               (resolved-type-new arena 'rk-typevar type-name (none) "int64_t"))
             ;; Unknown type - emit error (may be missing import)
             (else
-            (let ((arena (env-arena env))
-                  (msg (string-concat arena "Unknown type: " type-name)))
-              (env-add-error env msg 0 0)
-              (env-get-generic-type env))))))))
+              (do
+                (when (not (report-type-not-imported env type-name 0 0))
+                  (env-add-error env (string-concat arena "Unknown type: " type-name) 0 0))
+                (env-get-generic-type env))))))))
 
   ;; ============================================================
   ;; Let Binding Support

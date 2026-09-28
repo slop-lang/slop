@@ -7,18 +7,18 @@
 
 (module resolve
   (export
-    resolve-imports resolve-import-stmt resolve-module-file)
+    resolve-imports resolve-import-stmt resolve-module-file check-import-shadowing)
 
   (import parser (SExpr SExprList SExprSymbol is-form
                   sexpr-is-list sexpr-list-len sexpr-list-get
                   sexpr-line sexpr-col))
   (import types (ResolvedType))
-  (import env (TypeEnv env-arena env-add-import env-resolve-import
-               env-lookup-type env-lookup-type-direct lookup-type-by-qualified-name
+  (import env (TypeEnv env-arena env-add-import env-resolve-import env-lookup-module-import
+               env-lookup-type-qualified
                env-set-module env-get-module env-get-current-file
                env-add-error env-lookup-function-direct
                env-lookup-constant-in-module))
-  (import strlib (string-build))
+  (import strlib (string-build index-of substring))
   (import path (path-dirname path-join))
   (import file (file-exists))
 
@@ -26,36 +26,22 @@
   ;; Import Resolution
   ;; ============================================================
 
+  ;; One name in an (import M (name...)) form
+  (type ImportSite (record
+    (source String)
+    (name String)
+    (name-expr (Ptr SExpr))))
+
   (fn resolve-imports ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
-    (@intent "Process all import statements in the AST")
+    (@intent "Resolve every imported name in the AST to the module that defines it")
     (@spec (((Ptr TypeEnv) (List (Ptr SExpr))) -> Unit))
     (@pre (!= env nil))
-    (let ((len (list-len ast)))
+    (let ((sites (collect-import-sites (env-arena env) ast))
+          (len (list-len sites)))
       (for (i 0 len)
-        (match (list-get ast i)
-          ((some expr)
-            (cond
-              ((is-form expr "import")
-                (resolve-import-stmt env expr))
-              ((is-form expr "module")
-                (resolve-module-imports env expr))
-              (else (do))))
+        (match (list-get sites i)
+          ((some site) (resolve-import-name env site))
           ((none) (do))))))
-
-  (fn resolve-module-imports ((env (Ptr TypeEnv)) (module-form (Ptr SExpr)))
-    (@intent "Process import statements inside a module form")
-    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
-    (@pre (!= env nil))
-    (@pre (!= module-form nil))
-    (when (sexpr-is-list module-form)
-      (let ((len (sexpr-list-len module-form)))
-        ;; Start from index 2 (after module keyword and name)
-        (for (i 2 len)
-          (match (sexpr-list-get module-form i)
-            ((some item)
-              (when (is-form item "import")
-                (resolve-import-stmt env item)))
-            ((none) (do)))))))
 
   (fn resolve-import-stmt ((env (Ptr TypeEnv)) (import-form (Ptr SExpr)))
     (@intent "Process a single import statement")
@@ -63,102 +49,153 @@
     (@pre (!= env nil))
     (@pre (!= import-form nil))
     (@pre (is-form import-form "import"))
-    (let ((arena (env-arena env)))
-      (match (deref import-form)
-        ((lst lst)
-          (let ((items (. lst items)))
-            (match (list-get items 1)
-              ((some mod-name-expr)
-                (match (deref mod-name-expr)
-                  ((sym mod-sym)
-                    (match (list-get items 2)
-                      ((some names-expr)
-                        (match (deref names-expr)
-                          ((lst names-lst)
-                            (let ((name-items (. names-lst items))
-                                  (name-len (list-len name-items)))
-                              (for (j 0 name-len)
-                                (match (list-get name-items j)
-                                  ((some name-expr)
-                                    (match (deref name-expr)
-                                      ((sym name-sym)
-                                        (let ((local-name (. name-sym name))
-                                              ;; Look up the type to find its actual defining module
-                                              ;; This handles re-exports: if parser exports SExpr from types,
-                                              ;; we want "types:SExpr" not "parser:SExpr"
-                                              (actual-module (match (env-lookup-type-direct env local-name)
-                                                               ((some t)
-                                                                 (match (. (deref t) module-name)
-                                                                   ((some mod) mod)
-                                                                   ;; Builtin - use specified module
-                                                                   ((none) (. mod-sym name))))
-                                                               ;; Type not found - might be a function, use specified module
-                                                               ((none) (. mod-sym name))))
-                                              (qualified-name (string-concat arena actual-module
-                                                                (string-concat arena ":" local-name))))
-                                          ;; Validate that the symbol exists in the target module
-                                          (when (and (not (contains-slash (. mod-sym name)))
-                                                     (match (lookup-type-by-qualified-name env qualified-name)
-                                                       ((some _) false)
-                                                       ((none) true))
-                                                     (match (env-lookup-function-direct env qualified-name)
-                                                       ((some _) false)
-                                                       ((none) true))
-                                                     (not (env-lookup-constant-in-module env actual-module local-name)))
-                                            (env-add-error env
-                                              (string-concat arena "module '"
-                                                (string-concat arena (. mod-sym name)
-                                                  (string-concat arena "' does not export '"
-                                                    (string-concat arena local-name "'"))))
-                                              (sexpr-line name-expr) (sexpr-col name-expr)))
-                                          (check-import-collision env local-name (. mod-sym name) qualified-name name-expr)
-                                          (env-add-import env local-name qualified-name)))
-                                      (_ (do))))
-                                  ((none) (do))))))
-                          (_ (do))))
-                      ((none) (do))))
-                  (_ (do))))
-              ((none) (do)))))
-        (_ (do)))))
+    (let ((arena (env-arena env))
+          (sites (push-import-sites arena (list-new arena ImportSite) import-form)))
+      (let ((len (list-len sites)))
+        (for (i 0 len)
+          (match (list-get sites i)
+            ((some site) (resolve-import-name env site))
+            ((none) (do)))))))
 
-  (fn check-import-collision ((env (Ptr TypeEnv)) (local-name String) (source-mod String)
-                              (qualified-name String) (name-expr (Ptr SExpr)))
-    (@intent "Report a function import the current module already defines, or imports from another module")
-    (@spec (((Ptr TypeEnv) String String String (Ptr SExpr)) -> Unit))
+  (fn collect-import-sites ((arena Arena) (ast (List (Ptr SExpr))))
+    (@intent "List every imported name, at top level and inside a module form")
+    (@spec ((Arena (List (Ptr SExpr))) -> (List ImportSite)))
+    (let ((mut sites (list-new arena ImportSite))
+          (len (list-len ast)))
+      (for (i 0 len)
+        (match (list-get ast i)
+          ((some expr)
+            (cond
+              ((is-form expr "import")
+                (set! sites (push-import-sites arena sites expr)))
+              ((is-form expr "module")
+                ;; Start from index 2 (after module keyword and name)
+                (let ((mod-len (sexpr-list-len expr)))
+                  (for (j 2 mod-len)
+                    (match (sexpr-list-get expr j)
+                      ((some item)
+                        (when (is-form item "import")
+                          (set! sites (push-import-sites arena sites item))))
+                      ((none) (do))))))
+              (else (do))))
+          ((none) (do))))
+      sites))
+
+  (fn push-import-sites ((arena Arena) (sites (List ImportSite)) (import-form (Ptr SExpr)))
+    (@intent "Add one site per name listed in an (import M (names...)) form")
+    (@spec ((Arena (List ImportSite) (Ptr SExpr)) -> (List ImportSite)))
+    (@pre (!= import-form nil))
+    ;; Returns the extended list: a List is a value, so pushing onto the
+    ;; parameter would land in this function's copy only
+    (let ((mut result sites))
+      (match (sexpr-list-get import-form 1)
+        ((some mod-name-expr)
+          (match (deref mod-name-expr)
+            ((sym mod-sym)
+              (match (sexpr-list-get import-form 2)
+                ((some names-expr)
+                  (match (deref names-expr)
+                    ((lst names-lst)
+                      (let ((name-items (. names-lst items))
+                            (name-len (list-len name-items)))
+                        (for (j 0 name-len)
+                          (match (list-get name-items j)
+                            ((some name-expr)
+                              (match (deref name-expr)
+                                ((sym name-sym)
+                                  (list-push result (ImportSite (. mod-sym name) (. name-sym name) name-expr)))
+                                (_ (do))))
+                            ((none) (do))))))
+                    (_ (do))))
+                ((none) (do))))
+            (_ (do))))
+        ((none) (do)))
+      result))
+
+  (fn resolve-import-target ((env (Ptr TypeEnv)) (src String) (name String))
+    (@intent "Find the qualified name of what module src provides under name, following its re-exports")
+    (@spec (((Ptr TypeEnv) String String) -> (Option String)))
     (@pre (!= env nil))
-    (@pre (!= name-expr nil))
-    (let ((arena (env-arena env)))
-      (when (match (env-lookup-function-direct env qualified-name)
-              ((some _) true)
-              ((none) false))
-        ;; Defined here and imported: the import could never be reached
-        (match (env-get-module env)
-          ((some cur)
-            (let ((own-qualified (string-build arena (list String cur ":" local-name))))
-              (when (and (not (string-eq own-qualified qualified-name))
-                         (match (env-lookup-function-direct env own-qualified)
-                           ((some _) true)
-                           ((none) false)))
+    ;; src's own type, function or constant; otherwise whatever src itself
+    ;; imports under that name, already qualified by the module defining it
+    ;; (so parser's SExpr, imported from types, resolves to types:SExpr)
+    (let ((arena (env-arena env))
+          (qualified (string-build arena (list String src ":" name))))
+      (if (or (match (env-lookup-type-qualified env src name) ((some _) true) ((none) false))
+              (match (env-lookup-function-direct env qualified) ((some _) true) ((none) false))
+              (env-lookup-constant-in-module env src name))
+        (some qualified)
+        (env-lookup-module-import env src name))))
+
+  (fn resolve-import-name ((env (Ptr TypeEnv)) (site ImportSite))
+    (@intent "Map one imported name to the module that defines it, reporting what cannot be resolved")
+    (@spec (((Ptr TypeEnv) ImportSite) -> Unit))
+    (@pre (!= env nil))
+    (let ((arena (env-arena env))
+          (src (. site source))
+          (local-name (. site name))
+          (name-expr (. site name-expr)))
+      (match (resolve-import-target env src local-name)
+        ((some target)
+          ;; Imported from two modules: neither may be picked silently. The
+          ;; same definition reached through two modules is one import.
+          (match (env-resolve-import env local-name)
+            ((some prev)
+              (when (not (string-eq prev target))
                 (env-add-error env
-                  (string-build arena (list String "'" local-name "' is defined in module '" cur
-                                                   "' and also imported from '" source-mod "'"))
-                  (sexpr-line name-expr) (sexpr-col name-expr)))))
-          ((none) (do)))
-        ;; Imported from two modules: neither may be picked silently
-        (match (env-resolve-import env local-name)
-          ((some prev-qualified)
-            (when (not (string-eq prev-qualified qualified-name))
-              (match (env-lookup-function-direct env prev-qualified)
-                ((some prev-sig)
-                  (match (. (deref prev-sig) module-name)
-                    ((some prev-mod)
-                      (env-add-error env
-                        (string-build arena (list String "'" local-name "' is imported from both '" prev-mod
-                                                         "' and '" source-mod "'"))
-                        (sexpr-line name-expr) (sexpr-col name-expr)))
-                    ((none) (do))))
-                ((none) (do)))))
-          ((none) (do))))))
+                  (string-build arena (list String "'" local-name "' is imported from both '"
+                                                   (qualified-module-part arena prev) "' and '" src "'"))
+                  (sexpr-line name-expr) (sexpr-col name-expr))))
+            ((none) (do)))
+          (env-add-import env local-name target))
+        ((none)
+          ;; A path-style module (utils/helper) may not have been loaded
+          (when (not (contains-slash src))
+            (env-add-error env
+              (string-build arena (list String "module '" src "' does not export '" local-name "'"))
+              (sexpr-line name-expr) (sexpr-col name-expr)))
+          (env-add-import env local-name (string-build arena (list String src ":" local-name)))))))
+
+  (fn qualified-module-part ((arena Arena) (qualified String))
+    (@intent "Get the module part of a qualified name like 'module:name'")
+    (@spec ((Arena String) -> String))
+    (match (index-of qualified ":")
+      ((some idx) (substring arena qualified 0 idx))
+      ((none) qualified)))
+
+  (fn check-import-shadowing ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
+    (@intent "Report a name the current module both defines and imports")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr))) -> Unit))
+    (@pre (!= env nil))
+    ;; Run once the module's own types, constants and functions are
+    ;; collected: the imported one could never be reached
+    (match (env-get-module env)
+      ((some cur)
+        (let ((arena (env-arena env))
+              (sites (collect-import-sites arena ast))
+              (len (list-len sites)))
+          (for (i 0 len)
+            (match (list-get sites i)
+              ((some site)
+                (let ((local-name (. site name))
+                      (own (string-build arena (list String cur ":" local-name)))
+                      (imported-own (match (env-resolve-import env local-name)
+                                      ((some q) (string-eq q own))
+                                      ((none) false))))
+                  ;; An import that did not resolve was already reported
+                  (when (and (not imported-own)
+                             (match (resolve-import-target env (. site source) local-name)
+                               ((some _) true)
+                               ((none) false))
+                             (or (match (env-lookup-type-qualified env cur local-name) ((some _) true) ((none) false))
+                                 (match (env-lookup-function-direct env own) ((some _) true) ((none) false))
+                                 (env-lookup-constant-in-module env cur local-name)))
+                    (env-add-error env
+                      (string-build arena (list String "'" local-name "' is defined in module '" cur
+                                                       "' and also imported from '" (. site source) "'"))
+                      (sexpr-line (. site name-expr)) (sexpr-col (. site name-expr))))))
+              ((none) (do))))))
+      ((none) (do))))
 
   ;; ============================================================
   ;; Module File Resolution

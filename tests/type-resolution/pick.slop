@@ -1,0 +1,27 @@
+;; The test harness prescans every module again for each @example. A Pt
+;; here must still be beta's while alpha is imported too.
+(module pick
+  (export pick-y pick-paint)
+  (import alpha (make-a))
+  (import beta (Pt))
+  (import hue (color-code))
+  (import tint (Paint paint-code))
+
+  (fn pick-y ((v Int))
+    (@intent "Build beta's Pt and read the field only it has")
+    (@spec ((Int) -> Int))
+    (@example (3) -> 4)
+    (@example (10) -> 11)
+    (let ((p (Pt v (+ v 1)))
+          (a (make-a v)))
+      (+ (- (. p y) (. a x)) v)))
+
+  (fn pick-paint ((n Int))
+    (@intent "'red and a match arm here are tint's Paint, with hue imported too")
+    (@spec ((Int) -> Int))
+    (@example (1) -> 10)
+    (@example (0) -> 20)
+    (let ((p (if (> n 0) 'red 'blue)))
+      (match p
+        ('red (paint-code p))
+        ('blue 20)))))

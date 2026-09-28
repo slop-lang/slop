@@ -1,0 +1,38 @@
+;; A type name resolves within the module: its own, then what it imports,
+;; then -- for a type reaching it through a value -- the one module that
+;; defines it. Before, the transpiler took whichever module registered the
+;; name last, and fields were looked up by bare name, so (. p y) on beta's Pt
+;; could read alpha's struct.
+;; main.slop's imports in reverse, so epsilon's and beta's types come first.
+
+(module main
+  (import derived (derived-total))
+  (import epsilon (make-eps))
+  (import delta (Scores make-scores))
+  (import gamma (make-hold))
+  (import mid (Pt make-b))
+  (import alpha (make-a))
+
+  (fn check ((name String) (ok Bool))
+    (@intent "Report one check, returning 1 if it failed")
+    (@spec ((String Bool) -> Int))
+    (if ok
+      (do (print name) (println ": PASS") 0)
+      (do (print name) (println ": FAIL") 1)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (let ((failures (+ (check "make-b's Pt is beta's" (== (. (make-b 2) y) 3))
+                    (+ (check "constructor builds beta's Pt" (== (. (Pt 4 5) y) 5))
+                    (+ (check "record-new builds beta's Pt" (== (. (record-new Pt (x 1) (y 7)) y) 7))
+                    (+ (check "make-a's Pt is alpha's" (== (. (make-a 9) x) 9))
+                    (+ (check "unimported unique type's fields" (== (. (. (make-hold 6) g) level) 6))
+                    (+ (check "imported Scores is delta's" (== (. (Scores 11) total) 11))
+                    (+ (check "epsilon's Scores keeps its fields" (== (. (make-eps 2 3) b) 3))
+                       (with-arena 4096
+                         (check "derived Scores through Option and List" (== (derived-total arena) 11))))))))))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!") 0)
+        (do (println "test(s) failed") 1)))))

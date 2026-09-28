@@ -1,0 +1,18 @@
+;; delta's Scores reaches this module only through results -- an Option and
+;; a List of it -- while epsilon, which it also imports from, defines a
+;; Scores too. The values carry delta's C type, so nothing here is ambiguous.
+(module derived
+  (export derived-total)
+  (import delta (find-scores all-scores))
+  (import epsilon (make-eps))
+
+  (fn derived-total ((arena Arena))
+    (@intent "Read delta's Scores out of an Option and a List")
+    (@spec ((Arena) -> Int))
+    (let ((from-opt (match (find-scores 4)
+                      ((some s) (. s total))
+                      ((none) 0)))
+          (from-list (match (list-get (all-scores arena 5) 0)
+                       ((some s) (. s total))
+                       ((none) 0))))
+      (+ from-opt (+ from-list (. (make-eps 1 2) b))))))

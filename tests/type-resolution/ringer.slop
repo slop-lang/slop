@@ -1,0 +1,16 @@
+;; ringer defines a function ring while tint's Figure, which ringer never
+;; imports, has a variant ring. The call is the function: a variant the
+;; module can reach only build-wide must not take a name it defines.
+(module ringer
+  (export ringer-total)
+  (import tint (figure-size))
+
+  (fn ring ((n Int))
+    (@intent "ringer's own ring")
+    (@spec ((Int) -> Int))
+    (* n 3))
+
+  (fn ringer-total ((n Int))
+    (@intent "Call ringer's ring, not tint's variant")
+    (@spec ((Int) -> Int))
+    (ring n)))

@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # type-scoping collects the #174 phase PRs before they merge to main
+    branches: [main, type-scoping]
 
 permissions:
   contents: read
