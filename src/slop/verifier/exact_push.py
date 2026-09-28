@@ -745,7 +745,10 @@ class ExactPushModelMixin:
             modes = list(getattr(sig, 'param_modes', [])) or [None] * len(types)
         else:
             return False
-        if any(mode in ('out', 'mut') for mode in modes):
+        # A mut parameter is a local copy of a value type (#180): the callee
+        # changing it never reaches the caller. `out` no longer compiles, but
+        # a source written for an older slop may still say it.
+        if any(mode == 'out' for mode in modes):
             return False
         return all(self._xp_is_value_type(t, set()) for t in types)
 

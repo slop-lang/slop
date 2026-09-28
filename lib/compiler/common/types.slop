@@ -28,7 +28,11 @@
     resolved-type-set-inner
     resolved-type-set-inner2
     ;; Type string conversion
-    resolved-type-to-slop-string)
+    resolved-type-to-slop-string
+    ;; Mutability
+    BindingOrigin MutationKind mutation-error-message param-mode-error-message)
+
+  (import strlib (string-build))
 
   ;; ============================================================
   ;; S-Expression AST Types
@@ -625,4 +629,69 @@
               ((none) "Array")))
           ('rk-typevar name)
           (else name)))))
+
+  ;; ============================================================
+  ;; Mutability
+  ;;
+  ;; What a name was bound as decides what may change it. The checker and
+  ;; the transpiler both enforce this (a build drops checker diagnostics,
+  ;; #93), so both build their messages here and report the same text.
+  ;; ============================================================
+
+  ;; How a name came into scope
+  (type BindingOrigin (enum origin-param origin-local origin-bound origin-const))
+
+  ;; What a mutation does to the place it names
+  (type MutationKind (enum mut-assign mut-field mut-push mut-pop))
+
+  (fn mutation-error-message ((arena Arena) (kind MutationKind) (origin BindingOrigin)
+                              (name String) (via-field Bool))
+    (@intent "Explain why this mutation of an immutable binding is not allowed")
+    (@spec ((Arena MutationKind BindingOrigin String Bool) -> String))
+    (let ((q (string-build arena (list String "'" name "'"))))
+      (match origin
+        ('origin-param
+          (match kind
+            ('mut-assign
+              (string-build arena (list String "cannot assign to parameter " q
+                                               " - it is read-only; declare it (mut " name
+                                               " T) to modify a local copy, or pass a (Ptr T) to change the caller's value")))
+            ('mut-field
+              (string-build arena (list String "cannot change a field of parameter " q
+                                               " - it is read-only; declare it (mut " name
+                                               " T) to modify a local copy, or pass a (Ptr T) to change the caller's value")))
+            (else
+              (let ((verb (if (== kind 'mut-push) "push to" "pop from")))
+                (if via-field
+                  (string-build arena (list String "cannot " verb " a field of parameter " q
+                                                   " - it is read-only, and a change to a copy is lost to the caller; declare it (mut "
+                                                   name " T) and return it, or pass a (Ptr T)"))
+                  (string-build arena (list String "cannot " verb " parameter " q
+                                                   " - it is read-only, and a change to a copy is lost to the caller; pass a (Ptr (List T)) and use (deref "
+                                                   name "), or return the new list")))))))
+        ('origin-local
+          (if (== kind 'mut-assign)
+            (string-build arena (list String "cannot assign to " q " - it is immutable; declare it (let ((mut " name " ...)))"))
+            (string-build arena (list String "cannot change a field of " q " - it is immutable; declare it (let ((mut " name " ...)))"))))
+        ('origin-bound
+          (string-build arena (list String (if (== kind 'mut-assign) "cannot assign to " "cannot change a field of ") q
+                                           " - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut "
+                                           name " ...)))")))
+        ('origin-const
+          (string-build arena (list String (if (== kind 'mut-assign) "cannot assign to constant " "cannot change a field of constant ") q))))))
+
+  (fn param-mode-error-message ((arena Arena) (mode String) (name String))
+    (@intent "Explain why a parameter's mode is not allowed")
+    (@spec ((Arena String String) -> String))
+    ;; mut is only reported here when the parameter's type is a container
+    (cond
+      ((string-eq mode "mut")
+        (string-build arena (list String "'mut' is not allowed on parameter '" name
+                                         "' - a copy of a List, Map or Set shares the caller's storage; use (Ptr (List T)) to change the caller's list")))
+      ((string-eq mode "out")
+        (string-build arena (list String "'out' parameter '" name
+                                         "' is not supported - use a (Ptr T) parameter and pass (addr x)")))
+      (else
+        (string-build arena (list String "unknown parameter mode '" mode
+                                         "' - write (name Type) or (mut name Type)")))))
 )

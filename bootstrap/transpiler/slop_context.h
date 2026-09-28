@@ -88,6 +88,7 @@ struct context_VarEntry {
     uint8_t is_closure;
     slop_string closure_env_type;
     slop_string closure_lambda_name;
+    types_BindingOrigin origin;
 };
 typedef struct context_VarEntry context_VarEntry;
 

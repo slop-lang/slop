@@ -1,0 +1,10 @@
+;; Reassign a let binding declared without mut: an error in both slop check and slop build (#180).
+
+(module main
+  (type Pt (record (x Int) (y Int)))
+  (const LIMIT Int 10)
+
+  (fn main ()
+    (@intent "Reassign a let binding declared without mut")
+    (@spec (() -> Int))
+    (let ((x 1)) (set! x 2) x)))

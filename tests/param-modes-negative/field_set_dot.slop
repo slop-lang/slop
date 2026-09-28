@@ -1,0 +1,16 @@
+;; Set a field of an unmarked record parameter: an error in both slop check and slop build (#180).
+
+(module main
+  (type Bag (record (items (List Int)) (n Int)))
+  (type Node (record (v Int) (next (Ptr Node))))
+  (type Scores (Map String Int))
+
+  (fn f ((b Bag))
+    (@intent "Set a field of an unmarked record parameter")
+    (@spec ((Bag) -> Int))
+    (set! (. b n) 2) (. b n))
+
+  (fn main ()
+    (@intent "Must fail")
+    (@spec (() -> Int))
+    (with-arena 256 (f (Bag (list-new arena Int) 0)))))

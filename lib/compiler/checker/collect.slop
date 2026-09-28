@@ -1414,10 +1414,9 @@
                       (match (sexpr-list-get param-form 0)
                         ((some first-expr)
                           (let ((first-name (sexpr-get-symbol-name first-expr)))
-                            ;; Check if first element is a mode annotation (in, out, mut)
-                            (if (or (string-eq first-name "in")
-                                    (string-eq first-name "out")
-                                    (string-eq first-name "mut"))
+                            ;; Any three-element form is (mode name Type); infer's
+                            ;; bind-param-from-form reports a word that is not a mode
+                            (if (>= (sexpr-list-len param-form) 3)
                               ;; Mode form: (mode name Type) - need at least 3 elements
                               (when (>= (sexpr-list-len param-form) 3)
                                 (match (sexpr-list-get param-form 1)
@@ -1461,9 +1460,8 @@
                       (match (sexpr-list-get param-form 0)
                         ((some first-expr)
                           (let ((first-name (sexpr-get-symbol-name first-expr)))
-                            (if (or (string-eq first-name "in")
-                                    (string-eq first-name "out")
-                                    (string-eq first-name "mut"))
+                            ;; Any three-element form is (mode name Type), as above
+                            (if (>= (sexpr-list-len param-form) 3)
                               (when (>= (sexpr-list-len param-form) 3)
                                 (match (sexpr-list-get param-form 1)
                                   ((some name-expr)

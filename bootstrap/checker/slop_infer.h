@@ -11,6 +11,14 @@
 #include "slop_ctype.h"
 #include "slop_collect.h"
 
+typedef struct infer_MutPath infer_MutPath;
+
+typedef enum {
+    infer_StepKind_step_value,
+    infer_StepKind_step_pointer,
+    infer_StepKind_step_unknown
+} infer_StepKind;
+
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
@@ -33,6 +41,21 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 SLOP_OPTION_DEFINE(types_ResolvedType*, slop_option_types_ResolvedType_ptr)
 #endif
 
+struct infer_MutPath {
+    slop_string root;
+    uint8_t has_root;
+    int64_t depth;
+    uint8_t through;
+    uint8_t known;
+    slop_option_types_ResolvedType_ptr cur_type;
+};
+typedef struct infer_MutPath infer_MutPath;
+
+#ifndef SLOP_OPTION_INFER_MUTPATH_DEFINED
+#define SLOP_OPTION_INFER_MUTPATH_DEFINED
+SLOP_OPTION_DEFINE(infer_MutPath, slop_option_infer_MutPath)
+#endif
+
 uint8_t infer_string_contains_char(slop_string s, int64_t c);
 int64_t infer_string_index_of(slop_string s, int64_t c);
 slop_string infer_string_substring(slop_arena* arena, slop_string s, int64_t start, int64_t end);
@@ -48,7 +71,7 @@ uint8_t infer_is_chan_op(slop_string op);
 types_ResolvedType* infer_infer_threading_builtin(env_TypeEnv* env, slop_string op, types_SExpr* expr, slop_list_types_SExpr_ptr items, int64_t len, int64_t line, int64_t col);
 uint8_t infer_has_type_params(types_FnSignature* sig);
 slop_option_types_ResolvedType_ptr infer_find_binding(slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types, slop_string name);
-void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
+void infer_unify_types(slop_arena* arena, types_ResolvedType* formal, types_ResolvedType* actual, slop_list_string* bind_names, slop_list_types_ResolvedType_ptr* bind_types);
 types_ResolvedType* infer_substitute_type_vars(slop_arena* arena, types_ResolvedType* t, slop_list_string bind_names, slop_list_types_ResolvedType_ptr bind_types);
 types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t line, int64_t col);
 uint8_t infer_is_unwrappable_container(types_ResolvedType* t);
@@ -75,6 +98,15 @@ void infer_report_operand_mismatch(env_TypeEnv* env, slop_string op, slop_string
 void infer_check_list_operands(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, uint8_t has_index, int64_t line, int64_t col);
 uint8_t infer_is_assignable_list_target(types_SExpr* expr);
 void infer_check_list_target(env_TypeEnv* env, slop_string op, types_SExpr* expr, int64_t line, int64_t col);
+infer_StepKind infer_mutation_step_kind(types_ResolvedType* t);
+infer_MutPath infer_mutation_path_root(env_TypeEnv* env, slop_string name);
+infer_MutPath infer_mutation_path_field(infer_MutPath base, slop_string field);
+infer_MutPath infer_mutation_path(env_TypeEnv* env, types_SExpr* expr);
+uint8_t infer_mutation_forbidden(env_VarBinding b, infer_MutPath path, types_MutationKind kind);
+void infer_check_mutation(env_TypeEnv* env, types_SExpr* target, infer_MutPath path, types_MutationKind kind);
+void infer_check_param_mode(env_TypeEnv* env, slop_string mode, slop_string name, types_ResolvedType* param_type, types_SExpr* at);
+uint8_t infer_is_container_param_type(types_ResolvedType* t);
+void infer_check_set_target(env_TypeEnv* env, slop_list_types_SExpr_ptr items, int64_t len);
 void infer_check_builtin_args(env_TypeEnv* env, slop_string op, int64_t expected, int64_t actual, int64_t line, int64_t col);
 types_ResolvedType* infer_resolve_alias_chain(types_ResolvedType* t);
 void infer_check_option_predicate_arg(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t len, int64_t line, int64_t col);
@@ -127,6 +159,11 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #ifndef SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
 #define SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
 SLOP_OPTION_DEFINE(types_ResolvedType*, slop_option_types_ResolvedType_ptr)
+#endif
+
+#ifndef SLOP_OPTION_INFER_MUTPATH_DEFINED
+#define SLOP_OPTION_INFER_MUTPATH_DEFINED
+SLOP_OPTION_DEFINE(infer_MutPath, slop_option_infer_MutPath)
 #endif
 
 

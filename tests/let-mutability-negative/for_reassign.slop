@@ -1,0 +1,10 @@
+;; Reassign a for loop's variable: an error in both slop check and slop build (#180).
+
+(module main
+  (type Pt (record (x Int) (y Int)))
+  (const LIMIT Int 10)
+
+  (fn main ()
+    (@intent "Reassign a for loop's variable")
+    (@spec (() -> Int))
+    (let ((mut total 0)) (for (i 0 3) (set! i 5) (set! total (+ total i))) total)))

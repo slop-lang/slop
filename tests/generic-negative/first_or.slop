@@ -1,0 +1,21 @@
+;; A @generic function's return type comes from its arguments: here T is Int,
+;; so first-or returns Int and string-len rejects it. The type-variable
+;; bindings used to be pushed onto List parameters -- copies -- and lost, so T
+;; stayed T, which matches anything, and this passed (#180).
+
+(module main
+  (fn first-or ((xs (List T)) (dflt T))
+    (@intent "First element, or the default")
+    (@generic (T))
+    (@spec (((List T) T) -> T))
+    (match (list-get xs 0)
+      ((some x) x)
+      ((none) dflt)))
+
+  (fn main ()
+    (@intent "Check must fail")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((xs (list-new arena Int)))
+        (list-push xs 7)
+        (string-len (first-or xs 0))))))

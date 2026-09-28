@@ -259,6 +259,11 @@ run_negative_build_test "$NEG/unimported.slop" "import-unimported" \
     "unimported.slop:9:15: error: undefined function 'f' - check imports" \
     -I "$NEG" -I "$REPO_ROOT/tests/import-resolution"
 
+# list-push grows its list in an arena; with none in scope it used to emit the
+# bare identifier `arena`, which only the C compiler caught (#179).
+run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_push_no_arena.slop" "list-push-no-arena" \
+    "list_push_no_arena.slop:9:6: error: list-push: no arena in scope"
+
 # The checker's half of the same rule, for types, variants and re-exports.
 # `slop build` drops checker diagnostics (#93), so these run `slop check`.
 run_check_clean_test() {
@@ -345,6 +350,59 @@ run_negative_check_test "$TRN/variant.slop" "variant-imported-from-both" \
     -I "$TRN" -I "$TRC"
 
 echo ""
+
+# A @generic call's return type is specialised from its arguments. The
+# bindings used to be pushed onto List parameters (copies) and lost, so T was
+# never replaced and anything passed through a generic call type-checked (#180).
+run_negative_check_test "$REPO_ROOT/tests/generic-negative/first_or.slop" "generic-return-specialised" \
+    "first_or.slop:21:9: error: argument 1 to 'string-len': expected String, got Int"
+
+echo ""
+
+
+# Parameter modes (#180). An unmarked parameter's own value is read-only, a
+# mut parameter is a local copy of a value type, and out is gone. The checker
+# and the transpiler both enforce it, with the same message, since a build
+# drops checker diagnostics (#93): each case runs through both.
+PMN="$REPO_ROOT/tests/param-modes-negative"
+while IFS='|' read -r pm_name pm_expected <&3; do
+    run_negative_check_test "$PMN/$pm_name.slop" "param-mode-$pm_name" "$pm_expected"
+    run_negative_build_test "$PMN/$pm_name.slop" "param-mode-$pm_name" "$pm_expected"
+done 3<<'PM_CASES'
+assign_param|assign_param.slop:11:11: error: cannot assign to parameter 'n' - it is read-only; declare it (mut n T) to modify a local copy, or pass a (Ptr T) to change the caller's value
+assign_ptr_param|assign_ptr_param.slop:11:11: error: cannot assign to parameter 'p' - it is read-only; declare it (mut p T) to modify a local copy, or pass a (Ptr T) to change the caller's value
+field_set|field_set.slop:11:11: error: cannot change a field of parameter 'b' - it is read-only; declare it (mut b T) to modify a local copy, or pass a (Ptr T) to change the caller's value
+field_set_dot|field_set_dot.slop:11:11: error: cannot change a field of parameter 'b' - it is read-only; declare it (mut b T) to modify a local copy, or pass a (Ptr T) to change the caller's value
+field_set_dotted|field_set_dotted.slop:11:11: error: cannot change a field of parameter 'b' - it is read-only; declare it (mut b T) to modify a local copy, or pass a (Ptr T) to change the caller's value
+field_set_typed|field_set_typed.slop:11:11: error: cannot change a field of parameter 'b' - it is read-only; declare it (mut b T) to modify a local copy, or pass a (Ptr T) to change the caller's value
+mut_list|mut_list.slop:8:15: error: 'mut' is not allowed on parameter 'xs' - a copy of a List, Map or Set shares the caller's storage; use (Ptr (List T)) to change the caller's list
+mut_map_alias|mut_map_alias.slop:8:15: error: 'mut' is not allowed on parameter 'm' - a copy of a List, Map or Set shares the caller's storage; use (Ptr (List T)) to change the caller's list
+mut_set|mut_set.slop:8:15: error: 'mut' is not allowed on parameter 's' - a copy of a List, Map or Set shares the caller's storage; use (Ptr (List T)) to change the caller's list
+out_param|out_param.slop:8:15: error: 'out' parameter 'r' is not supported - use a (Ptr T) parameter and pass (addr x)
+pop_param|pop_param.slop:11:15: error: cannot pop from parameter 'xs' - it is read-only, and a change to a copy is lost to the caller; pass a (Ptr (List T)) and use (deref xs), or return the new list
+push_field|push_field.slop:11:16: error: cannot push to a field of parameter 'b' - it is read-only, and a change to a copy is lost to the caller; declare it (mut b T) and return it, or pass a (Ptr T)
+push_param|push_param.slop:11:16: error: cannot push to parameter 'xs' - it is read-only, and a change to a copy is lost to the caller; pass a (Ptr (List T)) and use (deref xs), or return the new list
+ref_param|ref_param.slop:8:15: error: unknown parameter mode 'ref' - write (name Type) or (mut name Type)
+set_expr|set_expr.slop:11:24: error: cannot assign to parameter 'n' - it is read-only; declare it (mut n T) to modify a local copy, or pass a (Ptr T) to change the caller's value
+PM_CASES
+run_check_clean_test "$REPO_ROOT/tests/test_param_modes.slop" "param-modes"
+run_check_clean_test "$REPO_ROOT/tests/test_mutation_allowed.slop" "mutation-allowed"
+
+# Immutable bindings (#180): a let without mut, a for / for-each / match /
+# with-arena name, and a constant cannot be set!, in check and build alike.
+# Pushing onto a local's own list stays allowed (tests/test_mutation_allowed).
+LMN="$REPO_ROOT/tests/let-mutability-negative"
+while IFS='|' read -r lm_name lm_expected <&3; do
+    run_negative_check_test "$LMN/$lm_name.slop" "binding-$lm_name" "$lm_expected"
+    run_negative_build_test "$LMN/$lm_name.slop" "binding-$lm_name" "$lm_expected"
+done 3<<'LM_CASES'
+const_reassign|const_reassign.slop:10:15: error: cannot assign to constant 'LIMIT'
+for_each_field_set|for_each_field_set.slop:10:104: error: cannot change a field of 'p' - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut p ...)))
+for_reassign|for_reassign.slop:10:45: error: cannot assign to 'i' - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut i ...)))
+let_field_set|let_field_set.slop:10:31: error: cannot change a field of 'p' - it is immutable; declare it (let ((mut p ...)))
+let_reassign|let_reassign.slop:10:24: error: cannot assign to 'x' - it is immutable; declare it (let ((mut x ...)))
+match_reassign|match_reassign.slop:10:37: error: cannot assign to 'v' - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut v ...)))
+LM_CASES
 
 # ============================================================
 # Cleanup and Summary

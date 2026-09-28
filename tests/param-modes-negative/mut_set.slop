@@ -1,0 +1,16 @@
+;; A mut Set parameter: an error in both slop check and slop build (#180).
+
+(module main
+  (type Bag (record (items (List Int)) (n Int)))
+  (type Node (record (v Int) (next (Ptr Node))))
+  (type Scores (Map String Int))
+
+  (fn f ((mut s (Set Int)))
+    (@intent "A mut Set parameter")
+    (@spec (((Set Int)) -> Int))
+    0)
+
+  (fn main ()
+    (@intent "Must fail")
+    (@spec (() -> Int))
+    (with-arena 256 (f (set-new arena Int)))))
