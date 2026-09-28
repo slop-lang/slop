@@ -594,6 +594,50 @@ These are errors:
   ...)
 ```
 
+Type names resolve the same way. A type name `T` written in module `M` is, in
+order:
+
+1. `M`'s own type `T`;
+2. the type `T` that `M` imports, via `(import X (T))`;
+3. a builtin type.
+
+A type name that `M` neither defines nor imports is an error, even if another
+module defines it: `type 'Pt' is defined in module 'alpha' but not imported`.
+Two modules may define types of the same name. `alpha`'s `Pt` and `beta`'s
+`Pt` are different types with their own fields, and passing one where the
+other is expected is a type error. The two import errors above apply to types
+too. A value can still have a type that `M` never names, such as the result of
+an imported function, and using it needs no import. If `M` does name such a
+type without importing it, the build accepts the name only when exactly one
+module defines it. Otherwise it reports `type 'Scores' is defined in modules
+'delta' and 'epsilon' - import it from the one you mean`.
+
+Type aliases, including aliases of `Result`, `Option`, `Map` and `Set`, are
+type names and resolve by the same rules.
+
+Enum and union variants follow the type they belong to. A variant `v` in `M`
+is, in order:
+
+1. a variant of a type `M` defines;
+2. a variant of a type `M` imports;
+3. a builtin variant (`some`, `none`, `ok`, `error`).
+
+A `match` arm names a variant of the scrutinee's type, whatever else `M`
+defines or imports.
+
+```
+(module m
+  (import hue (Color))   ; Color has red
+  (import tint (Paint))  ; Paint has red
+  (fn f () ... 'red ...)) ; error: variant 'red' is ambiguous: imported from both 'tint' (Paint) and 'hue' (Color)
+```
+
+A variant of a type `M` neither defines nor imports is accepted only if
+exactly one type in the build has a variant of that name. It never takes the
+place of a function of the same name that `M` defines or imports. When
+several types have it, the build reports `variant 'red' belongs to types in
+modules 'tint' (Paint) and 'hue' (Color) - import the type you mean`.
+
 Inside a function, a call to the function's own name is recursion unless the
 module also declares an FFI function of that name. In that case the call
 reaches the FFI declaration, which is how a wrapper such as

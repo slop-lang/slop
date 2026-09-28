@@ -34,7 +34,9 @@
     ;; Generated type tracking
     ctx-mark-type-emitted ctx-is-type-emitted
     ;; Enum variant tracking
-    EnumVariant ctx-register-enum-variant ctx-lookup-enum-variant
+    EnumVariant ctx-register-enum-variant ctx-register-enum-variant-in ctx-lookup-enum-variant
+    ctx-resolve-enum-variant-at ctx-resolve-any-enum-variant ctx-enum-variant-known
+    ctx-resolve-enum-variant-for ctx-resolve-callable-variant
     ;; Union variant tracking (for hash/eq generation)
     UnionVariantEntry ctx-register-union-variant ctx-get-union-variants
     ;; Result type tracking
@@ -193,7 +195,8 @@
   ;; Types used by TranspileContext (must be defined before it)
   (type EnumVariant (record
     (variant-name String)
-    (enum-name String)))
+    (enum-name String)        ;; C name of the enum or union type
+    (owner-module String)))   ;; Module that defines the type ("" = builtin)
 
   ;; Union variant with payload type info (for hash/eq generation)
   (type UnionVariantEntry (record
@@ -225,7 +228,7 @@
     (c-name String)))     ;; Generated C type name like slop_thread_int
 
   (type ResultTypeAlias (record
-    (alias-name String)   ;; SLOP type alias name (e.g., "ComputeResult")
+    (alias-name String)   ;; C name of the alias (e.g., "mod_ComputeResult")
     (c-name String)))     ;; Generated C type name (e.g., "slop_result_int_BaseError")
 
   (type FuncCNameAlias (record
@@ -235,7 +238,7 @@
 
   ;; Type alias definitions for resolving Map/Set type aliases
   (type TypeAliasEntry (record
-    (name String)          ;; Type alias name (e.g., "TermIndex")
+    (name String)          ;; C name of the alias (e.g., "index_TermIndex")
     (slop-type String)))   ;; SLOP type definition (e.g., "(Map Term TermMap)")
 
   (type InlineRecord (record
@@ -1395,30 +1398,242 @@
 
   ;; ============================================================
   ;; Enum Variant Tracking
+  ;;
+  ;; A variant name resolves within the module (#174): a variant of a type
+  ;; the module defines, then of a type it imports (two distinct imported
+  ;; types is an error), then a builtin one, and only then a variant of a
+  ;; type from anywhere in the build -- if exactly one type has it. A match
+  ;; asks for the variant of its scrutinee's type first.
   ;; ============================================================
 
+  (type VariantScope (enum scope-own scope-imported scope-builtin))
+
+  (type VariantLookup (union
+    (variant-found String)          ;; C name of the variant's type
+    (variant-missing)
+    (variant-ambiguous)))           ;; Already reported
+
   (fn ctx-register-enum-variant ((ctx (Ptr TranspileContext)) (variant-name String) (enum-name String))
-    (@intent "Register an enum variant with its parent type")
+    (@intent "Register a variant of a type the current module defines")
     (@spec (((Ptr TranspileContext) String String) -> Unit))
     (@pre {ctx != nil})
-    (list-push (. (deref ctx) enum-variants) (EnumVariant variant-name enum-name)))
+    (ctx-register-enum-variant-in ctx variant-name enum-name (ctx-current-module-name ctx)))
+
+  (fn ctx-register-enum-variant-in ((ctx (Ptr TranspileContext)) (variant-name String) (enum-name String) (owner String))
+    (@intent "Register a variant of a type that module owner defines (\"\" for a builtin)")
+    (@spec (((Ptr TranspileContext) String String String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) enum-variants) (EnumVariant variant-name enum-name owner)))
+
+  (fn variants-have-enum ((variants (List EnumVariant)) (enum-name String))
+    (@intent "Whether a list of variants already holds one of this type")
+    (@spec (((List EnumVariant) String) -> Bool))
+    (let ((len (list-len variants))
+          (mut found false))
+      (for (i 0 len)
+        (match (list-get variants i)
+          ((some v) (when (string-eq (. v enum-name) enum-name) (set! found true)))
+          ((none) (do))))
+      found))
+
+  (fn enum-variant-candidates ((ctx (Ptr TranspileContext)) (variant-name String))
+    (@intent "Every type that has a variant of this name, once each, oldest first")
+    (@spec (((Ptr TranspileContext) String) -> (List EnumVariant)))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (variants (. (deref ctx) enum-variants))
+          (len (list-len variants))
+          (result (list-new arena EnumVariant)))
+      (for (i 0 len)
+        (match (list-get variants i)
+          ((some v)
+            (when (and (string-eq (. v variant-name) variant-name)
+                       (not (variants-have-enum result (. v enum-name))))
+              (list-push result v)))
+          ((none) (do))))
+      result))
+
+  (fn module-imports-type-c-name ((ctx (Ptr TranspileContext)) (c-name String) (mod String))
+    (@intent "Whether module mod imports the type whose C name is c-name")
+    (@spec (((Ptr TranspileContext) String String) -> Bool))
+    (@pre {ctx != nil})
+    (let ((types (. (deref ctx) types))
+          (len (list-len types))
+          (mut found false))
+      (for (i 0 len)
+        (match (list-get types i)
+          ((some t)
+            (when (and (string-eq (. t owner-module) mod)
+                       (> (string-len (. t imported-from)) 0)
+                       (string-eq (. t c-name) c-name))
+              (set! found true)))
+          ((none) (do))))
+      found))
+
+  (fn select-variants ((ctx (Ptr TranspileContext)) (candidates (List EnumVariant)) (mod String) (scope VariantScope))
+    (@intent "The candidates whose type module mod defines, imports, or has built in")
+    (@spec (((Ptr TranspileContext) (List EnumVariant) String VariantScope) -> (List EnumVariant)))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (len (list-len candidates))
+          (result (list-new arena EnumVariant)))
+      (for (i 0 len)
+        (match (list-get candidates i)
+          ((some v)
+            (let ((owner (. v owner-module))
+                  (keep (match scope
+                          ('scope-own (string-eq owner mod))
+                          ('scope-imported (and (not (string-eq owner mod))
+                                                 (module-imports-type-c-name ctx (. v enum-name) mod)))
+                          ('scope-builtin (== (string-len owner) 0)))))
+              (when keep
+                (list-push result v))))
+          ((none) (do))))
+      result))
+
+  (fn first-variant-type ((variants (List EnumVariant)))
+    (@intent "The type of the first variant in a list, if any")
+    (@spec (((List EnumVariant)) -> VariantLookup))
+    (match (list-get variants 0)
+      ((some v) (variant-found (. v enum-name)))
+      ((none) (variant-missing))))
+
+  (fn variant-type-slop-name ((ctx (Ptr TranspileContext)) (v EnumVariant))
+    (@intent "The SLOP name of a variant's type, for messages")
+    (@spec (((Ptr TranspileContext) EnumVariant) -> String))
+    (@pre {ctx != nil})
+    (let ((types (. (deref ctx) types))
+          (len (list-len types))
+          (mut name (. v enum-name)))
+      (for (i 0 len)
+        (match (list-get types i)
+          ((some t)
+            (when (and (string-eq (. t c-name) (. v enum-name))
+                       (string-eq (. t owner-module) (. v owner-module))
+                       (== (string-len (. t imported-from)) 0))
+              (set! name (. t name))))
+          ((none) (do))))
+      name))
+
+  (fn report-variant-ambiguity ((ctx (Ptr TranspileContext)) (variant-name String)
+                                (candidates (List EnumVariant)) (imported Bool) (at (Ptr SExpr)))
+    (@intent "Report a variant name that several types supply, none of them this module's own")
+    (@spec (((Ptr TranspileContext) String (List EnumVariant) Bool (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (key (string-build arena (list String "variant " variant-name))))
+      ;; Once per variant per module, as for a type name
+      (when (not (list-has-string (. (deref ctx) reported-ambiguities) key))
+        (let ((line (if (== at nil) 0 (ctx-sexpr-line at)))
+              (col (if (== at nil) 0 (ctx-sexpr-col at)))
+              (parts (list-new arena String))
+              (count (list-len candidates)))
+          (list-push (. (deref ctx) reported-ambiguities) key)
+          (list-push parts "variant '")
+          (list-push parts variant-name)
+          (list-push parts (if imported "' is ambiguous: imported from both " "' belongs to types in modules "))
+          (for (i 0 count)
+            (match (list-get candidates i)
+              ((some v)
+                (do
+                  (when (> i 0)
+                    (list-push parts (if (== i (- count 1)) " and " ", ")))
+                  (list-push parts "'")
+                  (list-push parts (. v owner-module))
+                  (list-push parts "' (")
+                  (list-push parts (variant-type-slop-name ctx v))
+                  (list-push parts ")")))
+              ((none) (do))))
+          (when (not imported)
+            (list-push parts " - import the type you mean"))
+          (ctx-add-error-at ctx (string-build arena parts)
+            (if (> line 0) line (. (deref ctx) pos-line))
+            (if (> line 0) col (. (deref ctx) pos-col)))))))
+
+  (fn resolve-visible-variant ((ctx (Ptr TranspileContext)) (variant-name String) (at (Ptr SExpr)))
+    (@intent "Resolve a variant among the types the current module defines, imports, or has built in")
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> VariantLookup))
+    (@pre {ctx != nil})
+    (let ((candidates (enum-variant-candidates ctx variant-name))
+          (cur (ctx-current-module-name ctx))
+          (own (select-variants ctx candidates cur 'scope-own)))
+      (if (> (list-len own) 0)
+        (first-variant-type own)
+        (let ((imported (select-variants ctx candidates cur 'scope-imported)))
+          (cond
+            ((== (list-len imported) 1) (first-variant-type imported))
+            ((> (list-len imported) 1)
+              (do
+                (report-variant-ambiguity ctx variant-name imported true at)
+                (variant-ambiguous)))
+            (else
+              (first-variant-type (select-variants ctx candidates cur 'scope-builtin))))))))
+
+  (fn ctx-resolve-any-enum-variant ((ctx (Ptr TranspileContext)) (variant-name String) (at (Ptr SExpr)))
+    (@intent "Resolve a variant from anywhere in the build, if exactly one type has it")
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> (Option String)))
+    (@pre {ctx != nil})
+    (let ((candidates (enum-variant-candidates ctx variant-name))
+          (count (list-len candidates)))
+      (cond
+        ((== count 1)
+          (match (list-get candidates 0)
+            ((some v) (some (. v enum-name)))
+            ((none) none)))
+        ((> count 1)
+          (do
+            (report-variant-ambiguity ctx variant-name candidates false at)
+            none))
+        (else none))))
+
+  (fn ctx-resolve-enum-variant-at ((ctx (Ptr TranspileContext)) (variant-name String) (at (Ptr SExpr)))
+    (@intent "Resolve a variant name to the C name of its type, reporting an ambiguity at at")
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> (Option String)))
+    (@pre {ctx != nil})
+    (match (resolve-visible-variant ctx variant-name at)
+      ((variant-found enum-name) (some enum-name))
+      ((variant-ambiguous) none)
+      ((variant-missing) (ctx-resolve-any-enum-variant ctx variant-name at))))
 
   (fn ctx-lookup-enum-variant ((ctx (Ptr TranspileContext)) (variant-name String))
-    (@intent "Look up the enum type for a variant")
+    (@intent "Look up the enum type for a variant, as the current module resolves it")
     (@spec (((Ptr TranspileContext) String) -> (Option String)))
     (@pre {ctx != nil})
-    (let ((variants (. (deref ctx) enum-variants))
-          (len (list-len variants))
-          (mut i 0)
-          (mut result (Option String) none))
-      (while (and (< i len) (match result ((none) true) ((some _) false)))
-        (match (list-get variants i)
-          ((some entry)
-            (when (string-eq (. entry variant-name) variant-name)
-              (set! result (some (. entry enum-name)))))
-          ((none) (do)))
-        (set! i (+ i 1)))
-      result))
+    (ctx-resolve-enum-variant-at ctx variant-name nil))
+
+  (fn ctx-enum-variant-known ((ctx (Ptr TranspileContext)) (variant-name String))
+    (@intent "Whether any type in the build has a variant of this name; never reports")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    (> (list-len (enum-variant-candidates ctx variant-name)) 0))
+
+  (fn ctx-resolve-enum-variant-for ((ctx (Ptr TranspileContext)) (variant-name String)
+                                    (scrut-c-type String) (at (Ptr SExpr)))
+    (@intent "Resolve a match arm's variant: the scrutinee's own type wins when it has the variant")
+    (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> (Option String)))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (scrut (if (ends-with-star scrut-c-type)
+                   (substring arena scrut-c-type 0 (cast (Int 0 ..) (- (string-len scrut-c-type) 1)))
+                   scrut-c-type))
+          (candidates (enum-variant-candidates ctx variant-name)))
+      (if (variants-have-enum candidates scrut)
+        (some scrut)
+        (ctx-resolve-enum-variant-at ctx variant-name at))))
+
+  (fn ctx-resolve-callable-variant ((ctx (Ptr TranspileContext)) (name String) (at (Ptr SExpr)))
+    (@intent "Resolve a name in call or value position as a variant, deferring to a function of that name")
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> (Option String)))
+    (@pre {ctx != nil})
+    ;; A visible variant wins, as before. A variant the module can only reach
+    ;; build-wide must not take a name the module calls as a function.
+    (match (resolve-visible-variant ctx name at)
+      ((variant-found enum-name) (some enum-name))
+      ((variant-ambiguous) none)
+      ((variant-missing)
+        (match (ctx-lookup-func ctx name)
+          ((some _) none)
+          ((none) (ctx-resolve-any-enum-variant ctx name at))))))
 
   ;; ============================================================
   ;; Union Variant Tracking (for hash/eq generation)
@@ -1688,13 +1903,24 @@
   ;; ============================================================
 
   (fn ctx-register-result-type-alias ((ctx (Ptr TranspileContext)) (alias-name String) (c-name String))
-    (@intent "Register a type alias to a Result type")
+    (@intent "Register a type alias to a Result type, keyed by the alias's C name")
     (@spec (((Ptr TranspileContext) String String) -> Unit))
     (@pre {ctx != nil})
-    (list-push (. (deref ctx) result-type-aliases) (ResultTypeAlias alias-name c-name)))
+    (list-push (. (deref ctx) result-type-aliases)
+               (ResultTypeAlias (alias-key-for-definition ctx alias-name) c-name)))
 
-  (fn ctx-lookup-result-type-alias ((ctx (Ptr TranspileContext)) (alias-name String))
-    (@intent "Look up a type alias to find its Result type C name")
+  (fn alias-key-for-definition ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "The key an alias definition is registered under: the C name of the module's own type")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; Two modules may each define an alias of the same name (#174). A name
+    ;; that is already a C name, or one no module owns, is kept as given.
+    (match (ctx-find-own-type ctx name)
+      ((some entry) (. entry c-name))
+      ((none) name)))
+
+  (fn find-result-type-alias ((ctx (Ptr TranspileContext)) (key String))
+    (@intent "The Result C name registered for an alias C name")
     (@spec (((Ptr TranspileContext) String) -> (Option String)))
     (@pre {ctx != nil})
     (let ((aliases (. (deref ctx) result-type-aliases))
@@ -1704,11 +1930,42 @@
       (while (and (< i len) (match result ((none) true) ((some _) false)))
         (match (list-get aliases i)
           ((some entry)
-            (when (string-eq (. entry alias-name) alias-name)
+            (when (string-eq (. entry alias-name) key)
               (set! result (some (. entry c-name)))))
           ((none) (do)))
         (set! i (+ i 1)))
       result))
+
+  (fn type-candidates-have-alias ((ctx (Ptr TranspileContext)) (candidates (List TypeEntry)) (result-alias Bool))
+    (@intent "Whether any of several same-named types is an alias (a Result alias when result-alias)")
+    (@spec (((Ptr TranspileContext) (List TypeEntry) Bool) -> Bool))
+    (@pre {ctx != nil})
+    (let ((len (list-len candidates))
+          (mut found false))
+      (for (i 0 len)
+        (match (list-get candidates i)
+          ((some e)
+            (let ((hit (if result-alias
+                         (match (find-result-type-alias ctx (. e c-name)) ((some _) true) ((none) false))
+                         (match (find-type-alias ctx (. e c-name)) ((some _) true) ((none) false)))))
+              (when hit (set! found true))))
+          ((none) (do))))
+      found))
+
+  (fn ctx-lookup-result-type-alias ((ctx (Ptr TranspileContext)) (alias-name String))
+    (@intent "Look up a type alias to find its Result type C name, as the current module resolves the name")
+    (@spec (((Ptr TranspileContext) String) -> (Option String)))
+    (@pre {ctx != nil})
+    (match (ctx-resolve-type ctx alias-name)
+      ((type-found entry) (find-result-type-alias ctx (. entry c-name)))
+      ((type-missing) (find-result-type-alias ctx alias-name))
+      ((type-ambiguous candidates)
+        ;; Only an error if the name could have meant a Result alias
+        (if (type-candidates-have-alias ctx candidates true)
+          (do
+            (ctx-report-type-ambiguity ctx alias-name candidates nil)
+            none)
+          none))))
 
   ;; ============================================================
   ;; Function C Name Alias Tracking (for :c-name support)
@@ -2256,10 +2513,12 @@
   ;; ============================================================
 
   (fn ctx-register-type-alias ((ctx (Ptr TranspileContext)) (name String) (slop-type String))
-    (@intent "Register a type alias definition for resolving Map/Set types")
+    (@intent "Register a type alias definition for resolving Map/Set types, keyed by the alias's C name")
     (@spec (((Ptr TranspileContext) String String) -> Unit))
     (@pre {ctx != nil})
-    (list-push (. (deref ctx) type-aliases) (TypeAliasEntry name slop-type)))
+    ;; Keyed by C name, so a caller that holds only the C type -- FuncParamType
+    ;; carries nothing else -- finds it as well as one holding the SLOP name.
+    (list-push (. (deref ctx) type-aliases) (TypeAliasEntry (alias-key-for-definition ctx name) slop-type)))
 
   (fn ctx-is-option-c-type ((ctx (Ptr TranspileContext)) (c-type String))
     (@intent "Is this C type an Option, directly or through a type alias?")
@@ -2280,7 +2539,22 @@
         ((none) false))))
 
   (fn ctx-lookup-type-alias ((ctx (Ptr TranspileContext)) (name String))
-    (@intent "Look up a type alias to get its SLOP type definition")
+    (@intent "Look up a type alias to get its SLOP type definition, by SLOP name or C name")
+    (@spec (((Ptr TranspileContext) String) -> (Option String)))
+    (@pre {ctx != nil})
+    (match (ctx-resolve-type ctx name)
+      ((type-found entry) (find-type-alias ctx (. entry c-name)))
+      ((type-missing) (find-type-alias ctx name))
+      ((type-ambiguous candidates)
+        ;; Only an error if the name could have meant an alias
+        (if (type-candidates-have-alias ctx candidates false)
+          (do
+            (ctx-report-type-ambiguity ctx name candidates nil)
+            none)
+          none))))
+
+  (fn find-type-alias ((ctx (Ptr TranspileContext)) (key String))
+    (@intent "The SLOP definition registered for an alias C name")
     (@spec (((Ptr TranspileContext) String) -> (Option String)))
     (@pre {ctx != nil})
     (let ((aliases (. (deref ctx) type-aliases))
@@ -2290,7 +2564,7 @@
       (while (and (< i len) (match result ((none) true) ((some _) false)))
         (match (list-get aliases i)
           ((some entry)
-            (when (string-eq (. entry name) name)
+            (when (string-eq (. entry name) key)
               (set! result (some (. entry slop-type)))))
           ((none) (do)))
         (set! i (+ i 1)))

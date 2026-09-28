@@ -37,7 +37,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer
                  BindingOrigin MutationKind mutation-error-message))
-  (import context (TranspileContext ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
+  (import context (TranspileContext ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-enum-variant-known
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
@@ -332,9 +332,10 @@
           (match (ctx-lookup-var ctx name)
             ;; Found in context - use registered c-name
             ((some entry) (. entry c-name))
-            ;; Not found - check if it's an enum variant
+            ;; Not found - check if it's an enum variant, deferring to a
+            ;; function of the name over a variant the module doesn't see
             ((none)
-              (match (ctx-lookup-enum-variant ctx name)
+              (match (ctx-resolve-callable-variant ctx name nil)
                 ((some enum-name)
                   (get-prefixed-enum-value ctx enum-name name))
                 ((none)
@@ -3557,8 +3558,9 @@
                     (set! i (+ i 1)))
                   (ctx-str5 ctx "(" c-name "){" args "}"))))
             ((none)
-              ;; Check if fn-name is a union variant constructor (e.g., xsd-string-val)
-              (match (ctx-lookup-enum-variant ctx fn-name)
+              ;; Check if fn-name is a union variant constructor (e.g., xsd-string-val),
+              ;; deferring to a function of the name over a variant the module doesn't see
+              (match (ctx-resolve-callable-variant ctx fn-name nil)
                 ((some type-name)
                   ;; Union variant constructor: (variant-name value) -> inline struct init
                   (let ((c-variant (to-c-name arena fn-name))
@@ -4002,7 +4004,7 @@
                 ((is-result-patterns patterns)
                   (build-result-match-expr ctx scrutinee scrutinee-c items))
                 ((is-enum-expr-patterns ctx patterns)
-                  (build-enum-match-expr ctx scrutinee-c items))
+                  (build-enum-match-expr ctx scrutinee-c (infer-expr-c-type ctx scrutinee) items))
                 ((is-union-expr-patterns ctx patterns)
                   (build-union-match-expr ctx scrutinee scrutinee-c items))
                 (else
@@ -4102,9 +4104,8 @@
                 (let ((name (. s name)))
                   (when (and (not (string-eq name "else"))
                              (not (string-eq name "_")))
-                    (match (ctx-lookup-enum-variant ctx name)
-                      ((some _) (set! has-enum-variant true))
-                      ((none) (do))))))
+                    (when (ctx-enum-variant-known ctx name)
+                      (set! has-enum-variant true)))))
               (else (set! all-symbols false))))
           ((none) (do)))
         (set! i (+ i 1)))
@@ -4131,9 +4132,8 @@
                          (not (string-eq tag "error"))
                          (not (string-eq tag "else"))
                          (not (string-eq tag "_")))
-                (match (ctx-lookup-enum-variant ctx tag)
-                  ((some _) (set! has-union-variant true))
-                  ((none) (do))))))
+                (when (ctx-enum-variant-known ctx tag)
+                  (set! has-union-variant true)))))
           ((none) (do)))
         (set! i (+ i 1)))
       has-union-variant))
@@ -4810,9 +4810,9 @@
                         (ctx-str ctx "_mr = "
                           (ctx-str ctx err-body "; } _mr; })")))))))))))))
 
-  (fn build-enum-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
+  (fn build-enum-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (scrut-c-type String) (items (List (Ptr SExpr))))
     (@intent "Build enum match as GCC statement expression with switch (no .tag)")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     ;; Generate: ({ __auto_type _mv = scrutinee; <type> _mr = {0};
     ;;              switch (_mv) { case T_v: { _mr = body; break; } ... } _mr; })
@@ -4831,7 +4831,7 @@
                   (when (>= (list-len branch-items) 2)
                     (match (list-get branch-items 0)
                       ((some pattern)
-                        (set! cases (build-enum-case-expr ctx arena cases pattern branch-items result-type)))
+                        (set! cases (build-enum-case-expr ctx arena cases scrut-c-type pattern branch-items result-type)))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -4851,10 +4851,10 @@
               (s4 (ctx-str ctx s3 " } _mr; })")))
           s4))))
 
-  (fn build-enum-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String)
+  (fn build-enum-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String) (scrut-c-type String)
                              (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String))
     (@intent "Build a single enum case for expression-level match (no binding extraction)")
-    (@spec (((Ptr TranspileContext) Arena String (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
+    (@spec (((Ptr TranspileContext) Arena String String (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
     (@pre {ctx != nil})
     (let ((tag (get-expr-pattern-tag pattern))
           (is-void (string-eq result-type "void")))
@@ -4867,7 +4867,7 @@
               (ctx-str ctx cases (ctx-str3 ctx "default: { _mr = " body "; break; } ")))))
         (else
           ;; Regular enum variant case - no binding extraction
-          (match (ctx-lookup-enum-variant ctx tag)
+          (match (ctx-resolve-enum-variant-for ctx tag scrut-c-type pattern)
             ((some type-name)
               (let ((c-tag (to-c-name arena tag))
                     (case-label (ctx-str4 ctx type-name "_" c-tag ""))
@@ -5040,7 +5040,7 @@
               (ctx-str ctx cases (ctx-str3 ctx "default: { _mr = " body "; break; } ")))))
         (else
           ;; Regular variant case
-          (match (ctx-lookup-enum-variant ctx tag)
+          (match (ctx-resolve-enum-variant-for ctx tag (infer-expr-c-type ctx scrutinee) pattern)
             ((some type-name)
               (let ((c-tag (to-c-name arena tag))
                     (case-label (ctx-str4 ctx type-name "_" c-tag ""))

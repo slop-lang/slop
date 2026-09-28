@@ -1,0 +1,47 @@
+;; An enum or union variant, a type alias and a Result alias resolve within
+;; the module (#174): its own type's, then an imported type's, then -- only if
+;; a single type in the build has it -- anyone's. A match arm takes the
+;; variant of its scrutinee's type. Before, the first registration in the
+;; build won, so hue's code was emitted with tint_Paint_red and tint's
+;; Result type.
+;; hue's types are registered first.
+
+(module main
+  (import hue (Shape color-code shape-size first-id safe-div))
+  (import tint (Paint Figure Ids Res paint-code figure-size make-ids count-ids parse-len))
+  (import ringer (ringer-total))
+
+  (fn check ((name String) (ok Bool))
+    (@intent "Report one check, returning 1 if it failed")
+    (@spec ((String Bool) -> Int))
+    (if ok
+      (do (print name) (println ": PASS") 0)
+      (do (print name) (println ": FAIL") 1)))
+
+  (fn describe ((f Figure))
+    (@intent "Match tint's Figure, whose dot carries a String")
+    (@spec ((Figure) -> Int))
+    (match f
+      ((dot s) (cast Int (string-len s)))
+      ((ring n) (* n 100))))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((m (make-ids arena "a")))
+        (let ((failures (+ (check "'red is tint's" (== (paint-code 'red) 10))
+                        (+ (check "Paint local is tint's" (== (let ((p Paint (quote red))) (paint-code p)) 10))
+                        (+ (check "dot builds tint's Figure" (== (figure-size (Figure (dot "abc"))) 3))
+                        (+ (check "match on Figure dot" (== (describe (Figure (dot "hello"))) 5))
+                        (+ (check "union-new Figure" (== (describe (union-new Figure ring 2)) 200))
+                        (+ (check "hue's shapes still work" (== (shape-size (union-new Shape box 3)) 9))
+                        (+ (check "Ids is tint's Map" (== (count-ids m) 1))
+                        (+ (check "Res is tint's" (match (parse-len "xyz") ((ok s) (== (string-len s) 3)) ((error _) false)))
+                        (+ (check "hue's Res" (match (safe-div 6 3) ((ok n) (== n 2)) ((error _) false)))
+                        (+ (check "hue's Ids" (match (first-id 4) ((some n) (== n 4)) ((none) false)))
+                           (check "own function beats unimported variant" (== (ringer-total 2) 6))))))))))))))
+          (println "")
+          (if (== failures 0)
+            (do (println "All tests passed!") 0)
+            (do (println "test(s) failed") 1)))))))
