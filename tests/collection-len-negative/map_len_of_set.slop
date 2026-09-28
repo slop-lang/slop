@@ -1,0 +1,9 @@
+(module map-len-of-set
+  (@intent "map-len counts a Map; handed a Set it is a checker error")
+
+  (fn main ()
+    (@intent "Must not check: map-len is given a Set")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((s (set-new arena Int)))
+        (map-len s)))))

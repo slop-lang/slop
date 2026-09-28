@@ -81,7 +81,7 @@
    '((list
       :anchor
       (identifier) @font-lock-operator-face
-      (:match "^\\(\\+\\|-\\|\\*\\|/\\|%\\|&\\||\\|\\^\\|<<\\|>>\\|==\\|!=\\|<\\|<=\\|>\\|>=\\|and\\|or\\|not\\|min\\|max\\|\\.\\|@\\|put\\|set!\\|deref\\|ok\\|error\\|try\\|\\?\\|is-ok\\|unwrap\\|some\\|none\\|cast\\|sizeof\\|addr\\|array\\|list\\|map\\|set\\|record-new\\|union-new\\|arena-new\\|arena-alloc\\|arena-free\\|with-arena\\|string-new\\|string-len\\|string-concat\\|string-eq\\|string-slice\\|string-split\\|string-push-char\\|int-to-string\\|list-new\\|list-push\\|list-get\\|list-pop\\|list-len\\|map-new\\|map-put\\|map-get\\|map-has\\|map-keys\\|map-remove\\|set-new\\|set-put\\|set-has\\|set-remove\\|set-elements\\|chan\\|chan-buffered\\|chan-close\\|send\\|recv\\|try-recv\\|spawn\\|join\\|now-ms\\|sleep-ms\\|print\\|println\\)$"
+      (:match "^\\(\\+\\|-\\|\\*\\|/\\|%\\|&\\||\\|\\^\\|<<\\|>>\\|==\\|!=\\|<\\|<=\\|>\\|>=\\|and\\|or\\|not\\|min\\|max\\|\\.\\|@\\|put\\|set!\\|deref\\|ok\\|error\\|try\\|\\?\\|is-ok\\|unwrap\\|some\\|none\\|cast\\|sizeof\\|addr\\|array\\|list\\|map\\|set\\|record-new\\|union-new\\|arena-new\\|arena-alloc\\|arena-free\\|with-arena\\|string-new\\|string-len\\|string-concat\\|string-eq\\|string-slice\\|string-split\\|string-push-char\\|int-to-string\\|list-new\\|list-push\\|list-get\\|list-pop\\|list-len\\|map-new\\|map-put\\|map-get\\|map-has\\|map-keys\\|map-remove\\|map-len\\|set-new\\|set-put\\|set-has\\|set-remove\\|set-elements\\|set-len\\|chan\\|chan-buffered\\|chan-close\\|send\\|recv\\|try-recv\\|spawn\\|join\\|now-ms\\|sleep-ms\\|print\\|println\\)$"
               @font-lock-operator-face))
      (range_dots) @font-lock-operator-face)
 

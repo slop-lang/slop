@@ -415,6 +415,12 @@ run_negative_check_test "$REPO_ROOT/tests/enum-pattern-negative/paren_arm.slop" 
 run_negative_build_test "$REPO_ROOT/tests/enum-pattern-negative/paren_arm.slop" "enum-paren-arm" \
     "paren_arm.slop:11:8: error: a match on enum 'Paint' names a variant as 'red, not (red)"
 
+# map-len / set-len count the collection they name; the checker rejects the
+# other one, and a well-typed use checks clean.
+run_negative_check_test "$REPO_ROOT/tests/collection-len-negative/map_len_of_set.slop" "map-len-of-set" \
+    "map_len_of_set.slop:9:9: error: map-len: expected Map, got Set"
+run_check_clean_test "$REPO_ROOT/tests/test_collection_len.slop" "collection-len"
+
 TRN="$REPO_ROOT/tests/type-resolution-check-negative"
 run_negative_check_test "$TRN/both.slop" "type-imported-from-both" \
     "both.slop:4:17: error: 'Pt' is imported from both 'alpha' and 'beta'" \

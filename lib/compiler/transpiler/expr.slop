@@ -2998,6 +2998,9 @@
                     ;; map-has: (map-has map key) -> (slop_map_get(map, key) != NULL)
                     ((and (string-eq op "map-has") (>= len 3))
                       (transpile-map-has ctx items))
+                    ;; map-len / set-len: (map-len map) -> ((int64_t)(map)->len)
+                    ((or (string-eq op "map-len") (string-eq op "set-len"))
+                      (transpile-collection-len ctx op items))
                     ;; map-keys: (map-keys map) -> slop_map_keys(map)
                     ((and (string-eq op "map-keys") (>= len 2))
                       (transpile-map-keys ctx items))
@@ -4651,8 +4654,9 @@
                               ((none) "int64_t"))))
                         ;; string-concat returns slop_string
                         ((string-eq op "string-concat") "slop_string")
-                        ;; list-len returns int64_t
-                        ((string-eq op "list-len") "int64_t")
+                        ;; list-len, map-len and set-len return int64_t
+                        ((or (string-eq op "list-len") (string-eq op "map-len") (string-eq op "set-len"))
+                          "int64_t")
                         ((or (string-eq op "is-none") (string-eq op "is-some")) "bool")
                         ;; string-len returns int64_t
                         ((string-eq op "string-len") "int64_t")
@@ -6511,6 +6515,22 @@
             (do
               (ctx-add-error-at ctx "map-get: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL"))))))
+
+  (fn transpile-collection-len ((ctx (Ptr TranspileContext)) (op String) (items (List (Ptr SExpr))))
+    (@intent "Transpile map-len / set-len to the table's entry count")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; O(1) and allocation-free: slop_map keeps len current through put,
+    ;; remove and grow. The alternative was (list-len (set-elements s)).
+    (if (!= (list-len items) 2)
+      (do
+        (ctx-add-error-at ctx (ctx-str ctx op ": expects exactly one argument")
+                          (ctx-list-first-line items) (ctx-list-first-col items))
+        "0")
+      (match (list-get items 1)
+        ((some coll-expr)
+          (ctx-str3 ctx "((int64_t)(" (resolve-container-c ctx coll-expr) ")->len)"))
+        ((none) "0"))))
 
   (fn transpile-map-has ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile map-has to check for non-NULL with proper key pointer wrapping")

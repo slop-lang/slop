@@ -741,8 +741,9 @@ Language primitives that are always available without imports.
 (map-has map k) -> Bool
 (map-keys map) -> (List K)
 (map-remove map k) -> Unit              ; Requires mutable map
+(map-len map) -> (Int 0 ..)             ; Entry count, O(1)
 
-There is no map literal and no map-len.
+There is no map literal.
 
 ### Sets
 (set-new arena T) -> (Set T)            ; Type parameter required
@@ -751,8 +752,7 @@ There is no map literal and no map-len.
 (set-has set e) -> Bool
 (set-remove set e) -> Unit
 (set-elements set) -> (List T)
-
-There is no set-len; use (list-len (set-elements s)).
+(set-len set) -> (Int 0 ..)             ; Element count, O(1)
 
 ### Options
 (some val) -> (Option T)

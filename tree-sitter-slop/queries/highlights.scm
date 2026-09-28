@@ -80,9 +80,9 @@
     ; List operations
     "list-new" "list-push" "list-get" "list-pop" "list-len"
     ; Map operations
-    "map-new" "map-put" "map-get" "map-has" "map-keys" "map-remove"
+    "map-new" "map-put" "map-get" "map-has" "map-keys" "map-remove" "map-len"
     ; Set operations
-    "set-new" "set-put" "set-has" "set-remove" "set-elements"
+    "set-new" "set-put" "set-has" "set-remove" "set-elements" "set-len"
     ; Concurrency
     "chan" "chan-buffered" "chan-close" "send" "recv" "try-recv" "spawn" "join"
     ; Time

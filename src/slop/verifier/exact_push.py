@@ -55,7 +55,7 @@ _FORBIDDEN_FORMS = (
 # user function the body calls to be @pure whenever one of these appears.
 _STATE_READS = frozenset((
     'set-has', 'map-has', 'map-get', 'list-len', 'list-get',
-    'set-elements', 'map-keys',
+    'set-elements', 'map-keys', 'map-len', 'set-len',
 ))
 
 # Heads that are syntax or builtins which mutate nothing. Any other head is a
