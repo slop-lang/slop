@@ -1,0 +1,35 @@
+;; Every way list-push finds the arena to grow a list in (#179): a field of
+;; a struct that carries its own arena, an Arena parameter under another
+;; name, and a named with-arena. Each push must reach the list it names.
+
+(module main
+  (type Env (record (arena Arena) (items (List Int))))
+
+  (fn push-via-env ((env (Ptr Env)) (x Int))
+    (@intent "Grow the list in the arena of the struct it belongs to")
+    (@spec (((Ptr Env) Int) -> Unit))
+    (list-push (. (deref env) items) x))
+
+  (fn push-with-named-arena ((a Arena) (xs (Ptr (List Int))) (x Int))
+    (@intent "Grow the list in an Arena parameter not called arena")
+    (@spec ((Arena (Ptr (List Int)) Int) -> Unit))
+    (list-push (deref xs) x))
+
+  (fn main ()
+    (@intent "Push through each route, then count what arrived")
+    (@spec (() -> Int))
+    (with-arena :as mem 65536
+      (let ((env (cast (Ptr Env) (arena-alloc mem (sizeof Env))))
+            (mut ys (list-new mem Int))
+            (zs (list-new mem Int)))
+        (set! env arena mem)
+        (set! env items (list-new mem Int))
+        (for (i 0 40)
+          (push-via-env env i)
+          (push-with-named-arena mem (addr ys) i)
+          (list-push zs i))
+        (if (and (== (list-len (. (deref env) items)) 40)
+                 (== (list-len ys) 40)
+                 (== (list-len zs) 40))
+          (do (println "list-push arena: PASS") 0)
+          (do (println "list-push arena: FAIL") 1))))))

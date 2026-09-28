@@ -3042,7 +3042,7 @@
                                     (item-c (transpile-expr ctx item-expr))
                                     ;; Determine arena source from the list expression
                                     ;; If it's a struct field access, use struct->arena
-                                    (arena-c (get-arena-for-list-push-expr ctx list-expr list-c)))
+                                    (arena-c (get-arena-for-list-push-expr ctx list-expr items)))
                                 ;; ({ __auto_type _lst_p = &(list); __auto_type _item = item;
                                 ;;    if (_lst_p->len >= _lst_p->cap) { ... grow ... }
                                 ;;    _lst_p->data[_lst_p->len++] = _item; })
@@ -5409,32 +5409,43 @@
             (starts-with (. entry slop-type) "(Fn")))
       ((none) false)))
 
-  (fn get-arena-for-list-push-expr ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)) (list-c String))
-    (@intent "Get arena source for list-push by analyzing list expression")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr) String) -> String))
+  (fn get-arena-for-list-push-expr ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)) (items (List (Ptr SExpr))))
+    (@intent "Resolve the arena a list-push grows its list in, or record a transpiler error")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (@pre {list-expr != nil})
-    ;; First priority: check if "arena" variable is in scope (most functions have arena param)
+    ;; 1. a variable named "arena"; 2. the arena field of a ctx variable;
+    ;; 3. the arena field of the struct the list is a field of, so
+    ;; (. (deref env) types) grows in env->arena; 4. any Arena-typed variable
+    ;; in scope, else an error (resolve-arena-c-name). Tiers 2 and 3 apply only
+    ;; when the struct really has an arena field: guessing, and a last-resort
+    ;; bare "arena", left the C compiler to report a missing arena (#179).
     (match (ctx-lookup-var ctx "arena")
       ((some arena-var)
-        ;; arena is in scope - use it directly
         (. arena-var c-name))
       ((none)
-        ;; Second priority: check for "ctx" variable which has arena field
-        (match (ctx-lookup-var ctx "ctx")
-          ((some ctx-var)
-            ;; ctx is in scope - use ctx->arena
-            (ctx-str ctx (. ctx-var c-name) "->arena"))
-          ((none)
-            ;; Third priority: check if list-expr is a field access pattern (. BASE FIELD)
-            ;; Extract arena from BASE (e.g., (. (deref env) types) -> env->arena)
-            (let ((arena-from-field (get-arena-from-field-access ctx list-expr)))
-              (if (> (string-len arena-from-field) 0)
-                arena-from-field
-                ;; Try finding any arena-typed variable, else fallback to "arena"
-                (match (ctx-find-arena-var ctx)
-                  ((some arena-entry) (. arena-entry c-name))
-                  ((none) "arena")))))))))
+        (let ((from-ctx (match (ctx-lookup-var ctx "ctx")
+                          ((some ctx-var)
+                            (arena-field-access ctx (. ctx-var c-name) (. ctx-var c-type)))
+                          ((none) ""))))
+          (if (> (string-len from-ctx) 0)
+            from-ctx
+            (let ((from-field (get-arena-from-field-access ctx list-expr)))
+              (if (> (string-len from-field) 0)
+                from-field
+                (resolve-arena-c-name ctx "list-push" items))))))))
+
+  (fn arena-field-access ((ctx (Ptr TranspileContext)) (base-c String) (base-c-type String))
+    (@intent "Access the arena field of a struct value or pointer, or empty if the struct has none")
+    (@spec (((Ptr TranspileContext) String String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (is-ptr (ends-with base-c-type "*"))
+          (struct-type (if is-ptr (strip-pointer-suffix arena base-c-type) base-c-type)))
+      (match (ctx-lookup-field-type ctx struct-type "arena")
+        ((some _)
+          (ctx-str ctx base-c (if is-ptr "->arena" ".arena")))
+        ((none) ""))))
 
   (fn get-arena-from-field-access ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
     (@intent "Extract arena from base struct if expr is field access (. BASE FIELD)")
@@ -5466,54 +5477,39 @@
       (else ""))) ;; Not a list
 
   (fn get-arena-from-base ((ctx (Ptr TranspileContext)) (base-expr (Ptr SExpr)))
-    (@intent "Extract arena from a base expression - return base->arena or base.arena")
+    (@intent "Access the arena field of a field access's base, or empty if it has none")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
     (@pre {ctx != nil})
     (@pre {base-expr != nil})
     (match (deref base-expr)
-      ;; Simple symbol - check if it's a pointer variable
+      ;; A variable: its own arena field
       ((sym sym)
-        (let ((var-name (. sym name)))
-          (match (ctx-lookup-var ctx var-name)
-            ((some entry)
-              ;; Check if it's a pointer variable
+        (match (ctx-lookup-var ctx (. sym name))
+          ((some entry)
+            (arena-field-access ctx (. entry c-name)
               (if (. entry is-pointer)
-                (ctx-str ctx (. entry c-name) "->arena")
-                (ctx-str ctx (. entry c-name) ".arena")))
-            ((none)
-              ;; Unknown variable - assume pointer access
-              (let ((arena (. (deref ctx) arena))
-                    (c-name (to-c-name arena var-name)))
-                (ctx-str ctx c-name "->arena"))))))
-      ;; Deref expression: (deref ptr)
+                (if (ends-with (. entry c-type) "*") (. entry c-type) (ctx-str ctx (. entry c-type) "*"))
+                (. entry c-type))))
+          ((none) "")))
+      ;; (deref ptr): the pointee's arena field, ptr->arena
       ((lst lst)
         (let ((items (. lst items)))
           (if (< (list-len items) 2)
-            "arena"
+            ""
             (match (list-get items 0)
               ((some head-expr)
                 (match (deref head-expr)
-                  ((sym sym)
-                    (if (string-eq (. sym name) "deref")
-                      ;; (deref ptr) -> ptr->arena
+                  ((sym head-sym)
+                    (if (string-eq (. head-sym name) "deref")
                       (match (list-get items 1)
                         ((some ptr-expr)
-                          (let ((ptr-c (transpile-expr ctx ptr-expr)))
-                            (ctx-str ctx ptr-c "->arena")))
-                        ((none) "arena"))
-                      ;; Not a deref
-                      "arena"))
-                  (else "arena")))
-              ((none) "arena")))))
-      (else "arena")))
-
-  ;; Keep old function for compatibility
-  (fn get-arena-for-list-push ((ctx (Ptr TranspileContext)) (list-c String))
-    (@intent "Get arena source for list-push - use arena from scope")
-    (@spec (((Ptr TranspileContext) String) -> String))
-    (@pre {ctx != nil})
-    ;; Fallback - use arena from scope
-    "arena")
+                          (arena-field-access ctx (transpile-expr ctx ptr-expr)
+                            (infer-expr-c-type ctx ptr-expr)))
+                        ((none) ""))
+                      ""))
+                  (else "")))
+              ((none) "")))))
+      (else "")))
 
   ;; ============================================================
   ;; Map Type Helpers
