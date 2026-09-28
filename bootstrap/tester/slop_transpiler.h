@@ -63,6 +63,11 @@ SLOP_OPTION_DEFINE(context_UnionVariantEntry, slop_option_context_UnionVariantEn
 SLOP_OPTION_DEFINE(context_FieldEntry, slop_option_context_FieldEntry)
 #endif
 
+#ifndef SLOP_OPTION_CONTEXT_RESULTTYPE_DEFINED
+#define SLOP_OPTION_CONTEXT_RESULTTYPE_DEFINED
+SLOP_OPTION_DEFINE(context_ResultType, slop_option_context_ResultType)
+#endif
+
 struct transpiler_GenericInfo {
     uint8_t is_generic;
     slop_list_string type_params;
@@ -220,16 +225,25 @@ void transpiler_emit_late_registered_option_types_header(context_TranspileContex
 void transpiler_emit_value_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_complex_value_list_types_header(context_TranspileContext* ctx);
 void transpiler_emit_struct_hash_eq(context_TranspileContext* ctx, slop_string c_type);
-void transpiler_emit_union_payload_hash_eq(context_TranspileContext* ctx, slop_list_context_UnionVariantEntry variants);
+void transpiler_emit_value_key_hash_eq(context_TranspileContext* ctx, slop_string c_type, slop_string slop_type);
+void transpiler_emit_aggregate_hash_eq(context_TranspileContext* ctx, slop_string c_type);
+void transpiler_emit_union_payload_hash_eq(context_TranspileContext* ctx, slop_string union_name, slop_list_context_UnionVariantEntry variants);
 void transpiler_emit_record_field_dependencies(context_TranspileContext* ctx, slop_list_context_FieldEntry fields);
 uint8_t transpiler_is_primitive_slop_type(slop_string slop_type);
 uint8_t transpiler_is_range_type_alias(context_TranspileContext* ctx, slop_string slop_type);
 uint8_t transpiler_is_unsigned_payload_type(slop_string slop_type);
 uint8_t transpiler_is_narrow_signed_payload_type(slop_string slop_type);
 slop_string transpiler_resolve_payload_slop_type(context_TranspileContext* ctx, slop_string slop_type);
+slop_string transpiler_resolved_payload_c_type(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string slop_type, slop_string c_type);
+uint8_t transpiler_is_enum_slop_type(context_TranspileContext* ctx, slop_string slop_type);
 void transpiler_container_payload_error(context_TranspileContext* ctx, slop_string slop_type, slop_string c_payload_type);
-slop_string transpiler_payload_hash_expr(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string c_payload_type, slop_string access);
-slop_string transpiler_payload_eq_expr(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string c_payload_type, slop_string a_access, slop_string b_access);
+slop_string transpiler_payload_hash_expr(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string raw_c_type, slop_string access);
+slop_string transpiler_payload_eq_expr(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string raw_c_type, slop_string a_access, slop_string b_access);
+uint8_t transpiler_is_tagged_value_slop_type(slop_string slop_type);
+uint8_t transpiler_is_identity_container_slop_type(slop_string slop_type);
+slop_string transpiler_value_hash_expr(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string c_type, slop_string access);
+slop_string transpiler_value_eq_expr(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string c_type, slop_string a_access, slop_string b_access);
+void transpiler_emit_value_hash_dependencies(context_TranspileContext* ctx, slop_string raw_slop_type, slop_string raw_c_type);
 slop_list_transpiler_PayloadSlot transpiler_union_variant_payloads(context_TranspileContext* ctx, slop_string union_name, slop_string variant_name);
 void transpiler_emit_union_hash_fn(context_TranspileContext* ctx, slop_string c_type, slop_list_context_UnionVariantEntry variants);
 void transpiler_emit_union_variant_hash(context_TranspileContext* ctx, slop_string union_name, context_UnionVariantEntry variant);
@@ -272,6 +286,9 @@ void transpiler_emit_list_declare_by_c_name(context_TranspileContext* ctx, slop_
 uint8_t transpiler_index_in_list(slop_list_int lst, int64_t idx);
 uint8_t transpiler_type_deps_satisfied(context_TranspileContext* ctx, types_SExpr* type_def);
 uint8_t transpiler_type_is_available(context_TranspileContext* ctx, slop_string type_name);
+slop_option_context_ResultType transpiler_find_result_type(context_TranspileContext* ctx, slop_string c_name);
+uint8_t transpiler_result_side_available(context_TranspileContext* ctx, slop_string c_type);
+uint8_t transpiler_result_type_available(context_TranspileContext* ctx, slop_string c_name);
 uint8_t transpiler_is_emittable_container_type(context_TranspileContext* ctx, slop_string type_name);
 uint8_t transpiler_is_slop_runtime_type(slop_string type_name);
 uint8_t transpiler_is_primitive_type(slop_string type_name);
@@ -352,6 +369,11 @@ SLOP_OPTION_DEFINE(context_FieldEntry, slop_option_context_FieldEntry)
 #ifndef SLOP_OPTION_TRANSPILER_PAYLOADSLOT_DEFINED
 #define SLOP_OPTION_TRANSPILER_PAYLOADSLOT_DEFINED
 SLOP_OPTION_DEFINE(transpiler_PayloadSlot, slop_option_transpiler_PayloadSlot)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_RESULTTYPE_DEFINED
+#define SLOP_OPTION_CONTEXT_RESULTTYPE_DEFINED
+SLOP_OPTION_DEFINE(context_ResultType, slop_option_context_ResultType)
 #endif
 
 

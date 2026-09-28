@@ -110,6 +110,7 @@ void infer_check_mutation(env_TypeEnv* env, types_SExpr* target, infer_MutPath p
 void infer_check_param_mode(env_TypeEnv* env, slop_string mode, slop_string name, types_ResolvedType* param_type, types_SExpr* at);
 uint8_t infer_is_container_param_type(types_ResolvedType* t);
 void infer_check_set_target(env_TypeEnv* env, slop_list_types_SExpr_ptr items, int64_t len);
+void infer_check_len_operand(env_TypeEnv* env, slop_string op, slop_string expected, slop_list_types_SExpr_ptr items, int64_t line, int64_t col);
 void infer_check_builtin_args(env_TypeEnv* env, slop_string op, int64_t expected, int64_t actual, int64_t line, int64_t col);
 types_ResolvedType* infer_resolve_alias_chain(types_ResolvedType* t);
 void infer_check_option_predicate_arg(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t len, int64_t line, int64_t col);

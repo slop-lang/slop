@@ -286,14 +286,68 @@ typedef struct { void* fn; void* env; } slop_closure_t;
  * String Interning Functions
  * ============================================================ */
 
-/* FNV-1a hash for raw string data (used by interning) */
-static inline uint64_t slop_hash_string_data(const char* str, size_t len) {
-    uint64_t hash = 14695981039346656037ULL;
-    for (size_t i = 0; i < len; i++) {
-        hash ^= (uint8_t)str[i];
-        hash *= 1099511628211ULL;
+/* Byte-string hash: 8 bytes per step, after xxHash64's per-lane round and
+ * avalanche. It is a pure function of the bytes -- no seed, no addresses, and
+ * words are read little-endian on every host -- so a given key hashes the
+ * same across runs and platforms, and Map/Set iteration order with it. */
+#define SLOP_HASH_P1 0x9E3779B185EBCA87ULL
+#define SLOP_HASH_P2 0xC2B2AE3D27D4EB4FULL
+#define SLOP_HASH_P3 0x165667B19E3779F9ULL
+#define SLOP_HASH_P4 0x85EBCA77C2B2AE63ULL
+
+static inline uint64_t slop_hash_rotl(uint64_t x, int r) {
+    return (x << r) | (x >> (64 - r));
+}
+
+static inline uint64_t slop_hash_load64(const uint8_t* p) {
+    uint64_t w;
+    memcpy(&w, p, sizeof(w));
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    w = __builtin_bswap64(w);
+#endif
+    return w;
+}
+
+static inline uint64_t slop_hash_word(uint64_t h, uint64_t w) {
+    h ^= slop_hash_rotl(w * SLOP_HASH_P2, 31) * SLOP_HASH_P1;
+    return slop_hash_rotl(h, 27) * SLOP_HASH_P1 + SLOP_HASH_P4;
+}
+
+static inline uint64_t slop_hash_avalanche(uint64_t h) {
+    h ^= h >> 33;
+    h *= SLOP_HASH_P2;
+    h ^= h >> 29;
+    h *= SLOP_HASH_P3;
+    h ^= h >> 32;
+    return h;
+}
+
+static inline uint64_t slop_hash_bytes(const void* data, size_t len) {
+    const uint8_t* p = (const uint8_t*)data;
+    uint64_t h = SLOP_HASH_P3 ^ ((uint64_t)len * SLOP_HASH_P1);
+    while (len >= 8) {
+        h = slop_hash_word(h, slop_hash_load64(p));
+        p += 8;
+        len -= 8;
     }
-    return hash;
+    if (len > 0) {
+        /* Assembled byte by byte, so the tail is little-endian everywhere too. */
+        uint64_t w = 0;
+        for (size_t i = 0; i < len; i++) w |= (uint64_t)p[i] << (8 * i);
+        h = slop_hash_word(h, w);
+    }
+    return slop_hash_avalanche(h);
+}
+
+/* Fold one more 64-bit hash into a running one (generated hash functions
+ * use it to combine a tag with a payload hash). */
+static inline uint64_t slop_hash_combine(uint64_t h, uint64_t v) {
+    return slop_hash_word(h, v);
+}
+
+/* Hash for raw string data (used by interning) */
+static inline uint64_t slop_hash_string_data(const char* str, size_t len) {
+    return slop_hash_bytes(str, len);
 }
 
 /* Initialize the global intern pool (called lazily) */
@@ -425,6 +479,8 @@ static inline slop_string slop_string_new_len(slop_arena* arena, const char* src
 
 static inline bool slop_string_eq(slop_string a, slop_string b) {
     if (a.len != b.len) return false;
+    /* Interned strings (SLOP_STRING_INTERN_ALL) that are equal share storage. */
+    if (a.data == b.data) return true;
     return memcmp(a.data, b.data, a.len) == 0;
 }
 
@@ -600,12 +656,13 @@ typedef bool (*slop_eq_fn)(const void* a, const void* b);
 typedef struct {
     void* key;          /* Pointer to key (arena-allocated copy) */
     void* value;
+    uint64_t hash;      /* slop_map_mix(map->hash(key)), valid while occupied */
     bool occupied;
 } slop_map_entry;
 
 typedef struct {
     size_t len;
-    size_t cap;
+    size_t cap;         /* Always a power of two */
     size_t key_size;    /* Size of key type in bytes */
     slop_hash_fn hash;  /* Hash function for keys */
     slop_eq_fn eq;      /* Equality function for keys */
@@ -616,15 +673,9 @@ typedef struct {
  * Hash functions for primitive types
  * ============================================================ */
 
-/* FNV-1a hash for strings */
 static inline uint64_t slop_hash_string(const void* key) {
     const slop_string* s = (const slop_string*)key;
-    uint64_t hash = 14695981039346656037ULL;
-    for (size_t i = 0; i < s->len; i++) {
-        hash ^= (uint8_t)s->data[i];
-        hash *= 1099511628211ULL;
-    }
-    return hash;
+    return slop_hash_bytes(s->data, s->len);
 }
 
 static inline bool slop_eq_string(const void* a, const void* b) {
@@ -655,6 +706,49 @@ static inline bool slop_eq_uint(const void* a, const void* b) {
     return *(const uint64_t*)a == *(const uint64_t*)b;
 }
 
+/* Hash/eq for keys narrower than 64 bits. Each reads exactly its own width --
+ * a key is stored in key_size bytes, so reading 8 would run past it -- and
+ * widens before hashing, so a value hashes as it would as an Int. */
+#define SLOP_NARROW_KEY_HASH_EQ(NAME, T, WIDE, HASH) \
+    static inline uint64_t slop_hash_##NAME(const void* key) { \
+        WIDE x = (WIDE)*(const T*)key; \
+        return HASH(&x); \
+    } \
+    static inline bool slop_eq_##NAME(const void* a, const void* b) { \
+        return *(const T*)a == *(const T*)b; \
+    }
+
+SLOP_NARROW_KEY_HASH_EQ(i32, int32_t, int64_t, slop_hash_int)
+SLOP_NARROW_KEY_HASH_EQ(i16, int16_t, int64_t, slop_hash_int)
+SLOP_NARROW_KEY_HASH_EQ(i8, int8_t, int64_t, slop_hash_int)
+SLOP_NARROW_KEY_HASH_EQ(u32, uint32_t, uint64_t, slop_hash_uint)
+SLOP_NARROW_KEY_HASH_EQ(u16, uint16_t, uint64_t, slop_hash_uint)
+SLOP_NARROW_KEY_HASH_EQ(u8, uint8_t, uint64_t, slop_hash_uint)
+SLOP_NARROW_KEY_HASH_EQ(bool, bool, uint64_t, slop_hash_uint)
+
+/* Hash/eq for Float (double) and F32 (float) keys. eq is C's ==, so -0.0
+ * and 0.0 are one key and must hash alike, and a NaN key is never found. */
+static inline uint64_t slop_hash_double(const void* key) {
+    double d = *(const double*)key;
+    if (d == 0.0) d = 0.0;
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof(bits));
+    return slop_hash_uint(&bits);
+}
+
+static inline bool slop_eq_double(const void* a, const void* b) {
+    return *(const double*)a == *(const double*)b;
+}
+
+static inline uint64_t slop_hash_float(const void* key) {
+    double d = (double)*(const float*)key;
+    return slop_hash_double(&d);
+}
+
+static inline bool slop_eq_float(const void* a, const void* b) {
+    return *(const float*)a == *(const float*)b;
+}
+
 /* Hash for pointers (useful for identity maps) */
 static inline uint64_t slop_hash_ptr(const void* key) {
     uint64_t x = (uint64_t)(*(const void**)key);
@@ -671,16 +765,11 @@ static inline bool slop_eq_ptr(const void* a, const void* b) {
 #define slop_hash_symbol slop_hash_int
 #define slop_eq_symbol slop_eq_int
 
-/* Generate hash/eq functions for arbitrary struct types using FNV-1a */
+/* Generate hash/eq functions over the raw bytes of a type with no padding
+ * (an enum, a range alias) */
 #define SLOP_STRUCT_HASH_EQ_DEFINE(T) \
     static inline uint64_t slop_hash_##T(const void* key) { \
-        const uint8_t* bytes = (const uint8_t*)key; \
-        uint64_t hash = 14695981039346656037ULL; \
-        for (size_t i = 0; i < sizeof(T); i++) { \
-            hash ^= bytes[i]; \
-            hash *= 1099511628211ULL; \
-        } \
-        return hash; \
+        return slop_hash_bytes(key, sizeof(T)); \
     } \
     static inline bool slop_eq_##T(const void* a, const void* b) { \
         return memcmp(a, b, sizeof(T)) == 0; \
@@ -690,12 +779,31 @@ static inline bool slop_eq_ptr(const void* a, const void* b) {
  * Map operations
  * ============================================================ */
 
+/* Spread a key hash across the low bits before masking. Generated hash
+ * functions fold fields with FNV-style steps and slop_hash_int's low bits come
+ * from a multiply, so neither can be trusted to vary in the bits a small
+ * power-of-two table looks at. The result is what an entry stores. */
+static inline uint64_t slop_map_mix(uint64_t h) {
+    h ^= h >> 32;
+    h *= 0x9E3779B97F4A7C15ULL;
+    h ^= h >> 29;
+    return h;
+}
+
+/* Smallest power of two >= n, and at least 8 */
+static inline size_t slop_map_round_cap(size_t n) {
+    size_t cap = 8;
+    while (cap < n) cap <<= 1;
+    return cap;
+}
+
 static inline slop_map slop_map_new(slop_arena* arena, size_t capacity,
                                      size_t key_size, slop_hash_fn hash, slop_eq_fn eq) {
+    size_t cap = slop_map_round_cap(capacity);
     slop_map_entry* entries = (slop_map_entry*)slop_arena_alloc(
-        arena, capacity * sizeof(slop_map_entry));
-    memset(entries, 0, capacity * sizeof(slop_map_entry));
-    return (slop_map){0, capacity, key_size, hash, eq, entries};
+        arena, cap * sizeof(slop_map_entry));
+    memset(entries, 0, cap * sizeof(slop_map_entry));
+    return (slop_map){0, cap, key_size, hash, eq, entries};
 }
 
 /* Return pointer to arena-allocated map (for slop_map* type) */
@@ -711,36 +819,48 @@ static inline slop_map* slop_map_new_string(slop_arena* arena, size_t capacity) 
     return slop_map_new_ptr(arena, capacity, sizeof(slop_string), slop_hash_string, slop_eq_string);
 }
 
+/* Linear probing over a power-of-two table. Every probe compares the stored
+ * hash first, so eq -- an indirect call, and for a string key a memcmp -- runs
+ * only on a full 64-bit hash match. Lookups never write, so any number of
+ * threads may read a map that nobody is mutating. */
 static inline void* slop_map_get(slop_map* map, const void* key) {
-    uint64_t hash = map->hash(key);
-    size_t idx = hash % map->cap;
+    uint64_t hash = slop_map_mix(map->hash(key));
+    size_t mask = map->cap - 1;
+    size_t probe = hash & mask;
 
-    for (size_t i = 0; i < map->cap; i++) {
-        size_t probe = (idx + i) % map->cap;
-        if (!map->entries[probe].occupied) {
+    for (size_t n = 0; n < map->cap; n++, probe = (probe + 1) & mask) {
+        const slop_map_entry* e = &map->entries[probe];
+        if (!e->occupied) {
             return NULL;
         }
-        if (map->eq(map->entries[probe].key, key)) {
-            return map->entries[probe].value;
+        if (e->hash == hash && map->eq(e->key, key)) {
+            return e->value;
         }
     }
     return NULL;
 }
 
-/* Forward declaration for recursive call in put */
-static inline void slop_map_put(slop_arena* arena, slop_map* map,
-                                 const void* key, void* value);
-
+/* Double the table, moving each entry to its slot in the new one. The key
+ * copies, the value pointers and the stored hashes carry over as they are:
+ * nothing is re-hashed, compared or allocated per entry. */
 static inline void slop_map_grow(slop_arena* arena, slop_map* map) {
     size_t new_cap = map->cap * 2;
-    slop_map new_map = slop_map_new(arena, new_cap, map->key_size, map->hash, map->eq);
+    size_t mask = new_cap - 1;
+    slop_map_entry* entries = (slop_map_entry*)slop_arena_alloc(
+        arena, new_cap * sizeof(slop_map_entry));
+    memset(entries, 0, new_cap * sizeof(slop_map_entry));
     for (size_t i = 0; i < map->cap; i++) {
-        if (map->entries[i].occupied) {
-            slop_map_put(arena, &new_map,
-                        map->entries[i].key, map->entries[i].value);
+        const slop_map_entry* e = &map->entries[i];
+        if (e->occupied) {
+            size_t probe = e->hash & mask;
+            while (entries[probe].occupied) {
+                probe = (probe + 1) & mask;
+            }
+            entries[probe] = *e;
         }
     }
-    *map = new_map;
+    map->cap = new_cap;
+    map->entries = entries;
 }
 
 static inline void slop_map_put(slop_arena* arena, slop_map* map,
@@ -750,23 +870,25 @@ static inline void slop_map_put(slop_arena* arena, slop_map* map,
         slop_map_grow(arena, map);
     }
 
-    uint64_t hash = map->hash(key);
-    size_t idx = hash % map->cap;
+    uint64_t hash = slop_map_mix(map->hash(key));
+    size_t mask = map->cap - 1;
+    size_t probe = hash & mask;
 
-    for (size_t i = 0; i < map->cap; i++) {
-        size_t probe = (idx + i) % map->cap;
-        if (!map->entries[probe].occupied) {
+    for (size_t n = 0; n < map->cap; n++, probe = (probe + 1) & mask) {
+        slop_map_entry* e = &map->entries[probe];
+        if (!e->occupied) {
             /* Allocate and copy key */
             void* key_copy = slop_arena_alloc(arena, map->key_size);
             memcpy(key_copy, key, map->key_size);
-            map->entries[probe].key = key_copy;
-            map->entries[probe].value = value;
-            map->entries[probe].occupied = true;
+            e->key = key_copy;
+            e->value = value;
+            e->hash = hash;
+            e->occupied = true;
             map->len++;
             return;
         }
-        if (map->eq(map->entries[probe].key, key)) {
-            map->entries[probe].value = value;
+        if (e->hash == hash && map->eq(e->key, key)) {
+            e->value = value;
             return;
         }
     }
@@ -777,15 +899,16 @@ static inline bool slop_map_has(slop_map* map, const void* key) {
 }
 
 static inline bool slop_map_remove(slop_map* map, const void* key) {
-    uint64_t hash = map->hash(key);
-    size_t idx = hash % map->cap;
+    uint64_t hash = slop_map_mix(map->hash(key));
+    size_t mask = map->cap - 1;
+    size_t probe = hash & mask;
 
     /* Locate the entry. */
     size_t hole = map->cap;                 /* cap == "not found" sentinel */
-    for (size_t n = 0; n < map->cap; n++) {
-        size_t probe = (idx + n) % map->cap;
-        if (!map->entries[probe].occupied) return false;
-        if (map->eq(map->entries[probe].key, key)) { hole = probe; break; }
+    for (size_t n = 0; n < map->cap; n++, probe = (probe + 1) & mask) {
+        const slop_map_entry* e = &map->entries[probe];
+        if (!e->occupied) return false;
+        if (e->hash == hash && map->eq(e->key, key)) { hole = probe; break; }
     }
     if (hole == map->cap) return false;
 
@@ -802,12 +925,12 @@ static inline bool slop_map_remove(slop_map* map, const void* key) {
         map->entries[i].occupied = false;
         size_t j = i;
         for (;;) {
-            j = (j + 1) % map->cap;
+            j = (j + 1) & mask;
             if (!map->entries[j].occupied) {
                 map->len--;
                 return true;
             }
-            size_t k = map->hash(map->entries[j].key) % map->cap;
+            size_t k = map->entries[j].hash & mask;
             /* Entry j may fill the hole at i only if its home slot k does
              * not lie cyclically within (i, j]. */
             if (i <= j ? (i < k && k <= j) : (i < k || k <= j)) continue;
