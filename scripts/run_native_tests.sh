@@ -63,6 +63,8 @@ run_unit_tests "lib/std/path" "path"
 run_unit_tests "lib/std/json" "json"
 run_unit_tests "lib/std/xml" "xml"
 run_unit_tests "tests/example-harness" "example-harness"
+# The harness prescans each module again per @example: pick's Pt is beta's (#174)
+run_unit_tests "tests/type-resolution" "type-resolution-examples"
 # The test-harness generator, covered by the mechanism it implements. Meaningful only
 # alongside the negative fixture below, which independently proves the harness still
 # tells a pass from a skip from a failure.
@@ -215,6 +217,16 @@ run_lib_test "$REPO_ROOT/tests/import-resolution/main.slop" "import-resolution" 
 run_lib_test "$REPO_ROOT/tests/import-resolution/main_swapped.slop" "import-resolution-swapped" \
     -I "$REPO_ROOT/tests/import-resolution"
 
+# A type name resolves the same way (#174): alpha and beta each define Pt,
+# delta and epsilon each define Scores. Before, the transpiler used the Pt
+# registered last in the build, and looked fields up by bare name, so
+# (. p y) on beta's Pt could be emitted against alpha's struct and cc
+# rejected it. Both import orders are built.
+run_lib_test "$REPO_ROOT/tests/type-resolution/main.slop" "type-resolution-build" \
+    -I "$REPO_ROOT/tests/type-resolution"
+run_lib_test "$REPO_ROOT/tests/type-resolution/main_swapped.slop" "type-resolution-build-swapped" \
+    -I "$REPO_ROOT/tests/type-resolution"
+
 # A build that must fail with exactly one error: the expected message at the
 # expected file:line:col. Exactly one, because a module's errors used to be
 # reported again under the file name of every module transpiled after it.
@@ -258,6 +270,17 @@ run_negative_build_test "$NEG/local-and-import.slop" "import-local-and-import" \
 run_negative_build_test "$NEG/unimported.slop" "import-unimported" \
     "unimported.slop:9:15: error: undefined function 'f' - check imports" \
     -I "$NEG" -I "$REPO_ROOT/tests/import-resolution"
+
+TNEG="$REPO_ROOT/tests/type-resolution-negative"
+run_negative_build_test "$TNEG/both.slop" "type-import-ambiguous" \
+    "both.slop:4:17: error: 'Pt' is imported from both 'alpha' and 'beta'" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
+run_negative_build_test "$TNEG/shadow.slop" "type-local-and-import" \
+    "shadow.slop:3:17: error: 'Pt' is defined in module 'main' and also imported from 'beta'" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
+run_negative_build_test "$TNEG/unimported.slop" "type-unimported-ambiguous" \
+    "unimported.slop:10:32: error: type 'Scores' is defined in modules 'epsilon' and 'delta' - import it from the one you mean" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
 
 # list-push grows its list in an arena; with none in scope it used to emit the
 # bare identifier `arena`, which only the C compiler caught (#179).

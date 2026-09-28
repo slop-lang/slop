@@ -1,0 +1,12 @@
+;; alpha and beta each define Pt, differently. A module importing one of
+;; them must get that one's struct and fields, whichever was registered first.
+
+(module alpha
+  (export Pt make-a)
+
+  (type Pt (record (x Int)))
+
+  (fn make-a ((v Int))
+    (@intent "alpha's one-field Pt")
+    (@spec ((Int) -> Pt))
+    (Pt v)))

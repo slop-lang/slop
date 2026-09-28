@@ -37,11 +37,11 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer
                  BindingOrigin MutationKind mutation-error-message))
-  (import context (TranspileContext ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
+  (import context (TranspileContext ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
-                   ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-register-option-type
+                   ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-lookup-field-type-for-slop ctx-lookup-field-slop-type-for-slop ctx-register-option-type
                    ctx-get-fields-for-type ctx-get-union-variants FieldEntry
                    ctx-register-list-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-is-option-c-type ctx-register-chan-type
@@ -1186,7 +1186,7 @@
                           (match (ctx-lookup-var ctx (get-var-name-from-expr obj-expr))
                             ((some var-entry)
                               (let ((obj-slop-type (. var-entry slop-type)))
-                                (match (ctx-lookup-field-type ctx obj-slop-type field-name)
+                                (match (ctx-lookup-field-type-for-slop ctx obj-slop-type field-name)
                                   ((some c-type2) c-type2)
                                   ((none) "__auto_type"))))
                             ((none) "__auto_type"))))))
@@ -1677,7 +1677,7 @@
                                                       (obj-slop-type (if (starts-with obj-slop-type-raw "(Ptr ")
                                                                        (substring arena obj-slop-type-raw 5 (- (. obj-slop-type-raw len) 6))
                                                                        obj-slop-type-raw)))
-                                                  (match (ctx-lookup-field-slop-type ctx obj-slop-type field-name)
+                                                  (match (ctx-lookup-field-slop-type-for-slop ctx obj-slop-type field-name)
                                                     ((some slop-type2) slop-type2)
                                                     ((none) ""))))))))
                                       (_ "")))
@@ -2510,6 +2510,7 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
     (@pre {ctx != nil})
     (@pre {expr != nil})
+    (ctx-set-pos ctx expr)
     (match (deref expr)
       ;; Literals
       ((num _) (transpile-literal ctx expr))
@@ -3062,14 +3063,15 @@
                     ;;
                     ;; Gating on ctx-lookup-func/ctx-lookup-type instead was tried
                     ;; and was wrong: both lookups then saw every module in the
-                    ;; build, and ctx-lookup-type still does. A dependency defining the name
+                    ;; build, and ctx-lookup-type still falls back to a type that
+                    ;; only one module defines, imported or not. A dependency defining the name
                     ;; would disable the builtin in an unrelated module that never
                     ;; imported it, and the call -- type-checked as the builtin --
                     ;; would lower to a call into the dependency. Refusing the
                     ;; definition removes the disagreement rather than tracking it.
                     ;; A local of that name wins, matching the checker. Locals are
                     ;; module-scoped, so ctx-lookup-var is safe here in a way that
-                    ;; ctx-lookup-type is not -- it sees every module in the build.
+                    ;; ctx-lookup-type is not -- that fallback reaches past the imports.
                     ((and (or (string-eq op "is-none") (string-eq op "is-some"))
                           (>= len 2)
                           (not (local-callable-shadows ctx op)))
@@ -3533,7 +3535,7 @@
                 ;; Record type: emit compound literal
                 ;; For none arguments, look up field type and generate typed compound literal
                 (let ((c-name (. type-entry c-name))
-                      (type-name fn-name)  ;; Use SLOP type name for field lookup
+                      (type-name c-name)  ;; Fields are registered under the C name (#174)
                       (mut args "")
                       (mut i 1)
                       (mut field-idx 0))
@@ -3806,7 +3808,7 @@
                                                   (let ((field-name (. field-sym name))
                                                         (obj-slop-type (infer-expr-slop-type ctx obj-expr)))
                                                     (if (> (string-len obj-slop-type) 0)
-                                                      (match (ctx-lookup-field-slop-type ctx obj-slop-type field-name)
+                                                      (match (ctx-lookup-field-slop-type-for-slop ctx obj-slop-type field-name)
                                                         ((some fst)
                                                           (cond
                                                             ((string-eq fst "String") (some "slop_string"))
@@ -6051,18 +6053,7 @@
         (let ((c-name (. type-entry c-name)))
           (ctx-register-struct-key-type ctx c-name)
           (build-struct-key-info ctx c-name)))
-      ((none)
-        ;; Try with module prefix
-        (match (ctx-get-module ctx)
-          ((some mod)
-            (let ((prefixed (ctx-str3 ctx mod "_" name)))
-              (match (ctx-lookup-type ctx prefixed)
-                ((some type-entry)
-                  (let ((c-name (. type-entry c-name)))
-                    (ctx-register-struct-key-type ctx c-name)
-                    (build-struct-key-info ctx c-name)))
-                ((none) ""))))
-          ((none) "")))))
+      ((none) "")))
 
   (fn transpile-map-new ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile map-new to slop_map_new_ptr with key type info")
@@ -8213,13 +8204,12 @@
           (match (ctx-lookup-func ctx sym-name)
             ((some _) false)  ;; Known function
             ((none)
-              (match (ctx-lookup-type ctx sym-name)
-                ((some _) false)  ;; Type name
-                ((none)
-                  ;; Check if it's a variable in scope
-                  (match (ctx-lookup-var ctx sym-name)
-                    ((some _) true)  ;; It's a captured variable!
-                    ((none) false))))))))))  ;; Unknown symbol
+              (if (ctx-type-name-exists ctx sym-name)
+                false  ;; Type name
+                ;; Check if it's a variable in scope
+                (match (ctx-lookup-var ctx sym-name)
+                  ((some _) true)  ;; It's a captured variable!
+                  ((none) false)))))))))  ;; Unknown symbol
 
   (fn is-builtin-op ((name String))
     (@intent "Check if name is a builtin operator")

@@ -130,6 +130,7 @@ void transpiler_check_and_register_result_alias(context_TranspileContext* ctx, s
 void transpiler_prescan_ffi(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 uint8_t transpiler_is_type_name(slop_string name);
 void transpiler_report_import_collision(context_TranspileContext* ctx, slop_string name, slop_string source_mod, types_SExpr* at);
+void transpiler_report_type_import_collision(context_TranspileContext* ctx, slop_string name, slop_string source_mod, slop_string c_name, types_SExpr* at);
 void transpiler_report_imported_definition(context_TranspileContext* ctx, slop_string name, types_SExpr* at);
 void transpiler_prescan_import(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void transpiler_register_types_module_variants(context_TranspileContext* ctx);
@@ -159,6 +160,10 @@ int64_t transpiler_get_body_start(slop_list_types_SExpr_ptr items);
 slop_list_string transpiler_get_export_names(slop_arena* arena, slop_list_types_SExpr_ptr items);
 uint8_t transpiler_list_contains_str(slop_list_string lst, slop_string needle);
 void transpiler_prescan_module_body(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start);
+slop_option_string transpiler_form_symbol_at(slop_list_types_SExpr_ptr items, int64_t idx);
+slop_string transpiler_type_def_c_name(context_TranspileContext* ctx, slop_string type_name);
+void transpiler_predeclare_module_types(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start);
+void transpiler_predeclare_type_form(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void transpiler_scan_type_for_generics(context_TranspileContext* ctx, types_SExpr* type_expr);
 void transpiler_scan_record_fields_for_generics(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 void transpiler_emit_ffi_includes(context_TranspileContext* ctx);

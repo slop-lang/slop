@@ -18,7 +18,7 @@
     extract-module-name)
 
   (import types (SExpr SExprSymbol SExprString SExprNumber SExprList))
-  (import parser (parse ParseResult is-form sexpr-is-symbol sexpr-list-len sexpr-list-get sexpr-get-symbol-name))
+  (import parser (ParseError parse ParseResult is-form sexpr-is-symbol sexpr-list-len sexpr-list-get sexpr-get-symbol-name))
   (import extract (TestCase extract-examples-from-ast))
   (import test-emit (emit-test-harness-typed init-transpile-context init-transpile-context-for-imports re-prescan-main-module))
   (import context (ctx-set-module))

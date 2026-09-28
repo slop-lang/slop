@@ -19,7 +19,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import context (TranspileContext context-new ctx-emit ctx-emit-header ctx-get-output ctx-get-header
                    ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
-                   ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry ctx-current-module-name ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
+                   ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry ctx-find-type-binding ctx-find-own-type ctx-module-defines-types ctx-lookup-type-in-module ctx-type-name-exists ctx-set-pos ctx-current-module-name ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
                    ctx-add-include ctx-get-includes ctx-register-enum-variant
                    ctx-register-union-variant ctx-get-union-variants UnionVariantEntry
                    ctx-register-result-type ctx-has-result-type ctx-get-result-types ResultType
@@ -125,6 +125,7 @@
     (@pre {ctx != nil})
     (let ((len (list-len items))
           (mut i 0))
+      (predeclare-module-types ctx items 0)
       (while (< i len)
         (match (list-get items i)
           ((some item)
@@ -137,6 +138,7 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
     (@pre {ctx != nil})
     (@pre {item != nil})
+    (ctx-set-pos ctx item)
     (match (deref item)
       ((lst lst)
         (let ((items (. lst items)))
@@ -175,21 +177,14 @@
             (match (deref name-expr)
               ((sym sym)
                 (let ((type-name (. sym name))
-                      (base-c-name (to-c-name arena type-name))
-                      ;; Add module prefix if prefixing is enabled
-                      (c-name (if (ctx-prefixing-enabled ctx)
-                                (match (ctx-get-module ctx)
-                                  ((some mod-name)
-                                    (ctx-str ctx (to-c-name arena mod-name) (ctx-str ctx "_" base-c-name)))
-                                  ((none) base-c-name))
-                                base-c-name)))
+                      (c-name (type-def-c-name ctx type-name)))
                   ;; Determine type kind
                   (let ((is-enum (is-enum-def items))
                         (is-record (is-record-def items))
                         (is-union (is-union-def items))
                         ;; For array types, get element pointer type for c-type
                         (c-type (get-array-c-type ctx items c-name)))
-                    (ctx-register-type ctx (TypeEntry type-name c-name c-type is-enum is-record is-union))
+                    (ctx-register-type ctx (TypeEntry type-name c-name c-type is-enum is-record is-union (ctx-current-module-name ctx) ""))
                     ;; Register enum variants for quote operator (use prefixed c-name)
                     (when is-enum
                       (register-enum-variants ctx c-name items))
@@ -809,20 +804,9 @@
               (match (ctx-lookup-type ctx name)
                 ((some type-entry)
                   (ctx-register-struct-key-type ctx (. type-entry c-name)))
-                ;; Try with module prefix
+                ;; Not found - register using converted name
                 ((none)
-                  (match (ctx-get-module ctx)
-                    ((some mod)
-                      (let ((prefixed (ctx-str3 ctx mod "_" name)))
-                        (match (ctx-lookup-type ctx prefixed)
-                          ((some type-entry)
-                            (ctx-register-struct-key-type ctx (. type-entry c-name)))
-                          ((none)
-                            ;; Not found - register using converted name
-                            (ctx-register-struct-key-type ctx (to-c-name arena name))))))
-                    ((none)
-                      ;; No module - register using converted name
-                      (ctx-register-struct-key-type ctx (to-c-name arena name)))))))))
+                  (ctx-register-struct-key-type ctx (to-c-name arena name)))))))
         ;; Complex type expression - skip for now
         (else (do)))))
 
@@ -925,6 +909,31 @@
                   (ctx-sexpr-line at) (ctx-sexpr-col at))))))
         ((none) (do)))))
 
+  (fn report-type-import-collision ((ctx (Ptr TranspileContext)) (name String) (source-mod String)
+                                     (c-name String) (at (Ptr SExpr)))
+    (@intent "Report a type import the current module already defines, or imports from another module")
+    (@spec (((Ptr TranspileContext) String String String (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    ;; The same type reached by two paths is one import; so is the tester's
+    ;; second prescan of a module. Only a different type is a collision.
+    (let ((arena (. (deref ctx) arena))
+          (cur (ctx-current-module-name ctx)))
+      (match (ctx-find-type-binding ctx name cur)
+        ((some entry)
+          (let ((from (. entry imported-from)))
+            (if (== (string-len from) 0)
+              (ctx-add-error-at ctx
+                (string-build arena (list String "'" name "' is defined in module '" cur
+                                                 "' and also imported from '" source-mod "'"))
+                (ctx-sexpr-line at) (ctx-sexpr-col at))
+              (when (and (not (string-eq from source-mod))
+                         (not (string-eq (. entry c-name) c-name)))
+                (ctx-add-error-at ctx
+                  (string-build arena (list String "'" name "' is imported from both '" from
+                                                   "' and '" source-mod "'"))
+                  (ctx-sexpr-line at) (ctx-sexpr-col at))))))
+        ((none) (do)))))
+
   (fn report-imported-definition ((ctx (Ptr TranspileContext)) (name String) (at (Ptr SExpr)))
     (@intent "Report a definition of name in the current module that the module also imports")
     (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> Unit))
@@ -953,10 +962,10 @@
                     (arena (. (deref ctx) arena)))
                 (ctx-add-import ctx mod-name)
                 ;; Register known type variants for types module
-                (when (string-eq mod-name "types")
+                (when (and (string-eq mod-name "types") (not (ctx-module-defines-types ctx "types")))
                   (register-types-module-variants ctx))
                 ;; Register file module variants
-                (when (string-eq mod-name "file")
+                (when (and (string-eq mod-name "file") (not (ctx-module-defines-types ctx "file")))
                   (register-file-module-variants ctx))
                 ;; Parse the symbols list and register any types (capitalized names)
                 (match (list-get items 2)
@@ -976,16 +985,19 @@
                                           (c-sym-name (to-c-name arena sym-name)))
                                       (if (is-type-name sym-name)
                                         ;; Register type AND as variable (for constants like XSD_STRING)
-                                        ;; Re-exports: reuse existing c-name to preserve original module prefix
-                                        (let ((existing (ctx-lookup-type ctx sym-name))
+                                        ;; Resolved in the named module's own namespace (#174), not the
+                                        ;; whole build. Re-exports: the source module's own import entry
+                                        ;; carries the original module's c-name.
+                                        (let ((existing (ctx-find-type-binding ctx sym-name mod-name))
                                               (c-name (match existing
                                                         ((some entry) (. entry c-name))
                                                         ((none) (ctx-str3 ctx c-mod-name "_" c-sym-name)))))
                                           (do
+                                            (report-type-import-collision ctx sym-name mod-name c-name sym-item)
                                             (ctx-register-type ctx (TypeEntry sym-name c-name c-name
                                                                      (match existing ((some e) (. e is-enum)) ((none) false))
                                                                      (match existing ((some e) (. e is-record)) ((none) false))
-                                                                     (match existing ((some e) (. e is-union)) ((none) false))))
+                                                                     (match existing ((some e) (. e is-union)) ((none) false)) (ctx-current-module-name ctx) mod-name))
                                             (ctx-bind-var ctx (VarEntry sym-name c-name "auto" "" false false false "" "" 'origin-const))))
                                         ;; Register function with module prefix
                                         ;; Resolve against the named module's own namespace, not the
@@ -1035,11 +1047,11 @@
     (@pre {ctx != nil})
     ;; Register the types themselves so they're recognized as constructors
     ;; is_enum, is_record, is_union flags - use module-prefixed c-names
-    (ctx-register-type ctx (TypeEntry "SExpr" "types_SExpr" "types_SExpr" false false true))
-    (ctx-register-type ctx (TypeEntry "SExprSymbol" "types_SExprSymbol" "types_SExprSymbol" false true false))
-    (ctx-register-type ctx (TypeEntry "SExprString" "types_SExprString" "types_SExprString" false true false))
-    (ctx-register-type ctx (TypeEntry "SExprNumber" "types_SExprNumber" "types_SExprNumber" false true false))
-    (ctx-register-type ctx (TypeEntry "SExprList" "types_SExprList" "types_SExprList" false true false))
+    (ctx-register-type ctx (TypeEntry "SExpr" "types_SExpr" "types_SExpr" false false true "types" ""))
+    (ctx-register-type ctx (TypeEntry "SExprSymbol" "types_SExprSymbol" "types_SExprSymbol" false true false "types" ""))
+    (ctx-register-type ctx (TypeEntry "SExprString" "types_SExprString" "types_SExprString" false true false "types" ""))
+    (ctx-register-type ctx (TypeEntry "SExprNumber" "types_SExprNumber" "types_SExprNumber" false true false "types" ""))
+    (ctx-register-type ctx (TypeEntry "SExprList" "types_SExprList" "types_SExprList" false true false "types" ""))
     ;; The types module defines SExpr as a union with these variants:
     ;; (type SExpr (union (symbol SExprSymbol) (string SExprString) (number SExprNumber) (list SExprList)))
     ;; Use prefixed names since SExpr comes from types module
@@ -1072,9 +1084,9 @@
     (ctx-register-enum-variant ctx "invalid-mode" "file_FileError")
     (ctx-register-enum-variant ctx "closed" "file_FileError")
     ;; Register type entries for file types
-    (ctx-register-type ctx (TypeEntry "FileMode" "file_FileMode" "file_FileMode" true false false))
-    (ctx-register-type ctx (TypeEntry "FileError" "file_FileError" "file_FileError" true false false))
-    (ctx-register-type ctx (TypeEntry "File" "file_File" "file_File" false true false)))
+    (ctx-register-type ctx (TypeEntry "FileMode" "file_FileMode" "file_FileMode" true false false "file" ""))
+    (ctx-register-type ctx (TypeEntry "FileError" "file_FileError" "file_FileError" true false false "file" ""))
+    (ctx-register-type ctx (TypeEntry "File" "file_File" "file_File" false true false "file" "")))
 
   (fn prescan-const ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Prescan a constant definition - register as variable for symbol resolution")
@@ -1231,7 +1243,7 @@
                           ;; Check for :c-name modifier after the type name
                           (c-name (get-ffi-struct-c-name arena items name-idx type-name)))
                       ;; Register as external struct type with proper C name
-                      (ctx-register-type ctx (TypeEntry type-name c-name c-name false true false))))
+                      (ctx-register-type ctx (TypeEntry type-name c-name c-name false true false (ctx-current-module-name ctx) ""))))
                   (else (do))))
               ((none) (do))))))))
 
@@ -1718,12 +1730,83 @@
     (@pre {ctx != nil})
     (let ((len (list-len items))
           (mut i start))
+      (predeclare-module-types ctx items start)
       (while (< i len)
         (match (list-get items i)
           ((some item)
             (prescan-top-level ctx item))
           ((none) (do)))
         (set! i (+ i 1)))))
+
+  (fn form-symbol-at ((items (List (Ptr SExpr))) (idx Int))
+    (@intent "The name of the symbol at position idx of a form, if that item is a symbol")
+    (@spec (((List (Ptr SExpr)) Int) -> (Option String)))
+    (match (list-get items idx)
+      ((some item)
+        (match (deref item)
+          ((sym sym) (some (. sym name)))
+          (else none)))
+      ((none) none)))
+
+  (fn type-def-c-name ((ctx (Ptr TranspileContext)) (type-name String))
+    (@intent "C name of a type the current module defines: module-prefixed when prefixing is on")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (base-c-name (to-c-name arena type-name)))
+      (if (ctx-prefixing-enabled ctx)
+        (match (ctx-get-module ctx)
+          ((some mod-name)
+            (ctx-str ctx (to-c-name arena mod-name) (ctx-str ctx "_" base-c-name)))
+          ((none) base-c-name))
+        base-c-name)))
+
+  (fn predeclare-module-types ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start Int))
+    (@intent "Register every type the module defines before its imports and bodies are prescanned")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> Unit))
+    (@pre {ctx != nil})
+    ;; Without this, a use of the module's own type that comes before its
+    ;; (type ...) form -- or an import of the same name -- resolves to whatever
+    ;; another module registered first (#174). prescan-type and
+    ;; prescan-ffi-struct register the full entry later; this only binds the
+    ;; name to the module's own C name.
+    (let ((len (list-len items))
+          (mut i start))
+      (while (< i len)
+        (match (list-get items i)
+          ((some item)
+            (match (deref item)
+              ((lst lst)
+                (predeclare-type-form ctx (. lst items)))
+              (else (do))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
+
+  (fn predeclare-type-form ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Register the name of one (type ...) or (ffi-struct ...) form as the module's own")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    (match (form-symbol-at items 0)
+      ((some head)
+        (cond
+          ((string-eq head "type")
+            (match (form-symbol-at items 1)
+              ((some type-name)
+                (let ((c-name (type-def-c-name ctx type-name)))
+                  (ctx-register-type ctx (TypeEntry type-name c-name c-name
+                                           (is-enum-def items) (is-record-def items) (is-union-def items)
+                                           (ctx-current-module-name ctx) ""))))
+              ((none) (do))))
+          ((string-eq head "ffi-struct")
+            (let ((name-idx (if (is-ffi-string-item items 1) 2 1)))
+              (match (form-symbol-at items name-idx)
+                ((some type-name)
+                  (let ((c-name (get-ffi-struct-c-name (. (deref ctx) arena) items name-idx type-name)))
+                    (ctx-register-type ctx (TypeEntry type-name c-name c-name false true false
+                                             (ctx-current-module-name ctx) ""))))
+                ((none) (do)))))
+          (else (do))))
+      ((none) (do))))
 
   ;; ============================================================
   ;; Option/List Type Scanning
@@ -4663,8 +4746,9 @@
               ((some name-expr)
                 (match (deref name-expr)
                   ((sym sym)
+                    ;; A definition names the module's own type, never an import
                     (let ((name (. sym name)))
-                      (match (ctx-lookup-type ctx name)
+                      (match (ctx-find-own-type ctx name)
                         ((some entry) (. entry c-name))
                         ((none) ""))))
                   (else "")))
@@ -4997,6 +5081,7 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
     (@pre {ctx != nil})
     (@pre {type-def != nil})
+    (ctx-set-pos ctx type-def)
     (let ((arena (. (deref ctx) arena)))
       (match (deref type-def)
         ((lst lst)
@@ -5123,8 +5208,7 @@
                                   (is-ptr (is-pointer-type-expr-header type-expr)))
                               ;; Emit the field
                               (ctx-emit-header ctx (ctx-str4 ctx "    " c-type " " (ctx-str ctx c-field-name ";")))
-                              ;; Register field type for both raw and qualified type names
-                              (ctx-register-field-type ctx raw-type-name field-name c-type slop-type-str is-ptr)
+                              ;; Register field type under the C name: SLOP names are resolved to it first (#174)
                               (ctx-register-field-type ctx c-type-name field-name c-type slop-type-str is-ptr)))
                           ((none) (do)))))
                     (else (do))))

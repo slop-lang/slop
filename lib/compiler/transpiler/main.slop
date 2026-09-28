@@ -7,7 +7,7 @@
 
 (module transpiler-main
   (import types (SExpr SExprList SExprSymbol))
-  (import parser (parse ParseResult))
+  (import parser (ParseError parse ParseResult))
   (import context (TranspileContext context-new ctx-reset-for-new-module ctx-get-output ctx-get-header ctx-set-prefixing ctx-set-module ctx-set-file ctx-has-errors ctx-report-errors ctx-has-warnings ctx-report-warnings))
   (import transpiler (transpile-file generate-c-output))
   (import strlib (replace-all))

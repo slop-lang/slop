@@ -31,6 +31,7 @@ typedef struct context_TypeAliasEntry context_TypeAliasEntry;
 typedef struct context_InlineRecord context_InlineRecord;
 typedef struct context_GenericFuncInstantiation context_GenericFuncInstantiation;
 typedef struct context_TranspileContext context_TranspileContext;
+typedef struct context_TypeLookup context_TypeLookup;
 typedef struct context_LastLambdaInfo context_LastLambdaInfo;
 
 #ifndef SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
@@ -110,6 +111,8 @@ struct context_TypeEntry {
     uint8_t is_enum;
     uint8_t is_record;
     uint8_t is_union;
+    slop_string owner_module;
+    slop_string imported_from;
 };
 typedef struct context_TypeEntry context_TypeEntry;
 
@@ -449,12 +452,35 @@ struct context_TranspileContext {
     uint8_t skip_trampoline_generation;
     uint8_t strict_unknown_symbols;
     slop_string current_fn_c_name;
+    int64_t pos_line;
+    int64_t pos_col;
+    slop_list_string reported_ambiguities;
 };
 typedef struct context_TranspileContext context_TranspileContext;
 
 #ifndef SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 #define SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 SLOP_OPTION_DEFINE(context_TranspileContext, slop_option_context_TranspileContext)
+#endif
+
+typedef enum {
+    context_TypeLookup_type_found,
+    context_TypeLookup_type_missing,
+    context_TypeLookup_type_ambiguous
+} context_TypeLookup_tag;
+
+struct context_TypeLookup {
+    context_TypeLookup_tag tag;
+    union {
+        context_TypeEntry type_found;
+        slop_list_context_TypeEntry type_ambiguous;
+    } data;
+};
+typedef struct context_TypeLookup context_TypeLookup;
+
+#ifndef SLOP_OPTION_CONTEXT_TYPELOOKUP_DEFINED
+#define SLOP_OPTION_CONTEXT_TYPELOOKUP_DEFINED
+SLOP_OPTION_DEFINE(context_TypeLookup, slop_option_context_TypeLookup)
 #endif
 
 struct context_LastLambdaInfo {
@@ -505,7 +531,19 @@ slop_option_context_VarEntry context_find_arena_in_single_scope(context_Scope* s
 slop_option_context_VarEntry context_ctx_find_arena_var(context_TranspileContext* ctx);
 slop_option_context_VarEntry context_find_arena_in_scope_chain(context_Scope* scope);
 void context_ctx_register_type(context_TranspileContext* ctx, context_TypeEntry entry);
+slop_option_context_TypeEntry context_find_type_entry(context_TranspileContext* ctx, slop_string name, slop_string mod, uint8_t definition);
+slop_option_context_TypeEntry context_ctx_find_type_binding(context_TranspileContext* ctx, slop_string name, slop_string mod);
+slop_option_context_TypeEntry context_ctx_find_own_type(context_TranspileContext* ctx, slop_string name);
+uint8_t context_ctx_module_defines_types(context_TranspileContext* ctx, slop_string mod);
+slop_option_context_TypeEntry context_ctx_lookup_type_in_module(context_TranspileContext* ctx, slop_string name, slop_string mod);
+context_TypeLookup context_ctx_resolve_type(context_TranspileContext* ctx, slop_string name);
+uint8_t context_type_entries_have_c_name(slop_list_context_TypeEntry entries, slop_string c_name);
+slop_option_context_TypeEntry context_ctx_resolve_type_at(context_TranspileContext* ctx, slop_string name, types_SExpr* at);
 slop_option_context_TypeEntry context_ctx_lookup_type(context_TranspileContext* ctx, slop_string name);
+uint8_t context_ctx_type_name_exists(context_TranspileContext* ctx, slop_string name);
+void context_ctx_report_type_ambiguity(context_TranspileContext* ctx, slop_string name, slop_list_context_TypeEntry candidates, types_SExpr* at);
+uint8_t context_list_has_string(slop_list_string items, slop_string s);
+void context_ctx_set_pos(context_TranspileContext* ctx, types_SExpr* expr);
 void context_ctx_register_func(context_TranspileContext* ctx, context_FuncEntry entry);
 slop_string context_ctx_current_module_name(context_TranspileContext* ctx);
 slop_option_context_FuncEntry context_ctx_lookup_func(context_TranspileContext* ctx, slop_string name);
@@ -513,8 +551,9 @@ slop_option_context_FuncEntry context_ctx_lookup_func_in_module(context_Transpil
 slop_option_context_FuncEntry context_ctx_find_import_entry(context_TranspileContext* ctx, slop_string name, slop_string mod);
 void context_ctx_register_field_type(context_TranspileContext* ctx, slop_string type_name, slop_string field_name, slop_string c_type, slop_string slop_type, uint8_t is_pointer);
 slop_option_string context_ctx_lookup_field_type(context_TranspileContext* ctx, slop_string type_name, slop_string field_name);
-slop_string context_strip_module_prefix(slop_arena* arena, slop_string type_name);
 slop_option_string context_ctx_lookup_field_slop_type(context_TranspileContext* ctx, slop_string type_name, slop_string field_name);
+slop_option_string context_ctx_lookup_field_type_for_slop(context_TranspileContext* ctx, slop_string slop_name, slop_string field_name);
+slop_option_string context_ctx_lookup_field_slop_type_for_slop(context_TranspileContext* ctx, slop_string slop_name, slop_string field_name);
 slop_option_string context_ctx_lookup_field_type_by_index(context_TranspileContext* ctx, slop_string type_name, int64_t index);
 slop_list_context_FieldEntry context_ctx_get_fields_for_type(context_TranspileContext* ctx, slop_string type_name);
 void context_ctx_mark_pointer_var(context_TranspileContext* ctx, slop_string name);
@@ -720,6 +759,11 @@ SLOP_OPTION_DEFINE(context_GenericFuncInstantiation, slop_option_context_Generic
 #ifndef SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 #define SLOP_OPTION_CONTEXT_TRANSPILECONTEXT_DEFINED
 SLOP_OPTION_DEFINE(context_TranspileContext, slop_option_context_TranspileContext)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_TYPELOOKUP_DEFINED
+#define SLOP_OPTION_CONTEXT_TYPELOOKUP_DEFINED
+SLOP_OPTION_DEFINE(context_TypeLookup, slop_option_context_TypeLookup)
 #endif
 
 #ifndef SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED

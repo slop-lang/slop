@@ -1,0 +1,15 @@
+;; The test harness prescans every module again for each @example. A Pt
+;; here must still be beta's while alpha is imported too.
+(module pick
+  (export pick-y)
+  (import alpha (make-a))
+  (import beta (Pt))
+
+  (fn pick-y ((v Int))
+    (@intent "Build beta's Pt and read the field only it has")
+    (@spec ((Int) -> Int))
+    (@example (3) -> 4)
+    (@example (10) -> 11)
+    (let ((p (Pt v (+ v 1)))
+          (a (make-a v)))
+      (+ (- (. p y) (. a x)) v))))

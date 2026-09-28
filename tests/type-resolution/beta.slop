@@ -1,0 +1,9 @@
+(module beta
+  (export Pt make-b)
+
+  (type Pt (record (x Int) (y Int)))
+
+  (fn make-b ((v Int))
+    (@intent "beta's two-field Pt")
+    (@spec ((Int) -> Pt))
+    (Pt v (+ v 1))))
