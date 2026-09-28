@@ -19,7 +19,7 @@
     is-type-form is-function-form get-return-type get-slop-return-type get-result-type-name build-param-str get-type-name-str
     is-generic-type-alias)
 
-  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds))
+  (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds param-mode-error-message))
   (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
                    ctx-register-type ctx-register-func ctx-register-field-type ctx-current-module-name
                    ctx-str ctx-str3 ctx-str4 ctx-str5
@@ -35,7 +35,7 @@
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-int-type))
   (import stmt (transpile-stmt))
-  (import expr (transpile-expr))
+  (import expr (transpile-expr resolve-type-alias))
   (import strlib (starts-with ends-with substring replace))
   (import parser (pretty-print))
 
@@ -133,8 +133,8 @@
     (@spec (((List (Ptr SExpr))) -> Bool))
     ;; Scan items looking for (@generic ...)
     (let ((len (list-len items))
-          (i 0)
-          (found false))
+          (mut i 0)
+          (mut found false))
       (while (and (< i len) (not found))
         (match (list-get items i)
           ((some item)
@@ -212,7 +212,7 @@
                             (let ((slop-type-str (pretty-print arena type-expr)))
                               (do
                                 ;; Register constant as variable for local lookup
-                                (ctx-bind-var ctx (VarEntry raw-name c-name "auto" slop-type-str false false false "" ""))
+                                (ctx-bind-var ctx (VarEntry raw-name c-name "auto" slop-type-str false false false "" "" 'origin-const))
                                 (match (list-get items 3)
                                   ((some value-expr)
                                     (emit-const-def ctx c-name type-expr value-expr is-exported))
@@ -1081,7 +1081,7 @@
           ;; `d->root` (#80).
           (ctx-bind-var ctx (VarEntry "$result" "_retval" actual-return
                               (get-slop-return-type ctx items)
-                              (ends-with actual-return "*") false false "" "")))
+                              (ends-with actual-return "*") false false "" "" 'origin-bound)))
         ;; Set capture mode if we need _retval
         (when needs-retval
           (ctx-set-capture-retval ctx true))
@@ -1157,8 +1157,10 @@
           (let ((items (. lst items))
                 (len (list-len items)))
             (when (>= len 2)
-              ;; Check for mode: (mode name Type) or (name Type)
-              (let ((has-mode (and (>= len 3) (is-param-mode items)))
+              ;; (mode name Type) or (name Type). An unmarked or in parameter
+              ;; is read-only; a mut one is a local copy (#180)
+              (let ((has-mode (is-param-mode items))
+                    (mode (if has-mode (param-mode-word items) "in"))
                     (name-idx (if has-mode 1 0))
                     (type-idx (if has-mode 2 1)))
                 (match (list-get items name-idx)
@@ -1173,9 +1175,12 @@
                                   (slop-type-str (pretty-print arena type-expr))
                                   (is-ptr (is-pointer-type type-expr))
                                   (is-closure (is-fn-type type-expr)))
+                              (check-param-mode ctx mode param-name slop-type-str name-expr)
                               ;; (Fn ...) params are closures - set is-closure=true
                               ;; They're called via emit-generic-closure-call: ((cast)f.fn)(f.env, args)
-                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr false is-closure "" ""))))
+                              ;; A mut param is mutable, so a closure captures it by reference
+                              (ctx-bind-var ctx (VarEntry param-name c-name c-type slop-type-str is-ptr
+                                                          (string-eq mode "mut") is-closure "" "" 'origin-param))))
                           ((none) (do))))
                       (else (do))))
                   ((none) (do)))))))
@@ -1563,20 +1568,48 @@
         (else "/* param must be a list */"))))
 
   (fn is-param-mode ((items (List (Ptr SExpr))))
-    (@intent "Check if first item is a parameter mode")
+    (@intent "Check whether a parameter form is (mode name Type)")
     (@spec (((List (Ptr SExpr))) -> Bool))
-    (if (< (list-len items) 1)
-      false
-      (match (list-get items 0)
-        ((some first)
-          (match (deref first)
-            ((sym sym)
-              (let ((name (. sym name)))
-                (or (string-eq name "in")
-                    (string-eq name "out")
-                    (string-eq name "mut"))))
-            (else false)))
-        ((none) false))))
+    ;; Any three-element form: bind-single-param reports a mode word that is
+    ;; not in or mut, rather than reading it as the parameter's name
+    (>= (list-len items) 3))
+
+  (fn param-mode-word ((items (List (Ptr SExpr))))
+    (@intent "The mode word of a (mode name Type) parameter form")
+    (@spec (((List (Ptr SExpr))) -> String))
+    (match (list-get items 0)
+      ((some first)
+        (match (deref first)
+          ((sym sym) (. sym name))
+          (else "")))
+      ((none) "")))
+
+  (fn check-param-mode ((ctx (Ptr TranspileContext)) (mode String) (name String)
+                        (slop-type String) (at (Ptr SExpr)))
+    (@intent "Report a parameter mode that is not allowed")
+    (@spec (((Ptr TranspileContext) String String String (Ptr SExpr)) -> Unit))
+    (@pre {ctx != nil})
+    ;; in is the default; mut is a local copy, which for a List, Map or Set
+    ;; would share the caller's storage; anything else is not a mode. The
+    ;; checker reports the same, but a build drops its diagnostics (#93).
+    (when (not (or (string-eq mode "in")
+                   (and (string-eq mode "mut") (not (is-container-slop-type ctx slop-type)))))
+      (ctx-add-error-at ctx (param-mode-error-message (. (deref ctx) arena) mode name)
+        (ctx-sexpr-line at) (ctx-sexpr-col at))))
+
+  (fn is-container-slop-type ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Whether a SLOP type, through its aliases, is a List, Map or Set")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    (let ((mut t slop-type)
+          (mut steps 0))
+      (while (and (< steps 8) (not (starts-with t "(")))
+        (let ((resolved (resolve-type-alias ctx t)))
+          (if (string-eq resolved t)
+            (set! steps 8)
+            (set! t resolved)))
+        (set! steps (+ steps 1)))
+      (or (starts-with t "(List ") (starts-with t "(Map ") (starts-with t "(Set "))))
 
   (fn is-fn-type ((type-expr (Ptr SExpr)))
     (@intent "Check if type expression is a function type (Fn ...)")

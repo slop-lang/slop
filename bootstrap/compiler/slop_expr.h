@@ -9,6 +9,8 @@
 #include "slop_ctype.h"
 #include "slop_strlib.h"
 
+typedef struct expr_CMutPath expr_CMutPath;
+
 #ifndef SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_LIST_TYPES_SEXPR_PTR_IMPL_DEFINED
@@ -18,6 +20,19 @@ SLOP_LIST_DEFINE(types_SExpr*, slop_list_types_SExpr_ptr)
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
+#endif
+
+struct expr_CMutPath {
+    slop_string root;
+    uint8_t has_root;
+    int64_t depth;
+    uint8_t through;
+};
+typedef struct expr_CMutPath expr_CMutPath;
+
+#ifndef SLOP_OPTION_EXPR_CMUTPATH_DEFINED
+#define SLOP_OPTION_EXPR_CMUTPATH_DEFINED
+SLOP_OPTION_DEFINE(expr_CMutPath, slop_option_expr_CMutPath)
 #endif
 
 slop_string expr_escape_c_string(context_TranspileContext* ctx, slop_string s);
@@ -103,6 +118,12 @@ slop_string expr_infer_option_inner_slop_type(context_TranspileContext* ctx, typ
 slop_string expr_fix_ternary_none(context_TranspileContext* ctx, types_SExpr* other_expr, slop_string other_branch, slop_string this_branch);
 slop_option_string expr_extract_option_type(slop_arena* arena, slop_string s);
 slop_string expr_transpile_array_index(context_TranspileContext* ctx, types_SExpr* arr_expr, slop_string arr_c, slop_string idx_c);
+uint8_t expr_is_pointer_step(context_TranspileContext* ctx, types_SExpr* expr);
+expr_CMutPath expr_c_mutation_path(context_TranspileContext* ctx, types_SExpr* expr);
+expr_CMutPath expr_c_mutation_path_field(context_TranspileContext* ctx, expr_CMutPath base, types_SExpr* base_expr);
+uint8_t expr_c_mutation_forbidden(context_VarEntry entry, expr_CMutPath path, types_MutationKind kind);
+uint8_t expr_check_c_mutation(context_TranspileContext* ctx, types_SExpr* target, expr_CMutPath path, types_MutationKind kind);
+uint8_t expr_check_set_target_c(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t len);
 uint8_t expr_is_pointer_expr(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string expr_extract_sizeof_type(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string expr_transpile_expr(context_TranspileContext* ctx, types_SExpr* expr);
@@ -257,6 +278,11 @@ slop_string expr_infer_elem_from_type(context_TranspileContext* ctx, types_SExpr
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 #define SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED
 SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
+#endif
+
+#ifndef SLOP_OPTION_EXPR_CMUTPATH_DEFINED
+#define SLOP_OPTION_EXPR_CMUTPATH_DEFINED
+SLOP_OPTION_DEFINE(expr_CMutPath, slop_option_expr_CMutPath)
 #endif
 
 #ifndef SLOP_OPTION_CONTEXT_VARENTRY_DEFINED

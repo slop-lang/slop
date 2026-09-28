@@ -2039,10 +2039,10 @@
       (when (> (cast Int (. module-name len)) 0)
         (ctx-set-module tctx (some module-name))
         (ctx-set-prefixing tctx true))
-      (ctx-bind-var tctx (VarEntry "arena" "test_arena" "slop_arena*" "Arena" true false false "" ""))
+      (ctx-bind-var tctx (VarEntry "arena" "test_arena" "slop_arena*" "Arena" true false false "" "" 'origin-bound))
       ;; replace-wildcards rewrites _ to this marker; binding it here makes it resolve
       ;; to a zero initializer instead of tripping the strict-unknown-symbol check.
-      (ctx-bind-var tctx (VarEntry "__SLOP_WILDCARD__" "{0}" "int64_t" "Int" false false false "" ""))
+      (ctx-bind-var tctx (VarEntry "__SLOP_WILDCARD__" "{0}" "int64_t" "Int" false false false "" "" 'origin-bound))
       ;; @example arguments must resolve against the module and its imports. Without
       ;; this, an unknown fixture name is silently emitted as a plausible C identifier
       ;; and the failure surfaces as a link error - or, worse, as a passing test.

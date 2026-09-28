@@ -1,0 +1,107 @@
+;; Parameter modes (#180). An unmarked parameter's own value is read-only; a
+;; mut parameter is a local copy the caller never sees; a (Ptr T) passed as
+;; (addr x) is how a function changes the caller's value. Storage a value only
+;; points to -- a Map or Set, a List's elements -- is shared either way.
+
+(module main
+  (type Bag (record (items (List Int)) (n Int)))
+  (type Node (record (v Int) (next (Ptr Node))))
+
+  (fn bump ((mut n Int))
+    (@intent "Change a local copy of n")
+    (@spec ((Int) -> Int))
+    (set! n (+ n 1))
+    n)
+
+  (fn with-item ((arena Arena) (mut b Bag) (x Int))
+    (@intent "Functional update: add to a copy of the bag and return it")
+    (@spec ((Arena Bag Int) -> Bag))
+    (list-push (. b items) x)
+    (set! b n (+ (. b n) 1))
+    b)
+
+  (fn push-to ((arena Arena) (xs (Ptr (List Int))) (x Int))
+    (@intent "Push onto the caller's list")
+    (@spec ((Arena (Ptr (List Int)) Int) -> Unit))
+    (list-push (deref xs) x))
+
+  (fn put-one ((arena Arena) (m (Map Int Int)))
+    (@intent "A Map is a handle: the caller's map changes")
+    (@spec ((Arena (Map Int Int)) -> Unit))
+    (map-put m 1 10))
+
+  (fn add-one ((arena Arena) (s (Set Int)))
+    (@intent "A Set is a handle: the caller's set changes")
+    (@spec ((Arena (Set Int)) -> Unit))
+    (set-put s 7))
+
+  (fn set-first ((xs (List Int)))
+    (@intent "list-set writes the elements, which the copy shares")
+    (@spec (((List Int)) -> Bool))
+    (list-set xs 0 99))
+
+  (fn chain-length ((mut p (Ptr Node)))
+    (@intent "Walk a list with a reassignable local pointer")
+    (@spec (((Ptr Node)) -> Int))
+    (let ((mut count 0))
+      (while (!= p nil)
+        (set! count (+ count 1))
+        (set! p (. p next)))
+      count))
+
+  (fn bump-twice ((mut n Int))
+    (@intent "A closure captures a mut parameter by reference")
+    (@spec ((Int) -> Int))
+    (let ((inc (fn ()
+                 (@spec (() -> Unit))
+                 (set! n (+ n 1)))))
+      (inc)
+      (inc)
+      n))
+
+  (fn check ((name String) (ok Bool))
+    (@intent "Report one check, returning 1 if it failed")
+    (@spec ((String Bool) -> Int))
+    (if ok
+      (do (print name) (println ": PASS") 0)
+      (do (print name) (println ": FAIL") 1)))
+
+  (fn main ()
+    (@intent "Exercise each mode")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((n 5)
+            (bag (Bag (list-new arena Int) 0))
+            (bigger (with-item arena bag 3))
+            (mut ys (list-new arena Int))
+            (m (map-new arena Int Int))
+            (s (set-new arena Int))
+            (zs (list-new arena Int))
+            (c (cast (Ptr Node) (arena-alloc arena (sizeof Node))))
+            (b (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+        (set! c v 3)
+        (set! c next nil)
+        (set! b v 2)
+        (set! b next c)
+        (list-push zs 1)
+        (push-to arena (addr ys) 4)
+        (push-to arena (addr ys) 5)
+        (put-one arena m)
+        (add-one arena s)
+        (set-first zs)
+        (let ((failures
+                (+ (check "mut Int is a local copy" (and (== (bump n) 6) (== n 5)))
+                (+ (check "mut record: the copy changes, the caller's does not"
+                     (and (== (list-len (. bigger items)) 1) (== (. bigger n) 1)
+                          (== (list-len (. bag items)) 0) (== (. bag n) 0)))
+                (+ (check "a (Ptr (List T)) reaches the caller" (== (list-len ys) 2))
+                (+ (check "map-put through a Map parameter reaches the caller" (map-has m 1))
+                (+ (check "set-put through a Set parameter reaches the caller" (set-has s 7))
+                (+ (check "list-set through a List parameter reaches the caller"
+                     (match (list-get zs 0) ((some v) (== v 99)) ((none) false)))
+                (+ (check "a mut Ptr walks a chain" (== (chain-length b) 2))
+                   (check "a closure changes a mut parameter" (== (bump-twice 1) 3)))))))))))
+          (println "")
+          (if (== failures 0)
+            (do (println "All tests passed!") 0)
+            (do (println "test(s) failed") 1)))))))

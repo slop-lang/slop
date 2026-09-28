@@ -73,6 +73,8 @@ SLOP_OPTION_DEFINE(types_ParamInfo, slop_option_types_ParamInfo)
 struct env_VarBinding {
     slop_string name;
     types_ResolvedType* var_type;
+    uint8_t mutable;
+    types_BindingOrigin origin;
 };
 typedef struct env_VarBinding env_VarBinding;
 
@@ -207,6 +209,9 @@ slop_arena* env_env_arena(env_TypeEnv* env);
 void env_env_push_scope(env_TypeEnv* env);
 void env_env_pop_scope(env_TypeEnv* env);
 void env_env_bind_var(env_TypeEnv* env, slop_string name, types_ResolvedType* var_type);
+void env_env_bind_var_as(env_TypeEnv* env, slop_string name, types_ResolvedType* var_type, uint8_t mutable, types_BindingOrigin origin);
+slop_option_env_VarBinding env_scope_lookup_binding(env_CheckerScope* scope_ptr, slop_string name);
+slop_option_env_VarBinding env_env_lookup_binding(env_TypeEnv* env, slop_string name);
 slop_option_types_ResolvedType_ptr env_scope_lookup_var(env_CheckerScope* scope_ptr, slop_string name);
 slop_option_types_ResolvedType_ptr env_env_lookup_var(env_TypeEnv* env, slop_string name);
 void env_env_register_constant(env_TypeEnv* env, slop_string name, types_ResolvedType* const_type);
