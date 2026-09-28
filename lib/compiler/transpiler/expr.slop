@@ -23,6 +23,7 @@
     c-type-to-option-type-name
     ;; Set/Map type helpers
     resolve-type-alias extract-set-elem-from-slop-type
+    slop-type-to-c-type extract-first-type-arg extract-second-type-arg
     extract-map-key-from-slop-type extract-map-value-from-slop-type
     slop-value-type-to-c-type
     ;; Set/Map type detection
@@ -469,15 +470,33 @@
          (or (> (list-len (ctx-get-union-variants ctx c-type)) 0)
              (> (list-len (ctx-get-fields-for-type ctx c-type)) 0))))
 
+  (fn value-has-identity-part ((ctx (Ptr TranspileContext)) (raw-slop-type String))
+    (@intent "Check if generated eq compares any part of a value by identity: a List, Map or Set, bare or inside an Option or Result")
+    (@spec (((Ptr TranspileContext) String) -> Bool))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (st (resolve-type-alias ctx raw-slop-type)))
+      (cond
+        ((or (starts-with st "(List ") (starts-with st "(Map ") (starts-with st "(Set "))
+          true)
+        ((starts-with st "(Option ")
+          (value-has-identity-part ctx (extract-first-type-arg arena st 8)))
+        ((starts-with st "(Result ")
+          (or (value-has-identity-part ctx (extract-first-type-arg arena st 8))
+              (value-has-identity-part ctx (extract-second-type-arg arena st 8))))
+        (else false))))
+
   (fn record-container-field ((ctx (Ptr TranspileContext)) (c-type String))
     (@intent "Name the first field of a record that generated eq compares by identity, or \"\" if none")
     (@spec (((Ptr TranspileContext) String) -> String))
     (@pre {ctx != nil})
-    ;; emit-field-eq compares a (List T) / (Map K V) / (Set T) / (Option T) /
-    ;; (Result T E) field with memcmp over the struct header -- data pointer, len,
-    ;; cap -- so two containers holding identical contents come back unequal.
-    ;; That is long-standing map/set-key behaviour and is deliberately not changed
+    ;; emit-field-eq compares a (List T) field with memcmp over its header --
+    ;; data pointer, len, cap -- and a (Map K V) / (Set T) field by pointer, so
+    ;; two containers holding identical contents come back unequal. That is
+    ;; long-standing map/set-key behaviour and is deliberately not changed
     ;; here, but == makes it reachable from ordinary code, so the site warns.
+    ;; An Option or Result compares by content, and warns only for a container
+    ;; inside it.
     (let ((fields (ctx-get-fields-for-type ctx c-type))
           (len (list-len fields))
           (mut i 0)
@@ -485,13 +504,8 @@
       (while (and (< i len) (string-eq found ""))
         (match (list-get fields i)
           ((some field)
-            (let ((st (. field slop-type)))
-              (when (or (starts-with st "(List")
-                        (starts-with st "(Map")
-                        (starts-with st "(Set")
-                        (starts-with st "(Option")
-                        (starts-with st "(Result"))
-                (set! found (. field field-name)))))
+            (when (value-has-identity-part ctx (. field slop-type))
+              (set! found (. field field-name))))
           ((none) (do)))
         (set! i (+ i 1)))
       found))

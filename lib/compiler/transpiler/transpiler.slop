@@ -49,7 +49,8 @@
                 get-return-type get-slop-return-type get-result-type-name build-param-str eval-const-value get-type-name-str
                 is-generic-type-alias))
   (import stmt (transpile-stmt))
-  (import expr (transpile-expr))
+  (import expr (transpile-expr resolve-type-alias slop-type-to-c-type
+                extract-first-type-arg extract-second-type-arg))
   (import match (transpile-match))
   (import strlib (starts-with ends-with substring char-at string-build))
   (import parser (pretty-print))
@@ -3104,8 +3105,8 @@
       (if (> (list-len union-variants) 0)
         ;; Union type: first emit hash/eq for variant payload types, then the union itself
         (do
-          ;; Emit hash/eq for each variant's payload type (if it's a record type)
-          (emit-union-payload-hash-eq ctx union-variants)
+          ;; Emit hash/eq for the records and unions its payloads hash through
+          (emit-union-payload-hash-eq ctx c-type union-variants)
           ;; Now emit the union's own hash/eq
           (emit-union-hash-fn ctx c-type union-variants)
           (emit-union-eq-fn ctx c-type union-variants))
@@ -3122,36 +3123,31 @@
               ;; Generate equality function
               (emit-struct-eq-fn ctx c-type fields)))))))
 
-  (fn emit-union-payload-hash-eq ((ctx (Ptr TranspileContext)) (variants (List UnionVariantEntry)))
-    (@intent "Emit hash/eq functions for union variant payload types")
-    (@spec (((Ptr TranspileContext) (List UnionVariantEntry)) -> Unit))
+  (fn emit-union-payload-hash-eq ((ctx (Ptr TranspileContext)) (union-name String) (variants (List UnionVariantEntry)))
+    (@intent "Emit hash/eq for the records and unions a union's payloads hash through, every slot of every variant")
+    (@spec (((Ptr TranspileContext) String (List UnionVariantEntry)) -> Unit))
     (@pre {ctx != nil})
     (let ((len (list-len variants))
           (mut i 0))
       (while (< i len)
         (match (list-get variants i)
           ((some variant)
-            (let ((slop-type (. variant slop-type))
-                  (c-payload-type (. variant c-type)))
-              ;; Skip empty payloads and primitive types
-              (when (and (> (string-len slop-type) 0)
-                         (not (is-primitive-slop-type slop-type)))
-                ;; Check if this payload type has fields (is a record type)
-                (let ((fields (ctx-get-fields-for-type ctx c-payload-type)))
-                  (when (> (list-len fields) 0)
-                    ;; Build guard name for this type
-                    (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-payload-type) "_HASH_EQ_DEFINED" "")))
-                      ;; Only emit if not already defined
-                      (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
-                      (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
-                      (emit-struct-hash-fn ctx c-payload-type fields)
-                      (emit-struct-eq-fn ctx c-payload-type fields)
-                      (ctx-emit-header ctx "#endif")))))))
+            (let ((payloads (union-variant-payloads ctx union-name (. variant variant-name))))
+              (if (> (list-len payloads) 0)
+                (let ((count (list-len payloads))
+                      (mut j 0))
+                  (while (< j count)
+                    (match (list-get payloads j)
+                      ((some slot) (emit-value-hash-dependencies ctx (. slot slop-type) (. slot c-type)))
+                      ((none) (do)))
+                    (set! j (+ j 1))))
+                (when (> (string-len (. variant slop-type)) 0)
+                  (emit-value-hash-dependencies ctx (. variant slop-type) (. variant c-type))))))
           ((none) (do)))
         (set! i (+ i 1)))))
 
   (fn emit-record-field-dependencies ((ctx (Ptr TranspileContext)) (fields (List FieldEntry)))
-    (@intent "Emit hash/eq functions for record field types that need them (unions, nested records)")
+    (@intent "Emit hash/eq functions for record field types that need them (unions, nested records, through Option and Result)")
     (@spec (((Ptr TranspileContext) (List FieldEntry)) -> Unit))
     (@pre {ctx != nil})
     (let ((len (list-len fields))
@@ -3159,35 +3155,7 @@
       (while (< i len)
         (match (list-get fields i)
           ((some field)
-            (let ((slop-type (. field slop-type))
-                  (c-type (. field c-type)))
-              ;; Skip primitive types
-              (when (not (is-primitive-slop-type slop-type))
-                ;; Check if it's a union type
-                (let ((union-variants (ctx-get-union-variants ctx c-type)))
-                  (if (> (list-len union-variants) 0)
-                    ;; Union field - emit its hash/eq with guard
-                    (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" "")))
-                      (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
-                      (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
-                      ;; First emit dependencies for union's payload types
-                      (emit-union-payload-hash-eq ctx union-variants)
-                      ;; Then emit the union's hash/eq
-                      (emit-union-hash-fn ctx c-type union-variants)
-                      (emit-union-eq-fn ctx c-type union-variants)
-                      (ctx-emit-header ctx "#endif"))
-                    ;; Not a union - check if it's a nested record
-                    (let ((nested-fields (ctx-get-fields-for-type ctx c-type)))
-                      (when (> (list-len nested-fields) 0)
-                        ;; Nested record - emit its hash/eq with guard
-                        (let ((guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" "")))
-                          (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
-                          (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
-                          ;; Recursively emit dependencies first
-                          (emit-record-field-dependencies ctx nested-fields)
-                          (emit-struct-hash-fn ctx c-type nested-fields)
-                          (emit-struct-eq-fn ctx c-type nested-fields)
-                          (ctx-emit-header ctx "#endif")))))))))
+            (emit-value-hash-dependencies ctx (. field slop-type) (. field c-type)))
           ((none) (do)))
         (set! i (+ i 1)))))
 
@@ -3349,9 +3317,12 @@
           (ctx-str3 ctx "slop_hash_uint(&(uint64_t){ (uint64_t)" access " })"))
         ((is-narrow-signed-payload-type slop-type)
           (ctx-str3 ctx "slop_hash_int(&(int64_t){ (int64_t)" access " })"))
-        ;; A (List T) / (Option T) / (Result T E) payload would name
-        ;; slop_hash_slop_list_int and friends, none of which exist. Say so here
-        ;; rather than emitting a call to an undeclared function.
+        ;; An (Option T) / (Result T E) payload hashes by what it holds
+        ((is-tagged-value-slop-type slop-type)
+          (value-hash-expr ctx slop-type c-payload-type access))
+        ;; A (List T) payload would name slop_hash_slop_list_int, which does
+        ;; not exist. Say so here rather than emitting a call to an undeclared
+        ;; function.
         ((is-container-c-type c-payload-type)
           (do
             (container-payload-error ctx raw-slop-type c-payload-type)
@@ -3375,6 +3346,8 @@
              (is-unsigned-payload-type slop-type)
              (is-narrow-signed-payload-type slop-type))
           (ctx-str3 ctx a-access " == " b-access))
+        ((is-tagged-value-slop-type slop-type)
+          (value-eq-expr ctx slop-type c-payload-type a-access b-access))
         ;; Same as in payload-hash-expr: there is no slop_eq_slop_list_int.
         ((is-container-c-type c-payload-type)
           (do
@@ -3383,6 +3356,157 @@
         (else
           (ctx-str5 ctx "slop_eq_" c-payload-type "(&" a-access
                     (ctx-str3 ctx ", &" b-access ")"))))))
+
+  ;; ============================================================
+  ;; Content Hash/Eq for Option and Result
+  ;;
+  ;; An (Option T) or (Result T E) -- a record field, a union payload, or
+  ;; nested in either -- hashes and compares by what it holds: the tag, then
+  ;; the active payload through that payload's own hash or eq. Record fields
+  ;; of these types used to be hashed bytewise and compared with memcmp,
+  ;; which read the padding after the tag (the arena never zeroes it), the
+  ;; stale payload of an empty Option and the inactive side of a Result, and
+  ;; a String payload's pointer rather than its text. Equal values could
+  ;; hash differently, and differently from run to run.
+  ;; ============================================================
+
+  (fn is-tagged-value-slop-type ((slop-type String))
+    (@intent "Check if a SLOP type is an (Option T) or a (Result T E)")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("(Option String)") -> true)
+    (@example ("(Result Int String)") -> true)
+    (@example ("(List Int)") -> false)
+    (@example ("Option") -> false)
+    (or (starts-with slop-type "(Option ")
+        (starts-with slop-type "(Result ")))
+
+  (fn is-identity-container-slop-type ((slop-type String))
+    (@intent "Check if a SLOP type is a List, Map or Set, which generated hash/eq treat by identity")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("(List Int)") -> true)
+    (@example ("(Map String Int)") -> true)
+    (@example ("(Set Int)") -> true)
+    (@example ("(Option (List Int))") -> false)
+    (or (starts-with slop-type "(List ")
+        (starts-with slop-type "(Map ")
+        (starts-with slop-type "(Set ")))
+
+  (fn value-hash-expr ((ctx (Ptr TranspileContext)) (raw-slop-type String) (c-type String) (access String))
+    (@intent "Build a uint64_t hash expression over the content of one Option, Result or container value")
+    (@spec (((Ptr TranspileContext) String String String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (slop-type (resolve-payload-slop-type ctx raw-slop-type)))
+      (cond
+        ((starts-with slop-type "(Option ")
+          (let ((inner (extract-first-type-arg arena slop-type 8)))
+            (ctx-str5 ctx "((" access ").has_value ? slop_hash_combine(1, "
+                      (value-hash-expr ctx inner (slop-type-to-c-type ctx inner)
+                                       (ctx-str3 ctx "(" access ").value"))
+                      ") : 0)")))
+        ((starts-with slop-type "(Result ")
+          (let ((ok-type (extract-first-type-arg arena slop-type 8))
+                (err-type (extract-second-type-arg arena slop-type 8)))
+            (ctx-str5 ctx
+              (ctx-str3 ctx "((" access ").is_ok ? slop_hash_combine(1, ")
+              (value-hash-expr ctx ok-type (slop-type-to-c-type ctx ok-type)
+                               (ctx-str3 ctx "(" access ").data.ok"))
+              ") : slop_hash_combine(2, "
+              (value-hash-expr ctx err-type (slop-type-to-c-type ctx err-type)
+                               (ctx-str3 ctx "(" access ").data.err"))
+              "))")))
+        ;; Identity, as == warns: a List by its {data, len, cap} header, which
+        ;; has no padding, and a Map or Set by its pointer.
+        ((starts-with slop-type "(List ")
+          (ctx-str5 ctx "slop_hash_bytes(&(" access "), sizeof(" access "))"))
+        ((or (starts-with slop-type "(Map ") (starts-with slop-type "(Set "))
+          (ctx-str3 ctx "slop_hash_ptr(&(" access "))"))
+        (else
+          (payload-hash-expr ctx slop-type c-type access)))))
+
+  (fn value-eq-expr ((ctx (Ptr TranspileContext)) (raw-slop-type String) (c-type String)
+                     (a-access String) (b-access String))
+    (@intent "Build a bool equality expression over the content of one Option, Result or container value")
+    (@spec (((Ptr TranspileContext) String String String String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (slop-type (resolve-payload-slop-type ctx raw-slop-type)))
+      (cond
+        ((starts-with slop-type "(Option ")
+          (let ((inner (extract-first-type-arg arena slop-type 8))
+                (inner-eq (value-eq-expr ctx inner (slop-type-to-c-type ctx inner)
+                                         (ctx-str3 ctx "(" a-access ").value")
+                                         (ctx-str3 ctx "(" b-access ").value"))))
+            (ctx-str5 ctx
+              (ctx-str5 ctx "((" a-access ").has_value == (" b-access ").has_value")
+              (ctx-str3 ctx " && (!(" a-access ").has_value || (")
+              inner-eq
+              ")))"
+              "")))
+        ((starts-with slop-type "(Result ")
+          (let ((ok-type (extract-first-type-arg arena slop-type 8))
+                (err-type (extract-second-type-arg arena slop-type 8))
+                (ok-eq (value-eq-expr ctx ok-type (slop-type-to-c-type ctx ok-type)
+                                      (ctx-str3 ctx "(" a-access ").data.ok")
+                                      (ctx-str3 ctx "(" b-access ").data.ok")))
+                (err-eq (value-eq-expr ctx err-type (slop-type-to-c-type ctx err-type)
+                                       (ctx-str3 ctx "(" a-access ").data.err")
+                                       (ctx-str3 ctx "(" b-access ").data.err"))))
+            (ctx-str5 ctx
+              (ctx-str5 ctx "((" a-access ").is_ok == (" b-access ").is_ok")
+              (ctx-str3 ctx " && ((" a-access ").is_ok ? (")
+              ok-eq
+              ") : ("
+              (ctx-str ctx err-eq ")))"))))
+        ((starts-with slop-type "(List ")
+          (ctx-str5 ctx "(memcmp(&(" a-access "), &(" (ctx-str3 ctx b-access "), sizeof(" a-access) ")) == 0)"))
+        ((or (starts-with slop-type "(Map ") (starts-with slop-type "(Set "))
+          (ctx-str5 ctx "((" a-access ") == (" b-access "))"))
+        (else
+          (ctx-str3 ctx "(" (payload-eq-expr ctx slop-type c-type a-access b-access) ")")))))
+
+  (fn emit-value-hash-dependencies ((ctx (Ptr TranspileContext)) (raw-slop-type String) (c-type String))
+    (@intent "Emit hash/eq for the records and unions a value's hash calls into, ahead of their first use")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@pre {ctx != nil})
+    ;; Looks through an Option or a Result to what it holds, so a record
+    ;; wrapped in one is defined before the hash that calls it. Each type is
+    ;; emitted under its own _HASH_EQ_DEFINED guard, which is what makes
+    ;; emitting it again from another path harmless.
+    (let ((arena (. (deref ctx) arena))
+          (slop-type (resolve-payload-slop-type ctx raw-slop-type)))
+      (cond
+        ((starts-with slop-type "(Option ")
+          (let ((inner (extract-first-type-arg arena slop-type 8)))
+            (emit-value-hash-dependencies ctx inner (slop-type-to-c-type ctx inner))))
+        ((starts-with slop-type "(Result ")
+          (let ((ok-type (extract-first-type-arg arena slop-type 8))
+                (err-type (extract-second-type-arg arena slop-type 8)))
+            (emit-value-hash-dependencies ctx ok-type (slop-type-to-c-type ctx ok-type))
+            (emit-value-hash-dependencies ctx err-type (slop-type-to-c-type ctx err-type))))
+        ((or (is-primitive-slop-type slop-type) (is-identity-container-slop-type slop-type))
+          (do))
+        (else
+          (let ((union-variants (ctx-get-union-variants ctx c-type))
+                (guard-name (ctx-str3 ctx (uppercase-name ctx c-type) "_HASH_EQ_DEFINED" "")))
+            (if (> (list-len union-variants) 0)
+              (do
+                (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
+                (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+                (emit-union-payload-hash-eq ctx c-type union-variants)
+                (emit-union-hash-fn ctx c-type union-variants)
+                (emit-union-eq-fn ctx c-type union-variants)
+                (ctx-emit-header ctx "#endif"))
+              (let ((nested-fields (ctx-get-fields-for-type ctx c-type)))
+                (when (> (list-len nested-fields) 0)
+                  (ctx-emit-header ctx (ctx-str ctx "#ifndef " guard-name))
+                  (ctx-emit-header ctx (ctx-str ctx "#define " guard-name))
+                  (emit-record-field-dependencies ctx nested-fields)
+                  (emit-struct-hash-fn ctx c-type nested-fields)
+                  (emit-struct-eq-fn ctx c-type nested-fields)
+                  (ctx-emit-header ctx "#endif")))))))))
 
   (fn union-variant-payloads ((ctx (Ptr TranspileContext)) (union-name String) (variant-name String))
     (@intent "Collect the payload slots of a multi-payload union variant; empty for 0- and 1-payload variants")
@@ -3625,14 +3749,13 @@
         ;; Pointer types - check if slop-type starts with "(Ptr"
         ((starts-with slop-type "(Ptr")
           (ctx-emit-header ctx (ctx-str3 ctx "    hash ^= slop_hash_ptr(&_k->" c-field-name "); hash *= 1099511628211ULL;")))
-        ;; Complex container types (List, Map, Set, Option, Result) - use byte-level hash
-        ((or (starts-with slop-type "(List")
-             (or (starts-with slop-type "(Map")
-                 (or (starts-with slop-type "(Set")
-                     (or (starts-with slop-type "(Option")
-                         (starts-with slop-type "(Result")))))
-          (let ((c-type (. field c-type)))
-            (ctx-emit-header ctx (ctx-str5 ctx "    { const uint8_t* _b = (const uint8_t*)&_k->" c-field-name "; for(size_t _i=0; _i<sizeof(_k->" c-field-name "); _i++) { hash ^= _b[_i]; hash *= 1099511628211ULL; } }"))))
+        ;; (Option T) / (Result T E) hash by content; (List T), (Map K V) and
+        ;; (Set T) by identity, which == warns about
+        ((or (is-tagged-value-slop-type slop-type) (is-identity-container-slop-type slop-type))
+          (ctx-emit-header ctx
+            (ctx-str3 ctx "    hash ^= "
+                      (value-hash-expr ctx slop-type (. field c-type) (ctx-str ctx "_k->" c-field-name))
+                      "; hash *= 1099511628211ULL;")))
         ;; Range type aliases (e.g., BlankNodeId -> (Int 0 ..)) - use int hash
         ((is-range-type-alias ctx slop-type)
           (ctx-emit-header ctx (ctx-str3 ctx "    { int64_t _tmp = (int64_t)_k->" c-field-name "; hash ^= slop_hash_int(&_tmp); hash *= 1099511628211ULL; }")))
@@ -3701,14 +3824,14 @@
         ;; Pointer types - direct pointer comparison
         ((starts-with slop-type "(Ptr")
           (ctx-emit-header ctx (ctx-str4 ctx "        && _a->" c-field-name " == _b->" c-field-name)))
-        ;; Complex container types (List, Map, Set, Option, Result) - use memcmp
-        ((or (starts-with slop-type "(List")
-             (or (starts-with slop-type "(Map")
-                 (or (starts-with slop-type "(Set")
-                     (or (starts-with slop-type "(Option")
-                         (starts-with slop-type "(Result")))))
-          (let ((c-type (. field c-type)))
-            (ctx-emit-header ctx (ctx-str ctx (ctx-str ctx (ctx-str5 ctx "        && memcmp(&_a->" c-field-name ", &_b->" c-field-name ", sizeof(_a->") c-field-name) ")) == 0"))))
+        ;; Same split as emit-field-hash: content for Option / Result, identity
+        ;; for List / Map / Set
+        ((or (is-tagged-value-slop-type slop-type) (is-identity-container-slop-type slop-type))
+          (ctx-emit-header ctx
+            (ctx-str ctx "        && "
+                     (value-eq-expr ctx slop-type (. field c-type)
+                                    (ctx-str ctx "_a->" c-field-name)
+                                    (ctx-str ctx "_b->" c-field-name)))))
         ;; Range type aliases (e.g., BlankNodeId -> (Int 0 ..)) - direct comparison
         ((is-range-type-alias ctx slop-type)
           (ctx-emit-header ctx (ctx-str4 ctx "        && _a->" c-field-name " == _b->" c-field-name)))

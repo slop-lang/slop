@@ -1,9 +1,8 @@
 ;; Fixture for #89: `==` on a record that has a container field.
 ;;
-;; The generated slop_eq_ compares a (List T) / (Map K V) / (Set T) /
-;; (Option T) / (Result T E) field with memcmp over the struct header --
-;; data pointer, len, cap -- so two containers holding identical contents
-;; come back unequal. That is long-standing map/set-key behaviour and is
+;; The generated slop_eq_ compares a (List T) field with memcmp over its
+;; header -- data pointer, len, cap -- and a (Map K V) / (Set T) field by
+;; pointer, so two containers holding identical contents come back unequal. That is long-standing map/set-key behaviour and is
 ;; deliberately unchanged, but == makes it reachable from ordinary code,
 ;; so the site warns rather than silently answering by identity.
 ;;
