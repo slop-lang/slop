@@ -1913,8 +1913,13 @@
                 (MutPath (. base root) (. base has-root) (+ (. base depth) 1) true (. base known)
                          (resolved-type-get-field-type pointee field))))
             ('step-value
-              (MutPath (. base root) (. base has-root) (+ (. base depth) 1) (. base through) (. base known)
-                       (resolved-type-get-field-type r field)))
+              ;; Only a record or union has fields. Anything else here is a
+              ;; type the checker fell back to -- arena-alloc of a type it does
+              ;; not know is typed Int -- so the step is unknown, not a value
+              (if (or (== (. (deref r) kind) 'rk-record) (== (. (deref r) kind) 'rk-union))
+                (MutPath (. base root) (. base has-root) (+ (. base depth) 1) (. base through) (. base known)
+                         (resolved-type-get-field-type r field))
+                (MutPath (. base root) (. base has-root) (+ (. base depth) 1) (. base through) false (none))))
             ('step-unknown
               (MutPath (. base root) (. base has-root) (+ (. base depth) 1) (. base through) false (none))))))
       ((none)
@@ -1970,14 +1975,21 @@
     ;; push or pop is only judged when every step's type was known
     (and (not (. b mutable))
          (not (. path through))
-         (== (. b origin) 'origin-param)
-         (cond
-           ((== kind 'mut-assign) true)
-           ((== kind 'mut-field) (. path known))
-           ((== (. path depth) 0)
-             ;; A push or pop on the parameter itself: only a List value
-             (== (mutation-step-kind (. b var-type)) 'step-value))
-           (else (. path known)))))
+         (if (== (. b origin) 'origin-param)
+           ;; A parameter's own value: a change to that copy is lost
+           (cond
+             ((== kind 'mut-assign) true)
+             ((== kind 'mut-field) (. path known))
+             ((== (. path depth) 0)
+               ;; A push or pop on the parameter itself: only a List value
+               (== (mutation-step-kind (. b var-type)) 'step-value))
+             (else (. path known)))
+           ;; A let, for, for-each, match or with-arena binding: set! is the
+           ;; change; a push or pop on its own list is not lost, and allowed
+           (cond
+             ((== kind 'mut-assign) true)
+             ((== kind 'mut-field) (. path known))
+             (else false)))))
 
   (fn check-mutation ((env (Ptr TypeEnv)) (target (Ptr SExpr)) (path MutPath) (kind MutationKind))
     (@intent "Report a mutation of a binding its declaration does not let change")
@@ -1991,7 +2003,16 @@
             (env-add-error env
               (mutation-error-message (env-arena env) kind (. b origin) (. path root) (> (. path depth) 0))
               (sexpr-line target) (sexpr-col target))))
-        ((none) (do)))))
+        ((none)
+          ;; A module constant is not a binding, and cannot be set!
+          (match (env-lookup-constant env (. path root))
+            ((some _)
+              (when (and (not (. path through))
+                         (or (== kind 'mut-assign) (== kind 'mut-field)))
+                (env-add-error env
+                  (mutation-error-message (env-arena env) kind 'origin-const (. path root) (> (. path depth) 0))
+                  (sexpr-line target) (sexpr-col target))))
+            ((none) (do)))))))
 
   (fn check-param-mode ((env (Ptr TypeEnv)) (mode String) (name String)
                         (param-type (Ptr ResolvedType)) (at (Ptr SExpr)))
@@ -3035,9 +3056,9 @@
                                     (list-push parts var-name)
                                     (list-push parts " (Option T) ...)")
                                     (env-add-warning env (string-build arena parts) line col)
-                                    (env-bind-var env var-name val-type))
+                                    (env-bind-var-as env var-name val-type true 'origin-local))
                                   ;; Concrete type - just bind it
-                                  (env-bind-var env var-name val-type))))
+                                  (env-bind-var-as env var-name val-type true 'origin-local))))
                             ((none) (do)))))))
                   ((none) (do))))
               ;; Immutable: (name expr) or (name Type expr)
@@ -3048,13 +3069,13 @@
                     (match (sexpr-list-get binding-form 2)
                       ((some val-expr)
                         (let ((val-type (infer-expr env val-expr)))
-                          (env-bind-var env first-name val-type)))
+                          (env-bind-var-as env first-name val-type false 'origin-local)))
                       ((none) (do)))
                     ;; Untyped binding: (name expr) - get expr at position 1
                     (match (sexpr-list-get binding-form 1)
                       ((some val-expr)
                         (let ((val-type (infer-expr env val-expr)))
-                          (env-bind-var env first-name val-type)))
+                          (env-bind-var-as env first-name val-type false 'origin-local)))
                       ((none) (do)))))))))
         ((none) (do)))))
 

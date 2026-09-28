@@ -1,0 +1,10 @@
+;; Reassign a name bound by match: an error in both slop check and slop build (#180).
+
+(module main
+  (type Pt (record (x Int) (y Int)))
+  (const LIMIT Int 10)
+
+  (fn main ()
+    (@intent "Reassign a name bound by match")
+    (@spec (() -> Int))
+    (match (some 1) ((some v) (set! v 2) v) ((none) 0))))

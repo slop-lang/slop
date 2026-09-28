@@ -11618,6 +11618,27 @@ class TestExactPushModelCalls:
 '''
         assert _status_of(src).status != 'verified'
 
+    def test_a_call_with_a_mut_parameter_is_modelled(self):
+        # A mut parameter is a local copy of a value type (#180): the callee
+        # changing it never reaches the caller, so the call is modelled like
+        # any value call, and the callee's post lands on the pushed element.
+        src = '''
+(module probe
+  (fn clamp ((mut x Int))
+    (@spec ((Int) -> Int))
+    (@post (>= $result 0))
+    (when (< x 0) (set! x 0))
+    x)
+  (fn f ((arena Arena) (v Int))
+    (@spec ((Arena Int) -> (List Int)))
+    (@alloc arena)
+    (@property p (forall (a $result) (>= a 0)))
+    (let ((mut r (list-new arena Int)))
+      (do (let ((y (clamp v))) (list-push r y)) r))))
+'''
+        result = _status_of(src)
+        assert result.status == 'verified', result.message
+
     def test_a_callee_precondition_is_not_assumed_defined(self):
         src = '''
 (module probe

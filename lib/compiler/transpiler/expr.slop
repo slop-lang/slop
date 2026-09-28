@@ -2342,11 +2342,28 @@
     (@spec ((VarEntry CMutPath MutationKind) -> Bool))
     (and (not (. entry is-mutable))
          (not (. path through))
-         (== (. entry origin) 'origin-param)
-         (or (!= (. path depth) 0)
-             (== kind 'mut-assign)
-             ;; A push or pop on the parameter itself: only a List value
-             (starts-with (. entry c-type) "slop_list_"))))
+         (if (== (. entry origin) 'origin-param)
+           ;; A parameter's own value: a change to that copy is lost
+           (or (!= (. path depth) 0)
+               (== kind 'mut-assign)
+               ;; A push or pop on the parameter itself: only a List value
+               (starts-with (. entry c-type) "slop_list_"))
+           ;; A let, for, for-each, match or with-arena binding, or a constant:
+           ;; set! is the change; a push or pop on its own list is allowed. A
+           ;; field set only where the C type is known to be a value, so an
+           ;; inference gap is never mistaken for one.
+           (cond
+             ((== kind 'mut-assign) true)
+             ((== kind 'mut-field) (is-known-value-c-type (. entry c-type)))
+             (else false)))))
+
+  (fn is-known-value-c-type ((c-type String))
+    (@intent "Whether a C type is known and is not a pointer")
+    (@spec ((String) -> Bool))
+    (and (> (string-len c-type) 0)
+         (not (ends-with c-type "*"))
+         (not (string-eq c-type "auto"))
+         (not (string-eq c-type "__auto_type"))))
 
   (fn check-c-mutation ((ctx (Ptr TranspileContext)) (target (Ptr SExpr)) (path CMutPath) (kind MutationKind))
     (@intent "Report a mutation of a variable its declaration does not let change; true when allowed")
@@ -5238,7 +5255,8 @@
                                               ((none) "int64_t")))
                                           ((none) "int64_t")))))
                           ;; Register in context so nested lambdas can find it
-                          (ctx-bind-var ctx (VarEntry var-name c-name c-type "" false false false "" "" 'origin-local))))
+                          ;; With its mutability: a closure captures a mut local by reference
+                          (ctx-bind-var ctx (VarEntry var-name c-name c-type "" (ends-with c-type "*") has-mut false "" "" 'origin-local))))
                       (else (do))))
                   ((none) (do)))))))
         (else (do)))))

@@ -1,0 +1,10 @@
+;; Set a field of a for-each element, a copy: an error in both slop check and slop build (#180).
+
+(module main
+  (type Pt (record (x Int) (y Int)))
+  (const LIMIT Int 10)
+
+  (fn main ()
+    (@intent "Set a field of a for-each element, a copy")
+    (@spec (() -> Int))
+    (with-arena 1024 (let ((pts (list-new arena Pt))) (list-push pts (Pt 1 2)) (for-each (p pts) (set! p x 9)) 0))))

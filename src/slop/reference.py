@@ -88,10 +88,17 @@ struct). Use (Ptr T) or (List T) for self-referencing variants:
   body)
 
 ### Parameter Modes
-(fn example ((in x Type)         ; Read-only (default), pass by value
-             (out result Type)   ; Write-only, pointer to uninitialized
-             (mut state Type))   ; Read-write, pointer to initialized
+(fn example ((x Type)            ; Read-only (default; `in` is the same)
+             (mut state Type)    ; Mutable local copy of a value type
+             (out-p (Ptr T)))    ; Change the caller's value: caller passes (addr v)
   ...)
+- Unmarked: reassigning it, setting its fields, or list-push/list-pop on it or a
+  List field of it is an error -- the change would be lost to the caller.
+  Map/Set contents, list-set elements, and writes through a Ptr are allowed.
+- mut: the caller never sees the change (functional update: change, return).
+  Not allowed on List/Map/Set parameters, whose copies share storage.
+- There is no `out` mode: use a (Ptr T) parameter.
+- let bindings without mut, and for/for-each/match/with-arena names, cannot be set!.
 
 ### With Arena (for allocating functions)
 (fn create-user ((arena Arena) (name String))
@@ -545,7 +552,7 @@ The verifier CANNOT prove:
 - Properties requiring induction
 
 ### Example: Fully Verified Function
-(fn increment-counter ((mut counter Int))
+(fn increment-counter ((counter Int))
   (@intent "Add 1 to counter, clamped to 100")
   (@spec (((Int 0 .. 100)) -> (Int 0 .. 100)))
   (@pre {(>= counter 0)})
