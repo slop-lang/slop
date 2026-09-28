@@ -22,7 +22,7 @@
     infer-collection-element-slop-type infer-result-ok-slop-type infer-result-err-slop-type
     c-type-to-option-type-name
     ;; Set/Map type helpers
-    resolve-type-alias extract-set-elem-from-slop-type
+    resolve-type-alias extract-set-elem-from-slop-type builtin-map-key-c-info
     slop-type-to-c-type extract-first-type-arg extract-second-type-arg
     extract-map-key-from-slop-type extract-map-value-from-slop-type
     slop-value-type-to-c-type
@@ -6047,6 +6047,31 @@
           (ctx-str ctx c-name
             (ctx-str ctx ", slop_eq_" c-name))))))
 
+  (fn builtin-map-key-c-info ((name String))
+    (@intent "The sizeof/hash/eq triple for a key type the runtime hashes itself, or \"\" if it needs a generated one")
+    (@spec ((String) -> String))
+    (@pure)
+    ;; Each size and its hash/eq agree on the width. I32 and U32 keys used to
+    ;; pair sizeof(int32_t) with slop_hash_int, which reads 8 bytes: past the
+    ;; end of a lookup key, and into the arena garbage after a stored one.
+    (@example ("I32") -> "sizeof(int32_t), slop_hash_i32, slop_eq_i32")
+    (@example ("U8") -> "sizeof(uint8_t), slop_hash_u8, slop_eq_u8")
+    (@example ("Point") -> "")
+    (cond
+      ((string-eq name "String") "sizeof(slop_string), slop_hash_string, slop_eq_string")
+      ((or (string-eq name "Int") (string-eq name "I64")) "sizeof(int64_t), slop_hash_int, slop_eq_int")
+      ((string-eq name "I32") "sizeof(int32_t), slop_hash_i32, slop_eq_i32")
+      ((string-eq name "I16") "sizeof(int16_t), slop_hash_i16, slop_eq_i16")
+      ((string-eq name "I8") "sizeof(int8_t), slop_hash_i8, slop_eq_i8")
+      ((or (string-eq name "Uint") (string-eq name "U64")) "sizeof(uint64_t), slop_hash_uint, slop_eq_uint")
+      ((string-eq name "U32") "sizeof(uint32_t), slop_hash_u32, slop_eq_u32")
+      ((string-eq name "U16") "sizeof(uint16_t), slop_hash_u16, slop_eq_u16")
+      ((string-eq name "U8") "sizeof(uint8_t), slop_hash_u8, slop_eq_u8")
+      ((string-eq name "Bool") "sizeof(bool), slop_hash_bool, slop_eq_bool")
+      ;; Symbols are interned as integers
+      ((string-eq name "Symbol") "sizeof(int64_t), slop_hash_symbol, slop_eq_symbol")
+      (else "")))
+
   (fn get-map-key-c-info ((ctx (Ptr TranspileContext)) (key-type-expr (Ptr SExpr)))
     (@intent "Get sizeof, hash fn, eq fn suffix for map key type")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
@@ -6055,26 +6080,10 @@
     (match (deref key-type-expr)
       ;; Symbol: check for builtin types
       ((sym sym)
-        (let ((name (. sym name)))
+        (let ((name (. sym name))
+              (builtin (builtin-map-key-c-info name)))
           (cond
-            ;; String -> slop_string
-            ((string-eq name "String")
-              "sizeof(slop_string), slop_hash_string, slop_eq_string")
-            ;; Int, I64 -> int64_t
-            ((or (string-eq name "Int") (string-eq name "I64"))
-              "sizeof(int64_t), slop_hash_int, slop_eq_int")
-            ;; I32 -> int32_t (use int hash)
-            ((string-eq name "I32")
-              "sizeof(int32_t), slop_hash_int, slop_eq_int")
-            ;; Uint, U64 -> uint64_t
-            ((or (string-eq name "Uint") (string-eq name "U64"))
-              "sizeof(uint64_t), slop_hash_uint, slop_eq_uint")
-            ;; U32 -> uint32_t (use uint hash)
-            ((string-eq name "U32")
-              "sizeof(uint32_t), slop_hash_uint, slop_eq_uint")
-            ;; Symbol -> int64_t (symbols are interned as integers)
-            ((string-eq name "Symbol")
-              "sizeof(int64_t), slop_hash_symbol, slop_eq_symbol")
+            ((> (string-len builtin) 0) builtin)
             ;; User-defined type: look up and generate struct hash/eq
             (else
               (let ((arena (. (deref ctx) arena))

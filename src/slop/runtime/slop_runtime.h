@@ -706,6 +706,26 @@ static inline bool slop_eq_uint(const void* a, const void* b) {
     return *(const uint64_t*)a == *(const uint64_t*)b;
 }
 
+/* Hash/eq for keys narrower than 64 bits. Each reads exactly its own width --
+ * a key is stored in key_size bytes, so reading 8 would run past it -- and
+ * widens before hashing, so a value hashes as it would as an Int. */
+#define SLOP_NARROW_KEY_HASH_EQ(NAME, T, WIDE, HASH) \
+    static inline uint64_t slop_hash_##NAME(const void* key) { \
+        WIDE x = (WIDE)*(const T*)key; \
+        return HASH(&x); \
+    } \
+    static inline bool slop_eq_##NAME(const void* a, const void* b) { \
+        return *(const T*)a == *(const T*)b; \
+    }
+
+SLOP_NARROW_KEY_HASH_EQ(i32, int32_t, int64_t, slop_hash_int)
+SLOP_NARROW_KEY_HASH_EQ(i16, int16_t, int64_t, slop_hash_int)
+SLOP_NARROW_KEY_HASH_EQ(i8, int8_t, int64_t, slop_hash_int)
+SLOP_NARROW_KEY_HASH_EQ(u32, uint32_t, uint64_t, slop_hash_uint)
+SLOP_NARROW_KEY_HASH_EQ(u16, uint16_t, uint64_t, slop_hash_uint)
+SLOP_NARROW_KEY_HASH_EQ(u8, uint8_t, uint64_t, slop_hash_uint)
+SLOP_NARROW_KEY_HASH_EQ(bool, bool, uint64_t, slop_hash_uint)
+
 /* Hash for pointers (useful for identity maps) */
 static inline uint64_t slop_hash_ptr(const void* key) {
     uint64_t x = (uint64_t)(*(const void**)key);

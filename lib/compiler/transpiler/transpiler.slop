@@ -49,7 +49,7 @@
                 get-return-type get-slop-return-type get-result-type-name build-param-str eval-const-value get-type-name-str
                 is-generic-type-alias))
   (import stmt (transpile-stmt))
-  (import expr (transpile-expr resolve-type-alias slop-type-to-c-type
+  (import expr (transpile-expr resolve-type-alias slop-type-to-c-type builtin-map-key-c-info
                 extract-first-type-arg extract-second-type-arg))
   (import match (transpile-match))
   (import strlib (starts-with ends-with substring char-at string-build))
@@ -808,14 +808,8 @@
   (fn is-builtin-map-key-type ((name String))
     (@intent "Check if type is a builtin that doesn't need struct hash/eq")
     (@spec ((String) -> Bool))
-    (or (string-eq name "String")
-        (or (string-eq name "Int")
-            (or (string-eq name "I64")
-                (or (string-eq name "I32")
-                    (or (string-eq name "Uint")
-                        (or (string-eq name "U64")
-                            (or (string-eq name "U32")
-                                (string-eq name "Symbol")))))))))
+    ;; The same table get-map-key-c-info reads, so the two cannot disagree
+    (> (string-len (builtin-map-key-c-info name)) 0))
 
   (fn check-and-register-result-alias ((ctx (Ptr TranspileContext)) (alias-name String) (body-expr (Ptr SExpr)))
     (@intent "Check if type body is (Result OkType ErrType) and register alias if so")
