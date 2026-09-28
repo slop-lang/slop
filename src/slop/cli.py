@@ -435,6 +435,9 @@ def test_native(input_file: str, dep_files: list = None):
             text=True
         )
         if result.returncode == 0:
+            # Forward anything the tester reports on success (#201)
+            if result.stderr:
+                print(result.stderr, end='', file=sys.stderr)
             data = json.loads(result.stdout)
             if 'error' in data:
                 return data['error'], 0, '', False
@@ -2155,6 +2158,9 @@ def _build_library_from_sources(
             if result.stderr:
                 for line in result.stderr.strip().split('\n')[:5]:
                     print(f"    {line}")
+        elif result.stderr:
+            # Forward warnings on success, as the single-file path does (#201)
+            print(result.stderr, end='', file=sys.stderr)
         try:
             stdout = result.stdout
             # Strip noise from compiler output
@@ -2537,6 +2543,9 @@ def cmd_build(args):
                     if result.stderr:
                         for line in result.stderr.strip().split('\n')[:5]:
                             print(f"    {line}")
+                elif result.stderr:
+                    # Forward warnings on success, as the single-file path does (#201)
+                    print(result.stderr, end='', file=sys.stderr)
                 try:
                     stdout = result.stdout
                     # Strip noise from compiler output

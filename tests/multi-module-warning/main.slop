@@ -1,0 +1,7 @@
+(module main
+  (import helper (add-ten))
+
+  (fn main ()
+    (@intent "Call a module whose closure has no arena")
+    (@spec (() -> Int))
+    (if (== (add-ten 5) 15) 0 1)))

@@ -3134,7 +3134,10 @@ void infer_check_enum_pattern_form(env_TypeEnv* env, types_ResolvedType* scrutin
         {
             __auto_type head = infer_match_pattern_head(pattern);
             if (!(string_eq(head, SLOP_STR(""))) && !(string_eq(head, SLOP_STR("quote")))) {
-                env_env_add_error(env, strlib_string_build(env_env_arena(env), ((slop_list_string){.len = 7, .cap = 7, .data = (slop_string[]){SLOP_STR("a match on enum '"), (*scrutinee_type).name, SLOP_STR("' names a variant as '"), head, SLOP_STR(", not ("), head, SLOP_STR(")")}})), parser_sexpr_line(pattern), parser_sexpr_col(pattern));
+                {
+                    __auto_type arena = env_env_arena(env);
+                    env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("a match on enum '"); _ll.data[1] = (*scrutinee_type).name; _ll.data[2] = SLOP_STR("' names a variant as '"); _ll.data[3] = head; _ll.data[4] = SLOP_STR(", not ("); _ll.data[5] = head; _ll.data[6] = SLOP_STR(")"); _ll; })), parser_sexpr_line(pattern), parser_sexpr_col(pattern));
+                }
             }
         }
     }

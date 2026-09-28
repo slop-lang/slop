@@ -1,0 +1,13 @@
+;; A closure built with no arena in scope, which the transpiler warns about.
+;; The warning must reach the user when helper is built as a dependency and
+;; when its @example runs, not only in a single-file build (#201).
+(module helper
+  (export add-ten)
+
+  (fn add-ten ((x Int))
+    (@intent "Add ten through a closure allocated with no arena in scope")
+    (@spec ((Int) -> Int))
+    (@example (5) -> 15)
+    (let ((y 10)
+          (f (fn ((n Int)) (+ n y))))
+      (f x))))

@@ -2720,11 +2720,12 @@
       (let ((head (match-pattern-head pattern)))
         (when (and (not (string-eq head ""))
                    (not (string-eq head "quote")))
-          (env-add-error env
-            (string-build (env-arena env)
-              (list String "a match on enum '" (. (deref scrutinee-type) name)
-                           "' names a variant as '" head ", not (" head ")"))
-            (sexpr-line pattern) (sexpr-col pattern))))))
+          (let ((arena (env-arena env)))
+            (env-add-error env
+              (string-build arena
+                (list String "a match on enum '" (. (deref scrutinee-type) name)
+                             "' names a variant as '" head ", not (" head ")"))
+              (sexpr-line pattern) (sexpr-col pattern)))))))
 
   (fn infer-match-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of match expression, checking branch types")

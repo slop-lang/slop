@@ -86,6 +86,31 @@ class TestTranspilerWarnings:
         assert "error:" not in stderr, f"Should have no errors, got: {stderr!r}"
 
 
+class TestMultiModuleWarnings:
+    """A multi-module build forwards the transpiler's warnings, not only a single-file one (#201)."""
+
+    def test_dependency_warning_is_forwarded(self, tmp_path):
+        """helper's closure warning reaches stderr when main imports helper."""
+        output = str(tmp_path / "multi_module_warning")
+        fixture = TESTS_DIR / "multi-module-warning"
+        result = subprocess.run(
+            ["uv", "run", "slop", "build", str(fixture / "main.slop"),
+             "-I", str(fixture), "-o", output],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, f"Build failed: {result.stderr}"
+        assert "no arena in scope" in result.stderr, (
+            f"Expected helper's closure warning in stderr, got: {result.stderr!r}")
+        assert "helper.slop" in result.stderr, (
+            f"Warning should name the dependency's file, got: {result.stderr!r}")
+
+        run = subprocess.run([output], capture_output=True)
+        assert run.returncode == 0, "Binary should exit 0"
+
+
 class TestConditionParens:
     """Conditions must not double-wrap comparisons (-Wparentheses-equality)."""
 
