@@ -20,7 +20,7 @@
     is-generic-type-alias)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber RangeBounds param-mode-error-message))
-  (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent
+  (import context (TranspileContext ctx-set-pos ctx-emit ctx-emit ctx-indent ctx-dedent
                    ctx-register-type ctx-register-func ctx-register-field-type ctx-current-module-name
                    ctx-str ctx-str3 ctx-str4 ctx-str5
                    ctx-set-current-result-type ctx-clear-current-result-type
@@ -319,7 +319,7 @@
                           ;; Register as a known type
                           ;; Use struct prefix for non-typedef names
                           (let ((actual-c-name (if (ends-with-t type-name) c-name (ctx-str ctx "struct " c-name))))
-                            (ctx-register-type ctx (TypeEntry type-name c-name actual-c-name false true false)))))
+                            (ctx-register-type ctx (TypeEntry type-name c-name actual-c-name false true false (ctx-current-module-name ctx) "")))))
                       (else (do))))
                   ((none) (do)))))))
         (else (do)))))
@@ -451,7 +451,7 @@
             (ctx-emit ctx (ctx-str5 ctx "typedef struct " qualified-name " " qualified-name ";"))
             (ctx-emit ctx "")
             ;; Register type
-            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false true false))))
+            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false true false (ctx-current-module-name ctx) ""))))
         (else (ctx-add-error-at ctx "invalid record form" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))
 
   (fn emit-record-fields ((ctx (Ptr TranspileContext)) (raw-type-name String) (qualified-type-name String) (items (List (Ptr SExpr))) (start-idx Int))
@@ -493,8 +493,7 @@
                                 (is-ptr (is-pointer-type-expr type-expr)))
                             ;; Emit the field
                             (ctx-emit ctx (ctx-str5 ctx "    " field-type " " field-name ";"))
-                            ;; Register field type for both raw and qualified type names
-                            (ctx-register-field-type ctx raw-type-name raw-field-name field-type slop-type-str is-ptr)
+                            ;; Register field type under the C name: SLOP names are resolved to it first (#174)
                             (ctx-register-field-type ctx qualified-type-name raw-field-name field-type slop-type-str is-ptr)))
                         ((none) (ctx-emit ctx "    /* missing field type */"))))
                     (else (ctx-emit ctx "    /* field name must be symbol */"))))
@@ -522,7 +521,7 @@
             (ctx-emit ctx (ctx-str3 ctx "} " qualified-name ";"))
             (ctx-emit ctx "")
             ;; Register type
-            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name true false false))))
+            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name true false false (ctx-current-module-name ctx) ""))))
         (else (ctx-add-error-at ctx "invalid enum form" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))
 
   (fn emit-enum-values ((ctx (Ptr TranspileContext)) (type-name String) (items (List (Ptr SExpr))) (start-idx Int) (len Int))
@@ -574,7 +573,7 @@
             (emit-tag-constants ctx qualified-name items 1)
             (ctx-emit ctx "")
             ;; Register type
-            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false false true))
+            (ctx-register-type ctx (TypeEntry raw-name qualified-name qualified-name false false true (ctx-current-module-name ctx) ""))
             ;; Register field types for union variants (for type inference)
             (register-union-variant-fields ctx raw-name qualified-name items 1)))
         (else (ctx-add-error-at ctx "invalid union form" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))
@@ -687,7 +686,6 @@
                                       (let ((c-type (to-c-type-prefixed ctx type-expr))
                                             (slop-type-str (pretty-print arena type-expr))
                                             (is-ptr (is-pointer-type-expr type-expr)))
-                                        (ctx-register-field-type ctx raw-name tag-name c-type slop-type-str is-ptr)
                                         (ctx-register-field-type ctx qualified-name tag-name c-type slop-type-str is-ptr)))
                                     ((none) (do))))
                                 ;; Multi-field variant: register each position as tag__N
@@ -695,7 +693,6 @@
                                   ;; Register field count marker: (type, "tag__count", "N", "")
                                   (let ((count-key (ctx-str3 ctx tag-name "__count" ""))
                                         (count-str (int-to-string arena (- var-len 1))))
-                                    (ctx-register-field-type ctx raw-name count-key count-str "" false)
                                     (ctx-register-field-type ctx qualified-name count-key count-str "" false))
                                   ;; Register each field position: (type, "tag__0", c-type, slop-type)
                                   (for (fi 1 var-len)
@@ -705,7 +702,6 @@
                                               (slop-type-str (pretty-print arena type-expr))
                                               (is-ptr (is-pointer-type-expr type-expr))
                                               (field-key (ctx-str3 ctx tag-name "__" (int-to-string arena (- fi 1)))))
-                                          (ctx-register-field-type ctx raw-name field-key c-type slop-type-str is-ptr)
                                           (ctx-register-field-type ctx qualified-name field-key c-type slop-type-str is-ptr)))
                                       ((none) (do))))
                                   ;; Also register first field as fallback for single-field lookups
@@ -714,7 +710,6 @@
                                       (let ((c-type (to-c-type-prefixed ctx type-expr))
                                             (slop-type-str (pretty-print arena type-expr))
                                             (is-ptr (is-pointer-type-expr type-expr)))
-                                        (ctx-register-field-type ctx raw-name tag-name c-type slop-type-str is-ptr)
                                         (ctx-register-field-type ctx qualified-name tag-name c-type slop-type-str is-ptr)))
                                     ((none) (do))))
                                 (else (do)))))
@@ -737,7 +732,7 @@
       ;; Check if it's an Array type - requires special handling
       (cond
         ((is-array-type type-expr)
-          (emit-array-typedef ctx qualified-name type-expr))
+          (emit-array-typedef ctx raw-name qualified-name type-expr))
         ;; Check if it's a range type like (Int 0 .. 100)
         ((is-range-type type-expr)
           (emit-range-typedef ctx raw-name qualified-name type-expr))
@@ -748,7 +743,7 @@
             (ctx-emit ctx (ctx-str5 ctx "typedef " c-type " " qualified-name ";"))
             (ctx-emit ctx "")
             ;; Register type
-            (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))
+            (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false (ctx-current-module-name ctx) ""))
             ;; Register type alias for Map/Set/Result/Option resolution
             (when (is-generic-type-alias slop-type-str)
               (ctx-register-type-alias ctx raw-name slop-type-str)))))))
@@ -779,9 +774,9 @@
               ((none) false)))))
       (else false)))
 
-  (fn emit-array-typedef ((ctx (Ptr TranspileContext)) (qualified-name String) (type-expr (Ptr SExpr)))
+  (fn emit-array-typedef ((ctx (Ptr TranspileContext)) (raw-name String) (qualified-name String) (type-expr (Ptr SExpr)))
     (@intent "Emit typedef for Array type: typedef T NAME[SIZE];")
-    (@spec (((Ptr TranspileContext) String (Ptr SExpr)) -> Unit))
+    (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> Unit))
     (@pre {ctx != nil})
     (@pre {type-expr != nil})
     (let ((arena (. (deref ctx) arena)))
@@ -804,7 +799,7 @@
                         (ctx-emit ctx "")
                         ;; Register as pointer type for usage (arrays decay to pointers)
                         (let ((ptr-type (ctx-str ctx elem-c-type "*")))
-                          (ctx-register-type ctx (TypeEntry qualified-name qualified-name ptr-type false false false)))))
+                          (ctx-register-type ctx (TypeEntry raw-name qualified-name ptr-type false false false (ctx-current-module-name ctx) "")))))
                     ((none)
                       (ctx-emit ctx (ctx-str ctx "typedef void* " (ctx-str ctx qualified-name ";"))))))
                 ((none)
@@ -969,7 +964,7 @@
       (ctx-emit ctx "}")
       (ctx-emit ctx "")
       ;; Register type
-      (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false))
+      (ctx-register-type ctx (TypeEntry raw-name qualified-name c-type false false false (ctx-current-module-name ctx) ""))
       ;; Register as type alias so hash/eq generation can detect range types
       (ctx-register-type-alias ctx raw-name (pretty-print arena type-expr))))
 
@@ -982,6 +977,7 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
     (@pre {ctx != nil})
     (@pre {expr != nil})
+    (ctx-set-pos ctx expr)
     (let ((arena (. (deref ctx) arena)))
       (match (deref expr)
         ((lst lst)

@@ -64,7 +64,7 @@ void defn_register_union_variant_fields(context_TranspileContext* ctx, slop_stri
 void defn_transpile_type_alias(context_TranspileContext* ctx, slop_string raw_name, slop_string qualified_name, types_SExpr* type_expr);
 uint8_t defn_is_generic_type_alias(slop_string s);
 uint8_t defn_is_array_type(types_SExpr* type_expr);
-void defn_emit_array_typedef(context_TranspileContext* ctx, slop_string qualified_name, types_SExpr* type_expr);
+void defn_emit_array_typedef(context_TranspileContext* ctx, slop_string raw_name, slop_string qualified_name, types_SExpr* type_expr);
 slop_string defn_get_number_as_string(types_SExpr* expr);
 uint8_t defn_is_range_type(types_SExpr* type_expr);
 types_RangeBounds defn_parse_range_bounds(types_SExpr* type_expr);

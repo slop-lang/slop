@@ -1,0 +1,10 @@
+;; main names Scores without importing it, and two modules define one.
+;; The transpiler must not pick either.
+(module main
+  (import delta (make-scores))
+  (import epsilon (make-eps))
+
+  (fn main ()
+    (@intent "Write a Scores that main never imports")
+    (@spec (() -> Int))
+    (+ (. (make-eps 1 2) a) (. (record-new Scores (total 3)) total))))

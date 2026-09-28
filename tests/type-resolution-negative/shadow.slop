@@ -1,0 +1,10 @@
+;; main defines Pt and also imports beta's
+(module main
+  (import beta (Pt))
+
+  (type Pt (record (z Int)))
+
+  (fn main ()
+    (@intent "Use a Pt that is both defined and imported")
+    (@spec (() -> Int))
+    (. (Pt 1) z)))

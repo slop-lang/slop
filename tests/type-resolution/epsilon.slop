@@ -1,0 +1,9 @@
+(module epsilon
+  (export Scores make-eps)
+
+  (type Scores (record (a Int) (b Int)))
+
+  (fn make-eps ((a Int) (b Int))
+    (@intent "epsilon's two-field Scores")
+    (@spec ((Int Int) -> Scores))
+    (Scores a b)))

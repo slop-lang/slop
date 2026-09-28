@@ -1,0 +1,22 @@
+;; delta and epsilon both define Scores; main imports delta's
+(module delta
+  (export Scores make-scores find-scores all-scores)
+
+  (type Scores (record (total Int)))
+
+  (fn make-scores ((v Int))
+    (@intent "delta's one-field Scores")
+    (@spec ((Int) -> Scores))
+    (Scores v))
+
+  (fn find-scores ((v Int))
+    (@intent "Maybe a Scores")
+    (@spec ((Int) -> (Option Scores)))
+    (some (Scores v)))
+
+  (fn all-scores ((arena Arena) (v Int))
+    (@intent "A list of Scores")
+    (@spec ((Arena Int) -> (List Scores)))
+    (let ((xs (list-new arena Scores)))
+      (list-push xs (Scores v))
+      xs)))

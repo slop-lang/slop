@@ -14,7 +14,7 @@
   (export (main 2))
 
   ;; --- Parser imports ---
-  (import parser (SExpr parse is-form
+  (import parser (ParseError SExpr parse is-form
                   sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name
                   sexpr-line sexpr-col))
   ;; --- Type system imports ---

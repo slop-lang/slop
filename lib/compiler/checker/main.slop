@@ -14,7 +14,7 @@
   (export
     type-check type-check-with-env TypeCheckResult (main 2))
 
-  (import parser (SExpr parse is-form
+  (import parser (ParseError SExpr parse is-form
                   sexpr-is-list sexpr-list-get sexpr-list-len sexpr-get-symbol-name
                   sexpr-line sexpr-col))
   (import types (TypeError TypeErrorKind type-error-new
