@@ -121,6 +121,46 @@ run_negative_unit_tests "tests/example-harness-negative" "example-harness-negati
 echo ""
 
 # ============================================================
+# Part 1b: Runtime C tests (tests/runtime/*.c)
+# ============================================================
+# The runtime header is exercised directly, under ASan and UBSan, where a
+# SLOP program cannot reach: forced hash collisions, removal across the
+# table's wrap-around, what a grow allocates.
+echo "=== Running Runtime Tests ==="
+echo ""
+
+run_runtime_test() {
+    local test_file="$1"
+    local test_name=$(basename "$test_file" .c)
+    local exe_path="$BUILD_DIR/$test_name"
+
+    echo -n "Testing $test_name... "
+    local output
+    if ! output=$(cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+            -I "$RUNTIME_DIR" -o "$exe_path" "$test_file" 2>&1); then
+        echo -e "${RED}FAIL (build)${NC}"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+    if output=$("$exe_path" 2>&1); then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+for test_file in "$REPO_ROOT"/tests/runtime/*.c; do
+    if [ -f "$test_file" ]; then
+        run_runtime_test "$test_file"
+    fi
+done
+echo ""
+
+# ============================================================
 # Part 2: Integration Tests (tests/*.slop)
 # ============================================================
 echo "=== Running Integration Tests ==="

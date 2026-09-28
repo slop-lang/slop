@@ -321,9 +321,16 @@ identifier               ; Variable reference
 
 ; for-each Collection Types:
 ; - List: iterates elements in order
-; - Set: iterates elements (zero allocation, order undefined)
-; - Map with (var map): iterates keys only (zero allocation)
-; - Map with ((k v) map): iterates key-value pairs (zero allocation)
+; - Set: iterates elements (zero allocation, order unspecified)
+; - Map with (var map): iterates keys only (zero allocation, order unspecified)
+; - Map with ((k v) map): iterates key-value pairs (zero allocation, order unspecified)
+;
+; Map and Set order -- for-each, map-keys and set-elements alike -- is the
+; order of the underlying hash table. It is deterministic: the same sequence
+; of operations on the same keys gives the same order on every run and
+; platform, except for (Ptr T) keys, which hash by address. It is otherwise
+; unspecified and may change between releases; sort when order matters.
+; Changing a Map or Set inside a for-each over it is undefined.
 (break)
 (continue)
 (return expr)
@@ -895,7 +902,7 @@ Minimal runtime (~500 lines of C):
 (map-put map key val) -> Unit
 (map-get map key) -> (Option V)
 (map-has map key) -> Bool
-(map-keys map) -> (List K)               ; Return list of all keys
+(map-keys map) -> (List K)               ; Return list of all keys (order: see for-each)
 (map-remove map key) -> Unit             ; Remove key from mutable map
 
 ; Options
@@ -918,7 +925,7 @@ Minimal runtime (~500 lines of C):
 (set-put set element) -> Unit                     ; Add element to set
 (set-has set element) -> Bool                     ; Check if element exists
 (set-remove set element) -> Unit                  ; Remove element from set
-(set-elements set) -> (List T)                    ; Get all elements as list
+(set-elements set) -> (List T)                    ; Get all elements as list (order: see for-each)
 
 ; Results
 (ok val) -> (Result T E)
