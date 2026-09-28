@@ -510,6 +510,45 @@
         result
         (string-eq (. (deref ca) name) (. (deref cb) name)))))
 
+  (fn is-map-like ((t (Ptr ResolvedType)))
+    (@intent "A Map, or a Set, which the checker records as an rk-primitive over slop_map*")
+    (@spec (((Ptr ResolvedType)) -> Bool))
+    (@pure)
+    (@pre (!= t nil))
+    (let ((kind (. (deref t) kind)))
+      (or (== kind 'rk-map)
+          (== kind 'rk-set)
+          (and (== kind 'rk-primitive) (string-eq (. (deref t) c-name) "slop_map*")))))
+
+  (fn map-types-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)) (depth Int))
+    (@intent "Compare two maps, or two sets, by key and value type")
+    (@spec (((Ptr ResolvedType) (Ptr ResolvedType) Int) -> Bool))
+    (@pre (!= a nil))
+    (@pre (!= b nil))
+    ;; A map alias and the anonymous map it stands for are named differently --
+    ;; Ids against Map -- so the name shortcut in types-equal cannot relate them
+    ;; (#197). The depth bound is a cycle guard, as in container-inners-equal:
+    ;; (type A (Map K B)) with (type B (Map K A)) must not hang the checker.
+    (if (>= depth 32)
+      (string-eq (. (deref a) name) (. (deref b) name))
+      (and (== (== (. (deref a) kind) 'rk-map) (== (. (deref b) kind) 'rk-map))
+           (map-inner-equal (. (deref a) inner-type) (. (deref b) inner-type) depth)
+           (map-inner-equal (. (deref a) inner-type2) (. (deref b) inner-type2) depth))))
+
+  (fn map-inner-equal ((a (Option (Ptr ResolvedType))) (b (Option (Ptr ResolvedType))) (depth Int))
+    (@intent "Compare a key or value type of two maps; one the checker never recorded matches anything")
+    (@spec (((Option (Ptr ResolvedType)) (Option (Ptr ResolvedType)) Int) -> Bool))
+    (match a
+      ((some ai)
+        (match b
+          ((some bi)
+            (cond
+              ((== ai bi) true)
+              ((and (is-map-like ai) (is-map-like bi)) (map-types-equal ai bi (+ depth 1)))
+              (else (types-equal ai bi))))
+          ((none) true)))
+      ((none) true)))
+
   (fn types-equal ((a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
     (@intent "Check if two types are equal, handling generics and aliases")
     (@spec (((Ptr ResolvedType) (Ptr ResolvedType)) -> Bool))
@@ -551,6 +590,11 @@
 
         ;; Same name - definitely equal
         ((string-eq a-name b-name) true)
+
+        ;; A map or set alias against the anonymous (Map K V) or (Set T), or
+        ;; another alias of the same shape: the names differ, so compare the
+        ;; key and value types (#197)
+        ((and (is-map-like a) (is-map-like b)) (map-types-equal a b 0))
 
         ;; Type variables match anything
         ((or (== a-kind 'rk-typevar) (== b-kind 'rk-typevar)) true)
@@ -2662,6 +2706,26 @@
                     (list-push parts (join arena missing ", "))
                     (env-add-warning env (string-build arena parts) line col)))))))))) 
 
+  (fn check-enum-pattern-form ((env (Ptr TypeEnv)) (scrutinee-type (Ptr ResolvedType)) (pattern (Ptr SExpr)))
+    (@intent "Report a match arm on an enum written as a list, (red), instead of 'red")
+    (@spec (((Ptr TypeEnv) (Ptr ResolvedType) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= scrutinee-type nil))
+    (@pre (!= pattern nil))
+    ;; An enum variant has no payload, so its arm is 'red (spec 3). The
+    ;; transpiler reads a list pattern as a union variant and switches on
+    ;; .tag, which only cc then rejected (#196).
+    (when (and (== (. (deref scrutinee-type) kind) 'rk-enum)
+               (sexpr-is-list pattern))
+      (let ((head (match-pattern-head pattern)))
+        (when (and (not (string-eq head ""))
+                   (not (string-eq head "quote")))
+          (env-add-error env
+            (string-build (env-arena env)
+              (list String "a match on enum '" (. (deref scrutinee-type) name)
+                           "' names a variant as '" head ", not (" head ")"))
+            (sexpr-line pattern) (sexpr-col pattern))))))
+
   (fn infer-match-expr ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (lst SExprList))
     (@intent "Infer type of match expression, checking branch types")
     (@spec (((Ptr TypeEnv) (Ptr SExpr) SExprList) -> (Ptr ResolvedType)))
@@ -2696,13 +2760,15 @@
                   (when (> clause-len 0)
                     (match (list-get clause-items 0)
                       ((some pattern)
-                        (let ((head (match-pattern-head pattern)))
-                          (if (is-wildcard-head head)
-                            (set! has-wildcard true)
-                            ;; An arm that guards particular payload values
-                            ;; does not cover its variant (#91).
-                            (when (not (pattern-is-constrained pattern))
-                              (list-push covered head)))))
+                        (do
+                          (check-enum-pattern-form env scrutinee-type pattern)
+                          (let ((head (match-pattern-head pattern)))
+                            (if (is-wildcard-head head)
+                              (set! has-wildcard true)
+                              ;; An arm that guards particular payload values
+                              ;; does not cover its variant (#91).
+                              (when (not (pattern-is-constrained pattern))
+                                (list-push covered head))))))
                       ((none) (do))))
                   (when (> clause-len 1)
                     ;; Push scope for this clause's pattern bindings

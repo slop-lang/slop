@@ -143,6 +143,10 @@ literal     = number | string | 'true | 'false | 'nil
 (alias Name Type)
 ```
 
+A `(type Name (Map K V))`, `(Set T)`, `(List T)` or `(Option T)` names that
+container. A value of the container type can be passed where the alias is
+expected, and the other way round, when the element types agree.
+
 ### 3.3.1 Type Invariants
 
 Types can declare invariants that must hold for all values:
@@ -516,7 +520,9 @@ literal                      ; Literal match (number, string)
 ```
 
 **Enum matching**: Use quoted symbols `'Fizz` for enum value matches. Bare identifiers
-are bindings (capture the value), not value matches.
+are bindings (capture the value), not value matches. An enum variant has no
+payload, so a list pattern such as `((Fizz) ...)` is an error, reported as
+`... names a variant as 'Fizz, not (Fizz)`.
 
 ```lisp
 (match result
@@ -632,9 +638,13 @@ defines or imports.
   (fn f () ... 'red ...)) ; error: variant 'red' is ambiguous: imported from both 'tint' (Paint) and 'hue' (Color)
 ```
 
-A variant of a type `M` neither defines nor imports is accepted only if
-exactly one type in the build has a variant of that name. It never takes the
-place of a function of the same name that `M` defines or imports. When
+A variant of a type `M` neither defines nor imports takes the type that is
+expected where it appears, if that type has it: an argument's parameter type,
+a record field's type, a typed `let` binding, or the function's return type.
+So `(paint-code 'red)` is `Paint`'s `red` even if `M` imports neither `Paint`
+nor another type with a `red`. Otherwise it is accepted only if exactly one
+type in the build has a variant of that name. It never takes the place of a
+function of the same name that `M` defines or imports. When
 several types have it, the build reports `variant 'red' belongs to types in
 modules 'tint' (Paint) and 'hue' (Color) - import the type you mean`.
 

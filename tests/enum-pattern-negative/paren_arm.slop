@@ -1,0 +1,17 @@
+;; An enum variant has no payload, so its match arm is 'red (spec 3). The
+;; transpiler lowered (red) as a union variant and switched on .tag, which
+;; only cc rejected (#196).
+(module main
+  (type Paint (enum red blue))
+
+  (fn paint-code ((p Paint))
+    (@intent "Number paints, one arm written as a list")
+    (@spec ((Paint) -> Int))
+    (match p
+      ((red) 10)
+      ('blue 20)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (paint-code 'blue)))

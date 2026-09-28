@@ -76,6 +76,9 @@ types_ResolvedType* infer_substitute_type_vars(slop_arena* arena, types_Resolved
 types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t line, int64_t col);
 uint8_t infer_is_unwrappable_container(types_ResolvedType* t);
 uint8_t infer_container_inners_equal(types_ResolvedType* a, types_ResolvedType* b);
+uint8_t infer_is_map_like(types_ResolvedType* t);
+uint8_t infer_map_types_equal(types_ResolvedType* a, types_ResolvedType* b, int64_t depth);
+uint8_t infer_map_inner_equal(slop_option_types_ResolvedType_ptr a, slop_option_types_ResolvedType_ptr b, int64_t depth);
 uint8_t infer_types_equal(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_types_module_conflict(types_ResolvedType* a, types_ResolvedType* b);
 uint8_t infer_inner_module_conflict(slop_option_types_ResolvedType_ptr a, slop_option_types_ResolvedType_ptr b);
@@ -123,6 +126,7 @@ uint8_t infer_pattern_is_constrained(types_SExpr* pattern);
 uint8_t infer_string_list_contains(slop_list_string names, slop_string name);
 slop_list_string infer_match_expected_variants(slop_arena* arena, types_ResolvedType* scrutinee_type);
 void infer_check_match_exhaustive(env_TypeEnv* env, types_ResolvedType* scrutinee_type, slop_list_string covered, uint8_t has_wildcard, int64_t line, int64_t col);
+void infer_check_enum_pattern_form(env_TypeEnv* env, types_ResolvedType* scrutinee_type, types_SExpr* pattern);
 types_ResolvedType* infer_infer_match_expr(env_TypeEnv* env, types_SExpr* expr, types_SExprList lst);
 void infer_check_return_type(env_TypeEnv* env, types_SExpr* fn_form, slop_string fn_name, types_ResolvedType* inferred_type, int64_t fn_line, int64_t fn_col);
 void infer_check_spec_return_type(env_TypeEnv* env, types_SExpr* spec_form, slop_string fn_name, types_ResolvedType* inferred_type, int64_t fn_line, int64_t fn_col);

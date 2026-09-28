@@ -56,6 +56,7 @@ void stmt_transpile_for_each_map_kv(context_TranspileContext* ctx, slop_list_typ
 void stmt_transpile_for_each(context_TranspileContext* ctx, types_SExpr* expr);
 void stmt_transpile_stmt(context_TranspileContext* ctx, types_SExpr* expr, uint8_t is_return);
 void stmt_emit_typed_return_expr(context_TranspileContext* ctx, types_SExpr* expr);
+slop_string stmt_current_return_c_type(context_TranspileContext* ctx);
 void stmt_emit_return_with_typed_none(context_TranspileContext* ctx, slop_string code);
 
 #ifndef SLOP_OPTION_TYPES_SEXPR_PTR_DEFINED

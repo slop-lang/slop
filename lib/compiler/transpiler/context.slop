@@ -36,7 +36,7 @@
     ;; Enum variant tracking
     EnumVariant ctx-register-enum-variant ctx-register-enum-variant-in ctx-lookup-enum-variant
     ctx-resolve-enum-variant-at ctx-resolve-any-enum-variant ctx-enum-variant-known
-    ctx-resolve-enum-variant-for ctx-resolve-callable-variant
+    ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-resolve-callable-variant
     ;; Union variant tracking (for hash/eq generation)
     UnionVariantEntry ctx-register-union-variant ctx-get-union-variants
     ;; Result type tracking
@@ -1620,6 +1620,27 @@
       (if (variants-have-enum candidates scrut)
         (some scrut)
         (ctx-resolve-enum-variant-at ctx variant-name at))))
+
+  (fn ctx-resolve-enum-variant-expecting ((ctx (Ptr TranspileContext)) (variant-name String)
+                                          (expected-c-type String) (at (Ptr SExpr)))
+    (@intent "Resolve a variant whose type the context expects: visible first, then the expected type")
+    (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> (Option String)))
+    (@pre {ctx != nil})
+    ;; The checker's order (#198): a variant the module can see wins, and two
+    ;; imported types with it stay an error. Only a variant the module cannot
+    ;; see is taken from the type the argument, initialiser or return expects,
+    ;; before falling back to a unique one from anywhere in the build.
+    (match (resolve-visible-variant ctx variant-name at)
+      ((variant-found enum-name) (some enum-name))
+      ((variant-ambiguous) none)
+      ((variant-missing)
+        (let ((arena (. (deref ctx) arena))
+              (expected (if (ends-with-star expected-c-type)
+                          (substring arena expected-c-type 0 (cast (Int 0 ..) (- (string-len expected-c-type) 1)))
+                          expected-c-type)))
+          (if (variants-have-enum (enum-variant-candidates ctx variant-name) expected)
+            (some expected)
+            (ctx-resolve-any-enum-variant ctx variant-name at))))))
 
   (fn ctx-resolve-callable-variant ((ctx (Ptr TranspileContext)) (name String) (at (Ptr SExpr)))
     (@intent "Resolve a name in call or value position as a variant, deferring to a function of that name")

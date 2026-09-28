@@ -1,0 +1,16 @@
+;; expecting imports neither Color nor Paint, both of which have red. A
+;; quoted variant takes its type from where it goes -- the parameter, the
+;; record field -- as the checker does (#198). Before, the transpiler
+;; lowered 'red without that type and could not choose.
+(module expecting
+  (export expecting-total)
+  (import hue (color-code))
+  (import tint (Swatch paint-code swatch-code))
+
+  (fn expecting-total ()
+    (@intent "Pass 'red to hue's and tint's functions and into tint's record")
+    (@spec (() -> Int))
+    (+ (paint-code 'red)
+       (+ (color-code 'red)
+          (+ (swatch-code (Swatch 'red 2))
+             (swatch-code (record-new Swatch (paint 'blue) (size 1))))))))
