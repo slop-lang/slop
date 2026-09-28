@@ -1,0 +1,48 @@
+(module test-collection-len
+  (@intent "map-len and set-len count entries in O(1), through growth, removal and a Ptr")
+
+  (type Counts (Map String Int))
+
+  (fn fill ((arena Arena) (m (Ptr (Map Int Int))) (n Int))
+    (@intent "Put keys 0 .. n-1 into the caller's map")
+    (@spec ((Arena (Ptr (Map Int Int)) Int) -> Int))
+    (@alloc arena)
+    (let ((mut i 0))
+      (while (< i n)
+        (map-put (deref m) i (* i i))
+        (set! i (+ i 1)))
+      (map-len m)))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if a count is wrong")
+    (@spec (() -> Int))
+    (with-arena 262144
+      (let ((mut fails 0)
+            (mut m (map-new arena Int Int))
+            (s (set-new arena String))
+            (c Counts (map-new arena String Int))
+            (mut i 0))
+        (when (!= (map-len m) 0) (set! fails (+ fails 1)))
+        (when (!= (set-len s) 0) (set! fails (+ fails 1)))
+        ;; 1000 keys cross several grows
+        (when (!= (fill arena (addr m) 1000) 1000) (set! fails (+ fails 1)))
+        (when (!= (map-len m) 1000) (set! fails (+ fails 1)))
+        ;; overwriting does not count twice
+        (map-put m 5 0)
+        (when (!= (map-len m) 1000) (set! fails (+ fails 1)))
+        (while (< i 1000)
+          (map-remove m i)
+          (set! i (+ i 3)))
+        (when (!= (map-len m) 666) (set! fails (+ fails 1)))
+        (when (!= (map-len m) (list-len (map-keys m))) (set! fails (+ fails 1)))
+        ;; removing a missing key changes nothing
+        (map-remove m 0)
+        (when (!= (map-len m) 666) (set! fails (+ fails 1)))
+        (set-put s "a")
+        (set-put s "b")
+        (set-put s "a")
+        (when (!= (set-len s) 2) (set! fails (+ fails 1)))
+        (when (!= (set-len (set String "x" "y" "z" "x")) 3) (set! fails (+ fails 1)))
+        (map-put c "k" 1)
+        (when (!= (map-len c) 1) (set! fails (+ fails 1)))
+        fails))))

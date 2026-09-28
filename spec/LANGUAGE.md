@@ -904,6 +904,7 @@ Minimal runtime (~500 lines of C):
 (map-has map key) -> Bool
 (map-keys map) -> (List K)               ; Return list of all keys (order: see for-each)
 (map-remove map key) -> Unit             ; Remove key from mutable map
+(map-len map) -> (Int 0 ..)              ; Number of entries, O(1)
 
 ; Options
 (some val) -> (Option T)
@@ -926,6 +927,7 @@ Minimal runtime (~500 lines of C):
 (set-has set element) -> Bool                     ; Check if element exists
 (set-remove set element) -> Unit                  ; Remove element from set
 (set-elements set) -> (List T)                    ; Get all elements as list (order: see for-each)
+(set-len set) -> (Int 0 ..)                       ; Number of elements, O(1)
 
 ; Results
 (ok val) -> (Result T E)

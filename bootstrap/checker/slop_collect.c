@@ -1604,7 +1604,7 @@ uint8_t collect_is_reserved_collection_name(slop_string name) {
 }
 
 uint8_t collect_is_reserved_collection_name_rest(slop_string name) {
-    return (string_eq(name, SLOP_STR("map-has")) || (string_eq(name, SLOP_STR("map-keys")) || (string_eq(name, SLOP_STR("map-remove")) || (string_eq(name, SLOP_STR("set")) || (string_eq(name, SLOP_STR("set-new")) || (string_eq(name, SLOP_STR("set-put")) || (string_eq(name, SLOP_STR("set-has")) || (string_eq(name, SLOP_STR("set-remove")) || string_eq(name, SLOP_STR("set-elements"))))))))));
+    return ((string_eq(name, SLOP_STR("map-has"))) || (string_eq(name, SLOP_STR("map-keys"))) || (string_eq(name, SLOP_STR("map-remove"))) || (string_eq(name, SLOP_STR("map-len"))) || (string_eq(name, SLOP_STR("set"))) || (string_eq(name, SLOP_STR("set-new"))) || (string_eq(name, SLOP_STR("set-put"))) || (string_eq(name, SLOP_STR("set-has"))) || (string_eq(name, SLOP_STR("set-remove"))) || (string_eq(name, SLOP_STR("set-elements"))) || (string_eq(name, SLOP_STR("set-len"))));
 }
 
 uint8_t collect_is_reserved_constructor_name(slop_string name) {

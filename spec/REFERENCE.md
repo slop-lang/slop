@@ -118,12 +118,14 @@ All definitions must be inside the module form:
 (map-has map key)        ; check if key exists -> Bool
 (map-keys map)           ; all keys -> (List K)
 (map-remove map key)     ; remove key (requires mutable map)
+(map-len map)            ; number of entries
 
 (set-new arena Type)     ; create empty set (type parameter required)
 (set Type e1 e2...)      ; set literal
 (set-put set elem)       ; add element
 (set-has set elem)       ; check membership -> Bool
 (set-remove set elem)    ; remove element
+(set-len set)            ; number of elements
 (set-elements set)       ; all elements -> (List T)
 ```
 

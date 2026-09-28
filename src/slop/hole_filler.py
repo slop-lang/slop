@@ -683,7 +683,7 @@ FUNCTION_ALTERNATIVES = {
     'rest': 'No rest in SLOP. Use slice or iterate from index 1',
     'cons': 'No cons in SLOP. Use (list ...) to create lists',
     'append': 'No append in SLOP. Build new list with for-each',
-    'length': 'Use string-len for strings, list-len for lists (both builtins)',
+    'length': 'Use string-len for strings, list-len for lists, map-len / set-len for maps and sets (all builtins)',
     'null?': 'No null? in SLOP. Use (== x nil) or (none? x) for Option',
     'nil?': 'No nil? in SLOP. Use (== x nil)',
     'empty?': 'No empty? in SLOP. Check length or use == nil',

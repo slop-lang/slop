@@ -38,7 +38,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer
                  BindingOrigin MutationKind mutation-error-message))
-  (import context (TranspileContext ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
+  (import context (TranspileContext ctx-register-value-key-type ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
@@ -1617,6 +1617,16 @@
                 (inner-type (substring arena slop-type 5 (cast (Int 0 ..) inner-len)))
                 (inner-c (slop-value-type-to-c-type ctx inner-type)))
             (string-concat arena inner-c "*")))
+        ;; Any other form -- (Option T), (Result T E), (List T), a range. Its
+        ;; text was run through to-c-name, so a Set of (Option String) had
+        ;; set-elements define slop_list_(Option_String) over "(Option String)".
+        ((starts-with slop-type "(")
+          (let ((parsed (parse-type-string arena slop-type)))
+            (if (== parsed nil)
+              (do
+                (ctx-add-error ctx (ctx-str3 ctx "cannot read the type '" slop-type "'"))
+                "void*")
+              (to-c-type-prefixed ctx parsed))))
         (else
           (match (ctx-lookup-type ctx slop-type)
             ((some entry) (. entry c-name))
@@ -2988,6 +2998,9 @@
                     ;; map-has: (map-has map key) -> (slop_map_get(map, key) != NULL)
                     ((and (string-eq op "map-has") (>= len 3))
                       (transpile-map-has ctx items))
+                    ;; map-len / set-len: (map-len map) -> ((int64_t)(map)->len)
+                    ((or (string-eq op "map-len") (string-eq op "set-len"))
+                      (transpile-collection-len ctx op items))
                     ;; map-keys: (map-keys map) -> slop_map_keys(map)
                     ((and (string-eq op "map-keys") (>= len 2))
                       (transpile-map-keys ctx items))
@@ -4641,8 +4654,9 @@
                               ((none) "int64_t"))))
                         ;; string-concat returns slop_string
                         ((string-eq op "string-concat") "slop_string")
-                        ;; list-len returns int64_t
-                        ((string-eq op "list-len") "int64_t")
+                        ;; list-len, map-len and set-len return int64_t
+                        ((or (string-eq op "list-len") (string-eq op "map-len") (string-eq op "set-len"))
+                          "int64_t")
                         ((or (string-eq op "is-none") (string-eq op "is-some")) "bool")
                         ;; string-len returns int64_t
                         ((string-eq op "string-len") "int64_t")
@@ -6068,9 +6082,70 @@
       ((string-eq name "U16") "sizeof(uint16_t), slop_hash_u16, slop_eq_u16")
       ((string-eq name "U8") "sizeof(uint8_t), slop_hash_u8, slop_eq_u8")
       ((string-eq name "Bool") "sizeof(bool), slop_hash_bool, slop_eq_bool")
+      ((or (string-eq name "Float") (string-eq name "F64")) "sizeof(double), slop_hash_double, slop_eq_double")
+      ((string-eq name "F32") "sizeof(float), slop_hash_float, slop_eq_float")
       ;; Symbols are interned as integers
       ((string-eq name "Symbol") "sizeof(int64_t), slop_hash_symbol, slop_eq_symbol")
       (else "")))
+
+  (fn int-c-type-key-info ((c-type String))
+    (@intent "The sizeof/hash/eq triple for an integer C type, or \"\" for any other")
+    (@spec ((String) -> String))
+    (@pure)
+    (@example ("uint8_t") -> "sizeof(uint8_t), slop_hash_u8, slop_eq_u8")
+    (@example ("int64_t") -> "sizeof(int64_t), slop_hash_int, slop_eq_int")
+    (@example ("double") -> "")
+    (cond
+      ((string-eq c-type "int64_t") (builtin-map-key-c-info "Int"))
+      ((string-eq c-type "int32_t") (builtin-map-key-c-info "I32"))
+      ((string-eq c-type "int16_t") (builtin-map-key-c-info "I16"))
+      ((string-eq c-type "int8_t") (builtin-map-key-c-info "I8"))
+      ((string-eq c-type "uint64_t") (builtin-map-key-c-info "U64"))
+      ((string-eq c-type "uint32_t") (builtin-map-key-c-info "U32"))
+      ((string-eq c-type "uint16_t") (builtin-map-key-c-info "U16"))
+      ((string-eq c-type "uint8_t") (builtin-map-key-c-info "U8"))
+      (else "")))
+
+  (fn is-range-type-string ((type-str String))
+    (@intent "Check if a type string is an integer range type such as (Int 0 .. 255)")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (@example ("(Int 0 ..)") -> true)
+    (@example ("(U8 0 .. 9)") -> true)
+    (@example ("(List Int)") -> false)
+    (or (starts-with type-str "(Int ") (starts-with type-str "(I64 ")
+        (starts-with type-str "(I32 ") (starts-with type-str "(I16 ")
+        (starts-with type-str "(I8 ") (starts-with type-str "(U64 ")
+        (starts-with type-str "(U32 ") (starts-with type-str "(U16 ")
+        (starts-with type-str "(U8 ")))
+
+  (fn compound-map-key-c-info ((ctx (Ptr TranspileContext)) (key-type-expr (Ptr SExpr)))
+    (@intent "The sizeof/hash/eq triple for a compound key type, or an error if it has no structural hash")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {key-type-expr != nil})
+    ;; Every compound key but (Ptr T) used to fall back to the String hash and
+    ;; sizeof(slop_string): a range key was read as 16 bytes, an Option key's
+    ;; has_value as a length. Each now gets a hash of its own width and kind,
+    ;; or an error.
+    (let ((arena (. (deref ctx) arena))
+          (type-str (sexpr-to-type-string arena key-type-expr)))
+      (cond
+        ((starts-with type-str "(Ptr ")
+          "sizeof(void*), slop_hash_ptr, slop_eq_ptr")
+        ((and (is-range-type-string type-str)
+              (> (string-len (int-c-type-key-info (to-c-type arena key-type-expr))) 0))
+          (int-c-type-key-info (to-c-type arena key-type-expr)))
+        ((or (starts-with type-str "(Option ") (starts-with type-str "(Result "))
+          (let ((c-type (to-c-type-prefixed ctx key-type-expr)))
+            (ctx-register-value-key-type ctx c-type type-str)
+            (build-struct-key-info ctx c-type)))
+        (else
+          (do
+            (ctx-add-error-at ctx
+              (ctx-str3 ctx "'" type-str "' cannot be a Map key or Set element - it has no structural hash")
+              (ctx-sexpr-line key-type-expr) (ctx-sexpr-col key-type-expr))
+            "sizeof(void*), slop_hash_ptr, slop_eq_ptr")))))
 
   (fn get-map-key-c-info ((ctx (Ptr TranspileContext)) (key-type-expr (Ptr SExpr)))
     (@intent "Get sizeof, hash fn, eq fn suffix for map key type")
@@ -6082,36 +6157,36 @@
       ((sym sym)
         (let ((name (. sym name))
               (builtin (builtin-map-key-c-info name)))
-          (cond
-            ((> (string-len builtin) 0) builtin)
-            ;; User-defined type: look up and generate struct hash/eq
-            (else
-              (let ((arena (. (deref ctx) arena))
-                    (result (get-struct-key-info-by-name ctx name)))
-                (if (> (string-len result) 0)
-                  result
-                  ;; Fall back to direct name conversion
-                  (let ((c-name (to-c-name arena name)))
-                    (ctx-register-struct-key-type ctx c-name)
-                    (build-struct-key-info ctx c-name))))))))
-      ;; List: check for (Ptr T)
-      ((lst lst)
-        (let ((items (. lst items)))
-          (if (< (list-len items) 1)
-            "sizeof(void*), slop_hash_ptr, slop_eq_ptr"
-            (match (list-get items 0)
-              ((some head)
-                (match (deref head)
-                  ((sym sym)
-                    (let ((head-name (. sym name)))
-                      (if (string-eq head-name "Ptr")
-                        "sizeof(void*), slop_hash_ptr, slop_eq_ptr"
-                        ;; Default to string for unknown compound types
-                        "sizeof(slop_string), slop_hash_string, slop_eq_string")))
-                  (_ "sizeof(slop_string), slop_hash_string, slop_eq_string")))
-              ((none) "sizeof(void*), slop_hash_ptr, slop_eq_ptr")))))
-      ;; Default fallback
-      (_ "sizeof(slop_string), slop_hash_string, slop_eq_string")))
+          (if (> (string-len builtin) 0)
+            builtin
+            ;; An alias keys as the type it names: (type Ids (Option String))
+            ;; hashes by content, and an alias of a range by its width
+            (match (ctx-lookup-type-alias ctx name)
+              ((some underlying)
+                (let ((parsed (parse-type-string (. (deref ctx) arena) underlying)))
+                  (if (== parsed nil)
+                    (do
+                      (ctx-add-error-at ctx (ctx-str3 ctx "cannot read the type alias '" name "' as a key type")
+                                        (ctx-sexpr-line key-type-expr) (ctx-sexpr-col key-type-expr))
+                      "sizeof(void*), slop_hash_ptr, slop_eq_ptr")
+                    (get-map-key-c-info ctx parsed))))
+              ;; User-defined type: look up and generate struct hash/eq
+              ((none)
+                (let ((arena (. (deref ctx) arena))
+                      (result (get-struct-key-info-by-name ctx name)))
+                  (if (> (string-len result) 0)
+                    result
+                    ;; Fall back to direct name conversion
+                    (let ((c-name (to-c-name arena name)))
+                      (ctx-register-struct-key-type ctx c-name)
+                      (build-struct-key-info ctx c-name)))))))))
+      ((lst _)
+        (compound-map-key-c-info ctx key-type-expr))
+      (_
+        (do
+          (ctx-add-error-at ctx "a Map key or Set element type must be a type name or a type form"
+                            (ctx-sexpr-line key-type-expr) (ctx-sexpr-col key-type-expr))
+          "sizeof(void*), slop_hash_ptr, slop_eq_ptr"))))
 
   (fn get-struct-key-info-by-name ((ctx (Ptr TranspileContext)) (name String))
     (@intent "Look up a type by name and return struct key info if found")
@@ -6440,6 +6515,22 @@
             (do
               (ctx-add-error-at ctx "map-get: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL"))))))
+
+  (fn transpile-collection-len ((ctx (Ptr TranspileContext)) (op String) (items (List (Ptr SExpr))))
+    (@intent "Transpile map-len / set-len to the table's entry count")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+    (@pre {ctx != nil})
+    ;; O(1) and allocation-free: slop_map keeps len current through put,
+    ;; remove and grow. The alternative was (list-len (set-elements s)).
+    (if (!= (list-len items) 2)
+      (do
+        (ctx-add-error-at ctx (ctx-str ctx op ": expects exactly one argument")
+                          (ctx-list-first-line items) (ctx-list-first-col items))
+        "0")
+      (match (list-get items 1)
+        ((some coll-expr)
+          (ctx-str3 ctx "((int64_t)(" (resolve-container-c ctx coll-expr) ")->len)"))
+        ((none) "0"))))
 
   (fn transpile-map-has ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile map-has to check for non-NULL with proper key pointer wrapping")

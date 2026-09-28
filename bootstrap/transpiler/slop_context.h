@@ -27,6 +27,7 @@ typedef struct context_ChanType context_ChanType;
 typedef struct context_ThreadType context_ThreadType;
 typedef struct context_ResultTypeAlias context_ResultTypeAlias;
 typedef struct context_FuncCNameAlias context_FuncCNameAlias;
+typedef struct context_ValueKeyType context_ValueKeyType;
 typedef struct context_TypeAliasEntry context_TypeAliasEntry;
 typedef struct context_InlineRecord context_InlineRecord;
 typedef struct context_GenericFuncInstantiation context_GenericFuncInstantiation;
@@ -361,6 +362,23 @@ SLOP_OPTION_DEFINE(context_FuncCNameAlias, slop_option_context_FuncCNameAlias)
 SLOP_LIST_DEFINE(context_FuncCNameAlias, slop_list_context_FuncCNameAlias)
 #endif
 
+struct context_ValueKeyType {
+    slop_string c_type;
+    slop_string slop_type;
+};
+typedef struct context_ValueKeyType context_ValueKeyType;
+
+#ifndef SLOP_OPTION_CONTEXT_VALUEKEYTYPE_DEFINED
+#define SLOP_OPTION_CONTEXT_VALUEKEYTYPE_DEFINED
+SLOP_OPTION_DEFINE(context_ValueKeyType, slop_option_context_ValueKeyType)
+#endif
+
+#ifndef SLOP_LIST_CONTEXT_VALUEKEYTYPE_DEFINED
+#define SLOP_LIST_CONTEXT_VALUEKEYTYPE_DEFINED
+#define SLOP_LIST_CONTEXT_VALUEKEYTYPE_IMPL_DEFINED
+SLOP_LIST_DEFINE(context_ValueKeyType, slop_list_context_ValueKeyType)
+#endif
+
 struct context_TypeAliasEntry {
     slop_string name;
     slop_string slop_type;
@@ -444,6 +462,7 @@ struct context_TranspileContext {
     int64_t gensym_counter;
     uint8_t capture_to_retval;
     slop_list_string struct_key_types;
+    slop_list_context_ValueKeyType value_key_types;
     slop_list_context_TypeAliasEntry type_aliases;
     slop_string current_file;
     slop_list_context_TranspileError errors;
@@ -666,6 +685,8 @@ slop_string context_ctx_gensym(context_TranspileContext* ctx, slop_string prefix
 void context_ctx_register_struct_key_type(context_TranspileContext* ctx, slop_string c_type);
 uint8_t context_ctx_has_struct_key_type(context_TranspileContext* ctx, slop_string c_type);
 slop_list_string context_ctx_get_struct_key_types(context_TranspileContext* ctx);
+slop_option_string context_ctx_lookup_value_key_type(context_TranspileContext* ctx, slop_string c_type);
+void context_ctx_register_value_key_type(context_TranspileContext* ctx, slop_string c_type, slop_string slop_type);
 void context_ctx_register_type_alias(context_TranspileContext* ctx, slop_string name, slop_string slop_type);
 uint8_t context_ctx_is_option_c_type(context_TranspileContext* ctx, slop_string c_type);
 slop_option_string context_ctx_lookup_type_alias(context_TranspileContext* ctx, slop_string name);
@@ -786,6 +807,11 @@ SLOP_OPTION_DEFINE(context_ResultTypeAlias, slop_option_context_ResultTypeAlias)
 #ifndef SLOP_OPTION_CONTEXT_FUNCCNAMEALIAS_DEFINED
 #define SLOP_OPTION_CONTEXT_FUNCCNAMEALIAS_DEFINED
 SLOP_OPTION_DEFINE(context_FuncCNameAlias, slop_option_context_FuncCNameAlias)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_VALUEKEYTYPE_DEFINED
+#define SLOP_OPTION_CONTEXT_VALUEKEYTYPE_DEFINED
+SLOP_OPTION_DEFINE(context_ValueKeyType, slop_option_context_ValueKeyType)
 #endif
 
 #ifndef SLOP_OPTION_CONTEXT_TYPEALIASENTRY_DEFINED

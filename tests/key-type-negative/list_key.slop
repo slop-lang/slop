@@ -1,0 +1,9 @@
+(module list-key
+  (@intent "A (List Int) has no structural hash, so it cannot be a Set element")
+
+  (fn main ()
+    (@intent "Must not build: the Set's element type is rejected")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((s (set-new arena (List Int))))
+        0))))

@@ -1273,6 +1273,22 @@ class Z3Translator:
                         return result
                     return None
 
+                # Map / Set size: an uninterpreted, non-negative count. Kept
+                # apart from field_len so a map's size is never equated with
+                # the length of a list that happens to share its term.
+                if op in ('map-len', 'set-len'):
+                    if len(expr) != 2:
+                        return None
+                    coll = self.translate_expr(expr[1])
+                    if coll is None or not z3.is_int(coll):
+                        return None
+                    func_name = "map_len" if op == 'map-len' else "set_len"
+                    if func_name not in self.variables:
+                        self.variables[func_name] = z3.Function(func_name, z3.IntSort(), z3.IntSort())
+                    result = self.variables[func_name](coll)
+                    self.constraints.append(result >= 0)
+                    return result
+
                 # List element access (array/seq encoding)
                 if op == 'list-ref':
                     # Try Seq encoding first

@@ -11,7 +11,8 @@
 ;; list, so a documented form that stops working, or was never
 ;; implemented, fails here rather than in someone's editor. Three were
 ;; found this way while writing it and removed from the docs:
-;; (map K V ...) literal, map-len and list-set do not exist.
+;; (map K V ...) literal, map-len and list-set did not exist. map-len and
+;; set-len have since been added.
 ;;
 ;; It is a conformance check, not a semantics check -- each builtin is
 ;; used once and its result inspected just enough to prove it ran.
@@ -40,10 +41,13 @@
       (let ((m (map-new arena String Int)))
         (map-put m "a" 1)
         (map-put m "b" 2)
+        (map-put m "a" 3)
         (and (map-has m "a")
              (match (map-get m "b") ((some v) (== v 2)) ((none) false))
              (== (list-len (map-keys m)) 2)
-             (do (map-remove m "a") (not (map-has m "a")))))))
+             (== (map-len m) 2)
+             (do (map-remove m "a") (not (map-has m "a")))
+             (== (map-len m) 1)))))
 
   (fn sets ()
     (@intent "every documented set builtin")
@@ -57,7 +61,10 @@
              (set-has lit 8)
              (== (list-len (set-elements s)) 2)
              (== (list-len (set-elements lit)) 3)
-             (do (set-remove s 1) (not (set-has s 1)))))))
+             (do (set-put s 2) (== (set-len s) 2))
+             (== (set-len lit) 3)
+             (do (set-remove s 1) (not (set-has s 1)))
+             (== (set-len s) 1)))))
 
   (fn main ()
     (@intent "Run the container conformance checks")

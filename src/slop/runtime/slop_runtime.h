@@ -726,6 +726,29 @@ SLOP_NARROW_KEY_HASH_EQ(u16, uint16_t, uint64_t, slop_hash_uint)
 SLOP_NARROW_KEY_HASH_EQ(u8, uint8_t, uint64_t, slop_hash_uint)
 SLOP_NARROW_KEY_HASH_EQ(bool, bool, uint64_t, slop_hash_uint)
 
+/* Hash/eq for Float (double) and F32 (float) keys. eq is C's ==, so -0.0
+ * and 0.0 are one key and must hash alike, and a NaN key is never found. */
+static inline uint64_t slop_hash_double(const void* key) {
+    double d = *(const double*)key;
+    if (d == 0.0) d = 0.0;
+    uint64_t bits;
+    memcpy(&bits, &d, sizeof(bits));
+    return slop_hash_uint(&bits);
+}
+
+static inline bool slop_eq_double(const void* a, const void* b) {
+    return *(const double*)a == *(const double*)b;
+}
+
+static inline uint64_t slop_hash_float(const void* key) {
+    double d = (double)*(const float*)key;
+    return slop_hash_double(&d);
+}
+
+static inline bool slop_eq_float(const void* a, const void* b) {
+    return *(const float*)a == *(const float*)b;
+}
+
 /* Hash for pointers (useful for identity maps) */
 static inline uint64_t slop_hash_ptr(const void* key) {
     uint64_t x = (uint64_t)(*(const void**)key);
