@@ -1,0 +1,9 @@
+;; main imports both hue's Color and tint's Paint, and each has a red
+(module main
+  (import hue (Color color-code))
+  (import tint (Paint paint-code))
+
+  (fn main ()
+    (@intent "Use an ambiguous 'red")
+    (@spec (() -> Int))
+    (paint-code 'red)))

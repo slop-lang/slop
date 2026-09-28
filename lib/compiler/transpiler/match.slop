@@ -17,7 +17,7 @@
   (import parser (sexpr-get-symbol-name sexpr-is-number sexpr-number-string))
   (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens VarEntry
-                   ctx-lookup-enum-variant ctx-get-current-return-type ctx-is-option-c-type ctx-gensym
+                   ctx-resolve-enum-variant-for ctx-enum-variant-known ctx-get-current-return-type ctx-is-option-c-type ctx-gensym
                    to-c-type-prefixed ends-with-star
                    ctx-lookup-field-type ctx-lookup-field-slop-type
                    ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
@@ -127,9 +127,8 @@
                          (not (string-eq tag "error"))
                          (not (string-eq tag "else"))
                          (not (string-eq tag "_")))
-                (match (ctx-lookup-enum-variant ctx tag)
-                  ((some _) (set! has-union-variant true))
-                  ((none) (do))))))
+                (when (ctx-enum-variant-known ctx tag)
+                  (set! has-union-variant true)))))
           ((none) (do)))
         (set! i (+ i 1)))
       has-union-variant))
@@ -207,12 +206,13 @@
                     (let ((scrutinee-c (transpile-expr ctx scrutinee))
                           (patterns (collect-patterns ctx items))
                           ;; Generate unique variable name for the scrutinee
-                          (scrutinee-var (ctx-gensym ctx "_mv")))
+                          (scrutinee-var (ctx-gensym ctx "_mv"))
+                          ;; Also picks the type a match arm's variant belongs to (#174)
+                          (scrut-c-type (infer-expr-c-type ctx scrutinee)))
                       ;; Store scrutinee in a variable first (avoids multiple evaluation)
                       ;; If scrutinee is a pointer to a union/option/result, dereference it
                       ;; so downstream .tag/.data accesses work correctly
-                      (let ((scrut-c-type (infer-expr-c-type ctx scrutinee))
-                            (needs-deref (or (ends-with-star scrut-c-type) (is-pointer-expr ctx scrutinee))))
+                      (let ((needs-deref (or (ends-with-star scrut-c-type) (is-pointer-expr ctx scrutinee))))
                         (if needs-deref
                           (ctx-emit ctx (ctx-str4 ctx "__auto_type " scrutinee-var " = *(" (ctx-str ctx scrutinee-c ");")))
                           (ctx-emit ctx (ctx-str4 ctx "__auto_type " scrutinee-var " = " (ctx-str ctx scrutinee-c ";")))))
@@ -227,11 +227,11 @@
                         ((is-result-match patterns)
                           (transpile-result-match ctx scrutinee-var scrutinee patterns items is-return))
                         ((is-enum-match patterns)
-                          (transpile-enum-match ctx scrutinee-var items is-return))
+                          (transpile-enum-match ctx scrutinee-var scrut-c-type items is-return))
                         ((is-literal-match patterns)
                           (transpile-literal-match ctx scrutinee-var items is-return))
                         ((is-union-match ctx patterns)
-                          (transpile-union-match ctx scrutinee-var patterns items is-return))
+                          (transpile-union-match ctx scrutinee-var scrut-c-type patterns items is-return))
                         (else
                           (transpile-generic-match ctx scrutinee-var items is-return)))))
                   ((none) (ctx-add-error-at ctx "missing match scrutinee" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))))))
@@ -470,10 +470,10 @@
   ;; Enum Match
   ;; ============================================================
 
-  (fn transpile-enum-match ((ctx (Ptr TranspileContext)) (scrutinee-c String)
+  (fn transpile-enum-match ((ctx (Ptr TranspileContext)) (scrutinee-c String) (scrut-c-type String)
                             (items (List (Ptr SExpr))) (is-return Bool))
     (@intent "Transpile enum matching using switch")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr)) Bool) -> Unit))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
@@ -494,7 +494,7 @@
                         (let ((tag (get-pattern-tag pattern)))
                           (when (or (string-eq tag "else") (string-eq tag "_"))
                             (set! has-else true)))
-                        (emit-enum-case ctx pattern branch-items is-return))
+                        (emit-enum-case ctx scrut-c-type pattern branch-items is-return))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -503,10 +503,10 @@
       (ctx-emit ctx "}")
       (emit-match-fallthrough-trap ctx is-return has-else)))
 
-  (fn emit-enum-case ((ctx (Ptr TranspileContext)) (pattern (Ptr SExpr))
+  (fn emit-enum-case ((ctx (Ptr TranspileContext)) (scrut-c-type String) (pattern (Ptr SExpr))
                       (branch-items (List (Ptr SExpr))) (is-return Bool))
     (@intent "Emit a single enum case")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr) (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String (Ptr SExpr) (List (Ptr SExpr)) Bool) -> Unit))
     (@pre {ctx != nil})
     (@pre {pattern != nil})
     (let ((arena (. (deref ctx) arena))
@@ -520,7 +520,7 @@
           (ctx-dedent ctx)
           (ctx-emit ctx "}"))
         (do
-          (match (ctx-lookup-enum-variant ctx tag)
+          (match (ctx-resolve-enum-variant-for ctx tag scrut-c-type pattern)
             ((some type-name)
               (let ((c-case (ctx-str3 ctx type-name "_" (to-c-name arena tag))))
                 (ctx-emit ctx (ctx-str ctx "case " (ctx-str ctx c-case ": {")))
@@ -602,14 +602,14 @@
   ;; Union Match (tagged union)
   ;; ============================================================
 
-  (fn transpile-union-match ((ctx (Ptr TranspileContext)) (scrutinee-c String)
+  (fn transpile-union-match ((ctx (Ptr TranspileContext)) (scrutinee-c String) (scrut-c-type String)
                              (patterns (List (Ptr SExpr))) (items (List (Ptr SExpr))) (is-return Bool))
     (@intent "Transpile union (tagged union) matching using switch on tag")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr)) (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr)) (List (Ptr SExpr)) Bool) -> Unit))
     (@pre {ctx != nil})
     ;; If any arm contains literal patterns, use if/else if chain instead of switch
     (if (has-literal-in-patterns patterns)
-      (transpile-union-match-with-literals ctx scrutinee-c patterns items is-return)
+      (transpile-union-match-with-literals ctx scrutinee-c scrut-c-type patterns items is-return)
       (let ((arena (. (deref ctx) arena))
             (len (list-len items))
             (mut i 2)
@@ -640,7 +640,7 @@
                                 (ctx-emit ctx "}"))
                               (else
                                 ;; Regular variant case - look up union type name from variant
-                                (match (ctx-lookup-enum-variant ctx tag)
+                                (match (ctx-resolve-enum-variant-for ctx tag scrut-c-type pattern)
                                   ((some union-type-name)
                                     (emit-union-case ctx scrutinee-c pattern tag union-type-name branch-items is-return))
                                   ((none)
@@ -2110,10 +2110,10 @@
   ;; Union Match with Literal Guards (if/else if chain)
   ;; ============================================================
 
-  (fn transpile-union-match-with-literals ((ctx (Ptr TranspileContext)) (scrutinee-c String)
+  (fn transpile-union-match-with-literals ((ctx (Ptr TranspileContext)) (scrutinee-c String) (scrut-c-type String)
                                            (patterns (List (Ptr SExpr))) (items (List (Ptr SExpr))) (is-return Bool))
     (@intent "Transpile union match with literal guards using if/else if chain")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr)) (List (Ptr SExpr)) Bool) -> Unit))
+    (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr)) (List (Ptr SExpr)) Bool) -> Unit))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
@@ -2142,7 +2142,7 @@
                               (ctx-dedent ctx)
                               (set! first false))
                             ;; Regular variant arm with potential literal guards
-                            (match (ctx-lookup-enum-variant ctx tag)
+                            (match (ctx-resolve-enum-variant-for ctx tag scrut-c-type pattern)
                               ((some union-type-name)
                                 (let ((c-tag (to-c-name arena tag))
                                       (tag-cond (ctx-str5 ctx scrutinee-c ".tag == " union-type-name "_" c-tag))

@@ -1198,8 +1198,9 @@
     ;;
     ;; The transpiler dispatches these names before any function lookup, so a
     ;; definition would type-check as itself and lower as the builtin. Its type
-    ;; lookup also still sees every module in the build, so gating the builtin
-    ;; on a lookup would let a dependency disable it somewhere else entirely.
+    ;; lookup also falls back to a type that only one module defines, imported
+    ;; or not, so gating the builtin on a lookup would let a dependency disable
+    ;; it somewhere else entirely.
     ;; So the definition is refused here instead, where module-name is known
     ;; and the message can be precise.
     ;;

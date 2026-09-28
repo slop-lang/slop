@@ -1,0 +1,35 @@
+;; hue and tint each define a red variant, a dot variant, an Ids alias and a
+;; Res Result alias, differently. Each module must get its own, whichever
+;; was registered first (#174).
+
+(module hue
+  (export Color Shape Ids Res color-code shape-size first-id safe-div)
+
+  (type Color (enum green red))
+  (type Shape (union (dot Int) (box Int)))
+  (type Ids (Option Int))
+  (type Res (Result Int String))
+
+  (fn color-code ((c Color))
+    (@intent "Number hue's colors")
+    (@spec ((Color) -> Int))
+    (match c
+      ('green 1)
+      ('red 2)))
+
+  (fn shape-size ((s Shape))
+    (@intent "Size of hue's shapes")
+    (@spec ((Shape) -> Int))
+    (match s
+      ((dot n) n)
+      ((box n) (* n n))))
+
+  (fn first-id ((x Int))
+    (@intent "hue's Ids is an Option")
+    (@spec ((Int) -> Ids))
+    (if (> x 0) (some x) none))
+
+  (fn safe-div ((a Int) (b Int))
+    (@intent "hue's Res carries an Int")
+    (@spec ((Int Int) -> Res))
+    (if (== b 0) (error "div by zero") (ok (/ a b)))))

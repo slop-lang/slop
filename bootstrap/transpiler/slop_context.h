@@ -32,7 +32,14 @@ typedef struct context_InlineRecord context_InlineRecord;
 typedef struct context_GenericFuncInstantiation context_GenericFuncInstantiation;
 typedef struct context_TranspileContext context_TranspileContext;
 typedef struct context_TypeLookup context_TypeLookup;
+typedef struct context_VariantLookup context_VariantLookup;
 typedef struct context_LastLambdaInfo context_LastLambdaInfo;
+
+typedef enum {
+    context_VariantScope_scope_own,
+    context_VariantScope_scope_imported,
+    context_VariantScope_scope_builtin
+} context_VariantScope;
 
 #ifndef SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
 #define SLOP_LIST_CONTEXT_FUNCPARAMTYPE_PTR_DEFINED
@@ -198,6 +205,7 @@ SLOP_OPTION_DEFINE(context_Scope, slop_option_context_Scope)
 struct context_EnumVariant {
     slop_string variant_name;
     slop_string enum_name;
+    slop_string owner_module;
 };
 typedef struct context_EnumVariant context_EnumVariant;
 
@@ -483,6 +491,25 @@ typedef struct context_TypeLookup context_TypeLookup;
 SLOP_OPTION_DEFINE(context_TypeLookup, slop_option_context_TypeLookup)
 #endif
 
+typedef enum {
+    context_VariantLookup_variant_found,
+    context_VariantLookup_variant_missing,
+    context_VariantLookup_variant_ambiguous
+} context_VariantLookup_tag;
+
+struct context_VariantLookup {
+    context_VariantLookup_tag tag;
+    union {
+        slop_string variant_found;
+    } data;
+};
+typedef struct context_VariantLookup context_VariantLookup;
+
+#ifndef SLOP_OPTION_CONTEXT_VARIANTLOOKUP_DEFINED
+#define SLOP_OPTION_CONTEXT_VARIANTLOOKUP_DEFINED
+SLOP_OPTION_DEFINE(context_VariantLookup, slop_option_context_VariantLookup)
+#endif
+
 struct context_LastLambdaInfo {
     uint8_t is_closure;
     slop_string env_type;
@@ -568,7 +595,21 @@ slop_list_string context_ctx_get_includes(context_TranspileContext* ctx);
 void context_ctx_mark_type_emitted(context_TranspileContext* ctx, slop_string type_name);
 uint8_t context_ctx_is_type_emitted(context_TranspileContext* ctx, slop_string type_name);
 void context_ctx_register_enum_variant(context_TranspileContext* ctx, slop_string variant_name, slop_string enum_name);
+void context_ctx_register_enum_variant_in(context_TranspileContext* ctx, slop_string variant_name, slop_string enum_name, slop_string owner);
+uint8_t context_variants_have_enum(slop_list_context_EnumVariant variants, slop_string enum_name);
+slop_list_context_EnumVariant context_enum_variant_candidates(context_TranspileContext* ctx, slop_string variant_name);
+uint8_t context_module_imports_type_c_name(context_TranspileContext* ctx, slop_string c_name, slop_string mod);
+slop_list_context_EnumVariant context_select_variants(context_TranspileContext* ctx, slop_list_context_EnumVariant candidates, slop_string mod, context_VariantScope scope);
+context_VariantLookup context_first_variant_type(slop_list_context_EnumVariant variants);
+slop_string context_variant_type_slop_name(context_TranspileContext* ctx, context_EnumVariant v);
+void context_report_variant_ambiguity(context_TranspileContext* ctx, slop_string variant_name, slop_list_context_EnumVariant candidates, uint8_t imported, types_SExpr* at);
+context_VariantLookup context_resolve_visible_variant(context_TranspileContext* ctx, slop_string variant_name, types_SExpr* at);
+slop_option_string context_ctx_resolve_any_enum_variant(context_TranspileContext* ctx, slop_string variant_name, types_SExpr* at);
+slop_option_string context_ctx_resolve_enum_variant_at(context_TranspileContext* ctx, slop_string variant_name, types_SExpr* at);
 slop_option_string context_ctx_lookup_enum_variant(context_TranspileContext* ctx, slop_string variant_name);
+uint8_t context_ctx_enum_variant_known(context_TranspileContext* ctx, slop_string variant_name);
+slop_option_string context_ctx_resolve_enum_variant_for(context_TranspileContext* ctx, slop_string variant_name, slop_string scrut_c_type, types_SExpr* at);
+slop_option_string context_ctx_resolve_callable_variant(context_TranspileContext* ctx, slop_string name, types_SExpr* at);
 void context_ctx_register_union_variant(context_TranspileContext* ctx, slop_string variant_name, slop_string union_name, slop_string c_variant_name, slop_string slop_type, slop_string c_type);
 slop_list_context_UnionVariantEntry context_ctx_get_union_variants(context_TranspileContext* ctx, slop_string union_name);
 void context_ctx_register_result_type(context_TranspileContext* ctx, slop_string ok_type, slop_string err_type, slop_string c_name);
@@ -595,6 +636,9 @@ void context_ctx_register_thread_type(context_TranspileContext* ctx, slop_string
 uint8_t context_ctx_has_thread_type(context_TranspileContext* ctx, slop_string c_name);
 slop_list_context_ThreadType context_ctx_get_thread_types(context_TranspileContext* ctx);
 void context_ctx_register_result_type_alias(context_TranspileContext* ctx, slop_string alias_name, slop_string c_name);
+slop_string context_alias_key_for_definition(context_TranspileContext* ctx, slop_string name);
+slop_option_string context_find_result_type_alias(context_TranspileContext* ctx, slop_string key);
+uint8_t context_type_candidates_have_alias(context_TranspileContext* ctx, slop_list_context_TypeEntry candidates, uint8_t result_alias);
 slop_option_string context_ctx_lookup_result_type_alias(context_TranspileContext* ctx, slop_string alias_name);
 void context_ctx_add_c_name_alias(context_TranspileContext* ctx, context_FuncCNameAlias alias);
 slop_list_context_FuncCNameAlias context_ctx_get_c_name_aliases(context_TranspileContext* ctx);
@@ -623,6 +667,7 @@ slop_list_string context_ctx_get_struct_key_types(context_TranspileContext* ctx)
 void context_ctx_register_type_alias(context_TranspileContext* ctx, slop_string name, slop_string slop_type);
 uint8_t context_ctx_is_option_c_type(context_TranspileContext* ctx, slop_string c_type);
 slop_option_string context_ctx_lookup_type_alias(context_TranspileContext* ctx, slop_string name);
+slop_option_string context_find_type_alias(context_TranspileContext* ctx, slop_string key);
 void context_ctx_add_deferred_lambda(context_TranspileContext* ctx, slop_string lambda_code);
 slop_list_string context_ctx_get_deferred_lambdas(context_TranspileContext* ctx);
 void context_ctx_clear_deferred_lambdas(context_TranspileContext* ctx);
@@ -764,6 +809,11 @@ SLOP_OPTION_DEFINE(context_TranspileContext, slop_option_context_TranspileContex
 #ifndef SLOP_OPTION_CONTEXT_TYPELOOKUP_DEFINED
 #define SLOP_OPTION_CONTEXT_TYPELOOKUP_DEFINED
 SLOP_OPTION_DEFINE(context_TypeLookup, slop_option_context_TypeLookup)
+#endif
+
+#ifndef SLOP_OPTION_CONTEXT_VARIANTLOOKUP_DEFINED
+#define SLOP_OPTION_CONTEXT_VARIANTLOOKUP_DEFINED
+SLOP_OPTION_DEFINE(context_VariantLookup, slop_option_context_VariantLookup)
 #endif
 
 #ifndef SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED

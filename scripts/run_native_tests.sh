@@ -63,7 +63,8 @@ run_unit_tests "lib/std/path" "path"
 run_unit_tests "lib/std/json" "json"
 run_unit_tests "lib/std/xml" "xml"
 run_unit_tests "tests/example-harness" "example-harness"
-# The harness prescans each module again per @example: pick's Pt is beta's (#174)
+# The harness prescans each module again per @example: pick's Pt is beta's
+# and its 'red is tint's (#174)
 run_unit_tests "tests/type-resolution" "type-resolution-examples"
 # The test-harness generator, covered by the mechanism it implements. Meaningful only
 # alongside the negative fixture below, which independently proves the harness still
@@ -226,6 +227,14 @@ run_lib_test "$REPO_ROOT/tests/type-resolution/main.slop" "type-resolution-build
     -I "$REPO_ROOT/tests/type-resolution"
 run_lib_test "$REPO_ROOT/tests/type-resolution/main_swapped.slop" "type-resolution-build-swapped" \
     -I "$REPO_ROOT/tests/type-resolution"
+# Variants and aliases too: hue and tint each have a red and a dot variant,
+# an Ids alias and a Res Result alias. The first registration in the build
+# used to win, so one module's code named the other's enum constants and
+# Result type, and a variant could take the name of a module's own function.
+run_lib_test "$REPO_ROOT/tests/type-resolution/variants.slop" "type-resolution-variants" \
+    -I "$REPO_ROOT/tests/type-resolution"
+run_lib_test "$REPO_ROOT/tests/type-resolution/variants_swapped.slop" "type-resolution-variants-swapped" \
+    -I "$REPO_ROOT/tests/type-resolution"
 
 # A build that must fail with exactly one error: the expected message at the
 # expected file:line:col. Exactly one, because a module's errors used to be
@@ -280,6 +289,12 @@ run_negative_build_test "$TNEG/shadow.slop" "type-local-and-import" \
     -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
 run_negative_build_test "$TNEG/unimported.slop" "type-unimported-ambiguous" \
     "unimported.slop:10:32: error: type 'Scores' is defined in modules 'epsilon' and 'delta' - import it from the one you mean" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
+run_negative_build_test "$TNEG/variant-both.slop" "variant-import-ambiguous" \
+    "variant-both.slop:9:17: error: variant 'red' is ambiguous: imported from both 'tint' (Paint) and 'hue' (Color)" \
+    -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
+run_negative_build_test "$TNEG/variant-unimported.slop" "variant-unimported-ambiguous" \
+    "variant-unimported.slop:10:17: error: variant 'red' belongs to types in modules 'tint' (Paint) and 'hue' (Color) - import the type you mean" \
     -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
 
 # list-push grows its list in an arena; with none in scope it used to emit the

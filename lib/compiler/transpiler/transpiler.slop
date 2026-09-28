@@ -20,7 +20,7 @@
   (import context (TranspileContext context-new ctx-emit ctx-emit-header ctx-get-output ctx-get-header
                    ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-register-type ctx-register-func ctx-lookup-type ctx-lookup-func ctx-lookup-func-in-module ctx-find-import-entry ctx-find-type-binding ctx-find-own-type ctx-module-defines-types ctx-lookup-type-in-module ctx-type-name-exists ctx-set-pos ctx-current-module-name ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-set-module ctx-get-module ctx-set-prefixing ctx-prefixing-enabled ctx-prefix-type
-                   ctx-add-include ctx-get-includes ctx-register-enum-variant
+                   ctx-add-include ctx-get-includes ctx-register-enum-variant ctx-register-enum-variant-in
                    ctx-register-union-variant ctx-get-union-variants UnionVariantEntry
                    ctx-register-result-type ctx-has-result-type ctx-get-result-types ResultType
                    ctx-set-current-result-type ctx-get-current-result-type ctx-clear-current-result-type
@@ -216,17 +216,11 @@
                             ;; Register type aliases during prescan and scan for generics
                             (let ((slop-type-str (pretty-print arena body-expr)))
                               (when (is-generic-type-alias slop-type-str)
-                                (ctx-register-type-alias ctx type-name slop-type-str)
-                                ;; Also under the C name. Several places downstream
-                                ;; hold only the C type -- FuncParamType carries
-                                ;; nothing else -- and need to ask what the alias
-                                ;; stands for. Without this, a bare (none) passed to
-                                ;; a parameter typed by an Option alias could not be
-                                ;; given a type and stayed _slop_option_generic.
-                                ;; When prefixing is off the two names coincide and
-                                ;; this registers the same mapping twice, harmlessly.
-                                (when (not (string-eq c-name type-name))
-                                  (ctx-register-type-alias ctx c-name slop-type-str)))
+                                ;; Keyed by the C name, which is also what the places
+                                ;; that hold only the C type ask with: a bare (none)
+                                ;; passed to a parameter typed by an Option alias
+                                ;; needs it, or it stays _slop_option_generic.
+                                (ctx-register-type-alias ctx type-name slop-type-str))
                               ;; Register whatever containers the alias body names.
                               ;; This used to run only for (Map ...) and (Set ...),
                               ;; so (type PointList (List Point)) declared the alias
@@ -1055,34 +1049,34 @@
     ;; The types module defines SExpr as a union with these variants:
     ;; (type SExpr (union (symbol SExprSymbol) (string SExprString) (number SExprNumber) (list SExprList)))
     ;; Use prefixed names since SExpr comes from types module
-    (ctx-register-enum-variant ctx "sym" "types_SExpr")
-    (ctx-register-enum-variant ctx "str" "types_SExpr")
-    (ctx-register-enum-variant ctx "num" "types_SExpr")
-    (ctx-register-enum-variant ctx "lst" "types_SExpr")
+    (ctx-register-enum-variant-in ctx "sym" "types_SExpr" "types")
+    (ctx-register-enum-variant-in ctx "str" "types_SExpr" "types")
+    (ctx-register-enum-variant-in ctx "num" "types_SExpr" "types")
+    (ctx-register-enum-variant-in ctx "lst" "types_SExpr" "types")
     ;; Option and Result variants are built-in and don't need module prefix
-    (ctx-register-enum-variant ctx "some" "Option")
-    (ctx-register-enum-variant ctx "none" "Option")
-    (ctx-register-enum-variant ctx "ok" "Result")
-    (ctx-register-enum-variant ctx "error" "Result"))
+    (ctx-register-enum-variant-in ctx "some" "Option" "")
+    (ctx-register-enum-variant-in ctx "none" "Option" "")
+    (ctx-register-enum-variant-in ctx "ok" "Result" "")
+    (ctx-register-enum-variant-in ctx "error" "Result" ""))
 
   (fn register-file-module-variants ((ctx (Ptr TranspileContext)))
     (@intent "Register FileMode and FileError variants from the file module")
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
     ;; Register FileMode enum variants
-    (ctx-register-enum-variant ctx "read" "file_FileMode")
-    (ctx-register-enum-variant ctx "write" "file_FileMode")
-    (ctx-register-enum-variant ctx "append" "file_FileMode")
-    (ctx-register-enum-variant ctx "read-write" "file_FileMode")
-    (ctx-register-enum-variant ctx "write-read" "file_FileMode")
-    (ctx-register-enum-variant ctx "append-read" "file_FileMode")
+    (ctx-register-enum-variant-in ctx "read" "file_FileMode" "file")
+    (ctx-register-enum-variant-in ctx "write" "file_FileMode" "file")
+    (ctx-register-enum-variant-in ctx "append" "file_FileMode" "file")
+    (ctx-register-enum-variant-in ctx "read-write" "file_FileMode" "file")
+    (ctx-register-enum-variant-in ctx "write-read" "file_FileMode" "file")
+    (ctx-register-enum-variant-in ctx "append-read" "file_FileMode" "file")
     ;; Register FileError enum variants
-    (ctx-register-enum-variant ctx "not-found" "file_FileError")
-    (ctx-register-enum-variant ctx "permission" "file_FileError")
-    (ctx-register-enum-variant ctx "io-error" "file_FileError")
-    (ctx-register-enum-variant ctx "eof" "file_FileError")
-    (ctx-register-enum-variant ctx "invalid-mode" "file_FileError")
-    (ctx-register-enum-variant ctx "closed" "file_FileError")
+    (ctx-register-enum-variant-in ctx "not-found" "file_FileError" "file")
+    (ctx-register-enum-variant-in ctx "permission" "file_FileError" "file")
+    (ctx-register-enum-variant-in ctx "io-error" "file_FileError" "file")
+    (ctx-register-enum-variant-in ctx "eof" "file_FileError" "file")
+    (ctx-register-enum-variant-in ctx "invalid-mode" "file_FileError" "file")
+    (ctx-register-enum-variant-in ctx "closed" "file_FileError" "file")
     ;; Register type entries for file types
     (ctx-register-type ctx (TypeEntry "FileMode" "file_FileMode" "file_FileMode" true false false "file" ""))
     (ctx-register-type ctx (TypeEntry "FileError" "file_FileError" "file_FileError" true false false "file" ""))
