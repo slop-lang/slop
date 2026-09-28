@@ -39,7 +39,7 @@
                    ctx-mark-type-emitted ctx-is-type-emitted
                    ctx-register-field-type ctx-get-fields-for-type FieldEntry
                    ctx-lookup-field-type ctx-lookup-field-slop-type
-                   ctx-register-struct-key-type ctx-get-struct-key-types
+                   ctx-register-struct-key-type ctx-get-struct-key-types ctx-lookup-value-key-type
                    ctx-get-deferred-lambdas ctx-clear-deferred-lambdas
                    ctx-start-function-buffer ctx-stop-function-buffer ctx-flush-function-buffer))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-container-c-type))
@@ -793,8 +793,10 @@
       (match (deref type-expr)
         ((sym sym)
           (let ((name (. sym name)))
-            ;; Skip builtin types - they don't need struct hash/eq
-            (when (not (is-builtin-map-key-type name))
+            ;; Skip builtin types - they don't need struct hash/eq - and
+            ;; aliases, which get-map-key-c-info keys as the type they name
+            (when (and (not (is-builtin-map-key-type name))
+                       (is-none (ctx-lookup-type-alias ctx name)))
               ;; Look up the type
               (match (ctx-lookup-type ctx name)
                 ((some type-entry)
@@ -3092,6 +3094,29 @@
 
   (fn emit-struct-hash-eq ((ctx (Ptr TranspileContext)) (c-type String))
     (@intent "Generate field-by-field hash and equality functions for a struct or union type")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (match (ctx-lookup-value-key-type ctx c-type)
+      ((some slop-type) (emit-value-key-hash-eq ctx c-type slop-type))
+      ((none) (emit-aggregate-hash-eq ctx c-type))))
+
+  (fn emit-value-key-hash-eq ((ctx (Ptr TranspileContext)) (c-type String) (slop-type String))
+    (@intent "Generate hash and equality functions for an (Option T) or (Result T E) used as a key itself")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@pre {ctx != nil})
+    (let ((key (ctx-str3 ctx "(*(const " c-type "*)key)"))
+          (a (ctx-str3 ctx "(*(const " c-type "*)a)"))
+          (b (ctx-str3 ctx "(*(const " c-type "*)b)")))
+      (emit-value-hash-dependencies ctx slop-type c-type)
+      (ctx-emit-header ctx (ctx-str3 ctx "static inline uint64_t slop_hash_" c-type "(const void* key) {"))
+      (ctx-emit-header ctx (ctx-str3 ctx "    return " (value-hash-expr ctx slop-type c-type key) ";"))
+      (ctx-emit-header ctx "}")
+      (ctx-emit-header ctx (ctx-str3 ctx "static inline bool slop_eq_" c-type "(const void* a, const void* b) {"))
+      (ctx-emit-header ctx (ctx-str3 ctx "    return " (value-eq-expr ctx slop-type c-type a b) ";"))
+      (ctx-emit-header ctx "}")))
+
+  (fn emit-aggregate-hash-eq ((ctx (Ptr TranspileContext)) (c-type String))
+    (@intent "Generate field-by-field hash and equality functions for a record, or tag-switched ones for a union")
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (@pre {ctx != nil})
     ;; Check if this is a union type

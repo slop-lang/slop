@@ -342,6 +342,11 @@ run_negative_build_test "$TNEG/variant-unimported.slop" "variant-unimported-ambi
 run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_push_no_arena.slop" "list-push-no-arena" \
     "list_push_no_arena.slop:9:6: error: list-push: no arena in scope"
 
+# A key type with no structural hash is a transpiler error. Every compound key
+# but (Ptr T) used to be hashed as a String, whatever its size.
+run_negative_build_test "$REPO_ROOT/tests/key-type-negative/list_key.slop" "list-key" \
+    "list_key.slop:8:31: error: '(List Int)' cannot be a Map key or Set element - it has no structural hash"
+
 # The checker's half of the same rule, for types, variants and re-exports.
 # `slop build` drops checker diagnostics (#93), so these run `slop check`.
 run_check_clean_test() {
