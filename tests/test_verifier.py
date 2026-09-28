@@ -11914,3 +11914,56 @@ class TestExactPushModelFallsBack:
         with_model = _status_of(src).status
         monkeypatch.setattr(ContractVerifier, '_exact_push_model', lambda self, body, tr: None)
         assert _status_of(src).status == with_model, shape
+
+
+class TestResultConstructorAxioms:
+    """(ok x) and (error e) in value position carry their tag and payload.
+
+    (some x) and (none) always had these axioms. The Result constructors fell
+    through to an uninterpreted call, so once the payload was a name a `set!`
+    or a loop had versioned -- the tail is no longer a literal the contract
+    phase can see through -- nothing tied the returned (ok r) to `r`. growl's
+    apply-scm-rules, which folds eighteen rule outputs into `result` and
+    returns (ok result), could not verify its iteration postcondition.
+    """
+
+    _SRC = '''
+(module probe
+  (type Box (record (n Int)))
+  (type Err (enum bad))
+  (fn same ((b Box)) (@spec ((Box) -> Box)) (@pure) (@post {(. $result n) == (. b n)}) b)
+  (fn f ((b Box) (xs (List Int)))
+    (@spec ((Box (List Int)) -> (Result Box Err)))
+    (@post (match $result ((ok d) {C}) ((error _) true)))
+    BODY)
+  (fn g ((n Int))
+    (@spec ((Int) -> (Result Box Int)))
+    (@post (match $result ((ok _) false) ((error e) {C})))
+    (let ((mut m n))
+      (set! m (+ m 1))
+      (error m))))
+'''
+
+    _BODIES = {
+        'after-set': '(let ((mut r b)) (set! r (same r)) (ok r))',
+        'after-loop': ('(let ((mut r b)) (for-each (x xs) (@loop-invariant {(. r n) == (. b n)})'
+                       ' (set! r (same r))) (ok r))'),
+    }
+
+    @pytest.mark.parametrize("body", sorted(_BODIES))
+    def test_the_ok_payload_is_the_value_returned(self, body):
+        src = self._SRC.replace('BODY', self._BODIES[body]).replace('{C}', '{(. d n) == (. b n)}', 1)
+        assert _status_of(src).status == 'verified'
+
+    @pytest.mark.parametrize("body", sorted(_BODIES))
+    def test_a_false_claim_about_the_ok_payload_fails(self, body):
+        src = self._SRC.replace('BODY', self._BODIES[body]).replace('{C}', '{(. d n) == (+ (. b n) 1)}', 1)
+        assert _status_of(src).status == 'failed'
+
+    def test_the_error_payload_is_the_value_returned(self):
+        src = self._SRC.replace('BODY', '(ok b)').replace('{C}', 'true', 1).replace('{C}', '{e == (+ n 1)}')
+        assert _status_of(src, name='g').status == 'verified'
+
+    def test_a_false_claim_about_the_error_payload_fails(self):
+        src = self._SRC.replace('BODY', '(ok b)').replace('{C}', 'true', 1).replace('{C}', '{e == n}')
+        assert _status_of(src, name='g').status == 'failed'

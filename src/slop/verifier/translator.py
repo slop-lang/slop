@@ -1462,44 +1462,24 @@ class Z3Translator:
                 if op == 'list-set' and len(expr) >= 4:
                     return self._translate_list_set(expr)
 
-                # Option constructors with semantic axioms
-                if op == 'some' and len(expr) == 2:
+                # Option and Result constructors, with the axioms `match` and a
+                # postcondition read them by: union_tag(ctor(x)) is ctor's tag
+                # and union_payload_<ctor>(ctor(x)) == x. (ok x) and (error e)
+                # had none, so a function returning (ok result) could prove
+                # nothing about the Delta inside its Result.
+                if op in ('some', 'ok', 'error') and len(expr) == 2:
                     inner = self.translate_expr(expr[1])
                     if inner is None:
                         return None
                     result = self._translate_function_call(expr)
                     if result is not None:
-                        # Add constructor axioms so Z3 knows:
-                        # union_tag(some(x)) == 1 and union_payload_some(some(x)) == x
-                        tag_func_name = "union_tag"
-                        if tag_func_name not in self.variables:
-                            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
-                            self.variables[tag_func_name] = tag_func
-                        else:
-                            tag_func = self.variables[tag_func_name]
-                        self.constraints.append(
-                            tag_func(result) == z3.IntVal(self.constructor_tag('some')))
-
-                        payload_func_name = "union_payload_some"
-                        if payload_func_name not in self.variables:
-                            payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
-                            self.variables[payload_func_name] = payload_func
-                        else:
-                            payload_func = self.variables[payload_func_name]
-                        self.constraints.append(payload_func(result) == inner)
+                        self._assert_constructed(result, op, inner)
                     return result
 
                 if op == 'none' and len(expr) == 1:
                     result = self._translate_function_call(expr)
                     if result is not None:
-                        tag_func_name = "union_tag"
-                        if tag_func_name not in self.variables:
-                            tag_func = z3.Function(tag_func_name, z3.IntSort(), z3.IntSort())
-                            self.variables[tag_func_name] = tag_func
-                        else:
-                            tag_func = self.variables[tag_func_name]
-                        self.constraints.append(
-                            tag_func(result) == z3.IntVal(self.constructor_tag('none')))
+                        self._assert_constructed(result, op, None)
                     return result
 
                 # arena-alloc always returns non-nil pointer (runtime aborts on OOM)
@@ -2426,6 +2406,17 @@ class Z3Translator:
         """
         self.definedness_constraints.add(len(self.constraints))
         self.constraints.append(constraint)
+
+    def _assert_constructed(self, value, ctor: str, payload) -> None:
+        """Constrain `value` to be `(ctor payload)`: its tag, and its payload if any."""
+        if "union_tag" not in self.variables:
+            self.variables["union_tag"] = z3.Function("union_tag", z3.IntSort(), z3.IntSort())
+        self.constraints.append(
+            self.variables["union_tag"](value) == z3.IntVal(self.constructor_tag(ctor)))
+        if payload is not None:
+            # The accessor `match` reads the payload back through
+            accessor = self.union_payload_accessor(ctor, 0, payload.sort())
+            self.constraints.append(accessor(value) == payload)
 
     def constructor_tag(self, name: str) -> int:
         """The tag index for a union constructor, as `match` will read it.
