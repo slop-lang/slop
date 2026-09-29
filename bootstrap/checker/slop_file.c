@@ -181,9 +181,17 @@ slop_result_int_file_FileError file_file_size(slop_string path) {
             {
                 __auto_type result = stat(((uint8_t*)(path.data)), ((void*)(buf)));
                 if (result != 0) {
-                    return ((slop_result_int_file_FileError){ .is_ok = false, .data.err = file_FileError_not_found });
+                    {
+                        slop_result_int_file_FileError _wa_ret = ((slop_result_int_file_FileError){ .is_ok = false, .data.err = file_FileError_not_found });
+                        slop_arena_free(arena);
+                        return _wa_ret;
+                    }
                 } else {
-                    return ((slop_result_int_file_FileError){ .is_ok = true, .data.ok = ((int64_t)(((struct stat*)(buf))->st_size)) });
+                    {
+                        slop_result_int_file_FileError _wa_ret = ((slop_result_int_file_FileError){ .is_ok = true, .data.ok = ((int64_t)(((struct stat*)(buf))->st_size)) });
+                        slop_arena_free(arena);
+                        return _wa_ret;
+                    }
                 }
             }
         }

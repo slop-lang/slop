@@ -158,11 +158,7 @@ void emit_emit_enum_close(context_TranspileContext* ctx, slop_string type_name) 
 
 void emit_emit_return(context_TranspileContext* ctx, slop_string value) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
-    if (string_eq(value, SLOP_STR(""))) {
-        context_ctx_emit(ctx, SLOP_STR("return;"));
-    } else {
-        context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("return "), value, SLOP_STR(";")));
-    }
+    context_ctx_emit_return(ctx, value);
 }
 
 void emit_emit_assignment(context_TranspileContext* ctx, slop_string lhs, slop_string rhs) {

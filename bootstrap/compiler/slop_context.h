@@ -461,6 +461,7 @@ struct context_TranspileContext {
     slop_list_context_FuncCNameAlias c_name_aliases;
     int64_t gensym_counter;
     uint8_t capture_to_retval;
+    slop_list_string open_arenas;
     slop_list_string struct_key_types;
     slop_list_context_ValueKeyType value_key_types;
     slop_list_context_TypeAliasEntry type_aliases;
@@ -644,6 +645,12 @@ slop_option_string context_ctx_get_current_return_type(context_TranspileContext*
 void context_ctx_clear_current_return_type(context_TranspileContext* ctx);
 void context_ctx_set_capture_retval(context_TranspileContext* ctx, uint8_t enabled);
 uint8_t context_ctx_is_capture_retval(context_TranspileContext* ctx);
+void context_ctx_push_open_arena(context_TranspileContext* ctx, slop_string c_name);
+void context_ctx_pop_open_arena(context_TranspileContext* ctx);
+slop_list_string context_ctx_take_open_arenas(context_TranspileContext* ctx);
+void context_ctx_restore_open_arenas(context_TranspileContext* ctx, slop_list_string saved);
+slop_string context_ctx_open_arena_frees(context_TranspileContext* ctx);
+void context_ctx_emit_return(context_TranspileContext* ctx, slop_string code);
 void context_ctx_register_option_type(context_TranspileContext* ctx, slop_string inner_type, slop_string c_name);
 uint8_t context_ctx_has_option_type(context_TranspileContext* ctx, slop_string c_name);
 slop_list_context_OptionType context_ctx_get_option_types(context_TranspileContext* ctx);
