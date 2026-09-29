@@ -8,7 +8,10 @@
   ;; - a parameter typed (Map K (Set T)): the checker resolved the value by
   ;;   the empty symbol name of (Set T), and set-len saw an untyped payload;
   ;; - (for-each ((k v) m) ...): the checker skipped the body entirely, so a
-  ;;   map-get there was "unknown function or type 'map-get'".
+  ;;   map-get there was "unknown function or type 'map-get'";
+  ;; - a closure capturing the payload of a match on a let-bound map-get: the
+  ;;   let had no SLOP type, so the payload and the closure's env field were
+  ;;   declared `auto`.
 
   (type Index (record
     (groups (Map Int (Set Int)))
@@ -40,6 +43,19 @@
     (let ((found (map-get (. ix nested) k)))
       (match found
         ((some inner) (map-len inner))
+        ((none) -1))))
+
+  (fn apply-to ((f (Fn (Int) Int)) (x Int))
+    (@intent "Call f on x")
+    (@spec (((Fn (Int) Int) Int) -> Int))
+    (f x))
+
+  (fn scaled ((ix Index) (g Int))
+    (@intent "Scale 10 by the size of group g, inside a closure capturing the matched set")
+    (@spec ((Index Int) -> Int))
+    (let ((found (map-get (. ix groups) g)))
+      (match found
+        ((some s) (apply-to (fn ((x Int)) (* x (set-len s))) 10))
         ((none) -1))))
 
   (fn weighted ((m (Map Int (Set Int))) (w (Map Int Int)))
@@ -86,7 +102,9 @@
           (when (!= (list-sum ix "a") 60) (set! fails (+ fails 1)))
           (when (!= (list-sum ix "b") -1) (set! fails (+ fails 1)))
           (when (!= (inner-count (addr ix) 3) 3) (set! fails (+ fails 1)))
-          (when (!= (weighted groups weights) 120) (set! fails (+ fails 1))))
+          (when (!= (weighted groups weights) 120) (set! fails (+ fails 1)))
+          (when (!= (scaled ix 1) 20) (set! fails (+ fails 1)))
+          (when (!= (scaled ix 9) -1) (set! fails (+ fails 1))))
         (when (> fails 0)
           (print "test_map_get_values failures: ")
           (println fails))

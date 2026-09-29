@@ -1753,6 +1753,18 @@
                                       (_ "")))
                                   ((none) "")))
                               ((none) "")))
+                          ;; map-get: (map-get m k) -> (Option V). Without it a let bound to
+                          ;; a map-get had no SLOP type, a match on it bound its payload
+                          ;; as `auto`, and a closure capturing that payload declared an
+                          ;; env field of type `auto`.
+                          ((and (string-eq op "map-get") (>= len 2))
+                            (match (list-get items 1)
+                              ((some map-expr)
+                                (let ((value-slop-type (infer-map-value-slop-type ctx map-expr)))
+                                  (if (== (string-len value-slop-type) 0)
+                                    ""
+                                    (ctx-str3 ctx "(Option " value-slop-type ")"))))
+                              ((none) "")))
                           ;; record-new: (record-new TypeName ...) -> TypeName
                           ((string-eq op "record-new")
                             (if (>= len 2)
@@ -7457,6 +7469,12 @@
                   (c-name (to-c-name arena var-name))
                   ;; For mutable vars, store pointer type in env struct
                   (field-type (if is-mut (ctx-str ctx var-type "*") var-type)))
+              ;; A struct field cannot be `auto`: a capture whose type nothing
+              ;; recorded used to be declared that way, and only cc noticed
+              (when (or (starts-with var-type "auto") (starts-with var-type "__auto_type")
+                        (== (string-len var-type) 0))
+                (ctx-add-error ctx (ctx-str3 ctx "cannot determine the type of '" var-name
+                                             "', which a closure captures - bind it with a declared type")))
               (set! fields (ctx-str ctx fields (ctx-str4 ctx field-type " " c-name "; ")))))
           ((none) (do)))
         (set! i (+ i 1)))
