@@ -35,6 +35,9 @@ class FunctionDef:
     # or None), so a caller can tell whether a call can change state it holds.
     param_type_exprs: List[Optional['SExpr']] = field(default_factory=list)
     param_modes: List[Optional[str]] = field(default_factory=list)
+    # The return type expression from @spec, so a caller can tell what kind of
+    # value a call yields - a record, or a pointer whose fields can change.
+    return_type_expr: Optional['SExpr'] = None
 
 
 class FunctionRegistry:
@@ -97,8 +100,15 @@ class FunctionRegistry:
                            '@alloc', '@example', '@deprecated', '@property',
                            '@generation-mode', '@requires', '@callback-assume'}
 
+        return_type_expr: Optional['SExpr'] = None
         skip_next_string = False
         for item in fn_form.items[3:]:
+            if is_form(item, '@spec') and len(item) > 1 and isinstance(item[1], SList):
+                spec = item[1]
+                for i, part in enumerate(spec.items):
+                    if isinstance(part, Symbol) and part.name == '->' and i + 1 < len(spec):
+                        return_type_expr = spec[i + 1]
+                        break
             if isinstance(item, Symbol):
                 if item.name.startswith(':'):
                     skip_next_string = True  # Next String is property value
@@ -149,7 +159,8 @@ class FunctionRegistry:
                                            is_pure=is_pure, postconditions=postconditions,
                                            properties=properties, preconditions=preconditions,
                                            param_type_exprs=param_type_exprs,
-                                           param_modes=param_modes)
+                                           param_modes=param_modes,
+                                           return_type_expr=return_type_expr)
 
     def is_simple_accessor(self, name: str) -> bool:
         """Check if function is a simple field accessor: (. param field)"""
