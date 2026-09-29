@@ -12160,3 +12160,184 @@ class TestCheckedLoopInvariants:
         r = self._result(src, 'f', search_paths=[tmp_path],
                          filename=str(tmp_path / "main.slop"))
         assert r.status == 'verified', r.message
+
+
+class TestCheckedLoopInvariantSoundness:
+    """Ways a false contract got through the first version of the invariant
+    check (an adversarial review of it). Each must not verify."""
+
+    @staticmethod
+    def _status(src, name, tmp_path=None, modules=None):
+        from slop.verifier import verify_source
+        kwargs = {'filename': 'probe.slop'}
+        if modules:
+            for module_name, text in modules.items():
+                (tmp_path / f"{module_name}.slop").write_text(text)
+            kwargs = {'filename': str(tmp_path / 'main.slop'), 'search_paths': [tmp_path]}
+        results = [r for r in verify_source(src, **kwargs) if r.name == name]
+        assert len(results) == 1, results
+        return results[0].status
+
+    def test_an_invariant_is_not_assumed_on_a_path_that_returned_before_the_loop(self):
+        assert self._status('''
+(fn h ((k Int) (xs (List Int)))
+  (@spec ((Int (List Int)) -> Int))
+  (@post {$result >= 0})
+  (let ((mut n 0))
+    (when (< k 0) (return k))
+    (for-each (x xs)
+      (@loop-invariant {k >= 0})
+      (set! n (+ n 1)))
+    n))''', 'h') == 'failed'
+
+    ADDR = '''
+(module probe
+  (type R (record (n Int)))
+  (fn bump ((p (Ptr R)))
+    (@spec (((Ptr R)) -> Unit))
+    (set! p n 100))
+  (fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post {$result %s})
+    (let ((mut r (record-new R (n 0))))
+      (for-each (a xs)
+        (@loop-invariant {(. r n) %s})
+        %s)
+      %s
+      (. r n))))'''
+
+    def test_a_local_written_through_its_address_in_the_loop(self):
+        assert self._status(self.ADDR % ('== 0', '== 0', '(bump (addr r))', ''), 'f') != 'verified'
+
+    def test_a_local_written_through_its_address_after_the_loop(self):
+        assert self._status(self.ADDR % ('<= 10', '<= 10', '(set! r (record-new R (n 5)))',
+                                         '(bump (addr r))'), 'f') != 'verified'
+
+    def test_a_quantifier_binder_named_like_a_built_list(self):
+        assert self._status('''
+(fn f ((arena Arena) (yss (List (List Int))) (xs (List Int)))
+  (@spec ((Arena (List (List Int)) (List Int)) -> Int))
+  (let ((out (list-new arena Int))
+        (mut n 0))
+    (for-each (x xs)
+      (@loop-invariant (forall (out yss) (== (list-len out) 0)))
+      (set! n (+ n 1)))
+    n))''', 'f') != 'verified'
+
+    def test_a_let_star_shadowing_a_built_list(self):
+        assert self._status('''
+(fn f ((arena Arena) (ys (List Int)) (zs (List Int)))
+  (@spec ((Arena (List Int) (List Int)) -> (List Int)))
+  (let ((out (list-new arena Int))
+        (mut n 0))
+    (let* ((out ys))
+      (list-push out 1)
+      (for-each (z zs)
+        (@loop-invariant (forall (t out) (== t 1)))
+        (set! n (+ n 1))))
+    out))''', 'f') != 'verified'
+
+    def test_a_dotted_path_through_a_pointer(self):
+        assert self._status('''
+(module probe
+  (type C (record (n Int)))
+  (type R (record (p (Ptr C))))
+  (fn zero ((c (Ptr C)))
+    (@spec (((Ptr C)) -> Unit))
+    (set! c n 0))
+  (fn f ((arena Arena) (c (Ptr C)) (xs (List Int)))
+    (@spec ((Arena (Ptr C) (List Int)) -> (List R)))
+    (@pre {(. c n) > 0})
+    (let ((out (list-new arena R)))
+      (for-each (x xs)
+        (@loop-invariant (forall (t out) {t.p.n > 0}))
+        (list-push out (record-new R (p c)))
+        (zero c))
+      out)))''', 'f') != 'verified'
+
+    GROW = '''
+(module probe
+  (fn grow ((xs (List Int)))
+    (@spec (((List Int)) -> Bool))
+    (do (list-push xs 0) true))
+  (fn take ((xs (List Int)))
+    (@spec (((List Int)) -> (List Int)))
+    (do (list-push xs 0) xs))
+  (fn f ((xs (List Int)) (ys (List Int)))
+    (@spec (((List Int) (List Int)) -> Int))
+    (@pre {(list-len xs) == 5})
+    (let ((mut n 0))
+      %s
+      (for-each (y ys)
+        (@loop-invariant {(list-len xs) == 5})
+        (set! n (+ n 1)))
+      n)))'''
+
+    def test_an_effect_in_a_while_condition_with_a_break(self):
+        assert self._status(self.GROW % '''(while (grow xs)
+        (when (> n 3) (break))
+        (set! n (+ n 1)))''', 'f') != 'verified'
+
+    def test_an_effect_inside_an_index_access(self):
+        assert self._status(self.GROW % '(set! n (@ (take xs) 0))', 'f') != 'verified'
+
+    EACH_AND_GROW = '''
+(module cb
+  (export each-and-grow)
+  (fn each-and-grow ((xs (List Int)) (ys (List Int)) (callback (Fn (Int) Unit)))
+    (@spec (((List Int) (List Int) (Fn (Int) Unit)) -> Unit))
+    (@callback-assume callback (> $callback-arg 0))
+    (do
+      (list-push ys 0)
+      (for-each (x xs) (when (> x 0) (callback x))))))
+'''
+
+    def test_a_callee_that_is_not_pure_changes_state_around_its_callback(self, tmp_path):
+        src = '''
+(module main
+  (import cb (each-and-grow))
+  (fn g ((xs (List Int)) (ys (List Int)))
+    (@spec (((List Int) (List Int)) -> Int))
+    (@pre {(list-len ys) == 5})
+    (let ((mut n 0))
+      (each-and-grow xs ys (fn ((x Int))
+         (@loop-invariant {(list-len ys) == 5})
+         (set! n (+ n 1))))
+      n)))'''
+        assert self._status(src, 'g', tmp_path, {'cb': self.EACH_AND_GROW}) != 'verified'
+
+    EACH_POSITIVE = '''
+(module cb
+  (export each-positive)
+  (fn each-positive ((xs (List Int)) (callback (Fn (Int) Unit)))
+    (@spec (((List Int) (Fn (Int) Unit)) -> Unit))
+    (@pure)
+    (@callback-assume callback (> $callback-arg 0))
+    (for-each (x xs) (when (> x 0) (callback x)))))
+'''
+
+    def test_return_in_a_callback_does_not_leave_the_function(self, tmp_path):
+        src = '''
+(module main
+  (import cb (each-positive))
+  (fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (let ((mut n 0))
+      (each-positive xs
+        (fn ((x Int))
+          (@loop-invariant {n >= 0})
+          (set! n (- 0 1))
+          (return)))
+      n)))'''
+        assert self._status(src, 'f', tmp_path, {'cb': self.EACH_POSITIVE}) != 'verified'
+
+    def test_division_is_checked_rather_than_opaque(self):
+        assert self._status('''
+(fn f ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post {$result >= 0})
+  (let ((mut half 0))
+    (for-each (x xs)
+      (@loop-invariant {half >= 0})
+      (set! half (/ (+ half 10) 2)))
+    half))''', 'f') == 'verified'

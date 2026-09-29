@@ -66,8 +66,17 @@ _ALLOCATORS = frozenset(('list-new', 'set-new', 'map-new', 'arena-new'))
 # predicates over a list's elements, and a raw dereference.
 _EXTRA_STATE_READS = frozenset((
     'list-ref', 'list-contains', 'deref', 'all-triples-have-predicate',
-    'all-elements-satisfy', 'any-element-satisfies',
+    'all-elements-satisfy', 'any-element-satisfies', '@',
 ))
+
+# Arithmetic exact_push refuses (its model has no program points for a
+# divisor's obligation), which changes nothing and reads no state.
+_PURE_OPERATORS = frozenset(('/', '%', 'mod', 'div'))
+
+
+def _is_annotation(name: str) -> bool:
+    """`@loop-invariant` and its kind, but not `@`, which indexes a collection."""
+    return name.startswith('@') and len(name) > 1
 
 # Forms the walk does not follow at all.
 _UNMODELLED_FORMS = frozenset(('with-arena', 'spawn', 'try', '?', 'lambda', 'loop'))
@@ -92,6 +101,7 @@ class InvariantOutcome:
     counterexample: Optional[Dict[str, str]] = None
     assumable: bool = False     # proved, and still true where the main verifier would use it
     reads_state: bool = False   # reads collection state (see module doc)
+    exits_before: bool = False  # a `return` can run before the loop: assume it only where none did
 
     @property
     def text(self) -> str:
@@ -177,6 +187,7 @@ class InvariantProverMixin:
             env, types = self._ip_declare_parameters(tr, params)
             self._ip_params = set(env)
             self._ip_assigned = self._ip_assigned_names(body)
+            self._ip_addr_taken = self._ip_addresses_taken(body)
             self._ip_tracked = self._ip_tracked_lists(body, set(env))
             given = []
             for _, pre in preconditions:
@@ -267,6 +278,65 @@ class InvariantProverMixin:
         walk(body)
         return names
 
+    def _ip_addresses_taken(self, body) -> set:
+        """Locals whose address is taken: a call handed it may write them."""
+        names = set()
+
+        def walk(node):
+            if not isinstance(node, SList) or len(node) == 0 or is_form(node, 'quote'):
+                return
+            if is_form(node, 'addr') and len(node) >= 2 and isinstance(node[1], Symbol):
+                names.add(node[1].name)
+            for item in node.items:
+                walk(item)
+
+        walk(body)
+        return names
+
+    def _ip_binder_counts(self, body) -> Dict[str, int]:
+        """How many times each name is bound, by any form that binds one."""
+        counts: Dict[str, int] = {}
+
+        def bind(name):
+            if isinstance(name, Symbol):
+                counts[name.name] = counts.get(name.name, 0) + 1
+
+        def walk(node):
+            if not isinstance(node, SList) or len(node) == 0:
+                return
+            head = node[0].name if isinstance(node[0], Symbol) else None
+            if head == 'quote':
+                return
+            if head in ('let', 'let*') and len(node) >= 2 and isinstance(node[1], SList):
+                for binding in node[1].items:
+                    if isinstance(binding, SList) and len(binding) >= 2:
+                        name = self._binding_name(binding)
+                        if name:
+                            counts[name] = counts.get(name, 0) + 1
+            elif head in ('for-each', 'for', 'forall', 'exists', 'with-arena') \
+                    and len(node) >= 2 and isinstance(node[1], SList) and len(node[1]) >= 1:
+                binder = node[1][0]
+                if isinstance(binder, SList):
+                    for item in binder.items:
+                        bind(item)
+                else:
+                    bind(binder)
+            elif head == 'match':
+                for clause in node.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 1:
+                        pattern = clause[0]
+                        if isinstance(pattern, SList):
+                            for item in pattern.items[1:]:
+                                bind(item)
+            elif head == 'fn' and len(node) >= 2 and isinstance(node[1], SList):
+                for param in node[1].items:
+                    bind(param[0] if isinstance(param, SList) and len(param) >= 1 else param)
+            for item in node.items:
+                walk(item)
+
+        walk(body)
+        return counts
+
     def _ip_tracked_lists(self, body, params: set) -> set:
         """Lists the walk can follow exactly: made here, used only in ways it models.
 
@@ -297,8 +367,12 @@ class InvariantProverMixin:
 
         find(body)
         tracked = set()
+        binders = self._ip_binder_counts(body)
         for name, bindings in candidates.items():
-            if bindings != 1 or name in params or self._count_bindings_of(body, name) != 1:
+            # Any other binding of the name - a shadowing let*, a quantifier's
+            # or a pattern's binder - is a different value under the same name.
+            if bindings != 1 or name in params or binders.get(name, 0) != 1 \
+                    or name in self._ip_addr_taken:
                 continue
             if self._ip_uses_are_modelled(body, name):
                 tracked.add(name)
@@ -468,13 +542,14 @@ class InvariantProverMixin:
             return where
         if head in _MUTATORS:
             return where
-        if head in _ALLOCATORS or head in _NEUTRAL_HEADS or head in _EXTRA_STATE_READS:
+        if head in _ALLOCATORS or head in _NEUTRAL_HEADS or head in _EXTRA_STATE_READS \
+                or head in _PURE_OPERATORS:
             return None
         if head in ('record-new', 'union-new', 'fn', 'quote', 'cast', 'forall', 'exists',
                     'implies', 'if', 'cond', 'when', 'match', 'do', 'let', 'let*', 'set!',
                     'return', 'break', 'continue', '@loop-invariant', 'and', 'or', 'not'):
             return None
-        if head.startswith('@'):
+        if _is_annotation(head):
             return None
         return where
 
@@ -502,7 +577,7 @@ class InvariantProverMixin:
                     walk(item)
                 return
             name = head.name
-            if name == 'quote' or name.startswith('@'):
+            if name == 'quote' or _is_annotation(name):
                 return
             if name in ('let', 'let*') and len(node) >= 2 and isinstance(node[1], SList):
                 for binding in node[1].items:
@@ -511,18 +586,13 @@ class InvariantProverMixin:
                 for item in node.items[2:]:
                     walk(item)
                 return
-            if name in ('for-each',) and len(node) >= 2 and isinstance(node[1], SList):
+            if name in ('for-each', 'forall', 'exists') and len(node) >= 2 \
+                    and isinstance(node[1], SList):
+                # A desugared callback's source is the call minus its lambda:
+                # the callee runs, and what it may change is its own effect.
                 binder = node[1]
                 if len(binder) >= 2:
-                    source = binder[1]
-                    # A desugared callback's source is the call minus its
-                    # lambda; the iteration itself changes nothing.
-                    if not self._ip_is_callback_source(source):
-                        walk(source)
-                for item in node.items[2:]:
-                    walk(item)
-                return
-            if name in ('forall', 'exists') and len(node) >= 3:
+                    walk(binder[1])
                 for item in node.items[2:]:
                     walk(item)
                 return
@@ -625,8 +695,15 @@ class InvariantProverMixin:
         def walk(node, bound):
             if isinstance(node, Symbol):
                 n = node.name
-                if '.' in n.strip('.') and n.split('.')[0] not in bound:
-                    reads.append(f"the field path {n}")
+                if '.' in n.strip('.'):
+                    parts = n.split('.')
+                    typ = bound[parts[0]] if parts[0] in bound else st.types.get(parts[0])
+                    for field_name in parts[1:]:
+                        base = self._ip_resolve(typ)
+                        if not isinstance(base, RecordType):
+                            reads.append(f"the field path {n}")
+                            break
+                        typ = base.fields.get(field_name)
                 return
             if not isinstance(node, SList) or len(node) == 0:
                 return
@@ -735,6 +812,20 @@ class InvariantProverMixin:
     def _ip_opaque(self, sort):
         return z3.FreshConst(sort, _OPAQUE)
 
+    def _ip_effect(self, st: _IState, effect: Optional[str]) -> _IState:
+        """The state after something that may change collection state.
+
+        A local whose address was taken may have been written through it,
+        which the walk cannot see - so it becomes opaque at every such point.
+        """
+        if effect is None:
+            return st
+        env = dict(st.env)
+        for name in self._ip_addr_taken:
+            if name in env:
+                env[name] = self._ip_opaque(env[name].sort())
+        return st.but(env=env, dirty=st.dirty or effect)
+
     def _ip_eval(self, expr, st: _IState, pc, invariant=False, sort=None):
         """Translate a term at this program point. Returns (term, state after it).
 
@@ -748,7 +839,7 @@ class InvariantProverMixin:
             if invariant or sort is None:
                 raise
             effect = self._ip_first_effect([expr])
-            return self._ip_opaque(sort), st.but(dirty=st.dirty or effect)
+            return self._ip_opaque(sort), self._ip_effect(st, effect)
 
     def _ip_eval_term(self, expr, st: _IState, pc, invariant):
         if isinstance(expr, SList) and len(expr) > 0 and isinstance(expr[0], Symbol) \
@@ -768,9 +859,9 @@ class InvariantProverMixin:
             if invariant:
                 raise _Unchecked(f"it reads {reads[0]}, which {stale} may change")
             term = self._ip_translate(expr, st, pc, instantiate=False, pin=False)
-            return self._ip_opaque(term.sort()), st.but(dirty=st.dirty or effect)
+            return self._ip_opaque(term.sort()), self._ip_effect(st, effect)
         term = self._ip_translate(expr, st, pc, instantiate=True, pin=True, invariant=invariant)
-        return term, (st.but(dirty=effect) if effect and not st.dirty else st)
+        return term, self._ip_effect(st, effect)
 
     def _ip_check_pure(self, expr):
         """Refuse statement forms inside a term; a fresh collection is fine."""
@@ -953,7 +1044,7 @@ class InvariantProverMixin:
             sort = natural.sort() if natural is not None else z3.IntSort()
             tr._pinned_terms[id(expr)] = z3.FreshConst(sort, 'alloc')
         elif self._xp_is_builtin(name, tr) or name in _EXTRA_STATE_READS \
-                or name in ('and', 'or', 'not', 'implies'):
+                or name in _PURE_OPERATORS or name in ('and', 'or', 'not', 'implies'):
             return
         elif self._ip_is_user_function(name):
             if self._xp_callee_is_pure(name, tr):
@@ -971,6 +1062,9 @@ class InvariantProverMixin:
         """An invariant at this program point: (term, definedness obligations)."""
         if self._ip_mentions(condition, '$result'):
             raise _Unchecked("it names $result, which the loop does not have yet")
+        for name in sorted(self._ip_addr_taken):
+            if self._ip_mentions(condition, name):
+                raise _Unchecked(f"it names {name}, whose address is taken, so a call may write it")
         for source in self._ip_quantifier_sources(condition):
             if isinstance(source, Symbol) and source.name in st.seqs:
                 continue
@@ -1064,7 +1158,7 @@ class InvariantProverMixin:
         name = head.name if isinstance(head, Symbol) else None
         if name is None:
             raise _Bail("a call through a computed function")
-        if name.startswith('@'):
+        if _is_annotation(name):
             return st
         if name == 'do':
             for item in stmt.items[1:]:
@@ -1114,7 +1208,7 @@ class InvariantProverMixin:
         if name in _MUTATORS:
             for item in stmt.items[1:]:
                 _, st = self._ip_eval(item, st, pc, sort=z3.IntSort())
-            return st.but(dirty=st.dirty or self._ip_call_effect(stmt))
+            return self._ip_effect(st, self._ip_call_effect(stmt))
         if name in _UNMODELLED_FORMS or name == 'fn':
             raise _Bail(f"{name} is not modelled")
         # A call made for its effect.
@@ -1200,7 +1294,7 @@ class InvariantProverMixin:
         env[bname] = self._ip_opaque(self._ip_sort_of(self._ip_resolve(typ)))
         types = dict(state.types)
         types[bname] = typ
-        return state.but(env=env, types=types, dirty=st.dirty or effect)
+        return self._ip_effect(state.but(env=env, types=types), effect)
 
     def _ip_has_statements(self, expr) -> bool:
         return self._contains_any_form(
@@ -1359,7 +1453,7 @@ class InvariantProverMixin:
             seqs = dict(st.seqs)
             seqs[target.name] = z3.Concat(st.seqs[target.name], z3.Unit(element))
             return st.but(seqs=seqs)
-        return st.but(dirty=st.dirty or self._ip_call_effect(stmt))
+        return self._ip_effect(st, self._ip_call_effect(stmt))
 
     def _ip_merge(self, guard, taken: _IState, other: _IState) -> _IState:
         if set(taken.env) != set(other.env) or set(taken.seqs) != set(other.seqs):
@@ -1417,10 +1511,19 @@ class InvariantProverMixin:
             reason = f"it names the loop variable {header[1]}"
         # What the loop iterates is evaluated once, before the first iteration.
         bounds = None
+        iteration_effect = None     # what each iteration may change besides the body
         if header is not None and header[0] == 'each':
             source = header[2]
-            if isinstance(source, SList) and not is_form(source, '.') \
-                    and not self._ip_is_callback_source(source):
+            if self._ip_is_callback_source(source):
+                # The callee runs around every call of the callback: its
+                # effects come before the first iteration and between them.
+                iteration_effect = self._ip_first_effect([source])
+                st = self._ip_effect(st, iteration_effect)
+                if conditions and reason is None and self._ip_contains_return(body_items):
+                    # There `return` leaves the callback, not the function: the
+                    # next call starts from wherever it left off.
+                    reason = "return in a callback body"
+            elif isinstance(source, SList) and not is_form(source, '.'):
                 _, st = self._ip_eval(source, st, pc, sort=z3.IntSort())
         elif header is not None and header[0] == 'for':
             lo, st = self._ip_eval(header[2], st, pc)
@@ -1448,7 +1551,12 @@ class InvariantProverMixin:
         # Inductive step, from an arbitrary iteration. Its hypotheses are
         # asserted outright in the checks made while it is walked (see
         # _ip_local); axioms recorded meanwhile carry its guard.
-        body_effect = self._ip_first_effect(body_items)
+        body_effect = self._ip_first_effect(body_items) or iteration_effect
+        if kind == 'while' and len(loop) >= 2:
+            # The condition is evaluated at the top of every iteration.
+            body_effect = body_effect or self._ip_first_effect([loop[1]])
+        if body_effect is not None:
+            names = names | {n for n in self._ip_addr_taken if n in st.env}
         step = self._ip_havoc(st, names, pushed, opaque=not checking)
         step = step.but(alive=z3.BoolVal(True), dirty=st.dirty or body_effect)
         step_pc = z3.And(pc, z3.FreshBool('iteration'))
@@ -1496,7 +1604,7 @@ class InvariantProverMixin:
 
         # After the loop.
         after = self._ip_havoc(st, names, pushed, opaque=not proved)
-        after = after.but(dirty=st.dirty or body_effect)
+        after = self._ip_effect(after, body_effect)
         if end is not None and self._ip_contains_return(body_items):
             after = after.but(alive=z3.And(st.alive, z3.FreshBool('alive')))
         if proved:
@@ -1820,6 +1928,14 @@ class InvariantProverMixin:
         loop = outcome.loop
         if self._ip_loop_depth.get(id(loop)) != 0:
             return False
+        # The invariant was proved of the paths that reach the loop. Asserted
+        # about the function, it would also describe one that returned
+        # before getting there: the caller states it only where no early
+        # return was taken, which it can do for `return` but not for `?`.
+        exits = self._ip_exits_before(body, loop)
+        if exits == '?':
+            return False
+        outcome.exits_before = exits == 'return'
         if self._needs_array_encoding([outcome.expr]):
             return False
         after = self._ip_after(body, loop)
@@ -1835,6 +1951,29 @@ class InvariantProverMixin:
                     or any(is_form(n, 'c-inline') for n in after):
                 return False
         return True
+
+    def _ip_exits_before(self, body, loop) -> Optional[str]:
+        """'?' if a `?` comes before `loop`, else 'return' if a `return` does, else None."""
+        state = {'found': None, 'done': False}
+
+        def walk(node):
+            if state['done'] or not isinstance(node, SList) or len(node) == 0:
+                return
+            if node is loop:
+                state['done'] = True
+                return
+            head = node[0].name if isinstance(node[0], Symbol) else None
+            if head in ('quote', 'fn'):
+                return
+            if head == '?':
+                state['found'] = '?'
+            elif head == 'return' and state['found'] is None:
+                state['found'] = 'return'
+            for item in node.items:
+                walk(item)
+
+        walk(body)
+        return state['found']
 
     def _ip_after(self, body, loop) -> List[Any]:
         """Call-shaped nodes that run after `loop`, in pre-order."""

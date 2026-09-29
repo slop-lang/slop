@@ -3853,9 +3853,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for outcome in assumable_invariants:
             if id(outcome.loop) not in translator._unconditional_loops:
                 continue
+            # With a return before the loop, only the paths that took none of
+            # the early exits are known to have reached it.
+            if outcome.exits_before and not early_exits:
+                continue
             with translator.loop_exit_scope(outcome.loop) as found:
                 term = translator.translate_expr(outcome.expr) if found else None
             if term is not None and z3.is_bool(term):
+                if outcome.exits_before:
+                    term = z3.Implies(reached_guard, term)
                 proved_invariant_z3.append(term)
         assume_constraint_end = len(translator.constraints)
 
