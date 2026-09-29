@@ -43,13 +43,15 @@ from .axiom_generation import AxiomGenerationMixin
 from .loop_analysis import LoopAnalysisMixin
 from .union_handling import UnionHandlingMixin
 from .exact_push import ExactPushModelMixin
+from .loop_invariants import InvariantProverMixin, InvariantReport
 
 if TYPE_CHECKING:
     from slop.parser import SExpr
 
 
 class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
-                       LoopAnalysisMixin, UnionHandlingMixin, ExactPushModelMixin):
+                       LoopAnalysisMixin, UnionHandlingMixin, ExactPushModelMixin,
+                       InvariantProverMixin):
     """Verifies @pre/@post contracts for functions.
     
     Inherits specialized functionality from mixins:
@@ -3431,6 +3433,48 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
     # ========================================================================
 
     def verify_function(self, fn_form: SList) -> VerificationResult:
+        """Verify a single function's contracts, its loop invariants among them."""
+        self._invariant_report: Optional[InvariantReport] = None
+        result = self._verify_function_contracts(fn_form)
+        return self._merge_invariant_report(result, self._invariant_report)
+
+    def _merge_invariant_report(self, result: VerificationResult,
+                                report: Optional[InvariantReport]) -> VerificationResult:
+        """Fold the loop invariants' outcomes into the function's result.
+
+        A failed invariant has already ended verification (see
+        _verify_function_contracts). An invariant that could not be checked was
+        not assumed, so whatever the contracts depend on it for is unproved: a
+        verified result stays verified only if nothing was left unchecked, and
+        a failure without a counterexample - a contract that did not translate,
+        say - keeps its own message. Otherwise the result is unknown, since a
+        postcondition that failed may have needed the invariant (#69).
+        """
+        if report is None or not report.outcomes:
+            return result
+        unchecked = report.unchecked
+        if not unchecked:
+            if result.status == 'skipped':
+                return VerificationResult(
+                    name=result.name, verified=True, status='verified',
+                    message="Loop invariants verified", location=result.location)
+            return result
+        notes = "\n".join(o.message for o in unchecked)
+        if result.status in ('failed', 'error', 'warning') and not result.counterexample:
+            return VerificationResult(
+                name=result.name, verified=False, status=result.status,
+                message=f"{result.message}\n{notes}", location=result.location,
+                suggestions=result.suggestions)
+        status = 'timeout' if any(o.status == 'timeout' for o in unchecked) else 'unknown'
+        message = notes
+        if result.status not in ('verified', 'skipped') and result.message:
+            message = f"{notes}\n{result.message}"
+        return VerificationResult(
+            name=result.name, verified=False, status=status, message=message,
+            counterexample=result.counterexample, location=result.location,
+            suggestions=result.suggestions)
+
+    def _verify_function_contracts(self, fn_form: SList) -> VerificationResult:
         """Verify a single function's contracts"""
         # Extract function info
         if len(fn_form) < 3:
@@ -3522,14 +3566,39 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if fn_body is not None:
             fn_body = self._desugar_callback_iterations(fn_body)
 
-        # Extract loop invariants from function body and treat them as assumptions
-        # @loop-invariant provides axioms that help verify loops
+        # Explicit @loop-invariants are checked - base case and inductive step -
+        # before anything relies on them (loop_invariants.py). One that does not
+        # hold fails the function; only a proved one is used below, as a fact
+        # about where its loop ends.
         propagated_range: range = range(0)
+        invariant_report: Optional[InvariantReport] = None
         if fn_body is not None:
             loop_invariants = self._extract_loop_invariants(fn_body)
-            if loop_invariants:
-                assumptions.extend(loop_invariants)
-            elif properties:
+            walked_body = fn_body
+            if all_body_exprs and len(all_body_exprs) > 1:
+                walked_body = SList([Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
+                                    fn_body.line, fn_body.col)
+            sites, misplaced, in_callbacks = self._attach_loop_invariants(walked_body)
+            if misplaced:
+                from slop.parser import pretty_print
+                return VerificationResult(
+                    name=fn_name, verified=False, status="failed",
+                    message="\n".join(
+                        "@loop-invariant must be the first form(s) of a for-each, for "
+                        f"or while body: {pretty_print(form)}" for form in misplaced),
+                    location=SourceLocation(self.filename, fn_form.line, fn_form.col))
+            if sites or in_callbacks:
+                invariant_report = self._check_loop_invariants(
+                    params, preconditions, walked_body, sites, in_callbacks)
+                self._invariant_report = invariant_report
+                failed = invariant_report.failed
+                if failed:
+                    return VerificationResult(
+                        name=fn_name, verified=False, status="failed",
+                        message="\n".join(o.message for o in failed),
+                        counterexample=failed[0].counterexample,
+                        location=SourceLocation(self.filename, fn_form.line, fn_form.col))
+            if not loop_invariants and properties:
                 # Auto-propagate @property as @loop-invariant when no explicit
                 # invariants exist. The @property body (with $result substituted
                 # for the mutable result variable) serves as the invariant at
@@ -3571,10 +3640,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # same list model as the postcondition making the same claim, or the two
         # disagree about a claim only because of how it was spelled (#125).
         property_exprs = [prop_expr for _, prop_expr in properties]
+        # A proved invariant is asserted too, and without the sequence model a
+        # quantifier over a list reads as one over everything - a stronger
+        # claim than the one proved.
+        assumable_invariants = invariant_report.assumable if invariant_report else []
+        invariant_exprs = [o.expr for o in assumable_invariants]
         use_array_encoding = (self._needs_array_encoding(postconditions) or
                               self._needs_array_encoding(property_exprs))
         use_seq_encoding = (self._needs_seq_encoding(postconditions) or
-                           self._needs_seq_encoding(property_exprs))
+                           self._needs_seq_encoding(property_exprs) or
+                           self._needs_seq_encoding(invariant_exprs))
 
         # Create translator and declare parameters
         translator = Z3Translator(self.type_env, self.filename, self.function_registry,
@@ -3772,6 +3847,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 assume_is_propagated.append(assume_index in propagated_range)
             else:
                 failed_assumes.append(assume)
+        # Each proved invariant, about the values where its loop ended: a name
+        # a later loop or assignment writes again has moved on by the end.
+        proved_invariant_z3: List[z3.BoolRef] = []
+        for outcome in assumable_invariants:
+            if id(outcome.loop) not in translator._unconditional_loops:
+                continue
+            with translator.loop_exit_scope(outcome.loop) as found:
+                term = translator.translate_expr(outcome.expr) if found else None
+            if term is not None and z3.is_bool(term):
+                proved_invariant_z3.append(term)
         assume_constraint_end = len(translator.constraints)
 
         # Translate properties (universal assertions)
@@ -4005,6 +4090,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # after the assumptions too, so the property solver picks which of those
         # it takes rather than receiving them all through here.
         pre_mark = len(solver.assertions())
+
+        # Proved loop invariants hold given the preconditions - that is what the
+        # base case assumed - so that is how they are stated. The property
+        # solver, which leaves the preconditions out, takes them from here.
+        for term in proved_invariant_z3:
+            solver.add(z3.Implies(z3.And(*pre_z3), term) if pre_z3 else term)
 
         # Phase 1: Add type invariants for parameters
         # For (type T (record ...) (@invariant cond)), when param has type T,
