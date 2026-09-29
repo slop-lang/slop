@@ -3644,6 +3644,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # quantifier over a list reads as one over everything - a stronger
         # claim than the one proved.
         assumable_invariants = invariant_report.assumable if invariant_report else []
+        if len(all_body_exprs) > 1:
+            # The invariant was proved over every form of the body; the model
+            # below is built from the last one alone.
+            assumable_invariants = []
         invariant_exprs = [o.expr for o in assumable_invariants]
         use_array_encoding = (self._needs_array_encoding(postconditions) or
                               self._needs_array_encoding(property_exprs))

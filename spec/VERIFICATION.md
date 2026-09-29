@@ -312,7 +312,7 @@ An invariant is a claim that holds every time the loop is about to run its body,
 
 Only a proved invariant is used afterwards, as a fact about the values each name had **where its loop ended** — not the values the function ends with, which a later loop or assignment may have changed. Since the base case assumed `@pre`, it is asserted under `@pre`, so a `@property` (checked without `@pre`) does not inherit it.
 
-The check walks the function forward. A list the function makes with `list-new` and only pushes to, reads the length of, loops over, or returns is followed exactly: each push is `Concat(s, Unit(e))` under the conditions it runs under. A call's `@post` (and `@property`) is assumed about a value of the call's own. A call to a function that is not `@pure` and is handed a list, set, map or pointer may change collection state; after one, a read of that state - `list-len` of an untracked list, a quantifier over a parameter's list, a field through a pointer - is something the check can no longer vouch for.
+The check walks the function forward. A list the function makes with `list-new` and only pushes to, reads the length of, loops over, or returns is followed exactly: each push is `Concat(s, Unit(e))` under the conditions it runs under. A call's `@post` (and `@property`) is assumed about a value of the call's own. A call to a function that is not `@pure` may change collection state - through what it is handed, or through C - and so may a write through a place (`(set! (. p n) v)`, `(set! (@ xs 0) v)`); after either, a read of that state - `list-len` of an untracked list, `@`, a quantifier over a parameter's list, a field through a pointer - is something the check can no longer vouch for. A local whose address is taken (`addr`) may be written by any such call, so an invariant naming one is not checked.
 
 **Placement.** `@loop-invariant` must be the first form (or forms) of a `for-each`, `while` or `for` body. For a callback desugared into a loop, write it first in the lambda's body. Anywhere else is an error:
 
@@ -337,11 +337,12 @@ A failed invariant fails the function whatever its postconditions say. An unchec
 - an invariant that reads collection state a call in the function may change (the reason names the call);
 - an invariant that calls a function that is not `@pure` inside a quantifier - an uninterpreted function of its arguments is only right for one that is;
 - a quantifier over a collection that is neither a tracked list nor a parameter (or a field of one) that is never reassigned;
-- an invariant naming `$result`;
+- an invariant naming `$result` or the loop variable;
+- a quantifier over a parameter whose name some binding in the function reuses;
 - an invariant inside a lambda that is not desugared into a loop, or inside a `let` initializer that has statements in it;
 - a loop the walk cannot reach through a construct it does not follow (`with-arena`, `spawn`, `try`, `?`).
 
-A proved invariant over a tracked list is not used if the list is pushed to after the loop, nor one reading collection state if anything after the loop may change it; nor one needing the array encoding (`all-triples-have-predicate`, `list-ref`) - write those as a `forall` over the list instead.
+A proved invariant over a tracked list is not used if the list is pushed to after the loop, nor one reading collection state if anything after the loop may change it; nor one needing the array encoding (`all-triples-have-predicate`, `list-ref`) - write those as a `forall` over the list instead. With a `return` before the loop it is stated only for the runs that took no early return, and not used at all when an assignment or a `?` also precedes the loop, or when the function body has more than one form.
 
 ## 5. @property vs @post
 

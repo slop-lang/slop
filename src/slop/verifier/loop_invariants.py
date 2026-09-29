@@ -186,6 +186,8 @@ class InvariantProverMixin:
         try:
             env, types = self._ip_declare_parameters(tr, params)
             self._ip_params = set(env)
+            self._ip_param_terms = dict(env)
+            self._ip_binders = self._ip_binder_counts(body)
             self._ip_assigned = self._ip_assigned_names(body)
             self._ip_addr_taken = self._ip_addresses_taken(body)
             self._ip_tracked = self._ip_tracked_lists(body, set(env))
@@ -522,24 +524,27 @@ class InvariantProverMixin:
         return ((registry is not None and name in registry.functions)
                 or name in tr.imported_defs.functions)
 
+    @staticmethod
+    def _ip_plain_assignment(node) -> bool:
+        """`(set! name value)` of a local, as opposed to a write through a place."""
+        return (len(node) == 3 and isinstance(node[1], Symbol)
+                and '.' not in node[1].name.strip('.'))
+
     def _ip_call_effect(self, call) -> Optional[str]:
         """What a call in the body may change, as a description; None if nothing."""
         head = call[0].name if isinstance(call[0], Symbol) else None
         if head is None:
             return "a call through a computed function"
         where = f"{head} (line {getattr(call, 'line', '?')})"
+        if head == 'set!':
+            return None if self._ip_plain_assignment(call) else f"the assignment at line {getattr(call, 'line', '?')}"
         if head == 'list-push' and len(call) >= 2 and isinstance(call[1], Symbol) \
                 and call[1].name in self._ip_tracked:
             return None
         if self._ip_is_user_function(head):
-            if self._xp_callee_is_pure(head, self._xp_tr):
-                return None
-            types, modes, _, _, _ = self._ip_signature(head)
-            if any(mode == 'out' for mode in modes):
-                return where
-            if self._xp_params_are_values(head):
-                return None
-            return where
+            # A function not declared @pure may reach state through what it is
+            # handed, and through C it may reach state it is not handed.
+            return None if self._xp_callee_is_pure(head, self._xp_tr) else where
         if head in _MUTATORS:
             return where
         if head in _ALLOCATORS or head in _NEUTRAL_HEADS or head in _EXTRA_STATE_READS \
@@ -594,6 +599,13 @@ class InvariantProverMixin:
                 if len(binder) >= 2:
                     walk(binder[1])
                 for item in node.items[2:]:
+                    walk(item)
+                return
+            if name == 'set!' and not self._ip_plain_assignment(node):
+                # A write through a field, an index or a pointer changes state
+                # the walk reads through uninterpreted terms.
+                out.append(node)
+                for item in node.items[1:]:
                     walk(item)
                 return
             if name in ('if', 'when', 'cond', 'match', 'do', 'while', 'set!', 'return', 'fn'):
@@ -1065,13 +1077,17 @@ class InvariantProverMixin:
         for name in sorted(self._ip_addr_taken):
             if self._ip_mentions(condition, name):
                 raise _Unchecked(f"it names {name}, whose address is taken, so a call may write it")
+        inner_binders = self._ip_binder_counts(condition)
         for source in self._ip_quantifier_sources(condition):
+            root = self._ip_root_name(source)
+            if root is not None and root in inner_binders:
+                raise _Unchecked(f"it quantifies over {pretty_print(source)}, "
+                                 "a name the invariant itself binds")
             if isinstance(source, Symbol) and source.name in st.seqs:
                 continue
-            root = self._ip_root_name(source)
             if root is None:
                 raise _Unchecked(f"it quantifies over {pretty_print(source)}, which is not a named collection")
-            if root in self._ip_assigned or root not in self._ip_params:
+            if not self._ip_stable_parameter(root, st):
                 raise _Unchecked(f"it quantifies over {pretty_print(source)}, "
                                  "whose name does not always denote the same collection")
         impure = self._ip_impure_call_in_quantifier(condition)
@@ -1128,6 +1144,20 @@ class InvariantProverMixin:
 
         walk(expr)
         return out
+
+    def _ip_stable_parameter(self, root: Optional[str], st: _IState) -> bool:
+        """True if `root` is a parameter that, here, still names the parameter.
+
+        The translator looks a collection's sequence up by name, so a name any
+        binding reuses - a `let`, a loop's or a pattern's binder - would read
+        the parameter's list where the program means another.
+        """
+        if root is None or root not in self._ip_params or root in self._ip_assigned:
+            return False
+        if self._ip_binders.get(root, 0) != 0:
+            return False
+        term = st.env.get(root)
+        return term is not None and term.eq(self._ip_param_terms[root])
 
     @staticmethod
     def _ip_root_name(expr) -> Optional[str]:
@@ -1690,7 +1720,7 @@ class InvariantProverMixin:
         else:
             if step.dirty is None:
                 root = self._ip_root_name(source)
-                if root is not None and root in self._ip_params and root not in self._ip_assigned:
+                if self._ip_stable_parameter(root, entry):
                     seq = self._xp_tr._get_or_create_collection_seq(source)
                     if seq is not None and seq.sort() == z3.SeqSort(element.sort()):
                         facts.extend(self._ip_member(element, seq))
@@ -1954,7 +1984,7 @@ class InvariantProverMixin:
 
     def _ip_exits_before(self, body, loop) -> Optional[str]:
         """'?' if a `?` comes before `loop`, else 'return' if a `return` does, else None."""
-        state = {'found': None, 'done': False}
+        state = {'found': None, 'done': False, 'assigned': False}
 
         def walk(node):
             if state['done'] or not isinstance(node, SList) or len(node) == 0:
@@ -1969,10 +1999,16 @@ class InvariantProverMixin:
                 state['found'] = '?'
             elif head == 'return' and state['found'] is None:
                 state['found'] = 'return'
+            elif head == 'set!':
+                state['assigned'] = True
             for item in node.items:
                 walk(item)
 
         walk(body)
+        if state['found'] == 'return' and state['assigned']:
+            # The early-exit guards read names as they stood at the top; an
+            # assignment before the loop may have changed what one tests.
+            return '?'
         return state['found']
 
     def _ip_after(self, body, loop) -> List[Any]:

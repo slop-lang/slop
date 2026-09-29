@@ -12331,6 +12331,73 @@ class TestCheckedLoopInvariantSoundness:
       n)))'''
         assert self._status(src, 'f', tmp_path, {'cb': self.EACH_POSITIVE}) != 'verified'
 
+    def test_a_parameter_name_rebound_by_a_let_is_not_the_parameter(self):
+        assert self._status('''
+(fn f ((xs (List Int)) (zs (List Int)))
+  (@spec (((List Int) (List Int)) -> Int))
+  (@pre (forall (t xs) (> t 0)))
+  (@post (and {$result >= 0} (forall (t xs) (> t 0))))
+  (let ((mut k 0))
+    (let ((xs zs))
+      (for-each (y xs)
+        (@loop-invariant {k >= 0})
+        (set! k (+ k y))))
+    k))''', 'f') != 'verified'
+
+    def test_a_write_through_an_index_after_the_loop(self):
+        assert self._status('''
+(fn f ((xs (List Int)) (ys (List Int)))
+  (@spec (((List Int) (List Int)) -> Int))
+  (@pre {(list-len xs) > 0})
+  (@post {$result == 0})
+  (let ((mut k (@ xs 0)))
+    (for-each (y ys)
+      (@loop-invariant {k == (@ xs 0)})
+      (set! k k))
+    (set! (@ xs 0) (+ k 1))
+    (- k (@ xs 0))))''', 'f') != 'verified'
+
+    def test_a_write_through_a_field_inside_an_initializer(self):
+        assert self._status('''
+(module probe
+  (type R (record (n Int)))
+  (fn f ((p (Ptr R)) (ys (List Int)))
+    (@spec (((Ptr R) (List Int)) -> Int))
+    (@pre {(list-len ys) > 0})
+    (@post {$result == 0})
+    (let ((mut k (. p n)))
+      (for-each (y ys)
+        (@loop-invariant {k == (. p n)})
+        (let ((z (do (set! (. p n) (+ k 1)) 0)))
+          (set! k k)))
+      (- k (. p n)))))''', 'f') != 'verified'
+
+    def test_an_earlier_form_of_a_multi_form_body(self):
+        assert self._status('''
+(fn f ((mut n Int) (xs (List Int)))
+  (@spec ((Int (List Int)) -> Int))
+  (@pre {n > 5})
+  (@post (implies (== (list-len xs) 0) (== $result 42)))
+  (set! n 0)
+  (do (for-each (x xs) (@loop-invariant {n < 3}) (set! n 1)) n))''', 'f') != 'verified'
+
+    def test_a_callee_with_no_parameters_may_still_change_state(self):
+        assert self._status('''
+(module probe
+  (fn poke ()
+    (@spec (() -> Unit))
+    (c-inline "g_list.data[0] = 99;"))
+  (fn f ((xs (List Int)) (ys (List Int)))
+    (@spec (((List Int) (List Int)) -> Int))
+    (@pre {(list-len xs) > 0})
+    (@post {$result == 0})
+    (let ((mut k (@ xs 0)))
+      (for-each (y ys)
+        (@loop-invariant {k == (@ xs 0)})
+        (poke)
+        (set! k k))
+      (- k (@ xs 0)))))''', 'f') != 'verified'
+
     def test_division_is_checked_rather_than_opaque(self):
         assert self._status('''
 (fn f ((xs (List Int)))
