@@ -8305,6 +8305,7 @@ _UNION_RECORD_PROBE = '''
   (fn step ((arena Arena) (s St))
     (@spec ((Arena St) -> St))
     (@alloc arena)
+    (@post {(. $result iteration) == (+ (. s iteration) 1)})
     (record-new St (iteration (+ (. s iteration) 1))))
 
 %s)
@@ -8391,6 +8392,7 @@ class TestUnionWrappedRecordFields:
   (fn w5 ((arena Arena) (s0 St) (cap Int) (bail Bool))
     (@spec ((Arena St Int Bool) -> (Result G E)))
     (@alloc arena)
+    (@pre {(. s0 iteration) <= cap})
     (@post (match $result ((ok r) {(. (. r state) iteration) <= cap}) ((error _) true)))
     (let ((mut st s0)
           (mut stop false))
@@ -8406,6 +8408,34 @@ class TestUnionWrappedRecordFields:
           (if stop
             (ok (record-new G (state st) (tag 1)))
             (ok (record-new G (state st) (tag 2))))))))''', 'w5') == 'verified'
+
+    def test_an_invariant_the_entry_state_does_not_establish_fails(self):
+        """The same loop with nothing saying where `s0` starts: the invariant
+        is not known to hold on entry, so it is not assumed and the function
+        does not verify on the strength of it."""
+        from slop.verifier import verify_source
+        src = _UNION_RECORD_PROBE % '''
+  (fn w5b ((arena Arena) (s0 St) (cap Int) (bail Bool))
+    (@spec ((Arena St Int Bool) -> (Result G E)))
+    (@alloc arena)
+    (@post (match $result ((ok r) {(. (. r state) iteration) <= cap}) ((error _) true)))
+    (let ((mut st s0)
+          (mut stop false))
+      (do
+        (while (not stop)
+          (@loop-invariant {(. st iteration) <= cap})
+          (do
+            (if (>= (. st iteration) cap)
+              (set! stop true)
+              (set! st (step arena st)))))
+        (if bail
+          (error 'bad)
+          (if stop
+            (ok (record-new G (state st) (tag 1)))
+            (ok (record-new G (state st) (tag 2))))))))'''
+        result = next(r for r in verify_source(src, filename="probe.slop") if r.name == 'w5b')
+        assert result.status == 'failed'
+        assert result.message.startswith("loop invariant not established on entry:")
 
     def test_an_arm_that_binds_locals_before_constructing(self):
         """The constructor states the shape; the `let` around it is just where
@@ -8573,6 +8603,7 @@ class TestUnionWrappedRecordFields:
     (@spec ((Arena St Int Bool Bool) -> (Result G E)))
     (@alloc arena)
     (@pre (not c))
+    (@pre {(. s0 iteration) <= cap})
     (@post (match $result ((ok r) {(. (. r state) iteration) <= cap}) ((error _) true)))
     (let ((mut st s0)
           (mut stop false))
@@ -8598,6 +8629,7 @@ class TestUnionWrappedRecordFields:
     (@spec ((Arena St Int Bool) -> (Result G E)))
     (@alloc arena)
     (@pre c)
+    (@pre {(. s0 iteration) <= cap})
     (@post (match $result ((ok r) {(. (. r state) iteration) <= cap}) ((error _) true)))
     (let ((mut st s0)
           (mut stop false))
@@ -8618,6 +8650,7 @@ class TestUnionWrappedRecordFields:
   (fn n3 ((arena Arena) (s0 St) (cap Int) (bail Bool))
     (@spec ((Arena St Int Bool) -> (Result G E)))
     (@alloc arena)
+    (@pre {(. s0 iteration) <= cap})
     (@post (match $result ((ok r) {(. (. r state) iteration) < cap}) ((error _) true)))
     (let ((mut st s0)
           (mut stop false))
@@ -11745,3 +11778,385 @@ class TestResultConstructorAxioms:
     def test_a_false_claim_about_the_error_payload_fails(self):
         src = self._SRC.replace('BODY', '(ok b)').replace('{C}', 'true', 1).replace('{C}', '{e == n}')
         assert _status_of(src, name='g').status == 'failed'
+
+
+class TestCheckedLoopInvariants:
+    """An explicit @loop-invariant is proved - base case and inductive step -
+    before anything uses it. One that does not hold fails the function with a
+    diagnostic of its own; one the analysis cannot follow is unknown and is
+    not assumed. Before this, every invariant was trusted, so one restating a
+    postcondition proved that postcondition from itself."""
+
+    @staticmethod
+    def _result(src, name, search_paths=None, filename="probe.slop"):
+        from slop.verifier import verify_source
+        results = [r for r in verify_source(src, filename=filename, search_paths=search_paths)
+                   if r.name == name]
+        assert len(results) == 1, results
+        return results[0]
+
+    COUNTER = '''
+(fn f ((xs (List Int)) (start Int))
+  (@spec (((List Int) Int) -> Int))
+  %s
+  (@post {$result >= 0})
+  (let ((mut count start))
+    (for-each (x xs)
+      (@loop-invariant {count >= 0})
+      %s)
+    count))'''
+
+    def test_a_true_invariant_proves_the_postcondition(self):
+        r = self._result(self.COUNTER % ('(@pre {start >= 0})', '(when {x > 0} (set! count (+ count 1)))'), 'f')
+        assert r.status == 'verified', r.message
+
+    def test_an_invariant_not_established_on_entry_fails(self):
+        r = self._result(self.COUNTER % ('', '(set! count (+ count 1))'), 'f')
+        assert r.status == 'failed'
+        assert r.message.startswith("loop invariant not established on entry: (>= count 0)")
+        assert r.counterexample and 'count' in r.counterexample
+
+    def test_an_invariant_the_body_does_not_preserve_fails(self):
+        r = self._result(self.COUNTER % ('(@pre {start >= 0})', '(set! count (- count 1))'), 'f')
+        assert r.status == 'failed'
+        assert r.message.startswith("loop invariant not preserved: (>= count 0)")
+        assert r.counterexample
+
+    def test_a_false_invariant_does_not_prove_what_it_implies(self):
+        r = self._result('''
+(fn f ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post {$result == 7})
+  (let ((mut total 0))
+    (for-each (x xs)
+      (@loop-invariant {total == 7})
+      (set! total (+ total x)))
+    total))''', 'f')
+        assert r.status == 'failed'
+        assert 'loop invariant not established on entry' in r.message
+
+    def test_an_invariant_is_about_where_its_own_loop_ends(self):
+        """Loop 1 keeps x <= 10; loop 2 sets it to 100. Asserting loop 1's
+        invariant about the value the body ends with proved $result <= 10."""
+        r = self._result('''
+(fn f ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post {$result <= 10})
+  (let ((mut x 0))
+    (for-each (a xs)
+      (@loop-invariant {x <= 10})
+      (set! x 5))
+    (for-each (b xs)
+      (set! x 100))
+    x))''', 'f')
+        assert r.status != 'verified'
+
+    FILTER = '''
+(fn f ((arena Arena) (xs (List Int)))
+  (@spec ((Arena (List Int)) -> (List Int)))
+  (@post (forall (t $result) (> t 0)))
+  (let ((mut result (list-new arena Int)))
+    (for-each (x xs)
+      (@loop-invariant (forall (t result) (> t 0)))
+      (when (> x %s) (list-push result x)))
+    %s
+    result))'''
+
+    def test_a_filter_invariant_over_the_built_list(self):
+        assert self._result(self.FILTER % ('0', ''), 'f').status == 'verified'
+
+    def test_a_filter_invariant_that_lets_a_bad_element_in_fails(self):
+        r = self._result(self.FILTER % ('-5', ''), 'f')
+        assert r.status == 'failed'
+        assert r.message.startswith("loop invariant not preserved:")
+
+    WHILE_PUSH = '''
+(fn f ((arena Arena) (n Int))
+  (@spec ((Arena Int) -> (List Int)))
+  (@post (forall (t $result) (> t 0)))
+  (let ((mut result (list-new arena Int))
+        (mut i 0))
+    (while (< i n)
+      %s
+      (list-push result (+ i 1))
+      (set! i (+ i 1)))
+    %s
+    result))'''
+    WHILE_INV = '(@loop-invariant (and (>= i 0) (forall (t result) (> t 0))))'
+
+    def test_the_proved_invariant_is_what_proves_the_postcondition(self):
+        """No loop pattern covers this body: without the invariant nothing is
+        known about the list's elements, with it the postcondition follows."""
+        assert self._result(self.WHILE_PUSH % ('', ''), 'f').status == 'unknown'
+        assert self._result(self.WHILE_PUSH % (self.WHILE_INV, ''), 'f').status == 'verified'
+
+    def test_a_push_after_the_loop_is_not_covered_by_the_invariant(self):
+        """The list has one sequence for the whole function; the invariant is
+        about where the loop ended, which a later push leaves behind."""
+        r = self._result(self.WHILE_PUSH % (self.WHILE_INV, '(list-push result 0)'), 'f')
+        assert r.status != 'verified'
+
+    RECORD_PUSH = '''
+(module probe
+  (type T (record (pred Int)))
+  (fn f ((arena Arena) (xs (List Int)))
+    (@spec ((Arena (List Int)) -> (List T)))
+    (@post (forall (t $result) (== (. t pred) 1)))
+    (let ((mut result (list-new arena T)))
+      (for-each (x xs)
+        (@loop-invariant (forall (t result) (== (. t pred) 1)))
+        (list-push result (record-new T (pred %s))))
+      result)))'''
+
+    def test_pushing_records_that_keep_the_invariant(self):
+        """The invariant is proved. The postcondition check itself times out on
+        a quantifier over a list of records, as it did before invariants were
+        checked; that is not the invariant's doing."""
+        r = self._result(self.RECORD_PUSH % '1', 'f')
+        assert r.status != 'failed'
+        assert "loop invariant" not in r.message
+
+    def test_pushing_a_record_with_another_field_value_is_not_preserved(self):
+        """The shape of growl's dt-type1 with the push changed to another
+        predicate: the invariant used to verify it regardless."""
+        r = self._result(self.RECORD_PUSH % '2', 'f')
+        assert r.status == 'failed'
+        assert r.message.startswith("loop invariant not preserved:")
+
+    def test_a_proved_invariant_needs_the_precondition_so_a_property_does_not_get_it(self):
+        """The base case assumed @pre, so the invariant holds only under it; a
+        @property is checked without @pre and must not inherit it."""
+        post = self._result(self.COUNTER % ('(@pre {start >= 0})', '(set! count (+ count 1))'), 'f')
+        assert post.status == 'verified'
+        prop = self._result('''
+(fn g ((xs (List Int)) (start Int))
+  (@spec (((List Int) Int) -> Int))
+  (@pre {start >= 0})
+  (@property nonneg {$result >= 0})
+  (let ((mut count start))
+    (for-each (x xs)
+      (@loop-invariant {count >= 0})
+      (set! count (+ count 1)))
+    count))''', 'g')
+        assert prop.status != 'verified'
+
+    DELTA = '''
+(module probe
+  (type D (record (items (List Int)) (it (Int 0 ..))))
+  (fn add ((arena Arena) (mut d D) (x Int))
+    (@spec ((Arena D Int) -> D))
+    %s
+    (do (list-push (. d items) x) d))
+  (fn mk ((arena Arena) (n (Int 0 ..)))
+    (@spec ((Arena (Int 0 ..)) -> D))
+    (@post {(. $result it) == n})
+    (record-new D (items (list-new arena Int)) (it n)))
+  (fn merge ((arena Arena) (d1 D) (xs (List Int)))
+    (@spec ((Arena D (List Int)) -> D))
+    (@post {(. $result it) == (. d1 it)})
+    (let ((mut result d1))
+      (for-each (x xs)
+        (@loop-invariant {(. result it) == (. d1 it)})
+        (set! result (add arena result x)))
+      result))
+  (fn apply ((arena Arena) (d D) (xs (List Int)) (ys (List Int)))
+    (@spec ((Arena D (List Int) (List Int)) -> D))
+    (@post {(. $result it) == (+ (. d it) 1)})
+    (let ((next (+ (. d it) 1))
+          (mut result (mk arena next)))
+      (for-each (x xs)
+        (@loop-invariant {(. result it) == next})
+        (set! result (add arena result x)))
+      (for-each (y ys)
+        (@loop-invariant {(. result it) == next})
+        (set! result (add arena result y)))
+      result)))'''
+
+    def test_a_callee_that_changes_a_collection_but_keeps_a_field(self):
+        """growl's delta-merge: `add` pushes to a list inside the record, so it
+        may change collection state, but its postcondition about a value field
+        still carries the invariant."""
+        src = self.DELTA % '(@post {(. $result it) == (. d it)})'
+        assert self._result(src, 'merge').status == 'verified'
+
+    def test_without_the_callee_postcondition_the_invariant_is_not_preserved(self):
+        r = self._result(self.DELTA % '', 'merge')
+        assert r.status == 'failed'
+        assert r.message.startswith("loop invariant not preserved:")
+
+    def test_sequential_loops_each_start_where_the_last_ended(self):
+        """growl's apply-scm-rules: the second loop's base case is the first
+        loop's proved invariant."""
+        src = self.DELTA % '(@post {(. $result it) == (. d it)})'
+        assert self._result(src, 'apply').status == 'verified'
+
+    NESTED = '''
+(fn f ((xss (List (List Int))))
+  (@spec (((List (List Int))) -> Int))
+  (@post {$result >= 0})
+  (let ((mut total 0))
+    (for-each (xs xss)
+      (@loop-invariant {total >= 0})
+      (for-each (x xs)
+        %s
+        (set! total (+ total 1))))
+    total))'''
+
+    def test_nested_loops_each_with_an_invariant(self):
+        assert self._result(self.NESTED % '(@loop-invariant {total >= 0})', 'f').status == 'verified'
+
+    def test_an_unannotated_inner_loop_leaves_the_outer_invariant_unchecked(self):
+        r = self._result(self.NESTED % '', 'f')
+        assert r.status == 'unknown'
+        assert "could not check loop invariant: (>= total 0)" in r.message
+
+    ENGINE = '''
+(module probe
+  (type St (record (iteration (Int 0 ..))))
+  (type Cfg (record (max-iterations (Int 1 ..))))
+  (fn run-iter ((arena Arena) (s St))
+    (@spec ((Arena St) -> (Result St Int)))
+    (@pre {(. s iteration) >= 0})
+    (@post (match $result ((ok ns) {(. ns iteration) == (+ (. s iteration) 1)}) ((error _) true)))
+    (ok (record-new St (iteration (+ (. s iteration) 1)))))
+  (fn run ((arena Arena) (cfg Cfg) (skip Bool))
+    (@spec ((Arena Cfg Bool) -> Int))
+    (@post {$result <= (. cfg max-iterations)})
+    (let ((mut state (record-new St (iteration 0)))
+          (mut done false))
+      (when skip (return 0))
+      (while (and (not done) (< (. state iteration) (. cfg max-iterations)))
+        (@loop-invariant {(. state iteration) <= (. cfg max-iterations)})
+        %s
+        (match (run-iter arena state)
+          ((ok ns) (set! state ns))
+          ((error e) (set! done true))))
+      (. state iteration))))'''
+
+    def test_a_while_loop_shaped_like_growls_engine_run(self):
+        """A record-new initializer, an early return before the loop, the loop
+        condition, and a callee's postcondition read through a match arm."""
+        assert self._result(self.ENGINE % '', 'run').status == 'verified'
+
+    def test_c_inline_in_the_loop_body_leaves_the_invariant_unchecked(self):
+        r = self._result(self.ENGINE % '(c-inline "done = 0;")', 'run')
+        assert r.status == 'unknown'
+        assert "c-inline" in r.message
+
+    def test_an_invariant_reading_a_list_a_call_may_change_is_unchecked(self):
+        r = self._result('''
+(module probe
+  (fn put ((ys (List Int)) (x Int))
+    (@spec (((List Int) Int) -> Int))
+    (do (list-push ys x) 0))
+  (fn f ((xs (List Int)) (ys (List Int)))
+    (@spec (((List Int) (List Int)) -> Int))
+    (@post {$result >= 0})
+    (let ((mut n 0))
+      (for-each (x xs)
+        (@loop-invariant {(list-len ys) >= 0})
+        (put ys x)
+        (set! n (+ n 1)))
+      n)))''', 'f')
+        assert r.status == 'unknown'
+        assert "list-len" in r.message and "put" in r.message
+
+    def test_an_invariant_about_the_loop_variable_is_unchecked(self):
+        """Between iterations - on entry, after the loop - the loop variable
+        is not bound, or names something else."""
+        r = self._result('''
+(fn f ((xs (List Int)) (x Int))
+  (@spec (((List Int) Int) -> Int))
+  (@pre {x >= 0})
+  (@post {$result >= 0})
+  (let ((mut total 0))
+    (for-each (x xs)
+      (@loop-invariant {x >= 0})
+      (set! total (+ total 1)))
+    total))''', 'f')
+        assert r.status == 'unknown'
+        assert "names the loop variable x" in r.message
+
+    def test_break_in_the_body_leaves_the_invariant_unchecked(self):
+        r = self._result(self.COUNTER % ('(@pre {start >= 0})',
+                                         '(when {x > 5} (break)) (set! count (+ count 1))'), 'f')
+        assert r.status == 'unknown'
+        assert "break" in r.message
+
+    def test_an_invariant_that_does_not_lead_a_loop_body_is_misplaced(self):
+        r = self._result('''
+(fn f ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post {$result >= 0})
+  (let ((mut count 0))
+    (for-each (x xs)
+      (set! count (+ count 1))
+      (@loop-invariant {count >= 0}))
+    count))''', 'f')
+        assert r.status == 'failed'
+        assert r.message.startswith("@loop-invariant must be the first form(s)")
+
+    INVARIANT_ONLY = '''
+(fn f ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (let ((mut count 0))
+    (for-each (x xs)
+      (@loop-invariant %s)
+      %s)
+    count))'''
+
+    def test_a_function_with_only_invariants_is_verified_by_them(self):
+        r = self._result(self.INVARIANT_ONLY % ('{count >= 0}', '(set! count (+ count 1))'), 'f')
+        assert r.status == 'verified'
+        assert r.message == "Loop invariants verified"
+
+    def test_a_function_with_only_invariants_fails_with_them(self):
+        r = self._result(self.INVARIANT_ONLY % ('{count >= 0}', '(set! count (- count 1))'), 'f')
+        assert r.status == 'failed'
+
+    def test_a_function_with_only_unchecked_invariants_is_unknown(self):
+        r = self._result(self.INVARIANT_ONLY % ('{count >= 0}', '(when {x > 5} (break)) (set! count 1)'), 'f')
+        assert r.status == 'unknown'
+
+    def test_a_step_that_cannot_run_proves_the_invariant(self):
+        """If the invariant and the loop condition cannot both hold, no
+        iteration runs from a state where the invariant holds."""
+        r = self._result('''
+(fn f ((n Int))
+  (@spec ((Int) -> Int))
+  (@post {$result == 0})
+  (let ((mut i 0))
+    (while (and (< i 10) (> i 20))
+      (@loop-invariant {i == 0})
+      (set! i 5))
+    i))''', 'f')
+        assert r.status == 'verified', r.message
+
+    def test_an_invariant_in_a_desugared_callback(self, tmp_path):
+        """An invariant written first in a callback's lambda becomes the
+        invariant of the loop the callback is desugared into, and the callee's
+        @callback-assume describes each element."""
+        (tmp_path / "cb.slop").write_text('''
+(module cb
+  (export each-positive)
+  (fn each-positive ((xs (List Int)) (callback (Fn (Int) Unit)))
+    (@spec (((List Int) (Fn (Int) Unit)) -> Unit))
+    (@pure)
+    (@callback-assume callback (> $callback-arg 0))
+    (for-each (x xs) (when (> x 0) (callback x)))))
+''')
+        src = '''
+(module main
+  (import cb (each-positive))
+  (fn f ((arena Arena) (xs (List Int)))
+    (@spec ((Arena (List Int)) -> (List Int)))
+    (@post (forall (t $result) (> t 0)))
+    (let ((mut result (list-new arena Int)))
+      (each-positive xs
+        (fn ((x Int))
+          (@loop-invariant (forall (t result) (> t 0)))
+          (list-push result x)))
+      result)))'''
+        r = self._result(src, 'f', search_paths=[tmp_path],
+                         filename=str(tmp_path / "main.slop"))
+        assert r.status == 'verified', r.message
