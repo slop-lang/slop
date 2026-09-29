@@ -1,0 +1,93 @@
+(module list-new-bench
+  (@intent "Micro-benchmark: collections created and mostly left empty")
+
+  ;; Shaped after HOWL's hot path. Every rule call returns a (List Addressed)
+  ;; built with list-new, and most return nothing; every per-round delta
+  ;; context is a record of three maps of which one is touched.
+  ;;
+  ;; Build and run:  slop build bench/list_new.slop -o /tmp/list_new -O 2
+  ;;                 /tmp/list_new
+  ;; Prints, for each phase, the elapsed milliseconds and the arena bytes the
+  ;; phase's collections took, then a checksum that must not change between
+  ;; runtimes. Each batch runs in a with-arena of its own, starting at 64 KB
+  ;; so its block chain grows the way a long-lived arena's does, and freed
+  ;; after the batch so an eager build stays under the runtime's arena cap.
+  ;; The byte count is what an eager list-new or map-new really costs: the
+  ;; pointer bump is cheap, the memory it claims is not.
+
+  (type Addressed (record
+    (a Int) (b Int) (c Int) (d Int) (e Int)
+    (f Int) (g Int) (h Int) (i Int) (j Int)))
+
+  (type DeltaCtx (record
+    (subsumers (Set Int))
+    (succs (Map Int Int))
+    (preds (Map Int Int))))
+
+  (const CALLS Int 10000000)
+  (const CONTEXTS Int 1000000)
+  (const BATCH Int 10000)
+
+  (fn rule ((arena Arena) (n Int))
+    (@intent "A rule call: fires on one call in 16, returns nothing otherwise")
+    (@spec ((Arena Int) -> (List Addressed)))
+    (@alloc arena)
+    (let ((out (list-new arena Addressed)))
+      (when (== (% n 16) 0)
+        (list-push out (Addressed n n n n n n n n n n)))
+      out))
+
+  (fn context ((arena Arena) (n Int))
+    (@intent "A delta context of three maps, of which only succs is written")
+    (@spec ((Arena Int) -> Int))
+    (@alloc arena)
+    (let ((ctx (DeltaCtx (set-new arena Int) (map-new arena Int Int) (map-new arena Int Int))))
+      (map-put (. ctx succs) n 1)
+      (+ (map-len (. ctx succs)) (+ (map-len (. ctx preds)) (set-len (. ctx subsumers))))))
+
+  (fn run-rules ((bytes (Ptr Int)))
+    (@intent "CALLS rule calls in batches; the sum of the returned lengths, and the arena bytes used in bytes")
+    (@spec (((Ptr Int)) -> Int))
+    (let ((mut sum 0)
+          (mut done 0))
+      (while (< done CALLS)
+        (with-arena :as scratch 65536
+          (let ((mut i 0))
+            (while (< i BATCH)
+              (set! sum (+ sum (list-len (rule scratch (+ done i)))))
+              (set! i (+ i 1)))
+            (set! (deref bytes) (+ (deref bytes) (c-inline "({ int64_t _u = 0; for (slop_arena* _a = scratch; _a; _a = _a->next) _u += (int64_t)_a->offset; _u; })")))))
+        (set! done (+ done BATCH)))
+      sum))
+
+  (fn run-contexts ((bytes (Ptr Int)))
+    (@intent "CONTEXTS delta contexts in batches; the sum of their sizes, and the arena bytes used in bytes")
+    (@spec (((Ptr Int)) -> Int))
+    (let ((mut sum 0)
+          (mut done 0))
+      (while (< done CONTEXTS)
+        (with-arena :as scratch 65536
+          (let ((mut i 0))
+            (while (< i BATCH)
+              (set! sum (+ sum (context scratch (+ done i))))
+              (set! i (+ i 1)))
+            (set! (deref bytes) (+ (deref bytes) (c-inline "({ int64_t _u = 0; for (slop_arena* _a = scratch; _a; _a = _a->next) _u += (int64_t)_a->offset; _u; })")))))
+        (set! done (+ done BATCH)))
+      sum))
+
+  (fn main ()
+    (@intent "Run both phases and print a checksum")
+    (@spec (() -> Int))
+    (let ((mut rule-bytes 0)
+          (mut ctx-bytes 0)
+          (t0 (now-ms))
+          (a (run-rules (addr rule-bytes)))
+          (t1 (now-ms))
+          (b (run-contexts (addr ctx-bytes)))
+          (t2 (now-ms)))
+      (print "list-new calls ms:   ") (println (- t1 t0))
+      (print "list-new arena MB:   ") (println (/ rule-bytes 1048576))
+      (print "map contexts ms:     ") (println (- t2 t1))
+      (print "map contexts arena MB: ") (println (/ ctx-bytes 1048576))
+      (print "checksum: ") (println (+ a b))
+      0)))
