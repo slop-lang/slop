@@ -1,0 +1,116 @@
+(module test-with-arena-return
+  (@intent "A with-arena block frees its arena on every return path, not only when control falls off its end")
+
+  ;; The statement lowering transpiled the block's last statement as a return
+  ;; when the block was itself in return position, and emitted the free after
+  ;; it, where nothing reached it (HOWL's advance-round: every round's scratch
+  ;; stayed resident). An explicit (return x) inside the block skipped the free
+  ;; the same way.
+  ;;
+  ;; Each shape below runs ROUNDS times with a BIG arena. The runtime counts
+  ;; every arena against a 256 MB cap and aborts past it, so a leaking shape
+  ;; takes the whole test down long before the loop ends.
+
+  (const ROUNDS Int 64)
+  (const BIG Int 16777216)
+
+  (fn fill ((a Arena) (n Int))
+    (@intent "Build a list of 0 .. n-1 in a and return its sum")
+    (@spec ((Arena Int) -> Int))
+    (@alloc a)
+    (let ((xs (list-new a Int))
+          (mut i 0)
+          (mut sum 0))
+      (while (< i n)
+        (list-push xs i)
+        (set! i (+ i 1)))
+      (for-each (x xs)
+        (set! sum (+ sum x)))
+      sum))
+
+  (fn tail-value ((n Int))
+    (@intent "The block is the function's value")
+    (@spec ((Int) -> Int))
+    (with-arena :as scratch BIG
+      (let ((s (fill scratch n)))
+        (do
+          (fill scratch 1)
+          (+ s 1)))))
+
+  (fn tail-unnamed ((n Int))
+    (@intent "The unnamed form, binding arena, as the function's value")
+    (@spec ((Int) -> Int))
+    (with-arena BIG
+      (fill arena n)))
+
+  (fn early-return ((n Int))
+    (@intent "An explicit return from inside the block")
+    (@spec ((Int) -> Int))
+    (with-arena :as scratch BIG
+      (let ((s (fill scratch n)))
+        (when (> s 0)
+          (return s))
+        -1)))
+
+  (fn nested ((n Int))
+    (@intent "Two blocks open at the return: both are freed")
+    (@spec ((Int) -> Int))
+    (with-arena :as outer BIG
+      (with-arena :as inner BIG
+        (+ (fill outer n) (fill inner n)))))
+
+  (fn in-match-arm ((o (Option Int)))
+    (@intent "The block is a match arm in return position")
+    (@spec (((Option Int)) -> Int))
+    (match o
+      ((some n)
+        (with-arena :as scratch BIG
+          (fill scratch n)))
+      ((none) 0)))
+
+  (fn optional ((n Int))
+    (@intent "An Option built from arena data, returned from the block")
+    (@spec ((Int) -> (Option Int)))
+    (with-arena :as scratch BIG
+      (let ((s (fill scratch n)))
+        (if (> s 0) (some s) (none)))))
+
+  (fn side-effect ((n Int) (out (Ptr Int)))
+    (@intent "A void function whose last form is the block")
+    (@spec ((Int (Ptr Int)) -> Unit))
+    (with-arena :as scratch BIG
+      (set! (deref out) (fill scratch n))))
+
+  (fn with-lambda ((n Int))
+    (@intent "A lambda's return inside the block must not free the block's arena")
+    (@spec ((Int) -> Int))
+    (with-arena :as scratch BIG
+      (let ((twice (fn ((x Int)) (* x 2)))
+            (a (fill scratch n))
+            (b (twice a)))
+        ;; scratch must still be live here
+        (+ b (fill scratch n)))))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit, or an abort at the arena cap, if a return leaks or loses its value")
+    (@spec (() -> Int))
+    (let ((mut fails 0)
+          (mut out 0)
+          (mut r 0))
+      (while (< r ROUNDS)
+        (when (!= (tail-value 10) 46) (set! fails (+ fails 1)))
+        (when (!= (tail-unnamed 10) 45) (set! fails (+ fails 1)))
+        (when (!= (early-return 10) 45) (set! fails (+ fails 1)))
+        (when (!= (nested 10) 90) (set! fails (+ fails 1)))
+        (when (!= (in-match-arm (some 10)) 45) (set! fails (+ fails 1)))
+        (match (optional 10)
+          ((some v) (when (!= v 45) (set! fails (+ fails 1))))
+          ((none) (set! fails (+ fails 1))))
+        (side-effect 10 (addr out))
+        (when (!= out 45) (set! fails (+ fails 1)))
+        (when (!= (with-lambda 10) 135) (set! fails (+ fails 1)))
+        (set! r (+ r 1)))
+      (when (> fails 0)
+        (print "test_with_arena_return failures: ")
+        (println fails))
+      fails)))

@@ -47,6 +47,9 @@
     ctx-set-current-return-type ctx-get-current-return-type ctx-clear-current-return-type
     ;; Capture return value mode (for postconditions)
     ctx-set-capture-retval ctx-is-capture-retval
+    ;; Scoped arenas open at the current point (with-arena), freed on return
+    ctx-push-open-arena ctx-pop-open-arena ctx-take-open-arenas ctx-restore-open-arenas
+    ctx-emit-return
     ;; Option/List type tracking
     OptionType ListType
     ctx-register-option-type ctx-has-option-type ctx-get-option-types
@@ -315,6 +318,8 @@
       (gensym-counter Int)
       ;; Flag to capture return values to _retval (for postconditions)
       (capture-to-retval Bool)
+      ;; C names of the with-arena arenas open at this point, outermost first
+      (open-arenas (List String))
       ;; Struct key types needing hash/eq generation (C type names)
       (struct-key-types (List String))
       ;; The subset of those hashed through their SLOP type (Option / Result keys)
@@ -401,6 +406,7 @@
       (set! (deref ctx) c-name-aliases (list-new arena FuncCNameAlias))
       (set! (deref ctx) gensym-counter 0)
       (set! (deref ctx) capture-to-retval false)
+      (set! (deref ctx) open-arenas (list-new arena String))
       (set! (deref ctx) struct-key-types (list-new arena String))
       (set! (deref ctx) value-key-types (list-new arena ValueKeyType))
       (set! (deref ctx) type-aliases (list-new arena TypeAliasEntry))
@@ -1803,6 +1809,94 @@
     (@spec (((Ptr TranspileContext)) -> Bool))
     (@pre {ctx != nil})
     (. (deref ctx) capture-to-retval))
+
+  ;; ============================================================
+  ;; Scoped Arenas Open at the Current Point (with-arena)
+  ;;
+  ;; A with-arena frees its arena where its block ends. A return from inside
+  ;; the block -- the block's own value in return position, or an explicit
+  ;; (return x) -- never reaches that line, so every return emitted while an
+  ;; arena is open frees them all first, innermost first.
+  ;; ============================================================
+
+  (fn ctx-push-open-arena ((ctx (Ptr TranspileContext)) (c-name String))
+    (@intent "Record that a with-arena block has opened the arena named c-name")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) open-arenas) c-name))
+
+  (fn ctx-pop-open-arena ((ctx (Ptr TranspileContext)))
+    (@intent "Record that the innermost open with-arena block has closed")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (match (list-pop (. (deref ctx) open-arenas))
+      ((some _) (do))
+      ((none) (do))))
+
+  (fn ctx-take-open-arenas ((ctx (Ptr TranspileContext)))
+    (@intent "Set aside the open arenas, for a body that is a function of its own")
+    (@spec (((Ptr TranspileContext)) -> (List String)))
+    (@pre {ctx != nil})
+    ;; A lambda's body becomes a separate C function: its returns leave that
+    ;; function, not the one whose arenas are open around it.
+    (let ((saved (. (deref ctx) open-arenas)))
+      (set! (deref ctx) open-arenas (list-new (. (deref ctx) arena) String))
+      saved))
+
+  (fn ctx-restore-open-arenas ((ctx (Ptr TranspileContext)) (saved (List String)))
+    (@intent "Put back the open arenas ctx-take-open-arenas set aside")
+    (@spec (((Ptr TranspileContext) (List String)) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) open-arenas saved))
+
+  (fn ctx-open-arena-frees ((ctx (Ptr TranspileContext)))
+    (@intent "The statements freeing every open with-arena arena, innermost first; empty if none")
+    (@spec (((Ptr TranspileContext)) -> String))
+    (@pre {ctx != nil})
+    (let ((open (. (deref ctx) open-arenas))
+          (mut frees "")
+          (mut i (- (list-len open) 1)))
+      (while (>= i 0)
+        (match (list-get open i)
+          ((some c-name)
+            (set! frees (ctx-str4 ctx frees (if (string-eq frees "") "" " ") "slop_arena_free(" (ctx-str ctx c-name ");"))))
+          ((none) (do)))
+        (set! i (- i 1)))
+      frees))
+
+  (fn ctx-emit-return ((ctx (Ptr TranspileContext)) (code String))
+    (@intent "Emit a return of code, or a bare return for \"\", freeing every open with-arena arena first")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    ;; With an arena open the value is computed into a temporary while the
+    ;; arena is still live, then the arenas are freed, then it is returned.
+    ;; What the value points into is the caller's concern: a result that
+    ;; lives in the freed arena is a use-after-free (see with-arena in
+    ;; LANGUAGE.md).
+    (let ((frees (ctx-open-arena-frees ctx))
+          (ret-type (match (ctx-get-current-return-type ctx)
+                      ((some t) t)
+                      ((none) "__auto_type"))))
+      (cond
+        ((string-eq frees "")
+          (if (string-eq code "")
+            (ctx-emit ctx "return;")
+            (ctx-emit ctx (ctx-str3 ctx "return " code ";"))))
+        ((or (string-eq code "") (string-eq ret-type "void"))
+          (do
+            (when (not (string-eq code ""))
+              (ctx-emit ctx (ctx-str ctx code ";")))
+            (ctx-emit ctx frees)
+            (ctx-emit ctx "return;")))
+        (else
+          (do
+            (ctx-emit ctx "{")
+            (ctx-indent ctx)
+            (ctx-emit ctx (ctx-str4 ctx ret-type " _wa_ret = " code ";"))
+            (ctx-emit ctx frees)
+            (ctx-emit ctx "return _wa_ret;")
+            (ctx-dedent ctx)
+            (ctx-emit ctx "}"))))))
 
   ;; ============================================================
   ;; Option Type Tracking

@@ -633,6 +633,11 @@ tier-4: 70B+ models   ; Complex algorithms, multi-step logic
   (let ((x (arena-alloc arena size)))
     ...))  ; Arena auto-freed at end, binds 'arena'
 
+The arena is freed on every exit from the block, including when its value is
+the function's return value and on (return x). What leaves the block must not
+point into its arena: return a scalar, or build the result in an arena that
+outlives the block (usually a caller's Arena parameter).
+
 ;; Named arena - binds custom name instead of 'arena'
 (with-arena :as scratch 4096
   (arena-alloc scratch 256))

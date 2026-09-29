@@ -38,7 +38,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer
                  BindingOrigin MutationKind mutation-error-message))
-  (import context (TranspileContext ctx-register-value-key-type ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
+  (import context (TranspileContext ctx-register-value-key-type ctx-take-open-arenas ctx-restore-open-arenas ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
                    ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
@@ -7307,12 +7307,17 @@
             (lambda-name (match (ctx-get-module ctx)
                            ((some mod) (ctx-str3 ctx (to-c-name arena mod) "_" base-name))
                            ((none) base-name))))
-        ;; Check if we have captures
-        (if (> (list-len free-vars) 0)
-          ;; Closure: generate struct and modified lambda
-          (transpile-closure ctx items params param-names free-vars lambda-name)
-          ;; Simple lambda: no captures
-          (transpile-simple-lambda ctx items params lambda-name)))))
+        ;; The body becomes a function of its own, so a return in it must not
+        ;; free the arenas of the with-arena blocks it is written inside
+        (let ((outer-arenas (ctx-take-open-arenas ctx))
+              ;; Check if we have captures
+              (lambda-c (if (> (list-len free-vars) 0)
+                          ;; Closure: generate struct and modified lambda
+                          (transpile-closure ctx items params param-names free-vars lambda-name)
+                          ;; Simple lambda: no captures
+                          (transpile-simple-lambda ctx items params lambda-name))))
+          (ctx-restore-open-arenas ctx outer-arenas)
+          lambda-c))))
 
   (fn extract-param-names ((arena Arena) (params (List (Ptr SExpr))))
     (@intent "Extract parameter names from params list")

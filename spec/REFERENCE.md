@@ -84,7 +84,8 @@ All definitions must be inside the module form:
 (arena-new size)         ; create arena
 (arena-alloc arena size) ; allocate from arena
 (arena-free arena)       ; free arena
-(with-arena size body)   ; scoped arena (implicit 'arena' var)
+(with-arena size body)   ; scoped arena (implicit 'arena' var), freed on every exit;
+                         ; what the block returns must not point into it
 (sizeof Type)            ; size of type in bytes
 (addr expr)              ; address-of (&expr)
 (deref ptr)              ; dereference pointer (*ptr)

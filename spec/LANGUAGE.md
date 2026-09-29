@@ -690,16 +690,25 @@ Named arenas are useful when:
 - **Multiple lifetimes**: Keep data in separate arenas with different lifetimes
 
 ```lisp
-(fn process-with-scratch ((input String))
-  (@intent "Process with separate scratch and output arenas")
-  (with-arena :as output 8192
-    (with-arena :as scratch 4096
-      ;; scratch arena for temporary allocations
-      (let ((temp (parse scratch input)))
-        ;; output arena for result that outlives scratch
-        (build-result output temp)))))
-;; scratch freed first, then output
+(fn process-with-scratch ((out Arena) (input String))
+  (@intent "Parse in a scratch arena, build the result in the caller's")
+  (@alloc out)
+  (with-arena :as scratch 4096
+    ;; scratch arena for temporary allocations
+    (let ((temp (parse scratch input)))
+      ;; the result goes in `out`, which the caller owns and outlives scratch
+      (build-result out temp))))
+;; scratch is freed before process-with-scratch returns
 ```
+
+**The arena is freed on every exit from the block** -- falling off its end,
+the block's value being the function's return value, or an explicit
+`(return x)` inside it. A value that leaves the block, whether as its result
+or through a `return`, is computed while the arena is still live and handed
+back after it is freed. It must therefore not point into that arena: return
+a scalar, or build what you return in an arena that outlives the block,
+typically one the caller passes in. Returning data that lives in the scoped
+arena is a use-after-free. The compiler does not yet reject it.
 
 Named and unnamed arenas can be mixed:
 
