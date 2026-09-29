@@ -463,7 +463,7 @@ The verifier catches the bug — when `val > hi`, returning `val` violates `$res
 
 ### How It Works
 
-The verifier uses weakest precondition (WP) calculus, reasoning backward through `if`/`cond`/`match`/`let`/`do` blocks to compute the weakest condition needed before execution. For loops, it detects common patterns (filter, map, count, fold) and automatically generates universally quantified axioms connecting outputs to inputs — no manual invariants needed for recognized patterns.
+The verifier translates a function body into Z3 constraints relating `$result` to the parameters, following `let` bindings and treating `if`/`cond`/`match` branches as path conditions, then asks the solver whether any input satisfying the preconditions can violate a postcondition. For loops, it detects common patterns (filter, map, count, fold) and automatically generates universally quantified axioms connecting outputs to inputs — no manual invariants needed for recognized patterns.
 
 When automatic detection isn't enough, you can provide explicit guidance:
 
