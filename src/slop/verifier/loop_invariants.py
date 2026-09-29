@@ -876,6 +876,10 @@ class InvariantProverMixin:
             return self._ip_opaque(sort), self._ip_effect(st, effect)
 
     def _ip_eval_term(self, expr, st: _IState, pc, invariant):
+        if not invariant:
+            impure = self._ip_impure_call_in_quantifier(expr)
+            if impure is not None:
+                raise _NoTranslation(f"{impure} is called inside a quantifier or match arm")
         if isinstance(expr, SList) and len(expr) > 0 and isinstance(expr[0], Symbol) \
                 and expr[0].name in _UNMODELLED_FORMS:
             raise _Bail(f"{expr[0].name} is not modelled")
@@ -898,11 +902,12 @@ class InvariantProverMixin:
         return term, self._ip_effect(st, effect)
 
     def _ip_check_pure(self, expr):
-        """Refuse statement forms inside a term; a fresh collection is fine."""
+        """Refuse statement forms inside a term; a fresh collection is fine,
+        and so is a `match` whose arms are terms."""
         if isinstance(expr, SList) and len(expr) > 0:
             head = expr[0]
             if isinstance(head, Symbol):
-                if head.name in ('let', 'let*', 'do', 'when', 'match', 'set!', 'list-push'):
+                if head.name in ('let', 'let*', 'do', 'when', 'set!', 'list-push'):
                     raise _Bail(f"{head.name} in a term")
                 if head.name == 'quote':
                     return
@@ -1061,6 +1066,12 @@ class InvariantProverMixin:
         head = expr[0]
         if isinstance(head, Symbol) and head.name in ('forall', 'exists'):
             return
+        if isinstance(head, Symbol) and head.name == 'match':
+            # The arms read names their patterns bind, which nothing here has
+            # a value for; only the scrutinee is evaluated as it stands.
+            if len(expr) >= 2:
+                self._ip_pin(expr[1], pc)
+            return
         for item in self._xp_evaluated_parts(expr):
             self._ip_pin(item, pc)
         if not isinstance(head, Symbol) or head.name in ('quote', 'cond', 'if', 'cast', '.'):
@@ -1123,7 +1134,7 @@ class InvariantProverMixin:
                                  "whose name does not always denote the same collection")
         impure = self._ip_impure_call_in_quantifier(condition)
         if impure is not None:
-            raise _Unchecked(f"it calls {impure}, which is not @pure, inside a quantifier")
+            raise _Unchecked(f"it calls {impure}, which is not @pure, inside a quantifier or match arm")
         term, _ = self._ip_eval(condition, st, pc, invariant=True)
         if z3.is_int(term):
             term = self._ensure_bool(term)     # as the main verifier reads it
@@ -1132,8 +1143,9 @@ class InvariantProverMixin:
         return term, list(self._ip_obligations)
 
     def _ip_impure_call_in_quantifier(self, expr) -> Optional[str]:
-        """A call inside a quantifier is an uninterpreted function of its
-        arguments, which is only right for a function that is one."""
+        """A call inside a quantifier or a match arm is not pinned, so it is an
+        uninterpreted function of its arguments - only right for a function
+        that is one."""
         def walk(node, inside):
             if not isinstance(node, SList) or len(node) == 0:
                 return None
@@ -1145,6 +1157,17 @@ class InvariantProverMixin:
                     found = walk(item, True)
                     if found:
                         return found
+                return None
+            if head == 'match' and len(node) >= 2:
+                found = walk(node[1], inside)
+                if found:
+                    return found
+                for clause in node.items[2:]:
+                    if isinstance(clause, SList):
+                        for item in clause.items[1:]:
+                            found = walk(item, True)
+                            if found:
+                                return found
                 return None
             if inside and head is not None and self._ip_is_user_function(head) \
                     and not self._xp_callee_is_pure(head, self._xp_tr):

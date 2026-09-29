@@ -12061,6 +12061,24 @@ class TestCheckedLoopInvariants:
         assert r.status == 'unknown'
         assert "list-len" in r.message and "put" in r.message
 
+    OPTION = '''
+(fn f ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post {$result > 0})
+  (let ((mut best (Option Int) (none)))
+    (for-each (x xs)
+      (@loop-invariant (match best ((some b) (> b 0)) ((none) true)))
+      (when (> x %s) (set! best (some x))))
+    (match best ((some b) b) ((none) 1))))'''
+
+    def test_an_invariant_that_matches_on_an_option(self):
+        assert self._result(self.OPTION % '0', 'f').status == 'verified'
+
+    def test_an_option_invariant_the_body_breaks(self):
+        r = self._result(self.OPTION % '-3', 'f')
+        assert r.status == 'failed'
+        assert r.message.startswith("loop invariant not preserved:")
+
     def test_an_invariant_about_the_loop_variable_is_unchecked(self):
         """Between iterations - on entry, after the loop - the loop variable
         is not bound, or names something else."""
