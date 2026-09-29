@@ -115,6 +115,8 @@ slop_string expr_extract_set_elem_from_slop_type(slop_arena* arena, slop_string 
 slop_string expr_infer_set_elem_c_type(context_TranspileContext* ctx, types_SExpr* set_expr);
 slop_string expr_compound_slop_type_to_id(slop_arena* arena, slop_string slop_type);
 slop_string expr_slop_value_type_to_option_id(slop_arena* arena, slop_string slop_type);
+slop_string expr_infer_map_value_slop_type(context_TranspileContext* ctx, types_SExpr* map_expr);
+slop_string expr_map_value_c_type(context_TranspileContext* ctx, types_SExpr* map_expr);
 slop_string expr_infer_map_value_option_type(context_TranspileContext* ctx, types_SExpr* map_expr);
 slop_string expr_option_type_to_value_c_type(slop_arena* arena, slop_string option_type);
 slop_string expr_infer_option_inner_slop_type(context_TranspileContext* ctx, types_SExpr* scrutinee);
