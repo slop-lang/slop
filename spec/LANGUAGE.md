@@ -242,7 +242,7 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 (@post boolean-expr)             ; Postcondition ($result for return value)
 (@assume boolean-expr)           ; Trusted axiom for verification (e.g., FFI behavior)
 (@invariant boolean-expr)        ; Type invariant (on type definitions only)
-(@loop-invariant boolean-expr)   ; Loop invariant (inside for-each/while body)
+(@loop-invariant boolean-expr)   ; Loop invariant (first form(s) of a for-each/while/for body; checked)
 (@callback-assume param expr)    ; Property of callback args ($callback-arg for each arg)
 
 ; Infix notation (contracts only) - curly braces denote infix expressions
@@ -872,7 +872,7 @@ SLOP uses Z3 for compile-time contract verification. The verifier automatically:
 
 **Escape hatches** when automatic verification fails:
 - `@assume`: Trust assertion without proof
-- `@loop-invariant`: Provide invariant for complex loops
+- `@loop-invariant`: State an invariant for a loop the verifier does not recognize; it is proved (on entry and for every iteration) before it is used
 
 See REFERENCE.md for recognized patterns and verification details.
 

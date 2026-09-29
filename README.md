@@ -465,7 +465,7 @@ The verifier catches the bug — when `val > hi`, returning `val` violates `$res
 
 The verifier translates a function body into Z3 constraints relating `$result` to the parameters, following `let` bindings and treating `if`/`cond`/`match` branches as path conditions, then asks the solver whether any input satisfying the preconditions can violate a postcondition. For loops, it detects common patterns (filter, map, count, fold) and automatically generates universally quantified axioms connecting outputs to inputs — no manual invariants needed for recognized patterns.
 
-When automatic detection isn't enough, you can provide explicit guidance:
+When automatic detection isn't enough, you can provide explicit guidance. A `@loop-invariant` is proved before it is used - it must hold when the loop starts and every iteration must keep it - while `@assume` is trusted:
 
 ```lisp
 ;; Inside a loop body

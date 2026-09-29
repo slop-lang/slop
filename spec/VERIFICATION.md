@@ -263,6 +263,8 @@ This eliminates the need for manually writing identical `@loop-invariant` annota
 - The function body contains a `for-each` loop
 - The function returns a mutable variable (the standard accumulator pattern)
 
+A propagated invariant is **not** checked the way an explicit one is (see How @loop-invariant Works below). It is left out when the property it came from is checked, so a property is never proved from itself (#125), but the postcondition check still assumes it.
+
 ### When Manual @loop-invariant Is Still Needed
 
 The automatic analysis covers the six patterns above plus property auto-propagation. Most loops verify without manual invariants.
@@ -299,11 +301,47 @@ The `eq-trans` function infers transitive `sameAs` triples via two nested loops 
   ...)
 ```
 
+As written, this invariant cannot be checked: it calls `make-iri`, which is not `@pure`, inside a quantifier (see the limits below). It reports `could not check loop invariant` and is not assumed.
+
 ### How @loop-invariant Works
 
-The invariant expression is extracted and trusted as an assumption — it is **not** proven by the verifier. It serves as a bridge: the verifier assumes the invariant holds at each iteration and uses it to prove the postcondition after the loop completes.
+An invariant is a claim that holds every time the loop is about to run its body, and therefore also where the loop ends. The verifier **proves** each one by induction before using it:
 
-Place `@loop-invariant` as the first expression inside the loop body. For nested loops, each loop level can have its own invariant.
+1. **Base case** — it holds where the loop is entered, given the function's `@pre`, the parameters' type invariants and range types, and what the code before the loop did.
+2. **Inductive step** — starting from an arbitrary iteration where it holds (and, for a `while`, where the loop condition holds), one run of the body leaves it holding. Everything the loop may assign is a fresh value there; the loop variable of a `for-each` is an element of the collection, and a desugared callback's `@callback-assume` facts describe it.
+
+Only a proved invariant is used afterwards, as a fact about the values each name had **where its loop ended** — not the values the function ends with, which a later loop or assignment may have changed. Since the base case assumed `@pre`, it is asserted under `@pre`, so a `@property` (checked without `@pre`) does not inherit it.
+
+The check walks the function forward. A list the function makes with `list-new` and only pushes to, reads the length of, loops over, or returns is followed exactly: each push is `Concat(s, Unit(e))` under the conditions it runs under. A call's `@post` (and `@property`) is assumed about a value of the call's own. A call to a function that is not `@pure` and is handed a list, set, map or pointer may change collection state; after one, a read of that state - `list-len` of an untracked list, a quantifier over a parameter's list, a field through a pointer - is something the check can no longer vouch for.
+
+**Placement.** `@loop-invariant` must be the first form (or forms) of a `for-each`, `while` or `for` body. For a callback desugared into a loop, write it first in the lambda's body. Anywhere else is an error:
+
+```
+@loop-invariant must be the first form(s) of a for-each, for or while body: <expr>
+```
+
+Nested loops each carry their own; an inner loop's invariant is checked for every outer iteration and may rely on the outer one. A loop's invariants stand or fall together.
+
+**Outcomes.**
+
+| Message | Status | Meaning |
+|---|---|---|
+| `loop invariant not established on entry: <expr>` | failed | The base case has a counterexample: the loop can start where it does not hold. |
+| `loop invariant not preserved: <expr>` | failed | The step has a counterexample: an iteration can start where it holds and end where it does not. |
+| `could not check loop invariant: <expr> (<reason>)` | unknown / timeout | The check needs something it does not model; the reason says what. The invariant is not assumed. |
+
+A failed invariant fails the function whatever its postconditions say. An unchecked one leaves the function unknown unless something else already failed it, since a postcondition that did not verify may have needed it.
+
+**What is not checked** (reported as `could not check`):
+- a loop body with `c-inline`, `break` or `continue`, or a `for` loop;
+- an invariant that reads collection state a call in the function may change (the reason names the call);
+- an invariant that calls a function that is not `@pure` inside a quantifier - an uninterpreted function of its arguments is only right for one that is;
+- a quantifier over a collection that is neither a tracked list nor a parameter (or a field of one) that is never reassigned;
+- an invariant naming `$result`;
+- an invariant inside a lambda that is not desugared into a loop, or inside a `let` initializer that has statements in it;
+- a loop the walk cannot reach through a construct it does not follow (`with-arena`, `spawn`, `try`, `?`).
+
+A proved invariant over a tracked list is not used if the list is pushed to after the loop, nor one reading collection state if anything after the loop may change it; nor one needing the array encoding (`all-triples-have-predicate`, `list-ref`) - write those as a `forall` over the list instead.
 
 ## 5. @property vs @post
 
@@ -484,6 +522,12 @@ Z3 could not determine satisfiability.
 - Non-linear arithmetic (`*`, `/`, `mod` on symbolic values)
 - Complex quantifier instantiation patterns
 - "the body's pushes are not modelled": a claim about a push-built result's elements, where the body is neither a recognized loop pattern (section 3) nor loop-free (section 2, Push-Built Results). The listed fallback shapes are the usual reasons.
+
+### Loop invariant messages
+
+- **`loop invariant not established on entry`** — the counterexample shows the invariant's names where the loop starts. Usually a missing `@pre`, or an initializer that does not satisfy the invariant.
+- **`loop invariant not preserved`** — the counterexample shows the names where an iteration ends. The body can break the invariant, or the invariant is true but not inductive: strengthen it with what the body needs to keep it (a bound on a counter, a callee's `@post`).
+- **`could not check loop invariant`** — the reason in parentheses names what the check does not model (section 4, How @loop-invariant Works). Move the construct out of the loop, give the callee a contract, or restate the invariant over something the check follows.
 
 ### "Could not translate"
 

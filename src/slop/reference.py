@@ -438,7 +438,12 @@ ERROR and fails the run; it is never counted as a pass.
 
 ### Loop Invariants
 
-(@loop-invariant condition) inside a loop body:
+(@loop-invariant condition) as the first form(s) of a loop body. The verifier
+proves it - it must hold where the loop starts and every iteration must keep
+it - and only then assumes it where the loop ends. A failure reports
+"loop invariant not established on entry" or "not preserved"; an invariant
+the check cannot follow reports "could not check loop invariant" and is not
+assumed.
 
 (while (and (not done) {(. state iteration) < (. config max-iterations)})
   (@loop-invariant {(. state iteration) <= (. config max-iterations)})
