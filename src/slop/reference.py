@@ -753,7 +753,10 @@ Language primitives that are always available without imports.
 (map-remove map k) -> Unit              ; Requires mutable map
 (map-len map) -> (Int 0 ..)             ; Entry count, O(1)
 
-There is no map literal.
+There is no map literal. A Map or Set is a handle: copies share one table.
+map-put copies the key and value in; map-get and for-each copy them out.
+Iteration order is deterministic but unspecified; do not change a map
+inside a for-each over it. Growth uses the arena in scope at the put.
 
 ### Sets
 (set-new arena T) -> (Set T)            ; Type parameter required

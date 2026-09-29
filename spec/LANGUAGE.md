@@ -325,12 +325,12 @@ identifier               ; Variable reference
 ; - Map with (var map): iterates keys only (zero allocation, order unspecified)
 ; - Map with ((k v) map): iterates key-value pairs (zero allocation, order unspecified)
 ;
-; Map and Set order -- for-each, map-keys and set-elements alike -- is the
-; order of the underlying hash table. It is deterministic: the same sequence
-; of operations on the same keys gives the same order on every run and
-; platform, except for (Ptr T) keys, which hash by address. It is otherwise
+; Map and Set order -- for-each, map-keys and set-elements alike -- is
+; deterministic: the same sequence of operations on the same keys gives the
+; same order on every run and platform, (Ptr T) keys included. It is otherwise
 ; unspecified and may change between releases; sort when order matters.
-; Changing a Map or Set inside a for-each over it is undefined.
+; Changing a Map or Set inside a for-each over it is undefined: the loop may
+; skip or repeat entries (it never reads outside the collection).
 (break)
 (continue)
 (return expr)
@@ -765,7 +765,8 @@ SLOP                    C
 (Bytes)                 slop_bytes
 (List T)                slop_list_T
 (Array T n)             T[n]
-(Map K V)               slop_map_K_V
+(Map K V)               slop_map*   (a handle; see Maps)
+(Set T)                 slop_map*   (a handle; see Maps)
 (enum a b c)            enum { a, b, c }
 (record (x T) (y U))    struct { T x; U y; }
 (union (a T) (b U))     struct { uint8_t tag; union { T a; U b; } data; }
@@ -914,6 +915,19 @@ Minimal runtime (~500 lines of C):
 (map-keys map) -> (List K)               ; Return list of all keys (order: see for-each)
 (map-remove map key) -> Unit             ; Remove key from mutable map
 (map-len map) -> (Int 0 ..)              ; Number of entries, O(1)
+;
+; A Map or Set value is a handle: copies of it -- a record field copied with
+; its record, an argument -- share one table, so a map-put or set-put through
+; any copy is seen through all of them. The table stores its keys and values
+; themselves: map-put and set-put copy the key and value in (an overwrite
+; replaces the value in place), and map-get and for-each copy them out, so
+; changing what map-get returned never changes the map -- except through a
+; handle inside it (a Map, Set or Ptr value, or a List's elements).
+;
+; A put that needs a bigger table grows it in the arena in scope at the put
+; -- a variable named `arena` if there is one, else the innermost Arena-typed
+; variable -- not the one the map was made in, so that arena must live as long
+; as the map is used. A put that fits allocates nothing.
 
 ; Options
 (some val) -> (Option T)

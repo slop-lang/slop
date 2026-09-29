@@ -2,9 +2,9 @@
   (@intent "An empty List, Map or Set has no storage until first use, and every builtin works on it")
 
   ;; list-new makes {NULL, 0, 0}, and map-new / set-new make a map with no
-  ;; entry table (cap 0, entries NULL); the first push or put allocates what
-  ;; they used to allocate up front. Every read -- and every for-each, which
-  ;; walks .len or ->cap directly -- has to work on that empty shape.
+  ;; table (cap 0, table NULL); the first push or put allocates the first
+  ;; storage. Every read -- and every for-each, which walks .len directly --
+  ;; has to work on that empty shape.
 
   (type Addressed (record (a Int) (b Int)))
 

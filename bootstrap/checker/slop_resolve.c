@@ -114,7 +114,7 @@ slop_list_resolve_ImportSite resolve_push_import_sites(slop_arena* arena, slop_l
                                                 case types_SExpr_sym:
                                                 {
                                                     __auto_type name_sym = _mv_113.data.sym;
-                                                    ({ __auto_type _lst_p = &(result); __auto_type _item = ((resolve_ImportSite){mod_sym.name, name_sym.name, name_expr}); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                                                    ({ __auto_type _lst_p = &(result); __auto_type _item = ((resolve_ImportSite){mod_sym.name, name_sym.name, name_expr}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                                                     break;
                                                 }
                                                 default: {

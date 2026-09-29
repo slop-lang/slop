@@ -730,11 +730,20 @@
                       (cond
                         ;; (map-new arena KeyType ValueType)
                         ((string-eq name "map-new")
-                          (when (>= len 3)
-                            (match (list-get items 2)
-                              ((some key-type-expr)
-                                (prescan-register-struct-key-type ctx key-type-expr))
-                              ((none) (do)))))
+                          (do
+                            (when (>= len 3)
+                              (match (list-get items 2)
+                                ((some key-type-expr)
+                                  (prescan-register-struct-key-type ctx key-type-expr))
+                                ((none) (do))))
+                            ;; Entries hold the value inline, so map-new names the
+                            ;; value's C type: register what it needs, as a signature's
+                            ;; types are -- a (Result T E) value may appear nowhere else.
+                            (when (>= len 4)
+                              (match (list-get items 3)
+                                ((some value-type-expr)
+                                  (scan-type-for-generics ctx value-type-expr))
+                                ((none) (do))))))
                         ;; (set-new arena ElemType)
                         ((string-eq name "set-new")
                           (when (>= len 3)

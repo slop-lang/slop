@@ -205,6 +205,7 @@ uint8_t expr_is_range_type_string(slop_string type_str);
 slop_string expr_compound_map_key_c_info(context_TranspileContext* ctx, types_SExpr* key_type_expr);
 slop_string expr_get_map_key_c_info(context_TranspileContext* ctx, types_SExpr* key_type_expr);
 slop_string expr_get_struct_key_info_by_name(context_TranspileContext* ctx, slop_string name);
+slop_string expr_map_new_value_c_type(context_TranspileContext* ctx, types_SExpr* value_type_expr);
 slop_string expr_transpile_map_new(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 uint8_t expr_is_c_primitive_type(slop_string t);
 slop_string expr_map_key_c_type(context_TranspileContext* ctx, types_SExpr* key_expr, types_SExpr* container_expr);
@@ -214,7 +215,7 @@ slop_string expr_with_map_key(context_TranspileContext* ctx, slop_string key_c, 
 uint8_t expr_map_key_needs_temp(context_TranspileContext* ctx, types_SExpr* key_expr, types_SExpr* container_expr);
 slop_string expr_map_key_temp_decl(context_TranspileContext* ctx, slop_string key_c, types_SExpr* key_expr, types_SExpr* container_expr, slop_string temp);
 slop_string expr_map_key_ptr(context_TranspileContext* ctx, slop_string key_c, types_SExpr* key_expr, types_SExpr* container_expr, slop_string temp);
-slop_string expr_map_put_value_decl_type(context_TranspileContext* ctx, types_SExpr* map_expr);
+slop_string expr_transpile_map_value(context_TranspileContext* ctx, types_SExpr* expr, slop_string c_type, uint8_t is_result);
 slop_string expr_transpile_map_put(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_map_get(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_collection_len(context_TranspileContext* ctx, slop_string op, slop_list_types_SExpr_ptr items);
