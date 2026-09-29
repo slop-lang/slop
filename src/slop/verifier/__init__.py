@@ -64,9 +64,6 @@ from .native_checker import (
 # Results
 from .results import VerificationResult, VerificationDiagnostic
 
-# Weakest precondition
-from .wp import WeakestPrecondition
-
 # Invariant inference
 from .invariant_inference import InferredInvariant, InvariantInferencer
 
@@ -133,9 +130,6 @@ __all__ = [
     # Results
     'VerificationResult',
     'VerificationDiagnostic',
-
-    # WP
-    'WeakestPrecondition',
 
     # Invariant inference
     'InferredInvariant',

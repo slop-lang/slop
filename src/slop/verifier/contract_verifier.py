@@ -35,7 +35,6 @@ from .registry import FunctionRegistry, FunctionDef
 from .type_builder import _parse_type_expr_simple
 from .translator import Z3Translator, _str_hash
 from .ssa import SSAContext, SSAVersion
-from .wp import WeakestPrecondition
 from .invariant_inference import InvariantInferencer, InferredInvariant
 
 # Import mixins
@@ -97,47 +96,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 for item in expr.items[1:]:
                     if self._references_mutable_state(item):
                         return True
-        return False
-
-    def _is_wp_applicable(self, body: SExpr) -> bool:
-        """Check if Weakest Precondition calculus should be applied.
-
-        WP is applicable for expressions where backward reasoning helps:
-        - let bindings (establish intermediate values)
-        - if/cond expressions (multiple paths)
-        - match expressions (pattern matching)
-        - do blocks (sequential composition)
-
-        WP is NOT applied to:
-        - Simple variable references (just returns True)
-        - Simple function calls without control flow
-        - Loops (require explicit invariants which we handle separately)
-        - Anything with an explicit (return ...), which the calculus walks
-          straight past: it substitutes an assignment's value even when a
-          return in that value means the assignment never happens, and the
-          resulting weakest precondition asserts the postcondition outright.
-        """
-        if not isinstance(body, SList) or len(body) == 0:
-            return False
-
-        if self._contains_any_form(body, ('return',)):
-            return False
-
-        head = body[0]
-        if not isinstance(head, Symbol):
-            return False
-
-        # Forms where WP adds value
-        wp_applicable_forms = {'let', 'if', 'cond', 'match', 'do'}
-
-        if head.name in wp_applicable_forms:
-            return True
-
-        # Also check if body contains nested let/if/etc
-        for item in body.items[1:]:
-            if self._is_wp_applicable(item):
-                return True
-
         return False
 
     def _needs_array_encoding(self, postconditions: List[SExpr]) -> bool:
@@ -4677,36 +4635,6 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         obligations = {str(axiom) for axiom in guarded_definedness}
         body_axioms = [axiom for axiom in list(solver.assertions())[pre_mark:]
                        if str(axiom) not in obligations]
-
-        # Phase 15: Weakest Precondition Calculus
-        # Use backward reasoning to generate stronger verification conditions.
-        # WP(body, postcondition) computes what must be true before the body
-        # executes to guarantee the postcondition holds after.
-        #
-        # The WP is used selectively: for let/if/cond expressions that
-        # establish $result through local bindings, we add the WP as a
-        # constraint. This helps verify functions where the body directly
-        # computes the result through sequential/conditional logic.
-        #
-        # We do NOT add WP for simple expressions (variables, constants)
-        # as that would just add True which doesn't help verification.
-        if fn_body is not None and post_z3 and self._is_wp_applicable(fn_body):
-            wp_calc = WeakestPrecondition(translator)
-
-            for post_z3_expr in post_z3:
-                try:
-                    wp_result = wp_calc.wp(fn_body, post_z3_expr)
-                    # Only add meaningful WP results (not True, not the same as post)
-                    if (wp_result is not None and
-                        not z3.eq(wp_result, z3.BoolVal(True)) and
-                        not z3.eq(wp_result, post_z3_expr)):
-                        # For let/if/cond, WP tells us what the body establishes
-                        # Add as implication: if WP holds, post should hold
-                        # This is sound because WP(body, Q) => body establishes Q
-                        solver.add(z3.Implies(wp_result, post_z3_expr))
-                except Exception:
-                    # WP computation failed - continue with standard verification
-                    pass
 
         # Under Seq encoding the returned local and $result get separate Seq
         # constants, so a fact about one is invisible to the other. The property
