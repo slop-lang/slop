@@ -67,6 +67,12 @@ class Z3Translator:
         # Seq encoding enables proper reasoning about list contents via Z3's native Sequence theory
         self.use_seq_encoding = use_seq_encoding
         self.list_seqs: Dict[str, z3.SeqRef] = {}
+        # Trigger patterns on collection quantifiers. They steer instantiation
+        # towards the element terms a contract mentions, which suits a claim
+        # about a list; they also stop Z3 from reaching an element of a
+        # `Concat`, which the loop invariant check (loop_invariants.py) builds
+        # at every push, so it turns them off.
+        self.use_quantifier_patterns = True
         self._seq_counter = 0  # Counter for unique seq names
         # Post-loop versions of the names a loop assigns, keyed by (loop, name),
         # so re-translating the same loop reuses them.
@@ -88,6 +94,11 @@ class Z3Translator:
         self._loop_version_counter = 0
         self._pre_loop_variables: Dict[str, z3.ExprRef] = {}
         self.versioned_loops: Set[int] = set()
+        # What every name held where each versioned loop ends, keyed by the
+        # loop. A proved @loop-invariant is a claim about that point: a name a
+        # later loop or assignment writes again has moved on by the end of the
+        # body, so the final version is the wrong one to state it about.
+        self.loop_exit_scopes: Dict[int, Dict[str, z3.ExprRef]] = {}
         # Loops that run whenever the function body does. Empty until
         # note_body() says otherwise, so a loop nobody has placed is treated as
         # conditional and gets no facts attached to it.
@@ -651,7 +662,8 @@ class Z3Translator:
 
             # Extract trigger patterns from the body
             # Patterns help Z3 know when to instantiate the quantifier
-            patterns = self._extract_patterns(actual_body, all_elems)
+            patterns = (self._extract_patterns(actual_body, all_elems)
+                        if self.use_quantifier_patterns else [])
 
             # Build the implication
             implication = z3.Implies(
@@ -2288,6 +2300,9 @@ class Z3Translator:
             if cond_z3 is not None and z3.is_bool(cond_z3):
                 self.constraints.append(z3.Not(cond_z3))
         self.versioned_loops.add(loop_id)
+        self.loop_exit_scopes.setdefault(loop_id, {
+            n: v for n, v in self.variables.items()
+            if z3.is_expr(v) and not isinstance(v, z3.FuncDeclRef)})
 
         # The body still gets walked so its inner bindings are declared, but its
         # assignments have already been accounted for by the havoc above and
@@ -2379,6 +2394,40 @@ class Z3Translator:
         finally:
             self._prefer_final_versions = was_prefer
             self._final_version_names = was_names
+
+    @contextmanager
+    def loop_exit_scope(self, loop: 'SExpr'):
+        """Read every name as it stood where `loop` ended.
+
+        Yields False, changing nothing, for a loop this translator never
+        versioned - one nested in another, or never reached. Declarations made
+        meanwhile (a field accessor, say) are kept: they are the translator's,
+        not a binding of the scope.
+        """
+        snapshot = self.loop_exit_scopes.get(id(loop))
+        if snapshot is None:
+            yield False
+            return
+        saved = dict(self.variables)
+        flags = (self._versions_frozen, self._prefer_initial_versions,
+                 self._prefer_final_versions)
+        self._versions_frozen = False
+        self._prefer_initial_versions = False
+        self._prefer_final_versions = False
+        for name, value in list(self.variables.items()):
+            if not isinstance(value, z3.FuncDeclRef):
+                del self.variables[name]
+        self.variables.update(snapshot)
+        try:
+            yield True
+        finally:
+            declared = {n: v for n, v in self.variables.items()
+                        if isinstance(v, z3.FuncDeclRef) and n not in saved}
+            self.variables.clear()
+            self.variables.update(saved)
+            self.variables.update(declared)
+            (self._versions_frozen, self._prefer_initial_versions,
+             self._prefer_final_versions) = flags
 
     def freeze_versions(self) -> None:
         """Stop answering for names that have more than one version.

@@ -814,7 +814,12 @@ class ExactPushModelMixin:
             if not self._xp_is_builtin(call[0].name, self._xp_tr):
                 self._xp_callee_posts(call, call[0].name, pc)
 
-    def _xp_callee_posts(self, call, fn_name: str, pc):
+    def _xp_callee_posts(self, call, fn_name: str, pc, keep_post=None):
+        """Assume the callee's @post and @property of this call, under `pc` and its @pre.
+
+        `keep_post(post)` may refuse a postcondition this caller cannot read
+        soundly; every one is kept when it is None.
+        """
         tr = self._xp_tr
         params = None
         posts: List[Any] = []
@@ -860,6 +865,8 @@ class ExactPushModelMixin:
         for post in posts:
             if not self._xp_closed_over(post, allowed):
                 continue    # a post about something other than the call: not ours to assume
+            if keep_post is not None and not keep_post(post):
+                continue
             start = len(tr.constraints)
             term = tr._translate_with_substitution(post, param_map)
             self._xp_truncate_constraints(start)

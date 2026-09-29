@@ -33,6 +33,65 @@ class LoopAnalysisMixin:
         self._collect_loop_invariants(expr, result)
         return result
 
+    _INVARIANT_LOOP_HEADS = ('for-each', 'while', 'for')
+
+    def _attach_loop_invariants(self, expr: SExpr):
+        """Each @loop-invariant with the loop it belongs to.
+
+        An invariant belongs to a loop when it leads the loop's body - directly,
+        or as the leading forms of a `do` that is the body's first form, which is
+        where one written first in a callback lambda lands once
+        _desugar_callback_iterations has turned the call into a for-each.
+
+        Returns (sites, misplaced, in_callbacks):
+        - sites: [(loop, [condition, ...])] in pre-order, for loops with any;
+        - misplaced: @loop-invariant forms anywhere else;
+        - in_callbacks: forms inside a lambda the verifier did not desugar,
+          whose loop it never walks.
+        """
+        sites: List[Tuple[SList, List[SExpr]]] = []
+        misplaced: List[SExpr] = []
+        in_callbacks: List[SExpr] = []
+
+        def leading(items) -> List[SList]:
+            found = []
+            for item in items:
+                if not is_form(item, '@loop-invariant'):
+                    break
+                found.append(item)
+            return found
+
+        def walk(node, attached, in_fn):
+            if not isinstance(node, SList) or len(node) == 0:
+                return
+            head = node[0]
+            name = head.name if isinstance(head, Symbol) else None
+            if name == 'quote':
+                return
+            if name == '@loop-invariant':
+                if in_fn:
+                    in_callbacks.append(node)
+                elif id(node) not in attached or len(node) != 2:
+                    misplaced.append(node)
+                return
+            if name == 'fn':
+                for item in node.items[1:]:
+                    walk(item, attached, True)
+                return
+            if name in self._INVARIANT_LOOP_HEADS and not in_fn:
+                body = node.items[2:]
+                forms = leading(body)
+                if not forms and body and is_form(body[0], 'do'):
+                    forms = leading(body[0].items[1:])
+                if forms:
+                    sites.append((node, [form[1] for form in forms if len(form) == 2]))
+                    attached = attached | {id(form) for form in forms}
+            for item in node.items:
+                walk(item, attached, in_fn)
+
+        walk(expr, frozenset(), False)
+        return sites, misplaced, in_callbacks
+
     def invariant_scope(self, invariant: SExpr) -> List:
         """The `let` bindings an invariant was written inside, innermost last."""
         return getattr(self, '_invariant_scopes', {}).get(id(invariant), [])
