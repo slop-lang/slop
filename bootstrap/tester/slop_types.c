@@ -100,7 +100,7 @@ types_ResolvedField* types_resolved_field_new(slop_arena* arena, slop_string nam
 types_ResolvedType* types_resolved_type_new(slop_arena* arena, types_ResolvedTypeKind kind, slop_string name, slop_option_string module_name, slop_string c_name) {
     {
         __auto_type t = ((types_ResolvedType*)(({ __auto_type _alloc = (types_ResolvedType*)slop_arena_alloc(arena, sizeof(types_ResolvedType)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        (*t) = (types_ResolvedType){kind, name, module_name, c_name, ((slop_list_types_ResolvedVariant){ .data = (types_ResolvedVariant*)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedVariant)), .len = 0, .cap = 16 }), ((slop_list_types_ResolvedField){ .data = (types_ResolvedField*)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedField)), .len = 0, .cap = 16 }), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_RangeBounds){.has_value = false}), 0, 0};
+        (*t) = (types_ResolvedType){kind, name, module_name, c_name, ((slop_list_types_ResolvedVariant){ .data = NULL, .len = 0, .cap = 0 }), ((slop_list_types_ResolvedField){ .data = NULL, .len = 0, .cap = 0 }), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_RangeBounds){.has_value = false}), 0, 0};
         return t;
     }
 }
@@ -134,7 +134,7 @@ types_FnSignature* types_fn_signature_new(slop_arena* arena, slop_string name, s
     SLOP_PRE(((return_type != NULL)), "(!= return-type nil)");
     {
         __auto_type sig = ((types_FnSignature*)(({ __auto_type _alloc = (types_FnSignature*)slop_arena_alloc(arena, sizeof(types_FnSignature)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        (*sig) = (types_FnSignature){name, c_name, params, return_type, 0, 0, ((slop_option_string){.has_value = false}), ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 }), 0};
+        (*sig) = (types_FnSignature){name, c_name, params, return_type, 0, 0, ((slop_option_string){.has_value = false}), ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 }), 0};
         return sig;
     }
 }
@@ -254,7 +254,7 @@ slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_a
             __auto_type len = ((int64_t)((variants).len));
             int64_t i = 0;
             uint8_t done = 0;
-            slop_list_types_ResolvedType_ptr found = ((slop_list_types_ResolvedType_ptr){ .data = (types_ResolvedType**)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedType*)), .len = 0, .cap = 16 });
+            slop_list_types_ResolvedType_ptr found = ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0 });
             while ((i < len) && !(done)) {
                 __auto_type _mv_7 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_7.has_value) {
@@ -270,7 +270,7 @@ slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_a
             return found;
         }
     } else {
-        return ((slop_list_types_ResolvedType_ptr){ .data = (types_ResolvedType**)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedType*)), .len = 0, .cap = 16 });
+        return ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0 });
     }
 }
 

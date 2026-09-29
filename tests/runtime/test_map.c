@@ -95,14 +95,85 @@ static void check_invariants(slop_map* m) {
  * ------------------------------------------------------------ */
 
 static void test_capacity_rounding(slop_arena* arena) {
-    CHECK(slop_map_new(arena, 0, 8, slop_hash_int, slop_eq_int).cap == 8);
     CHECK(slop_map_new(arena, 5, 8, slop_hash_int, slop_eq_int).cap == 8);
     CHECK(slop_map_new(arena, 16, 8, slop_hash_int, slop_eq_int).cap == 16);
     CHECK(slop_map_new(arena, 17, 8, slop_hash_int, slop_eq_int).cap == 32);
-    /* A zero-capacity map is usable (it used to divide by zero). */
-    slop_map m = slop_map_new(arena, 0, sizeof(int64_t), slop_hash_int, slop_eq_int);
+}
+
+static int counted_hash_calls = 0;
+static uint64_t counted_hash(const void* key) {
+    counted_hash_calls++;
+    return slop_hash_int(key);
+}
+
+/* Capacity 0 -- what map-new and set-new ask for -- makes no table at all.
+ * Reads of it neither allocate nor write, so concurrent readers of a map
+ * nobody mutates stay safe; the first put makes the table the language
+ * default always made, so the results and the iteration order are the same
+ * as an eager 16-entry map's. */
+static void test_lazy_table(void) {
+    slop_arena own = slop_arena_new(1 << 16);
+    slop_arena* arena = &own;
+
+    size_t before = arena->offset;
+    slop_map m = slop_map_new(arena, 0, sizeof(int64_t), counted_hash, slop_eq_int);
+    CHECK(m.cap == 0 && m.len == 0 && m.entries == NULL);
+    CHECK(arena->offset == before);
+
+    /* Reads: absent, no hashing, no allocation, not a byte of the map changed */
+    slop_map snapshot = m;
+    counted_hash_calls = 0;
+    CHECK(slop_map_get(&m, &(int64_t){1}) == NULL);
     CHECK(!slop_map_has(&m, &(int64_t){1}));
     CHECK(!slop_map_remove(&m, &(int64_t){1}));
+    CHECK(counted_hash_calls == 0);
+    CHECK(arena->offset == before);
+    CHECK(memcmp(&snapshot, &m, sizeof(m)) == 0);
+
+    /* Iteration, the way generated for-each loops read the table */
+    size_t visited = 0;
+    for (size_t i = 0; i < m.cap; i++) {
+        if (m.entries[i].occupied) visited++;
+    }
+    CHECK(visited == 0);
+    slop_set_elements_result els = slop_set_elements_raw(arena, &m);
+    CHECK(els.data == NULL && els.len == 0 && els.cap == 0);
+    slop_map* sm = slop_map_new_string(arena, 0);
+    CHECK(slop_map_keys(arena, sm).len == 0);
+
+    /* The first put makes a 16-entry table, plus the key's own copy */
+    before = arena->offset;
+    static int64_t one = 1;
+    slop_map_put(arena, &m, &(int64_t){7}, &one);
+    CHECK(m.cap == 16 && m.len == 1);
+    CHECK(arena->offset - before == 16 * sizeof(slop_map_entry) + sizeof(int64_t));
+    CHECK(slop_map_get(&m, &(int64_t){7}) == &one);
+
+    /* Removing back to empty keeps the table; lookups still answer absent */
+    CHECK(slop_map_remove(&m, &(int64_t){7}));
+    CHECK(m.len == 0 && m.cap == 16);
+    CHECK(slop_map_get(&m, &(int64_t){7}) == NULL);
+
+    /* The same insertions into a lazy map and an eager 16-entry map leave
+     * identical tables: same slots, same keys, same stored hashes */
+    slop_map lazy = slop_map_new(arena, 0, sizeof(int64_t), slop_hash_int, slop_eq_int);
+    slop_map eager = slop_map_new(arena, 16, sizeof(int64_t), slop_hash_int, slop_eq_int);
+    static int64_t vals[200];
+    for (int64_t k = 0; k < 200; k++) {
+        int64_t key = k * 7919;
+        vals[k] = k;
+        slop_map_put(arena, &lazy, &key, &vals[k]);
+        slop_map_put(arena, &eager, &key, &vals[k]);
+    }
+    CHECK(lazy.cap == eager.cap && lazy.len == eager.len);
+    for (size_t i = 0; i < lazy.cap && i < eager.cap; i++) {
+        CHECK(lazy.entries[i].occupied == eager.entries[i].occupied);
+        if (lazy.entries[i].occupied && eager.entries[i].occupied) {
+            CHECK(*(int64_t*)lazy.entries[i].key == *(int64_t*)eager.entries[i].key);
+            CHECK(lazy.entries[i].hash == eager.entries[i].hash);
+        }
+    }
+    slop_arena_free(&own);
 }
 
 static void test_basic(slop_arena* arena) {
@@ -394,6 +465,7 @@ int main(void) {
     slop_arena arena = slop_arena_new(1 << 20);
 
     test_capacity_rounding(&arena);
+    test_lazy_table();
     test_basic(&arena);
     test_stored_hash_filters_eq(&arena);
     test_remove_across_wrap(&arena);

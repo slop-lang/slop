@@ -157,7 +157,7 @@ void tester_main_print_int(int64_t n) {
 
 slop_list_string tester_main_read_import_files(slop_arena* arena, int64_t argc, uint8_t** argv) {
     {
-        __auto_type sources = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        __auto_type sources = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         int64_t i = 2;
         while (i < argc) {
             {

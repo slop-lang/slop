@@ -34,7 +34,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
     SLOP_PRE((parser_is_form(import_form, SLOP_STR("import"))), "(is-form import-form \"import\")");
     {
         __auto_type arena = env_env_arena(env);
-        __auto_type sites = resolve_push_import_sites(arena, ((slop_list_resolve_ImportSite){ .data = (resolve_ImportSite*)slop_arena_alloc(arena, 16 * sizeof(resolve_ImportSite)), .len = 0, .cap = 16 }), import_form);
+        __auto_type sites = resolve_push_import_sites(arena, ((slop_list_resolve_ImportSite){ .data = NULL, .len = 0, .cap = 0 }), import_form);
         {
             __auto_type len = ((int64_t)((sites).len));
             for (int64_t i = 0; i < len; i++) {
@@ -51,7 +51,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
 
 slop_list_resolve_ImportSite resolve_collect_import_sites(slop_arena* arena, slop_list_types_SExpr_ptr ast) {
     {
-        __auto_type sites = ((slop_list_resolve_ImportSite){ .data = (resolve_ImportSite*)slop_arena_alloc(arena, 16 * sizeof(resolve_ImportSite)), .len = 0, .cap = 16 });
+        __auto_type sites = ((slop_list_resolve_ImportSite){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type len = ((int64_t)((ast).len));
         for (int64_t i = 0; i < len; i++) {
             __auto_type _mv_106 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });

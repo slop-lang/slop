@@ -709,7 +709,7 @@ types_ResolvedType* collect_get_field_type_generic(env_TypeEnv* env, slop_arena*
 slop_list_string collect_find_fn_type_params(slop_arena* arena, types_SExpr* fn_form) {
     SLOP_PRE(((fn_form != NULL)), "(!= fn-form nil)");
     {
-        __auto_type type_params = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        __auto_type type_params = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type len = parser_sexpr_list_len(fn_form);
         for (int64_t i = 3; i < len; i++) {
             __auto_type _mv_156 = parser_sexpr_list_get(fn_form, i);
@@ -804,7 +804,7 @@ slop_list_types_ResolvedType_ptr collect_collect_fn_spec_params(env_TypeEnv* env
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((fn_form != NULL)), "(!= fn-form nil)");
     {
-        __auto_type spec_params = ((slop_list_types_ResolvedType_ptr){ .data = (types_ResolvedType**)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedType*)), .len = 0, .cap = 16 });
+        __auto_type spec_params = ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type len = parser_sexpr_list_len(fn_form);
         for (int64_t i = 3; i < len; i++) {
             __auto_type _mv_162 = parser_sexpr_list_get(fn_form, i);
@@ -1004,7 +1004,7 @@ slop_list_types_ResolvedType_ptr collect_get_variant_payload_types(env_TypeEnv* 
     SLOP_PRE(((variant_form != NULL)), "(!= variant-form nil)");
     {
         __auto_type arena = env_env_arena(env);
-        __auto_type result = ((slop_list_types_ResolvedType_ptr){ .data = (types_ResolvedType**)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedType*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type vlen = parser_sexpr_list_len(variant_form);
         for (int64_t idx = 1; idx < vlen; idx++) {
             __auto_type _mv_174 = parser_sexpr_list_get(variant_form, idx);
@@ -1146,7 +1146,7 @@ void collect_collect_single_union_variant(env_TypeEnv* env, slop_arena* arena, t
         if (!(string_eq(vname, SLOP_STR("")))) {
             if (collect_has_recursive_value_payload(variant_form, type_name)) {
                 {
-                    __auto_type parts = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+                    __auto_type parts = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
                     ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("recursive union variant '")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                     ({ __auto_type _lst_p = &(parts); __auto_type _item = (vname); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                     ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("' in type '")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -1489,7 +1489,7 @@ uint8_t collect_ffi_has_variadic(types_SExpr* func_decl) {
 slop_list_types_ParamInfo collect_collect_ffi_params(env_TypeEnv* env, slop_arena* arena, types_SExpr* func_decl) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
-        __auto_type params = ((slop_list_types_ParamInfo){ .data = (types_ParamInfo*)slop_arena_alloc(arena, 16 * sizeof(types_ParamInfo)), .len = 0, .cap = 16 });
+        __auto_type params = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type _mv_201 = parser_sexpr_list_get(func_decl, 1);
         if (_mv_201.has_value) {
             __auto_type params_expr = _mv_201.value;
@@ -1676,7 +1676,7 @@ slop_list_types_ParamInfo collect_collect_fn_params(env_TypeEnv* env, slop_arena
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((fn_form != NULL)), "(!= fn-form nil)");
     {
-        __auto_type params = ((slop_list_types_ParamInfo){ .data = (types_ParamInfo*)slop_arena_alloc(arena, 16 * sizeof(types_ParamInfo)), .len = 0, .cap = 16 });
+        __auto_type params = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type _mv_209 = parser_sexpr_list_get(fn_form, 2);
         if (_mv_209.has_value) {
             __auto_type params_expr = _mv_209.value;
@@ -1749,7 +1749,7 @@ slop_list_types_ParamInfo collect_collect_fn_params_generic(env_TypeEnv* env, sl
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((fn_form != NULL)), "(!= fn-form nil)");
     {
-        __auto_type params = ((slop_list_types_ParamInfo){ .data = (types_ParamInfo*)slop_arena_alloc(arena, 16 * sizeof(types_ParamInfo)), .len = 0, .cap = 16 });
+        __auto_type params = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type _mv_215 = parser_sexpr_list_get(fn_form, 2);
         if (_mv_215.has_value) {
             __auto_type params_expr = _mv_215.value;

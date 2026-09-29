@@ -186,58 +186,58 @@ context_TranspileContext* context_context_new(slop_arena* arena) {
         __auto_type initial_scope = ((context_Scope*)(({ __auto_type _alloc = (context_Scope*)slop_arena_alloc(arena, sizeof(context_Scope)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         slop_option_context_Scope_ptr no_parent = (slop_option_context_Scope_ptr){.has_value = false};
         slop_option_string no_module = (slop_option_string){.has_value = false};
-        (*initial_scope).vars = ((slop_list_context_VarEntry){ .data = (context_VarEntry*)slop_arena_alloc(arena, 16 * sizeof(context_VarEntry)), .len = 0, .cap = 16 });
+        (*initial_scope).vars = ((slop_list_context_VarEntry){ .data = NULL, .len = 0, .cap = 0 });
         (*initial_scope).parent = no_parent;
         (*ctx).arena = arena;
-        (*ctx).output = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).header = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).output = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).header = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).indent = 0;
         (*ctx).scope = initial_scope;
-        (*ctx).types = ((slop_list_context_TypeEntry){ .data = (context_TypeEntry*)slop_arena_alloc(arena, 16 * sizeof(context_TypeEntry)), .len = 0, .cap = 16 });
-        (*ctx).funcs = ((slop_list_context_FuncEntry){ .data = (context_FuncEntry*)slop_arena_alloc(arena, 16 * sizeof(context_FuncEntry)), .len = 0, .cap = 16 });
-        (*ctx).field_types = ((slop_list_context_FieldEntry){ .data = (context_FieldEntry*)slop_arena_alloc(arena, 16 * sizeof(context_FieldEntry)), .len = 0, .cap = 16 });
-        (*ctx).pointer_vars = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).types = ((slop_list_context_TypeEntry){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).funcs = ((slop_list_context_FuncEntry){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).field_types = ((slop_list_context_FieldEntry){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).pointer_vars = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).current_module = no_module;
         (*ctx).enable_prefixing = 0;
-        (*ctx).includes = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).emitted_types = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).enum_variants = ((slop_list_context_EnumVariant){ .data = (context_EnumVariant*)slop_arena_alloc(arena, 16 * sizeof(context_EnumVariant)), .len = 0, .cap = 16 });
-        (*ctx).union_variants = ((slop_list_context_UnionVariantEntry){ .data = (context_UnionVariantEntry*)slop_arena_alloc(arena, 16 * sizeof(context_UnionVariantEntry)), .len = 0, .cap = 16 });
-        (*ctx).result_types = ((slop_list_context_ResultType){ .data = (context_ResultType*)slop_arena_alloc(arena, 16 * sizeof(context_ResultType)), .len = 0, .cap = 16 });
+        (*ctx).includes = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).emitted_types = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).enum_variants = ((slop_list_context_EnumVariant){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).union_variants = ((slop_list_context_UnionVariantEntry){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).result_types = ((slop_list_context_ResultType){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).current_result_type = (slop_option_string){.has_value = false};
         (*ctx).current_return_c_type = (slop_option_string){.has_value = false};
-        (*ctx).imported_modules = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).option_types = ((slop_list_context_OptionType){ .data = (context_OptionType*)slop_arena_alloc(arena, 16 * sizeof(context_OptionType)), .len = 0, .cap = 16 });
-        (*ctx).list_types = ((slop_list_context_ListType){ .data = (context_ListType*)slop_arena_alloc(arena, 16 * sizeof(context_ListType)), .len = 0, .cap = 16 });
-        (*ctx).chan_types = ((slop_list_context_ChanType){ .data = (context_ChanType*)slop_arena_alloc(arena, 16 * sizeof(context_ChanType)), .len = 0, .cap = 16 });
-        (*ctx).thread_types = ((slop_list_context_ThreadType){ .data = (context_ThreadType*)slop_arena_alloc(arena, 16 * sizeof(context_ThreadType)), .len = 0, .cap = 16 });
-        (*ctx).result_type_aliases = ((slop_list_context_ResultTypeAlias){ .data = (context_ResultTypeAlias*)slop_arena_alloc(arena, 16 * sizeof(context_ResultTypeAlias)), .len = 0, .cap = 16 });
-        (*ctx).inline_records = ((slop_list_context_InlineRecord){ .data = (context_InlineRecord*)slop_arena_alloc(arena, 16 * sizeof(context_InlineRecord)), .len = 0, .cap = 16 });
-        (*ctx).c_name_aliases = ((slop_list_context_FuncCNameAlias){ .data = (context_FuncCNameAlias*)slop_arena_alloc(arena, 16 * sizeof(context_FuncCNameAlias)), .len = 0, .cap = 16 });
+        (*ctx).imported_modules = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).option_types = ((slop_list_context_OptionType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).list_types = ((slop_list_context_ListType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).chan_types = ((slop_list_context_ChanType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).thread_types = ((slop_list_context_ThreadType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).result_type_aliases = ((slop_list_context_ResultTypeAlias){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).inline_records = ((slop_list_context_InlineRecord){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).c_name_aliases = ((slop_list_context_FuncCNameAlias){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).gensym_counter = 0;
         (*ctx).capture_to_retval = 0;
-        (*ctx).open_arenas = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).struct_key_types = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).value_key_types = ((slop_list_context_ValueKeyType){ .data = (context_ValueKeyType*)slop_arena_alloc(arena, 16 * sizeof(context_ValueKeyType)), .len = 0, .cap = 16 });
-        (*ctx).type_aliases = ((slop_list_context_TypeAliasEntry){ .data = (context_TypeAliasEntry*)slop_arena_alloc(arena, 16 * sizeof(context_TypeAliasEntry)), .len = 0, .cap = 16 });
+        (*ctx).open_arenas = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).struct_key_types = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).value_key_types = ((slop_list_context_ValueKeyType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).type_aliases = ((slop_list_context_TypeAliasEntry){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).current_file = SLOP_STR("");
-        (*ctx).errors = ((slop_list_context_TranspileError){ .data = (context_TranspileError*)slop_arena_alloc(arena, 16 * sizeof(context_TranspileError)), .len = 0, .cap = 16 });
-        (*ctx).warnings = ((slop_list_context_TranspileError){ .data = (context_TranspileError*)slop_arena_alloc(arena, 16 * sizeof(context_TranspileError)), .len = 0, .cap = 16 });
-        (*ctx).deferred_lambdas = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).fn_trampolines = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).function_output = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).errors = ((slop_list_context_TranspileError){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).warnings = ((slop_list_context_TranspileError){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).deferred_lambdas = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).fn_trampolines = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).function_output = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).emit_to_function_buffer = 0;
         (*ctx).last_lambda_is_closure = 0;
         (*ctx).last_lambda_env_type = SLOP_STR("");
         (*ctx).last_lambda_name = SLOP_STR("");
-        (*ctx).generic_func_instantiations = ((slop_list_context_GenericFuncInstantiation){ .data = (context_GenericFuncInstantiation*)slop_arena_alloc(arena, 16 * sizeof(context_GenericFuncInstantiation)), .len = 0, .cap = 16 });
+        (*ctx).generic_func_instantiations = ((slop_list_context_GenericFuncInstantiation){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).single_output_mode = 0;
         (*ctx).skip_trampoline_generation = 0;
         (*ctx).strict_unknown_symbols = 0;
         (*ctx).current_fn_c_name = SLOP_STR("");
         (*ctx).pos_line = 0;
         (*ctx).pos_col = 0;
-        (*ctx).reported_ambiguities = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).reported_ambiguities = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("Int"), SLOP_STR("int64_t"), SLOP_STR("int64_t"), 0, 0, 0, SLOP_STR(""), SLOP_STR("")});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("I8"), SLOP_STR("int8_t"), SLOP_STR("int8_t"), 0, 0, 0, SLOP_STR(""), SLOP_STR("")});
         context_ctx_register_type(ctx, (context_TypeEntry){SLOP_STR("I16"), SLOP_STR("int16_t"), SLOP_STR("int16_t"), 0, 0, 0, SLOP_STR(""), SLOP_STR("")});
@@ -269,37 +269,37 @@ void context_ctx_reset_for_new_module(context_TranspileContext* ctx, slop_string
         __auto_type arena = (*ctx).arena;
         __auto_type fresh_scope = ((context_Scope*)(({ __auto_type _alloc = (context_Scope*)slop_arena_alloc(arena, sizeof(context_Scope)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         slop_option_context_Scope_ptr no_parent = (slop_option_context_Scope_ptr){.has_value = false};
-        (*fresh_scope).vars = ((slop_list_context_VarEntry){ .data = (context_VarEntry*)slop_arena_alloc(arena, 16 * sizeof(context_VarEntry)), .len = 0, .cap = 16 });
+        (*fresh_scope).vars = ((slop_list_context_VarEntry){ .data = NULL, .len = 0, .cap = 0 });
         (*fresh_scope).parent = no_parent;
-        (*ctx).output = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).header = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).output = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).header = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).indent = 0;
         (*ctx).scope = fresh_scope;
         (*ctx).current_result_type = (slop_option_string){.has_value = false};
         (*ctx).current_return_c_type = (slop_option_string){.has_value = false};
-        (*ctx).includes = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).emitted_types = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).imported_modules = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).result_types = ((slop_list_context_ResultType){ .data = (context_ResultType*)slop_arena_alloc(arena, 16 * sizeof(context_ResultType)), .len = 0, .cap = 16 });
-        (*ctx).option_types = ((slop_list_context_OptionType){ .data = (context_OptionType*)slop_arena_alloc(arena, 16 * sizeof(context_OptionType)), .len = 0, .cap = 16 });
-        (*ctx).list_types = ((slop_list_context_ListType){ .data = (context_ListType*)slop_arena_alloc(arena, 16 * sizeof(context_ListType)), .len = 0, .cap = 16 });
-        (*ctx).chan_types = ((slop_list_context_ChanType){ .data = (context_ChanType*)slop_arena_alloc(arena, 16 * sizeof(context_ChanType)), .len = 0, .cap = 16 });
-        (*ctx).thread_types = ((slop_list_context_ThreadType){ .data = (context_ThreadType*)slop_arena_alloc(arena, 16 * sizeof(context_ThreadType)), .len = 0, .cap = 16 });
-        (*ctx).inline_records = ((slop_list_context_InlineRecord){ .data = (context_InlineRecord*)slop_arena_alloc(arena, 16 * sizeof(context_InlineRecord)), .len = 0, .cap = 16 });
-        (*ctx).c_name_aliases = ((slop_list_context_FuncCNameAlias){ .data = (context_FuncCNameAlias*)slop_arena_alloc(arena, 16 * sizeof(context_FuncCNameAlias)), .len = 0, .cap = 16 });
-        (*ctx).struct_key_types = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        (*ctx).value_key_types = ((slop_list_context_ValueKeyType){ .data = (context_ValueKeyType*)slop_arena_alloc(arena, 16 * sizeof(context_ValueKeyType)), .len = 0, .cap = 16 });
-        (*ctx).warnings = ((slop_list_context_TranspileError){ .data = (context_TranspileError*)slop_arena_alloc(arena, 16 * sizeof(context_TranspileError)), .len = 0, .cap = 16 });
-        (*ctx).errors = ((slop_list_context_TranspileError){ .data = (context_TranspileError*)slop_arena_alloc(arena, 16 * sizeof(context_TranspileError)), .len = 0, .cap = 16 });
-        (*ctx).deferred_lambdas = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).includes = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).emitted_types = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).imported_modules = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).result_types = ((slop_list_context_ResultType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).option_types = ((slop_list_context_OptionType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).list_types = ((slop_list_context_ListType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).chan_types = ((slop_list_context_ChanType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).thread_types = ((slop_list_context_ThreadType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).inline_records = ((slop_list_context_InlineRecord){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).c_name_aliases = ((slop_list_context_FuncCNameAlias){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).struct_key_types = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).value_key_types = ((slop_list_context_ValueKeyType){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).warnings = ((slop_list_context_TranspileError){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).errors = ((slop_list_context_TranspileError){ .data = NULL, .len = 0, .cap = 0 });
+        (*ctx).deferred_lambdas = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         if (!((*ctx).single_output_mode)) {
-            (*ctx).fn_trampolines = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+            (*ctx).fn_trampolines = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         }
-        (*ctx).function_output = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).function_output = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).emit_to_function_buffer = 0;
-        (*ctx).generic_func_instantiations = ((slop_list_context_GenericFuncInstantiation){ .data = (context_GenericFuncInstantiation*)slop_arena_alloc(arena, 16 * sizeof(context_GenericFuncInstantiation)), .len = 0, .cap = 16 });
+        (*ctx).generic_func_instantiations = ((slop_list_context_GenericFuncInstantiation){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).current_module = (slop_option_string){.has_value = 1, .value = mod_name};
-        (*ctx).reported_ambiguities = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).reported_ambiguities = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
     }
 }
 
@@ -608,7 +608,7 @@ void context_ctx_push_scope(context_TranspileContext* ctx) {
         __auto_type new_scope = ((context_Scope*)(({ __auto_type _alloc = (context_Scope*)slop_arena_alloc(arena, sizeof(context_Scope)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         __auto_type current = (*ctx).scope;
         slop_option_context_Scope_ptr parent_opt = (slop_option_context_Scope_ptr){.has_value = 1, .value = current};
-        (*new_scope).vars = ((slop_list_context_VarEntry){ .data = (context_VarEntry*)slop_arena_alloc(arena, 16 * sizeof(context_VarEntry)), .len = 0, .cap = 16 });
+        (*new_scope).vars = ((slop_list_context_VarEntry){ .data = NULL, .len = 0, .cap = 0 });
         (*new_scope).parent = parent_opt;
         (*ctx).scope = new_scope;
     }
@@ -832,7 +832,7 @@ context_TypeLookup context_ctx_resolve_type(context_TranspileContext* ctx, slop_
             {
                 __auto_type arena = (*ctx).arena;
                 __auto_type types = (*ctx).types;
-                __auto_type candidates = ((slop_list_context_TypeEntry){ .data = (context_TypeEntry*)slop_arena_alloc(arena, 16 * sizeof(context_TypeEntry)), .len = 0, .cap = 16 });
+                __auto_type candidates = ((slop_list_context_TypeEntry){ .data = NULL, .len = 0, .cap = 0 });
                 __auto_type i = (((int64_t)(((int64_t)((types).len)))) - 1);
                 while (i >= 0) {
                     __auto_type _mv_70 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(i)); slop_option_context_TypeEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -932,7 +932,7 @@ void context_ctx_report_type_ambiguity(context_TranspileContext* ctx, slop_strin
             __auto_type arena = (*ctx).arena;
             __auto_type line = (((at == NULL)) ? 0 : context_ctx_sexpr_line(at));
             __auto_type col = (((at == NULL)) ? 0 : context_ctx_sexpr_col(at));
-            __auto_type parts = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+            __auto_type parts = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
             __auto_type count = ((int64_t)((candidates).len));
             ({ __auto_type _lst_p = &((*ctx).reported_ambiguities); __auto_type _item = (name); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
             ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("type '")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -1179,7 +1179,7 @@ slop_list_context_FieldEntry context_ctx_get_fields_for_type(context_TranspileCo
     {
         __auto_type arena = (*ctx).arena;
         __auto_type all_fields = (*ctx).field_types;
-        __auto_type result = ((slop_list_context_FieldEntry){ .data = (context_FieldEntry*)slop_arena_alloc(arena, 16 * sizeof(context_FieldEntry)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_context_FieldEntry){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type len = ((int64_t)((all_fields).len));
         int64_t i = 0;
         while (i < len) {
@@ -1355,7 +1355,7 @@ slop_list_context_EnumVariant context_enum_variant_candidates(context_TranspileC
         __auto_type arena = (*ctx).arena;
         __auto_type variants = (*ctx).enum_variants;
         __auto_type len = ((int64_t)((variants).len));
-        __auto_type result = ((slop_list_context_EnumVariant){ .data = (context_EnumVariant*)slop_arena_alloc(arena, 16 * sizeof(context_EnumVariant)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_context_EnumVariant){ .data = NULL, .len = 0, .cap = 0 });
         for (int64_t i = 0; i < len; i++) {
             __auto_type _mv_93 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_context_EnumVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_93.has_value) {
@@ -1395,7 +1395,7 @@ slop_list_context_EnumVariant context_select_variants(context_TranspileContext* 
     {
         __auto_type arena = (*ctx).arena;
         __auto_type len = ((int64_t)((candidates).len));
-        __auto_type result = ((slop_list_context_EnumVariant){ .data = (context_EnumVariant*)slop_arena_alloc(arena, 16 * sizeof(context_EnumVariant)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_context_EnumVariant){ .data = NULL, .len = 0, .cap = 0 });
         for (int64_t i = 0; i < len; i++) {
             __auto_type _mv_95 = ({ __auto_type _lst = candidates; size_t _idx = (size_t)i; slop_option_context_EnumVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_95.has_value) {
@@ -1454,7 +1454,7 @@ void context_report_variant_ambiguity(context_TranspileContext* ctx, slop_string
             {
                 __auto_type line = (((at == NULL)) ? 0 : context_ctx_sexpr_line(at));
                 __auto_type col = (((at == NULL)) ? 0 : context_ctx_sexpr_col(at));
-                __auto_type parts = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+                __auto_type parts = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
                 __auto_type count = ((int64_t)((candidates).len));
                 ({ __auto_type _lst_p = &((*ctx).reported_ambiguities); __auto_type _item = (key); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                 ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("variant '")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -1643,7 +1643,7 @@ slop_list_context_UnionVariantEntry context_ctx_get_union_variants(context_Trans
     {
         __auto_type arena = (*ctx).arena;
         __auto_type all_variants = (*ctx).union_variants;
-        __auto_type result = ((slop_list_context_UnionVariantEntry){ .data = (context_UnionVariantEntry*)slop_arena_alloc(arena, 16 * sizeof(context_UnionVariantEntry)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_context_UnionVariantEntry){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type len = ((int64_t)((all_variants).len));
         int64_t i = 0;
         while (i < len) {
@@ -1759,7 +1759,7 @@ slop_list_string context_ctx_take_open_arenas(context_TranspileContext* ctx) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
         __auto_type saved = (*ctx).open_arenas;
-        (*ctx).open_arenas = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc((*ctx).arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).open_arenas = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         return saved;
     }
 }
@@ -2836,7 +2836,7 @@ void context_ctx_clear_deferred_lambdas(context_TranspileContext* ctx) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
         __auto_type arena = (*ctx).arena;
-        (*ctx).deferred_lambdas = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        (*ctx).deferred_lambdas = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
     }
 }
 
@@ -2948,7 +2948,7 @@ void context_ctx_flush_function_buffer(context_TranspileContext* ctx) {
         }
         {
             __auto_type arena = (*ctx).arena;
-            (*ctx).function_output = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+            (*ctx).function_output = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         }
     }
 }

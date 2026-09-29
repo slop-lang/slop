@@ -530,8 +530,8 @@ types_ResolvedType* infer_infer_generic_call(env_TypeEnv* env, types_FnSignature
         __auto_type arena = env_env_arena(env);
         __auto_type params = (*sig).params;
         __auto_type num_params = ((int64_t)((params).len));
-        __auto_type bind_names = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
-        __auto_type bind_types = ((slop_list_types_ResolvedType_ptr){ .data = (types_ResolvedType**)slop_arena_alloc(arena, 16 * sizeof(types_ResolvedType*)), .len = 0, .cap = 16 });
+        __auto_type bind_names = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
+        __auto_type bind_types = ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0 });
         if (parser_sexpr_is_list(expr)) {
             {
                 __auto_type num_args = (parser_sexpr_list_len(expr) - 1);
@@ -2201,7 +2201,7 @@ void infer_check_single_arg(env_TypeEnv* env, types_FnSignature* sig, types_SExp
                         __auto_type actual_name = (*actual_type).name;
                         if (((string_eq(actual_name, SLOP_STR("Option_T")) || strlib_starts_with(actual_name, SLOP_STR("Option_")))) && (!(strlib_starts_with(expected_name, SLOP_STR("Option_")))) && (((*expected_type).kind != types_ResolvedTypeKind_rk_option))) {
                             {
-                                __auto_type parts = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+                                __auto_type parts = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
                                 ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("argument ")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                                 ({ __auto_type _lst_p = &(parts); __auto_type _item = (int_to_string(arena, (arg_idx + 1))); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                                 ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR(" to '")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -2257,7 +2257,7 @@ void infer_report_operand_mismatch(env_TypeEnv* env, slop_string op, slop_string
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type arena = env_env_arena(env);
-        __auto_type parts = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        __auto_type parts = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("'")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(parts); __auto_type _item = (op); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("' ")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -3072,7 +3072,7 @@ slop_list_string infer_match_expected_variants(slop_arena* arena, types_Resolved
     SLOP_PRE(((scrutinee_type != NULL)), "(!= scrutinee-type nil)");
     {
         __auto_type kind = (*scrutinee_type).kind;
-        __auto_type result = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         if ((kind == types_ResolvedTypeKind_rk_union) || (kind == types_ResolvedTypeKind_rk_enum)) {
             {
                 __auto_type variants = (*scrutinee_type).variants;
@@ -3116,7 +3116,7 @@ void infer_check_match_exhaustive(env_TypeEnv* env, types_ResolvedType* scrutine
                     __auto_type n = ((int64_t)((covered).len));
                     int64_t i = 0;
                     uint8_t all_known = 1;
-                    __auto_type missing = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+                    __auto_type missing = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
                     while (i < n) {
                         __auto_type _mv_1908 = ({ __auto_type _lst = covered; size_t _idx = (size_t)i; slop_option_string _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                         if (_mv_1908.has_value) {
@@ -3145,7 +3145,7 @@ void infer_check_match_exhaustive(env_TypeEnv* env, types_ResolvedType* scrutine
                             }
                             if (((int64_t)((missing).len)) > 0) {
                                 {
-                                    __auto_type parts = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+                                    __auto_type parts = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
                                     ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("non-exhaustive match on ")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                                     ({ __auto_type _lst_p = &(parts); __auto_type _item = (type_name); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                                     ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR(": missing ")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -3188,7 +3188,7 @@ types_ResolvedType* infer_infer_match_expr(env_TypeEnv* env, types_SExpr* expr, 
         uint8_t has_result = 0;
         uint8_t has_wildcard = 0;
         __auto_type match_arena = env_env_arena(env);
-        __auto_type covered = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(match_arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+        __auto_type covered = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         types_ResolvedType* result_type = env_env_get_unit_type(env);
         __auto_type scrutinee_type = (((len >= 2)) ? ({ __auto_type _mv = ({ __auto_type _lst = items; size_t _idx = (size_t)1; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type scrutinee = _mv.value; infer_infer_expr(env, scrutinee); }) : (env_env_get_unit_type(env)); }) : env_env_get_unit_type(env));
         int64_t i = 2;
@@ -3795,7 +3795,7 @@ void infer_bind_let_binding(env_TypeEnv* env, types_SExpr* binding_form) {
                                                         __auto_type arena = env_env_arena(env);
                                                         __auto_type line = parser_sexpr_line(binding_form);
                                                         __auto_type col = parser_sexpr_col(binding_form);
-                                                        __auto_type parts = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+                                                        __auto_type parts = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
                                                         ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("mutable variable '")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                                                         ({ __auto_type _lst_p = &(parts); __auto_type _item = (var_name); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                                                         ({ __auto_type _lst_p = &(parts); __auto_type _item = (SLOP_STR("' has ambiguous Option type - add explicit type: (mut ")); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });

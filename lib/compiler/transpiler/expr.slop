@@ -2997,7 +2997,7 @@
                     ;; list: (list Type elem1 elem2 ...) -> inline list literal
                     ((and (string-eq op "list") (>= len 2))
                       (transpile-list-literal ctx items))
-                    ;; map-new: (map-new arena KeyType ValueType) -> slop_map_new_ptr(arena, 16)
+                    ;; map-new: (map-new arena KeyType ValueType) -> slop_map_new_ptr(arena, 0, ...)
                     ((and (string-eq op "map-new") (>= len 2))
                       (transpile-map-new ctx items))
                     ;; map-put: (map-put map key val) -> slop_map_put(arena, map, key, &val)
@@ -3247,15 +3247,12 @@
                                 ;; which the runtime predefines.
                                 (ctx-register-list-type ctx elem-c-type list-type)
                                 (ctx-register-option-type ctx elem-c-type (ctx-str ctx "slop_option_" elem-id))
-                                ;; ((slop_list_Type){ .data = (Type*)slop_arena_alloc(arena, 16 * sizeof(Type)), .len = 0, .cap = 16 })
-                                (ctx-str ctx "(("
-                                  (ctx-str ctx list-type
-                                    (ctx-str ctx "){ .data = ("
-                                      (ctx-str ctx elem-c-type
-                                        (ctx-str ctx "*)slop_arena_alloc("
-                                          (ctx-str ctx arena-c
-                                            (ctx-str ctx ", 16 * sizeof("
-                                              (ctx-str ctx elem-c-type ")), .len = 0, .cap = 16 })"))))))))))
+                                ;; ((slop_list_Type){ .data = NULL, .len = 0, .cap = 0 })
+                                ;; No storage until the first push, which grows from cap 0
+                                ;; to the 16 slots this used to allocate up front: most
+                                ;; lists a rule builds stay empty. The arena expression is
+                                ;; still transpiled, for its diagnostics, but not emitted.
+                                (ctx-str3 ctx "((" list-type "){ .data = NULL, .len = 0, .cap = 0 })")))
                             ((none)
                               (do
                                 (ctx-add-error-at ctx "missing list-new type argument" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6226,7 +6223,7 @@
             ((some arena-expr)
               (let ((arena-c (transpile-expr ctx arena-expr)))
                 ;; Default to string keys for backward compatibility
-                (ctx-str ctx "slop_map_new_ptr(" (ctx-str ctx arena-c ", 16, sizeof(slop_string), slop_hash_string, slop_eq_string)"))))
+                (ctx-str ctx "slop_map_new_ptr(" (ctx-str ctx arena-c ", 0, sizeof(slop_string), slop_hash_string, slop_eq_string)"))))
             ((none)
               (do
                 (ctx-add-error-at ctx "map-new: missing arena" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6238,11 +6235,12 @@
               ((some key-type-expr)
                 (let ((arena-c (transpile-expr ctx arena-expr))
                       (key-info (get-map-key-c-info ctx key-type-expr)))
-                  ;; Generate: slop_map_new_ptr(arena, 16, sizeof_expr, hash_fn, eq_fn)
+                  ;; Generate: slop_map_new_ptr(arena, 0, sizeof_expr, hash_fn, eq_fn)
+                  ;; Capacity 0: no entry table until the first put (see slop_map_new)
                   ;; key-info is already the formatted string "sizeof(...), hash_fn, eq_fn"
                   (ctx-str ctx "slop_map_new_ptr("
                     (ctx-str ctx arena-c
-                      (ctx-str ctx ", 16, "
+                      (ctx-str ctx ", 0, "
                         (ctx-str ctx key-info ")"))))))
               ((none)
                 (do
@@ -6671,10 +6669,11 @@
               ((some elem-type-expr)
                 (let ((arena-c (transpile-expr ctx arena-expr))
                       (elem-info (get-map-key-c-info ctx elem-type-expr)))
-                  ;; Generate: slop_map_new_ptr(arena, 16, sizeof_expr, hash_fn, eq_fn)
+                  ;; Generate: slop_map_new_ptr(arena, 0, sizeof_expr, hash_fn, eq_fn)
+                  ;; Capacity 0: no entry table until the first put (see slop_map_new)
                   (ctx-str ctx "slop_map_new_ptr("
                     (ctx-str ctx arena-c
-                      (ctx-str ctx ", 16, "
+                      (ctx-str ctx ", 0, "
                         (ctx-str ctx elem-info ")"))))))
               ((none)
                 (do

@@ -590,11 +590,14 @@ static inline slop_bytes slop_bytes_from(slop_arena* arena, const uint8_t* src, 
         return (Name){0, initial_cap, data}; \
     } \
     \
+    /* An empty list may have no storage yet ({NULL, 0, 0}, as list-new \
+     * creates it): the first push allocates 16 slots, and memcpy is never \
+     * handed its NULL data. */ \
     static inline void Name##_push(slop_arena* arena, Name* list, T item) { \
         if (list->len >= list->cap) { \
-            size_t new_cap = list->cap * 2; \
+            size_t new_cap = list->cap == 0 ? 16 : list->cap * 2; \
             T* new_data = (T*)slop_arena_alloc(arena, new_cap * sizeof(T)); \
-            memcpy(new_data, list->data, list->len * sizeof(T)); \
+            if (list->len > 0) memcpy(new_data, list->data, list->len * sizeof(T)); \
             list->data = new_data; \
             list->cap = new_cap; \
         } \
@@ -797,13 +800,27 @@ static inline size_t slop_map_round_cap(size_t n) {
     return cap;
 }
 
-static inline slop_map slop_map_new(slop_arena* arena, size_t capacity,
-                                     size_t key_size, slop_hash_fn hash, slop_eq_fn eq) {
-    size_t cap = slop_map_round_cap(capacity);
+/* The capacity of the first table a map with no table gets */
+#define SLOP_MAP_FIRST_CAPACITY 16
+
+/* A fresh zeroed table of cap entries, cap a power of two */
+static inline slop_map_entry* slop_map_alloc_table(slop_arena* arena, size_t cap) {
     slop_map_entry* entries = (slop_map_entry*)slop_arena_alloc(
         arena, cap * sizeof(slop_map_entry));
     memset(entries, 0, cap * sizeof(slop_map_entry));
-    return (slop_map){0, cap, key_size, hash, eq, entries};
+    return entries;
+}
+
+/* capacity 0 creates a map with no table (cap 0, entries NULL), which the
+ * first put allocates; map-new and set-new ask for that, so an empty Map or
+ * Set costs only this struct. Any other capacity is allocated now. */
+static inline slop_map slop_map_new(slop_arena* arena, size_t capacity,
+                                     size_t key_size, slop_hash_fn hash, slop_eq_fn eq) {
+    if (capacity == 0) {
+        return (slop_map){0, 0, key_size, hash, eq, NULL};
+    }
+    size_t cap = slop_map_round_cap(capacity);
+    return (slop_map){0, cap, key_size, hash, eq, slop_map_alloc_table(arena, cap)};
 }
 
 /* Return pointer to arena-allocated map (for slop_map* type) */
@@ -824,6 +841,7 @@ static inline slop_map* slop_map_new_string(slop_arena* arena, size_t capacity) 
  * only on a full 64-bit hash match. Lookups never write, so any number of
  * threads may read a map that nobody is mutating. */
 static inline void* slop_map_get(slop_map* map, const void* key) {
+    if (map->cap == 0) return NULL;         /* no table yet; allocate nothing */
     uint64_t hash = slop_map_mix(map->hash(key));
     size_t mask = map->cap - 1;
     size_t probe = hash & mask;
@@ -840,15 +858,14 @@ static inline void* slop_map_get(slop_map* map, const void* key) {
     return NULL;
 }
 
-/* Double the table, moving each entry to its slot in the new one. The key
- * copies, the value pointers and the stored hashes carry over as they are:
- * nothing is re-hashed, compared or allocated per entry. */
+/* Double the table -- or, for a map with none yet, create the first -- moving
+ * each entry to its slot in the new one. The key copies, the value pointers
+ * and the stored hashes carry over as they are: nothing is re-hashed,
+ * compared or allocated per entry. */
 static inline void slop_map_grow(slop_arena* arena, slop_map* map) {
-    size_t new_cap = map->cap * 2;
+    size_t new_cap = map->cap == 0 ? SLOP_MAP_FIRST_CAPACITY : map->cap * 2;
     size_t mask = new_cap - 1;
-    slop_map_entry* entries = (slop_map_entry*)slop_arena_alloc(
-        arena, new_cap * sizeof(slop_map_entry));
-    memset(entries, 0, new_cap * sizeof(slop_map_entry));
+    slop_map_entry* entries = slop_map_alloc_table(arena, new_cap);
     for (size_t i = 0; i < map->cap; i++) {
         const slop_map_entry* e = &map->entries[i];
         if (e->occupied) {
@@ -865,7 +882,8 @@ static inline void slop_map_grow(slop_arena* arena, slop_map* map) {
 
 static inline void slop_map_put(slop_arena* arena, slop_map* map,
                                  const void* key, void* value) {
-    /* Grow if needed (75% load factor) */
+    /* Grow if needed (75% load factor); a map with no table yet gets its
+     * first one here, and only here */
     if (map->len * 4 >= map->cap * 3) {
         slop_map_grow(arena, map);
     }
@@ -899,6 +917,7 @@ static inline bool slop_map_has(slop_map* map, const void* key) {
 }
 
 static inline bool slop_map_remove(slop_map* map, const void* key) {
+    if (map->cap == 0) return false;
     uint64_t hash = slop_map_mix(map->hash(key));
     size_t mask = map->cap - 1;
     size_t probe = hash & mask;
