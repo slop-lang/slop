@@ -12398,6 +12398,96 @@ class TestCheckedLoopInvariantSoundness:
         (set! k k))
       (- k (@ xs 0)))))''', 'f') != 'verified'
 
+    def test_a_write_inside_a_loop_header(self):
+        assert self._status('''
+(module probe
+  (type R (record (items (List Int))))
+  (fn f ((r R))
+    (@spec ((R) -> Int))
+    (@post {$result == 0})
+    (let ((mut n 0))
+      (for-each (x (. (do (set! n 7) r) items))
+        (@loop-invariant {n == 0})
+        (set! n n))
+      n)))''', 'f') != 'verified'
+
+    def test_the_address_of_a_field(self):
+        assert self._status('''
+(module probe
+  (type R (record (n Int)))
+  (fn bump ((p (Ptr Int)))
+    (@spec (((Ptr Int)) -> Unit))
+    (set! (deref p) 100))
+  (fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post {$result == 0})
+    (let ((mut r (record-new R (n 0))))
+      (for-each (x xs)
+        (@loop-invariant {(. r n) == 0})
+        (bump (addr (. r n))))
+      (. r n))))''', 'f') != 'verified'
+
+    def test_a_declared_range_is_not_kept_by_an_assignment(self):
+        assert self._status('''
+(fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post {$result != 12})
+    (let ((mut n (Int 0 .. 10) 0))
+      (for-each (x xs)
+        (@loop-invariant {n != 12})
+        (set! n (+ n 1)))
+      n))''', 'f') != 'verified'
+
+    def test_a_closure_that_assigns_a_local(self):
+        assert self._status('''
+(fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post {$result == 0})
+    (let ((mut n 0)
+          (cb (do (+ 1 1) (fn () (set! n 5)))))
+      (set! n 0)
+      (for-each (x xs)
+        (@loop-invariant {n == 0})
+        (cb))
+      n))''', 'f') != 'verified'
+
+    def test_a_return_inside_the_loop_leaves_a_mut_parameter_mid_iteration(self):
+        assert self._status('''
+(fn f ((mut n Int) (xs (List Int)))
+  (@spec ((Int (List Int)) -> Int))
+  (@pre {n >= 0})
+  (@post {n >= 0})
+  (do (for-each (x xs)
+        (@loop-invariant {n >= 0})
+        (set! n -1)
+        (when (> x 5) (return 0))
+        (set! n 0))
+      0))''', 'f') != 'verified'
+
+    def test_a_callbacks_second_parameter_is_not_an_outer_name(self, tmp_path):
+        src = '''
+(module main
+  (import cb2 (each-pair))
+  (fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post {$result >= 0})
+    (let ((mut n 0)
+          (v 0))
+      (each-pair xs
+        (fn ((k Int) (v Int))
+          (@loop-invariant {n >= 0})
+          (set! n v)))
+      n)))'''
+        assert self._status(src, 'f', tmp_path, {'cb2': '''
+(module cb2
+  (export each-pair)
+  (fn each-pair ((xs (List Int)) (callback (Fn (Int Int) Unit)))
+    (@spec (((List Int) (Fn (Int Int) Unit)) -> Unit))
+    (@pure)
+    (@callback-assume callback (> $callback-arg 0))
+    (for-each (x xs) (when (> x 0) (callback x (- 0 x))))))
+'''}) != 'verified'
+
     def test_division_is_checked_rather_than_opaque(self):
         assert self._status('''
 (fn f ((xs (List Int)))

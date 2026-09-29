@@ -1426,6 +1426,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
                         # Build for-each: (for-each (var virtual-coll) body)
                         result = SList([Symbol('for-each'), binding, body])
+                        # The lambda's other parameters are bound by the callee
+                        # too; the loop variable stands for the first alone.
+                        extra = []
+                        for param in lambda_params.items[1:]:
+                            if isinstance(param, SList) and len(param) >= 1 and isinstance(param[0], Symbol):
+                                extra.append((param[0].name, param[1] if len(param) >= 2 else None))
+                            elif isinstance(param, Symbol):
+                                extra.append((param.name, None))
+                        if extra:
+                            self._desugared_extra_params[id(result)] = extra
                         if hasattr(expr, 'line'):
                             result.line = expr.line
                             result.col = expr.col
@@ -3435,6 +3445,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
     def verify_function(self, fn_form: SList) -> VerificationResult:
         """Verify a single function's contracts, its loop invariants among them."""
         self._invariant_report: Optional[InvariantReport] = None
+        self._desugared_extra_params: Dict[int, List] = {}
         result = self._verify_function_contracts(fn_form)
         return self._merge_invariant_report(result, self._invariant_report)
 
@@ -3453,6 +3464,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if report is None or not report.outcomes:
             return result
         unchecked = report.unchecked
+        # A counterexample the verifier found without a proved invariant it
+        # could not use may be one that invariant rules out (#69).
+        unused = [o for o in report.outcomes if o.status == 'proved' and not o.asserted]
+        if unused and result.status == 'failed' and result.counterexample and not unchecked:
+            notes = "\n".join(
+                f"loop invariant proved but not used: {o.text} ({o.unused or 'not needed'})"
+                for o in unused)
+            return VerificationResult(
+                name=result.name, verified=False, status='unknown',
+                message=f"{result.message}\n{notes}", location=result.location,
+                suggestions=result.suggestions)
         if not unchecked:
             if result.status == 'skipped':
                 return VerificationResult(
@@ -3647,6 +3669,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if len(all_body_exprs) > 1:
             # The invariant was proved over every form of the body; the model
             # below is built from the last one alone.
+            for outcome in assumable_invariants:
+                outcome.unused = "the function body has more than one form"
             assumable_invariants = []
         invariant_exprs = [o.expr for o in assumable_invariants]
         use_array_encoding = (self._needs_array_encoding(postconditions) or
@@ -3856,17 +3880,24 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         proved_invariant_z3: List[z3.BoolRef] = []
         for outcome in assumable_invariants:
             if id(outcome.loop) not in translator._unconditional_loops:
+                outcome.unused = "its loop does not run on every path through the function"
                 continue
             # With a return before the loop, only the paths that took none of
             # the early exits are known to have reached it.
             if outcome.exits_before and not early_exits:
+                outcome.unused = "a return before the loop is not one the verifier can guard"
                 continue
             with translator.loop_exit_scope(outcome.loop) as found:
                 term = translator.translate_expr(outcome.expr) if found else None
+            if term is not None and z3.is_int(term):
+                term = self._ensure_bool(term)
             if term is not None and z3.is_bool(term):
                 if outcome.exits_before:
                     term = z3.Implies(reached_guard, term)
                 proved_invariant_z3.append(term)
+                outcome.asserted = True
+            else:
+                outcome.unused = 'it does not translate where its loop ends'
         assume_constraint_end = len(translator.constraints)
 
         # Translate properties (universal assertions)
