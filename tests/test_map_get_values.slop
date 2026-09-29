@@ -1,0 +1,93 @@
+(module test-map-get-values
+  (@intent "map-get of container values, and builtins in a map for-each body, keep their types")
+
+  ;; Three shapes that lost the type of what they read:
+  ;; - a Map whose value is a (Set T), (Map K V) or (List T): map-get read the
+  ;;   value back as a void* through slop_option_ptr, so (set-len s) became
+  ;;   ((void*)s)->len, and a List lost all but its first 8 bytes;
+  ;; - a parameter typed (Map K (Set T)): the checker resolved the value by
+  ;;   the empty symbol name of (Set T), and set-len saw an untyped payload;
+  ;; - (for-each ((k v) m) ...): the checker skipped the body entirely, so a
+  ;;   map-get there was "unknown function or type 'map-get'".
+
+  (type Index (record
+    (groups (Map Int (Set Int)))
+    (lists (Map String (List Int)))
+    (nested (Map Int (Map Int Int)))))
+
+  (fn group-size ((m (Map Int (Set Int))) (k Int))
+    (@intent "The size of the set under k, from a parameter-typed map")
+    (@spec (((Map Int (Set Int)) Int) -> Int))
+    (match (map-get m k)
+      ((some s) (set-len s))
+      ((none) -1)))
+
+  (fn list-sum ((ix Index) (name String))
+    (@intent "The sum of the list under name, from a record's map, bound by a let")
+    (@spec ((Index String) -> Int))
+    (let ((found (map-get (. ix lists) name))
+          (mut sum 0))
+      (match found
+        ((some xs)
+          (for-each (x xs)
+            (set! sum (+ sum x))))
+        ((none) (set! sum -1)))
+      sum))
+
+  (fn inner-count ((ix (Ptr Index)) (k Int))
+    (@intent "The size of the map under k, through a pointer to the record")
+    (@spec (((Ptr Index) Int) -> Int))
+    (let ((found (map-get (. ix nested) k)))
+      (match found
+        ((some inner) (map-len inner))
+        ((none) -1))))
+
+  (fn weighted ((m (Map Int (Set Int))) (w (Map Int Int)))
+    (@intent "Sum of each set's size times the weight of its key, with builtins in the for-each body")
+    (@spec (((Map Int (Set Int)) (Map Int Int)) -> Int))
+    (let ((mut total 0))
+      (for-each ((k s) m)
+        (match (map-get w k)
+          ((some x) (set! total (+ total (* x (set-len s)))))
+          ((none) (do))))
+      total))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any value came back wrong")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((mut fails 0)
+            (groups (map-new arena Int (Set Int)))
+            (lists (map-new arena String (List Int)))
+            (nested (map-new arena Int (Map Int Int)))
+            (weights (map-new arena Int Int))
+            (s1 (set-new arena Int))
+            (s2 (set-new arena Int))
+            (xs (list-new arena Int))
+            (inner (map-new arena Int Int)))
+        (set-put s1 1)
+        (set-put s1 2)
+        (set-put s2 9)
+        (map-put groups 1 s1)
+        (map-put groups 2 s2)
+        (list-push xs 10)
+        (list-push xs 20)
+        (list-push xs 30)
+        (map-put lists "a" xs)
+        (map-put inner 5 50)
+        (map-put inner 6 60)
+        (map-put inner 7 70)
+        (map-put nested 3 inner)
+        (map-put weights 1 10)
+        (map-put weights 2 100)
+        (let ((mut ix (Index groups lists nested)))
+          (when (!= (group-size groups 1) 2) (set! fails (+ fails 1)))
+          (when (!= (group-size groups 3) -1) (set! fails (+ fails 1)))
+          (when (!= (list-sum ix "a") 60) (set! fails (+ fails 1)))
+          (when (!= (list-sum ix "b") -1) (set! fails (+ fails 1)))
+          (when (!= (inner-count (addr ix) 3) 3) (set! fails (+ fails 1)))
+          (when (!= (weighted groups weights) 120) (set! fails (+ fails 1))))
+        (when (> fails 0)
+          (print "test_map_get_values failures: ")
+          (println fails))
+        fails))))

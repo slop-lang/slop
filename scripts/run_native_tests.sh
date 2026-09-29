@@ -420,6 +420,9 @@ run_negative_build_test "$REPO_ROOT/tests/enum-pattern-negative/paren_arm.slop" 
 run_negative_check_test "$REPO_ROOT/tests/collection-len-negative/map_len_of_set.slop" "map-len-of-set" \
     "map_len_of_set.slop:9:9: error: map-len: expected Map, got Set"
 run_check_clean_test "$REPO_ROOT/tests/test_collection_len.slop" "collection-len"
+# A (Map K (Set T)) parameter's map-get payload, and a (for-each ((k v) m)) body,
+# are typed by the checker; before, the one was untyped and the other unchecked.
+run_check_clean_test "$REPO_ROOT/tests/test_map_get_values.slop" "map-get-values"
 
 TRN="$REPO_ROOT/tests/type-resolution-check-negative"
 run_negative_check_test "$TRN/both.slop" "type-imported-from-both" \
