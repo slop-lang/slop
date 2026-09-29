@@ -341,7 +341,7 @@ slop_result_parser_Token_parser_ParseError parser_lexer_next_token(slop_arena* a
 slop_result_list_parser_Token_parser_ParseError parser_tokenize(slop_arena* arena, slop_string source) {
     {
         __auto_type state = parser_lexer_new(source);
-        __auto_type tokens = ((slop_list_parser_Token){ .data = (parser_Token*)slop_arena_alloc(arena, 16 * sizeof(parser_Token)), .len = 0, .cap = 16 });
+        __auto_type tokens = ((slop_list_parser_Token){ .data = NULL, .len = 0, .cap = 0 });
         uint8_t done = 0;
         uint8_t has_error = 0;
         __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
@@ -437,7 +437,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_expr(slop_arena* aren
                 {
                     __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                     __auto_type quote_sym = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-                    __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                    __auto_type items = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                     (*quote_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){SLOP_STR("quote"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     ({ __auto_type _lst_p = &(items); __auto_type _item = (quote_sym); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                     ({ __auto_type _lst_p = &(items); __auto_type _item = (quoted_expr); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -507,7 +507,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_list(slop_arena* aren
         __auto_type start_tok = parser_parser_peek(state);
         parser_parser_advance(state);
         {
-            __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+            __auto_type items = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
             uint8_t done = 0;
             uint8_t has_error = 0;
             __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
@@ -625,7 +625,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                     {
                         __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                         __auto_type not_sym = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-                        __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                        __auto_type items = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                         (*not_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){SLOP_STR("not"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                         ({ __auto_type _lst_p = &(items); __auto_type _item = (not_sym); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                         ({ __auto_type _lst_p = &(items); __auto_type _item = (operand); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -654,7 +654,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                     __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                     __auto_type minus_sym = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                     __auto_type zero_node = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-                    __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                    __auto_type items = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                     (*minus_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){SLOP_STR("-"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     (*zero_node) = ((types_SExpr){ .tag = types_SExpr_num, .data.num = (types_SExprNumber){0, 0.0, 0, SLOP_STR("0"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     ({ __auto_type _lst_p = &(items); __auto_type _item = (minus_sym); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -702,7 +702,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_primary(slop_ar
                 {
                     __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                     __auto_type quote_sym = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-                    __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                    __auto_type items = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                     (*quote_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){SLOP_STR("quote"), tok.line, tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                     ({ __auto_type _lst_p = &(items); __auto_type _item = (quote_sym); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                     ({ __auto_type _lst_p = &(items); __auto_type _item = (quoted_expr); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -751,7 +751,7 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_prec(slop_arena
                                         {
                                             __auto_type node = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
                                             __auto_type op_sym = ((types_SExpr*)(({ __auto_type _alloc = (types_SExpr*)slop_arena_alloc(arena, sizeof(types_SExpr)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-                                            __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                                            __auto_type items = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                                             (*op_sym) = ((types_SExpr){ .tag = types_SExpr_sym, .data.sym = (types_SExprSymbol){op_tok.value, op_tok.line, op_tok.col, ((slop_option_types_ResolvedType_ptr){.has_value = false})} });
                                             ({ __auto_type _lst_p = &(items); __auto_type _item = (op_sym); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                                             ({ __auto_type _lst_p = &(items); __auto_type _item = (result); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -814,7 +814,7 @@ slop_result_list_types_SExpr_ptr_parser_ParseError parser_parse(slop_arena* aren
         __auto_type tokens = _mv_34.data.ok;
         {
             __auto_type state = parser_parser_new(tokens);
-            __auto_type result = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+            __auto_type result = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
             __auto_type done = 0;
             __auto_type has_error = 0;
             __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
@@ -1074,7 +1074,7 @@ slop_string parser_sexpr_string_value(types_SExpr* expr) {
 
 slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr) {
     {
-        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
         if (parser_is_form(expr, SLOP_STR("hole"))) {
             ({ __auto_type _lst_p = &(result); __auto_type _item = (expr); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc(arena, _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         }

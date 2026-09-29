@@ -52,7 +52,7 @@ slop_string tester_extract_module_name(slop_list_types_SExpr_ptr exprs) {
 
 slop_list_type_extract_ImportEntry tester_extract_imports(slop_arena* arena, slop_list_types_SExpr_ptr exprs) {
     {
-        __auto_type result = ((slop_list_type_extract_ImportEntry){ .data = (type_extract_ImportEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_ImportEntry)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_type_extract_ImportEntry){ .data = NULL, .len = 0, .cap = 0 });
         if (((int64_t)((exprs).len)) > 0) {
             __auto_type _mv_1716 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)0; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_1716.has_value) {
@@ -73,7 +73,7 @@ slop_list_type_extract_ImportEntry tester_extract_imports(slop_arena* arena, slo
                                             if (parser_sexpr_is_symbol(name_expr)) {
                                                 {
                                                     __auto_type mod_name = parser_sexpr_get_symbol_name(name_expr);
-                                                    __auto_type symbols = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+                                                    __auto_type symbols = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
                                                     __auto_type _mv_1719 = parser_sexpr_list_get(child, 2);
                                                     if (_mv_1719.has_value) {
                                                         __auto_type sym_list = _mv_1719.value;
@@ -125,7 +125,7 @@ tester_TestResult tester_generate_tests(slop_arena* arena, slop_string source, s
                 __auto_type test_cases = extract_extract_examples_from_ast(arena, exprs);
                 __auto_type test_count = ((int64_t)((test_cases).len));
                 if (test_count == 0) {
-                    return (tester_TestResult){1, ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 }), 0, mod_name, SLOP_STR("")};
+                    return (tester_TestResult){1, ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 }), 0, mod_name, SLOP_STR("")};
                 } else {
                     {
                         __auto_type prefix = (((((int64_t)(mod_name.len)) > 0)) ? ctype_to_c_name(arena, mod_name) : SLOP_STR(""));
@@ -143,7 +143,7 @@ tester_TestResult tester_generate_tests(slop_arena* arena, slop_string source, s
         __auto_type err = _mv_1721.data.err;
         {
             __auto_type error_msg = string_concat(arena, SLOP_STR("Parse error at line "), string_concat(arena, int_to_string(arena, err.line), string_concat(arena, SLOP_STR(", col "), string_concat(arena, int_to_string(arena, err.col), string_concat(arena, SLOP_STR(": "), err.message)))));
-            return (tester_TestResult){0, ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 }), 0, SLOP_STR(""), error_msg};
+            return (tester_TestResult){0, ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 }), 0, SLOP_STR(""), error_msg};
         }
     }
     SLOP_UNREACHABLE();
@@ -160,7 +160,7 @@ tester_TestResult tester_generate_tests_with_imports(slop_arena* arena, slop_str
                 __auto_type test_cases = extract_extract_examples_from_ast(arena, exprs);
                 __auto_type test_count = ((int64_t)((test_cases).len));
                 if (test_count == 0) {
-                    return (tester_TestResult){1, ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 }), 0, mod_name, SLOP_STR("")};
+                    return (tester_TestResult){1, ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 }), 0, mod_name, SLOP_STR("")};
                 } else {
                     {
                         __auto_type prefix = (((((int64_t)(mod_name.len)) > 0)) ? ctype_to_c_name(arena, mod_name) : SLOP_STR(""));
@@ -205,7 +205,7 @@ tester_TestResult tester_generate_tests_with_imports(slop_arena* arena, slop_str
         __auto_type err = _mv_1722.data.err;
         {
             __auto_type error_msg = string_concat(arena, SLOP_STR("Parse error at line "), string_concat(arena, int_to_string(arena, err.line), string_concat(arena, SLOP_STR(", col "), string_concat(arena, int_to_string(arena, err.col), string_concat(arena, SLOP_STR(": "), err.message)))));
-            return (tester_TestResult){0, ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 }), 0, SLOP_STR(""), error_msg};
+            return (tester_TestResult){0, ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 }), 0, SLOP_STR(""), error_msg};
         }
     }
     SLOP_UNREACHABLE();
@@ -323,9 +323,9 @@ type_extract_TstTypeEntry* tester_type_entry_new_local(slop_arena* arena, slop_s
         (*entry).name = name;
         (*entry).c_name = c_name;
         (*entry).kind = ((type_extract_TstTypeEntryKind)(kind));
-        (*entry).fields = ((slop_list_type_extract_TstFieldEntry){ .data = (type_extract_TstFieldEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_TstFieldEntry)), .len = 0, .cap = 16 });
-        (*entry).variants = ((slop_list_type_extract_VariantEntry){ .data = (type_extract_VariantEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_VariantEntry)), .len = 0, .cap = 16 });
-        (*entry).enum_values = ((slop_list_type_extract_EnumValueEntry){ .data = (type_extract_EnumValueEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_EnumValueEntry)), .len = 0, .cap = 16 });
+        (*entry).fields = ((slop_list_type_extract_TstFieldEntry){ .data = NULL, .len = 0, .cap = 0 });
+        (*entry).variants = ((slop_list_type_extract_VariantEntry){ .data = NULL, .len = 0, .cap = 0 });
+        (*entry).enum_values = ((slop_list_type_extract_EnumValueEntry){ .data = NULL, .len = 0, .cap = 0 });
         (*entry).inner_type = SLOP_STR("");
         return entry;
     }

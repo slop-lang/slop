@@ -146,7 +146,7 @@ slop_option_string extract_extract_return_type(slop_arena* arena, types_SExpr* s
 slop_list_types_SExpr_ptr extract_collect_preconditions(slop_arena* arena, types_SExpr* fn_form) {
     SLOP_PRE(((fn_form != NULL)), "(!= fn-form nil)");
     {
-        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type form_len = parser_sexpr_list_len(fn_form);
         int64_t i = 3;
         while (i < form_len) {
@@ -173,7 +173,7 @@ slop_list_types_SExpr_ptr extract_collect_preconditions(slop_arena* arena, types
 
 slop_list_extract_TestCase_ptr extract_extract_fn_examples(slop_arena* arena, types_SExpr* fn_form, slop_option_string module_name) {
     {
-        __auto_type result = ((slop_list_extract_TestCase_ptr){ .data = (extract_TestCase**)slop_arena_alloc(arena, 16 * sizeof(extract_TestCase*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_extract_TestCase_ptr){ .data = NULL, .len = 0, .cap = 0 });
         if (parser_sexpr_list_len(fn_form) < 3) {
             return result;
         } else {
@@ -248,7 +248,7 @@ slop_option_extract_TestCase_ptr extract_parse_example(slop_arena* arena, types_
             return (slop_option_extract_TestCase_ptr){.has_value = false};
         } else {
             {
-                __auto_type items = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                __auto_type items = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                 int64_t i = 1;
                 while (i < example_len) {
                     __auto_type _mv_1613 = parser_sexpr_list_get(example_form, i);
@@ -291,7 +291,7 @@ slop_option_extract_TestCase_ptr extract_parse_example(slop_arena* arena, types_
                                 return (slop_option_extract_TestCase_ptr){.has_value = false};
                             } else {
                                 {
-                                    __auto_type args = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                                    __auto_type args = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                                     int64_t j = args_start;
                                     while (j < arrow_idx) {
                                         __auto_type _mv_1616 = ({ __auto_type _lst = items; size_t _idx = (size_t)j; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -334,14 +334,14 @@ slop_list_types_SExpr_ptr extract_unpack_grouped_args(slop_arena* arena, slop_li
                     {
                         __auto_type inner_len = parser_sexpr_list_len(first_arg);
                         if (inner_len == 0) {
-                            result = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                            result = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                         } else {
                             __auto_type _mv_1619 = parser_sexpr_list_get(first_arg, 0);
                             if (_mv_1619.has_value) {
                                 __auto_type first_inner = _mv_1619.value;
                                 if (parser_sexpr_is_symbol(first_inner) && string_eq(parser_sexpr_get_symbol_name(first_inner), SLOP_STR("arena"))) {
                                     {
-                                        __auto_type unpacked = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                                        __auto_type unpacked = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                                         __auto_type i = 1;
                                         while (i < inner_len) {
                                             __auto_type _mv_1620 = parser_sexpr_list_get(first_arg, i);
@@ -357,7 +357,7 @@ slop_list_types_SExpr_ptr extract_unpack_grouped_args(slop_arena* arena, slop_li
                                 } else {
                                     if ((parser_sexpr_is_number(first_inner)) || (parser_sexpr_is_string(first_inner)) || (!(parser_sexpr_is_symbol(first_inner)))) {
                                         {
-                                            __auto_type unpacked = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+                                            __auto_type unpacked = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
                                             __auto_type i = 0;
                                             while (i < inner_len) {
                                                 __auto_type _mv_1621 = parser_sexpr_list_get(first_arg, i);
@@ -386,7 +386,7 @@ slop_list_types_SExpr_ptr extract_unpack_grouped_args(slop_arena* arena, slop_li
 
 slop_list_extract_TestCase_ptr extract_extract_examples_from_module(slop_arena* arena, types_SExpr* module_form) {
     {
-        __auto_type result = ((slop_list_extract_TestCase_ptr){ .data = (extract_TestCase**)slop_arena_alloc(arena, 16 * sizeof(extract_TestCase*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_extract_TestCase_ptr){ .data = NULL, .len = 0, .cap = 0 });
         if (parser_sexpr_list_len(module_form) < 2) {
             return result;
         } else {
@@ -441,7 +441,7 @@ slop_list_extract_TestCase_ptr extract_extract_examples_from_module(slop_arena* 
 
 slop_list_extract_TestCase_ptr extract_extract_examples_from_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast) {
     {
-        __auto_type result = ((slop_list_extract_TestCase_ptr){ .data = (extract_TestCase**)slop_arena_alloc(arena, 16 * sizeof(extract_TestCase*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_extract_TestCase_ptr){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type len = ((int64_t)((ast).len));
         int64_t i = 0;
         while (i < len) {

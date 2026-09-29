@@ -28,11 +28,11 @@ slop_string type_extract_make_c_type_name(slop_arena* arena, slop_string prefix,
 slop_string type_extract_convert_to_c_ident(slop_arena* arena, slop_string name);
 
 type_extract_TypeRegistry type_extract_make_type_registry(slop_arena* arena, slop_string prefix) {
-    return (type_extract_TypeRegistry){((slop_list_type_extract_TstTypeEntry_ptr){ .data = (type_extract_TstTypeEntry**)slop_arena_alloc(arena, 16 * sizeof(type_extract_TstTypeEntry*)), .len = 0, .cap = 16 }), prefix, ((slop_list_type_extract_ImportEntry){ .data = (type_extract_ImportEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_ImportEntry)), .len = 0, .cap = 16 })};
+    return (type_extract_TypeRegistry){((slop_list_type_extract_TstTypeEntry_ptr){ .data = NULL, .len = 0, .cap = 0 }), prefix, ((slop_list_type_extract_ImportEntry){ .data = NULL, .len = 0, .cap = 0 })};
 }
 
 type_extract_TypeRegistry type_extract_make_type_registry_with_imports(slop_arena* arena, slop_string prefix, slop_list_type_extract_ImportEntry imports) {
-    return (type_extract_TypeRegistry){((slop_list_type_extract_TstTypeEntry_ptr){ .data = (type_extract_TstTypeEntry**)slop_arena_alloc(arena, 16 * sizeof(type_extract_TstTypeEntry*)), .len = 0, .cap = 16 }), prefix, imports};
+    return (type_extract_TypeRegistry){((slop_list_type_extract_TstTypeEntry_ptr){ .data = NULL, .len = 0, .cap = 0 }), prefix, imports};
 }
 
 void type_extract_registry_add_type(slop_arena* arena, type_extract_TypeRegistry* reg, type_extract_TstTypeEntry* entry) {
@@ -42,7 +42,7 @@ void type_extract_registry_add_type(slop_arena* arena, type_extract_TypeRegistry
 type_extract_TstTypeEntry* type_extract_type_entry_new(slop_arena* arena, slop_string name, slop_string c_name, type_extract_TstTypeEntryKind kind) {
     {
         __auto_type entry = ((type_extract_TstTypeEntry*)(({ __auto_type _alloc = (type_extract_TstTypeEntry*)slop_arena_alloc(arena, sizeof(type_extract_TstTypeEntry)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        (*entry) = (type_extract_TstTypeEntry){name, c_name, kind, ((slop_list_type_extract_TstFieldEntry){ .data = (type_extract_TstFieldEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_TstFieldEntry)), .len = 0, .cap = 16 }), ((slop_list_type_extract_VariantEntry){ .data = (type_extract_VariantEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_VariantEntry)), .len = 0, .cap = 16 }), ((slop_list_type_extract_EnumValueEntry){ .data = (type_extract_EnumValueEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_EnumValueEntry)), .len = 0, .cap = 16 }), SLOP_STR("")};
+        (*entry) = (type_extract_TstTypeEntry){name, c_name, kind, ((slop_list_type_extract_TstFieldEntry){ .data = NULL, .len = 0, .cap = 0 }), ((slop_list_type_extract_VariantEntry){ .data = NULL, .len = 0, .cap = 0 }), ((slop_list_type_extract_EnumValueEntry){ .data = NULL, .len = 0, .cap = 0 }), SLOP_STR("")};
         return entry;
     }
 }
@@ -60,7 +60,7 @@ type_extract_EnumValueEntry type_extract_enum_value_entry_new(slop_string name, 
 }
 
 type_extract_TypeRegistry* type_extract_extract_types_from_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix) {
-    return type_extract_extract_types_from_ast_with_imports(arena, ast, module_prefix, ((slop_list_type_extract_ImportEntry){ .data = (type_extract_ImportEntry*)slop_arena_alloc(arena, 16 * sizeof(type_extract_ImportEntry)), .len = 0, .cap = 16 }));
+    return type_extract_extract_types_from_ast_with_imports(arena, ast, module_prefix, ((slop_list_type_extract_ImportEntry){ .data = NULL, .len = 0, .cap = 0 }));
 }
 
 type_extract_TypeRegistry* type_extract_extract_types_from_ast_with_imports(slop_arena* arena, slop_list_types_SExpr_ptr ast, slop_string module_prefix, slop_list_type_extract_ImportEntry imports) {

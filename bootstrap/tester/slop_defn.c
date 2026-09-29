@@ -1669,7 +1669,7 @@ void defn_emit_function_def(context_TranspileContext* ctx, slop_string raw_name,
             {
                 __auto_type param_types = defn_collect_param_types(ctx, params_expr);
                 __auto_type slop_ret_type = defn_get_slop_return_type(ctx, items);
-                __auto_type empty_type_params = ((slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 16 * sizeof(slop_string)), .len = 0, .cap = 16 });
+                __auto_type empty_type_params = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
                 slop_option_types_SExpr_ptr no_source = (slop_option_types_SExpr_ptr){.has_value = false};
                 context_ctx_register_func(ctx, (context_FuncEntry){raw_name, fn_name, actual_return, slop_ret_type, strlib_ends_with(actual_return, SLOP_STR("*")), string_eq(actual_return, SLOP_STR("slop_string")), param_types, 0, empty_type_params, no_source, context_ctx_current_module_name(ctx), SLOP_STR("")});
             }
@@ -1818,7 +1818,7 @@ slop_list_context_FuncParamType_ptr defn_collect_param_types(context_TranspileCo
     SLOP_PRE(((params_expr != NULL)), "(!= params-expr nil)");
     {
         __auto_type arena = (*ctx).arena;
-        __auto_type result = ((slop_list_context_FuncParamType_ptr){ .data = (context_FuncParamType**)slop_arena_alloc(arena, 16 * sizeof(context_FuncParamType*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_context_FuncParamType_ptr){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type _mv_1091 = (*params_expr);
         switch (_mv_1091.tag) {
             case types_SExpr_lst:
@@ -3065,7 +3065,7 @@ slop_option_types_SExpr_ptr defn_get_annotation_condition(types_SExpr* expr) {
 
 slop_list_types_SExpr_ptr defn_collect_preconditions(slop_arena* arena, slop_list_types_SExpr_ptr items) {
     {
-        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type len = ((int64_t)((items).len));
         int64_t i = 3;
         while (i < len) {
@@ -3090,7 +3090,7 @@ slop_list_types_SExpr_ptr defn_collect_preconditions(slop_arena* arena, slop_lis
 
 slop_list_types_SExpr_ptr defn_collect_postconditions(slop_arena* arena, slop_list_types_SExpr_ptr items) {
     {
-        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type len = ((int64_t)((items).len));
         int64_t i = 3;
         while (i < len) {
@@ -3115,7 +3115,7 @@ slop_list_types_SExpr_ptr defn_collect_postconditions(slop_arena* arena, slop_li
 
 slop_list_types_SExpr_ptr defn_collect_assumptions(slop_arena* arena, slop_list_types_SExpr_ptr items) {
     {
-        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = (types_SExpr**)slop_arena_alloc(arena, 16 * sizeof(types_SExpr*)), .len = 0, .cap = 16 });
+        __auto_type result = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0 });
         __auto_type len = ((int64_t)((items).len));
         int64_t i = 3;
         while (i < len) {
