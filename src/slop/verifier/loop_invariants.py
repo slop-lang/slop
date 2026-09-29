@@ -183,7 +183,7 @@ class InvariantProverMixin:
         self._ip_time_spent = False
         self._ip_loop_depth: Dict[int, int] = {}
         self._ip_depth = 0
-        self._ip_consistent_upto = -1
+        self._ip_consistent: Dict[Any, bool] = {}
         # Hypotheses of the iterations being walked - an invariant assumed at
         # the top of the body, the loop's condition, what is known of its
         # element - asserted only in checks made while that iteration is walked.
@@ -209,7 +209,7 @@ class InvariantProverMixin:
                     given.append(term)
             self._ip_context = ([c for i, c in enumerate(tr.constraints)
                                  if i not in tr.definedness_constraints]
-                                + given + list(self._extract_record_field_range_axioms(tr)))
+                                + given + self._ip_parameter_field_ranges(tr, env, types))
             state = _IState(env, types, {}, z3.BoolVal(True), None)
             try:
                 self._ip_stmt(body, state, z3.BoolVal(True))
@@ -244,6 +244,33 @@ class InvariantProverMixin:
     @staticmethod
     def _ip_unchecked_message(expr, reason: str) -> str:
         return f"could not check loop invariant: {pretty_print(expr)} ({reason})"
+
+    def _ip_parameter_field_ranges(self, tr, env, types) -> List[Any]:
+        """The declared ranges of each record parameter's own fields.
+
+        Taken as given about the arguments, as the main verifier takes a
+        parameter's range. Not stated for every record: a field accessor is
+        named by the field alone, shared by every type with a field of that
+        name, and C does not check a range when a record is built - a
+        universal range axiom would contradict a record the body makes.
+        """
+        facts = []
+        for name, typ in types.items():
+            record = self._ip_resolve(typ)
+            if not isinstance(record, RecordType):
+                continue
+            for field_name, field_type in record.fields.items():
+                bounds = self._ip_resolve(field_type)
+                if not isinstance(bounds, RangeType):
+                    continue
+                access = tr._translate_field_for_obj(env[name], field_name)
+                if access is None or access.sort() != z3.IntSort():
+                    continue
+                if bounds.bounds.min_val is not None:
+                    facts.append(access >= bounds.bounds.min_val)
+                if bounds.bounds.max_val is not None:
+                    facts.append(access <= bounds.bounds.max_val)
+        return facts
 
     def _ip_declare_parameters(self, tr, params) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         env: Dict[str, Any] = {}
@@ -892,6 +919,11 @@ class InvariantProverMixin:
                 raise _Bail(f"{call[0].name} in a term")
             effect = effect or self._ip_call_effect(call)
         reads = self._ip_state_reads(expr, st)
+        if effect is not None:
+            # A local a call may write, read in the same term, may be read
+            # after the call - an `if` arm, the right of an `and`.
+            reads = reads + [f"{n}, which a call may write" for n in sorted(self._ip_addr_taken)
+                             if self._ip_mentions(expr, n)]
         stale = st.dirty or (effect if reads else None)
         if reads and stale:
             if invariant:
@@ -1082,8 +1114,16 @@ class InvariantProverMixin:
                 if isinstance(item, SList) and len(item) >= 2 and tr.translate_expr(item[1]) is None:
                     raise _Bail("a record field does not translate")
             const = z3.FreshConst(z3.IntSort(), 'record')
-            self._xp_axioms.extend(self._extract_record_field_axioms(
-                expr, tr, base_accessor=const, path_cond=pc, bindings={}))
+            # Each field's value, where the accessor holds a value of that
+            # sort. Accessors are named by field alone and their sort is a
+            # guess from the name; a fact across sorts would be false.
+            for item in expr.items[2:]:
+                if not (isinstance(item, SList) and len(item) >= 2 and isinstance(item[0], Symbol)):
+                    continue
+                value = tr.translate_expr(item[1])
+                access = tr._translate_field_for_obj(const, item[0].name)
+                if value is not None and access is not None and access.sort() == value.sort():
+                    self._xp_axioms.append(z3.Implies(pc, access == value))
             tr._pinned_terms[id(expr)] = const
         elif name == 'union-new':
             if len(expr) < 3 or not isinstance(expr[2], Symbol):
@@ -1322,12 +1362,17 @@ class InvariantProverMixin:
             raise _Bail("malformed let")
         inner = st
         introduced: List[str] = []
+        # What each name this let shadows held just before it was shadowed -
+        # after anything an earlier initializer did to it.
+        outer: Dict[str, Tuple[Any, Any, Any]] = {}
         for binding in stmt[1].items:
             if not isinstance(binding, SList) or len(binding) < 2:
                 raise _Bail("malformed binding")
             bname = self._binding_name(binding)
             if bname is None:
                 raise _Bail("unnamed binding")
+            if bname in inner.env and bname not in outer and bname not in introduced:
+                outer[bname] = (inner.env[bname], inner.types.get(bname), inner.seqs.get(bname, _MISSING))
             init = binding[-1]
             type_expr = None
             if isinstance(binding[0], Symbol) and binding[0].name == 'mut':
@@ -1362,15 +1407,17 @@ class InvariantProverMixin:
             inner = self._ip_stmt(item, inner, pc)
         env, types, seqs = dict(inner.env), dict(inner.types), dict(inner.seqs)
         for bname in introduced:
-            if bname in st.env:
-                env[bname] = st.env[bname]
-                types[bname] = st.types.get(bname)
+            if bname in outer:
+                value, typ, seq = outer[bname]
+                env[bname] = value
+                types[bname] = typ
+                if seq is _MISSING:
+                    seqs.pop(bname, None)
+                else:
+                    seqs[bname] = seq
             else:
                 env.pop(bname, None)
                 types.pop(bname, None)
-            if bname in st.seqs:
-                seqs[bname] = st.seqs[bname]
-            elif bname not in st.env:
                 seqs.pop(bname, None)
         return inner.but(env=env, types=types, seqs=seqs)
 
@@ -1654,7 +1701,7 @@ class InvariantProverMixin:
                     outcome.reads_state = bool(self._ip_state_reads(condition, st))
                 for outcome, (goal, obligations) in zip(outcomes, goals):
                     self._ip_decide(outcome, z3.Implies(z3.And(pc, st.alive), z3.And(goal, *obligations)),
-                                    st, "not established on entry")
+                                    st, "not established on entry", pc)
         if reason is not None:
             for outcome in outcomes:
                 self._ip_set_unknown(outcome, reason)
@@ -1750,7 +1797,7 @@ class InvariantProverMixin:
                 continue
             self._ip_decide(outcome, z3.Implies(z3.And(step_pc, end.alive),
                                                 z3.And(goal, *obligations)),
-                            end, "not preserved")
+                            end, "not preserved", step_pc)
         for outcome in outcomes:
             if outcome.status == 'pending':
                 outcome.status = 'proved'
@@ -1842,10 +1889,16 @@ class InvariantProverMixin:
         sig = tr.imported_defs.functions.get(source[0].name)
         args = list(source.items[1:])
         facts = []
+        # The lambda was the last argument, so it fills the parameter after
+        # the ones `args` fill; another callback parameter's facts are not
+        # about this one's element.
+        if len(sig.params) != len(args) + 1:
+            return facts
+        lambda_param = sig.params[len(args)]
+        params = list(sig.params[:len(args)])
         for assumption in getattr(sig, 'callback_assumptions', []) or []:
             callback_param = getattr(assumption, 'callback_param', None)
-            params = [p for p in sig.params if p != callback_param]
-            if len(params) != len(args):
+            if callback_param != lambda_param:
                 continue
             expr = getattr(assumption, 'assumption', None)
             if expr is None:
@@ -1923,8 +1976,14 @@ class InvariantProverMixin:
     # Solving
     # ------------------------------------------------------------------
 
-    def _ip_decide(self, outcome: InvariantOutcome, claim, st: _IState, failure: str) -> None:
-        """Check `claim` under everything the walk has established; record a failure."""
+    def _ip_decide(self, outcome: InvariantOutcome, claim, st: _IState, failure: str, path) -> None:
+        """Check `claim` under everything the walk has established; record a failure.
+
+        `path` is the claim's path condition. A proof is only a proof if the
+        facts leave that path possible; the hypotheses of the iteration are
+        left out of that question, since an iteration no state can start is
+        a legitimate reason for the step to hold.
+        """
         if outcome.status != 'pending':
             return
         if self._ip_time_spent:
@@ -1940,11 +1999,11 @@ class InvariantProverMixin:
         solver.add(z3.Not(claim))
         result = solver.check()
         if result == z3.unsat:
-            if len(facts) != self._ip_consistent_upto:
-                if self._axioms_are_contradictory(facts):
-                    self._ip_set_unknown(outcome, "the verification context is inconsistent")
-                    return
-                self._ip_consistent_upto = len(facts)
+            key = (len(facts), path.get_id())
+            if key not in self._ip_consistent:
+                self._ip_consistent[key] = not self._axioms_are_contradictory(facts + [path])
+            if not self._ip_consistent[key]:
+                self._ip_set_unknown(outcome, "the verification context is inconsistent")
             return      # holds; the caller decides what that makes the invariant
         if result == z3.sat:
             model = solver.model()

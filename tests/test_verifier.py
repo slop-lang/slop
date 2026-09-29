@@ -12026,6 +12026,7 @@ class TestCheckedLoopInvariants:
           (mut done false))
       (when skip (return 0))
       (while (and (not done) (< (. state iteration) (. cfg max-iterations)))
+        (@loop-invariant {(. state iteration) >= 0})
         (@loop-invariant {(. state iteration) <= (. cfg max-iterations)})
         %s
         (match (run-iter arena state)
@@ -12504,6 +12505,93 @@ class TestCheckedLoopInvariantSoundness:
     (@pure)
     (@callback-assume callback (> $callback-arg 0))
     (for-each (x xs) (when (> x 0) (callback x (- 0 x))))))
+'''}) != 'verified'
+
+    def test_a_record_field_of_another_sort_makes_no_path_impossible(self):
+        assert self._status('''
+(module probe
+  (type P (record (x F64)))
+  (fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post {$result == 0})
+    (let ((mut c 0))
+      (for-each (x xs)
+        (@loop-invariant {c == 0})
+        (let ((p (record-new P (x 0.5))))
+          (set! c (+ c 1))))
+      c)))''', 'f') != 'verified'
+
+    def test_a_range_is_not_assumed_of_a_record_the_body_builds(self):
+        assert self._status('''
+(module probe
+  (type A (record (n (Int 0 .. 10))))
+  (fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post {$result <= 10})
+    (let ((mut c 0))
+      (for-each (x xs)
+        (@loop-invariant {c <= 10})
+        (set! c (+ c 1))
+        (let ((a (record-new A (n c))))
+          (set! c c)))
+      c)))''', 'f') != 'verified'
+
+    def test_a_local_read_after_a_call_that_writes_it_in_the_same_term(self):
+        assert self._status('''
+(module probe
+  (type Cell (record (v Int)))
+  (fn bump ((p (Ptr Cell)))
+    (@spec (((Ptr Cell)) -> Bool))
+    (do
+      (set! p v 5)
+      true))
+  (fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post {$result == 0})
+    (let ((mut c 0)
+          (mut cell (record-new Cell (v 0))))
+      (for-each (x xs)
+        (@loop-invariant {c == 0})
+        (set! cell (record-new Cell (v 0)))
+        (set! c (if (bump (addr cell)) (. cell v) 0)))
+      c)))''', 'f') != 'verified'
+
+    def test_an_earlier_initializers_write_survives_a_later_shadowing_binding(self):
+        assert self._status('''
+(fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post {$result == 0})
+    (let ((mut c 0))
+      (let ((a (do (set! c 5) 1))
+            (c 7))
+        (+ a c))
+      (for-each (x xs)
+        (@loop-invariant {c == 0})
+        (set! c c))
+      c))''', 'f') != 'verified'
+
+    def test_a_callback_assume_describes_only_its_own_callback(self, tmp_path):
+        src = '''
+(module main
+  (import cb3 (each2))
+  (fn fa ((xs (List Int)) (h (Fn (Int) Unit)))
+    (@spec (((List Int) (Fn (Int) Unit)) -> Int))
+    (@post {$result >= 0})
+    (let ((mut n 0))
+      (each2 xs h
+        (fn ((b Int))
+          (@loop-invariant {n >= 0})
+          (set! n b)))
+      n)))'''
+        assert self._status(src, 'fa', tmp_path, {'cb3': '''
+(module cb3
+  (export each2)
+  (fn each2 ((xs (List Int)) (f (Fn (Int) Unit)) (g (Fn (Int) Unit)))
+    (@spec (((List Int) (Fn (Int) Unit) (Fn (Int) Unit)) -> Unit))
+    (@pure)
+    (@callback-assume f (> $callback-arg 0))
+    (for-each (x xs)
+      (if (> x 0) (f x) (g x)))))
 '''}) != 'verified'
 
     def test_division_is_checked_rather_than_opaque(self):
