@@ -521,9 +521,17 @@ slop_result_int_strlib_ParseError strlib_parse_int(slop_string s) {
                 {
                     __auto_type end_val = (*((char**)(endptr)));
                     if (end_val == ((char*)(s.data))) {
-                        return ((slop_result_int_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_invalid_format });
+                        {
+                            slop_result_int_strlib_ParseError _wa_ret = ((slop_result_int_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_invalid_format });
+                            slop_arena_free(arena);
+                            return _wa_ret;
+                        }
                     } else {
-                        return ((slop_result_int_strlib_ParseError){ .is_ok = true, .data.ok = result });
+                        {
+                            slop_result_int_strlib_ParseError _wa_ret = ((slop_result_int_strlib_ParseError){ .is_ok = true, .data.ok = result });
+                            slop_arena_free(arena);
+                            return _wa_ret;
+                        }
                     }
                 }
             }
@@ -551,9 +559,17 @@ slop_result_float_strlib_ParseError strlib_parse_float(slop_string s) {
                 {
                     __auto_type end_val = (*((char**)(endptr)));
                     if (end_val == ((char*)(s.data))) {
-                        return ((slop_result_float_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_invalid_format });
+                        {
+                            slop_result_float_strlib_ParseError _wa_ret = ((slop_result_float_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_invalid_format });
+                            slop_arena_free(arena);
+                            return _wa_ret;
+                        }
                     } else {
-                        return ((slop_result_float_strlib_ParseError){ .is_ok = true, .data.ok = result });
+                        {
+                            slop_result_float_strlib_ParseError _wa_ret = ((slop_result_float_strlib_ParseError){ .is_ok = true, .data.ok = result });
+                            slop_arena_free(arena);
+                            return _wa_ret;
+                        }
                     }
                 }
             }

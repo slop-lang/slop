@@ -18,7 +18,7 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import parser (sexpr-get-symbol-name))
-  (import context (TranspileContext ctx-set-pos ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
+  (import context (TranspileContext ctx-push-open-arena ctx-pop-open-arena ctx-emit-return ctx-set-pos ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type
                    ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens VarEntry
                    ctx-get-current-return-type ctx-is-capture-retval ctx-is-option-c-type
@@ -801,6 +801,9 @@
     ;;     <body statements>
     ;;     slop_arena_free(<name>);
     ;; }
+    ;; A return inside the body -- its last statement when the block is in
+    ;; return position, or an explicit (return x) -- would skip that free, so
+    ;; the arena is recorded as open and ctx-emit-return frees it first.
     (match (deref expr)
       ((lst lst)
         (let ((items (. lst items))
@@ -854,6 +857,7 @@
                     ((none) (ctx-add-error-at ctx "missing size" (ctx-sexpr-line expr) (ctx-sexpr-col expr))))
                   ;; Bind arena variable in scope
                   (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" "" 'origin-bound))
+                  (ctx-push-open-arena ctx c-arena-name)
                   ;; Process body statements
                   (let ((mut i body-start))
                     (while (< i len)
@@ -863,7 +867,8 @@
                             (transpile-stmt ctx body-expr (and is-return is-last))))
                         ((none) (do)))
                       (set! i (+ i 1))))
-                  ;; Free arena
+                  (ctx-pop-open-arena ctx)
+                  ;; Free arena, for every path that falls off the end of the block
                   (ctx-emit ctx (ctx-str3 ctx "slop_arena_free(" c-arena-name ");"))
                   ;; Close scope
                   (ctx-pop-scope ctx)
@@ -1334,12 +1339,12 @@
                           (transpile-with-arena ctx expr is-return))
                         ((string-eq op "return")
                           (if (< (list-len items) 2)
-                            (ctx-emit ctx "return;")
+                            (ctx-emit-return ctx "")
                             (match (list-get items 1)
                               ((some val-expr)
                                 ;; Use helper that handles (some ..), (none), and regular expressions
                                 (emit-typed-return-expr ctx val-expr))
-                              ((none) (ctx-emit ctx "return;")))))
+                              ((none) (ctx-emit-return ctx "")))))
                         ((string-eq op "break")
                           (ctx-emit ctx "break;"))
                         ((string-eq op "continue")
@@ -1395,7 +1400,7 @@
                                   (match (list-get items 1)
                                     ((some inner-expr)
                                       (let ((inner-c (transpile-expr ctx inner-expr)))
-                                        (ctx-emit ctx (ctx-str5 ctx "return (" ret-type "){.has_value = 1, .value = " inner-c "};"))))
+                                        (ctx-emit-return ctx (ctx-str5 ctx "(" ret-type "){.has_value = 1, .value = " inner-c "}"))))
                                     ((none) (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))
                                 (emit-return-with-typed-none ctx (transpile-expr ctx expr))))
                             ((none) (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))
@@ -1404,7 +1409,7 @@
                           (match (ctx-get-current-return-type ctx)
                             ((some ret-type)
                               (if (ctx-is-option-c-type ctx ret-type)
-                                (ctx-emit ctx (ctx-str3 ctx "return (" ret-type "){.has_value = false};"))
+                                (ctx-emit-return ctx (ctx-str3 ctx "(" ret-type "){.has_value = false}"))
                                 (emit-return-with-typed-none ctx (transpile-expr ctx expr))))
                             ((none) (emit-return-with-typed-none ctx (transpile-expr ctx expr)))))
                         ;; Other expressions - use existing helper
@@ -1459,6 +1464,6 @@
       ;; Check if we're capturing to _retval (postconditions mode) or returning
       (if (ctx-is-capture-retval ctx)
         (ctx-emit ctx (ctx-str3 ctx "_retval = " final-code ";"))
-        (ctx-emit ctx (ctx-str3 ctx "return " final-code ";")))))
+        (ctx-emit-return ctx final-code))))
 
 ) ;; end module

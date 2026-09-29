@@ -812,9 +812,17 @@ int main(int argc, char** _c_argv) {
                     }
                     if (string_len(expr_str) == 0) {
                         printf("%s\n", "Error: --expr requires an expression argument");
-                        return 1;
+                        {
+                            int _wa_ret = 1;
+                            slop_arena_free(arena);
+                            return _wa_ret;
+                        }
                     } else {
-                        return checker_check_expr_mode(arena, env, expr_str, type_str, context_file, params_str);
+                        {
+                            int _wa_ret = checker_check_expr_mode(arena, env, expr_str, type_str, context_file, params_str);
+                            slop_arena_free(arena);
+                            return _wa_ret;
+                        }
                     }
                 }
             } else {
@@ -848,9 +856,17 @@ int main(int argc, char** _c_argv) {
                         putchar(10);
                     }
                     if (total_errors > 0) {
-                        return 1;
+                        {
+                            int _wa_ret = 1;
+                            slop_arena_free(arena);
+                            return _wa_ret;
+                        }
                     } else {
-                        return 0;
+                        {
+                            int _wa_ret = 0;
+                            slop_arena_free(arena);
+                            return _wa_ret;
+                        }
                     }
                 }
             }

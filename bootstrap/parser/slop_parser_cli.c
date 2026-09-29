@@ -84,7 +84,11 @@ int main(int argc, char** _c_argv) {
                         } else {
                             printf("%s", "Unknown format: ");
                             printf("%.*s\n", (int)(fmt_arg).len, (fmt_arg).data);
-                            return 1;
+                            {
+                                int _wa_ret = 1;
+                                slop_arena_free(arena);
+                                return _wa_ret;
+                            }
                         }
                     }
                     file_idx = 3;
@@ -96,7 +100,11 @@ int main(int argc, char** _c_argv) {
                         __auto_type e = _mv_59.data.err;
                         printf("%s", "Error: Could not open file: ");
                         printf("%.*s\n", (int)(path).len, (path).data);
-                        return 1;
+                        {
+                            int _wa_ret = 1;
+                            slop_arena_free(arena);
+                            return _wa_ret;
+                        }
                     } else if (_mv_59.is_ok) {
                         __auto_type f = _mv_59.data.ok;
                         __auto_type _mv_60 = file_file_read_all(arena, (&f));
@@ -104,7 +112,11 @@ int main(int argc, char** _c_argv) {
                             __auto_type e = _mv_60.data.err;
                             file_file_close((&f));
                             printf("%s\n", "Error: Could not read file");
-                            return 1;
+                            {
+                                int _wa_ret = 1;
+                                slop_arena_free(arena);
+                                return _wa_ret;
+                            }
                         } else if (_mv_60.is_ok) {
                             __auto_type source = _mv_60.data.ok;
                             file_file_close((&f));
@@ -117,15 +129,27 @@ int main(int argc, char** _c_argv) {
                                 printf("%lld", (long long)(e.col));
                                 printf("%s", ": ");
                                 printf("%.*s\n", (int)(e.message).len, (e.message).data);
-                                return 1;
+                                {
+                                    int _wa_ret = 1;
+                                    slop_arena_free(arena);
+                                    return _wa_ret;
+                                }
                             } else if (_mv_61.is_ok) {
                                 __auto_type exprs = _mv_61.data.ok;
                                 if (format == parser_cli_OutputFormat_fmt_json) {
                                     parser_cli_print_json_array(arena, exprs);
-                                    return 0;
+                                    {
+                                        int _wa_ret = 0;
+                                        slop_arena_free(arena);
+                                        return _wa_ret;
+                                    }
                                 } else {
                                     parser_cli_print_sexp_list(arena, exprs);
-                                    return 0;
+                                    {
+                                        int _wa_ret = 0;
+                                        slop_arena_free(arena);
+                                        return _wa_ret;
+                                    }
                                 }
                             }
                             SLOP_UNREACHABLE();

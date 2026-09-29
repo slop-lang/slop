@@ -20,7 +20,7 @@
     emit-typedef)
 
   (import types (SExpr SExprList SExprSymbol))
-  (import context (TranspileContext ctx-emit ctx-emit ctx-indent ctx-dedent ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens ctx-add-include))
+  (import context (TranspileContext ctx-emit-return ctx-emit ctx-emit ctx-indent ctx-dedent ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens ctx-add-include))
   (import ctype (to-c-type to-c-name))
   (import strlib (replace))
 
@@ -203,12 +203,10 @@
   ;; ============================================================
 
   (fn emit-return ((ctx (Ptr TranspileContext)) (value String))
-    (@intent "Emit a return statement")
+    (@intent "Emit a return statement, freeing any open with-arena arena first")
     (@spec (((Ptr TranspileContext) String) -> Unit))
     (@pre {ctx != nil})
-    (if (string-eq value "")
-      (ctx-emit ctx "return;")
-      (ctx-emit ctx (ctx-str3 ctx "return " value ";"))))
+    (ctx-emit-return ctx value))
 
   (fn emit-assignment ((ctx (Ptr TranspileContext)) (lhs String) (rhs String))
     (@intent "Emit an assignment statement")

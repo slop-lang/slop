@@ -15,7 +15,7 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import parser (sexpr-get-symbol-name sexpr-is-number sexpr-number-string))
-  (import context (TranspileContext ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
+  (import context (TranspileContext ctx-push-open-arena ctx-pop-open-arena ctx-emit-return ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens VarEntry
                    ctx-resolve-enum-variant-for ctx-enum-variant-known ctx-get-current-return-type ctx-is-option-c-type ctx-gensym
                    to-c-type-prefixed ends-with-star
@@ -1568,6 +1568,8 @@
                 ((none) (ctx-add-error-at ctx "missing size" (ctx-list-first-line items) (ctx-list-first-col items))))
               ;; Bind arena variable in scope
               (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" "" 'origin-bound))
+              ;; Open until the block closes: a return inside it frees it first
+              (ctx-push-open-arena ctx c-arena-name)
               ;; Process body statements
               (let ((mut i body-start))
                 (while (< i len)
@@ -1577,6 +1579,7 @@
                         (emit-branch-body-item ctx body-expr (and is-return is-last) is-last)))
                     ((none) (do)))
                   (set! i (+ i 1))))
+              (ctx-pop-open-arena ctx)
               ;; Free arena
               (ctx-emit ctx (ctx-str3 ctx "slop_arena_free(" c-arena-name ");"))
               ;; Close scope
@@ -1880,11 +1883,11 @@
     (@pre {ctx != nil})
     (let ((len (list-len items)))
       (if (< len 2)
-        (ctx-emit ctx "return;")
+        (ctx-emit-return ctx "")
         (match (list-get items 1)
           ((some val-expr)
             (emit-typed-return-expr ctx val-expr))
-          ((none) (ctx-emit ctx "return;"))))))
+          ((none) (ctx-emit-return ctx ""))))))
 
   ;; ============================================================
   ;; Helper for typed none in returns
@@ -1902,7 +1905,7 @@
                                code))
                            ((none) code))
                          code)))
-      (ctx-emit ctx (ctx-str3 ctx "return " final-code ";"))))
+      (ctx-emit-return ctx final-code)))
 
   ;; Helper to emit typed return from expression (handles some/none with proper typing)
   (fn emit-typed-return-expr ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
@@ -1932,7 +1935,7 @@
                                   (match (list-get items 1)
                                     ((some inner-expr)
                                       (let ((inner-c (transpile-expr ctx inner-expr)))
-                                        (ctx-emit ctx (ctx-str5 ctx "return (" ret-type "){.has_value = 1, .value = " inner-c "};"))))
+                                        (ctx-emit-return ctx (ctx-str5 ctx "(" ret-type "){.has_value = 1, .value = " inner-c "}"))))
                                     ((none) (emit-return-typed ctx (transpile-expr ctx expr)))))
                                 (emit-return-typed ctx (transpile-expr ctx expr))))
                             ((none) (emit-return-typed ctx (transpile-expr ctx expr)))))
@@ -1941,7 +1944,7 @@
                           (match (ctx-get-current-return-type ctx)
                             ((some ret-type)
                               (if (ctx-is-option-c-type ctx ret-type)
-                                (ctx-emit ctx (ctx-str3 ctx "return (" ret-type "){.has_value = false};"))
+                                (ctx-emit-return ctx (ctx-str3 ctx "(" ret-type "){.has_value = false}"))
                                 (emit-return-typed ctx (transpile-expr ctx expr))))
                             ((none) (emit-return-typed ctx (transpile-expr ctx expr)))))
                         ;; Other expressions - use existing helper
