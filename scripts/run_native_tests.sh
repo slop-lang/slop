@@ -125,7 +125,7 @@ echo ""
 # ============================================================
 # The runtime header is exercised directly, under ASan and UBSan, where a
 # SLOP program cannot reach: forced hash collisions, removal across the
-# table's wrap-around, what a grow allocates.
+# table's wrap-around, what a grow allocates. *_tsan.c tests run under TSan.
 echo "=== Running Runtime Tests ==="
 echo ""
 
@@ -134,16 +134,32 @@ run_runtime_test() {
     local test_name=$(basename "$test_file" .c)
     local exe_path="$BUILD_DIR/$test_name"
 
+    # *_tsan.c tests are about threads, and run under ThreadSanitizer, which
+    # cannot be combined with ASan
+    local sanitize="-fsanitize=address,undefined -fno-sanitize-recover=undefined"
+    local run_prefix=()
+    case "$test_name" in
+        *_tsan)
+            sanitize="-fsanitize=thread -pthread"
+            # TSan's shadow memory cannot cope with the high-entropy ASLR of
+            # recent Linux kernels ("unexpected memory mapping"): run it
+            # with randomization off
+            if [ "$(uname -s)" = "Linux" ] && command -v setarch >/dev/null 2>&1; then
+                run_prefix=(setarch "$(uname -m)" -R)
+            fi
+            ;;
+    esac
+
     echo -n "Testing $test_name... "
     local output
-    if ! output=$(cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined \
+    if ! output=$(cc -g -O1 $sanitize \
             -I "$RUNTIME_DIR" -o "$exe_path" "$test_file" 2>&1); then
         echo -e "${RED}FAIL (build)${NC}"
         echo "$output"
         FAIL_COUNT=$((FAIL_COUNT + 1))
         return
     fi
-    if output=$("$exe_path" 2>&1); then
+    if output=$("${run_prefix[@]}" "$exe_path" 2>&1); then
         echo -e "${GREEN}PASS${NC}"
         PASS_COUNT=$((PASS_COUNT + 1))
     else

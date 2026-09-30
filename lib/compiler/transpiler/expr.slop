@@ -39,7 +39,7 @@
                  ResolvedType resolved-type-is-pointer
                  BindingOrigin MutationKind mutation-error-message))
   (import context (TranspileContext ctx-register-value-key-type ctx-take-open-arenas ctx-restore-open-arenas ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
-                   ctx-get-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
+                   ctx-get-current-result-type ctx-set-current-result-type ctx-clear-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-lookup-field-type-for-slop ctx-lookup-field-slop-type-for-slop ctx-register-option-type
@@ -1753,6 +1753,16 @@
                                       (_ "")))
                                   ((none) "")))
                               ((none) "")))
+                          ;; deref: (deref p) -> T for a p of type (Ptr T). Without it a
+                          ;; (Ptr (Map K V)) dereferenced at a map-put had no value type.
+                          ((and (string-eq op "deref") (>= len 2))
+                            (match (list-get items 1)
+                              ((some ptr-expr)
+                                (let ((ptr-type (resolve-type-alias ctx (infer-expr-slop-type ctx ptr-expr))))
+                                  (if (starts-with ptr-type "(Ptr ")
+                                    (substring arena ptr-type 5 (- (. ptr-type len) 6))
+                                    "")))
+                              ((none) "")))
                           ;; map-get: (map-get m k) -> (Option V). Without it a let bound to
                           ;; a map-get had no SLOP type, a match on it bound its payload
                           ;; as `auto`, and a closure capturing that payload declared an
@@ -3000,13 +3010,13 @@
                     ;; map-new: (map-new arena KeyType ValueType) -> slop_map_new_ptr(arena, 0, ...)
                     ((and (string-eq op "map-new") (>= len 2))
                       (transpile-map-new ctx items))
-                    ;; map-put: (map-put map key val) -> slop_map_put(arena, map, key, &val)
+                    ;; map-put: (map-put map key val) -> slop_map_put(arena, map, key, &val, sizeof(val))
                     ((and (string-eq op "map-put") (>= len 4))
                       (transpile-map-put ctx items))
                     ;; map-get: (map-get map key) -> slop_map_get(map, key)
                     ((and (string-eq op "map-get") (>= len 3))
                       (transpile-map-get ctx items))
-                    ;; map-has: (map-has map key) -> (slop_map_get(map, key) != NULL)
+                    ;; map-has: (map-has map key) -> slop_map_has(map, key)
                     ((and (string-eq op "map-has") (>= len 3))
                       (transpile-map-has ctx items))
                     ;; map-len / set-len: (map-len map) -> ((int64_t)(map)->len)
@@ -3024,7 +3034,7 @@
                     ;; set-new: (set-new arena ElementType) -> slop_map_new_ptr for Set
                     ((and (string-eq op "set-new") (>= len 3))
                       (transpile-set-new ctx items))
-                    ;; set-put: (set-put set element) -> slop_map_put with dummy value
+                    ;; set-put: (set-put set element) -> slop_map_put with no value (NULL, 0)
                     ((and (string-eq op "set-put") (>= len 3))
                       (transpile-set-put ctx items))
                     ;; set-has: (set-has set element) -> slop_map_has
@@ -3248,8 +3258,8 @@
                                 (ctx-register-list-type ctx elem-c-type list-type)
                                 (ctx-register-option-type ctx elem-c-type (ctx-str ctx "slop_option_" elem-id))
                                 ;; ((slop_list_Type){ .data = NULL, .len = 0, .cap = 0 })
-                                ;; No storage until the first push, which grows from cap 0
-                                ;; to the 16 slots this used to allocate up front: most
+                                ;; No storage until the first push, which gives it
+                                ;; SLOP_LIST_FIRST_CAPACITY slots (slop_list_grow_raw): most
                                 ;; lists a rule builds stay empty. The arena expression is
                                 ;; still transpiled, for its diagnostics, but not emitted.
                                 (ctx-str3 ctx "((" list-type "){ .data = NULL, .len = 0, .cap = 0 })")))
@@ -3274,14 +3284,17 @@
                                     ;; If it's a struct field access, use struct->arena
                                     (arena-c (get-arena-for-list-push-expr ctx list-expr items)))
                                 ;; ({ __auto_type _lst_p = &(list); __auto_type _item = item;
-                                ;;    if (_lst_p->len >= _lst_p->cap) { ... grow ... }
+                                ;;    if (_lst_p->len >= _lst_p->cap) { _lst_p->data = slop_list_grow_raw(arena, ...); }
                                 ;;    _lst_p->data[_lst_p->len++] = _item; })
+                                ;; The runtime owns the growth policy: first capacity, doubling,
+                                ;; and moving to a new buffer (never extending the shared one in
+                                ;; place, since copies of the list header point at it).
                                 (let ((s1 (ctx-str ctx "({ __auto_type _lst_p = &(" list-c))
                                       (s2 (ctx-str ctx s1 "); __auto_type _item = ("))
                                       (s3 (ctx-str ctx s2 item-c))
-                                      (s4 (ctx-str ctx s3 "); if (_lst_p->len >= _lst_p->cap) { size_t _new_cap = _lst_p->cap == 0 ? 16 : _lst_p->cap * 2; __typeof__(_lst_p->data) _new_data = (__typeof__(_lst_p->data))slop_arena_alloc("))
+                                      (s4 (ctx-str ctx s3 "); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw("))
                                       (s5 (ctx-str ctx s4 arena-c))
-                                      (s6 (ctx-str ctx s5 ", _new_cap * sizeof(*_lst_p->data)); if (_lst_p->len > 0) memcpy(_new_data, _lst_p->data, _lst_p->len * sizeof(*_lst_p->data)); _lst_p->data = _new_data; _lst_p->cap = _new_cap; } _lst_p->data[_lst_p->len++] = _item; (void)0; })")))
+                                      (s6 (ctx-str ctx s5 ", _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; })")))
                                   s6)))
                             ((none)
                               (do
@@ -6054,54 +6067,59 @@
   ;; ============================================================
   ;; Map Key Type Info
   ;;
-  ;; Returns C code suffix with sizeof, hash function, and eq function
-  ;; for the given key type expression: "sizeof(...), hash_fn, eq_fn"
+  ;; Returns the key half of a slop_map_desc initializer for the given key
+  ;; type expression: "KeyCType, hash_fn, eq_fn, SLOP_KEY_<mode>", which
+  ;; SLOP_SET_DESC(...) takes as is and SLOP_MAP_DESC(..., ValueCType)
+  ;; follows with the value type. The mode says how a probe matches a key:
+  ;; BITS compares the key's bytes (integers, Bool, Symbol, Ptr), CALL calls
+  ;; eq (Float, whose -0.0 and 0.0 are one key), HASHED compares a stored
+  ;; hash before calling eq (String and generated hashes, whose eq is costly).
   ;; ============================================================
 
   (fn build-struct-key-info ((ctx (Ptr TranspileContext)) (c-name String))
-    (@intent "Build sizeof/hash/eq info string for a struct key type")
+    (@intent "Build the key descriptor for a type with a generated hash and eq")
     (@spec (((Ptr TranspileContext) String) -> String))
     (@pre {ctx != nil})
-    ;; Generate: sizeof(TypeName), slop_hash_TypeName, slop_eq_TypeName
-    (ctx-str ctx "sizeof("
-      (ctx-str ctx c-name
-        (ctx-str ctx "), slop_hash_"
-          (ctx-str ctx c-name
-            (ctx-str ctx ", slop_eq_" c-name))))))
+    ;; Generate: TypeName, slop_hash_TypeName, slop_eq_TypeName, SLOP_KEY_HASHED
+    (ctx-str ctx c-name
+      (ctx-str ctx ", slop_hash_"
+        (ctx-str ctx c-name
+          (ctx-str ctx ", slop_eq_"
+            (ctx-str ctx c-name ", SLOP_KEY_HASHED"))))))
 
   (fn builtin-map-key-c-info ((name String))
-    (@intent "The sizeof/hash/eq triple for a key type the runtime hashes itself, or \"\" if it needs a generated one")
+    (@intent "The key descriptor for a key type the runtime hashes itself, or \"\" if it needs a generated one")
     (@spec ((String) -> String))
     (@pure)
     ;; Each size and its hash/eq agree on the width. I32 and U32 keys used to
     ;; pair sizeof(int32_t) with slop_hash_int, which reads 8 bytes: past the
     ;; end of a lookup key, and into the arena garbage after a stored one.
-    (@example ("I32") -> "sizeof(int32_t), slop_hash_i32, slop_eq_i32")
-    (@example ("U8") -> "sizeof(uint8_t), slop_hash_u8, slop_eq_u8")
+    (@example ("I32") -> "int32_t, slop_hash_i32, slop_eq_i32, SLOP_KEY_BITS")
+    (@example ("U8") -> "uint8_t, slop_hash_u8, slop_eq_u8, SLOP_KEY_BITS")
     (@example ("Point") -> "")
     (cond
-      ((string-eq name "String") "sizeof(slop_string), slop_hash_string, slop_eq_string")
-      ((or (string-eq name "Int") (string-eq name "I64")) "sizeof(int64_t), slop_hash_int, slop_eq_int")
-      ((string-eq name "I32") "sizeof(int32_t), slop_hash_i32, slop_eq_i32")
-      ((string-eq name "I16") "sizeof(int16_t), slop_hash_i16, slop_eq_i16")
-      ((string-eq name "I8") "sizeof(int8_t), slop_hash_i8, slop_eq_i8")
-      ((or (string-eq name "Uint") (string-eq name "U64")) "sizeof(uint64_t), slop_hash_uint, slop_eq_uint")
-      ((string-eq name "U32") "sizeof(uint32_t), slop_hash_u32, slop_eq_u32")
-      ((string-eq name "U16") "sizeof(uint16_t), slop_hash_u16, slop_eq_u16")
-      ((string-eq name "U8") "sizeof(uint8_t), slop_hash_u8, slop_eq_u8")
-      ((string-eq name "Bool") "sizeof(bool), slop_hash_bool, slop_eq_bool")
-      ((or (string-eq name "Float") (string-eq name "F64")) "sizeof(double), slop_hash_double, slop_eq_double")
-      ((string-eq name "F32") "sizeof(float), slop_hash_float, slop_eq_float")
+      ((string-eq name "String") "slop_string, slop_hash_string, slop_eq_string, SLOP_KEY_HASHED")
+      ((or (string-eq name "Int") (string-eq name "I64")) "int64_t, slop_hash_int, slop_eq_int, SLOP_KEY_BITS")
+      ((string-eq name "I32") "int32_t, slop_hash_i32, slop_eq_i32, SLOP_KEY_BITS")
+      ((string-eq name "I16") "int16_t, slop_hash_i16, slop_eq_i16, SLOP_KEY_BITS")
+      ((string-eq name "I8") "int8_t, slop_hash_i8, slop_eq_i8, SLOP_KEY_BITS")
+      ((or (string-eq name "Uint") (string-eq name "U64")) "uint64_t, slop_hash_uint, slop_eq_uint, SLOP_KEY_BITS")
+      ((string-eq name "U32") "uint32_t, slop_hash_u32, slop_eq_u32, SLOP_KEY_BITS")
+      ((string-eq name "U16") "uint16_t, slop_hash_u16, slop_eq_u16, SLOP_KEY_BITS")
+      ((string-eq name "U8") "uint8_t, slop_hash_u8, slop_eq_u8, SLOP_KEY_BITS")
+      ((string-eq name "Bool") "bool, slop_hash_bool, slop_eq_bool, SLOP_KEY_BITS")
+      ((or (string-eq name "Float") (string-eq name "F64")) "double, slop_hash_double, slop_eq_double, SLOP_KEY_CALL")
+      ((string-eq name "F32") "float, slop_hash_float, slop_eq_float, SLOP_KEY_CALL")
       ;; Symbols are interned as integers
-      ((string-eq name "Symbol") "sizeof(int64_t), slop_hash_symbol, slop_eq_symbol")
+      ((string-eq name "Symbol") "int64_t, slop_hash_symbol, slop_eq_symbol, SLOP_KEY_BITS")
       (else "")))
 
   (fn int-c-type-key-info ((c-type String))
-    (@intent "The sizeof/hash/eq triple for an integer C type, or \"\" for any other")
+    (@intent "The key descriptor for an integer C type, or \"\" for any other")
     (@spec ((String) -> String))
     (@pure)
-    (@example ("uint8_t") -> "sizeof(uint8_t), slop_hash_u8, slop_eq_u8")
-    (@example ("int64_t") -> "sizeof(int64_t), slop_hash_int, slop_eq_int")
+    (@example ("uint8_t") -> "uint8_t, slop_hash_u8, slop_eq_u8, SLOP_KEY_BITS")
+    (@example ("int64_t") -> "int64_t, slop_hash_int, slop_eq_int, SLOP_KEY_BITS")
     (@example ("double") -> "")
     (cond
       ((string-eq c-type "int64_t") (builtin-map-key-c-info "Int"))
@@ -6128,7 +6146,7 @@
         (starts-with type-str "(U8 ")))
 
   (fn compound-map-key-c-info ((ctx (Ptr TranspileContext)) (key-type-expr (Ptr SExpr)))
-    (@intent "The sizeof/hash/eq triple for a compound key type, or an error if it has no structural hash")
+    (@intent "The key descriptor for a compound key type, or an error if it has no structural hash")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
     (@pre {ctx != nil})
     (@pre {key-type-expr != nil})
@@ -6140,7 +6158,7 @@
           (type-str (sexpr-to-type-string arena key-type-expr)))
       (cond
         ((starts-with type-str "(Ptr ")
-          "sizeof(void*), slop_hash_ptr, slop_eq_ptr")
+          "void*, slop_hash_ptr, slop_eq_ptr, SLOP_KEY_BITS")
         ((and (is-range-type-string type-str)
               (> (string-len (int-c-type-key-info (to-c-type arena key-type-expr))) 0))
           (int-c-type-key-info (to-c-type arena key-type-expr)))
@@ -6153,10 +6171,10 @@
             (ctx-add-error-at ctx
               (ctx-str3 ctx "'" type-str "' cannot be a Map key or Set element - it has no structural hash")
               (ctx-sexpr-line key-type-expr) (ctx-sexpr-col key-type-expr))
-            "sizeof(void*), slop_hash_ptr, slop_eq_ptr")))))
+            "void*, slop_hash_ptr, slop_eq_ptr, SLOP_KEY_BITS")))))
 
   (fn get-map-key-c-info ((ctx (Ptr TranspileContext)) (key-type-expr (Ptr SExpr)))
-    (@intent "Get sizeof, hash fn, eq fn suffix for map key type")
+    (@intent "The key descriptor (C type, hash, eq, mode) for a map key or set element type")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
     (@pre {ctx != nil})
     (@pre {key-type-expr != nil})
@@ -6176,7 +6194,7 @@
                     (do
                       (ctx-add-error-at ctx (ctx-str3 ctx "cannot read the type alias '" name "' as a key type")
                                         (ctx-sexpr-line key-type-expr) (ctx-sexpr-col key-type-expr))
-                      "sizeof(void*), slop_hash_ptr, slop_eq_ptr")
+                      "void*, slop_hash_ptr, slop_eq_ptr, SLOP_KEY_BITS")
                     (get-map-key-c-info ctx parsed))))
               ;; User-defined type: look up and generate struct hash/eq
               ((none)
@@ -6194,7 +6212,7 @@
         (do
           (ctx-add-error-at ctx "a Map key or Set element type must be a type name or a type form"
                             (ctx-sexpr-line key-type-expr) (ctx-sexpr-col key-type-expr))
-          "sizeof(void*), slop_hash_ptr, slop_eq_ptr"))))
+          "void*, slop_hash_ptr, slop_eq_ptr, SLOP_KEY_BITS"))))
 
   (fn get-struct-key-info-by-name ((ctx (Ptr TranspileContext)) (name String))
     (@intent "Look up a type by name and return struct key info if found")
@@ -6208,48 +6226,61 @@
           (build-struct-key-info ctx c-name)))
       ((none) "")))
 
+  (fn map-new-value-c-type ((ctx (Ptr TranspileContext)) (value-type-expr (Ptr SExpr)))
+    (@intent "The C type a map-new's values are stored as; empty after an error")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {value-type-expr != nil})
+    ;; Entries hold the value inline, so the table's layout, every put's
+    ;; write and every read must agree on this one type. map-value-c-type
+    ;; reads it back from the map's (Map K V) type through the same
+    ;; resolve-type-alias and slop-value-type-to-c-type.
+    (let ((arena (. (deref ctx) arena))
+          (type-str (sexpr-to-type-string arena value-type-expr)))
+      (if (== (string-len type-str) 0)
+        (do
+          (ctx-add-error-at ctx "map-new: cannot read the value type"
+                            (ctx-sexpr-line value-type-expr) (ctx-sexpr-col value-type-expr))
+          "")
+        (slop-value-type-to-c-type ctx (resolve-type-alias ctx type-str)))))
+
   (fn transpile-map-new ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile map-new to slop_map_new_ptr with key type info")
+    (@intent "Transpile map-new to slop_map_new_ptr with a static descriptor of its key and value types")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
-    (let ((len (list-len items)))
-      (if (< len 3)
-        ;; Backward compat: if only arena, default to string keys
-        (if (< len 2)
-          (do
-            (ctx-add-error-at ctx "map-new: missing arena" (ctx-list-first-line items) (ctx-list-first-col items))
-            "NULL")
-          (match (list-get items 1)
-            ((some arena-expr)
-              (let ((arena-c (transpile-expr ctx arena-expr)))
-                ;; Default to string keys for backward compatibility
-                (ctx-str ctx "slop_map_new_ptr(" (ctx-str ctx arena-c ", 0, sizeof(slop_string), slop_hash_string, slop_eq_string)"))))
-            ((none)
-              (do
-                (ctx-add-error-at ctx "map-new: missing arena" (ctx-list-first-line items) (ctx-list-first-col items))
-                "NULL"))))
-        ;; Full form: (map-new arena KeyType ValueType)
-        (match (list-get items 1)
-          ((some arena-expr)
-            (match (list-get items 2)
-              ((some key-type-expr)
-                (let ((arena-c (transpile-expr ctx arena-expr))
-                      (key-info (get-map-key-c-info ctx key-type-expr)))
-                  ;; Generate: slop_map_new_ptr(arena, 0, sizeof_expr, hash_fn, eq_fn)
-                  ;; Capacity 0: no entry table until the first put (see slop_map_new)
-                  ;; key-info is already the formatted string "sizeof(...), hash_fn, eq_fn"
-                  (ctx-str ctx "slop_map_new_ptr("
-                    (ctx-str ctx arena-c
-                      (ctx-str ctx ", 0, "
-                        (ctx-str ctx key-info ")"))))))
-              ((none)
-                (do
-                  (ctx-add-error-at ctx "map-new: missing KeyType" (ctx-list-first-line items) (ctx-list-first-col items))
-                  "NULL"))))
-          ((none)
-            (do
-              (ctx-add-error-at ctx "map-new: missing arena" (ctx-list-first-line items) (ctx-list-first-col items))
-              "NULL"))))))
+    ;; The value type sizes the table's entries, so it is required: the
+    ;; two-argument (map-new arena) that once defaulted to String keys and
+    ;; untyped values is an error here, as the checker already makes it.
+    (if (!= (list-len items) 4)
+      (do
+        (ctx-add-error-at ctx "map-new: expects (map-new arena KeyType ValueType)"
+                          (ctx-list-first-line items) (ctx-list-first-col items))
+        "NULL")
+      (match (list-get items 1)
+        ((some arena-expr)
+          (match (list-get items 2)
+            ((some key-type-expr)
+              (match (list-get items 3)
+                ((some value-type-expr)
+                  (let ((arena-c (transpile-expr ctx arena-expr))
+                        (key-info (get-map-key-c-info ctx key-type-expr))
+                        (value-c (map-new-value-c-type ctx value-type-expr)))
+                    (if (== (string-len value-c) 0)
+                      "NULL"
+                      ;; ({ static const slop_map_desc _d = SLOP_MAP_DESC(K, hash, eq, mode, V);
+                      ;;    slop_map_new_ptr(arena, 0, &_d); })
+                      ;; One descriptor per map-new site, in static storage: every map
+                      ;; made here points at it. Capacity 0: no table until the first
+                      ;; put (see slop_map_new).
+                      (ctx-str ctx "({ static const slop_map_desc _d = SLOP_MAP_DESC("
+                        (ctx-str ctx key-info
+                          (ctx-str ctx ", "
+                            (ctx-str ctx value-c
+                              (ctx-str ctx "); slop_map_new_ptr("
+                                (ctx-str ctx arena-c ", 0, &_d); })")))))))))
+                ((none) "NULL")))
+            ((none) "NULL")))
+        ((none) "NULL"))))
 
   ;; ============================================================
   ;; Map Key Wrapping
@@ -6371,11 +6402,12 @@
     ;; Only the aggregate case. A scalar goes in a compound literal and a
     ;; pointer in a void* one, both already lvalues, and a key that is a name or
     ;; a field of one has an address of its own.
+    ;; A String key is an aggregate like any other: a call result has no
+    ;; address, and &(int_to_string(...)) is not C.
     (let ((key-type (map-key-c-type ctx key-expr container-expr)))
-      (and (not (string-eq key-type "slop_string"))
-           (and (not (ends-with-star key-type))
-                (and (not (is-c-primitive-type key-type))
-                     (not (key-expr-is-addressable key-expr)))))))
+      (and (not (ends-with-star key-type))
+           (and (not (is-c-primitive-type key-type))
+                (not (key-expr-is-addressable key-expr))))))
 
   (fn map-key-temp-decl ((ctx (Ptr TranspileContext)) (key-c String) (key-expr (Ptr SExpr))
                          (container-expr (Ptr SExpr)) (temp String))
@@ -6398,21 +6430,24 @@
       (ctx-str ctx "&" temp)
       (wrap-map-key-as-ptr ctx key-c key-expr container-expr)))
 
-  (fn map-put-value-decl-type ((ctx (Ptr TranspileContext)) (map-expr (Ptr SExpr)))
-    (@intent
-      "C type to declare map-put's `_val` with, so the width WRITTEN equals the width the readers dereference. map-put sizes its arena slot with sizeof(_val); map-get emits *(<option-type-to-value-c-type>*)_ptr and map for-each emits *(<slop-value-type-to-c-type>*)entries[i].value. With `__auto_type` the write width came from the value EXPRESSION, so a (Map K Int) storing an integer literal or int arithmetic wrote 4 bytes into a slot read back as 8 -- the upper half being whatever the bump allocator last left there (arena alloc never zeroes). Returns the declared type only when the two independent reader derivations AGREE and the result is a C arithmetic type; otherwise returns \"__auto_type\", reproducing the previous codegen byte for byte. That triple condition is what keeps String, structs, nested Map/Set (void* vs slop_map*), (List T) (void* vs a 24-byte struct -- a hard compile error if declared), (Option T), (Ptr T), F32 and range types on the identity path.")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
+  (fn transpile-map-value ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (c-type String) (is-result Bool))
+    (@intent "Transpile a value a map-put stores, for the map's own value type")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String Bool) -> String))
     (@pre {ctx != nil})
-    (@pre {map-expr != nil})
-    (let ((read-c-type (map-value-c-type ctx map-expr))
-          (value-slop-type (extract-map-value-from-inferred ctx map-expr)))
-      (if (or (== (string-len read-c-type) 0) (== (string-len value-slop-type) 0))
-        "__auto_type"
-        (let ((foreach-c-type (slop-value-type-to-c-type ctx value-slop-type)))
-          (if (and (is-c-primitive-type read-c-type)
-                   (string-eq read-c-type foreach-c-type))
-            read-c-type
-            "__auto_type")))))
+    (@pre {expr != nil})
+    ;; As a function argument is for its parameter: (none) becomes the map's
+    ;; Option type, not the generic literal. (ok v) and (error e) take their
+    ;; Result type from the enclosing function's return type, so for a map of
+    ;; Results that is the map's value type while the value is transpiled.
+    (if (not is-result)
+      (typed-none-arg ctx c-type (transpile-expr-for ctx expr c-type))
+      (let ((saved (ctx-get-current-result-type ctx)))
+        (ctx-set-current-result-type ctx c-type)
+        (let ((out (transpile-expr-for ctx expr c-type)))
+          (match saved
+            ((some prev) (ctx-set-current-result-type ctx prev))
+            ((none) (ctx-clear-current-result-type ctx)))
+          out))))
 
   (fn transpile-map-put ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile map-put to slop_map_put with proper key pointer wrapping")
@@ -6431,29 +6466,37 @@
                   ((some val-expr)
                     (let ((map-c (resolve-container-c ctx map-expr))
                           (key-c (transpile-expr ctx key-expr))
-                          (val-c (transpile-expr ctx val-expr))
                           ;; Wrap key as pointer for generic map API, binding
                           ;; an rvalue key to a temporary first (#108).
                           (key-temp (ctx-gensym ctx "_key"))
                           (key-decl (map-key-temp-decl ctx key-c key-expr map-expr key-temp))
                           (key-ptr (map-key-ptr ctx key-c key-expr map-expr key-temp))
-                          ;; Declare _val with the map's declared value type when that is
-                          ;; provably safe, so sizeof(_val) matches what map-get and map
-                          ;; for-each dereference. Falls back to "__auto_type".
-                          (val-decl-type (map-put-value-decl-type ctx map-expr))
-                          ;; slop_arena_alloc and slop_map_put both take the arena in
-                          ;; scope, which is not always the identifier "arena".
+                          ;; The map's own value type, as map-new laid out its entries
+                          ;; and as map-get and for-each read them. `_val` used to be
+                          ;; __auto_type whenever that was not provably a C arithmetic
+                          ;; type, sizing the write by the value EXPRESSION; with values
+                          ;; stored inline a wrong width would overrun the entry.
+                          (val-c-type (map-value-c-type ctx map-expr))
+                          ;; The value is transpiled for that type (see transpile-map-value)
+                          (val-c (transpile-map-value ctx val-expr val-c-type
+                                   (starts-with (infer-map-value-slop-type ctx map-expr) "(Result ")))
+                          ;; slop_map_put takes the arena in scope, which is not always
+                          ;; the identifier "arena": growth goes to it.
                           (arena-c (resolve-arena-c-name ctx "map-put" items)))
-                      ;; slop_map_put expects arena, slop_map* and key as const void*.
-                      ;; Allocate value on arena so it persists beyond the statement.
-                      ;; map-c is already dereferenced when the map is a (Ptr (Map ...)).
-                      (let ((s1 (ctx-str4 ctx (ctx-str ctx "({ " key-decl) val-decl-type " _val = " val-c))
-                            (s2 (ctx-str ctx s1 (ctx-str5 ctx "; void* _vptr = slop_arena_alloc(" arena-c ", sizeof(_val)); memcpy(_vptr, &_val, sizeof(_val)); slop_map_put(" arena-c ", ")))
-                            (s3 (ctx-str ctx s2 map-c))
-                            (s4 (ctx-str ctx s3 ", "))
-                            (s5 (ctx-str ctx s4 key-ptr))
-                            (s6 (ctx-str ctx s5 ", _vptr); })")))
-                        s6)))
+                      (if (== (string-len val-c-type) 0)
+                        (do
+                          (ctx-add-error-at ctx "map-put: cannot determine the value type of this map"
+                                            (ctx-sexpr-line map-expr) (ctx-sexpr-col map-expr))
+                          "0")
+                        ;; ({ KEYDECL VT _val = VAL; slop_map_put(ARENA, MAP, KEYPTR, &_val, sizeof(_val)); })
+                        ;; The runtime copies the key and value into the table and checks
+                        ;; sizeof(_val) against the map's value size. map-c is already
+                        ;; dereferenced when the map is a (Ptr (Map ...)).
+                        (ctx-str ctx (ctx-str4 ctx (ctx-str ctx "({ " key-decl) val-c-type " _val = " val-c)
+                          (ctx-str ctx (ctx-str3 ctx "; slop_map_put(" arena-c ", ")
+                            (ctx-str ctx map-c
+                              (ctx-str ctx ", "
+                                (ctx-str ctx key-ptr ", &_val, sizeof(_val)); })"))))))))
                   ((none)
                     (do
                       (ctx-add-error-at ctx "map-put: missing val" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6537,7 +6580,7 @@
         ((none) "0"))))
 
   (fn transpile-map-has ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile map-has to check for non-NULL with proper key pointer wrapping")
+    (@intent "Transpile map-has to slop_map_has with proper key pointer wrapping")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
@@ -6551,9 +6594,9 @@
               ((some key-expr)
                 (let ((map-c (resolve-container-c ctx map-expr))
                       (key-c (transpile-expr ctx key-expr))
-                      ;; Generate: (slop_map_get(MAP, KEY_PTR) != NULL)
-                      (prefix (ctx-str3 ctx "(slop_map_get(" map-c ", ")))
-                  (with-map-key ctx key-c key-expr map-expr prefix ") != NULL)")))
+                      ;; Generate: slop_map_has(MAP, KEY_PTR)
+                      (prefix (ctx-str3 ctx "slop_map_has(" map-c ", ")))
+                  (with-map-key ctx key-c key-expr map-expr prefix ")")))
               ((none)
                 (do
                   (ctx-add-error-at ctx "map-has: missing key" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6655,7 +6698,7 @@
   ;; ============================================================
 
   (fn transpile-set-new ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile set-new to slop_map_new_ptr with element type info")
+    (@intent "Transpile set-new to slop_map_new_ptr with a static descriptor of its element type")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
@@ -6669,12 +6712,14 @@
               ((some elem-type-expr)
                 (let ((arena-c (transpile-expr ctx arena-expr))
                       (elem-info (get-map-key-c-info ctx elem-type-expr)))
-                  ;; Generate: slop_map_new_ptr(arena, 0, sizeof_expr, hash_fn, eq_fn)
-                  ;; Capacity 0: no entry table until the first put (see slop_map_new)
-                  (ctx-str ctx "slop_map_new_ptr("
-                    (ctx-str ctx arena-c
-                      (ctx-str ctx ", 0, "
-                        (ctx-str ctx elem-info ")"))))))
+                  ;; ({ static const slop_map_desc _d = SLOP_SET_DESC(T, hash, eq, mode);
+                  ;;    slop_map_new_ptr(arena, 0, &_d); })
+                  ;; A Set's entries are its elements alone. Capacity 0: no table
+                  ;; until the first put (see slop_map_new)
+                  (ctx-str ctx "({ static const slop_map_desc _d = SLOP_SET_DESC("
+                    (ctx-str ctx elem-info
+                      (ctx-str ctx "); slop_map_new_ptr("
+                        (ctx-str ctx arena-c ", 0, &_d); })"))))))
               ((none)
                 (do
                   (ctx-add-error-at ctx "set-new: missing ElementType" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6685,7 +6730,7 @@
               "NULL"))))))
 
   (fn transpile-set-put ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile set-put to slop_map_put with dummy value")
+    (@intent "Transpile set-put to slop_map_put with no value")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
@@ -6704,11 +6749,11 @@
                       (elem-decl (map-key-temp-decl ctx elem-c elem-expr set-expr elem-temp))
                       (elem-ptr (map-key-ptr ctx elem-c elem-expr set-expr elem-temp))
                       (arena-c (resolve-arena-c-name ctx "set-put" items)))
-                  ;; Use a dummy 1-byte value for set membership
-                  (ctx-str ctx (ctx-str3 ctx (ctx-str3 ctx "({ " elem-decl "uint8_t _dummy = 1; slop_map_put(") arena-c ", ")
+                  ;; A Set stores no value: NULL, 0
+                  (ctx-str ctx (ctx-str3 ctx (ctx-str3 ctx "({ " elem-decl "slop_map_put(") arena-c ", ")
                     (ctx-str ctx set-c
                       (ctx-str ctx ", "
-                        (ctx-str ctx elem-ptr ", &_dummy); })"))))))
+                        (ctx-str ctx elem-ptr ", NULL, 0); })"))))))
               ((none)
                 (do
                   (ctx-add-error-at ctx "set-put: missing element" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6719,7 +6764,7 @@
               "0"))))))
 
   (fn transpile-set-has ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
-    (@intent "Transpile set-has to check for non-NULL with proper element pointer wrapping")
+    (@intent "Transpile set-has to slop_map_has with proper element pointer wrapping")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((len (list-len items)))
@@ -6733,8 +6778,9 @@
               ((some elem-expr)
                 (let ((set-c (resolve-container-c ctx set-expr))
                       (elem-c (transpile-expr ctx elem-expr))
-                      (prefix (ctx-str3 ctx "(slop_map_get(" set-c ", ")))
-                  (with-map-key ctx elem-c elem-expr set-expr prefix ") != NULL)")))
+                      ;; A Set stores no value, so membership is slop_map_has
+                      (prefix (ctx-str3 ctx "slop_map_has(" set-c ", ")))
+                  (with-map-key ctx elem-c elem-expr set-expr prefix ")")))
               ((none)
                 (do
                   (ctx-add-error-at ctx "set-has: missing element" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6841,14 +6887,16 @@
                   ;; NB: the `arena` binding above is the compiler's own allocator.
                   ;; This is the arena in the *transpiled program's* scope.
                   (arena-c (resolve-arena-c-name ctx "set" items))
-                  ;; Build: ({ slop_map* _s = slop_map_new_ptr(ARENA, N, elem_info);
+                  ;; Build: ({ static const slop_map_desc _d = SLOP_SET_DESC(elem_info);
+                  ;;          slop_map* _s = slop_map_new_ptr(ARENA, N, &_d);
+                  ;; sized for exactly its N elements (0 for an empty literal: no
+                  ;; table until a put)
                   (num-elems (- len 2))
-                  (init-cap (if (> num-elems 16) num-elems 16))
-                  (mut result (ctx-str ctx (ctx-str3 ctx "({ slop_map* _s = slop_map_new_ptr(" arena-c ", ")
-                                (ctx-str ctx (int-to-string arena init-cap)
-                                  (ctx-str ctx ", "
-                                    (ctx-str ctx elem-info "); "))))))
-              ;; Add each element: slop_map_put(ARENA, _s, &elem, &(uint8_t){1});
+                  (init-cap num-elems)
+                  (mut result (ctx-str ctx (ctx-str3 ctx "({ static const slop_map_desc _d = SLOP_SET_DESC(" elem-info "); ")
+                                (ctx-str ctx (ctx-str3 ctx "slop_map* _s = slop_map_new_ptr(" arena-c ", ")
+                                  (ctx-str ctx (int-to-string arena init-cap) ", &_d); ")))))
+              ;; Add each element: slop_map_put(ARENA, _s, &elem, NULL, 0);
               (let ((mut i 2))
                 (while (< i len)
                   (match (list-get items i)
@@ -6863,7 +6911,7 @@
                           (set! result (ctx-str ctx result
                             (ctx-str ctx (ctx-str3 ctx elem-decl
                                            (ctx-str3 ctx "slop_map_put(" arena-c ", _s, ") "")
-                              (ctx-str ctx elem-ptr ", &(uint8_t){1}); ")))))))
+                              (ctx-str ctx elem-ptr ", NULL, 0); ")))))))
                     ((none) (do)))
                   (set! i (+ i 1))))
               ;; Close: _s; })
@@ -7038,10 +7086,10 @@
           (coll-c (transpile-expr ctx coll-expr))
           (elem-slop-type (extract-set-elem-from-slop-type arena resolved-type))
           (elem-c-type (slop-value-type-to-c-type ctx elem-slop-type)))
-      ;; Build: ({ slop_map* _coll = (slop_map*)coll; for (size_t _i = 0; _i < _coll->cap; _i++) { if (_coll->entries[_i].occupied) { ElementType var = *(ElementType*)_coll->entries[_i].key;
-      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" (deref-container-c ctx coll-c resolved-type) "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
-            (if-part "if (_coll->entries[_i].occupied) { ")
-            (cast-part (ctx-str ctx elem-c-type "*)_coll->entries[_i].key"))
+      ;; Build: ({ slop_map* _coll = (slop_map*)coll; for (size_t _i = 0; _i < _coll->len; _i++) { { ElementType var = *(ElementType*)slop_map_key_at(_coll, _i);
+      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" (deref-container-c ctx coll-c resolved-type) "; for (size_t _i = 0; _i < _coll->len; _i++) { "))
+            (if-part "{ ")
+            (cast-part (ctx-str ctx elem-c-type "*)slop_map_key_at(_coll, _i)"))
             (assign-prefix (ctx-str4 ctx elem-c-type " " var-name " = *("))
             (assign-part (ctx-str3 ctx assign-prefix cast-part "; ")))
         (set! result (ctx-str3 ctx result if-part assign-part))
@@ -7080,10 +7128,10 @@
           (coll-c (transpile-expr ctx coll-expr))
           (key-slop-type (extract-map-key-from-slop-type arena resolved-type))
           (key-c-type (slop-value-type-to-c-type ctx key-slop-type)))
-      ;; Build: ({ slop_map* _coll = (slop_map*)coll; for (size_t _i = 0; _i < _coll->cap; _i++) { if (_coll->entries[_i].occupied) { KeyType var = *(KeyType*)_coll->entries[_i].key;
-      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" (deref-container-c ctx coll-c resolved-type) "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
-            (if-part "if (_coll->entries[_i].occupied) { ")
-            (cast-part (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
+      ;; Build: ({ slop_map* _coll = (slop_map*)coll; for (size_t _i = 0; _i < _coll->len; _i++) { { KeyType var = *(KeyType*)slop_map_key_at(_coll, _i);
+      (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" (deref-container-c ctx coll-c resolved-type) "; for (size_t _i = 0; _i < _coll->len; _i++) { "))
+            (if-part "{ ")
+            (cast-part (ctx-str ctx key-c-type "*)slop_map_key_at(_coll, _i)"))
             (assign-prefix (ctx-str4 ctx key-c-type " " var-name " = *("))
             (assign-part (ctx-str3 ctx assign-prefix cast-part "; ")))
         (set! result (ctx-str3 ctx result if-part assign-part))
@@ -7142,14 +7190,14 @@
                                             (val-slop-type (extract-map-value-from-slop-type arena resolved-type))
                                             (key-c-type (slop-value-type-to-c-type ctx key-slop-type))
                                             (val-c-type (slop-value-type-to-c-type ctx val-slop-type)))
-                                        ;; Build: ({ slop_map* _coll = (slop_map*)map; for (size_t _i = 0; _i < _coll->cap; _i++) { if (_coll->entries[_i].occupied) {
-                                        ;;         KeyType k = *(KeyType*)_coll->entries[_i].key; ValueType v = *(ValueType*)_coll->entries[_i].value;
-                                        (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" (deref-container-c ctx map-c resolved-type) "; for (size_t _i = 0; _i < _coll->cap; _i++) { "))
-                                              (if-part "if (_coll->entries[_i].occupied) { ")
-                                              (k-cast (ctx-str ctx key-c-type "*)_coll->entries[_i].key"))
+                                        ;; Build: ({ slop_map* _coll = (slop_map*)map; for (size_t _i = 0; _i < _coll->len; _i++) { {
+                                        ;;         KeyType k = *(KeyType*)slop_map_key_at(_coll, _i); ValueType v = *(ValueType*)slop_map_value_at(_coll, _i);
+                                        (let ((mut result (ctx-str3 ctx "({ slop_map* _coll = (slop_map*)" (deref-container-c ctx map-c resolved-type) "; for (size_t _i = 0; _i < _coll->len; _i++) { "))
+                                              (if-part "{ ")
+                                              (k-cast (ctx-str ctx key-c-type "*)slop_map_key_at(_coll, _i)"))
                                               (k-prefix (ctx-str4 ctx key-c-type " " k-name " = *("))
                                               (k-assign (ctx-str3 ctx k-prefix k-cast "; "))
-                                              (v-cast (ctx-str ctx val-c-type "*)_coll->entries[_i].value"))
+                                              (v-cast (ctx-str ctx val-c-type "*)slop_map_value_at(_coll, _i)"))
                                               (v-prefix (ctx-str4 ctx val-c-type " " v-name " = *("))
                                               (v-assign (ctx-str3 ctx v-prefix v-cast "; ")))
                                           (set! result (ctx-str4 ctx result if-part k-assign v-assign))
