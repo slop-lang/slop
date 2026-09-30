@@ -47,6 +47,7 @@
     ctx-set-current-return-type ctx-get-current-return-type ctx-clear-current-return-type
     ;; Capture return value mode (for postconditions)
     ctx-set-capture-retval ctx-is-capture-retval
+    ctx-set-post-exit ctx-is-post-exit ctx-post-exit-used ctx-restore-post-exit ctx-exit-code
     ;; Scoped arenas open at the current point (with-arena), freed on return
     ctx-push-open-arena ctx-pop-open-arena ctx-take-open-arenas ctx-restore-open-arenas
     ctx-emit-return
@@ -318,6 +319,11 @@
       (gensym-counter Int)
       ;; Flag to capture return values to _retval (for postconditions)
       (capture-to-retval Bool)
+      ;; Every return leaves through the postcondition checks: it jumps to
+      ;; the label emitted before them rather than returning directly
+      (post-exit Bool)
+      ;; Whether a return has jumped to that label, so the label is emitted
+      (post-exit-used Bool)
       ;; C names of the with-arena arenas open at this point, outermost first
       (open-arenas (List String))
       ;; Struct key types needing hash/eq generation (C type names)
@@ -406,6 +412,8 @@
       (set! (deref ctx) c-name-aliases (list-new arena FuncCNameAlias))
       (set! (deref ctx) gensym-counter 0)
       (set! (deref ctx) capture-to-retval false)
+      (set! (deref ctx) post-exit false)
+      (set! (deref ctx) post-exit-used false)
       (set! (deref ctx) open-arenas (list-new arena String))
       (set! (deref ctx) struct-key-types (list-new arena String))
       (set! (deref ctx) value-key-types (list-new arena ValueKeyType))
@@ -1810,6 +1818,40 @@
     (@pre {ctx != nil})
     (. (deref ctx) capture-to-retval))
 
+  ;; A function with a @post (or @assume) checks it on the way out. Its body
+  ;; is emitted with post-exit set: a return anywhere in it -- an explicit
+  ;; (return x), a `?` that propagates an error, the value of the last form
+  ;; -- stores its value in _retval and jumps to _slop_post, emitted before
+  ;; the checks. A bare C return there would leave without them, and an
+  ;; assignment to _retval with no jump would run on and be overwritten.
+
+  (fn ctx-set-post-exit ((ctx (Ptr TranspileContext)) (enabled Bool))
+    (@intent "Enable or disable jumping to the postcondition checks on return")
+    (@spec (((Ptr TranspileContext) Bool) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) post-exit enabled)
+    (when enabled
+      (set! (deref ctx) post-exit-used false)))
+
+  (fn ctx-is-post-exit ((ctx (Ptr TranspileContext)))
+    (@intent "Check if returns jump to the postcondition checks")
+    (@spec (((Ptr TranspileContext)) -> Bool))
+    (@pre {ctx != nil})
+    (. (deref ctx) post-exit))
+
+  (fn ctx-restore-post-exit ((ctx (Ptr TranspileContext)) (enabled Bool) (used Bool))
+    (@intent "Put back post-exit state saved around a body that is a function of its own")
+    (@spec (((Ptr TranspileContext) Bool Bool) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) post-exit enabled)
+    (set! (deref ctx) post-exit-used used))
+
+  (fn ctx-post-exit-used ((ctx (Ptr TranspileContext)))
+    (@intent "Check if a return jumped to the postcondition checks since post-exit was enabled")
+    (@spec (((Ptr TranspileContext)) -> Bool))
+    (@pre {ctx != nil})
+    (. (deref ctx) post-exit-used))
+
   ;; ============================================================
   ;; Scoped Arenas Open at the Current Point (with-arena)
   ;;
@@ -1864,6 +1906,39 @@
         (set! i (- i 1)))
       frees))
 
+  (fn ctx-exit-code ((ctx (Ptr TranspileContext)) (code String))
+    (@intent "One C statement that leaves the function with code (\"\" for none), as ctx-emit-return would")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; For a return inside an expression - `?` propagating an error from a
+    ;; statement expression - where the lines ctx-emit-return writes cannot
+    ;; go. The same order: the value while any open arena is live, the
+    ;; arenas freed, then out, through the postcondition checks if there are
+    ;; any.
+    (let ((frees (ctx-open-arena-frees ctx))
+          (sep (if (string-eq frees "") "" " "))
+          (ret-type (match (ctx-get-current-return-type ctx)
+                      ((some t) t)
+                      ((none) "__auto_type"))))
+      (cond
+        ((ctx-is-post-exit ctx)
+          (do
+            (set! (deref ctx) post-exit-used true)
+            (cond
+              ((string-eq code "")
+                (ctx-str4 ctx "{ " frees sep "goto _slop_post; }"))
+              ((ctx-is-capture-retval ctx)
+                (ctx-str5 ctx "{ _retval = " code "; " frees (ctx-str ctx sep "goto _slop_post; }")))
+              (else
+                (ctx-str5 ctx "{ " code "; " frees (ctx-str ctx sep "goto _slop_post; }"))))))
+        ((string-eq frees "")
+          (if (string-eq code "") "return;" (ctx-str3 ctx "return " code ";")))
+        ((or (string-eq code "") (string-eq ret-type "void"))
+          (ctx-str4 ctx "{ " (if (string-eq code "") "" (ctx-str ctx code "; ")) frees " return; }"))
+        (else
+          (ctx-str5 ctx "{ " ret-type " _wa_ret = " code
+                    (ctx-str3 ctx "; " frees " return _wa_ret; }"))))))
+
   (fn ctx-emit-return ((ctx (Ptr TranspileContext)) (code String))
     (@intent "Emit a return of code, or a bare return for \"\", freeing every open with-arena arena first")
     (@spec (((Ptr TranspileContext) String) -> Unit))
@@ -1872,12 +1947,23 @@
     ;; arena is still live, then the arenas are freed, then it is returned.
     ;; What the value points into is the caller's concern: a result that
     ;; lives in the freed arena is a use-after-free (see with-arena in
-    ;; LANGUAGE.md).
+    ;; LANGUAGE.md). With post-exit set, the value goes to _retval and the
+    ;; return jumps to the postcondition checks instead (ctx-set-post-exit).
     (let ((frees (ctx-open-arena-frees ctx))
           (ret-type (match (ctx-get-current-return-type ctx)
                       ((some t) t)
                       ((none) "__auto_type"))))
       (cond
+        ((ctx-is-post-exit ctx)
+          (do
+            (set! (deref ctx) post-exit-used true)
+            (when (not (string-eq code ""))
+              (if (ctx-is-capture-retval ctx)
+                (ctx-emit ctx (ctx-str3 ctx "_retval = " code ";"))
+                (ctx-emit ctx (ctx-str ctx code ";"))))
+            (when (not (string-eq frees ""))
+              (ctx-emit ctx frees))
+            (ctx-emit ctx "goto _slop_post;")))
         ((string-eq frees "")
           (if (string-eq code "")
             (ctx-emit ctx "return;")
