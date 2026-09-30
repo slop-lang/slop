@@ -1436,6 +1436,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                                 extra.append((param.name, None))
                         if extra:
                             self._desugared_extra_params[id(result)] = extra
+                        # A return in here leaves the callback (_exit_plan).
+                        self._desugared_loops.add(id(result))
                         if hasattr(expr, 'line'):
                             result.line = expr.line
                             result.col = expr.col
@@ -2670,16 +2672,159 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         walk(expr)
         return tuple(forms)
 
+    def _exit_plan(self, body: SExpr):
+        """Which `return`s the main model guards, and which the walk checks.
+
+        Returns (guarded, walked), or None if a `return` sits in a callback
+        body - it leaves the callback, not the function, and nothing here
+        models what the callback hands back.
+
+        `guarded` lists (guard_expr, value, return_node) for each return
+        `_early_exits` can give a condition to, in order: a bare
+        `(return v)`, `(when C ... (return v))` and `(if C (return v) ...)`
+        among the statements leading up to the tail, whose guard (and value)
+        reads nothing an assignment before it may have changed. Guards are
+        read as they stood at the top of the body, which is what they mean
+        only while nothing has been reassigned.
+
+        `walked` holds the ids of every other `return` that leaves the
+        function: inside a loop, in a match arm, deeper in an `if`, in a `let`
+        initializer, in the tail. There is no single condition to negate for
+        those, so the main model reasons only about the runs that take none of
+        them - the translator does not translate them (walked_returns) - and
+        the forward walk (loop_invariants.py) checks each postcondition at
+        each of them, where it has the path that leads there.
+        """
+        returns: List[SExpr] = []
+        in_callback = [False]
+
+        def collect(node, callback):
+            if not isinstance(node, SList) or len(node) == 0:
+                return
+            head = node[0]
+            if isinstance(head, Symbol):
+                if head.name in ('fn', 'quote'):
+                    return
+                if head.name == 'return':
+                    if callback:
+                        in_callback[0] = True
+                    else:
+                        returns.append(node)
+            inner = callback or id(node) in getattr(self, '_desugared_loops', ())
+            for item in node.items:
+                collect(item, inner)
+
+        collect(body, False)
+        if in_callback[0]:
+            return None
+
+        assigned = self._ip_assigned_names(body)
+        changing = ('set!', 'while', 'for-each', 'for')
+        guarded: List = []
+        state = {'reassigned': False}
+
+        def mentions_assigned(expr) -> bool:
+            if isinstance(expr, Symbol):
+                # `x.f` reads x.
+                return expr.name.split('.')[0] in assigned or expr.name in assigned
+            if isinstance(expr, SList):
+                return any(mentions_assigned(item) for item in expr.items)
+            return False
+
+        def stale(expr) -> bool:
+            return expr is not None and state['reassigned'] and mentions_assigned(expr)
+
+        def direct_return(stmts):
+            """The one `(return v)` a statement list ends its run with, if the
+            rest of it has no return and changes nothing the value reads."""
+            found = None
+            for stmt in stmts:
+                if is_form(stmt, 'return'):
+                    if found is not None:
+                        return None
+                    found = stmt
+                    continue
+                if found is not None:
+                    continue    # after the return: never runs
+                if self._contains_any_form(stmt, ('return',)):
+                    return None
+                if self._contains_any_form(stmt, changing):
+                    return None
+            return found
+
+        def note(guard_expr, ret) -> None:
+            value = ret[1] if len(ret) >= 2 else None
+            if stale(guard_expr) or stale(value):
+                return      # walked: its guard or value may read a later version
+            guarded.append((guard_expr, value, ret, state['reassigned']))
+
+        def scan(stmts) -> bool:
+            """True if a bare return ends the statements."""
+            for stmt in stmts:
+                if not isinstance(stmt, SList):
+                    continue
+                if is_form(stmt, 'return'):
+                    note(None, stmt)
+                    return True
+                if is_form(stmt, 'when') and len(stmt) >= 3:
+                    ret = direct_return(stmt.items[2:])
+                    if ret is not None:
+                        note(stmt[1], ret)
+                elif is_form(stmt, 'if') and len(stmt) >= 3:
+                    ret = direct_return([stmt[2]])
+                    if ret is not None:
+                        note(stmt[1], ret)
+                # Anything else that returns is walked. A loop or an assignment
+                # anywhere in the statement - in a match arm, say - moves the
+                # names a later guard reads.
+                if self._contains_any_form(stmt, changing):
+                    state['reassigned'] = True
+            return False
+
+        node = body
+        while True:
+            if is_form(node, 'let') and len(node) >= 3:
+                if isinstance(node[1], SList) and self._contains_any_form(node[1], changing):
+                    state['reassigned'] = True
+                if scan(node.items[2:-1]):
+                    break
+                node = node.items[-1]
+            elif is_form(node, 'do') and len(node) >= 2:
+                if scan(node.items[1:-1]):
+                    break
+                node = node.items[-1]
+            else:
+                break
+        guarded_ids = {id(ret) for _, _, ret, _ in guarded}
+        # A body that ends `(return v)` ends with v: that one is the tail.
+        if is_form(node, 'return'):
+            guarded_ids.add(id(node))
+        walked = {id(ret) for ret in returns if id(ret) not in guarded_ids}
+        return guarded, walked
+
+    @staticmethod
+    def _walked_return_nodes(body: SExpr, walked: Set[int]) -> List[SExpr]:
+        """The `return` nodes whose ids are in `walked`, in source order."""
+        nodes: List[SExpr] = []
+
+        def walk(node):
+            if not isinstance(node, SList):
+                return
+            if id(node) in walked:
+                nodes.append(node)
+            for item in node.items:
+                walk(item)
+
+        walk(body)
+        return nodes
+
     def _early_exits(self, body: SExpr, translator: Z3Translator):
-        """[(guard, value)] for each `(return v)` that can run before the tail.
+        """[(guard, value, guard_expr)] for each guarded `(return v)` (see _exit_plan).
 
         `_get_return_expr` sees only the trailing expression, so a function with
         an early return has exits it does not know about - and `$result == body`
         was asserted for the trailing one unconditionally, which proves whatever
         that form yields regardless of which path ran.
-
-        Recognises a bare `(return v)`, `(when C ... (return v))` and
-        `(if C (return v) ...)` among the statements leading up to the tail.
 
         Runs before the body is translated, so a guard reads the versions in
         scope at the top - which is what a guard before the first loop means.
@@ -2688,104 +2833,28 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         may not be; the conservative direction, and the price of not having
         program points here.
         Guards are cumulative: a later exit only runs if the earlier tests all
-        failed. Returns None if a `return` turns up in a shape this cannot
-        guard, which tells the caller to withhold rather than guess.
+        failed. Returns None for a return in a callback body, or if a guard
+        turns out to name a version a loop replaced, which tells the caller to
+        withhold rather than guess. Returns the walk checks are not here: the
+        main model covers the runs that take none of them.
         """
+        plan = self._exit_plan(body)
+        if plan is None:
+            return None
         exits: List = []
         earlier: List = []
-        failed = False
-        # Guards are read as they stood at the top of the body. That is what a
-        # guard before the first loop or assignment means; past one, the name it
-        # tests may have changed and there is no program point here to say
-        # which version it meant, so the whole modelling is given up.
-        reassigned = False
-
-        def returned_value(stmts):
-            """The value a statement list returns directly, if that is all of it.
-
-            `(when c (if d (return 1) 0) (return 2))` returns 1 when d holds, so
-            taking the direct `(return 2)` as the whole story would model the
-            wrong value for part of the path. A nested return anywhere means the
-            shape is not one this can guard.
-            """
-            direct = None
-            found = False
-            for stmt in stmts:
-                if is_form(stmt, 'return'):
-                    if found:
-                        return None, False
-                    direct = stmt[1] if len(stmt) >= 2 else None
-                    found = True
-                    continue
-                if self._contains_any_form(stmt, ('return',)):
-                    return None, False
-            return direct, found
-
-        def note(guard_term, value, guard_expr):
-            nonlocal failed
-            if reassigned and self._mentions_loop_versioned(guard_expr, translator):
-                failed = True
-                return
-            guard = z3.And(guard_term, *[z3.Not(t) for t in earlier]) if earlier else guard_term
-            exits.append((guard, value, guard_expr))
-            earlier.append(guard_term)
-
-        def scan(stmts):
-            nonlocal failed, reassigned
-            for stmt in stmts:
-                if not isinstance(stmt, SList):
-                    continue
-                if (is_form(stmt, 'while') or is_form(stmt, 'for-each')
-                        or is_form(stmt, 'set!')):
-                    reassigned = True
-                    # A return inside a loop or an assigned value still has no
-                    # single condition to negate.
-                    if self._contains_any_form(stmt, ('return',)):
-                        failed = True
-                        return
-                    continue
-                if is_form(stmt, 'return'):
-                    note(z3.BoolVal(True), stmt[1] if len(stmt) >= 2 else None, stmt)
-                    return
-                if is_form(stmt, 'when') and len(stmt) >= 3:
-                    value, found = returned_value(stmt.items[2:])
-                    if found:
-                        note(self._condition_term(stmt[1], translator), value, stmt[1])
-                        continue
-                elif is_form(stmt, 'if') and len(stmt) >= 3:
-                    then_value, then_found = returned_value([stmt[2]])
-                    if then_found:
-                        note(self._condition_term(stmt[1], translator), then_value, stmt[1])
-                        if len(stmt) >= 4 and not self._contains_any_form(stmt[3], ('return',)):
-                            continue
-                        if len(stmt) < 4:
-                            continue
-                if self._contains_any_form(stmt, ('return',)):
-                    failed = True
-                    return
-
-        node = body
-        while True:
-            if is_form(node, 'let') and len(node) >= 3:
-                # A binding initializer can return too, and there is no obvious
-                # guard for one that does.
-                if self._contains_any_form(node[1], ('return',)):
-                    return None
-                scan(node.items[2:-1])
-                node = node.items[-1]
-                if failed:
-                    return None
-            elif is_form(node, 'do') and len(node) >= 2:
-                scan(node.items[1:-1])
-                node = node.items[-1]
+        for guard_expr, value, ret, reassigned in plan[0]:
+            if guard_expr is None:
+                guard_term = z3.BoolVal(True)
             else:
-                break
-            if failed:
-                return None
-        if failed:
-            return None
-        if self._contains_any_form(node, ('return',)):
-            return None
+                # _exit_plan already walks a guard reading an assigned name;
+                # this is the translator's own view of the same question.
+                if reassigned and self._mentions_loop_versioned(guard_expr, translator):
+                    return None
+                guard_term = self._condition_term(guard_expr, translator)
+            guard = z3.And(guard_term, *[z3.Not(t) for t in earlier]) if earlier else guard_term
+            exits.append((guard, value, guard_expr if guard_expr is not None else ret))
+            earlier.append(guard_term)
         return exits
 
     def _tail_binding_names(self, body: SExpr) -> Set[str]:
@@ -2995,6 +3064,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # not rare.
         if is_form(resolved, 'list-new'):
             add(self._length_accessor(translator)(field_func) == z3.IntVal(0))
+        # A list literal holds exactly its elements.
+        if translator.is_list_literal(resolved):
+            add(self._length_accessor(translator)(field_func) == z3.IntVal(len(resolved) - 2))
 
         if is_form(resolved, 'record-new'):
             axioms.extend(self._extract_record_field_axioms(
@@ -3446,48 +3518,61 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         """Verify a single function's contracts, its loop invariants among them."""
         self._invariant_report: Optional[InvariantReport] = None
         self._desugared_extra_params: Dict[int, List] = {}
+        self._desugared_loops: Set[int] = set()
         result = self._verify_function_contracts(fn_form)
         return self._merge_invariant_report(result, self._invariant_report)
 
     def _merge_invariant_report(self, result: VerificationResult,
                                 report: Optional[InvariantReport]) -> VerificationResult:
-        """Fold the loop invariants' outcomes into the function's result.
+        """Fold the walk's outcomes - loop invariants, walked returns - into the result.
 
-        A failed invariant has already ended verification (see
-        _verify_function_contracts). An invariant that could not be checked was
-        not assumed, so whatever the contracts depend on it for is unproved: a
-        verified result stays verified only if nothing was left unchecked, and
-        a failure without a counterexample - a contract that did not translate,
-        say - keeps its own message. Otherwise the result is unknown, since a
-        postcondition that failed may have needed the invariant (#69).
+        A failed invariant, or a contract that fails at a walked return, has
+        already ended verification (see _verify_function_contracts). An
+        invariant that could not be checked was not assumed, so whatever the
+        contracts depend on it for is unproved: a verified result stays
+        verified only if nothing was left unchecked, and a failure without a
+        counterexample - a contract that did not translate, say - keeps its
+        own message. Otherwise the result is unknown, since a postcondition
+        that failed may have needed the invariant (#69).
+
+        A return the walk could not check leaves the contract unproved on
+        the runs that take it, so a verified result becomes unknown. A
+        counterexample from the main model stands, though: it is a run that
+        reaches the tail, which none of those returns has anything to do with.
         """
-        if report is None or not report.outcomes:
+        if report is None or (not report.outcomes and not report.exits):
             return result
+        if report.failed or report.exits_failed:
+            return result       # the walk's own failure, already the result
         unchecked = report.unchecked
+        exits_unchecked = report.exits_unchecked
+        exit_notes = [o.message for o in exits_unchecked]
         # A counterexample the verifier found without a proved invariant it
         # could not use may be one that invariant rules out (#69).
         unused = [o for o in report.outcomes if o.status == 'proved' and not o.asserted]
         if unused and result.status == 'failed' and result.counterexample and not unchecked:
             notes = "\n".join(
-                f"loop invariant proved but not used: {o.text} ({o.unused or 'not needed'})"
-                for o in unused)
+                [f"loop invariant proved but not used: {o.text} ({o.unused or 'not needed'})"
+                 for o in unused] + exit_notes)
             return VerificationResult(
                 name=result.name, verified=False, status='unknown',
                 message=f"{result.message}\n{notes}", location=result.location,
                 suggestions=result.suggestions)
-        if not unchecked:
+        if not unchecked and not exits_unchecked:
             if result.status == 'skipped':
                 return VerificationResult(
                     name=result.name, verified=True, status='verified',
                     message="Loop invariants verified", location=result.location)
             return result
-        notes = "\n".join(o.message for o in unchecked)
-        if result.status in ('failed', 'error', 'warning') and not result.counterexample:
+        notes = "\n".join([o.message for o in unchecked] + exit_notes)
+        if result.status in ('failed', 'error', 'warning') and \
+                (not result.counterexample or not unchecked):
             return VerificationResult(
                 name=result.name, verified=False, status=result.status,
                 message=f"{result.message}\n{notes}", location=result.location,
-                suggestions=result.suggestions)
-        status = 'timeout' if any(o.status == 'timeout' for o in unchecked) else 'unknown'
+                counterexample=result.counterexample, suggestions=result.suggestions)
+        status = ('timeout' if any(o.status == 'timeout' for o in unchecked + exits_unchecked)
+                  else 'unknown')
         message = notes
         if result.status not in ('verified', 'skipped') and result.message:
             message = f"{notes}\n{result.message}"
@@ -3594,12 +3679,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # about where its loop ends.
         propagated_range: range = range(0)
         invariant_report: Optional[InvariantReport] = None
+        # The returns the main model leaves to the walk (_exit_plan).
+        walked_returns: Set[int] = set()
         if fn_body is not None:
             loop_invariants = self._extract_loop_invariants(fn_body)
             walked_body = fn_body
             if all_body_exprs and len(all_body_exprs) > 1:
                 walked_body = SList([Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
                                     fn_body.line, fn_body.col)
+            exit_plan = self._exit_plan(walked_body)
+            if exit_plan is not None:
+                walked_returns = exit_plan[1]
             sites, misplaced, in_callbacks = self._attach_loop_invariants(walked_body)
             if misplaced:
                 from slop.parser import pretty_print
@@ -3609,11 +3699,21 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         "@loop-invariant must be the first form(s) of a for-each, for "
                         f"or while body: {pretty_print(form)}" for form in misplaced),
                     location=SourceLocation(self.filename, fn_form.line, fn_form.col))
-            if sites or in_callbacks:
+            checks_exits = bool(walked_returns) and bool(postconditions or properties)
+            if sites or in_callbacks or checks_exits:
+                exits = None
+                if checks_exits:
+                    exits = {
+                        'walked': walked_returns,
+                        'returns': self._walked_return_nodes(walked_body, walked_returns),
+                        'posts': list(postconditions),
+                        'properties': list(properties),
+                        'return_type': spec_return_type,
+                    }
                 invariant_report = self._check_loop_invariants(
-                    params, preconditions, walked_body, sites, in_callbacks)
+                    params, preconditions, walked_body, sites, in_callbacks, exits)
                 self._invariant_report = invariant_report
-                failed = invariant_report.failed
+                failed = invariant_report.failed + invariant_report.exits_failed
                 if failed:
                     return VerificationResult(
                         name=fn_name, verified=False, status="failed",
@@ -3683,6 +3783,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         translator = Z3Translator(self.type_env, self.filename, self.function_registry,
                                   self.imported_defs, use_array_encoding=use_array_encoding,
                                   use_seq_encoding=use_seq_encoding)
+        # The walk checked these (or reports why it could not); this model is
+        # of the runs that take none of them.
+        translator.walked_returns = set(walked_returns)
 
         # Declare parameter variables
         declared_param_names: Set[str] = set()

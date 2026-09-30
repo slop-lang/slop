@@ -42,7 +42,7 @@ import z3
 
 from slop.parser import SList, Symbol, Number, String, is_form, pretty_print
 from slop.types import (
-    PrimitiveType, RangeType, RecordType, ListType,
+    PrimitiveType, RangeType, RecordType, ListType, EnumType,
 )
 
 from .exact_push import _Bail, _STATE_READS, _NEUTRAL_HEADS, _OPTION_RESULT_CONSTRUCTORS, _MISSING
@@ -106,16 +106,45 @@ class InvariantOutcome:
     exits_before: bool = False  # a `return` can run before the loop: assume it only where none did
     asserted: bool = False      # the main verifier stated it
     unused: str = ''            # why a proved invariant is not stated, if it is not
+    # A postcondition or property checked at a `return` the main model leaves
+    # to the walk (ContractVerifier._exit_plan): `site` is that return.
+    kind: str = 'invariant'     # invariant | post | property
+    site: Any = None
+    name: Optional[str] = None  # a named property's name
+    visited: bool = False       # the walk reached the return and checked it
 
     @property
     def text(self) -> str:
         return pretty_print(self.expr)
+
+    @property
+    def what(self) -> str:
+        """How a message names the claim."""
+        if self.kind == 'post':
+            return 'postcondition'
+        if self.kind == 'property':
+            return f"property '{self.name}'" if self.name else 'property'
+        return 'loop invariant'
+
+    @property
+    def where(self) -> str:
+        return f" at the return on line {getattr(self.site, 'line', '?')}" if self.site is not None else ''
 
 
 @dataclass
 class InvariantReport:
     outcomes: List[InvariantOutcome] = field(default_factory=list)
     misplaced: List[Any] = field(default_factory=list)
+    # Postconditions and properties at the returns the walk checks.
+    exits: List[InvariantOutcome] = field(default_factory=list)
+
+    @property
+    def exits_failed(self) -> List[InvariantOutcome]:
+        return [o for o in self.exits if o.status == 'failed']
+
+    @property
+    def exits_unchecked(self) -> List[InvariantOutcome]:
+        return [o for o in self.exits if o.status in ('unknown', 'timeout')]
 
     @property
     def failed(self) -> List[InvariantOutcome]:
@@ -153,11 +182,32 @@ class InvariantProverMixin:
     # ------------------------------------------------------------------
 
     def _check_loop_invariants(self, params, preconditions, body, sites,
-                               in_callbacks) -> InvariantReport:
+                               in_callbacks, exits=None) -> InvariantReport:
+        """Check the invariants at `sites`, and the contract at each walked return.
+
+        `exits`, if given, is a dict: `walked` (ids of the returns the main
+        model leaves out - ContractVerifier._exit_plan), `returns` (those
+        nodes), `posts`, `properties` ((name, expr) pairs) and `return_type`.
+        Every postcondition and property is checked where each walked return
+        leaves the function, with $result bound to the value it returns.
+        """
         report = InvariantReport()
+        exits = exits or {}
         self._ip_outcomes: Dict[int, InvariantOutcome] = {}
         self._ip_sites: Dict[int, List[Any]] = {}
-        self._ip_all_conditions = [c for _, conditions in sites for c in conditions]
+        self._ip_walked = set(exits.get('walked', ()))
+        self._ip_return_type = exits.get('return_type')
+        # Per walked return, the claims to check there.
+        self._ip_exit_outcomes: Dict[int, List[InvariantOutcome]] = {}
+        claims = [('post', None, post) for post in exits.get('posts', [])]
+        claims += [('property', name, expr) for name, expr in exits.get('properties', [])]
+        for ret in exits.get('returns', []):
+            for kind, name, expr in claims:
+                outcome = InvariantOutcome(expr, None, kind=kind, site=ret, name=name)
+                self._ip_exit_outcomes.setdefault(id(ret), []).append(outcome)
+                report.exits.append(outcome)
+        self._ip_all_conditions = ([c for _, conditions in sites for c in conditions]
+                                   + [expr for _, _, expr in claims])
         for loop, conditions in sites:
             self._ip_sites[id(loop)] = conditions
             for condition in conditions:
@@ -169,7 +219,7 @@ class InvariantProverMixin:
                 form[1] if len(form) >= 2 else form, None, 'unknown',
                 self._ip_unchecked_message(form[1] if len(form) >= 2 else form,
                                            "inside a callback the verifier does not follow")))
-        if not self._ip_outcomes:
+        if not self._ip_outcomes and not report.exits:
             return report
 
         tr = Z3Translator(self.type_env, self.filename, self.function_registry,
@@ -178,6 +228,7 @@ class InvariantProverMixin:
         saved = {name: getattr(self, name, _MISSING)
                  for name in ('_xp_tr', '_xp_axioms', '_xp_bound')}
         self._xp_tr = tr
+        self._ip_return_sort = self._ip_sort_of(self._ip_resolve(self._ip_return_type))
         self._xp_axioms: List[Any] = []
         self._xp_bound: List[str] = []
         self._ip_time_spent = False
@@ -188,6 +239,15 @@ class InvariantProverMixin:
         # the top of the body, the loop's condition, what is known of its
         # element - asserted only in checks made while that iteration is walked.
         self._ip_local: List[Any] = []
+        # Constants standing for values the walk over-approximates without
+        # making them opaque: what a loop may have left in a name, an element
+        # of a collection nothing is known about. An invariant's step is meant
+        # to fail through them; a postcondition at a return is not (#69).
+        self._ip_havocked: set = set()
+        # Everything the preconditions give is stated under this: an invariant
+        # or a postcondition is checked with it, a property - which holds with
+        # no precondition, as the main property solver has it - without.
+        self._ip_pre = z3.FreshBool('pre')
         try:
             env, types = self._ip_declare_parameters(tr, params)
             self._ip_params = set(env)
@@ -202,7 +262,7 @@ class InvariantProverMixin:
                 if term is None or not z3.is_bool(term):
                     self._ip_give_up(f"the precondition {pretty_print(pre)} does not translate")
                     return self._ip_finish(report, body)
-                given.append(term)
+                given.append(z3.Implies(self._ip_pre, term))
             for _, inv in self._collect_parameter_invariants(params):
                 term = tr.translate_expr(inv)
                 if term is not None and z3.is_bool(term):
@@ -230,20 +290,34 @@ class InvariantProverMixin:
                 outcome.status = 'unknown'
                 outcome.message = self._ip_unchecked_message(
                     outcome.expr, "the loop is not reached by the analysis")
+        for outcome in report.exits:
+            # Checked every time the walk got there, and held each time.
+            if outcome.status == 'pending' and outcome.visited:
+                outcome.status = 'proved'
+            elif outcome.status == 'pending':
+                self._ip_set_unknown(outcome, "the return is not reached by the analysis")
         for outcome in report.outcomes:
             if outcome.status == 'proved' and outcome.loop is not None:
                 outcome.assumable = self._ip_assumable(outcome, body)
         return report
 
     def _ip_give_up(self, reason: str) -> None:
-        for outcome in self._ip_outcomes.values():
+        for outcome in self._ip_every_outcome():
             if outcome.status == 'pending':
                 outcome.status = 'unknown'
-                outcome.message = self._ip_unchecked_message(outcome.expr, reason)
+                outcome.message = self._ip_unchecked_text(outcome, reason)
+
+    def _ip_every_outcome(self) -> List[InvariantOutcome]:
+        return (list(self._ip_outcomes.values())
+                + [o for outcomes in self._ip_exit_outcomes.values() for o in outcomes])
 
     @staticmethod
     def _ip_unchecked_message(expr, reason: str) -> str:
         return f"could not check loop invariant: {pretty_print(expr)} ({reason})"
+
+    @staticmethod
+    def _ip_unchecked_text(outcome: InvariantOutcome, reason: str) -> str:
+        return f"could not check {outcome.what}{outcome.where}: {outcome.text} ({reason})"
 
     def _ip_parameter_field_ranges(self, tr, env, types) -> List[Any]:
         """The declared ranges of each record parameter's own fields.
@@ -545,6 +619,19 @@ class InvariantProverMixin:
     def _ip_contains_return(self, items) -> bool:
         return any(self._contains_any_form(item, ('return',)) for item in items)
 
+    def _ip_unwalked_return(self, items) -> bool:
+        """A `return` under `items` that is not one of the walked exits."""
+        def walk(node) -> bool:
+            if not isinstance(node, SList) or len(node) == 0:
+                return False
+            head = node[0].name if isinstance(node[0], Symbol) else None
+            if head in ('quote', 'fn'):
+                return False
+            if head == 'return' and id(node) not in self._ip_walked:
+                return True
+            return any(walk(item) for item in node.items)
+        return any(walk(item) for item in items)
+
     # ------------------------------------------------------------------
     # Calls: what they read and what they may change
     # ------------------------------------------------------------------
@@ -744,6 +831,14 @@ class InvariantProverMixin:
         """
         reads: List[str] = []
         tracked = set(st.seqs)
+        # Names for a value built in place (_ip_exit_formula): a length read
+        # through one is of a list no earlier change reached.
+        fresh_roots = set(getattr(self, '_ip_fresh_roots', ()))
+
+        def is_fresh(node, fresh) -> bool:
+            while is_form(node, '.') and len(node) >= 2:
+                node = node[1]
+            return isinstance(node, Symbol) and node.name.split('.')[0] in fresh
 
         def type_of(node, bound):
             if isinstance(node, Symbol) and node.name in bound:
@@ -753,7 +848,7 @@ class InvariantProverMixin:
                 return base.fields.get(node[2].name) if isinstance(base, RecordType) else None
             return self._ip_static_type(node, st)
 
-        def walk(node, bound):
+        def walk(node, bound, fresh=frozenset()):
             if isinstance(node, Symbol):
                 n = node.name
                 if '.' in n.strip('.'):
@@ -771,7 +866,7 @@ class InvariantProverMixin:
             head = node[0]
             if not isinstance(head, Symbol):
                 for item in node.items:
-                    walk(item, bound)
+                    walk(item, bound, fresh)
                 return
             name = head.name
             if name == 'quote':
@@ -787,22 +882,30 @@ class InvariantProverMixin:
                     else:
                         if not (isinstance(source, Symbol) and source.name in tracked):
                             reads.append(f"a quantifier over {pretty_print(source)}")
-                        walk(source, bound)
+                        walk(source, bound, fresh)
                         collection = self._ip_resolve(type_of(source, bound))
                         element = getattr(collection, 'element_type', None)
+                inner_fresh = fresh
                 if len(binder) >= 1 and isinstance(binder[0], Symbol):
                     inner = dict(bound)
                     inner[binder[0].name] = element
+                    inner_fresh = fresh - {binder[0].name}
                 for item in node.items[2:]:
-                    walk(item, inner)
+                    walk(item, inner, inner_fresh)
                 return
             if name == 'match' and len(node) >= 3:
-                walk(node[1], bound)
+                walk(node[1], bound, fresh)
                 scrutinee = self._ip_resolve(type_of(node[1], bound))
+                from_fresh = is_fresh(node[1], fresh)
                 for clause in node.items[2:]:
                     if not isinstance(clause, SList) or len(clause) < 1:
                         continue
                     inner = dict(bound)
+                    arm_fresh = set(fresh) - {b.name for b in (clause[0].items[1:]
+                                              if isinstance(clause[0], SList) else [])
+                                              if isinstance(b, Symbol)}
+                    if from_fresh and isinstance(clause[0], SList):
+                        arm_fresh |= {b.name for b in clause[0].items[1:] if isinstance(b, Symbol)}
                     pattern = clause[0]
                     if isinstance(pattern, SList) and len(pattern) >= 2 and isinstance(pattern[0], Symbol):
                         tag = pattern[0].name.lstrip("'")
@@ -810,12 +913,14 @@ class InvariantProverMixin:
                             if isinstance(binder, Symbol):
                                 inner[binder.name] = self._ip_payload_type(scrutinee, tag, index)
                     for item in clause.items[1:]:
-                        walk(item, inner)
+                        walk(item, inner, frozenset(arm_fresh))
+                return
+            if name == 'list-len' and len(node) >= 2 and is_fresh(node[1], fresh):
                 return
             if name in ('list-len', 'list-contains') and len(node) >= 2 \
                     and isinstance(node[1], Symbol) and node[1].name in tracked:
                 for item in node.items[2:]:
-                    walk(item, bound)
+                    walk(item, bound, fresh)
                 return
             if name in _STATE_READS or name in _EXTRA_STATE_READS:
                 reads.append(name)
@@ -824,15 +929,15 @@ class InvariantProverMixin:
                     base = self._ip_resolve(type_of(node[1], bound))
                     if not isinstance(base, RecordType):
                         reads.append(f"the field {pretty_print(node)}")
-                    walk(node[1], bound)
+                    walk(node[1], bound, fresh)
                 return
             elif self._ip_is_user_function(name):
                 if self._xp_callee_is_pure(name, self._xp_tr) and not self._xp_params_are_values(name):
                     reads.append(f"{name}, which is handed a collection")
             for item in node.items[1:]:
-                walk(item, bound)
+                walk(item, bound, fresh)
 
-        walk(expr, {})
+        walk(expr, {}, frozenset(fresh_roots))
         return reads
 
     def _ip_post_is_one_state(self, fn_name: str):
@@ -1113,15 +1218,22 @@ class InvariantProverMixin:
             for item in expr.items[2:]:
                 if isinstance(item, SList) and len(item) >= 2 and tr.translate_expr(item[1]) is None:
                     raise _Bail("a record field does not translate")
-            const = z3.FreshConst(z3.IntSort(), 'record')
+            fields = []
+            for item in expr.items[2:]:
+                if isinstance(item, SList) and len(item) >= 2 and isinstance(item[0], Symbol):
+                    fields.append((item[0].name, tr.translate_expr(item[1])))
             # Each field's value, where the accessor holds a value of that
             # sort. Accessors are named by field alone and their sort is a
-            # guess from the name; a fact across sorts would be false.
-            for item in expr.items[2:]:
-                if not (isinstance(item, SList) and len(item) >= 2 and isinstance(item[0], Symbol)):
-                    continue
-                value = tr.translate_expr(item[1])
-                access = tr._translate_field_for_obj(const, item[0].name)
+            # guess from the name; a fact across sorts would be false - and
+            # a record missing one is less than the program built, so it is
+            # opaque rather than a source of counterexamples.
+            probe = z3.FreshConst(z3.IntSort(), 'record')
+            complete = all(value is not None
+                           and tr._translate_field_for_obj(probe, field_name).sort() == value.sort()
+                           for field_name, value in fields)
+            const = probe if complete else self._ip_opaque(z3.IntSort())
+            for field_name, value in fields:
+                access = tr._translate_field_for_obj(const, field_name)
                 if value is not None and access is not None and access.sort() == value.sort():
                     self._xp_axioms.append(z3.Implies(pc, access == value))
             tr._pinned_terms[id(expr)] = const
@@ -1131,6 +1243,8 @@ class InvariantProverMixin:
             self._xp_pin_variant(expr, expr[2].name, expr.items[3:], pc)
         elif name in _OPTION_RESULT_CONSTRUCTORS:
             self._xp_pin_variant(expr, name, expr.items[1:], pc)
+        elif tr.is_list_literal(expr):
+            return      # a handle of its own, with its length (the translator's)
         elif name in _ALLOCATORS:
             natural = tr.translate_expr(expr)
             sort = natural.sort() if natural is not None else z3.IntSort()
@@ -1181,6 +1295,177 @@ class InvariantProverMixin:
         if not z3.is_bool(term):
             raise _Unchecked("it is not a Boolean condition")
         return term, list(self._ip_obligations)
+
+    def _ip_check_exit(self, stmt, value, st: _IState, pc) -> None:
+        """Check the contract where a walked `return` leaves the function.
+
+        $result is the value it returns, a `mut` parameter whatever it holds
+        here. The iteration's hypotheses (`_ip_local`) apply: an enclosing
+        loop's invariant, its condition, what is known of its element.
+        """
+        env, types, seqs = dict(st.env), dict(st.types), dict(st.seqs)
+        fresh = False
+        if value is not None:
+            env['$result'] = value
+            types['$result'] = self._ip_return_type
+            if isinstance(stmt[1], Symbol) and stmt[1].name in st.seqs:
+                seqs['$result'] = st.seqs[stmt[1].name]
+            fresh = self._ip_fresh_value(stmt[1], st)
+        at = st.but(env=env, types=types, seqs=seqs)
+        for outcome in self._ip_exit_outcomes[id(stmt)]:
+            if outcome.status != 'pending':
+                continue
+            outcome.visited = True
+            if value is None and self._ip_mentions(outcome.expr, '$result'):
+                self._ip_set_unknown(outcome, "the return has no value")
+                continue
+            try:
+                goal, obligations = self._ip_exit_formula(outcome.expr, at, pc, fresh)
+            except _Unchecked as unchecked:
+                self._ip_set_unknown(outcome, str(unchecked))
+                continue
+            # A contract's own side conditions are assumed, as the main
+            # verifier assumes them of a @post.
+            self._ip_decide(outcome, z3.Implies(z3.And(pc, st.alive, *obligations), goal),
+                            at, '', pc, goal=goal)
+
+    def _ip_exit_formula(self, condition, st: _IState, pc, fresh: bool):
+        """A postcondition or property at a return: (term, definedness obligations).
+
+        As _ip_formula, with $result bound. A $result built right there from
+        constructors (`fresh`) holds no collection anything changed before:
+        its lengths are read whatever the state, though not its elements,
+        which a list literal's model does not describe.
+        """
+        for name in sorted(self._ip_addr_taken):
+            if self._ip_mentions(condition, name):
+                raise _Unchecked(f"it names {name}, which a call may write (its address is taken, "
+                                 "or a lambda assigns it)")
+        inner_binders = self._ip_binder_counts(condition)
+        result_names = self._ip_result_names(condition) if fresh and '$result' not in st.seqs else set()
+        if result_names:
+            element_read = self._ip_result_element_read(condition, result_names)
+            if element_read is not None:
+                raise _Unchecked(f"it reads the elements of a list the return builds ({element_read})")
+        for source in self._ip_quantifier_sources(condition):
+            root = self._ip_root_name(source)
+            if self._ip_rooted_in(source, result_names):
+                continue    # a length of a list the return built (see above)
+            if root is not None and root in inner_binders:
+                raise _Unchecked(f"it quantifies over {pretty_print(source)}, "
+                                 "a name the claim itself binds")
+            if isinstance(source, Symbol) and source.name in st.seqs:
+                continue
+            if root is None:
+                raise _Unchecked(f"it quantifies over {pretty_print(source)}, which is not a named collection")
+            if not self._ip_stable_parameter(root, st):
+                raise _Unchecked(f"it quantifies over {pretty_print(source)}, "
+                                 "whose name does not always denote the same collection")
+        impure = self._ip_impure_call_in_quantifier(condition)
+        if impure is not None:
+            raise _Unchecked(f"it calls {impure}, which is not @pure, inside a quantifier or match arm")
+        saved = getattr(self, '_ip_fresh_roots', frozenset())
+        self._ip_fresh_roots = frozenset({'$result'}) if fresh else frozenset()
+        try:
+            term, _ = self._ip_eval(condition, st, pc, invariant=True)
+        finally:
+            self._ip_fresh_roots = saved
+        if z3.is_int(term):
+            term = self._ensure_bool(term)
+        if not z3.is_bool(term):
+            raise _Unchecked("it is not a Boolean condition")
+        return term, list(self._ip_obligations)
+
+    @staticmethod
+    def _ip_result_names(condition) -> set:
+        """$result, and every name a `match` in `condition` binds to a part of it."""
+        names = {'$result'}
+
+        def rooted(node) -> bool:
+            while is_form(node, '.') and len(node) >= 2:
+                node = node[1]
+            return isinstance(node, Symbol) and node.name.split('.')[0] in names
+
+        def walk(node):
+            if not isinstance(node, SList) or len(node) == 0:
+                return
+            if is_form(node, 'quote'):
+                return
+            if is_form(node, 'match') and len(node) >= 3 and rooted(node[1]):
+                for clause in node.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 1 and isinstance(clause[0], SList):
+                        names.update(b.name for b in clause[0].items[1:] if isinstance(b, Symbol))
+            for item in node.items:
+                walk(item)
+
+        walk(condition)
+        return names
+
+    @staticmethod
+    def _ip_rooted_in(node, names) -> bool:
+        while is_form(node, '.') and len(node) >= 2:
+            node = node[1]
+        return isinstance(node, Symbol) and node.name.split('.')[0] in names
+
+    def _ip_result_element_read(self, condition, names) -> Optional[str]:
+        """An element read of a collection reached from $result, if any."""
+        def walk(node):
+            if not isinstance(node, SList) or len(node) == 0:
+                return None
+            head = node[0].name if isinstance(node[0], Symbol) else None
+            if head == 'quote':
+                return None
+            if head in ('list-contains', 'list-ref', '@', 'forall', 'exists') and len(node) >= 2:
+                target = node[1][1] if head in ('forall', 'exists') and isinstance(node[1], SList) \
+                    and len(node[1]) >= 2 else node[1]
+                if self._ip_rooted_in(target, names):
+                    return pretty_print(node)
+            for item in node.items:
+                found = walk(item)
+                if found is not None:
+                    return found
+            return None
+
+        return walk(condition)
+
+    def _ip_fresh_value(self, expr, st: _IState) -> bool:
+        """True if `expr` builds its value right here, holding no collection
+        that existed before it: constructors all the way down, with lists
+        made in place, and nothing else but scalars."""
+        tr = self._xp_tr
+
+        def scalar(node) -> bool:
+            if isinstance(node, (Number, String)):
+                return True
+            typ = self._ip_resolve(self._ip_static_type(node, st))
+            if isinstance(typ, RangeType):
+                return True
+            if isinstance(typ, PrimitiveType):
+                return typ.name in ('Int', 'Bool', 'String', 'Float', 'F32', 'F64', 'I8', 'I16',
+                                    'I32', 'I64', 'U8', 'U16', 'U32', 'U64', 'Char')
+            return isinstance(typ, EnumType)
+
+        def fresh(node) -> bool:
+            if tr.is_list_literal(node) or is_form(node, 'list-new'):
+                return True
+            if not (isinstance(node, SList) and len(node) >= 1 and isinstance(node[0], Symbol)):
+                return False
+            head = node[0].name
+            if self._ip_is_user_function(head):
+                return False
+            if head in ('some', 'ok', 'error', 'none'):
+                return all(part(item) for item in node.items[1:])
+            if head == 'union-new':
+                return all(part(item) for item in node.items[3:])
+            if head == 'record-new':
+                return all(isinstance(item, SList) and len(item) >= 2 and part(item[-1])
+                           for item in node.items[2:])
+            return False
+
+        def part(node) -> bool:
+            return fresh(node) or scalar(node)
+
+        return fresh(expr)
 
     def _ip_impure_call_in_quantifier(self, expr) -> Optional[str]:
         """A call inside a quantifier or a match arm is not pinned, so it is an
@@ -1335,8 +1620,11 @@ class InvariantProverMixin:
         if name in _LOOP_HEADS:
             return self._ip_loop(stmt, st, pc)
         if name == 'return':
+            value = None
             if len(stmt) >= 2:
-                _, st = self._ip_eval(stmt[1], st, pc, sort=z3.IntSort())
+                value, st = self._ip_eval(stmt[1], st, pc, sort=self._ip_return_sort)
+            if id(stmt) in self._ip_exit_outcomes:
+                self._ip_check_exit(stmt, value, st, pc)
             return st.but(alive=z3.BoolVal(False))
         if name == 'c-inline':
             # C can write any local and any collection it reaches.
@@ -1731,7 +2019,8 @@ class InvariantProverMixin:
                 checking = False
         if checking:
             try:
-                self._ip_local.extend(self._ip_formula(c, step, step_pc)[0] for c in conditions)
+                self._ip_local.extend(z3.Implies(self._ip_pre, self._ip_formula(c, step, step_pc)[0])
+                                      for c in conditions)
             except _Unchecked as unchecked:
                 for outcome in outcomes:
                     self._ip_set_unknown(outcome, str(unchecked))
@@ -1773,7 +2062,7 @@ class InvariantProverMixin:
                     term, _ = self._ip_formula(condition, after, pc)
                 except _Unchecked:
                     continue
-                self._xp_axioms.append(z3.Implies(pc, term))
+                self._xp_axioms.append(z3.Implies(z3.And(pc, self._ip_pre), term))
         if kind == 'while' and not self._ip_own_break(body_items) \
                 and not self._ip_contains_return(body_items) and len(loop) >= 2:
             try:
@@ -1843,8 +2132,12 @@ class InvariantProverMixin:
             element_type = source_type.element_type if hasattr(source_type, 'element_type') else None
         element = z3.FreshConst(self._ip_sort_of(element_type), var)
         facts = []
+        # Without a sequence to be an element of, the element is anything at
+        # all - more than the collection can hold (see _ip_havocked).
+        exact = False
         if isinstance(source, Symbol) and source.name in entry.seqs:
             facts.extend(self._ip_member(element, entry.seqs[source.name]))
+            exact = True
         elif self._ip_is_callback_source(source):
             facts.extend(self._ip_callback_facts(source, element, entry, step, pc))
             # The lambda's other parameters: whatever the callee passes.
@@ -1854,6 +2147,7 @@ class InvariantProverMixin:
                 typ = (_parse_type_expr_simple(type_expr, self.type_env.type_registry)
                        if type_expr is not None else None)
                 extra_env[name] = z3.FreshConst(self._ip_sort_of(self._ip_resolve(typ)), name)
+                self._ip_havocked.add(extra_env[name].decl().name())
                 extra_types[name] = typ
             step = step.but(env=extra_env, types=extra_types)
         else:
@@ -1863,6 +2157,9 @@ class InvariantProverMixin:
                     seq = self._xp_tr._get_or_create_collection_seq(source)
                     if seq is not None and seq.sort() == z3.SeqSort(element.sort()):
                         facts.extend(self._ip_member(element, seq))
+                        exact = True
+        if not exact:
+            self._ip_havocked.add(element.decl().name())
         env = dict(step.env)
         env[var] = element
         types = dict(step.types)
@@ -1941,6 +2238,7 @@ class InvariantProverMixin:
         for name in names:
             old = env[name]
             fresh = self._ip_opaque(old.sort()) if opaque else z3.FreshConst(old.sort(), name)
+            self._ip_havocked.add(fresh.decl().name())
             env[name] = fresh
             # A declared range is not enforced by an assignment - (Int 0 .. 10)
             # compiles to a uint8_t that `set!` can take to 11 - so a fresh
@@ -1953,6 +2251,7 @@ class InvariantProverMixin:
             if name in seqs:
                 sort = seqs[name].sort()
                 seqs[name] = self._ip_opaque(sort) if opaque else z3.FreshConst(sort, name)
+                self._ip_havocked.add(seqs[name].decl().name())
         return st.but(env=env, seqs=seqs)
 
     def _ip_unknown_within(self, loop, reason: str) -> None:
@@ -1962,6 +2261,8 @@ class InvariantProverMixin:
                 return
             for condition in self._ip_sites.get(id(node), []):
                 self._ip_set_unknown(self._ip_outcomes[id(condition)], reason)
+            for outcome in self._ip_exit_outcomes.get(id(node), []):
+                self._ip_set_unknown(outcome, reason)
             for item in node.items:
                 walk(item)
         walk(loop)
@@ -1969,14 +2270,15 @@ class InvariantProverMixin:
     def _ip_set_unknown(self, outcome: InvariantOutcome, reason: str, status: str = 'unknown') -> None:
         if outcome.status in ('pending', 'proved'):
             outcome.status = status
-            outcome.message = self._ip_unchecked_message(outcome.expr, reason)
+            outcome.message = self._ip_unchecked_text(outcome, reason)
             outcome.counterexample = None
 
     # ------------------------------------------------------------------
     # Solving
     # ------------------------------------------------------------------
 
-    def _ip_decide(self, outcome: InvariantOutcome, claim, st: _IState, failure: str, path) -> None:
+    def _ip_decide(self, outcome: InvariantOutcome, claim, st: _IState, failure: str, path,
+                   goal=None) -> None:
         """Check `claim` under everything the walk has established; record a failure.
 
         `path` is the claim's path condition. A proof is only a proof if the
@@ -1992,6 +2294,8 @@ class InvariantProverMixin:
         solver = z3.Solver()
         solver.set("timeout", self.timeout_ms)
         facts = list(self._ip_context) + list(self._xp_axioms)
+        if outcome.kind != 'property':
+            facts.append(self._ip_pre)
         for fact in facts:
             solver.add(fact)
         for fact in self._ip_local:
@@ -1999,34 +2303,63 @@ class InvariantProverMixin:
         solver.add(z3.Not(claim))
         result = solver.check()
         if result == z3.unsat:
-            key = (len(facts), path.get_id())
+            # A return the facts rule out is dead code, and a claim there
+            # holds: only facts that contradict one another say nothing.
+            reach = path if outcome.kind == 'invariant' else z3.BoolVal(True)
+            key = (len(facts), reach.get_id(), outcome.kind == 'property')
             if key not in self._ip_consistent:
-                self._ip_consistent[key] = not self._axioms_are_contradictory(facts + [path])
+                self._ip_consistent[key] = not self._axioms_are_contradictory(facts + [reach])
             if not self._ip_consistent[key]:
                 self._ip_set_unknown(outcome, "the verification context is inconsistent")
             return      # holds; the caller decides what that makes the invariant
         if result == z3.sat:
             model = solver.model()
-            if self._ip_depends_on_opaque(claim, facts + list(self._ip_local)):
+            # At a return, a value a loop may have left behind is only what
+            # the loop's invariants say of it - less than the program knows.
+            over = self._ip_havocked if outcome.kind != 'invariant' else ()
+            if goal is not None:
+                # What decides whether the return is reached is not what
+                # decides whether the claim holds there: a guard testing an
+                # element nothing is known about leaves the return possible,
+                # and a claim false whatever that element is stays false. So
+                # the claim is its goal, and a fact recorded under a path
+                # condition links values only through what it states.
+                depends = self._ip_depends_on_opaque(goal, facts + list(self._ip_local), over,
+                                                     consequents=True)
+            else:
+                depends = self._ip_depends_on_opaque(claim, facts + list(self._ip_local), over)
+            if depends:
                 self._ip_set_unknown(outcome, "it depends on something the analysis could not follow")
                 return
             outcome.status = 'failed'
-            outcome.message = f"loop invariant {failure}: {outcome.text}"
-            outcome.counterexample = self._ip_counterexample(outcome.expr, st, model)
+            if outcome.kind == 'invariant':
+                outcome.message = f"loop invariant {failure}: {outcome.text}"
+            else:
+                outcome.message = f"{outcome.what} does not hold{outcome.where}: {outcome.text}"
+            shown = outcome.expr
+            if outcome.site is not None and len(outcome.site) >= 2:
+                shown = SList([outcome.expr, outcome.site[1]])
+            outcome.counterexample = self._ip_counterexample(shown, st, model)
             return
         self._ip_time_spent = True
         self._ip_set_unknown(outcome, "the solver timed out", status='timeout')
 
-    def _ip_depends_on_opaque(self, claim, facts) -> bool:
+    def _ip_depends_on_opaque(self, claim, facts, over=(), consequents=False) -> bool:
         """True if the claim, or a fact linked to it through shared constants,
-        mentions a value the walk could not follow. A counterexample through
-        one is no evidence (#69)."""
+        mentions a value the walk could not follow - or one of `over`, the
+        values it over-approximates. A counterexample through one is no
+        evidence (#69)."""
         def own(consts):
             # A path condition's guard is shared by everything under it and
             # says nothing about values.
-            return {c for c in consts if not c.startswith(('iteration!', 'alive!'))}
+            return {c for c in consts if not c.startswith(('iteration!', 'alive!', 'pre!'))}
+
+        def stated(fact):
+            while consequents and z3.is_app_of(fact, z3.Z3_OP_IMPLIES):
+                fact = fact.arg(1)
+            return fact
         names = own(self._ip_constants(claim))
-        linked = [(f, own(self._ip_constants(f))) for f in facts]
+        linked = [(f, own(self._ip_constants(stated(f)))) for f in facts]
         grew = True
         while grew:
             grew = False
@@ -2034,7 +2367,7 @@ class InvariantProverMixin:
                 if consts & names and not consts <= names:
                     names |= consts
                     grew = True
-        return any(name.startswith(_OPAQUE) for name in names)
+        return any(name.startswith(_OPAQUE) or name in over for name in names)
 
     @staticmethod
     def _ip_constants(term) -> set:
@@ -2121,9 +2454,11 @@ class InvariantProverMixin:
         outcome.exits_before = exits == 'return'
         if self._needs_array_encoding([outcome.expr]):
             return no("it needs the array encoding; state it as a forall over the list")
-        if self._ip_contains_return(list(loop.items[1:])):
+        if self._ip_unwalked_return(list(loop.items[1:])):
             # A run that returns from inside the loop leaves it mid-iteration,
-            # where the invariant need not hold.
+            # where the invariant need not hold. A walked return is fine: the
+            # main model covers only the runs that take none, and on those the
+            # loop ran to its end.
             return no("the loop can return from inside its body")
         after = self._ip_after(body, loop)
         tracked_read = {s.name for s in self._ip_quantifier_sources(outcome.expr)
@@ -2157,7 +2492,8 @@ class InvariantProverMixin:
                 return
             if head == '?':
                 state['found'] = '?'
-            elif head == 'return' and state['found'] is None:
+            elif head == 'return' and state['found'] is None and id(node) not in self._ip_walked:
+                # A walked return is not one the main model has runs for.
                 state['found'] = 'return'
             elif head == 'set!':
                 state['assigned'] = True

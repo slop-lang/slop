@@ -115,6 +115,15 @@ class Z3Translator:
         # is the very term the constructor's field axioms describe - where a
         # plain translation would mint a fresh, unconstrained record_new_N.
         self._pinned_terms: Dict[int, z3.ExprRef] = {}
+        # `return` forms the forward walk checks instead (see
+        # ContractVerifier._exit_plan), keyed by node identity. The main model
+        # reasons only about runs that take none of them, so one is not
+        # translated: its value's side conditions - `(/ 1 n)` makes n non-zero -
+        # would otherwise be facts about runs that never got there.
+        self.walked_returns: Set[int] = set()
+        # The handle each list literal stands for, keyed by node identity, so
+        # every phase translating the same `(list T ...)` reads the same list.
+        self._list_literals: Dict[int, z3.ExprRef] = {}
         # Indices into `constraints` of the ones that are *obligations* rather
         # than facts: a divisor being non-zero is something the code has to
         # establish, not something a contract may assume. They sit in the same
@@ -1238,6 +1247,15 @@ class Z3Translator:
                 if op == 'false':
                     return z3.BoolVal(False)
 
+                if op == 'return' and id(expr) in self.walked_returns:
+                    # Anything at all: the runs this model covers never take it.
+                    result = self.variables.get('$result')
+                    sort = result.sort() if isinstance(result, z3.ExprRef) else z3.IntSort()
+                    return z3.FreshConst(sort, 'walked_return')
+
+                if self.is_list_literal(expr):
+                    return self._translate_list_literal(expr)
+
                 # Comparison operators
                 if op in ('>', '<', '>=', '<=', '==', '!='):
                     return self._translate_comparison(expr)
@@ -1799,6 +1817,38 @@ class Z3Translator:
             return None
 
         return self._translate_field_for_obj(obj, field_name)
+
+    def is_list_literal(self, expr: SExpr) -> bool:
+        """`(list T e1 ... en)`, unless the program defines a function `list`."""
+        if not (isinstance(expr, SList) and len(expr) >= 2 and isinstance(expr[0], Symbol)
+                and expr[0].name == 'list'):
+            return False
+        registry = self.function_registry
+        if registry is not None and 'list' in registry.functions:
+            return False
+        return self.imported_defs is None or 'list' not in self.imported_defs.functions
+
+    def _translate_list_literal(self, expr: SList) -> z3.ExprRef:
+        """A list literal: a handle of its own, whose length is its element count.
+
+        The elements are not described - a quantifier over the literal knows
+        nothing of them - but `(list-len (. r witnesses))` of a record built
+        with `(witnesses (list Triple a b))` is 2, read through the same
+        field_len accessor list-len uses for anything that is not a name.
+        """
+        handle = self._list_literals.get(id(expr))
+        if handle is None:
+            handle = z3.FreshConst(z3.IntSort(), 'list_literal')
+            self._list_literals[id(expr)] = handle
+        func = self.variables.get('field_len')
+        if func is None:
+            func = z3.Function('field_len', z3.IntSort(), z3.IntSort())
+            self.variables['field_len'] = func
+        # A binding named field_len holds the slot (see field_len_term): no
+        # length then, rather than a call to a constant.
+        if isinstance(func, z3.FuncDeclRef) and func.arity() == 1:
+            self.constraints.append(func(handle) == z3.IntVal(len(expr) - 2))
+        return handle
 
     def _translate_field_for_obj(self, obj: z3.ExprRef, field_name: str) -> z3.ExprRef:
         """Translate field access given an already-translated object and field name.
