@@ -261,6 +261,17 @@ static inline uint8_t* slop_arena_block_grow(uint8_t* base, size_t capacity, siz
                                      slop_arena_map_len_(new_capacity), 1);
             return p == MAP_FAILED ? NULL : (uint8_t*)p;
         }
+#elif !defined(_WIN32)
+        if (*mapped) {
+            /* Map the growth just past the block's end, keeping it only if it
+             * lands there: munmap then releases both mappings as one range */
+            size_t old_len = slop_arena_map_len_(capacity);
+            size_t grow = slop_arena_map_len_(new_capacity) - old_len;
+            void* p = mmap(base + old_len, grow, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | SLOP_ARENA_MAP_ANON_, -1, 0);
+            if (p == (void*)(base + old_len)) return base;
+            if (p != MAP_FAILED) munmap(p, grow);
+        }
 #endif
         uint8_t* nb = slop_arena_map_(new_capacity);
         if (nb == NULL) return NULL;
