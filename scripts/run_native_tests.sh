@@ -148,6 +148,12 @@ run_runtime_test() {
                 run_prefix=(setarch "$(uname -m)" -R)
             fi
             ;;
+        *_ubsan)
+            # Under ASan the runtime keeps every arena block in malloc, and
+            # ASan's allocator and shadow distort resident size: tests of
+            # blocks mapped from the OS run under UBSan alone
+            sanitize="-fsanitize=undefined -fno-sanitize-recover=undefined"
+            ;;
     esac
 
     echo -n "Testing $test_name... "

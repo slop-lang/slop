@@ -20,6 +20,17 @@
 #include <stdio.h>
 #include <stdatomic.h>
 
+/* Arena blocks come from the OS (see the Arena Allocator section) */
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
+#endif
+
 #ifdef SLOP_INTERN_THREADSAFE
 #include <pthread.h>
 #endif
@@ -109,7 +120,66 @@ _Atomic size_t slop_global_allocated __attribute__((weak)) = 0;
 
 /* ============================================================
  * Arena Allocator
- * ============================================================ */
+ * ============================================================
+ *
+ * Big blocks bypass malloc. A block of SLOP_ARENA_MAP_THRESHOLD bytes or
+ * more, head or overflow, is mapped straight from the OS (mmap, or
+ * VirtualAlloc on Windows) and unmapped when its arena is freed or reset, so
+ * freeing an arena gives its memory back. Through malloc it did not:
+ *   - macOS's libmalloc keeps big freed blocks dirty in its large-allocation
+ *     cache, reusing one only when a later request happens to fit, and
+ *     malloc_zone_pressure_relief does not release them. HOWL, right after
+ *     freeing its front-end arena, held 1,774 MB resident with 256 MB of
+ *     arenas live: 19 freed blocks in MALLOC_LARGE (empty).
+ *   - glibc raises its mmap threshold after large frees, up to 32 MB, so
+ *     later blocks land in the brk heap and stay there without malloc_trim.
+ *
+ * The threshold is 1 MiB. Arenas start at 4 KB and small ones are common;
+ * below about 1 MiB malloc serves them from dense size-class regions that it
+ * reuses and trims itself. From 1 MiB up, touching a block already costs 256
+ * page faults (4 KB pages), so one mmap/munmap pair more is noise, and every
+ * block big enough to sit in either allocator's cache goes to the OS.
+ *
+ * Under AddressSanitizer every block still comes from malloc. ASan poisons a
+ * freed block and quarantines it, so a use after arena-free is reported. An
+ * unmapped range is soon handed out again by the next mmap, and a stale
+ * pointer into it would silently read a live arena.
+ *
+ * Freed blocks are not kept for reuse. Tried on HOWL, which re-creates 16 MB
+ * and 1 MB arenas every round, a 64 MB cache of them saved at most 3% of run
+ * time and raised EL-GALEN's peak by 60 MB.
+ *
+ * A mapped block is zero-filled and a malloc'd one is not; nothing may rely
+ * on either. */
+
+#ifndef SLOP_ARENA_MAP_THRESHOLD
+#define SLOP_ARENA_MAP_THRESHOLD ((size_t)1 << 20)  /* 1 MiB */
+#endif
+
+#if defined(__SANITIZE_ADDRESS__)
+#define SLOP_ARENA_ASAN_ 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SLOP_ARENA_ASAN_ 1
+#endif
+#endif
+
+#if !defined(_WIN32) && defined(MAP_ANONYMOUS)
+#define SLOP_ARENA_MAP_ANON_ MAP_ANONYMOUS
+#elif !defined(_WIN32) && defined(MAP_ANON)
+#define SLOP_ARENA_MAP_ANON_ MAP_ANON
+#endif
+
+/* 1 when big blocks are mapped; defining it 0 keeps every block in malloc */
+#ifndef SLOP_ARENA_USE_MAP
+#if defined(SLOP_ARENA_ASAN_)
+#define SLOP_ARENA_USE_MAP 0
+#elif defined(_WIN32) || defined(SLOP_ARENA_MAP_ANON_)
+#define SLOP_ARENA_USE_MAP 1
+#else
+#define SLOP_ARENA_USE_MAP 0
+#endif
+#endif
 
 typedef struct slop_arena {
     uint8_t* base;
@@ -117,7 +187,110 @@ typedef struct slop_arena {
     size_t capacity;
     size_t total_allocated;   /* Total bytes across all arenas in chain */
     struct slop_arena* next;  /* For overflow arenas */
+    bool mapped;              /* base came from the OS, not malloc */
 } slop_arena;
+
+#if SLOP_ARENA_USE_MAP
+#ifdef _WIN32
+static inline uint8_t* slop_arena_map_(size_t size) {
+    return (uint8_t*)VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+}
+
+static inline void slop_arena_unmap_(uint8_t* base, size_t size) {
+    (void)size;
+    VirtualFree(base, 0, MEM_RELEASE);
+}
+#else
+/* The length of the mapping behind a block of size bytes */
+static inline size_t slop_arena_map_len_(size_t size) {
+    size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    return (size + page - 1) & ~(page - 1);
+}
+
+static inline uint8_t* slop_arena_map_(size_t size) {
+    void* p = mmap(NULL, slop_arena_map_len_(size), PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | SLOP_ARENA_MAP_ANON_, -1, 0);
+    return p == MAP_FAILED ? NULL : (uint8_t*)p;
+}
+
+static inline void slop_arena_unmap_(uint8_t* base, size_t size) {
+    munmap(base, slop_arena_map_len_(size));
+}
+#endif
+#endif
+
+/* A block of capacity bytes for an arena, mapped when it is big enough;
+ * *mapped records which, for slop_arena_block_put. NULL on failure. */
+static inline uint8_t* slop_arena_block_get(size_t capacity, bool* mapped) {
+#if SLOP_ARENA_USE_MAP
+    if (capacity >= SLOP_ARENA_MAP_THRESHOLD) {
+        uint8_t* base = slop_arena_map_(capacity);
+        *mapped = base != NULL;
+        return base;
+    }
+#endif
+    *mapped = false;
+    return (uint8_t*)malloc(capacity);
+}
+
+/* Return a block from slop_arena_block_get to where it came from */
+static inline void slop_arena_block_put(uint8_t* base, size_t capacity, bool mapped) {
+    if (base == NULL) return;
+#if SLOP_ARENA_USE_MAP
+    if (mapped) {
+        slop_arena_unmap_(base, capacity);
+        return;
+    }
+#else
+    (void)capacity;
+    (void)mapped;
+#endif
+    free(base);
+}
+
+/* Grow a block from capacity to new_capacity bytes, keeping its first used
+ * bytes, the way realloc would. A block that reaches the threshold moves to a
+ * mapping; a mapped one is grown with mremap on Linux, which moves pages
+ * instead of copying them, and copied into a new mapping elsewhere. Returns
+ * the (possibly moved) block, or NULL, leaving the old one intact. */
+static inline uint8_t* slop_arena_block_grow(uint8_t* base, size_t capacity, size_t used,
+                                             size_t new_capacity, bool* mapped) {
+#if SLOP_ARENA_USE_MAP
+    if (*mapped || new_capacity >= SLOP_ARENA_MAP_THRESHOLD) {
+#if defined(__linux__) && defined(SYS_mremap)
+        if (*mapped) {
+            /* Called through syscall(), as mremap() is declared only under
+             * _GNU_SOURCE; 1 is MREMAP_MAYMOVE */
+            void* p = (void*)syscall(SYS_mremap, base, slop_arena_map_len_(capacity),
+                                     slop_arena_map_len_(new_capacity), 1);
+            return p == MAP_FAILED ? NULL : (uint8_t*)p;
+        }
+#elif !defined(_WIN32)
+        if (*mapped) {
+            /* Map the growth just past the block's end, keeping it only if it
+             * lands there: munmap then releases both mappings as one range */
+            size_t old_len = slop_arena_map_len_(capacity);
+            size_t grow = slop_arena_map_len_(new_capacity) - old_len;
+            void* p = mmap(base + old_len, grow, PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | SLOP_ARENA_MAP_ANON_, -1, 0);
+            if (p == (void*)(base + old_len)) return base;
+            if (p != MAP_FAILED) munmap(p, grow);
+        }
+#endif
+        uint8_t* nb = slop_arena_map_(new_capacity);
+        if (nb == NULL) return NULL;
+        memcpy(nb, base, used);
+        slop_arena_block_put(base, capacity, *mapped);
+        *mapped = true;
+        return nb;
+    }
+#else
+    (void)mapped;
+#endif
+    (void)capacity;
+    (void)used;
+    return (uint8_t*)realloc(base, new_capacity);
+}
 
 /* ============================================================
  * String Interning Pool
@@ -161,7 +334,7 @@ static inline slop_arena slop_arena_new(size_t capacity) {
 #endif
 
     slop_arena arena;
-    arena.base = (uint8_t*)malloc(capacity);
+    arena.base = slop_arena_block_get(capacity, &arena.mapped);
     arena.offset = 0;
     arena.capacity = (arena.base != NULL) ? capacity : 0;
     arena.total_allocated = arena.capacity;  /* Keep for per-chain tracking */
@@ -244,11 +417,11 @@ static inline bool slop_arena_try_extend(slop_arena* arena, void* ptr,
 }
 
 /* Resize the allocation at ptr to new_size bytes when it is the ONLY
- * allocation in its block of this arena's chain, by realloc'ing the block
- * itself: the old storage goes back to the allocator instead of lying
- * abandoned in the arena. Returns the (possibly moved) allocation, or NULL,
- * changing nothing, when ptr shares its block, is not in this arena, or the
- * realloc fails. On success the old address is dead, so this is only for
+ * allocation in its block of this arena's chain, by growing the block
+ * itself (slop_arena_block_grow): the old storage goes back to the allocator
+ * or the OS instead of lying abandoned in the arena. Returns the (possibly
+ * moved) allocation, or NULL, changing nothing, when ptr shares its block, is
+ * not in this arena, or the grow fails. On success the old address is dead, so this is only for
  * storage with exactly one owner pointer -- a map's table, held only by its
  * slop_map -- and never for a List's buffer, which every copy of the list
  * header points at. */
@@ -272,7 +445,7 @@ static inline void* slop_arena_realloc_sole(slop_arena* arena, void* ptr,
             abort();
         }
 #endif
-        uint8_t* nb = (uint8_t*)realloc(a->base, new_size);
+        uint8_t* nb = slop_arena_block_grow(a->base, a->capacity, a->offset, new_size, &a->mapped);
         if (nb == NULL) return NULL;
         atomic_fetch_add(&slop_global_allocated, new_size - a->capacity);
         a->total_allocated += new_size - a->capacity;
@@ -296,8 +469,9 @@ static inline void slop_arena_free(slop_arena* arena) {
         atomic_fetch_sub(&slop_global_allocated, arena->capacity);
     }
 
-    free(arena->base);
+    slop_arena_block_put(arena->base, arena->capacity, arena->mapped);
     arena->base = NULL;
+    arena->mapped = false;
     arena->offset = 0;
     arena->capacity = 0;
     arena->total_allocated = 0;
@@ -1825,7 +1999,6 @@ SLOP_RESULT_DEFINE(slop_string, slop_error, slop_result_string)
  * ============================================================ */
 
 #ifdef _WIN32
-#include <windows.h>
 static inline int64_t slop_now_ms(void) {
     return (int64_t)GetTickCount64();
 }
