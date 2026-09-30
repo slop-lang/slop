@@ -145,6 +145,10 @@ _Atomic size_t slop_global_allocated __attribute__((weak)) = 0;
  * unmapped range is soon handed out again by the next mmap, and a stale
  * pointer into it would silently read a live arena.
  *
+ * Freed blocks are not kept for reuse. Tried on HOWL, which re-creates 16 MB
+ * and 1 MB arenas every round, a 64 MB cache of them saved at most 3% of run
+ * time and raised EL-GALEN's peak by 60 MB.
+ *
  * A mapped block is zero-filled and a malloc'd one is not; nothing may rely
  * on either. */
 
