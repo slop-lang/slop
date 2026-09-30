@@ -66,6 +66,20 @@ The body is translated to Z3 with full path sensitivity. `if`/`match`/`cond` bra
 
 A `match` arm binds every payload position to its own accessor, at the sort the variant's declaration gives it (Real for `Float`, Bool for `Bool`, Int otherwise), and only for that arm. A quoted enum arm, `('red ...)`, is read by its tag. A match naming a tag the verifier has no index for is not translated.
 
+### Early Returns
+
+A function may leave through `(return v)` as well as through its last form, and each exit is checked against every `@post` and `@property`. There are three kinds of `return`:
+
+- **Guarded early returns** — a bare `(return v)`, `(when C ... (return v))` or `(if C (return v) ...)` among the statements before the last form. The test is read as it stood at the top of the body, so it (and `v`) must read nothing an earlier statement may have changed: no name a `set!`, a push or a loop wrote (a write through a field or an index counts; one through a pointer makes a read through it, `(deref p)` or `p.n`, stale), nothing a `let` rebinds over a parameter, and no assignment in the test itself. After a write through any place or a call to a function that is not `@pure`, only a test made of plain names and arithmetic is still read as it stood. The body's translation carries these: `$result` is `v` on the path where `C` holds (and no earlier guard did), and the last form's value otherwise.
+- **Other returns** — inside a loop, in a `match` arm, deeper inside an `if`, in a `let` initializer, or past a change to what the guard reads. There is no single condition to negate for these, so the body's translation reasons only about the runs that take none of them, and a forward walk of the body (the one that checks `@loop-invariant`, section 4) checks the contract where each of them leaves. There it knows the path that leads to the return, the loop's element and what is known of it, a proved invariant of each enclosing loop, every `@assume` that names nothing the body changes, and the value returned. A `@property` is checked there without the `@pre`s, as it is everywhere. A contract naming a parameter that a local shadows at the return (a loop variable, a match binder) is not checked there.
+- **A return in a callback's lambda** leaves the callback, not the function, and nothing is claimed about `$result` for a function with one.
+
+A `(return v)` that is the body's last form is just its value.
+
+What the walk does not model it does not guess at: a value it could not follow (a loop's variable with no invariant to describe it, a construct it does not handle) makes the check at that return `unknown` rather than `failed`, and so does a counterexample of the main model in a function with such returns - that model runs on past them, so its run may be one that returned. A list literal `(list T ...)` written as the value itself - a record field, the value returned - has its length, not its elements; one bound to a name has neither, since the name may be pushed to.
+
+`?` is not yet treated as an exit.
+
 ### Push-Built Results
 
 A result built by pushes with no loop is modelled exactly: the verifier knows which elements it contains and in what order, as a function of the branch conditions. The shape is
@@ -343,7 +357,7 @@ A failed invariant fails the function whatever its postconditions say. An unchec
 - an invariant inside a lambda that is not desugared into a loop, or inside a `let` initializer that has statements in it;
 - a loop the walk cannot reach through a construct it does not follow (`with-arena`, `spawn`, `try`, `?`).
 
-A proved invariant over a tracked list is not used if the list is pushed to after the loop, nor one reading collection state if anything after the loop may change it; nor one needing the array encoding (`all-triples-have-predicate`, `list-ref`) - write those as a `forall` over the list instead. With a `return` before the loop it is stated only for the runs that took no early return, and not used at all when an assignment or a `?` also precedes the loop, when the loop body can `return`, when the loop is nested in another or does not run on every path (a loop inside an `if` arm), or when the function body has more than one form.
+A proved invariant over a tracked list is not used if the list is pushed to after the loop, nor one reading collection state if anything after the loop may change it; nor one needing the array encoding (`all-triples-have-predicate`, `list-ref`) - write those as a `forall` over the list instead. With a guarded `return` before the loop (section 2, Early Returns) it is stated only for the runs that took no early return, and not used at all when an assignment or a `?` also precedes the loop, when the loop is nested in another or does not run on every path (a loop inside an `if` arm), or when the function body has more than one form.
 
 When a postcondition then fails, the result is `unknown`, not `failed`, with a line `loop invariant proved but not used: <expr> (<reason>)` - the counterexample may be one the invariant rules out.
 
@@ -532,6 +546,11 @@ Z3 could not determine satisfiability.
 - **`loop invariant not established on entry`** — the counterexample shows the invariant's names where the loop starts. Usually a missing `@pre`, or an initializer that does not satisfy the invariant.
 - **`loop invariant not preserved`** — the counterexample shows the names where an iteration ends. The body can break the invariant, or the invariant is true but not inductive: strengthen it with what the body needs to keep it (a bound on a counter, a callee's `@post`).
 - **`could not check loop invariant`** — the reason in parentheses names what the check does not model (section 4, How @loop-invariant Works). Move the construct out of the loop, give the callee a contract, or restate the invariant over something the check follows.
+
+### Messages at a return
+
+- **`postcondition does not hold at the return on line N`** (or `property ... does not hold`) — a return inside a loop, a `match` arm or past an assignment (section 2, Early Returns) yields a value the contract does not allow. The counterexample shows `$result` and the names the returned value is built from.
+- **`could not check postcondition at the return on line N`** — the reason in parentheses says what the walk could not follow there. The usual one is a value a loop computes with no `@loop-invariant` to describe it.
 
 ### "Could not translate"
 
