@@ -37,10 +37,13 @@ slop_result_u8_file_FileError file_file_close(file_File* f) {
         __auto_type result = fclose((*f).handle);
         if (result == 0) {
             _retval = ((slop_result_u8_file_FileError){ .is_ok = true, .data.ok = 1 });
+            goto _slop_post;
         } else {
             _retval = ((slop_result_u8_file_FileError){ .is_ok = false, .data.err = file_FileError_io_error });
+            goto _slop_post;
         }
     }
+    _slop_post: ;
     SLOP_POST((!((*f).is_open)), "(not (. (deref f) is-open))");
     return _retval;
 }

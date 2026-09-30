@@ -104,11 +104,16 @@ slop_option_string context_ctx_get_current_return_type(context_TranspileContext*
 void context_ctx_clear_current_return_type(context_TranspileContext* ctx);
 void context_ctx_set_capture_retval(context_TranspileContext* ctx, uint8_t enabled);
 uint8_t context_ctx_is_capture_retval(context_TranspileContext* ctx);
+void context_ctx_set_post_exit(context_TranspileContext* ctx, uint8_t enabled);
+uint8_t context_ctx_is_post_exit(context_TranspileContext* ctx);
+void context_ctx_restore_post_exit(context_TranspileContext* ctx, uint8_t enabled, uint8_t used);
+uint8_t context_ctx_post_exit_used(context_TranspileContext* ctx);
 void context_ctx_push_open_arena(context_TranspileContext* ctx, slop_string c_name);
 void context_ctx_pop_open_arena(context_TranspileContext* ctx);
 slop_list_string context_ctx_take_open_arenas(context_TranspileContext* ctx);
 void context_ctx_restore_open_arenas(context_TranspileContext* ctx, slop_list_string saved);
 slop_string context_ctx_open_arena_frees(context_TranspileContext* ctx);
+slop_string context_ctx_exit_code(context_TranspileContext* ctx, slop_string code);
 void context_ctx_emit_return(context_TranspileContext* ctx, slop_string code);
 void context_ctx_register_option_type(context_TranspileContext* ctx, slop_string inner_type, slop_string c_name);
 uint8_t context_ctx_has_option_type(context_TranspileContext* ctx, slop_string c_name);
@@ -216,6 +221,8 @@ context_TranspileContext* context_context_new(slop_arena* arena) {
         (*ctx).c_name_aliases = ((slop_list_context_FuncCNameAlias){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).gensym_counter = 0;
         (*ctx).capture_to_retval = 0;
+        (*ctx).post_exit = 0;
+        (*ctx).post_exit_used = 0;
         (*ctx).open_arenas = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).struct_key_types = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 });
         (*ctx).value_key_types = ((slop_list_context_ValueKeyType){ .data = NULL, .len = 0, .cap = 0 });
@@ -1741,6 +1748,30 @@ uint8_t context_ctx_is_capture_retval(context_TranspileContext* ctx) {
     return (*ctx).capture_to_retval;
 }
 
+void context_ctx_set_post_exit(context_TranspileContext* ctx, uint8_t enabled) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    (*ctx).post_exit = enabled;
+    if (enabled) {
+        (*ctx).post_exit_used = 0;
+    }
+}
+
+uint8_t context_ctx_is_post_exit(context_TranspileContext* ctx) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    return (*ctx).post_exit;
+}
+
+void context_ctx_restore_post_exit(context_TranspileContext* ctx, uint8_t enabled, uint8_t used) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    (*ctx).post_exit = enabled;
+    (*ctx).post_exit_used = used;
+}
+
+uint8_t context_ctx_post_exit_used(context_TranspileContext* ctx) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    return (*ctx).post_exit_used;
+}
+
 void context_ctx_push_open_arena(context_TranspileContext* ctx, slop_string c_name) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     ({ __auto_type _lst_p = &((*ctx).open_arenas); __auto_type _item = (c_name); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(ctx->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -1788,12 +1819,54 @@ slop_string context_ctx_open_arena_frees(context_TranspileContext* ctx) {
     }
 }
 
+slop_string context_ctx_exit_code(context_TranspileContext* ctx, slop_string code) {
+    SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
+    {
+        __auto_type frees = context_ctx_open_arena_frees(ctx);
+        __auto_type sep = ((string_eq(frees, SLOP_STR(""))) ? SLOP_STR("") : SLOP_STR(" "));
+        __auto_type ret_type = ({ __auto_type _mv = context_ctx_get_current_return_type(ctx); _mv.has_value ? ({ __auto_type t = _mv.value; t; }) : (SLOP_STR("__auto_type")); });
+        if (context_ctx_is_post_exit(ctx)) {
+            (*ctx).post_exit_used = 1;
+            if (string_eq(code, SLOP_STR(""))) {
+                return context_ctx_str4(ctx, SLOP_STR("{ "), frees, sep, SLOP_STR("goto _slop_post; }"));
+            } else if (context_ctx_is_capture_retval(ctx)) {
+                return context_ctx_str5(ctx, SLOP_STR("{ _retval = "), code, SLOP_STR("; "), frees, context_ctx_str(ctx, sep, SLOP_STR("goto _slop_post; }")));
+            } else {
+                return context_ctx_str5(ctx, SLOP_STR("{ "), code, SLOP_STR("; "), frees, context_ctx_str(ctx, sep, SLOP_STR("goto _slop_post; }")));
+            }
+        } else if (string_eq(frees, SLOP_STR(""))) {
+            if (string_eq(code, SLOP_STR(""))) {
+                return SLOP_STR("return;");
+            } else {
+                return context_ctx_str3(ctx, SLOP_STR("return "), code, SLOP_STR(";"));
+            }
+        } else if (string_eq(code, SLOP_STR("")) || string_eq(ret_type, SLOP_STR("void"))) {
+            return context_ctx_str4(ctx, SLOP_STR("{ "), ((string_eq(code, SLOP_STR(""))) ? SLOP_STR("") : context_ctx_str(ctx, code, SLOP_STR("; "))), frees, SLOP_STR(" return; }"));
+        } else {
+            return context_ctx_str5(ctx, SLOP_STR("{ "), ret_type, SLOP_STR(" _wa_ret = "), code, context_ctx_str3(ctx, SLOP_STR("; "), frees, SLOP_STR(" return _wa_ret; }")));
+        }
+    }
+}
+
 void context_ctx_emit_return(context_TranspileContext* ctx, slop_string code) {
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     {
         __auto_type frees = context_ctx_open_arena_frees(ctx);
         __auto_type ret_type = ({ __auto_type _mv = context_ctx_get_current_return_type(ctx); _mv.has_value ? ({ __auto_type t = _mv.value; t; }) : (SLOP_STR("__auto_type")); });
-        if (string_eq(frees, SLOP_STR(""))) {
+        if (context_ctx_is_post_exit(ctx)) {
+            (*ctx).post_exit_used = 1;
+            if (!(string_eq(code, SLOP_STR("")))) {
+                if (context_ctx_is_capture_retval(ctx)) {
+                    context_ctx_emit(ctx, context_ctx_str3(ctx, SLOP_STR("_retval = "), code, SLOP_STR(";")));
+                } else {
+                    context_ctx_emit(ctx, context_ctx_str(ctx, code, SLOP_STR(";")));
+                }
+            }
+            if (!(string_eq(frees, SLOP_STR("")))) {
+                context_ctx_emit(ctx, frees);
+            }
+            context_ctx_emit(ctx, SLOP_STR("goto _slop_post;"));
+        } else if (string_eq(frees, SLOP_STR(""))) {
             if (string_eq(code, SLOP_STR(""))) {
                 context_ctx_emit(ctx, SLOP_STR("return;"));
             } else {

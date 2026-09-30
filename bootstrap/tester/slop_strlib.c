@@ -598,8 +598,10 @@ slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precisio
         {
             __auto_type len = snprintf(((char*)(out_buf)), ((uint64_t)(64)), ((char*)(fmt_buf)), f);
             _retval = (slop_string){.len = ((uint64_t)(len)), .data = ((uint8_t*)(out_buf))};
+            goto _slop_post;
         }
     }
+    _slop_post: ;
     SLOP_POST(((_retval.len >= 1)), "(>= (. $result len) 1)");
     SLOP_POST(((_retval.data != NULL)), "(!= (. $result data) nil)");
     return _retval;
