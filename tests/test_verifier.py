@@ -12940,6 +12940,64 @@ class TestWalkedReturnSoundness:
   (@post (== $result 0))
   (when (do (set! n 5) (== n 5)) (return 9))
   0)''',
+        # Round two. C re-reads p.n before every iteration; grow changes it.
+        'for_bound_read_through_a_pointer': '''
+(module m
+  (type R (record (n Int)))
+  (fn grow ((p (Ptr R)))
+    (@spec (((Ptr R)) -> Unit))
+    (set! p.n 10))
+  (fn f ((p (Ptr R)))
+    (@spec (((Ptr R)) -> Int))
+    (@pre (== p.n 3))
+    (@post (< $result 3))
+    (for (i 0 p.n)
+      (grow p)
+      (when (== i 5) (return i)))
+    0))''',
+        # The @assume holds where the body ends; at the return k is 1.
+        'assume_about_a_name_the_body_changes': '''
+(fn f ((mut k Int) (xs (List Int)))
+  (@spec ((Int (List Int)) -> Int))
+  (@assume (== k 0))
+  (@post (== $result 0))
+  (set! k 1)
+  (for-each (x xs) (return k))
+  (set! k 0)
+  k)''',
+        'guard_after_a_push_through_a_field': '''
+(module m
+  (type B (record (items (List Int))))
+  (fn f ((arena Arena) (mut b B))
+    (@spec ((Arena B) -> Int))
+    (@pre (== (list-len (. b items)) 0))
+    (@post (== $result 1))
+    (list-push (. b items) 1)
+    (when (> (list-len (. b items)) 0) (return 0))
+    1))''',
+        'guard_reading_a_field_through_a_written_pointer': '''
+(module m
+  (type R (record (n Int)))
+  (fn f ((p (Ptr R)))
+    (@spec (((Ptr R)) -> Int))
+    (@pre (== p.n 0))
+    (@post (== $result 1))
+    (set! (deref p) (record-new R (n 10)))
+    (when (> p.n 5) (return 0))
+    1))''',
+        'guard_after_a_call_that_writes_through_a_pointer': '''
+(module m
+  (type R (record (n Int)))
+  (fn grow ((p (Ptr R)))
+    (@spec (((Ptr R)) -> Unit))
+    (set! p.n 10))
+  (fn f ((p (Ptr R)))
+    (@spec (((Ptr R)) -> Int))
+    (@pre (== p.n 0))
+    (@post (== $result 1))
+    (grow p)
+    (when (> p.n 5) (return 0))
+    1))''',
         'guard_after_a_push': '''
 (fn f ((mut xs (List Int)) (arena Arena))
   (@spec (((List Int) Arena) -> Int))
@@ -12953,9 +13011,21 @@ class TestWalkedReturnSoundness:
     @pytest.mark.parametrize('name', sorted(CASES))
     def test_does_not_verify(self, name):
         from slop.verifier import verify_source
-        results = verify_source(self.CASES[name], filename='probe.slop')
+        results = [r for r in verify_source(self.CASES[name], filename='probe.slop')
+                   if r.name == 'f']
         assert len(results) == 1
         assert results[0].status != 'verified', results[0].message
+
+    def test_a_run_past_a_walked_return_is_not_a_counterexample(self):
+        """f(-2) returns 0 at the walked return; the main model, running on
+        past it, would report -1."""
+        assert self._status('''
+(fn f ((mut n Int))
+  (@spec ((Int) -> Int))
+  (@post (>= $result 0))
+  (set! n (+ n 1))
+  (when (< n 0) (return 0))
+  n)''') != 'failed'
 
     @staticmethod
     def _status(src):

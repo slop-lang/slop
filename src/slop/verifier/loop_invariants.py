@@ -197,6 +197,8 @@ class InvariantProverMixin:
         self._ip_sites: Dict[int, List[Any]] = {}
         self._ip_walked = set(exits.get('walked', ()))
         self._ip_assumptions = list(exits.get('assumptions', []))
+        # Every name a set! or a push changes, by its root.
+        self._ip_changed = self._ip_changed_roots(body)
         self._ip_exit_scope = self._ip_binders_around(body) if self._ip_walked else {}
         self._ip_return_type = exits.get('return_type')
         # Per walked return, the claims to check there.
@@ -1338,9 +1340,14 @@ class InvariantProverMixin:
             if value is None and self._ip_mentions(assumption, '$result'):
                 continue
             hidden = sorted(shadowed & self._ip_free_roots(assumption))
+            # The main model reads an @assume where the body ends; about a
+            # name the body changes, that is not what holds here.
+            changed = sorted(self._ip_changed & self._ip_free_roots(assumption))
             try:
                 if hidden:
                     raise _Unchecked(f"it names {hidden[0]}, which a local binding shadows here")
+                if changed:
+                    raise _Unchecked(f"it names {changed[0]}, which the body changes")
                 term, obligations = self._ip_exit_formula(assumption, at, pc, fresh)
                 assumed.append(z3.And(term, *obligations))
             except (_Unchecked, _Bail) as unchecked:
@@ -1369,10 +1376,48 @@ class InvariantProverMixin:
             self._ip_decide(outcome, z3.Implies(z3.And(pc, st.alive, *obligations, *hypotheses,
                                                        *assumed), goal),
                             at, '', pc, goal=goal)
+            if outcome.status == 'pending' and assumed and not self._ip_path_open(
+                    outcome, [pc, st.alive, *hypotheses, *assumed]) and self._ip_path_open(
+                    outcome, [pc, st.alive, *hypotheses]):
+                # Held only because an @assume rules the return out: a
+                # trusted claim is not evidence that a path is dead.
+                self._ip_set_unknown(outcome, "an @assume contradicts the path to this return")
             if outcome.status == 'failed' and assume_note is not None:
                 outcome.status = 'unknown'
                 outcome.message = self._ip_unchecked_text(outcome, assume_note)
                 outcome.counterexample = None
+
+    @staticmethod
+    def _ip_changed_roots(body) -> set:
+        out = set()
+
+        def walk(node):
+            if not isinstance(node, SList) or len(node) == 0 or is_form(node, 'quote'):
+                return
+            head = node[0].name if isinstance(node[0], Symbol) else None
+            if (head == 'set!' or head in _MUTATORS) and len(node) >= 2:
+                place = node[1]
+                while isinstance(place, SList) and len(place) >= 2:
+                    place = place[1]
+                if isinstance(place, Symbol):
+                    out.add(place.name.split('.')[0])
+            for item in node.items:
+                walk(item)
+
+        walk(body)
+        return out
+
+    def _ip_path_open(self, outcome: InvariantOutcome, conditions) -> bool:
+        """True unless the facts rule `conditions` out (a timeout counts as open)."""
+        solver = z3.Solver()
+        solver.set("timeout", self.timeout_ms)
+        for fact in list(self._ip_context) + list(self._xp_axioms) + list(self._ip_local):
+            solver.add(fact)
+        if outcome.kind != 'property':
+            solver.add(self._ip_pre)
+        for condition in conditions:
+            solver.add(condition)
+        return solver.check() != z3.unsat
 
     @staticmethod
     def _ip_free_roots(expr) -> set:
@@ -2302,10 +2347,13 @@ class InvariantProverMixin:
             # nothing the body does can change it, and i counts up from lo
             # only if the body leaves it alone.
             written, _, cinline = self._ip_loop_writes(loop)
+            # A write through memory - a call, a field or pointer assignment -
+            # can change a field the bound reads, whatever the names say.
+            body_effect = self._ip_first_effect(list(loop.items[2:]))
             facts = []
             if not cinline and var not in written:
                 facts.append(lo <= index)
-                if self._ip_fixed_bound(header[3], written):
+                if self._ip_fixed_bound(header[3], written, body_effect is None):
                     facts.append(index < hi)
             if len(facts) < 2:
                 self._ip_havocked.add(index.decl().name())
@@ -2351,17 +2399,23 @@ class InvariantProverMixin:
         types[var] = element_type
         return step.but(env=env, types=types), facts
 
-    def _ip_fixed_bound(self, expr, written) -> bool:
+    def _ip_fixed_bound(self, expr, written, no_effect: bool) -> bool:
         """True if `expr` has the same value at every iteration's test: made
-        of numbers and names the loop does not assign, with no call or read
-        of collection state that the body could change."""
+        of numbers and names the loop does not assign (nor a call through their
+        address), and fields of them only if nothing in the loop may write
+        memory - `p.n` of a pointer changes under a call handed p."""
         if isinstance(expr, Number):
             return True
         if isinstance(expr, Symbol):
-            return expr.name.split('.')[0] not in written and expr.name not in self._ip_addr_taken
+            root = expr.name.split('.')[0]
+            if root in written or root in self._ip_addr_taken:
+                return False
+            return no_effect or '.' not in expr.name.strip('.')
+        if is_form(expr, '.') and len(expr) == 3:
+            return no_effect and self._ip_fixed_bound(expr[1], written, no_effect)
         if isinstance(expr, SList) and len(expr) >= 1 and isinstance(expr[0], Symbol) \
                 and expr[0].name in ('+', '-', '*'):
-            return all(self._ip_fixed_bound(item, written) for item in expr.items[1:])
+            return all(self._ip_fixed_bound(item, written, no_effect) for item in expr.items[1:])
         return False
 
     def _ip_header_names(self, loop) -> List[str]:

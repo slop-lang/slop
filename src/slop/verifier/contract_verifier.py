@@ -2718,34 +2718,80 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if in_callback[0]:
             return None
 
-        # The root of every place a `set!` writes: `x`, `x.f`, `(. x f)` and
-        # `(@ x i)` all change what a read of x gives. `(deref p)` changes
-        # what p points at, not p: only a read through `(deref p)` moves.
+        # The root of every place a `set!` or a push writes: `x`, `x.f`,
+        # `(. x f)` and `(@ x i)` all change what a read of x gives. `(deref p)`
+        # changes what p points at, not p. And a write through any place - a
+        # field, an index, a pointer - may reach state some other name reads
+        # (an alias, a pointer's target), as may a call to a function not
+        # declared @pure: after one, only a guard made of plain names and
+        # arithmetic is still read as it stood (see `heap` below).
         assigned: Set[str] = set()
         pointees: Set[str] = set()
+
+        def place_root(place):
+            """(root name, through a pointer?, a plain name?) of a written place."""
+            through_pointer = False
+            plain = isinstance(place, Symbol) and '.' not in place.name.strip('.')
+            while isinstance(place, SList) and len(place) >= 2:
+                through_pointer = through_pointer or is_form(place, 'deref')
+                place = place[1]
+            if isinstance(place, Symbol):
+                return place.name.split('.')[0], through_pointer, plain
+            return None, through_pointer, plain
+
+        def note_place(place):
+            root, through_pointer, _ = place_root(place)
+            if root is not None:
+                (pointees if through_pointer else assigned).add(root)
 
         def targets(node):
             if not isinstance(node, SList) or len(node) == 0 or is_form(node, 'quote'):
                 return
             if is_form(node, 'set!') and len(node) >= 2:
-                place = node[1]
-                through_pointer = False
-                while isinstance(place, SList) and len(place) >= 2:
-                    through_pointer = through_pointer or is_form(place, 'deref')
-                    place = place[1]
-                if isinstance(place, Symbol):
-                    root = place.name.split('.')[0]
-                    (pointees if through_pointer else assigned).add(root)
-            elif (isinstance(node[0], Symbol) and node[0].name in _MUTATORS and len(node) >= 2
-                  and isinstance(node[1], Symbol)):
-                assigned.add(node[1].name.split('.')[0])
+                note_place(node[1])
+            elif isinstance(node[0], Symbol) and node[0].name in _MUTATORS and len(node) >= 2:
+                note_place(node[1])
             for item in node.items:
                 targets(item)
 
+        def writes_memory(node) -> bool:
+            """A write through a place, or a call that may make one."""
+            if not isinstance(node, SList) or len(node) == 0 or is_form(node, 'quote'):
+                return False
+            head = node[0].name if isinstance(node[0], Symbol) else None
+            if head == 'fn':
+                return False
+            if head is None:
+                return True     # a call through a computed function
+            if head == 'set!' and len(node) >= 2 and not place_root(node[1])[2]:
+                return True
+            if head in _MUTATORS and len(node) >= 2 and not place_root(node[1])[2]:
+                return True
+            if head == 'c-inline' or self._may_write_state(head):
+                return True
+            return any(writes_memory(item) for item in node.items)
+
+        scalar_ops = {'+', '-', '*', '/', '%', 'mod', '==', '!=', '<', '>', '<=', '>=',
+                      'and', 'or', 'not', 'true', 'false'}
+
+        def plain(expr) -> bool:
+            """Names, literals and arithmetic on them: nothing read through memory."""
+            if isinstance(expr, Symbol):
+                return '.' not in expr.name.strip('.')
+            if isinstance(expr, SList):
+                return (len(expr) >= 1 and isinstance(expr[0], Symbol)
+                        and expr[0].name in scalar_ops
+                        and all(plain(item) for item in expr.items[1:]))
+            return True
+
         def reads_pointee(expr) -> bool:
+            if isinstance(expr, Symbol):
+                # p.n reads what p points at as surely as (deref p) does.
+                return '.' in expr.name.strip('.') and expr.name.split('.')[0] in pointees
             if not isinstance(expr, SList) or len(expr) == 0:
                 return False
-            if is_form(expr, 'deref') and len(expr) >= 2 and mentions(expr[1], pointees):
+            if (is_form(expr, 'deref') or is_form(expr, '.')) and len(expr) >= 2 \
+                    and mentions(expr[1], pointees):
                 return True
             return any(reads_pointee(item) for item in expr.items)
 
@@ -2753,7 +2799,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # A push changes a list's length as surely as a set! changes a name.
         changing = ('set!', 'while', 'for-each', 'for') + tuple(_MUTATORS)
         guarded: List = []
-        state = {'reassigned': False}
+        state = {'reassigned': False, 'heap': False}
         # Names a `let` on the way to the tail binds over a parameter's: the
         # guard is translated before the body, where the name still means the
         # parameter.
@@ -2769,9 +2815,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         def stale(expr) -> bool:
             if expr is None:
                 return False
-            if self._contains_any_form(expr, changing):
-                return True     # it assigns, or loops, as it is evaluated
+            if self._contains_any_form(expr, changing) or writes_memory(expr):
+                return True     # it changes state as it is evaluated
             return ((state['reassigned'] and (mentions(expr, assigned) or reads_pointee(expr)))
+                    or (state['heap'] and not plain(expr))
                     or mentions(expr, shadowing))
 
         def direct_return(stmts):
@@ -2819,6 +2866,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 # names a later guard reads.
                 if self._contains_any_form(stmt, changing):
                     state['reassigned'] = True
+                if writes_memory(stmt):
+                    state['heap'] = True
             return False
 
         node = body
@@ -2826,6 +2875,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if is_form(node, 'let') and len(node) >= 3:
                 if isinstance(node[1], SList) and self._contains_any_form(node[1], changing):
                     state['reassigned'] = True
+                if isinstance(node[1], SList) and writes_memory(node[1]):
+                    state['heap'] = True
                 if isinstance(node[1], SList):
                     for binding in node[1].items:
                         if isinstance(binding, SList) and len(binding) >= 2:
@@ -2863,6 +2914,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         walk(body)
         return nodes
+
+    def _may_write_state(self, name: str) -> bool:
+        """A call to `name` may change state the caller reads: a user or
+        imported function not declared @pure."""
+        registry = self.function_registry
+        if registry is not None and name in registry.functions:
+            return not registry.functions[name].is_pure
+        sig = self.imported_defs.functions.get(name) if self.imported_defs else None
+        if sig is not None:
+            return not getattr(sig, 'is_pure', False)
+        return False
 
     @staticmethod
     def _param_names(params) -> Set[str]:
@@ -3585,6 +3647,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         self._invariant_report: Optional[InvariantReport] = None
         self._desugared_extra_params: Dict[int, List] = {}
         self._desugared_loops: Set[int] = set()
+        self._has_walked_returns = False
         result = self._verify_function_contracts(fn_form)
         return self._merge_invariant_report(result, self._invariant_report)
 
@@ -3602,24 +3665,25 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         that failed may have needed the invariant (#69).
 
         A return the walk could not check leaves the contract unproved on
-        the runs that take it, so a verified result becomes unknown. A
-        counterexample from the main model stands, though: it is a run that
-        reaches the tail, which none of those returns has anything to do with.
+        the runs that take it, so a verified result becomes unknown. With
+        walked returns, a counterexample from the main model is unknown too:
+        that model runs on past them, so its run may be one that returned.
         """
-        if result.status == 'failed' and result.counterexample and any(
-                name.startswith('walked_return') for name in result.counterexample):
-            # The main model gives a walked return in a value's position no
-            # value at all; a counterexample through one is no evidence (#69).
+        if report is not None and (report.failed or report.exits_failed):
+            return result       # the walk's own failure, already the result
+        if result.status == 'failed' and result.counterexample and self._has_walked_returns:
+            # The main model runs on past a walked return as if it were not
+            # there - a run it describes may be one that returned earlier -
+            # and gives one in a value's position no value at all. Its
+            # counterexample is no evidence (#69).
             result = VerificationResult(
                 name=result.name, verified=False, status='unknown',
-                message=(f"{result.message}\nthe counterexample goes through a return the "
-                         "main model does not follow"),
+                message=(f"{result.message}\nthe counterexample may be a run that returns "
+                         "earlier, which the main model does not follow"),
                 counterexample=result.counterexample, location=result.location,
                 suggestions=result.suggestions)
         if report is None or (not report.outcomes and not report.exits):
             return result
-        if report.failed or report.exits_failed:
-            return result       # the walk's own failure, already the result
         unchecked = report.unchecked
         exits_unchecked = report.exits_unchecked
         exit_notes = [o.message for o in exits_unchecked]
@@ -3768,6 +3832,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             exit_plan = self._exit_plan(walked_body, self._param_names(params))
             if exit_plan is not None:
                 walked_returns = exit_plan[1]
+                self._has_walked_returns = bool(walked_returns)
                 guarded_returns = {id(ret) for _, _, ret, _ in exit_plan[0]}
             sites, misplaced, in_callbacks = self._attach_loop_invariants(walked_body)
             if misplaced:
