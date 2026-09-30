@@ -1829,26 +1829,30 @@ class Z3Translator:
         return self.imported_defs is None or 'list' not in self.imported_defs.functions
 
     def _translate_list_literal(self, expr: SList) -> z3.ExprRef:
-        """A list literal: a handle of its own, whose length is its element count.
+        """A list literal: a handle of its own, the same for every phase.
 
-        The elements are not described - a quantifier over the literal knows
-        nothing of them - but `(list-len (. r witnesses))` of a record built
-        with `(witnesses (list Triple a b))` is 2, read through the same
-        field_len accessor list-len uses for anything that is not a name.
+        Nothing is said of it here. Its length is its element count only
+        until something pushes to it, and a literal bound to a name can be
+        pushed to through that name or any alias - so the length is stated
+        only where the literal is the value itself, with nothing after it
+        (list_literal_length, used by the record-field facts and the walk).
         """
         handle = self._list_literals.get(id(expr))
         if handle is None:
             handle = z3.FreshConst(z3.IntSort(), 'list_literal')
             self._list_literals[id(expr)] = handle
+        return handle
+
+    def list_literal_length(self, expr: SList, handle: z3.ExprRef) -> Optional[z3.BoolRef]:
+        """`field_len(handle) == n` for the literal `expr`, or None if the slot is taken."""
         func = self.variables.get('field_len')
         if func is None:
             func = z3.Function('field_len', z3.IntSort(), z3.IntSort())
             self.variables['field_len'] = func
-        # A binding named field_len holds the slot (see field_len_term): no
-        # length then, rather than a call to a constant.
-        if isinstance(func, z3.FuncDeclRef) and func.arity() == 1:
-            self.constraints.append(func(handle) == z3.IntVal(len(expr) - 2))
-        return handle
+        # A binding named field_len holds the slot (see field_len_term).
+        if not (isinstance(func, z3.FuncDeclRef) and func.arity() == 1):
+            return None
+        return func(handle) == z3.IntVal(len(expr) - 2)
 
     def _translate_field_for_obj(self, obj: z3.ExprRef, field_name: str) -> z3.ExprRef:
         """Translate field access given an already-translated object and field name.

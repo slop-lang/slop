@@ -43,7 +43,7 @@ from .axiom_generation import AxiomGenerationMixin
 from .loop_analysis import LoopAnalysisMixin
 from .union_handling import UnionHandlingMixin
 from .exact_push import ExactPushModelMixin
-from .loop_invariants import InvariantProverMixin, InvariantReport
+from .loop_invariants import InvariantProverMixin, InvariantReport, _MUTATORS
 
 if TYPE_CHECKING:
     from slop.parser import SExpr
@@ -2672,7 +2672,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         walk(expr)
         return tuple(forms)
 
-    def _exit_plan(self, body: SExpr):
+    def _exit_plan(self, body: SExpr, param_names: Optional[Set[str]] = None):
         """Which `return`s the main model guards, and which the walk checks.
 
         Returns (guarded, walked), or None if a `return` sits in a callback
@@ -2718,21 +2718,61 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         if in_callback[0]:
             return None
 
-        assigned = self._ip_assigned_names(body)
-        changing = ('set!', 'while', 'for-each', 'for')
+        # The root of every place a `set!` writes: `x`, `x.f`, `(. x f)` and
+        # `(@ x i)` all change what a read of x gives. `(deref p)` changes
+        # what p points at, not p: only a read through `(deref p)` moves.
+        assigned: Set[str] = set()
+        pointees: Set[str] = set()
+
+        def targets(node):
+            if not isinstance(node, SList) or len(node) == 0 or is_form(node, 'quote'):
+                return
+            if is_form(node, 'set!') and len(node) >= 2:
+                place = node[1]
+                through_pointer = False
+                while isinstance(place, SList) and len(place) >= 2:
+                    through_pointer = through_pointer or is_form(place, 'deref')
+                    place = place[1]
+                if isinstance(place, Symbol):
+                    root = place.name.split('.')[0]
+                    (pointees if through_pointer else assigned).add(root)
+            elif (isinstance(node[0], Symbol) and node[0].name in _MUTATORS and len(node) >= 2
+                  and isinstance(node[1], Symbol)):
+                assigned.add(node[1].name.split('.')[0])
+            for item in node.items:
+                targets(item)
+
+        def reads_pointee(expr) -> bool:
+            if not isinstance(expr, SList) or len(expr) == 0:
+                return False
+            if is_form(expr, 'deref') and len(expr) >= 2 and mentions(expr[1], pointees):
+                return True
+            return any(reads_pointee(item) for item in expr.items)
+
+        targets(body)
+        # A push changes a list's length as surely as a set! changes a name.
+        changing = ('set!', 'while', 'for-each', 'for') + tuple(_MUTATORS)
         guarded: List = []
         state = {'reassigned': False}
+        # Names a `let` on the way to the tail binds over a parameter's: the
+        # guard is translated before the body, where the name still means the
+        # parameter.
+        shadowing: Set[str] = set()
 
-        def mentions_assigned(expr) -> bool:
+        def mentions(expr, names) -> bool:
             if isinstance(expr, Symbol):
-                # `x.f` reads x.
-                return expr.name.split('.')[0] in assigned or expr.name in assigned
+                return expr.name.split('.')[0] in names
             if isinstance(expr, SList):
-                return any(mentions_assigned(item) for item in expr.items)
+                return any(mentions(item, names) for item in expr.items)
             return False
 
         def stale(expr) -> bool:
-            return expr is not None and state['reassigned'] and mentions_assigned(expr)
+            if expr is None:
+                return False
+            if self._contains_any_form(expr, changing):
+                return True     # it assigns, or loops, as it is evaluated
+            return ((state['reassigned'] and (mentions(expr, assigned) or reads_pointee(expr)))
+                    or mentions(expr, shadowing))
 
         def direct_return(stmts):
             """The one `(return v)` a statement list ends its run with, if the
@@ -2786,6 +2826,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if is_form(node, 'let') and len(node) >= 3:
                 if isinstance(node[1], SList) and self._contains_any_form(node[1], changing):
                     state['reassigned'] = True
+                if isinstance(node[1], SList):
+                    for binding in node[1].items:
+                        if isinstance(binding, SList) and len(binding) >= 2:
+                            name = self._binding_name(binding)
+                            if name and param_names and name in param_names:
+                                shadowing.add(name)
                 if scan(node.items[2:-1]):
                     break
                 node = node.items[-1]
@@ -2818,7 +2864,19 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         walk(body)
         return nodes
 
-    def _early_exits(self, body: SExpr, translator: Z3Translator):
+    @staticmethod
+    def _param_names(params) -> Set[str]:
+        names: Set[str] = set()
+        for param in params.items if isinstance(params, SList) else []:
+            if isinstance(param, SList) and len(param) >= 2:
+                first = param[0]
+                if isinstance(first, Symbol) and first.name in ('in', 'out', 'mut'):
+                    first = param[1]
+                if isinstance(first, Symbol):
+                    names.add(first.name)
+        return names
+
+    def _early_exits(self, body: SExpr, translator: Z3Translator, param_names=None):
         """[(guard, value, guard_expr)] for each guarded `(return v)` (see _exit_plan).
 
         `_get_return_expr` sees only the trailing expression, so a function with
@@ -2838,7 +2896,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         withhold rather than guess. Returns the walk checks are not here: the
         main model covers the runs that take none of them.
         """
-        plan = self._exit_plan(body)
+        plan = self._exit_plan(body, param_names)
         if plan is None:
             return None
         exits: List = []
@@ -3032,7 +3090,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         return z3.And(path_cond, guard)
 
     def _record_value_axioms(self, field_func, value: SExpr, translator: Z3Translator,
-                             bindings: Dict[str, Tuple[SExpr, Dict]], path_cond) -> List:
+                             bindings: Dict[str, Tuple[SExpr, Dict]], path_cond,
+                             in_place: bool = True) -> List:
         """What is known about a record field, from the shape of its value.
 
         Recurses through `if`/`cond` in the value itself, conjoining each
@@ -3044,6 +3103,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # `if` is still a branch, and dispatching on the unresolved symbol would
         # miss it.
         resolved = self._resolve_binding(value, bindings)
+        # Whether `resolved` is written where the field is set, rather than
+        # reached through a binding (see the list literal case).
+        in_place = in_place and resolved is value
 
         branches = self._branch_conditions(resolved, translator)
         if branches is not None:
@@ -3051,7 +3113,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             for guard, branch in branches:
                 axioms.extend(self._record_value_axioms(
                     field_func, branch, translator, bindings,
-                    self._conjoin(path_cond, guard)))
+                    self._conjoin(path_cond, guard), in_place))
             return axioms
 
         axioms = []
@@ -3064,14 +3126,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # not rare.
         if is_form(resolved, 'list-new'):
             add(self._length_accessor(translator)(field_func) == z3.IntVal(0))
-        # A list literal holds exactly its elements.
-        if translator.is_list_literal(resolved):
+        # A list literal written as the field's value holds exactly its
+        # elements. Not one reached through a binding: the name may have been
+        # pushed to since, and the literal's handle is the same either way.
+        if in_place and translator.is_list_literal(resolved):
             add(self._length_accessor(translator)(field_func) == z3.IntVal(len(resolved) - 2))
 
         if is_form(resolved, 'record-new'):
             axioms.extend(self._extract_record_field_axioms(
                 resolved, translator, base_accessor=field_func,
-                path_cond=path_cond, bindings=bindings))
+                path_cond=path_cond, bindings=bindings, in_place=in_place))
 
         if isinstance(resolved, String):
             str_len_func_name = "string_len"
@@ -3124,7 +3188,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         # which this function already reads one level up.
                         axioms.extend(self._record_value_axioms(
                             payload_func(field_func), resolved[1], translator,
-                            bindings, path_cond))
+                            bindings, path_cond, in_place))
 
         # A user union built in place: its tag, and every payload at the sort
         # its declaration gives it - the same accessors a contract's `match`
@@ -3147,7 +3211,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 accessor = translator.union_payload_accessor(tag, index, sort)
                 add(accessor(field_func) == value)
                 axioms.extend(self._record_value_axioms(
-                    accessor(field_func), payload, translator, bindings, path_cond))
+                    accessor(field_func), payload, translator, bindings, path_cond,
+                    in_place))
         return axioms
 
     @staticmethod
@@ -3162,7 +3227,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
     def _extract_record_field_axioms(self, record_new: SList, translator: Z3Translator,
                                       base_accessor: Optional[z3.ExprRef] = None,
                                       path_cond=None,
-                                      bindings: Optional[Dict[str, Tuple[SExpr, Dict]]] = None) -> List:
+                                      bindings: Optional[Dict[str, Tuple[SExpr, Dict]]] = None,
+                                      in_place: bool = True) -> List:
         """Axioms for each field of a record-new: its value, and what that implies.
 
         `path_cond` guards every axiom, for a record built on one branch of a
@@ -3197,7 +3263,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     axioms.append(equality if path_cond is None
                                   else z3.Implies(path_cond, equality))
                 axioms.extend(self._record_value_axioms(
-                    field_func, item[1], translator, bindings, path_cond))
+                    field_func, item[1], translator, bindings, path_cond, in_place=in_place))
         return axioms
 
     def _extract_record_field_range_axioms(self, translator: Z3Translator) -> List:
@@ -3540,6 +3606,16 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         counterexample from the main model stands, though: it is a run that
         reaches the tail, which none of those returns has anything to do with.
         """
+        if result.status == 'failed' and result.counterexample and any(
+                name.startswith('walked_return') for name in result.counterexample):
+            # The main model gives a walked return in a value's position no
+            # value at all; a counterexample through one is no evidence (#69).
+            result = VerificationResult(
+                name=result.name, verified=False, status='unknown',
+                message=(f"{result.message}\nthe counterexample goes through a return the "
+                         "main model does not follow"),
+                counterexample=result.counterexample, location=result.location,
+                suggestions=result.suggestions)
         if report is None or (not report.outcomes and not report.exits):
             return result
         if report.failed or report.exits_failed:
@@ -3679,17 +3755,20 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # about where its loop ends.
         propagated_range: range = range(0)
         invariant_report: Optional[InvariantReport] = None
-        # The returns the main model leaves to the walk (_exit_plan).
+        # The returns the main model leaves to the walk (_exit_plan), and the
+        # guarded ones, whose values it translates on their own paths.
         walked_returns: Set[int] = set()
+        guarded_returns: Set[int] = set()
         if fn_body is not None:
             loop_invariants = self._extract_loop_invariants(fn_body)
             walked_body = fn_body
             if all_body_exprs and len(all_body_exprs) > 1:
                 walked_body = SList([Symbol('do')] + list(all_body_exprs[:-1]) + [fn_body],
                                     fn_body.line, fn_body.col)
-            exit_plan = self._exit_plan(walked_body)
+            exit_plan = self._exit_plan(walked_body, self._param_names(params))
             if exit_plan is not None:
                 walked_returns = exit_plan[1]
+                guarded_returns = {id(ret) for _, _, ret, _ in exit_plan[0]}
             sites, misplaced, in_callbacks = self._attach_loop_invariants(walked_body)
             if misplaced:
                 from slop.parser import pretty_print
@@ -3708,6 +3787,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         'returns': self._walked_return_nodes(walked_body, walked_returns),
                         'posts': list(postconditions),
                         'properties': list(properties),
+                        'assumptions': list(assumptions),
                         'return_type': spec_return_type,
                     }
                 invariant_report = self._check_loop_invariants(
@@ -3784,8 +3864,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                                   self.imported_defs, use_array_encoding=use_array_encoding,
                                   use_seq_encoding=use_seq_encoding)
         # The walk checked these (or reports why it could not); this model is
-        # of the runs that take none of them.
-        translator.walked_returns = set(walked_returns)
+        # of the runs that take none of them. A guarded return's value is
+        # translated under its own guard (the early exits below); translated
+        # as part of the body, its side conditions - `(/ n n)` makes n
+        # non-zero - would be facts about the tail.
+        translator.walked_returns = set(walked_returns) | guarded_returns
 
         # Declare parameter variables
         declared_param_names: Set[str] = set()
@@ -3902,7 +3985,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # *establishes* is what a property gets; the side conditions translating
         # it raised stay behind, filtered out where the property solver is built.
         if fn_body is not None and (postconditions or properties):
-            body_z3 = translator.translate_expr(fn_body)
+            # Every form, not the last alone: `(set! k 5) k` returns 5, and
+            # translating only `k` read the parameter's value.
+            body_z3 = translator.translate_expr(combined_body)
         body_constraint_end = len(translator.constraints)
 
         # Postconditions are translated after the body, not before it: a @post
@@ -3943,8 +4028,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # `return` in a shape _early_exits cannot guard leaves early_exits None,
         # in which case nothing is claimed about the result at all.
         with translator.initial_versions():
-            early_exits = (self._early_exits(combined_body, translator)
+            early_exits = (self._early_exits(combined_body, translator,
+                                             self._param_names(params))
                            if combined_body is not None else [])
+
         body_has_one_exit = early_exits is not None
         reached_guard = None
         if early_exits:

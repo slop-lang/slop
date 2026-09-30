@@ -196,6 +196,8 @@ class InvariantProverMixin:
         self._ip_outcomes: Dict[int, InvariantOutcome] = {}
         self._ip_sites: Dict[int, List[Any]] = {}
         self._ip_walked = set(exits.get('walked', ()))
+        self._ip_assumptions = list(exits.get('assumptions', []))
+        self._ip_exit_scope = self._ip_binders_around(body) if self._ip_walked else {}
         self._ip_return_type = exits.get('return_type')
         # Per walked return, the claims to check there.
         self._ip_exit_outcomes: Dict[int, List[InvariantOutcome]] = {}
@@ -1236,6 +1238,15 @@ class InvariantProverMixin:
                 access = tr._translate_field_for_obj(const, field_name)
                 if value is not None and access is not None and access.sort() == value.sort():
                     self._xp_axioms.append(z3.Implies(pc, access == value))
+            # A list literal written as a field is that long when the record
+            # is built; a push through the field later is a change of state
+            # like any other (_ip_call_effect), after which a length read
+            # through it is not trusted.
+            for item in expr.items[2:]:
+                if isinstance(item, SList) and len(item) >= 2 and tr.is_list_literal(item[1]):
+                    length = tr.list_literal_length(item[1], tr.translate_expr(item[1]))
+                    if length is not None:
+                        self._xp_axioms.append(z3.Implies(pc, length))
             tr._pinned_terms[id(expr)] = const
         elif name == 'union-new':
             if len(expr) < 3 or not isinstance(expr[2], Symbol):
@@ -1301,7 +1312,8 @@ class InvariantProverMixin:
 
         $result is the value it returns, a `mut` parameter whatever it holds
         here. The iteration's hypotheses (`_ip_local`) apply: an enclosing
-        loop's invariant, its condition, what is known of its element.
+        loop's invariant, its condition, what is known of its element - and
+        so does every @assume, which the main verifier trusts of every run.
         """
         env, types, seqs = dict(st.env), dict(st.types), dict(st.seqs)
         fresh = False
@@ -1312,12 +1324,40 @@ class InvariantProverMixin:
                 seqs['$result'] = st.seqs[stmt[1].name]
             fresh = self._ip_fresh_value(stmt[1], st)
         at = st.but(env=env, types=types, seqs=seqs)
+        hypotheses = []
+        if value is not None and self._xp_tr.is_list_literal(stmt[1]):
+            length = self._xp_tr.list_literal_length(stmt[1], value)
+            if length is not None:
+                hypotheses.append(length)
+        # A contract names parameters, but here a local may have taken one's
+        # name - `(for-each (k xs) (return k))` - and the walk's scope is the
+        # return site's.
+        shadowed = self._ip_exit_scope.get(id(stmt), frozenset())
+        assumed, assume_note = [], None
+        for assumption in self._ip_assumptions:
+            if value is None and self._ip_mentions(assumption, '$result'):
+                continue
+            hidden = sorted(shadowed & self._ip_free_roots(assumption))
+            try:
+                if hidden:
+                    raise _Unchecked(f"it names {hidden[0]}, which a local binding shadows here")
+                term, obligations = self._ip_exit_formula(assumption, at, pc, fresh)
+                assumed.append(z3.And(term, *obligations))
+            except (_Unchecked, _Bail) as unchecked:
+                # A trusted fact the walk cannot state here: a failure may be
+                # one it rules out.
+                assume_note = f"the @assume {pretty_print(assumption)} does not translate here ({unchecked})"
         for outcome in self._ip_exit_outcomes[id(stmt)]:
             if outcome.status != 'pending':
                 continue
             outcome.visited = True
             if value is None and self._ip_mentions(outcome.expr, '$result'):
                 self._ip_set_unknown(outcome, "the return has no value")
+                continue
+            hidden = sorted(shadowed & self._ip_free_roots(outcome.expr))
+            if hidden:
+                self._ip_set_unknown(outcome, f"it names {hidden[0]}, which a local binding "
+                                              "shadows at this return")
                 continue
             try:
                 goal, obligations = self._ip_exit_formula(outcome.expr, at, pc, fresh)
@@ -1326,8 +1366,138 @@ class InvariantProverMixin:
                 continue
             # A contract's own side conditions are assumed, as the main
             # verifier assumes them of a @post.
-            self._ip_decide(outcome, z3.Implies(z3.And(pc, st.alive, *obligations), goal),
+            self._ip_decide(outcome, z3.Implies(z3.And(pc, st.alive, *obligations, *hypotheses,
+                                                       *assumed), goal),
                             at, '', pc, goal=goal)
+            if outcome.status == 'failed' and assume_note is not None:
+                outcome.status = 'unknown'
+                outcome.message = self._ip_unchecked_text(outcome, assume_note)
+                outcome.counterexample = None
+
+    @staticmethod
+    def _ip_free_roots(expr) -> set:
+        """The names `expr` reads that it does not bind itself - not a
+        quantifier's variable, a match arm's or a let's - by the root of a
+        field path (`x.f` reads x)."""
+        out: set = set()
+
+        def symbols(node) -> set:
+            if isinstance(node, Symbol):
+                return {node.name}
+            if isinstance(node, SList):
+                return {n for item in node.items for n in symbols(item)}
+            return set()
+
+        def walk(node, bound):
+            if isinstance(node, Symbol):
+                root = node.name.split('.')[0]
+                if root not in bound:
+                    out.add(root)
+                return
+            if not isinstance(node, SList) or len(node) == 0 or is_form(node, 'quote'):
+                return
+            head = node[0].name if isinstance(node[0], Symbol) else None
+            if head in ('forall', 'exists') and len(node) >= 3 and isinstance(node[1], SList):
+                binder = node[1]
+                for item in binder.items[1:]:
+                    walk(item, bound)
+                inner = bound | (symbols(binder[0]) if len(binder) >= 1 else set())
+                for item in node.items[2:]:
+                    walk(item, inner)
+                return
+            if head == 'match' and len(node) >= 2:
+                walk(node[1], bound)
+                for clause in node.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 1:
+                        pattern = clause[0]
+                        inner = bound | (symbols(SList(pattern.items[1:])) if isinstance(pattern, SList)
+                                         else set())
+                        for item in clause.items[1:]:
+                            walk(item, inner)
+                return
+            if head in ('let', 'let*') and len(node) >= 2 and isinstance(node[1], SList):
+                inner = set(bound)
+                for binding in node[1].items:
+                    if isinstance(binding, SList) and len(binding) >= 2:
+                        walk(binding[-1], inner)
+                        first = (binding[1] if isinstance(binding[0], Symbol)
+                                 and binding[0].name == 'mut' else binding[0])
+                        if isinstance(first, Symbol):
+                            inner.add(first.name)
+                for item in node.items[2:]:
+                    walk(item, inner)
+                return
+            if head == '.' and len(node) >= 2:
+                walk(node[1], bound)    # the field's name is not a variable
+                return
+            for item in node.items[1:] if head is not None else node.items:
+                walk(item, bound)
+
+        walk(expr, frozenset())
+        return out
+
+    @staticmethod
+    def _ip_binders_around(body) -> Dict[int, frozenset]:
+        """For each `return` in `body`, the names bound around it: by a `let`,
+        a loop's header, a match arm's pattern or a lambda's parameters."""
+        out: Dict[int, frozenset] = {}
+
+        def symbols(node) -> List[str]:
+            if isinstance(node, Symbol):
+                return [] if node.name in ('_', 'mut') else [node.name]
+            if isinstance(node, SList):
+                return [n for item in node.items for n in symbols(item)]
+            return []
+
+        def walk(node, scope):
+            if not isinstance(node, SList) or len(node) == 0:
+                return
+            head = node[0].name if isinstance(node[0], Symbol) else None
+            if head == 'quote':
+                return
+            if head == 'return':
+                out[id(node)] = frozenset(scope)
+            if head in ('let', 'let*') and len(node) >= 2 and isinstance(node[1], SList):
+                inner = set(scope)
+                for binding in node[1].items:
+                    if isinstance(binding, SList) and len(binding) >= 2:
+                        walk(binding[-1], inner)
+                        first = (binding[1] if isinstance(binding[0], Symbol) and binding[0].name == 'mut'
+                                 else binding[0])
+                        if isinstance(first, Symbol):
+                            inner.add(first.name)
+                for item in node.items[2:]:
+                    walk(item, inner)
+                return
+            if head in ('for-each', 'for') and len(node) >= 2 and isinstance(node[1], SList):
+                binder = node[1]
+                named = binder.items[:-1] if head == 'for-each' else binder.items[:1]
+                names = [n for item in named for n in symbols(item)]
+                for item in (binder.items[-1:] if head == 'for-each' else binder.items[1:]):
+                    walk(item, scope)
+                inner = set(scope) | set(names)
+                for item in node.items[2:]:
+                    walk(item, inner)
+                return
+            if head == 'match' and len(node) >= 2:
+                walk(node[1], scope)
+                for clause in node.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 1:
+                        inner = set(scope) | set(symbols(clause[0])[1:] if isinstance(clause[0], SList)
+                                                 else [])
+                        for item in clause.items[1:]:
+                            walk(item, inner)
+                return
+            if head == 'fn' and len(node) >= 2:
+                inner = set(scope) | set(symbols(node[1]))
+                for item in node.items[2:]:
+                    walk(item, inner)
+                return
+            for item in node.items:
+                walk(item, scope)
+
+        walk(body, set())
+        return out
 
     def _ip_exit_formula(self, condition, st: _IState, pc, fresh: bool):
         """A postcondition or property at a return: (term, definedness obligations).
@@ -2017,6 +2187,9 @@ class InvariantProverMixin:
                 for outcome in outcomes:
                     self._ip_set_unknown(outcome, str(unchecked))
                 checking = False
+            # The body still reads what the header binds - a map's key and
+            # value, say - and not the names they shadow.
+            step = self._ip_bind_unknown(step, self._ip_header_names(loop))
         if checking:
             try:
                 self._ip_local.extend(z3.Implies(self._ip_pre, self._ip_formula(c, step, step_pc)[0])
@@ -2124,7 +2297,19 @@ class InvariantProverMixin:
             env[var] = index
             types = dict(step.types)
             types[var] = PrimitiveType('Int')
-            return step.but(env=env, types=types), [lo <= index, index < hi]
+            # The C loop tests `i < hi` before every iteration, and increments
+            # i after each: the bound read on entry is the one tested only if
+            # nothing the body does can change it, and i counts up from lo
+            # only if the body leaves it alone.
+            written, _, cinline = self._ip_loop_writes(loop)
+            facts = []
+            if not cinline and var not in written:
+                facts.append(lo <= index)
+                if self._ip_fixed_bound(header[3], written):
+                    facts.append(index < hi)
+            if len(facts) < 2:
+                self._ip_havocked.add(index.decl().name())
+            return step.but(env=env, types=types), facts
         _, var, source = header
         element_type = None
         source_type = self._ip_resolve(self._ip_static_type(source, entry))
@@ -2165,6 +2350,45 @@ class InvariantProverMixin:
         types = dict(step.types)
         types[var] = element_type
         return step.but(env=env, types=types), facts
+
+    def _ip_fixed_bound(self, expr, written) -> bool:
+        """True if `expr` has the same value at every iteration's test: made
+        of numbers and names the loop does not assign, with no call or read
+        of collection state that the body could change."""
+        if isinstance(expr, Number):
+            return True
+        if isinstance(expr, Symbol):
+            return expr.name.split('.')[0] not in written and expr.name not in self._ip_addr_taken
+        if isinstance(expr, SList) and len(expr) >= 1 and isinstance(expr[0], Symbol) \
+                and expr[0].name in ('+', '-', '*'):
+            return all(self._ip_fixed_bound(item, written) for item in expr.items[1:])
+        return False
+
+    def _ip_header_names(self, loop) -> List[str]:
+        """The names a loop's header binds."""
+        if len(loop) < 2 or not isinstance(loop[1], SList) or loop[0].name == 'while':
+            return []
+        binder = loop[1]
+        named = binder.items[:-1] if loop[0].name == 'for-each' else binder.items[:1]
+        names = []
+        for item in named:
+            stack = [item]
+            while stack:
+                node = stack.pop()
+                if isinstance(node, Symbol) and node.name not in ('_',):
+                    names.append(node.name)
+                elif isinstance(node, SList):
+                    stack.extend(node.items)
+        return names
+
+    def _ip_bind_unknown(self, st: _IState, names) -> _IState:
+        """`names` bound to values the walk knows nothing about."""
+        env, types, seqs = dict(st.env), dict(st.types), dict(st.seqs)
+        for name in names:
+            env[name] = self._ip_opaque(z3.IntSort())
+            types[name] = None
+            seqs.pop(name, None)
+        return st.but(env=env, types=types, seqs=seqs)
 
     @staticmethod
     def _ip_member(element, seq):
@@ -2324,8 +2548,11 @@ class InvariantProverMixin:
                 # and a claim false whatever that element is stays false. So
                 # the claim is its goal, and a fact recorded under a path
                 # condition links values only through what it states.
-                depends = self._ip_depends_on_opaque(goal, facts + list(self._ip_local), over,
-                                                     consequents=True)
+                # The path's own tests still relate values: `(== x last)` ties
+                # the returned x to whatever last is.
+                tests = self._ip_conjuncts(path) + self._ip_conjuncts(st.alive)
+                depends = self._ip_depends_on_opaque(goal, facts + list(self._ip_local) + tests,
+                                                     over, consequents=True)
             else:
                 depends = self._ip_depends_on_opaque(claim, facts + list(self._ip_local), over)
             if depends:
@@ -2368,6 +2595,17 @@ class InvariantProverMixin:
                     names |= consts
                     grew = True
         return any(name.startswith(_OPAQUE) or name in over for name in names)
+
+    @staticmethod
+    def _ip_conjuncts(term) -> List[Any]:
+        out, stack = [], [term]
+        while stack:
+            node = stack.pop()
+            if z3.is_and(node):
+                stack.extend(node.children())
+            else:
+                out.append(node)
+        return out
 
     @staticmethod
     def _ip_constants(term) -> set:

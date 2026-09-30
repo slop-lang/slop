@@ -12838,3 +12838,156 @@ class TestWalkedReturns:
     (for-each (x xs) (when (> x 0) (callback x)))))
 '''})
         assert r.status != 'verified', r.message
+
+
+class TestWalkedReturnSoundness:
+    """False contracts an adversarial review of the walked returns got through
+    (or would have, with the return in place). None may verify."""
+
+    CASES = {
+        # A list literal bound to a name is that long only until a push.
+        'pushed_literal': '''
+(fn f ((arena Arena))
+  (@spec ((Arena) -> Int))
+  (@post (== $result 2))
+  (let ((mut xs (list Int 1 2)))
+    (list-push xs 3)
+    (list-len xs)))''',
+        'pushed_literal_in_a_field': '''
+(module m
+  (type R (record (items (List Int))))
+  (fn f ((arena Arena))
+    (@spec ((Arena) -> R))
+    (@post (== (list-len (. $result items)) 2))
+    (let ((mut xs (list Int 1 2)))
+      (list-push xs 3)
+      (record-new R (items xs)))))''',
+        # At the return, k is the loop's, not the parameter the contract means.
+        'loop_variable_shadows_a_parameter': '''
+(fn f ((k Int) (xs (List Int)))
+  (@spec ((Int (List Int)) -> Int))
+  (@post (== $result k))
+  (for-each (k xs) (return k))
+  k)''',
+        'match_binder_shadows_a_parameter': '''
+(fn f ((k Int) (o (Option Int)))
+  (@spec ((Int (Option Int)) -> Int))
+  (@post (== $result k))
+  (match o
+    ((some k) (return k))
+    ((none) 0))
+  k)''',
+        # A map loop's (k v) binds v, whatever the walk makes of the header.
+        'map_loop_binders': '''
+(fn f ((m (Map Int Int)) (z Int))
+  (@spec (((Map Int Int) Int) -> Int))
+  (@pre (== z 0))
+  (@post (== $result 0))
+  (let ((v z))
+    (for-each ((k v) m) (return v))
+    0))''',
+        # C tests i < m before every iteration, after the body changed m.
+        'for_bound_changed_by_the_body': '''
+(fn f ((n Int))
+  (@spec ((Int) -> Int))
+  (@pre (== n 1))
+  (@post (< $result 1))
+  (let ((mut m n))
+    (for (i 0 m)
+      (set! m 10)
+      (when (== i 5) (return i)))
+    0))''',
+        # The forms before the last are part of the body too.
+        'an_earlier_form_assigns': '''
+(fn f ((mut k Int))
+  (@spec ((Int) -> Int))
+  (@pre (== k 0))
+  (@post (== $result 0))
+  (set! k 5)
+  k)''',
+        'an_earlier_form_assigns_with_a_return': '''
+(fn f ((mut k Int) (xs (List Int)))
+  (@spec ((Int (List Int)) -> Int))
+  (@pre (== k 0))
+  (@post (== $result 0))
+  (set! k 5)
+  (for-each (x xs) (when (> x 0) (return 0)))
+  k)''',
+        # Guards read at the top of the body: not past a shadowing let, a
+        # field write, their own assignment, or a push.
+        'guard_under_a_shadowing_let': '''
+(fn f ((a Int))
+  (@spec ((Int) -> Int))
+  (@pre (== a 0))
+  (@post (== $result 0))
+  (let ((a 2))
+    (when (== a 2) (return 5))
+    0))''',
+        'guard_after_a_field_write': '''
+(module m
+  (type R (record (f Int)))
+  (fn f ((mut r R))
+    (@spec ((R) -> Int))
+    (@pre (== (. r f) 0))
+    (@post (== $result 0))
+    (set! r.f 5)
+    (when (== (. r f) 5) (return 1))
+    0))''',
+        'guard_that_assigns': '''
+(fn f ((mut n Int))
+  (@spec ((Int) -> Int))
+  (@pre (== n 0))
+  (@post (== $result 0))
+  (when (do (set! n 5) (== n 5)) (return 9))
+  0)''',
+        'guard_after_a_push': '''
+(fn f ((mut xs (List Int)) (arena Arena))
+  (@spec (((List Int) Arena) -> Int))
+  (@pre (== (list-len xs) 0))
+  (@post (== $result 0))
+  (list-push xs 1)
+  (when (== (list-len xs) 1) (return 7))
+  0)''',
+    }
+
+    @pytest.mark.parametrize('name', sorted(CASES))
+    def test_does_not_verify(self, name):
+        from slop.verifier import verify_source
+        results = verify_source(self.CASES[name], filename='probe.slop')
+        assert len(results) == 1
+        assert results[0].status != 'verified', results[0].message
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        return verify_source(src, filename='probe.slop')[0].status
+
+    def test_a_counterexample_through_a_walked_return_is_not_evidence(self):
+        """In value position the main model gives a walked return any value."""
+        assert self._status('''
+(fn f ((x (Option Int)))
+  (@spec (((Option Int)) -> Int))
+  (@post (>= $result 0))
+  (match x ((some v) (return 1)) ((none) 0)))''') == 'unknown'
+
+    def test_a_guard_on_a_loop_carried_value_is_not_evidence(self):
+        """x equals last, and last is only ever 0 or 5; a counterexample with
+        a negative last is one the loop cannot produce."""
+        assert self._status('''
+(fn f ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post (>= $result 0))
+  (let ((mut last 0))
+    (for-each (x xs)
+      (when (== x last) (return x))
+      (set! last 5))
+    0))''') == 'unknown'
+
+    def test_an_assume_holds_at_a_walked_return(self):
+        assert self._status('''
+(fn f ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@assume (> $result 0))
+  (@post (> $result 0))
+  (for-each (x xs) (when (> x 5) (return (- x 10))))
+  1)''') == 'verified'
