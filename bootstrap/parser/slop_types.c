@@ -150,6 +150,8 @@ types_Diagnostic types_diagnostic_new(types_DiagnosticLevel level, slop_string m
 uint8_t types_is_primitive_kind(types_ResolvedTypeKind kind) {
     uint8_t _retval = {0};
     _retval = (kind == types_ResolvedTypeKind_rk_primitive);
+    goto _slop_post;
+    _slop_post: ;
     SLOP_POST(((_retval == (kind == types_ResolvedTypeKind_rk_primitive))), "(== $result (== kind (quote rk-primitive)))");
     return _retval;
 }
@@ -157,6 +159,8 @@ uint8_t types_is_primitive_kind(types_ResolvedTypeKind kind) {
 uint8_t types_is_container_kind(types_ResolvedTypeKind kind) {
     uint8_t _retval = {0};
     _retval = (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_result)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array)));
+    goto _slop_post;
+    _slop_post: ;
     SLOP_POST(((_retval == (((kind == types_ResolvedTypeKind_rk_list)) || ((kind == types_ResolvedTypeKind_rk_ptr)) || ((kind == types_ResolvedTypeKind_rk_option)) || ((kind == types_ResolvedTypeKind_rk_result)) || ((kind == types_ResolvedTypeKind_rk_map)) || ((kind == types_ResolvedTypeKind_rk_array))))), "(== $result (or (== kind (quote rk-list)) (== kind (quote rk-ptr)) (== kind (quote rk-option)) (== kind (quote rk-result)) (== kind (quote rk-map)) (== kind (quote rk-array))))");
     return _retval;
 }
@@ -165,6 +169,8 @@ uint8_t types_resolved_type_is_pointer(types_ResolvedType* t) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     uint8_t _retval = {0};
     _retval = ((*t).kind == types_ResolvedTypeKind_rk_ptr);
+    goto _slop_post;
+    _slop_post: ;
     SLOP_POST(((_retval == ((*t).kind == types_ResolvedTypeKind_rk_ptr))), "(== $result (== (. (deref t) kind) (quote rk-ptr)))");
     return _retval;
 }
@@ -173,6 +179,8 @@ uint8_t types_resolved_type_is_union(types_ResolvedType* t) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     uint8_t _retval = {0};
     _retval = ((*t).kind == types_ResolvedTypeKind_rk_union);
+    goto _slop_post;
+    _slop_post: ;
     SLOP_POST(((_retval == ((*t).kind == types_ResolvedTypeKind_rk_union))), "(== $result (== (. (deref t) kind) (quote rk-union)))");
     return _retval;
 }
@@ -181,6 +189,8 @@ uint8_t types_resolved_type_is_record(types_ResolvedType* t) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     uint8_t _retval = {0};
     _retval = ((*t).kind == types_ResolvedTypeKind_rk_record);
+    goto _slop_post;
+    _slop_post: ;
     SLOP_POST(((_retval == ((*t).kind == types_ResolvedTypeKind_rk_record))), "(== $result (== (. (deref t) kind) (quote rk-record)))");
     return _retval;
 }
@@ -189,6 +199,8 @@ uint8_t types_resolved_type_is_function(types_ResolvedType* t) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     uint8_t _retval = {0};
     _retval = ((*t).kind == types_ResolvedTypeKind_rk_function);
+    goto _slop_post;
+    _slop_post: ;
     SLOP_POST(((_retval == ((*t).kind == types_ResolvedTypeKind_rk_function))), "(== $result (== (. (deref t) kind) (quote rk-function)))");
     return _retval;
 }

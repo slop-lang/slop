@@ -21,7 +21,7 @@
   (import context (TranspileContext ctx-push-open-arena ctx-pop-open-arena ctx-emit-return ctx-set-pos ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type
                    ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens VarEntry
-                   ctx-get-current-return-type ctx-is-capture-retval ctx-is-option-c-type
+                   ctx-get-current-return-type ctx-is-option-c-type
                    to-c-type-prefixed ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    LastLambdaInfo ctx-get-last-lambda-info ctx-clear-last-lambda-info))
   (import ctype (to-c-type to-c-name))
@@ -1461,9 +1461,8 @@
                         (set! final-code s6)))))
                 ((none) (do)))))
           ((none) (do))))
-      ;; Check if we're capturing to _retval (postconditions mode) or returning
-      (if (ctx-is-capture-retval ctx)
-        (ctx-emit ctx (ctx-str3 ctx "_retval = " final-code ";"))
-        (ctx-emit-return ctx final-code))))
+      ;; With a @post, ctx-emit-return stores the value in _retval and jumps
+      ;; to the checks (ctx-set-post-exit)
+      (ctx-emit-return ctx final-code)))
 
 ) ;; end module

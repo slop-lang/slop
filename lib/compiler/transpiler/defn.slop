@@ -25,7 +25,7 @@
                    ctx-str ctx-str3 ctx-str4 ctx-str5
                    ctx-set-current-result-type ctx-clear-current-result-type
                    ctx-set-current-return-type ctx-get-current-return-type ctx-clear-current-return-type
-                   ctx-set-capture-retval ctx-is-capture-retval
+                   ctx-set-capture-retval ctx-is-capture-retval ctx-set-post-exit ctx-post-exit-used
                    ctx-lookup-result-type-alias ctx-lookup-type ctx-register-type-alias
                    ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-prefixing-enabled ctx-get-module ctx-prefix-type
@@ -1081,6 +1081,9 @@
         ;; Set capture mode if we need _retval
         (when needs-retval
           (ctx-set-capture-retval ctx true))
+        ;; Every return leaves through the checks below (ctx-set-post-exit)
+        (when has-post
+          (ctx-set-post-exit ctx true))
         ;; Set current function C name for FFI shadowing prevention
         (ctx-set-current-fn-c-name ctx fn-name)
         ;; Emit body (skip name, params, and annotations)
@@ -1090,6 +1093,11 @@
         ;; Clear capture mode
         (when needs-retval
           (ctx-set-capture-retval ctx false))
+        ;; Where the returns in the body jump to, if any did
+        (when has-post
+          (ctx-set-post-exit ctx false)
+          (when (ctx-post-exit-used ctx)
+            (ctx-emit ctx "_slop_post: ;")))
         ;; Emit postconditions and assumptions
         (emit-postconditions ctx postconditions)
         (emit-assumptions ctx assumptions)

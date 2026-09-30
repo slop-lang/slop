@@ -1,0 +1,160 @@
+;; ============================================================
+;; Test: early exits from a function with a @post (#239)
+;;
+;; A @post makes the transpiler capture the result in _retval so the
+;; postcondition can check it. Every way out of the function has to
+;; go through those checks and then return: an explicit (return x),
+;; one in a match arm, in a loop, in a with-arena, a bare (return) in
+;; a Unit function, and `?` propagating an error. A return used to
+;; assign _retval and carry on, so the tail overwrote it.
+;; ============================================================
+
+(module test-return-with-post
+
+  (type R (record (n Int)))
+
+  (fn pick ((c Bool))
+    (@intent "Return 7 early when c holds, else 0")
+    (@spec ((Bool) -> Int))
+    (@post (>= $result 0))
+    (when c (return 7))
+    0)
+
+  (fn first-or-minus-one ((o (Option Int)))
+    (@intent "Return the payload of o from a match arm, else -1")
+    (@spec (((Option Int)) -> Int))
+    (@post (>= $result -1))
+    (match o
+      ((some v) (return v))
+      ((none) (do)))
+    -1)
+
+  (fn find-negative ((xs (List Int)))
+    (@intent "Return the first negative element from inside the loop")
+    (@spec (((List Int)) -> (Option Int)))
+    (@post (match $result ((none) true) ((some v) (< v 0))))
+    (for-each (x xs)
+      (when (< x 0) (return (some x))))
+    (none))
+
+  (fn positive ((n Int))
+    (@intent "ok n if n is positive, else error n")
+    (@spec ((Int) -> (Result Int Int)))
+    (@post true)
+    (if (> n 0) (ok n) (error n)))
+
+  (fn doubled ((n Int))
+    (@intent "Double a positive n, propagating the error with ?")
+    (@spec ((Int) -> (Result Int Int)))
+    (@post (match $result ((ok v) (> v 0)) ((error e) (<= e 0))))
+    (let ((v (? (positive n))))
+      (ok (* v 2))))
+
+  (fn capped-length ((n Int))
+    (@intent "Return 5 from inside a with-arena when n is large, else 1")
+    (@spec ((Int) -> Int))
+    (@post (>= $result 0))
+    (with-arena 4096
+      (let ((xs (list-new arena Int)))
+        (list-push xs n)
+        (when (> n 5) (return 5))
+        (list-len xs))))
+
+  (fn set-unless ((p (Ptr R)) (stop Bool))
+    (@intent "Set p.n to 1 unless stop, returning early from a Unit function")
+    (@spec (((Ptr R) Bool) -> Unit))
+    (@post true)
+    (when stop (return))
+    (set! p.n 1))
+
+  (fn twice ((f (Fn (Int) Int)) (x Int))
+    (@intent "Apply f twice")
+    (@spec (((Fn (Int) Int) Int) -> Int))
+    (f (f x)))
+
+  (fn plus-two ((x Int))
+    (@intent "x + 2 through a lambda, 0 for a negative x")
+    (@spec ((Int) -> Int))
+    (@post (>= $result 0))
+    (when (< x 0) (return 0))
+    (twice (fn ((y Int)) (+ y 1)) x))
+
+  (fn test-when-return ()
+    (@spec (() -> Bool))
+    (and (== (pick true) 7) (== (pick false) 0)))
+
+  (fn test-match-arm-return ()
+    (@spec (() -> Bool))
+    (and (== (first-or-minus-one (some 4)) 4)
+         (== (first-or-minus-one (none)) -1)))
+
+  (fn test-loop-return ()
+    (@spec (() -> Bool))
+    (with-arena 4096
+      (let ((xs (list-new arena Int)))
+        (list-push xs 3)
+        (list-push xs -2)
+        (list-push xs -9)
+        (match (find-negative xs)
+          ((some v) (== v -2))
+          ((none) false)))))
+
+  (fn test-question-mark ()
+    (@spec (() -> Bool))
+    (and (match (doubled 3) ((ok v) (== v 6)) ((error _) false))
+         (match (doubled -4) ((ok _) false) ((error e) (== e -4)))))
+
+  (fn test-with-arena-return ()
+    (@spec (() -> Bool))
+    (and (== (capped-length 9) 5) (== (capped-length 2) 1)))
+
+  (fn test-unit-return ()
+    (@spec (() -> Bool))
+    (let ((mut a (record-new R (n 0)))
+          (mut b (record-new R (n 0))))
+      (set-unless (addr a) true)
+      (set-unless (addr b) false)
+      (and (== (. a n) 0) (== (. b n) 1))))
+
+  (fn test-lambda-in-post-function ()
+    (@spec (() -> Bool))
+    (and (== (plus-two 3) 5) (== (plus-two -1) 0)))
+
+  (fn main ()
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (if (test-when-return)
+        (println "test-when-return: PASS")
+        (do (println "test-when-return: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-match-arm-return)
+        (println "test-match-arm-return: PASS")
+        (do (println "test-match-arm-return: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-loop-return)
+        (println "test-loop-return: PASS")
+        (do (println "test-loop-return: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-question-mark)
+        (println "test-question-mark: PASS")
+        (do (println "test-question-mark: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-with-arena-return)
+        (println "test-with-arena-return: PASS")
+        (do (println "test-with-arena-return: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-unit-return)
+        (println "test-unit-return: PASS")
+        (do (println "test-unit-return: FAIL")
+            (set! failures (+ failures 1))))
+      (if (test-lambda-in-post-function)
+        (println "test-lambda-in-post-function: PASS")
+        (do (println "test-lambda-in-post-function: FAIL")
+            (set! failures (+ failures 1))))
+      (println "")
+      (if (== failures 0)
+        (do (println "All tests passed!")
+            0)
+        (do (print failures)
+            (println " test(s) failed")
+            1)))))

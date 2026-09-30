@@ -38,7 +38,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer
                  BindingOrigin MutationKind mutation-error-message))
-  (import context (TranspileContext ctx-register-value-key-type ctx-take-open-arenas ctx-restore-open-arenas ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
+  (import context (TranspileContext ctx-register-value-key-type ctx-take-open-arenas ctx-restore-open-arenas ctx-exit-code ctx-set-capture-retval ctx-is-capture-retval ctx-is-post-exit ctx-post-exit-used ctx-set-post-exit ctx-restore-post-exit ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
                    ctx-get-current-result-type ctx-set-current-result-type ctx-clear-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
@@ -3134,15 +3134,19 @@
                     ((and (string-eq op "?") (>= len 2))
                       (match (list-get items 1)
                         ((some result-expr)
-                          (let ((result-c (transpile-expr ctx result-expr)))
-                            (match (ctx-get-current-result-type ctx)
-                              ((some enclosing-type)
-                                ;; Convert error to enclosing function's result type
-                                (ctx-str5 ctx "({ __auto_type _tmp = " result-c "; if (!_tmp.is_ok) return ((" enclosing-type
-                                          "){ .is_ok = false, .data.err = _tmp.data.err }); _tmp.data.ok; })"))
-                              ((none)
-                                ;; No enclosing result type - use direct return (fallback)
-                                (ctx-str3 ctx "({ __auto_type _tmp = " result-c "; if (!_tmp.is_ok) return _tmp; _tmp.data.ok; })")))))
+                          (let ((result-c (transpile-expr ctx result-expr))
+                                (error-c (match (ctx-get-current-result-type ctx)
+                                           ;; Convert error to enclosing function's result type
+                                           ((some enclosing-type)
+                                             (ctx-str3 ctx "((" enclosing-type
+                                                       "){ .is_ok = false, .data.err = _tmp.data.err })"))
+                                           ;; No enclosing result type - return it as it is (fallback)
+                                           ((none) "_tmp"))))
+                            ;; The error leaves the function like any return: open
+                            ;; with-arena arenas freed, and through the
+                            ;; postcondition checks if there are any (ctx-exit-code)
+                            (ctx-str5 ctx "({ __auto_type _tmp = " result-c "; if (!_tmp.is_ok) "
+                                      (ctx-exit-code ctx error-c) " _tmp.data.ok; })")))
                         ((none)
                           (do
                             (ctx-add-error-at ctx "missing ? argument" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -7362,15 +7366,22 @@
                            ((none) base-name))))
         ;; The body becomes a function of its own, so a return in it must not
         ;; free the arenas of the with-arena blocks it is written inside
+        ;; nor jump to its postcondition checks
         (let ((outer-arenas (ctx-take-open-arenas ctx))
-              ;; Check if we have captures
-              (lambda-c (if (> (list-len free-vars) 0)
-                          ;; Closure: generate struct and modified lambda
-                          (transpile-closure ctx items params param-names free-vars lambda-name)
-                          ;; Simple lambda: no captures
-                          (transpile-simple-lambda ctx items params lambda-name))))
-          (ctx-restore-open-arenas ctx outer-arenas)
-          lambda-c))))
+              (outer-capture (ctx-is-capture-retval ctx))
+              (outer-post-exit (ctx-is-post-exit ctx))
+              (outer-post-used (ctx-post-exit-used ctx)))
+          (ctx-set-capture-retval ctx false)
+          (ctx-set-post-exit ctx false)
+          (let ((lambda-c (if (> (list-len free-vars) 0)
+                            ;; Closure: generate struct and modified lambda
+                            (transpile-closure ctx items params param-names free-vars lambda-name)
+                            ;; Simple lambda: no captures
+                            (transpile-simple-lambda ctx items params lambda-name))))
+            (ctx-restore-open-arenas ctx outer-arenas)
+            (ctx-set-capture-retval ctx outer-capture)
+            (ctx-restore-post-exit ctx outer-post-exit outer-post-used)
+            lambda-c)))))
 
   (fn extract-param-names ((arena Arena) (params (List (Ptr SExpr))))
     (@intent "Extract parameter names from params list")

@@ -167,10 +167,13 @@ slop_string ctype_unwrap_ptr_container_type(slop_arena* arena, slop_string slop_
         {
             __auto_type inner_len = ((int64_t)((string_len(slop_type) - 6)));
             _retval = strlib_substring(arena, slop_type, 5, inner_len);
+            goto _slop_post;
         }
     } else {
         _retval = slop_type;
+        goto _slop_post;
     }
+    _slop_post: ;
     SLOP_POST(((string_len(_retval) <= string_len(slop_type))), "(<= (string-len $result) (string-len slop-type))");
     return _retval;
 }
