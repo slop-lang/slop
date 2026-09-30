@@ -8729,8 +8729,8 @@ class TestEarlyExits:
         ''') != 'verified'
 
     def test_a_return_in_a_shape_that_cannot_be_guarded(self):
-        """A return inside a loop has no single condition to negate, so nothing
-        is claimed rather than something guessed."""
+        """A return inside a loop has no single condition to negate. The walk
+        checks it instead (TestWalkedReturns): `g` may have any size."""
         assert self._status('''
         (module m
           (type G (record (size Int)))
@@ -9319,11 +9319,11 @@ class TestLoopVariableVersions:
               i)))
         ''').status == 'verified'
 
-    def test_a_guard_past_a_reassignment_is_withdrawn(self):
+    def test_a_guard_past_a_reassignment_is_walked(self):
         """Guards are read as they stood at the top. Past an assignment the
         name they test may have changed, and there is no program point here to
-        say which version was meant - so the modelling is given up, and with it
-        the claim that the trailing form is the only result."""
+        say which version was meant - so the return is left to the forward
+        walk, which reads `i` where the test is made: 5, so it never returns."""
         assert self._result('''
         (module m
           (fn h ((arena Arena))
@@ -9333,7 +9333,19 @@ class TestLoopVariableVersions:
               (set! i 5)
               (when (== i 0) (return -1))
               i)))
-        ''').status != 'verified'
+        ''').status == 'verified'
+
+    def test_a_guard_past_a_reassignment_that_returns(self):
+        assert self._result('''
+        (module m
+          (fn h ((arena Arena))
+            (@spec ((Arena) -> Int))
+            (@post (== $result 5))
+            (let ((mut i 5))
+              (set! i 0)
+              (when (== i 0) (return -1))
+              i)))
+        ''').status == 'failed'
 
     def test_a_guard_before_any_reassignment_is_exact(self):
         assert self._result('''
@@ -12604,3 +12616,225 @@ class TestCheckedLoopInvariantSoundness:
       (@loop-invariant {half >= 0})
       (set! half (/ (+ half 10) 2)))
     half))''', 'f') == 'verified'
+
+
+class TestWalkedReturns:
+    """A `return` the early-exit guards cannot express - inside a loop, in a
+    match arm, after an assignment - used to leave $result unconstrained, so
+    every postcondition failed even when every exit met it. The main model now
+    covers the runs that take none of those returns, and the forward walk
+    checks each postcondition and property where each of them leaves."""
+
+    @staticmethod
+    def _result(src, name, tmp_path=None, modules=None):
+        from slop.verifier import verify_source
+        kwargs = {'filename': 'probe.slop'}
+        if modules:
+            for module_name, text in modules.items():
+                (tmp_path / f"{module_name}.slop").write_text(text)
+            kwargs = {'filename': str(tmp_path / 'main.slop'), 'search_paths': [tmp_path]}
+        results = [r for r in verify_source(src, **kwargs) if r.name == name]
+        assert len(results) == 1, results
+        return results[0]
+
+    # growl's dt-not-type: return from inside a loop after a call that is not
+    # @pure, so collection state is no longer known there.
+    DETECT = '''
+(module m
+  (type Triple (record (s Int) (o Int)))
+  (type Report (record (reason String) (witnesses (List Triple))))
+  (fn check ((t Triple))
+    (@spec ((Triple) -> Bool))
+    (@post true)
+    (> (. t o) 0))
+  (fn detect ((xs (List Triple)))
+    (@spec (((List Triple)) -> (Option Report)))
+    (@post (match $result ((none) true) ((some r) {(string-len (. r reason)) > 0})))
+    (@post (match $result ((none) true) ((some r) (>= (list-len (. r witnesses)) 1))))
+    (for-each (t xs)
+      (when (not (check t))
+        (return (some (record-new Report (reason "bad") (witnesses (list Triple t)))))))
+    (none)))'''
+
+    def test_a_return_inside_a_loop_that_meets_the_postconditions(self):
+        r = self._result(self.DETECT, 'detect')
+        assert r.status == 'verified', r.message
+
+    def test_a_return_inside_a_loop_that_breaks_a_postcondition(self):
+        r = self._result(self.DETECT.replace('(reason "bad")', '(reason "")'), 'detect')
+        assert r.status == 'failed', r.message
+        assert 'postcondition does not hold at the return on line' in r.message
+        assert r.counterexample
+
+    def test_a_list_literal_has_its_length(self):
+        r = self._result(self.DETECT.replace(
+            '(>= (list-len (. r witnesses)) 1)', '(>= (list-len (. r witnesses)) 2)'), 'detect')
+        assert r.status == 'failed', r.message
+
+    NESTED = '''
+(module m
+  (type Triple (record (s Int) (o Int)))
+  (type Report (record (reason String) (witnesses (List Triple))))
+  (fn found ((a Triple) (b Triple))
+    (@spec ((Triple Triple) -> Bool))
+    (@post true)
+    (== (. a o) (. b s)))
+  (fn detect ((xs (List Triple)) (ys (List Triple)))
+    (@spec (((List Triple) (List Triple)) -> (Option Report)))
+    (@post (match $result ((none) true) ((some r) (>= (list-len (. r witnesses)) 3))))
+    (for-each (a xs)
+      (for-each (b ys)
+        (let ((c (record-new Triple (s (. a s)) (o (. b o)))))
+          (when (found a b)
+            (return (some (record-new Report (reason "join") (witnesses (list Triple a b c)))))))))
+    (none)))'''
+
+    def test_a_return_inside_a_nested_loop(self):
+        r = self._result(self.NESTED, 'detect')
+        assert r.status == 'verified', r.message
+
+    def test_a_return_inside_a_nested_loop_that_breaks_the_postcondition(self):
+        r = self._result(self.NESTED.replace(
+            '(>= (list-len (. r witnesses)) 3)', '(>= (list-len (. r witnesses)) 4)'), 'detect')
+        assert r.status == 'failed', r.message
+
+    FOLD = '''
+(fn fold ((xs (List Int)))
+  (@spec (((List Int)) -> (Result Int Int)))
+  (@post (match $result ((ok v) (>= v 0)) ((error e) (< e 0))))
+  (let ((mut acc 0))
+    (for-each (x xs)
+      (@loop-invariant (>= acc 0))
+      (when (< x 0) (return (error x)))
+      (set! acc (+ acc x)))
+    (ok acc)))'''
+
+    def test_a_fold_that_returns_an_error_mid_loop(self):
+        """The error exit is checked where it happens; the invariant, proved,
+        describes the loop's end on every run that did not take it."""
+        r = self._result(self.FOLD, 'fold')
+        assert r.status == 'verified', r.message
+
+    def test_a_fold_whose_error_exit_breaks_the_postcondition(self):
+        r = self._result(self.FOLD.replace('((error e) (< e 0))', '((error e) (> e 0))'), 'fold')
+        assert r.status == 'failed', r.message
+        assert 'at the return on line' in r.message
+
+    APPLY = '''
+(module m
+  (type D (record (iteration Int)))
+  (fn find ((d D))
+    (@spec ((D) -> (Option Int)))
+    (@pure)
+    (@post true)
+    (if (> (. d iteration) 3) (some 1) (none)))
+  (fn apply ((d D) (validate Bool) (xs (List Int)))
+    (@spec ((D Bool (List Int)) -> (Result D Int)))
+    (@post (match $result ((ok r) (== (. r iteration) (. d iteration))) ((error _) true)))
+    (let ((mut result d))
+      (when (not validate)
+        (do
+          (match (find d)
+            ((some n) (return (error n)))
+            ((none) (do)))))
+      (for-each (x xs)
+        (@loop-invariant (== (. result iteration) (. d iteration)))
+        (set! result (record-new D (iteration (. result iteration)))))
+      (ok result))))'''
+
+    def test_a_return_from_a_match_arm_before_a_loop(self):
+        """growl's apply-*-rules: the report of a failed check is returned
+        from a match arm, and the tail after the loops still gets the loop's
+        invariant - a walked return before it is not a run the main model has."""
+        r = self._result(self.APPLY, 'apply')
+        assert r.status == 'verified', r.message
+
+    def test_a_walked_returns_side_conditions_stay_on_its_path(self):
+        """Translating `(/ 1 n)` states n != 0. The return is never taken on
+        the runs the main model covers, so that is no fact about them. (The
+        main translator does not reach a statement's return value today; this
+        holds the line if it ever does.)"""
+        r = self._result('''
+(fn d ((xs (List Int)) (flag Bool) (n Int))
+  (@spec (((List Int) Bool Int) -> Int))
+  (@post (!= $result 0))
+  (for-each (x xs)
+    (when flag (return (+ 1 (* 0 (/ 1 n))))))
+  n)''', 'd')
+        assert r.status != 'verified', r.message
+
+    def test_a_loop_carried_value_at_a_return_is_not_a_counterexample(self):
+        """With no invariant, what the loop left in acc is anything; a
+        counterexample through it says nothing about the program (#69)."""
+        r = self._result('''
+(fn s ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post (>= $result 0))
+  (let ((mut acc 0))
+    (for-each (x xs)
+      (set! acc (+ acc x))
+      (when (> x 100) (return acc)))
+    0))''', 's')
+        assert r.status == 'unknown', r.message
+
+    PROPERTY = '''
+(fn p ((xs (List Int)) (k Int))
+  (@spec (((List Int) Int) -> Int))
+  (@pre (> k 0))
+  (@property (> $result 0))
+  (for-each (x xs) (when (> x 0) (return k)))
+  1)'''
+
+    def test_a_property_is_checked_at_a_return_without_the_preconditions(self):
+        r = self._result(self.PROPERTY, 'p')
+        assert r.status == 'failed', r.message
+        assert "property does not hold at the return" in r.message
+
+    def test_a_property_that_holds_at_every_return(self):
+        r = self._result(self.PROPERTY.replace('(return k)', '(return 5)'), 'p')
+        assert r.status == 'verified', r.message
+
+    def test_a_guard_after_a_loop_nested_in_a_statement(self):
+        """The loop sits inside a `when`, so the guard's name has moved on by
+        the time it is tested; read as it stood at the top, `(> n 0)` was
+        false and the return looked impossible."""
+        r = self._result('''
+(fn g ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post (== $result 0))
+  (let ((mut n 0))
+    (when true (for-each (x xs) (set! n (+ n 1))))
+    (when (> n 0) (return n))
+    0))''', 'g')
+        assert r.status != 'verified', r.message
+
+    def test_a_postcondition_not_about_the_result(self):
+        r = self._result('''
+(fn u ((xs (List Int)))
+  (@spec (((List Int)) -> Int))
+  (@post (>= (list-len xs) 0))
+  (for-each (x xs) (when (> x 0) (return 2)))
+  1)''', 'u')
+        assert r.status == 'verified', r.message
+
+    def test_a_return_in_a_callback_is_not_the_functions(self, tmp_path):
+        """It leaves the lambda; the function still returns its tail."""
+        r = self._result('''
+(module main
+  (import cb (each-positive))
+  (fn f ((xs (List Int)))
+    (@spec (((List Int)) -> Int))
+    (@post (== $result 7))
+    (each-positive xs
+      (fn ((x Int))
+        (when (> x 5) (return 7))))
+    1))''', 'f', tmp_path, {'cb': '''
+(module cb
+  (export each-positive)
+  (fn each-positive ((xs (List Int)) (callback (Fn (Int) Unit)))
+    (@spec (((List Int) (Fn (Int) Unit)) -> Unit))
+    (@pure)
+    (@callback-assume callback (> $callback-arg 0))
+    (for-each (x xs) (when (> x 0) (callback x)))))
+'''})
+        assert r.status != 'verified', r.message
