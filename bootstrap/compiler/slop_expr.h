@@ -197,6 +197,7 @@ slop_string expr_transpile_record_new(context_TranspileContext* ctx, slop_list_t
 slop_string expr_transpile_record_fields(context_TranspileContext* ctx, slop_string type_name, slop_list_types_SExpr_ptr items, int64_t start_idx);
 slop_string expr_build_inline_struct_type(context_TranspileContext* ctx, slop_list_types_SExpr_ptr type_items);
 slop_string expr_transpile_inline_record_fields(context_TranspileContext* ctx, slop_string struct_def, slop_list_types_SExpr_ptr items, int64_t start_idx);
+uint8_t expr_list_literal_elements_constant(slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_list_literal(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_build_struct_key_info(context_TranspileContext* ctx, slop_string c_name);
 slop_string expr_builtin_map_key_c_info(slop_string name);
