@@ -38,4 +38,18 @@
     ;; Deliberately contradictory: the example asserts something the contract forbids.
     ;; It must be reported as a failure, not run anyway and reported as a pass.
     (@example (-5) -> -5)
-    n))
+    n)
+
+  (type Pt (record (x Int) (y Int)))
+
+  (fn diagonal ((n Int))
+    (@intent "The point (n, n)")
+    (@spec ((Int) -> Pt))
+    (@pure)
+    ;; Deliberately wrong: a record-new expected value is compared field by
+    ;; field, so a wrong y must fail rather than pass or break the C (#252)
+    (@example (2) -> (record-new Pt (y 3) (x 2)))
+    ;; A record result cannot be compared with C ==, so an expected value that is
+    ;; not a constructor is reported as unrunnable, not handed to cc (#252)
+    (@example (2) -> (diagonal 2))
+    (record-new Pt (x n) (y n))))

@@ -258,6 +258,12 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 ; a call to another function in the module or one of its imports is allowed.
 ;   (@example ((make-node arena) "href") -> (some "http://example.com"))
 ; `_` in the expected result means "do not compare this position".
+; :eq eq-fn compares the result with the expected value, (eq-fn result expected);
+; for a List result it compares them element by element instead. Without :eq, a
+; record, union, Option or Result result is compared structurally, so its
+; expected value must be written as a constructor: (record-new R (f v) ...),
+; (R v ...), a variant, (some ...), (none), (ok ...) or (error ...). Any other
+; expected value for such a result is reported as unrunnable.
 (@property (forall (x T) expr))  ; Property that should hold
 (@deprecated "message")          ; Mark as deprecated with migration hint
 (@doc "Extended documentation")  ; Detailed docs, emits as C comment

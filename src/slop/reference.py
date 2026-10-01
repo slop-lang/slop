@@ -338,6 +338,12 @@ to any function in the module or its imports. An example that cannot be
 compiled (an unresolved name, or `...` in an argument) is reported as an
 ERROR and fails the run; it is never counted as a pass.
 
+A record, union, Option or Result result is compared structurally, so write
+its expected value as a constructor — `(record-new R (f v) ...)`, `(R v ...)`,
+a variant, `(some ...)`, `(ok ...)` — or name an equality function:
+`(@example :eq r-eq (3) -> (make-r 3))` calls `(r-eq result expected)`.
+For a List result, `:eq` compares element by element.
+
 ; Basic: args match function params (skip arena params)
 (fn abs ((n Int))
   (@intent "Return absolute value of integer")

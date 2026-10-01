@@ -107,4 +107,50 @@
     (@example (5) -> (ok 5))
     (if (> n 0)
       (ok n)
-      (error (union-new Failure bad-input (record-new Detail (code 7) (note "too small")))))))
+      (error (union-new Failure bad-input (record-new Detail (code 7) (note "too small"))))))
+
+  ;; A record result compared against a record-new expected value, whose fields
+  ;; may come in any order, and through an :eq function. Both used to emit C
+  ;; == on two structs, which cc rejected (#252).
+  (type Reading (record (fires Bool) (level Int)))
+
+  (fn reading-eq ((a Reading) (b Reading))
+    (@intent "Readings are equal when they agree on both fields")
+    (@spec ((Reading Reading) -> Bool))
+    (@pure)
+    (and (== (. a fires) (. b fires)) (== (. a level) (. b level))))
+
+  (fn read-level ((n Int))
+    (@intent "A reading that fires above 10")
+    (@spec ((Int) -> Reading))
+    (@pure)
+    (@example (12) -> (record-new Reading (fires true) (level 12)))
+    (@example (3) -> (record-new Reading (level 3) (fires false)))
+    (@example (3) -> (record-new Reading (fires false) (level _)))
+    (@example :eq reading-eq (12) -> (record-new Reading (fires true) (level 12)))
+    (record-new Reading (fires (> n 10)) (level n)))
+
+  (fn maybe-reading ((n Int))
+    (@intent "A reading for a non-negative n")
+    (@spec ((Int) -> (Option Reading)))
+    (@pure)
+    (@example (4) -> (some (record-new Reading (fires false) (level 4))))
+    (@example (-1) -> (none))
+    (if (>= n 0) (some (read-level n)) (none)))
+
+  ;; :eq on a union result: this one compares tags only, so a different payload
+  ;; still passes, which a structural comparison would not allow.
+  (fn failure-eq ((a Failure) (b Failure))
+    (@intent "Failures are equal when they have the same tag")
+    (@spec ((Failure Failure) -> Bool))
+    (@pure)
+    (match a
+      ((bad-input _) (match b ((bad-input _) true) ((missing _) false)))
+      ((missing _) (match b ((bad-input _) false) ((missing _) true)))))
+
+  (fn reclassify ((n Int))
+    (@intent "classify, compared by tag")
+    (@spec ((Int) -> Failure))
+    (@pure)
+    (@example :eq failure-eq (1) -> (missing "anything"))
+    (classify n)))

@@ -97,12 +97,16 @@ run_negative_unit_tests() {
 
         if [ $exit_code -eq 0 ]; then
             problem="expected a non-zero exit"
-        elif ! echo "$output" | grep -q "0 passed, 2 failed, 1 unrunnable"; then
-            problem="expected '0 passed, 2 failed, 1 unrunnable' in the summary"
+        elif ! echo "$output" | grep -q "0 passed, 3 failed, 2 unrunnable"; then
+            problem="expected '0 passed, 3 failed, 2 unrunnable' in the summary"
         elif ! echo "$output" | grep -q "undefined function 'no-such-fixture'"; then
             problem="expected the unresolved fixture to be named"
         elif ! echo "$output" | grep -q "precondition violated: (> n 0)"; then
             problem="expected the violated @pre to be named"
+        elif ! echo "$output" | grep -q "diagonal(2) -> FAIL (got <record>, expected <expected>)"; then
+            problem="expected the wrong record-new field to fail (#252)"
+        elif ! echo "$output" | grep -q "cannot compare the Pt result with this expected value"; then
+            problem="expected the uncomparable record result to be reported (#252)"
         fi
 
         if [ -z "$problem" ]; then

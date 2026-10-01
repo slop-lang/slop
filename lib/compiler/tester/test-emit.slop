@@ -31,7 +31,7 @@
                    ctx-prefixing-enabled ctx-prefix-type to-c-type-prefixed
                    ctx-set-single-output-mode ctx-set-skip-trampoline-generation
                    ctx-set-strict-unknown-symbols ctx-get-errors TranspileError
-                   ctx-sexpr-line ctx-sexpr-col))
+                   ctx-sexpr-line ctx-sexpr-col ctx-add-error))
   (import expr (transpile-expr))
   (import transpiler (prescan-module))
 
@@ -930,6 +930,11 @@
       ;; and the builders below skip those fields individually.
       (if (is-wildcard-expr expected)
         (CompareInfo "1" "%s" "\"<unchecked>\"" "%s" "\"<unchecked>\"")
+      ;; :eq names the equality for the whole result - except a List's, where it
+      ;; compares elements (build-list-comparison-typed). It used to reach only
+      ;; that path, so a record result fell through to C == (#252).
+      (if (and (is-some eq-fn) (not (contains ret-type-str "List")))
+        (build-eq-fn-comparison arena expected eq-fn prefix types tctx)
       ;; Check for user-defined union types first
       (if (is-union-constructor-typed expected types)
         (build-union-comparison-typed arena expected prefix types ret-type-str tctx)
@@ -964,7 +969,7 @@
                      "\"some(...)\""))
                   ((is-record-constructor-typed inner-expr types)
                    (let ((record-name (get-record-name-from-expr inner-expr))
-                         (field-values (get-record-field-values arena inner-expr)))
+                         (field-values (expected-record-field-values arena types inner-expr)))
                      (match (registry-get-record-fields types record-name)
                        ((some fields)
                         (let ((expected-var-name "expected_value")
@@ -997,13 +1002,7 @@
                      "result.has_value ? \"some(...)\" : \"none\""
                      "%s"
                      "\"some(...)\""))))
-              (let ((c-expected (transpile-expr-safe arena tctx expected)))
-                (CompareInfo
-                  (string-concat arena "result == " c-expected)
-                  "%lld"
-                  "(long long)result"
-                  "%lld"
-                  (string-concat arena "(long long)" c-expected)))))
+              (uncomparable-result arena tctx "the Option" "(some ...) or (none)")))
           ;; Check for Result type
           (if (contains ret-type-str "Result")
             (if (is-ok-value expected)
@@ -1057,7 +1056,7 @@
                     ;; Check if inner value is a record constructor
                     (if (is-record-constructor-typed inner-expr types)
                       (let ((record-name (get-record-name-from-expr inner-expr))
-                            (field-values (get-record-field-values arena inner-expr)))
+                            (field-values (expected-record-field-values arena types inner-expr)))
                         (match (registry-get-record-fields types record-name)
                           ((some fields)
                             (let ((expected-var-name "expected_ok")
@@ -1159,13 +1158,7 @@
                       "result.is_ok ? \"ok(...)\" : \"error(...)\""
                       "%s"
                       "\"error(...)\"")))))
-                (let ((c-expected (transpile-expr-safe arena tctx expected)))
-                  (CompareInfo
-                    (string-concat arena "result == " c-expected)
-                    "%lld"
-                    "(long long)result"
-                    "%lld"
-                    (string-concat arena "(long long)" c-expected)))))
+                (uncomparable-result arena tctx "the Result" "(ok ...) or (error ...)")))
             ;; Check for List type (before String, since "List String" contains "String")
             (if (contains ret-type-str "List")
               (build-list-comparison-typed arena expected prefix types ret-type-str eq-fn tctx)
@@ -1211,14 +1204,60 @@
                       ;; Check for record types (need field-by-field comparison)
                       (if (is-record-constructor-typed expected types)
                         (build-record-comparison-typed arena expected prefix types tctx)
-                        ;; Default: integer comparison
-                        (let ((c-expected (transpile-expr-safe arena tctx expected)))
-                          (CompareInfo
-                            (string-concat arena "result == " c-expected)
-                            "%lld"
-                            "(long long)result"
-                            "%lld"
-                            (string-concat arena "(long long)" c-expected)))))))))))))))
+                        ;; Default: integer comparison, unless the result is a struct
+                        (build-scalar-comparison arena expected ret-type-str types tctx))))))))))))))
+
+  (fn build-eq-fn-comparison ((arena Arena) (expected (Ptr SExpr)) (eq-fn (Option String))
+                               (prefix String) (types TypeRegistry) (tctx (Ptr TranspileContext)))
+    (@intent "Compare the result with the expected value through an @example's :eq function")
+    (@spec ((Arena (Ptr SExpr) (Option String) String TypeRegistry (Ptr TranspileContext)) -> CompareInfo))
+    (@alloc arena)
+    (@pre {tctx != nil})
+    (let ((c-expected (transpile-expr-safe arena tctx expected))
+          (eq-c (match eq-fn
+                  ((some fn-name) (prefix-symbol arena fn-name prefix types))
+                  ((none) ""))))
+      (CompareInfo
+        (string-build arena (list String "({ typeof(result) expected_value = " c-expected
+                                         "; " eq-c "(result, expected_value); })"))
+        "%s"
+        "\"<value>\""
+        "%s"
+        "\"<expected>\"")))
+
+  (fn uncomparable-result ((arena Arena) (tctx (Ptr TranspileContext)) (what String) (forms String))
+    (@intent "Report an expected value the harness cannot compare a struct result with")
+    (@spec ((Arena (Ptr TranspileContext) String String) -> CompareInfo))
+    (@alloc arena)
+    (@pre {tctx != nil})
+    ;; C has no == for a struct, so emitting one only moved the failure to cc.
+    ;; The error makes emit-test-function-typed report the example, at its own
+    ;; position, instead of emitting it (#252).
+    (do
+      (ctx-add-error tctx (string-build arena (list String "cannot compare " what
+                                                    " result with this expected value: write it as "
+                                                    forms ", or give the example an :eq function")))
+      (CompareInfo "0" "%s" "\"<value>\"" "%s" "\"<expected>\"")))
+
+  (fn build-scalar-comparison ((arena Arena) (expected (Ptr SExpr)) (ret-type-str String)
+                                (types TypeRegistry) (tctx (Ptr TranspileContext)))
+    (@intent "Compare an integer-like result with ==; a record or union result cannot be")
+    (@spec ((Arena (Ptr SExpr) String TypeRegistry (Ptr TranspileContext)) -> CompareInfo))
+    (@alloc arena)
+    (@pre {tctx != nil})
+    (cond
+      ((registry-is-record types ret-type-str)
+        (uncomparable-result arena tctx (string-concat arena "the " ret-type-str) "a record constructor"))
+      ((registry-is-union types ret-type-str)
+        (uncomparable-result arena tctx (string-concat arena "the " ret-type-str) "a variant constructor"))
+      (else
+        (let ((c-expected (transpile-expr-safe arena tctx expected)))
+          (CompareInfo
+            (string-concat arena "result == " c-expected)
+            "%lld"
+            "(long long)result"
+            "%lld"
+            (string-concat arena "(long long)" c-expected))))))
 
   ;; ============================================================
   ;; Record Comparison Building
@@ -1231,7 +1270,7 @@
     (@alloc arena)
     (let ((record-name (get-record-name-from-expr expected))
           (c-expected (transpile-expr-safe arena tctx expected))
-          (field-values (get-record-field-values arena expected))
+          (field-values (expected-record-field-values arena types expected))
           (decl-type (get-record-decl-type arena types record-name)))
       (build-record-comparison-inner arena types record-name field-values c-expected decl-type)))
 
@@ -1284,18 +1323,20 @@
     (@spec (((Ptr SExpr)) -> String))
     (@pure)
     (@pre {expr != nil})
-    (match (deref expr)
-      ((lst lst)
-        (let ((items (. lst items)))
-          (if (== (list-len items) 0)
-            ""
-            (match (list-get items 0)
-              ((some first)
-                (if (sexpr-is-symbol first)
-                  (sexpr-get-symbol-name first)
-                  ""))
-              ((none) "")))))
-      (_ "")))
+    (if (is-form expr "record-new")
+      (record-new-type-name expr)
+      (match (deref expr)
+        ((lst lst)
+          (let ((items (. lst items)))
+            (if (== (list-len items) 0)
+              ""
+              (match (list-get items 0)
+                ((some first)
+                  (if (sexpr-is-symbol first)
+                    (sexpr-get-symbol-name first)
+                    ""))
+                ((none) "")))))
+        (_ ""))))
 
   (fn get-record-field-values ((arena Arena) (expr (Ptr SExpr)))
     (@intent "Extract field values from record constructor (RecordType val1 val2 ...)")
@@ -1317,6 +1358,58 @@
                 (set! i (+ i 1)))
               result))))
       (_ (list-new arena (Ptr SExpr)))))
+
+  (fn record-new-type-name ((expr (Ptr SExpr)))
+    (@intent "The record type a (record-new R (f v) ...) builds, or the empty string")
+    (@spec (((Ptr SExpr)) -> String))
+    (@pure)
+    (@pre {expr != nil})
+    (if (is-form expr "record-new")
+      (match (sexpr-list-get expr 1)
+        ((some t)
+          (if (sexpr-is-symbol t)
+            (sexpr-get-symbol-name t)
+            ""))
+        ((none) ""))
+      ""))
+
+  (fn record-new-field-value ((arena Arena) (expr (Ptr SExpr)) (name String))
+    (@intent "The value a record-new gives the named field, or a wildcard if it gives none")
+    (@spec ((Arena (Ptr SExpr) String) -> (Ptr SExpr)))
+    (@alloc arena)
+    (@pre {expr != nil})
+    (let ((mut found (make-sexpr-sym arena "_"))
+          (len (sexpr-list-len expr))
+          (mut i 2))
+      (while (< i len)
+        (match (sexpr-list-get expr i)
+          ((some pair)
+            (when (and (is-form pair name) (== (sexpr-list-len pair) 2))
+              (match (sexpr-list-get pair 1)
+                ((some v) (set! found v))
+                ((none) (do)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn expected-record-field-values ((arena Arena) (types TypeRegistry) (expr (Ptr SExpr)))
+    (@intent "A record constructor's field values, in the order the record declares its fields")
+    (@spec ((Arena TypeRegistry (Ptr SExpr)) -> (List (Ptr SExpr))))
+    (@alloc arena)
+    (@pre {expr != nil})
+    ;; build-record-field-comparisons-with-values pairs these with the declared
+    ;; fields by position, to know which ones are wildcards. A positional
+    ;; constructor is already in that order; (record-new R (f v) ...) names its
+    ;; fields in any order (#252).
+    (if (is-form expr "record-new")
+      (let ((result (list-new arena (Ptr SExpr))))
+        (match (registry-get-record-fields types (record-new-type-name expr))
+          ((some fields)
+            (for-each (field fields)
+              (list-push result (record-new-field-value arena expr (. field name)))))
+          ((none) (do)))
+        result)
+      (get-record-field-values arena expr)))
 
   (fn is-wildcard-expr ((expr (Ptr SExpr)))
     (@intent "Check if expression is a wildcard placeholder")
@@ -1713,28 +1806,30 @@
     (@spec (((Ptr SExpr) TypeRegistry) -> Bool))
     (@pure)
     (@pre {expr != nil})
-    (match (deref expr)
-      ((lst lst)
-        (let ((items (. lst items)))
-          (if (== (list-len items) 0)
-            false
-            (match (list-get items 0)
-              ((some first)
-                (if (sexpr-is-symbol first)
-                  (let ((name (sexpr-get-symbol-name first)))
-                    (if (or (string-eq name "none")
-                            (or (string-eq name "some")
-                                (or (string-eq name "ok")
-                                    (or (string-eq name "error")
-                                        (string-eq name "list")))))
-                      false
-                      (match (registry-lookup types name)
-                        ((some entry)
-                          (registry-is-record types name))
-                        ((none) false))))
-                  false))
-              ((none) false)))))
-      (_ false)))
+    (if (is-form expr "record-new")
+      (registry-is-record types (record-new-type-name expr))
+      (match (deref expr)
+        ((lst lst)
+          (let ((items (. lst items)))
+            (if (== (list-len items) 0)
+              false
+              (match (list-get items 0)
+                ((some first)
+                  (if (sexpr-is-symbol first)
+                    (let ((name (sexpr-get-symbol-name first)))
+                      (if (or (string-eq name "none")
+                              (or (string-eq name "some")
+                                  (or (string-eq name "ok")
+                                      (or (string-eq name "error")
+                                          (string-eq name "list")))))
+                        false
+                        (match (registry-lookup types name)
+                          ((some entry)
+                            (registry-is-record types name))
+                          ((none) false))))
+                    false))
+                ((none) false)))))
+        (_ false))))
 
   (fn emit-string-slice ((s String) (start Int))
     (@intent "Get substring from start to end of string")
