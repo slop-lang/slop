@@ -4894,6 +4894,121 @@ class TestFilterProvenanceSoundness:
         assert self._status(self.FN % (self.FROM_SOURCE, self.FILTER + ' result')) == 'verified'
 
 
+class TestDeclaredFieldSorts:
+    """A field accessor's sort comes from the record declarations (#246, #250).
+
+    It used to be guessed from the field's name - Bool only for is-/has- and a
+    few words - so a `(fires Bool)` field was an Int: `(not (. r fires))` did
+    not translate, and a bare `(. c fires)` as a filter test crashed Z3."""
+
+    @staticmethod
+    def _results(src):
+        from slop.verifier import verify_source
+        return {r.name: r for r in verify_source(src)}
+
+    BARE_FILTER = '''
+(module b1b
+  (type P (record (k Int) (v Int)))
+  (type C (record (fires Bool) (b Int)))
+  (fn f ((t Int) (p P))
+    (@spec ((Int P) -> C)) (@pure)
+    (record-new C (fires (== (. p k) t)) (b (. p v))))
+  (fn g ((arena Arena) (t Int) (ps (List P)))
+    (@spec ((Arena Int (List P)) -> (List Int))) (@alloc arena)
+    (@post (forall (c $result) (exists (q ps) (and (== (. (f t q) fires) true) (== (. (f t q) b) c)))))
+    (let ((mut result (list-new arena Int)))
+      (for-each (q ps)
+        (let ((c (f t q)))
+          (when (. c fires) (list-push result (. c b)))))
+      result))
+  (fn later ((x Int))
+    (@spec ((Int) -> Int)) (@pure)
+    (@post {$result == x})
+    x))'''
+
+    def test_a_bare_bool_field_as_a_filter_test_does_not_crash(self):
+        results = self._results(self.BARE_FILTER)
+        assert results['g'].status in ('unknown', 'verified')
+        # The file goes on being verified after it
+        assert results['later'].status == 'verified'
+
+    def test_a_bare_bool_field_filter_proves_its_predicate(self):
+        assert self._results('''
+(module m
+  (type C (record (fires Bool) (b Int)))
+  (fn g ((arena Arena) (cs (List C)))
+    (@spec ((Arena (List C)) -> (List C))) (@alloc arena)
+    (@post (forall (c $result) (. c fires)))
+    (let ((mut result (list-new arena C)))
+      (for-each (c cs) (when (. c fires) (list-push result c)))
+      result)))''')['g'].status == 'verified'
+
+    NOT_FIELD = '''
+(module b6
+  (type R (record (fires Bool) (x Int)))
+  (fn h2 ((a Int) (b Int))
+    (@spec ((Int Int) -> R)) (@pure)
+    %s
+    (record-new R (fires (== a b)) (x a))))'''
+
+    def test_not_over_a_bool_field_in_a_property(self):
+        src = self.NOT_FIELD % '(@property p (or (not (. $result fires)) (== a b)))'
+        assert self._results(src)['h2'].status == 'verified'
+
+    def test_not_over_a_bool_field_in_a_postcondition(self):
+        src = self.NOT_FIELD % '(@post (or (not (. $result fires)) (== a b)))'
+        assert self._results(src)['h2'].status == 'verified'
+
+    def test_a_false_claim_over_a_bool_field_fails(self):
+        src = self.NOT_FIELD % '(@post (or (not (. $result fires)) (!= a b)))'
+        assert self._results(src)['h2'].status == 'failed'
+
+    def test_records_declaring_one_field_name_at_different_sorts(self):
+        # `flag` has no single sort, so it keeps the old Int reading; `n` is
+        # unaffected by the clash.
+        src = '''
+(module s
+  (type A (record (flag Bool) (n Int)))
+  (type B (record (flag Int) (n Int)))
+  (fn f ((x Int))
+    (@spec ((Int) -> A)) (@pure)
+    (@post (== (. $result n) x))
+    (record-new A (flag true) (n x))))'''
+        assert self._results(src)['f'].status == 'verified'
+
+    FLOAT_FIELD = '''
+(module fl
+  (type R (record (w Float)))
+  (fn f ((x Int))
+    (@spec ((Int) -> R)) (@pure)
+    (@post (== (. $result w) 0.5))
+    (record-new R (w %s))))'''
+
+    def test_a_float_field_is_read_as_a_real(self):
+        assert self._results(self.FLOAT_FIELD % '0.5')['f'].status == 'verified'
+        assert self._results(self.FLOAT_FIELD % '0.25')['f'].status == 'failed'
+
+    def test_a_verifier_defect_is_unknown_for_that_function_only(self, monkeypatch):
+        # The backstop for any sort error still to be found: a Z3Exception in
+        # one function used to stop the whole file.
+        from slop.verifier.contract_verifier import ContractVerifier
+        real = ContractVerifier._verify_function_contracts
+
+        def raising(self, fn_form):
+            if fn_form[1].name == 'bad':
+                raise z3.Z3Exception(b'Sort mismatch')
+            return real(self, fn_form)
+
+        monkeypatch.setattr(ContractVerifier, '_verify_function_contracts', raising)
+        results = self._results('''
+(module m
+  (fn bad ((x Int)) (@spec ((Int) -> Int)) (@pure) (@post {$result == x}) x)
+  (fn good ((x Int)) (@spec ((Int) -> Int)) (@pure) (@post {$result == x}) x))''')
+        assert results['bad'].status == 'unknown'
+        assert 'Sort mismatch' in results['bad'].message
+        assert results['good'].status == 'verified'
+
+
 class TestMapPatternVerification:
     """Test map/transform pattern recognition and verification.
 

@@ -695,7 +695,7 @@ class AxiomGenerationMixin:
             # Bind loop var to source element at j
             translator.variables[filter_pattern.loop_var] = source_seq[source_idx]
 
-            pred_z3 = translator.translate_expr(filter_pattern.predicate)
+            pred_z3 = translator._as_bool(translator.translate_expr(filter_pattern.predicate))
             if pred_z3 is None:
                 return axioms
 
@@ -730,7 +730,7 @@ class AxiomGenerationMixin:
             # For filter (pred t), every element in result satisfies pred
             # ForAll i: 0 <= i < Length(result) => pred(result[i])
             translator.variables[filter_pattern.loop_var] = result_seq[result_idx]
-            pred_on_result = translator.translate_expr(filter_pattern.predicate)
+            pred_on_result = translator._as_bool(translator.translate_expr(filter_pattern.predicate))
             if pred_on_result is not None:
                 direct_axiom = z3.ForAll([result_idx],
                     z3.Implies(
@@ -940,11 +940,15 @@ class AxiomGenerationMixin:
                 ]
 
                 # Translate filter conditions with loop var bound to source[j]
+                # Every condition, or no axiom: one left out of the antecedent
+                # would claim a match for elements the loop never pushed.
                 filter_z3 = []
                 for cond in resolved_conditions:
-                    cond_z3 = translator.translate_expr(cond)
-                    if cond_z3 is not None:
-                        filter_z3.append(cond_z3)
+                    cond_z3 = translator._as_bool(translator.translate_expr(cond))
+                    if cond_z3 is None:
+                        filter_z3 = []
+                        break
+                    filter_z3.append(cond_z3)
 
                 if filter_z3:
                     # Build: filter1 AND filter2 AND ... => Exists result matching
@@ -1843,7 +1847,7 @@ class AxiomGenerationMixin:
         if isinstance(head, Symbol) and head.name == 'implies' and len(post) == 3:
             cond = post[1]
             inner_post = post[2]
-            cond_z3 = translator.translate_expr(cond)
+            cond_z3 = translator._as_bool(translator.translate_expr(cond))
             if cond_z3 is None:
                 return None
             inner_result = self._instantiate_collection_postcondition(

@@ -1039,13 +1039,10 @@ class Z3Translator:
         if len(expr) < 3:
             return None
 
-        antecedent = self.translate_expr(expr[1])
-        consequent = self.translate_expr(expr[2])
+        antecedent = self._as_bool(self.translate_expr(expr[1]))
+        consequent = self._as_bool(self.translate_expr(expr[2]))
 
         if antecedent is None or consequent is None:
-            return None
-
-        if not z3.is_bool(antecedent) or not z3.is_bool(consequent):
             return None
 
         return z3.Implies(antecedent, consequent)
@@ -1781,25 +1778,21 @@ class Z3Translator:
         op = expr[0].name if isinstance(expr[0], Symbol) else None
 
         if op == 'not' and len(expr) >= 2:
-            arg = self.translate_expr(expr[1])
-            if arg is not None and z3.is_bool(arg):
+            arg = self._as_bool(self.translate_expr(expr[1]))
+            if arg is not None:
                 return z3.Not(arg)
             return None
 
         if op == 'and' and len(expr) >= 3:
-            args = [self.translate_expr(e) for e in expr.items[1:]]
-            # Filter out None and non-bool args
-            bool_args = [a for a in args if a is not None and z3.is_bool(a)]
-            if len(bool_args) == len(args):  # All args translated to bool
-                return z3.And(*bool_args)
+            args = [self._as_bool(self.translate_expr(e)) for e in expr.items[1:]]
+            if all(a is not None for a in args):
+                return z3.And(*args)
             return None
 
         if op == 'or' and len(expr) >= 3:
-            args = [self.translate_expr(e) for e in expr.items[1:]]
-            # Filter out None and non-bool args
-            bool_args = [a for a in args if a is not None and z3.is_bool(a)]
-            if len(bool_args) == len(args):  # All args translated to bool
-                return z3.Or(*bool_args)
+            args = [self._as_bool(self.translate_expr(e)) for e in expr.items[1:]]
+            if all(a is not None for a in args):
+                return z3.Or(*args)
             return None
 
         return None
@@ -1870,12 +1863,51 @@ class Z3Translator:
             # Recursively access remaining fields
             return self._translate_field_for_obj(intermediate, remaining)
 
-        # Base case: single field name
-        # Create or get the field accessor function
-        # Use Bool for fields that look boolean, Int otherwise
+        return self.field_accessor(field_name)(obj)
+
+    def field_sort(self, field_name: str) -> Optional[z3.SortRef]:
+        """The sort every declared record gives `field_name`, or None.
+
+        Accessors are named by field alone, since the object's record type is
+        not known where a field is read, so the sort can only come from the
+        declarations if they agree. None when no record declares the field,
+        when one declares it at an unresolved type, or when two declare it at
+        different sorts.
+        """
+        cache = self.__dict__.setdefault('_field_sorts', {})
+        if field_name in cache:
+            return cache[field_name]
+        sorts: List[z3.SortRef] = []
+        unresolved = False
+        for typ in list(self.type_env.type_registry.values()) + list(self.imported_defs.types.values()):
+            if isinstance(typ, RecordType) and field_name in typ.fields:
+                sort = self._sort_of_type(typ.fields[field_name])
+                if sort is None:
+                    unresolved = True
+                elif not any(sort == s for s in sorts):
+                    sorts.append(sort)
+        result = sorts[0] if len(sorts) == 1 and not unresolved else None
+        cache[field_name] = result
+        return result
+
+    def field_accessor(self, field_name: str) -> z3.FuncDeclRef:
+        """The accessor function for a single (undotted) field name.
+
+        Its range is the field's declared sort (#246): read as an Int, a Bool
+        field could not be the operand of `not`, or the test of a filter, and a
+        Float one could never equal 0.5. A field no record declares, or that
+        records declare at different sorts, keeps the old guess from its name.
+        An accessor that is not Int-ranged is suffixed `:<sort>`, as
+        union_payload_accessor does, so it never meets an Int-ranged `field_x`
+        some other site built by hand.
+        """
         func_name = f"field_{field_name}"
-        is_bool_field = field_name.startswith('is-') or field_name.startswith('has-') or field_name in ('open', 'closed', 'valid', 'enabled', 'active')
-        return_sort = z3.BoolSort() if is_bool_field else z3.IntSort()
+        return_sort = self.field_sort(field_name)
+        if return_sort is None:
+            is_bool_field = field_name.startswith('is-') or field_name.startswith('has-') or field_name in ('open', 'closed', 'valid', 'enabled', 'active')
+            return_sort = z3.BoolSort() if is_bool_field else z3.IntSort()
+        if return_sort != z3.IntSort():
+            func_name = f"{func_name}:{return_sort}"
 
         func = self.variables.get(func_name)
         if func is not None and not isinstance(func, z3.FuncDeclRef):
@@ -1891,8 +1923,25 @@ class Z3Translator:
         if not isinstance(func, z3.FuncDeclRef):
             func = z3.Function(func_name, z3.IntSort(), return_sort)
             self.variables[func_name] = func
+        return func
 
-        return func(obj)
+    @staticmethod
+    def _as_bool(term: Optional[z3.ExprRef]) -> Optional[z3.BoolRef]:
+        """A condition as a Bool term, or None if it is not one.
+
+        The checker only lets a Bool reach `not`, `and`, `or` and `implies`, so
+        an Int-sorted term there is a Bool this model holds as an Int - a call
+        to a Bool function, a field nothing declares. It reads as nonzero, as
+        `if`, `cond` and `(== x true)` already read it. Before, the whole
+        contract became untranslatable (#250).
+        """
+        if term is None:
+            return None
+        if z3.is_bool(term):
+            return term
+        if z3.is_int(term):
+            return term != 0
+        return None
 
     def _translate_if(self, expr: SList) -> Optional[z3.ExprRef]:
         """Translate if expression to Z3 If()"""
