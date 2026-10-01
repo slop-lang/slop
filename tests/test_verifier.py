@@ -5081,6 +5081,77 @@ class TestUnionNewPayloads:
         assert self._status(self.RECORD % '(+ n 1)') == 'failed'
 
 
+class TestPureRecordCalls:
+    """A @pure function that builds a record is one term per call (#251).
+
+    Inlined, its record-new was a fresh constant at every use, so a field of
+    `(f t q)` in a loop body and of `(f t q2)` in the invariant were unrelated
+    and the invariant could not be preserved."""
+
+    @staticmethod
+    def _status(src, name):
+        from slop.verifier import verify_source
+        results = [r for r in verify_source(src) if r.name == name]
+        assert len(results) == 1, results
+        return results[0].status
+
+    HEAD = '''
+(module b7
+  (type P (record (k Int) (v Int)))
+  (type C (record (fires Bool) (b Int)))
+  (fn f ((t Int) (p P))
+    (@spec ((Int P) -> C)) (@pure)
+    (record-new C (fires (== (. p k) t)) (b (. p v))))
+'''
+
+    LOOP = HEAD + '''
+  (fn g2 ((arena Arena) (t Int) (ps (List P)))
+    (@spec ((Arena Int (List P)) -> (List Int))) (@alloc arena)
+    (@post (forall (c $result) (exists (q ps) (and (== (. (f t q) fires) true) (== (. (f t q) b) c)))))
+    (let ((mut result (list-new arena Int)))
+      (for-each (q ps)
+        (@loop-invariant (forall (c result) (exists (q2 ps) (and (== (. (f t q2) fires) true) (== (. (f t q2) b) c)))))
+        %s)
+      result)))'''
+
+    def test_a_field_of_the_call_in_the_body_and_the_invariant(self):
+        body = '(when (== (. (f t q) fires) true) (list-push result (. (f t q) b)))'
+        assert self._status(self.LOOP % body, 'g2') == 'verified'
+
+    def test_the_call_bound_by_a_let(self):
+        body = '(let ((c (f t q))) (when (== (. c fires) true) (list-push result (. c b))))'
+        assert self._status(self.LOOP % body, 'g2') == 'verified'
+
+    def test_pushing_something_else_does_not_verify(self):
+        body = '(when (== (. (f t q) fires) true) (list-push result (+ (. (f t q) b) 1)))'
+        assert self._status(self.LOOP % body, 'g2') != 'verified'
+
+    DIRECT = HEAD + '''
+  (fn h ((t Int) (p P))
+    (@spec ((Int P) -> Int)) (@pure)
+    (@post {$result == %s})
+    (. (f t p) b)))'''
+
+    def test_a_field_read_from_the_call(self):
+        assert self._status(self.DIRECT % '(. p v)', 'h') == 'verified'
+        assert self._status(self.DIRECT % '(. p k)', 'h') == 'failed'
+
+    def test_a_nested_record_new_is_not_one_shared_value(self):
+        # The inner record-new is a fresh constant; quantified over every call
+        # it would say all calls share one D, so two calls' ds would be equal.
+        assert self._status('''
+(module m
+  (type D (record (n Int)))
+  (type C (record (d D) (b Int)))
+  (fn f ((x Int))
+    (@spec ((Int) -> C)) (@pure)
+    (record-new C (d (record-new D (n x))) (b x)))
+  (fn h ((x Int))
+    (@spec ((Int) -> Bool)) (@pure)
+    (@post (== $result true))
+    (== (. (f x) d) (. (f (+ x 1)) d))))''', 'h') != 'verified'
+
+
 class TestMapPatternVerification:
     """Test map/transform pattern recognition and verification.
 
