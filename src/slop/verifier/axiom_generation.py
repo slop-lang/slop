@@ -519,6 +519,125 @@ class AxiomGenerationMixin:
             return links + [t == source_len for t in terms]
         return links + [t <= len(sites) * source_len for t in terms]
 
+    @staticmethod
+    def _returned_symbol(fn_body: 'SExpr') -> Optional[str]:
+        """The variable a body yields, following the tail of let/do chains.
+
+        None when the tail is anything else - an `if` or `match` choosing
+        between values, a call - since then which list is returned depends on
+        the path taken.
+        """
+        node = fn_body
+        while (is_form(node, 'let') or is_form(node, 'do')) and len(node) >= 2:
+            node = node.items[-1]
+        return node.name if isinstance(node, Symbol) else None
+
+    def _single_push_builds_result(self, fn_body: 'SExpr', result_var: str,
+                                   collection: 'SExpr') -> Optional['PushSiteInfo']:
+        """The one push that builds the returned list, if the loop is all there is.
+
+        A pattern axiom describes the returned list as exactly what one push
+        inside one `for-each` over `collection` put there. That only holds when:
+        the body returns `result_var` itself; that push is the only write to it
+        (no second push, in the loop or after it); nothing else touches it (no
+        pop, no `set!`, no alias, no callee that could append); and the source
+        is a stable collection the body only reads. Returns the push site, or
+        None when any of this fails.
+        """
+        from slop.parser import pretty_print
+
+        if self._returned_symbol(fn_body) != result_var:
+            return None
+        sites = self._collect_push_sites([fn_body], result_var)
+        if len(sites) != 1:
+            return None
+        site = sites[0]
+        if (len(site.loop_collections) != 1 or site.loop_collections[0] is None
+                or pretty_print(site.loop_collections[0]) != pretty_print(collection)):
+            return None
+        if self._list_escapes(fn_body, Symbol(result_var)):
+            return None
+        if not self._is_stable_source(collection) or self._source_escapes(fn_body, collection):
+            return None
+        return site
+
+    def _filter_provenance_holds(self, fn_body: 'SExpr', pattern: 'FilterPatternInfo') -> bool:
+        """True if the filter axioms describe what this body actually does.
+
+        The axioms say every element of the result is an element of the source
+        satisfying the predicate. That needs, beyond the single push of
+        `_single_push_builds_result`: the pushed value is the loop element
+        itself, not something computed from it; the predicate is one of the
+        guards that push actually sits under (not the condition of an `if`
+        whose else branch is where the push is); and the predicate reads
+        nothing bound inside the loop, since it is translated with only the loop
+        variable rebound.
+        """
+        from slop.parser import pretty_print
+
+        site = self._single_push_builds_result(fn_body, pattern.result_var, pattern.collection)
+        if site is None:
+            return False
+        pushed = site.pushed_expr
+        if not (isinstance(pushed, Symbol) and pushed.name == pattern.loop_var):
+            return False
+        predicate_str = pretty_print(pattern.predicate)
+        if not any(pretty_print(g) == predicate_str for g in site.guard_conditions):
+            return False
+        loop_binders = self._binders_inside_loop(fn_body, pattern.loop_var)
+        if pattern.loop_var in loop_binders:
+            return False
+        if self._symbols_in(pattern.predicate) & loop_binders:
+            return False
+        return True
+
+    def _binders_inside_loop(self, fn_body: 'SExpr', loop_var: str) -> set:
+        """Names bound by a let or match arm inside any for-each over `loop_var`."""
+        names: set = set()
+
+        def binders(node):
+            if not isinstance(node, SList):
+                return
+            if is_form(node, 'let') and len(node) >= 2 and isinstance(node[1], SList):
+                for b in node[1].items:
+                    if isinstance(b, SList):
+                        for item in b.items[:-1]:
+                            if isinstance(item, Symbol) and item.name != 'mut':
+                                names.add(item.name)
+            if is_form(node, 'match'):
+                for arm in node.items[2:]:
+                    if isinstance(arm, SList) and len(arm) >= 1:
+                        names.update(self._symbols_in(arm[0]))
+            for item in node.items:
+                binders(item)
+
+        def find(node):
+            if not isinstance(node, SList):
+                return
+            if (is_form(node, 'for-each') and len(node) >= 3
+                    and isinstance(node[1], SList) and len(node[1]) >= 1
+                    and isinstance(node[1][0], Symbol) and node[1][0].name == loop_var):
+                for item in node.items[2:]:
+                    binders(item)
+            for item in node.items:
+                find(item)
+
+        find(fn_body)
+        return names
+
+    @staticmethod
+    def _symbols_in(expr: 'SExpr') -> set:
+        """Every symbol name occurring in `expr`."""
+        out: set = set()
+        stack = [expr]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, Symbol):
+                out.add(node.name)
+            elif isinstance(node, SList):
+                stack.extend(node.items)
+        return out
+
     def _extract_seq_push_axioms(self, fn_body: SExpr, postconditions: List[SExpr],
                                   translator: 'Z3Translator') -> List[z3.BoolRef]:
         """Generate axioms connecting pushed elements to their source.
@@ -543,6 +662,8 @@ class AxiomGenerationMixin:
         # Find filter patterns
         filter_pattern = self._detect_filter_pattern(fn_body)
         if filter_pattern is None:
+            return axioms
+        if not self._filter_provenance_holds(fn_body, filter_pattern):
             return axioms
 
         # Need Seq for $result
@@ -672,6 +793,10 @@ class AxiomGenerationMixin:
                         nested_pattern, postconditions, translator
                     ))
                 return axioms
+            return axioms
+        # The axioms describe every element as one the loop's push built.
+        if self._single_push_builds_result(
+                fn_body, map_pattern.result_var, map_pattern.collection) is None:
             return axioms
 
         # Need Seq for $result
