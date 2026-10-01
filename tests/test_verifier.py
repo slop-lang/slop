@@ -5152,6 +5152,56 @@ class TestPureRecordCalls:
     (== (. (f x) d) (. (f (+ x 1)) d))))''', 'h') != 'verified'
 
 
+
+class TestStructuralListContains:
+    """In the loop-invariant walk, `list-contains` over a tracked list follows
+    the list's structure: a disjunct per push rather than an existential over
+    a concatenation, which made each step check time out (#248)."""
+
+    SRC = '''
+(module m
+  (fn f ((arena Arena) (xs (List Int)))
+    (@spec ((Arena (List Int)) -> Int)) (@alloc arena)
+    (let ((mut result (list-new arena Int))
+          (mut seen (list-new arena Int)))
+      (for-each (x xs)
+        (@loop-invariant (forall (y seen) (list-contains result y)))
+        (list-push seen x)
+        %s)
+      (cast Int (list-len result)))))'''
+
+    @staticmethod
+    def _status(src):
+        from slop.verifier import verify_source
+        results = [r for r in verify_source(src) if r.name == 'f']
+        assert len(results) == 1, results
+        return results[0].status
+
+    def test_an_invariant_about_membership_in_a_pushed_list(self):
+        assert self._status(self.SRC % '(list-push result x)') == 'verified'
+
+    def test_a_push_of_something_else_is_not_preserved(self):
+        assert self._status(self.SRC % '(list-push result (+ x 1))') == 'failed'
+
+    MATCHED = '''
+(module m
+  (fn g ((x Int)) (@spec ((Int) -> (Option Int))) (@pure) (if (> x 0) (some x) (none)))
+  (fn f ((arena Arena) (xs (List Int)))
+    (@spec ((Arena (List Int)) -> Int)) (@alloc arena)
+    (let ((mut result (list-new arena Int))
+          (mut seen (list-new arena Int)))
+      (for-each (x xs)
+        (@loop-invariant (forall (y seen) (match (g y) ((some c) (list-contains result c)) ((none) true))))
+        (list-push seen x)
+        (match (g x) ((some c) (list-push result %s)) ((none) (do))))
+      (cast Int (list-len result)))))'''
+
+    def test_an_element_bound_by_a_match_arm(self):
+        # The element is translated where the arm binds it, not before.
+        assert self._status(self.MATCHED % 'c') == 'verified'
+        assert self._status(self.MATCHED % '(+ c 1)') == 'failed'
+
+
 class TestMapPatternVerification:
     """Test map/transform pattern recognition and verification.
 
@@ -12252,12 +12302,11 @@ class TestCheckedLoopInvariants:
       result)))'''
 
     def test_pushing_records_that_keep_the_invariant(self):
-        """The invariant is proved. The postcondition check itself times out on
-        a quantifier over a list of records, as it did before invariants were
-        checked; that is not the invariant's doing."""
+        """The invariant is proved, and proves the postcondition. Asserted
+        with a trigger on `field(seq.nth S i)`, which never fires because Z3
+        rewrites a ground seq.nth, it used to time out (#248)."""
         r = self._result(self.RECORD_PUSH % '1', 'f')
-        assert r.status != 'failed'
-        assert "loop invariant" not in r.message
+        assert r.status == 'verified'
 
     def test_pushing_a_record_with_another_field_value_is_not_preserved(self):
         """The shape of growl's dt-type1 with the push changed to another
