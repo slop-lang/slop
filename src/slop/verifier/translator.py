@@ -547,6 +547,12 @@ class Z3Translator:
             else:
                 return self._create_list_seq(seq_name)
 
+        # (list-visited xs) is no collection outside the loop-invariant walk,
+        # which binds it itself (#247); read as a call it would be some list
+        # unrelated to xs.
+        if is_form(coll_expr, 'list-visited'):
+            return None
+
         # Handle function calls: (fn-name args...)
         # These are modeled as uninterpreted functions returning collections
         if isinstance(coll_expr, SList) and len(coll_expr) >= 1:
@@ -1356,6 +1362,15 @@ class Z3Translator:
                     return self._translate_list_ref(expr)
 
                 # Quantifiers
+                # A quantifier over (list-visited xs) outside the walk, which
+                # binds it itself, ranges over nothing known (#247). The
+                # type-bound fallback below would read the binder as ranging
+                # over every value instead.
+                if op in ('forall', 'exists') and len(expr) >= 2 \
+                        and isinstance(expr[1], SList) and len(expr[1]) == 2 \
+                        and is_form(expr[1][1], 'list-visited'):
+                    return None
+
                 if op == 'forall':
                     # Try collection-bound pattern first with Seq encoding
                     if self.use_seq_encoding:
@@ -1393,6 +1408,14 @@ class Z3Translator:
                 # (list-contains lst elem) => Exists idx: 0 <= idx < Length(seq) && seq[idx] == elem
                 if op == 'list-contains' and len(expr) == 3:
                     return self._translate_list_contains(expr)
+
+                # list-visited: verifier-only, and only in a @loop-invariant of a
+                # for-each over its list, where the loop-invariant walk binds it
+                # to the prefix visited so far (#247). Anywhere else it names
+                # nothing, so it does not translate rather than being read as
+                # some collection.
+                if op == 'list-visited':
+                    return None
 
                 # all-triples-have-predicate expansion
                 if op == 'all-triples-have-predicate':

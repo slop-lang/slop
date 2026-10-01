@@ -4161,7 +4161,11 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 continue
             with translator.loop_exit_scope(outcome.loop) as found, \
                     translator.without_quantifier_patterns():
-                term = translator.translate_expr(outcome.expr) if found else None
+                # Where a for-each ends it has handed its body every element,
+                # so `(list-visited xs)` is `xs` (_ip_visited_source decided
+                # the loop is one where that holds, or nothing proved it).
+                term = translator.translate_expr(self._ip_visited_at_exit(outcome.expr)) \
+                    if found else None
             if term is not None and z3.is_int(term):
                 term = self._ensure_bool(term)
             if term is not None and z3.is_bool(term):

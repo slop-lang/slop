@@ -357,6 +357,24 @@ Nested loops each carry their own; an inner loop's invariant is checked for ever
 | `loop invariant not preserved: <expr>` | failed | The step has a counterexample: an iteration can start where it holds and end where it does not. |
 | `could not check loop invariant: <expr> (<reason>)` | unknown / timeout | The check needs something it does not model; the reason says what. The invariant is not assumed. |
 
+**The visited prefix.** In the invariant of a `(for-each (x xs) ...)`, `(list-visited xs)` is the list of elements the loop has handed its body so far: empty where the loop is entered, `xs[0..k)` at the start of the iteration whose element is `xs[k]`, that prefix followed by `x` where the body ends, and all of `xs` where the loop ends. It is what makes a completeness claim provable - "every element so far that passed the filter is in the result" holds at every point, while the same claim over all of `xs` holds only at the end:
+
+```lisp
+(fn matching ((arena Arena) (t Int) (ps (List P)))
+  (@spec ((Arena Int (List P)) -> (List Int)))
+  (@alloc arena)
+  (@post (forall (p ps) (implies (== (. p k) t) (list-contains $result (. p v)))))
+  (let ((mut result (list-new arena Int)))
+    (for-each (p ps)
+      (@loop-invariant (forall (q (list-visited ps))
+                         (implies (== (. q k) t) (list-contains result (. q v)))))
+      (when (== (. p k) t)
+        (list-push result (. p v))))
+    result))
+```
+
+Where the loop ends, the proved invariant is stated with `(list-visited ps)` as `ps`, which is what proves the postcondition. The prefix is followed only when the loop visits every element of one fixed list, in order: `xs` is a parameter that is never reassigned or shadowed, nothing pushes to it before or in the loop, and neither the loop body nor anything before it may change collection state (a call to a function that is not `@pure`, a write through a place); the body has no `break`, `continue`, `return` or `c-inline`, and the loop is not a desugared callback. Otherwise an invariant that names it is `could not check`. A local list as the source is not followed yet: the main verifier does not know its contents where the loop ends.
+
 A failed invariant fails the function whatever its postconditions say. An unchecked one leaves the function unknown unless something else already failed it, since a postcondition that did not verify may have needed it.
 
 **What is not checked** (reported as `could not check`):
@@ -366,6 +384,7 @@ A failed invariant fails the function whatever its postconditions say. An unchec
 - an invariant that calls a function that is not `@pure` inside a quantifier - an uninterpreted function of its arguments is only right for one that is;
 - a quantifier over a collection that is neither a tracked list nor a parameter (or a field of one) that is never reassigned;
 - an invariant naming `$result` or the loop variable;
+- `(list-visited xs)` where the loop does not iterate `xs`, or where the prefix is not followed (above);
 - a quantifier over a parameter whose name some binding in the function reuses;
 - an invariant inside a lambda that is not desugared into a loop, or inside a `let` initializer that has statements in it;
 - a loop the walk cannot reach through a construct it does not follow (`with-arena`, `spawn`, `try`, `?`).
@@ -516,6 +535,10 @@ Example usage in a postcondition:
 Since `list-contains` is verifier-only, it cannot appear in runtime code — only in contract annotations.
 
 `(list-contains $result x)` reads the result as a sequence, exactly as `(forall (m $result) ...)` does, so for a push-built result (section 2) it is proved or refuted rather than left uninterpreted. The element is compared by identity: `x` should be a name or a field of one. A `record-new` in the contract is a fresh value, so use `exists` over its fields instead.
+
+### list-visited
+
+`(list-visited xs)` is the prefix of `xs` a `for-each` over it has visited so far. It means something only inside a `@loop-invariant` of `(for-each (x xs) ...)` - see section 4, The visited prefix, for what it is at each point and when it is followed. Anywhere else, including a `@post`, a contract that uses it does not translate. Like `list-contains`, it has no runtime representation.
 
 ## 10. Troubleshooting Verification Failures
 
