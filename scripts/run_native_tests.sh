@@ -364,6 +364,13 @@ run_negative_build_test "$TNEG/variant-unimported.slop" "variant-unimported-ambi
 run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_push_no_arena.slop" "list-push-no-arena" \
     "list_push_no_arena.slop:9:6: error: list-push: no arena in scope"
 
+# A list literal with no arena in scope was a compound literal in the
+# function's own frame, so returning it dangled (#245).
+run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_literal_no_arena.slop" "list-literal-no-arena" \
+    "list_literal_no_arena.slop:10:6: error: list: no arena in scope"
+run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_const_non_literal.slop" "list-const-non-literal" \
+    "list_const_non_literal.slop:8:31: error: list: a module-level list literal needs literal elements"
+
 # A key type with no structural hash is a transpiler error. Every compound key
 # but (Ptr T) used to be hashed as a String, whatever its size.
 run_negative_build_test "$REPO_ROOT/tests/key-type-negative/list_key.slop" "list-key" \

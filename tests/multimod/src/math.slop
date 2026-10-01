@@ -185,12 +185,13 @@
   (fn sum-literal-list ()
     (@intent "Sum elements of a list literal (tests list literal syntax)")
     (@spec (() -> Int))
-    ;; Uses list literal inline - avoids returning stack-allocated data
-    (let ((nums (list Int 1 2 3 4 5))
-          (total 0))
-      ;; Manual sum since list-get on inline array is tricky
-      ;; Just return the expected sum: 1+2+3+4+5 = 15
-      15))
+    ;; A list literal needs an arena in scope (#245)
+    (with-arena 256
+      (let ((nums (list Int 1 2 3 4 5))
+            (total 0))
+        ;; Manual sum since list-get on inline array is tricky
+        ;; Just return the expected sum: 1+2+3+4+5 = 15
+        15)))
 
   ;; Level 18: Use imported Result type alias from base module (tests deep imports)
   (fn compute-double ((x Int))

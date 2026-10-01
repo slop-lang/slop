@@ -1,0 +1,15 @@
+;; A list literal returned from a function with no arena in scope used to be
+;; a C compound literal in the function's own frame, so the caller read a dead
+;; stack array: it segfaulted at -O2, and ASan did not catch it by default
+;; (#245). A list literal now always needs an arena, like a set literal.
+
+(module main
+  (fn names ()
+    (@intent "Return a list literal with nowhere to keep it")
+    (@spec (() -> (List String)))
+    (list String "alpha" "beta" "gamma"))
+
+  (fn main ()
+    (@intent "Build must fail")
+    (@spec (() -> Int))
+    (cast Int (list-len (names)))))
