@@ -249,6 +249,10 @@ class InvariantProverMixin:
         # of a collection nothing is known about. An invariant's step is meant
         # to fail through them; a postcondition at a return is not (#69).
         self._ip_havocked: set = set()
+        # A for-each over a sequence the walk follows: (sequence, the index of
+        # an arbitrary iteration's element, that element), by loop.
+        self._ip_iterated: Dict[int, Any] = {}
+        self._ip_last_index = None
         # Everything the preconditions give is stated under this: an invariant
         # or a postcondition is checked with it, a property - which holds with
         # no precondition, as the main property solver has it - without.
@@ -528,7 +532,7 @@ class InvariantProverMixin:
                     return
                 if parent in ('mut', '@binding'):
                     return
-                if parent == 'list-contains' and index == 1:
+                if parent in ('list-contains', 'list-visited') and index == 1:
                     return
                 if parent in ('@quantifier-source', '@for-each-source') and not loop_pushes:
                     return
@@ -1279,8 +1283,50 @@ class InvariantProverMixin:
             sort = natural.sort() if natural is not None else z3.IntSort()
             tr._pinned_terms[id(expr)] = self._ip_opaque(sort)
 
+    _VISITED = '%list-visited:'
+
+    def _ip_rewrite_visited(self, condition, st: _IState):
+        """`(list-visited xs)` as the name of the prefix this state binds for xs."""
+        if not isinstance(condition, SList) or len(condition) == 0:
+            return condition
+        if is_form(condition, 'list-visited'):
+            if len(condition) != 2 or not isinstance(condition[1], Symbol) \
+                    or self._VISITED + condition[1].name not in st.seqs:
+                raise _Unchecked(f"{pretty_print(condition)} is not the collection this loop "
+                                 "iterates, or the loop is not one whose visited prefix is followed")
+            return Symbol(self._VISITED + condition[1].name)
+        if is_form(condition, 'quote'):
+            return condition
+        items = [self._ip_rewrite_visited(item, st) for item in condition.items]
+        if all(a is b for a, b in zip(items, condition.items)):
+            return condition
+        return SList(items, getattr(condition, 'line', 0), getattr(condition, 'col', 0))
+
+    @classmethod
+    def _ip_visited_at_exit(cls, expr):
+        """`expr` with each `(list-visited xs)` as `xs`: what a proved invariant says
+        where its loop ends, having handed its body every element."""
+        if not isinstance(expr, SList) or len(expr) == 0 or is_form(expr, 'quote'):
+            return expr
+        if is_form(expr, 'list-visited') and len(expr) == 2:
+            return expr[1]
+        items = [cls._ip_visited_at_exit(item) for item in expr.items]
+        if all(a is b for a, b in zip(items, expr.items)):
+            return expr
+        return SList(items, getattr(expr, 'line', 0), getattr(expr, 'col', 0))
+
+    def _ip_with_visited(self, st: _IState, prefix) -> _IState:
+        """`st` where `(list-visited xs)` names `prefix` (None: no prefix is followed)."""
+        if prefix is None:
+            return st
+        name, seq = prefix
+        seqs = dict(st.seqs)
+        seqs[self._VISITED + name] = seq
+        return st.but(seqs=seqs)
+
     def _ip_formula(self, condition, st: _IState, pc):
         """An invariant at this program point: (term, definedness obligations)."""
+        condition = self._ip_rewrite_visited(condition, st)
         if self._ip_mentions(condition, '$result'):
             raise _Unchecked("it names $result, which the loop does not have yet")
         for name in sorted(self._ip_addr_taken):
@@ -2194,10 +2240,16 @@ class InvariantProverMixin:
             hi, st = self._ip_eval(header[3], st, pc)
             bounds = (lo, hi)
 
+        # The visited prefix: what a for-each over a followed sequence has
+        # handed its body so far - empty on entry, the whole sequence at exit.
+        visited = self._ip_visited_source(loop, header, st, pushed, body_items, cinline)
+        empty = None
+        if visited is not None:
+            empty = (visited, z3.Empty(self._ip_visited_sort(header, st)))
         # Base case.
         if conditions and reason is None:
             try:
-                goals = [self._ip_formula(c, st, pc) for c in conditions]
+                goals = [self._ip_formula(c, self._ip_with_visited(st, empty), pc) for c in conditions]
             except _Unchecked as unchecked:
                 reason = str(unchecked)
             else:
@@ -2225,6 +2277,7 @@ class InvariantProverMixin:
         step = step.but(alive=z3.BoolVal(True), dirty=st.dirty or body_effect)
         step_pc = z3.And(pc, z3.FreshBool('iteration'))
         local_start = len(self._ip_local)
+        self._ip_iterated.pop(id(loop), None)
         try:
             step, facts = self._ip_enter_iteration(loop, header, bounds, st, step, step_pc)
             self._ip_local.extend(facts)
@@ -2236,10 +2289,19 @@ class InvariantProverMixin:
             # The body still reads what the header binds - a map's key and
             # value, say - and not the names they shadow.
             step = self._ip_bind_unknown(step, self._ip_header_names(loop))
+        prefix_start = prefix_end = prefix_full = None
+        iterated = self._ip_iterated.get(id(loop))
+        if visited is not None and iterated is not None:
+            seq, index, element = iterated
+            # The element is seq[index]; before it come seq[0..index).
+            start = z3.Extract(seq, 0, index)
+            prefix_start = (visited, start)
+            prefix_end = (visited, z3.Concat(start, z3.Unit(element)))
+            prefix_full = (visited, seq)
         if checking:
             try:
-                self._ip_local.extend(z3.Implies(self._ip_pre, self._ip_formula(c, step, step_pc)[0])
-                                      for c in conditions)
+                self._ip_local.extend(z3.Implies(self._ip_pre, self._ip_formula(
+                    c, self._ip_with_visited(step, prefix_start), step_pc)[0]) for c in conditions)
             except _Unchecked as unchecked:
                 for outcome in outcomes:
                     self._ip_set_unknown(outcome, str(unchecked))
@@ -2260,7 +2322,7 @@ class InvariantProverMixin:
 
         try:
             if checking and end is not None:
-                self._ip_step_end(outcomes, conditions, end, step_pc)
+                self._ip_step_end(outcomes, conditions, self._ip_with_visited(end, prefix_end), step_pc)
         finally:
             del self._ip_local[local_start:]
         if conditions and any(o.status == 'failed' for o in outcomes):
@@ -2278,7 +2340,7 @@ class InvariantProverMixin:
         if proved:
             for condition in conditions:
                 try:
-                    term, _ = self._ip_formula(condition, after, pc)
+                    term, _ = self._ip_formula(condition, self._ip_with_visited(after, prefix_full), pc)
                 except _Unchecked:
                     continue
                 self._xp_axioms.append(z3.Implies(z3.And(pc, self._ip_pre), term))
@@ -2291,6 +2353,42 @@ class InvariantProverMixin:
             except _Bail:
                 pass
         return after
+
+    def _ip_visited_source(self, loop, header, st: _IState, pushed, body_items, cinline) -> Optional[str]:
+        """The name of the list a for-each hands its body in order, element by
+        element, every one of them, if the walk follows that list. None
+        otherwise - `(list-visited xs)` is then not checked (#247).
+
+        Only a parameter, never reassigned or shadowed, that nothing pushes to
+        and nothing in the function or the loop may change: where the loop
+        ends `(list-visited xs)` is `xs`, and the main model, which asserts the
+        proved invariant there, knows a parameter's contents as the walk does.
+        A local list's it does not, so a source that is one is not followed.
+        """
+        if header is None or header[0] != 'each' or cinline:
+            return None
+        source = header[2]
+        if not isinstance(source, Symbol) or self._ip_is_callback_source(source):
+            return None
+        if not isinstance(self._ip_resolve(self._ip_static_type(source, st)), ListType):
+            return None
+        if self._ip_own_break(body_items):
+            return None
+        if not self._ip_stable_parameter(source.name, st) or source.name in pushed:
+            return None
+        # A tracked parameter's sequence is still the one it came in with
+        # only while it is a plain constant; a push before the loop builds
+        # a concatenation on it.
+        seq = st.seqs.get(source.name)
+        if seq is not None and not (z3.is_const(seq) and seq.decl().kind() == z3.Z3_OP_UNINTERPRETED):
+            return None
+        if st.dirty is None and self._ip_first_effect(body_items) is None:
+            return source.name
+        return None
+
+    def _ip_visited_sort(self, header, st: _IState):
+        source_type = self._ip_resolve(self._ip_static_type(header[2], st))
+        return z3.SeqSort(self._ip_sort_of(getattr(source_type, 'element_type', None)))
 
     def _ip_step_end(self, outcomes, conditions, end: _IState, step_pc) -> None:
         """Check each invariant where one iteration's body ends; mark the survivors proved."""
@@ -2371,6 +2469,7 @@ class InvariantProverMixin:
         exact = False
         if isinstance(source, Symbol) and source.name in entry.seqs:
             facts.extend(self._ip_member(element, entry.seqs[source.name]))
+            self._ip_iterated[id(loop)] = (entry.seqs[source.name], self._ip_last_index, element)
             exact = True
         elif self._ip_is_callback_source(source):
             facts.extend(self._ip_callback_facts(source, element, entry, step, pc))
@@ -2391,6 +2490,7 @@ class InvariantProverMixin:
                     seq = self._xp_tr._get_or_create_collection_seq(source)
                     if seq is not None and seq.sort() == z3.SeqSort(element.sort()):
                         facts.extend(self._ip_member(element, seq))
+                        self._ip_iterated[id(loop)] = (seq, self._ip_last_index, element)
                         exact = True
         if not exact:
             self._ip_havocked.add(element.decl().name())
@@ -2445,9 +2545,9 @@ class InvariantProverMixin:
             seqs.pop(name, None)
         return st.but(env=env, types=types, seqs=seqs)
 
-    @staticmethod
-    def _ip_member(element, seq):
+    def _ip_member(self, element, seq):
         index = z3.FreshInt('idx')
+        self._ip_last_index = index
         return [index >= 0, index < z3.Length(seq), element == seq[index]]
 
     @staticmethod

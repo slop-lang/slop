@@ -5202,6 +5202,119 @@ class TestStructuralListContains:
         assert self._status(self.MATCHED % '(+ c 1)') == 'failed'
 
 
+
+class TestListVisited:
+    """`(list-visited xs)` in a for-each's @loop-invariant: the prefix the loop
+    has visited so far, which makes a completeness claim provable (#247)."""
+
+    @staticmethod
+    def _status(src, name='f'):
+        from slop.verifier import verify_source
+        results = [r for r in verify_source(src) if r.name == name]
+        assert len(results) == 1, results
+        return results[0].status
+
+    POST = '(forall (p ps) (implies (== (. p k) t) (list-contains $result (. p v))))'
+    INV = '(forall (q (list-visited ps)) (implies (== (. q k) t) (list-contains result (. q v))))'
+    BODY = '(when (== (. p k) t) (list-push result (. p v)))'
+
+    @classmethod
+    def _fn(cls, post=None, inv=None, body=None, params='(arena Arena) (t Int) (ps (List P))',
+            spec='(Arena Int (List P))', extra='', before=''):
+        return f'''
+(module m
+  (type P (record (k Int) (v Int)))
+  {extra}
+  (fn f ({params})
+    (@spec ({spec} -> (List Int))) (@alloc arena)
+    (@post {post or cls.POST})
+    (let ((mut result (list-new arena Int)))
+      {before}
+      (for-each (p ps)
+        (@loop-invariant {inv or cls.INV})
+        {body or cls.BODY})
+      result)))'''
+
+    # Proved
+
+    def test_a_filter_loops_completeness(self):
+        assert self._status(self._fn()) == 'verified'
+
+    def test_a_match_over_a_pure_option_function(self):
+        assert self._status('''
+(module m
+  (type P (record (k Int) (v Int)))
+  (fn h ((t Int) (p P)) (@spec ((Int P) -> (Option Int))) (@pure)
+    (if (== (. p k) t) (some (. p v)) (none)))
+  (fn f ((arena Arena) (t Int) (ps (List P)))
+    (@spec ((Arena Int (List P)) -> (List Int))) (@alloc arena)
+    (@post (forall (p ps) (match (h t p) ((some c) (list-contains $result c)) ((none) true))))
+    (let ((mut result (list-new arena Int)))
+      (for-each (p ps)
+        (@loop-invariant (forall (q (list-visited ps))
+                           (match (h t q) ((some c) (list-contains result c)) ((none) true))))
+        (match (h t p) ((some c) (list-push result c)) ((none) (do))))
+      result)))''') == 'verified'
+
+    # Refuted
+
+    def test_a_loop_filtering_on_something_else(self):
+        body = '(when (> (. p k) t) (list-push result (. p v)))'
+        assert self._status(self._fn(body=body)) == 'failed'
+
+    def test_a_loop_that_drops_some_of_them(self):
+        body = '(when (and (== (. p k) t) (> (. p v) 0)) (list-push result (. p v)))'
+        assert self._status(self._fn(body=body)) == 'failed'
+
+    def test_claiming_every_element(self):
+        assert self._status(self._fn(
+            post='(forall (p ps) (list-contains $result (. p v)))',
+            inv='(forall (q (list-visited ps)) (list-contains result (. q v)))')) == 'failed'
+
+    # Not followed, so never assumed
+
+    def test_a_return_in_the_loop(self):
+        body = f'(do (when (< (. p v) 0) (return result)) {self.BODY})'
+        assert self._status(self._fn(body=body)) != 'verified'
+
+    def test_naming_a_list_the_loop_does_not_iterate(self):
+        inv = '(forall (q (list-visited qs)) (implies (== (. q k) t) (list-contains result (. q v))))'
+        assert self._status(self._fn(inv=inv, params='(arena Arena) (t Int) (ps (List P)) (qs (List P))',
+                                     spec='(Arena Int (List P) (List P))')) != 'verified'
+
+    def test_a_call_that_may_change_collection_state(self):
+        body = f'(do (bump) {self.BODY})'
+        assert self._status(self._fn(body=body, extra='(fn bump () (@spec (() -> Unit)) (do))')) != 'verified'
+
+    def test_a_loop_that_pushes_to_its_own_list(self):
+        body = f'(do (list-push ps p) {self.BODY})'
+        assert self._status(self._fn(body=body)) != 'verified'
+
+    def test_a_push_to_the_list_before_the_loop(self):
+        before = '(list-push ps (record-new P (k t) (v 99)))'
+        assert self._status(self._fn(before=before)) != 'verified'
+
+    def test_a_local_list(self):
+        assert self._status(f'''
+(module m
+  (type P (record (k Int) (v Int)))
+  (fn f ((arena Arena) (t Int) (xs (List P)))
+    (@spec ((Arena Int (List P)) -> (List Int))) (@alloc arena)
+    (@post (forall (p xs) (implies (== (. p k) t) (list-contains $result (. p v)))))
+    (let ((mut result (list-new arena Int)) (ps xs))
+      (for-each (p ps)
+        (@loop-invariant {self.INV})
+        {self.BODY})
+      result)))''') != 'verified'
+
+    def test_outside_a_loop_invariant_it_does_not_translate(self):
+        from slop.verifier import verify_source
+        src = self._fn(post='(forall (q (list-visited ps)) (> (. q v) 0))', inv='(>= (list-len result) 0)')
+        result = [r for r in verify_source(src) if r.name == 'f'][0]
+        assert result.status != 'verified'
+        assert 'Could not translate' in result.message
+
+
 class TestMapPatternVerification:
     """Test map/transform pattern recognition and verification.
 
