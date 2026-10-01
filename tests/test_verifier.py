@@ -4932,6 +4932,17 @@ class TestDeclaredFieldSorts:
         # The file goes on being verified after it
         assert results['later'].status == 'verified'
 
+    def test_a_bare_bool_field_filter_proves_its_predicate(self):
+        assert self._results('''
+(module m
+  (type C (record (fires Bool) (b Int)))
+  (fn g ((arena Arena) (cs (List C)))
+    (@spec ((Arena (List C)) -> (List C))) (@alloc arena)
+    (@post (forall (c $result) (. c fires)))
+    (let ((mut result (list-new arena C)))
+      (for-each (c cs) (when (. c fires) (list-push result c)))
+      result)))''')['g'].status == 'verified'
+
     NOT_FIELD = '''
 (module b6
   (type R (record (fires Bool) (x Int)))
