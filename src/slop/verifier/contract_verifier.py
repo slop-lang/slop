@@ -415,13 +415,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 else:
                     func = translator.variables[func_key]
 
-                # Get or create the field accessor function
-                field_func_name = f"field_{field_name}"
-                if field_func_name not in translator.variables:
-                    field_func = z3.Function(field_func_name, z3.IntSort(), z3.IntSort())
-                    translator.variables[field_func_name] = field_func
-                else:
-                    field_func = translator.variables[field_func_name]
+                # The field's own accessor, at its declared sort. A call is
+                # modelled Int-ranged, so for a Bool or Float field there is no
+                # equation to state.
+                field_func = translator.field_accessor(field_name)
+                if field_func.range() != func.range():
+                    continue
 
                 # Add axiom: ForAll x: fn_name(x) == field_name(x)
                 x = z3.Int("_accessor_x")
@@ -3648,7 +3647,19 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         self._desugared_extra_params: Dict[int, List] = {}
         self._desugared_loops: Set[int] = set()
         self._has_walked_returns = False
-        result = self._verify_function_contracts(fn_form)
+        try:
+            result = self._verify_function_contracts(fn_form)
+        except z3.Z3Exception as e:
+            # A term built at the wrong sort is a defect here, not in the
+            # program, and nothing above this caught it: the whole file stopped,
+            # and every later function went unreported (#246). It proves
+            # nothing about this function, so it is unknown, and the rest of
+            # the file still verifies.
+            name = fn_form[1].name if len(fn_form) > 1 and isinstance(fn_form[1], Symbol) else '<fn>'
+            detail = e.value.decode() if isinstance(getattr(e, 'value', None), bytes) else str(e)
+            return VerificationResult(
+                name=name, verified=False, status='unknown',
+                message=f"verifier error, contracts not checked: {detail}")
         return self._merge_invariant_report(result, self._invariant_report)
 
     def _merge_invariant_report(self, result: VerificationResult,
