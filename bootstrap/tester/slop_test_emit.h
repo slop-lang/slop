@@ -126,11 +126,17 @@ void test_emit_emit_main_function(test_emit_EmitContext* ctx, int64_t test_count
 slop_string test_emit_make_c_fn_name(slop_arena* arena, slop_string fn_name, slop_option_string module_name, slop_string prefix);
 slop_string test_emit_build_args_display_typed(slop_arena* arena, slop_list_types_SExpr_ptr args, type_extract_TypeRegistry types);
 test_emit_CompareInfo test_emit_build_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_option_string return_type, slop_string prefix, type_extract_TypeRegistry types, slop_option_string eq_fn, context_TranspileContext* tctx);
+test_emit_CompareInfo test_emit_build_eq_fn_comparison(slop_arena* arena, types_SExpr* expected, slop_option_string eq_fn, slop_string prefix, type_extract_TypeRegistry types, context_TranspileContext* tctx);
+test_emit_CompareInfo test_emit_uncomparable_result(slop_arena* arena, context_TranspileContext* tctx, slop_string what, slop_string forms);
+test_emit_CompareInfo test_emit_build_scalar_comparison(slop_arena* arena, types_SExpr* expected, slop_string ret_type_str, type_extract_TypeRegistry types, context_TranspileContext* tctx);
 test_emit_CompareInfo test_emit_build_record_comparison_typed(slop_arena* arena, types_SExpr* expected, slop_string prefix, type_extract_TypeRegistry types, context_TranspileContext* tctx);
 test_emit_CompareInfo test_emit_build_record_comparison_inner(slop_arena* arena, type_extract_TypeRegistry types, slop_string record_name, slop_list_types_SExpr_ptr field_values, slop_string c_expected, slop_string decl_type);
 slop_string test_emit_get_record_decl_type(slop_arena* arena, type_extract_TypeRegistry types, slop_string record_name);
 slop_string test_emit_get_record_name_from_expr(types_SExpr* expr);
 slop_list_types_SExpr_ptr test_emit_get_record_field_values(slop_arena* arena, types_SExpr* expr);
+slop_string test_emit_record_new_type_name(types_SExpr* expr);
+types_SExpr* test_emit_record_new_field_value(slop_arena* arena, types_SExpr* expr, slop_string name);
+slop_list_types_SExpr_ptr test_emit_expected_record_field_values(slop_arena* arena, type_extract_TypeRegistry types, types_SExpr* expr);
 uint8_t test_emit_is_wildcard_expr(types_SExpr* expr);
 int64_t test_emit_count_wildcard_values(slop_list_types_SExpr_ptr field_values);
 slop_string test_emit_build_record_field_comparisons_with_values(slop_arena* arena, slop_list_type_extract_TstFieldEntry fields, slop_list_types_SExpr_ptr field_values, slop_string result_accessor, slop_string expected_var);
