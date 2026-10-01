@@ -150,6 +150,19 @@ Conditional push of elements matching a predicate:
 - For each element in result: element came from source and satisfies `pred`
 - Exclusion: if predicate is `(not (eq item x))`, then `x` is not in result
 
+The element axioms are generated only when the loop is the whole story. All of these must hold:
+- The body returns `result` itself.
+- That one push is the only write to it:
+  - no second push, in the loop or after it;
+  - no push in an `else` branch;
+  - no `list-pop` or `set!`;
+  - no alias, and no callee it is handed to.
+- The pushed value is the loop element `t` itself, not something computed from it.
+- `pred` reads nothing bound inside the loop.
+- `items` is only read.
+
+Otherwise no element axioms are generated, and a contract about the result's elements needs a `@loop-invariant` (section 4). The same single-push, returned, unaliased conditions apply to the map axioms below.
+
 ### Map/Transform
 
 Unconditional push of a constructed element:

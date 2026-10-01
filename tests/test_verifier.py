@@ -4821,6 +4821,79 @@ class TestSequenceTheory:
             assert "Could not translate" not in (r.message or "")
 
 
+class TestFilterProvenanceSoundness:
+    """The filter-pattern axioms (#222) say every element of the returned list
+    is a source element satisfying the predicate. They were asserted for any
+    `when` around a push, whatever was pushed and whatever else wrote the list,
+    so each of these false contracts verified. Each must not verify; the two
+    true ones at the end must still verify."""
+
+    FN = '''
+(fn f ((arena Arena) (xs (List Int)))
+  (@spec ((Arena (List Int)) -> (List Int)))
+  (@alloc arena)
+  %s
+  (let ((mut result (list-new arena Int))
+        (mut out (list-new arena Int)))
+    %s))'''
+
+    POSITIVE = '(@post (forall (t $result) (> t 0)))'
+    FROM_SOURCE = '(@post (forall (y $result) (exists (x xs) (== y x))))'
+    FILTER = '(for-each (x xs) (when (> x 0) (list-push result x)))'
+
+    @staticmethod
+    def _status(src, name='f'):
+        from slop.verifier import verify_source
+        results = [r for r in verify_source(src) if r.name == name]
+        assert len(results) == 1, results
+        return results[0].status
+
+    def test_a_push_after_the_loop(self):
+        body = self.FILTER + ' (list-push result 0) result'
+        assert self._status(self.FN % (self.POSITIVE, body)) != 'verified'
+
+    def test_a_second_push_in_the_loop(self):
+        body = '(for-each (x xs) (when (> x 0) (list-push result x)) (list-push result 0)) result'
+        assert self._status(self.FN % (self.POSITIVE, body)) != 'verified'
+
+    def test_a_push_in_the_else_branch(self):
+        body = '(for-each (x xs) (if (> x 0) (list-push result x) (list-push result 0))) result'
+        assert self._status(self.FN % (self.POSITIVE, body)) != 'verified'
+
+    def test_returning_a_different_list(self):
+        body = self.FILTER + ' (list-push out 0) out'
+        assert self._status(self.FN % (self.POSITIVE, body)) != 'verified'
+
+    def test_reassigning_the_result_after_the_loop(self):
+        body = self.FILTER + ' (set! result xs) result'
+        assert self._status(self.FN % (self.POSITIVE, body)) != 'verified'
+
+    def test_pushing_a_value_computed_from_the_element(self):
+        body = '(for-each (x xs) (when (> x 0) (list-push result (+ x 1000)))) result'
+        assert self._status(self.FN % (self.FROM_SOURCE, body)) != 'verified'
+
+    def test_pushing_a_field_whose_name_another_record_shares(self):
+        # Accessors are named by field alone, so `(. r k)` on a pushed Q read
+        # the same function as the filter's `(. p k)` on the P it came from.
+        assert self._status('''
+(module probe
+  (type Q (record (k Int)))
+  (type P (record (k Int) (q Q)))
+  (fn f ((arena Arena) (t Int) (ps (List P)))
+    (@spec ((Arena Int (List P)) -> (List Q)))
+    (@alloc arena)
+    (@post (forall (r $result) (== (. r k) t)))
+    (let ((mut result (list-new arena Q)))
+      (for-each (p ps) (when (== (. p k) t) (list-push result (. p q))))
+      result)))''') != 'verified'
+
+    def test_the_filter_still_proves_its_predicate(self):
+        assert self._status(self.FN % (self.POSITIVE, self.FILTER + ' result')) == 'verified'
+
+    def test_the_filter_still_proves_provenance(self):
+        assert self._status(self.FN % (self.FROM_SOURCE, self.FILTER + ' result')) == 'verified'
+
+
 class TestMapPatternVerification:
     """Test map/transform pattern recognition and verification.
 
