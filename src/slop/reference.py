@@ -737,7 +737,7 @@ Language primitives that are always available without imports.
 
 ### Lists
 (list-new arena Type) -> (List Type)
-(list Type e1 e2...) -> (List Type)     ; Literal
+(list Type e1 e2...) -> (List Type)     ; Literal, built in the arena in scope (error if none)
 (list-push list item) -> Unit
 (list-pop list) -> (Option T)
 (list-get list idx) -> (Option T)
@@ -876,7 +876,7 @@ the build defines it; otherwise the error asks you to import the one you mean.
 
 ### Data Construction
 (array e1 e2...)                         ; Array literal
-(list Type e1 e2...)                     ; List literal
+(list Type e1 e2...)                     ; List literal (needs an arena in scope)
 (set Type e1 e2...)                      ; Set literal
 (record-new Type (f1 v1) (f2 v2)...)     ; Record constructor
 (TypeName v1 v2...)                      ; Positional constructor

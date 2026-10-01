@@ -1,0 +1,13 @@
+;; A module const's list literal is a file-scope C compound literal, and C only
+;; accepts constant expressions there. A String const is a static const object,
+;; not a constant expression, so this must be reported here rather than by cc
+;; (#245).
+
+(module main
+  (const GREETING String "hello")
+  (const WORDS (List String) (list String "a" GREETING))
+
+  (fn main ()
+    (@intent "Build must fail")
+    (@spec (() -> Int))
+    (cast Int (list-len WORDS))))

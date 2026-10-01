@@ -5988,6 +5988,29 @@
         (set! i (+ i 1)))
       (ctx-str ctx result "})")))
 
+  (fn list-literal-elements-constant ((items (List (Ptr SExpr))))
+    (@intent "Whether every element of (list T e...) is a literal C can put in static storage")
+    (@spec (((List (Ptr SExpr))) -> Bool))
+    ;; A symbol naming a const is refused: a non-integer const is a static
+    ;; const object, which C does not accept in a static initializer. An
+    ;; integer const is a #define and would do, but is refused too rather than
+    ;; looking up each symbol's type.
+    (let ((mut ok true)
+          (mut i 2))
+      (while (and ok (< i (list-len items)))
+        (match (list-get items i)
+          ((some e)
+            (match (deref e)
+              ((sym s)
+                (when (not (or (string-eq (. s name) "true") (string-eq (. s name) "false")))
+                  (set! ok false)))
+              ((num _) (do))
+              ((str _) (do))
+              (else (set! ok false))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      ok))
+
   (fn transpile-list-literal ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile list literal to inline array")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
@@ -6045,10 +6068,24 @@
                         (set! i (+ i 1)))
                       (ctx-str ctx result " _ll; })")))
                   ((none)
-                    ;; No arena: fallback to compound literal (stack-allocated)
+                    ;; No arena. Inside a function the data has to outlive the
+                    ;; call that built it - the list may be returned, stored in
+                    ;; a field or captured - and only an arena does that: a
+                    ;; compound literal there has automatic storage and dangles
+                    ;; (#245). A const's initializer is at module scope, where a
+                    ;; compound literal has static storage; C accepts one there
+                    ;; only when every element is a constant expression.
                     ;; ((slop_list_TYPE){.len = N, .cap = N, .data = (TYPE[]){e1, e2, ...}})
-                    (do
-                      (ctx-add-warning ctx "list literal uses stack-allocated compound literal (no arena in scope)")
+                    (cond
+                      ((not (string-eq (. (deref ctx) current-fn-c-name) ""))
+                        (do
+                          (ctx-add-error-at ctx "list: no arena in scope" (ctx-list-first-line items) (ctx-list-first-col items))
+                          "0"))
+                      ((not (list-literal-elements-constant items))
+                        (do
+                          (ctx-add-error-at ctx "list: a module-level list literal needs literal elements" (ctx-list-first-line items) (ctx-list-first-col items))
+                          "0"))
+                      (else
                       (let ((mut result (ctx-str ctx "((slop_list_" (ctx-str ctx type-id "){")))
                             (mut data-part (ctx-str ctx ".len = " (ctx-str ctx count-str (ctx-str ctx ", .cap = " (ctx-str ctx count-str (ctx-str ctx ", .data = (" (ctx-str ctx elem-type "[]){")))))))
                             (mut first true))
@@ -6062,7 +6099,7 @@
                               (set! first false))
                             ((none) (do)))
                           (set! i (+ i 1)))
-                        (ctx-str ctx result (ctx-str ctx data-part "}})"))))))))))
+                        (ctx-str ctx result (ctx-str ctx data-part "}})")))))))))))
           ((none)
             (do
               (ctx-add-error-at ctx "list: missing type" (ctx-list-first-line items) (ctx-list-first-col items))

@@ -943,22 +943,10 @@
     (@intent "Get resolved type for a constant type expression")
     (@spec (((Ptr TypeEnv) Arena (Ptr SExpr)) -> (Ptr ResolvedType)))
     (@pre (!= env nil))
-    (match (deref type-expr)
-      ((sym sym)
-        (let ((type-name (. sym name)))
-          (match (env-lookup-type env type-name)
-            ((some t) t)
-            ((none)
-              ;; Check for built-in types
-              (cond
-                ((string-eq type-name "Int") (env-get-int-type env))
-                ((string-eq type-name "Bool") (env-get-bool-type env))
-                ((string-eq type-name "String") (env-get-string-type env))
-                ((string-eq type-name "Unit") (env-get-unit-type env))
-                ;; Unknown type - create placeholder
-                (else (resolved-type-new arena 'rk-primitive type-name (none) type-name)))))))
-      ;; Complex type or other - use Int as default
-      (_ (env-get-int-type env))))
+    ;; Resolved as a field's type is. A compound type such as (List Int) used
+    ;; to be read as Int, so a const list could not be passed anywhere a List
+    ;; was expected (#245).
+    (get-field-type env arena type-expr))
 
   ;; ============================================================
   ;; Function Collection

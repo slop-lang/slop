@@ -353,6 +353,13 @@ identifier               ; Variable reference
 ;
 ; The type is not optional and is not inferred from context. There is no map
 ; literal -- build one with map-new and map-put.
+;
+; Inside a function, a list or set literal is built in the arena in scope (a
+; variable named `arena`, else any Arena-typed one), freshly on every
+; evaluation, so it can be returned, stored or mutated. With no arena in scope
+; it is a transpiler error: "list: no arena in scope". A module-level
+; (const NAME (List T) (list T ...)) needs no arena: its elements must be
+; literals (numbers, strings, true/false), and the list has static storage.
 
 ; Data access
 (. expr field)                   ; Field access (see semantics below)
