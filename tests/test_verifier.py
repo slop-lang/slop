@@ -5009,6 +5009,78 @@ class TestDeclaredFieldSorts:
         assert results['good'].status == 'verified'
 
 
+class TestUnionNewPayloads:
+    """A user union-new's payloads are modelled, wherever it is written (#249).
+
+    `union-new` had no translation, and the returned-variant axioms covered a
+    record-new payload only, so a single-payload variant's value - returned
+    directly, nested in another variant, or let-bound - was unconstrained."""
+
+    @staticmethod
+    def _status(src, name='h'):
+        from slop.verifier import verify_source
+        results = [r for r in verify_source(src) if r.name == name]
+        assert len(results) == 1, results
+        return results[0].status
+
+    DIRECT = '''
+(module b2
+  (type IRI (record (value String)))
+  (type T (union (t-name Int) (t-nom IRI)))
+  (fn h ((n Int))
+    (@spec ((Int) -> T)) (@pure)
+    (@post (match $result ((t-name m) (== m %s)) ((t-nom _) false)))
+    (union-new T %s n)))'''
+
+    def test_a_returned_single_payload_variant(self):
+        assert self._status(self.DIRECT % ('n', 't-name')) == 'verified'
+        assert self._status(self.DIRECT % ('(+ n 1)', 't-name')) == 'failed'
+
+    def test_a_quoted_tag(self):
+        assert self._status(self.DIRECT % ('n', "'t-name")) == 'verified'
+        assert self._status(self.DIRECT % ('(+ n 1)', "'t-name")) == 'failed'
+
+    NESTED = '''
+(module b5
+  (type T (union (t-name Int) (t-other Int)))
+  (type F (union (f-inst Int T) (f-none Int)))
+  (fn h ((x Int) (z Int))
+    (@spec ((Int Int) -> F)) (@pure)
+    (@post (match $result
+             ((f-inst a t) (and (== a x) (match t ((t-name m) (== m %s)) ((t-other _) false))))
+             ((f-none _) false)))
+    (union-new F f-inst x (union-new T t-name z))))'''
+
+    def test_a_variant_nested_in_another_variants_payload(self):
+        assert self._status(self.NESTED % 'z') == 'verified'
+        assert self._status(self.NESTED % 'x') == 'failed'
+
+    LET = '''
+(module b6
+  (type T (union (t-name Int) (t-other Int)))
+  (fn h ((n Int))
+    (@spec ((Int) -> T)) (@pure)
+    (@post (match $result ((t-name m) (== m %s)) ((t-other _) false)))
+    (let ((v (union-new T t-name n))) v)))'''
+
+    def test_a_let_bound_variant(self):
+        assert self._status(self.LET % 'n') == 'verified'
+        assert self._status(self.LET % '0') == 'failed'
+
+    RECORD = '''
+(module b7
+  (type D (record (code Int)))
+  (type T (union (bad D) (fine Int)))
+  (fn h ((n Int))
+    (@spec ((Int) -> T)) (@pure)
+    (@post (match $result ((bad d) (== (. d code) %s)) ((fine _) false)))
+    (union-new T bad (record-new D (code n)))))'''
+
+    def test_a_record_payload_still_has_its_fields(self):
+        assert self._status(self.RECORD % 'n') == 'verified'
+        assert self._status(self.RECORD % '(+ n 1)') == 'failed'
+
+
 class TestMapPatternVerification:
     """Test map/transform pattern recognition and verification.
 

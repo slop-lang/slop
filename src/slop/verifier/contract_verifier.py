@@ -3255,10 +3255,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # its declaration gives it - the same accessors a contract's `match`
         # reads (#166). A payload that does not reach its declared sort, or a
         # tag with no known index, gives nothing rather than a guess.
-        if (is_form(resolved, 'union-new') and len(resolved) >= 3
-                and isinstance(resolved[2], Symbol)
-                and translator.is_known_tag(resolved[2].name)):
-            tag = resolved[2].name
+        tag = translator.union_new_tag(resolved)
+        if tag is not None:
             tag_func = translator.variables.get("union_tag")
             if not isinstance(tag_func, z3.FuncDeclRef):
                 tag_func = z3.Function("union_tag", z3.IntSort(), z3.IntSort())
@@ -3266,11 +3264,15 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             add(tag_func(field_func) == z3.IntVal(translator.constructor_tag(tag)))
             for index, payload in enumerate(resolved.items[3:]):
                 sort = translator.payload_sort(tag, index)
-                value = translator.translate_expr(payload)
-                if sort is None or value is None or value.sort() != sort:
+                if sort is None:
                     continue
                 accessor = translator.union_payload_accessor(tag, index, sort)
-                add(accessor(field_func) == value)
+                value = translator.translate_expr(payload)
+                if value is not None and value.sort() == sort:
+                    add(accessor(field_func) == value)
+                # What the payload's shape says holds whether or not it has a
+                # term of its own: a nested union-new or record-new still has
+                # a tag and fields (#249).
                 axioms.extend(self._record_value_axioms(
                     accessor(field_func), payload, translator, bindings, path_cond,
                     in_place))
@@ -4583,10 +4585,13 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             tag_axiom = self._extract_union_tag_axiom(return_expr, translator)
             if tag_axiom is not None:
                 add_tail_axiom(tag_axiom)
-            # Also add field axioms for record-new payloads
-            field_axioms = self._extract_union_new_field_axioms(return_expr, translator)
-            for axiom in field_axioms:
-                add_tail_axiom(axiom)
+            # Every payload at its declared sort, and what each payload's shape
+            # says - the record-new fields of one, a nested variant's tag and
+            # payloads (#249). It used to cover a record-new payload only.
+            result_term = translator.variables.get('$result')
+            if result_term is not None:
+                for axiom in self._record_value_axioms(result_term, return_expr, translator, {}, None):
+                    add_tail_axiom(axiom)
 
         # Phase 4.5: Add union constructor axioms for (ok result), (error e), etc.
         # For the final return, add UNCONDITIONAL axioms (tag == X, payload == value).
@@ -4641,7 +4646,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     tag_axiom = self._extract_union_tag_axiom(return_expr, translator)
                     if tag_axiom is not None:
                         found.append(tag_axiom)
-                    found.extend(self._extract_union_new_field_axioms(return_expr, translator))
+                    result_term = translator.variables.get('$result')
+                    if result_term is not None:
+                        found.extend(self._record_value_axioms(
+                            result_term, return_expr, translator, {}, None))
                     return found
                 return []
 

@@ -1516,6 +1516,9 @@ class Z3Translator:
                     self.constraints.append(alloc_var != z3.IntVal(0))
                     return alloc_var
 
+                if op == 'union-new':
+                    return self._translate_union_new(expr)
+
                 # record-new produces a fresh abstract value
                 # (record-new TypeName (field1 val1) ...) -> fresh Int constant
                 if op == 'record-new':
@@ -2558,6 +2561,68 @@ class Z3Translator:
         """
         self.definedness_constraints.add(len(self.constraints))
         self.constraints.append(constraint)
+
+    def union_new_tag(self, expr: SExpr) -> Optional[str]:
+        """The variant a `(union-new T tag ...)` builds, if its index is known.
+
+        The tag may be written bare or quoted - `'tag` reads as (quote tag)
+        in that position.
+        """
+        if not (is_form(expr, 'union-new') and len(expr) >= 3):
+            return None
+        tag_expr = self._unquote_pattern(expr[2])
+        if not isinstance(tag_expr, Symbol):
+            return None
+        tag = tag_expr.name.lstrip("'")
+        return tag if self.is_known_tag(tag) else None
+
+    def _translate_union_new(self, expr: SList) -> Optional[z3.ExprRef]:
+        """`(union-new T tag p...)` as a term whose tag and payloads are pinned.
+
+        It had no translation: the type name `T` does not translate, so the
+        call fell through to None and a returned or nested variant's payload
+        was unconstrained (#249). The term applies one function per variant
+        to the payloads, so the same construction is the same term wherever
+        it is written - in a body, a contract, a loop invariant - and its tag
+        and payloads are asserted through the accessors `match` reads, at the
+        sorts the union declares. A tag or payload this cannot pin gives no
+        term at all, rather than one that says less than the program built.
+        """
+        tag = self.union_new_tag(expr)
+        if tag is None:
+            return None
+        payloads = []
+        for index, payload in enumerate(expr.items[3:]):
+            sort = self.payload_sort(tag, index)
+            value = self.translate_expr(payload)
+            if sort is None or value is None:
+                return None
+            if value.sort() != sort:
+                if sort == z3.RealSort() and z3.is_int(value):
+                    value = z3.ToReal(value)
+                else:
+                    return None
+            payloads.append(value)
+        # `#` cannot occur in a SLOP symbol, so no user name collides
+        name = f"union_new_{tag}#{len(payloads)}"
+        if payloads:
+            domain = [v.sort() for v in payloads]
+            func = self.variables.get(name)
+            if not (isinstance(func, z3.FuncDeclRef) and func.arity() == len(domain)
+                    and all(func.domain(i) == s for i, s in enumerate(domain))):
+                func = z3.Function(name, *domain, z3.IntSort())
+                self.variables[name] = func
+            term = func(*payloads)
+        else:
+            term = z3.Int(name)
+        if "union_tag" not in self.variables:
+            self.variables["union_tag"] = z3.Function("union_tag", z3.IntSort(), z3.IntSort())
+        self.constraints.append(
+            self.variables["union_tag"](term) == z3.IntVal(self.constructor_tag(tag)))
+        for index, value in enumerate(payloads):
+            accessor = self.union_payload_accessor(tag, index, value.sort())
+            self.constraints.append(accessor(term) == value)
+        return term
 
     def _assert_constructed(self, value, ctor: str, payload) -> None:
         """Constrain `value` to be `(ctor payload)`: its tag, and its payload if any."""
