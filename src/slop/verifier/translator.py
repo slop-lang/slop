@@ -3176,10 +3176,22 @@ class Z3Translator:
                     # Return field access on the argument
                     return self._translate_field_for_obj(arg, field_name)
 
+        # A @pure function that builds a record stays a call: inlined, its
+        # record-new was a fresh constant at every use, so `(. (f t q) b)` in a
+        # body and `(. (f t q2) b)` in an invariant named unrelated values (#251).
+        # What the body says about each field is asserted about the call below.
+        record_def = None
+        if self.function_registry:
+            fn_def = self.function_registry.functions.get(fn_name)
+            if (fn_def is not None and fn_def.is_pure and is_form(fn_def.body, 'record-new')
+                    and len(fn_def.params) == len(expr.items) - 1):
+                record_def = fn_def
+
         # Try to inline simple pure functions (e.g., iri-eq, blank-eq)
         # Skip inlining for -eq functions: they must remain as uninterpreted functions
         # so Phase 2 (reflexivity) and Phase 11 (union equality) axioms apply correctly.
-        if (self.function_registry and self.function_registry.is_simple_inlinable(fn_name)
+        if (record_def is None and self.function_registry
+                and self.function_registry.is_simple_inlinable(fn_name)
                 and not fn_name.endswith('-eq')):
             fn_def = self.function_registry.functions[fn_name]
             if fn_def.body and len(fn_def.params) == len(expr.items) - 1:
@@ -3268,7 +3280,67 @@ class Z3Translator:
             if bounds.max_val is not None:
                 self.constraints.append(result <= bounds.max_val)
 
+        if record_def is not None and func.arity() == len(record_def.params):
+            self.constraints.extend(self._record_call_axioms(fn_name, record_def, func))
+
         return result
+
+    def _record_call_axioms(self, fn_name: str, fn_def, func: z3.FuncDeclRef) -> List[z3.BoolRef]:
+        """What a record-building @pure function's body says about each field.
+
+        For `(fn f ((t Int) (p P)) (record-new C (fires e1) (b e2)))`, one
+        axiom per field, `forall t p: field_b(fn_f(t, p)) == e2`, triggered on
+        the call. Quantified rather than stated about this call's arguments: a
+        call inside a contract's quantifier has a bound variable for an
+        argument, and a fact about that outside its quantifier means nothing.
+
+        A field whose value names anything but the parameters - a nested
+        record-new's fresh constant, say - is left out: under the quantifier
+        it would claim one shared value for every call. So is one whose
+        translation added side facts this cannot carry along.
+        """
+        bound = [z3.Int(f"{fn_name}#{param}") for param in fn_def.params]
+        if any(func.domain(i) != b.sort() for i, b in enumerate(bound)):
+            return []
+        app = func(*bound) if bound else func()
+        allowed = {b.get_id() for b in bound}
+        axioms: List[z3.BoolRef] = []
+        for item in fn_def.body.items[2:]:
+            if not (isinstance(item, SList) and len(item) == 2 and isinstance(item[0], Symbol)):
+                continue
+            start = len(self.constraints)
+            value = self._translate_with_substitution(item[1], dict(zip(fn_def.params, bound)))
+            added = self.constraints[start:]
+            del self.constraints[start:]
+            if value is None or added:
+                continue
+            if any(c.get_id() not in allowed for c in self._free_constants(value)):
+                continue
+            access = self.field_accessor(item[0].name)(app)
+            if access.sort() != value.sort():
+                if access.sort() == z3.RealSort() and z3.is_int(value):
+                    value = z3.ToReal(value)
+                else:
+                    continue
+            fact = access == value
+            axioms.append(z3.ForAll(bound, fact, patterns=[app]) if bound else fact)
+        return axioms
+
+    @staticmethod
+    def _free_constants(term: z3.ExprRef) -> List[z3.ExprRef]:
+        """The uninterpreted constants `term` mentions."""
+        seen = set()
+        found = []
+        stack = [term]
+        while stack:
+            node = stack.pop()
+            if node.get_id() in seen:
+                continue
+            seen.add(node.get_id())
+            if z3.is_const(node) and node.decl().kind() == z3.Z3_OP_UNINTERPRETED:
+                found.append(node)
+            stack.extend(node.children())
+        return found
 
 
 
