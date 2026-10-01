@@ -73,6 +73,10 @@ class Z3Translator:
         # `Concat`, which the loop invariant check (loop_invariants.py) builds
         # at every push, so it turns them off.
         self.use_quantifier_patterns = True
+        # list-contains over a sequence built from pushes and branches, part by
+        # part rather than as an existential over an index. Only the loop-
+        # invariant walk sets it: its lists are exactly such terms (#248).
+        self.structural_contains = False
         self._seq_counter = 0  # Counter for unique seq names
         # Post-loop versions of the names a loop assigns, keyed by (loop, name),
         # so re-translating the same loop reuses them.
@@ -455,6 +459,9 @@ class Z3Translator:
         if elem_z3 is None:
             return None
 
+        if self.structural_contains:
+            return self._contains_by_structure(seq, elem_z3)
+
         # Build: Exists idx: 0 <= idx < Length(seq) && seq[idx] == elem
         idx = z3.Int(f'_lc_idx_{self._seq_counter}')
         self._seq_counter += 1
@@ -466,6 +473,29 @@ class Z3Translator:
                 seq[idx] == elem_z3
             )
         )
+
+    def _contains_by_structure(self, seq: z3.SeqRef, elem: z3.ExprRef) -> z3.BoolRef:
+        """`elem` is in `seq`, following how `seq` was built.
+
+        A disjunct per pushed element, an If per branch, false for the empty
+        list, and the existential over an index only for a part nothing more
+        is known about. The same truth value as `exists i: seq[i] == elem`,
+        without an existential over a concatenation: in the walk's step
+        checks that one made every membership claim about a push-built list
+        time out (#248).
+        """
+        if z3.is_app_of(seq, z3.Z3_OP_SEQ_CONCAT):
+            return z3.Or(*[self._contains_by_structure(part, elem) for part in seq.children()])
+        if z3.is_app_of(seq, z3.Z3_OP_SEQ_UNIT):
+            return seq.arg(0) == elem
+        if z3.is_app_of(seq, z3.Z3_OP_ITE):
+            return z3.If(seq.arg(0), self._contains_by_structure(seq.arg(1), elem),
+                         self._contains_by_structure(seq.arg(2), elem))
+        if z3.is_app_of(seq, z3.Z3_OP_SEQ_EMPTY):
+            return z3.BoolVal(False)
+        idx = z3.Int(f'_lc_idx_{self._seq_counter}')
+        self._seq_counter += 1
+        return z3.Exists([idx], z3.And(idx >= 0, idx < z3.Length(seq), seq[idx] == elem))
 
     def _seq_push(self, seq: z3.SeqRef, elem: z3.ExprRef) -> z3.SeqRef:
         """Model list-push as sequence concatenation.
@@ -3117,6 +3147,24 @@ class Z3Translator:
             else:
                 return False
         return has_enum_arm
+
+    @contextmanager
+    def without_quantifier_patterns(self):
+        """Translate a hypothesis with no trigger patterns on its quantifiers (#248).
+
+        The pattern _translate_forall_collection picks for `forall x in S` is
+        `field(seq.nth S i)`, and Z3 rewrites a ground `seq.nth`, so the
+        pattern never matches anything: a quantified fact asserted with it is
+        never instantiated, and a proof that needs it times out. A goal is
+        negated into an existential, where a pattern does nothing; a hypothesis
+        is better left to Z3's own trigger selection.
+        """
+        saved = self.use_quantifier_patterns
+        self.use_quantifier_patterns = False
+        try:
+            yield
+        finally:
+            self.use_quantifier_patterns = saved
 
     def _translate_with_substitution(self, expr: SExpr, param_map: Dict[str, 'z3.ExprRef']) -> Optional[z3.ExprRef]:
         """Translate expression with parameter substitution for function inlining.

@@ -1008,7 +1008,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if result_z3 is not None:
                 translator.variables['$result'] = result_z3
             try:
-                z3_axiom = translator.translate_expr(subst_post)
+                with translator.without_quantifier_patterns():
+                    z3_axiom = translator.translate_expr(subst_post)
             finally:
                 if result_z3 is not None:
                     if had:
@@ -1206,7 +1207,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 subst_post = self._substitute_postcondition(post, '$result', params, args)
             else:
                 subst_post = post
-            post_z3 = translator.translate_expr(subst_post)
+            with translator.without_quantifier_patterns():
+                post_z3 = translator.translate_expr(subst_post)
             if post_z3 is not None:
                 axioms.append(post_z3)
 
@@ -1280,7 +1282,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # For each postcondition, substitute $result and parameters, then translate
         for post in postconditions:
             subst_post = self._substitute_postcondition(post, var_name, params, call_args, self_ref_params)
-            z3_axiom = translator.translate_expr(subst_post)
+            with translator.without_quantifier_patterns():
+                z3_axiom = translator.translate_expr(subst_post)
             if z3_axiom is not None:
                 axioms.append(z3_axiom)
 
@@ -4137,7 +4140,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 for binding, name in self.invariant_scope(assume):
                     invariant_scope.enter_context(
                         translator.binding_in_scope(binding, name, final=True))
-                z3_assume = translator.translate_expr(assume)
+                with translator.without_quantifier_patterns():
+                    z3_assume = translator.translate_expr(assume)
             if z3_assume is not None:
                 assume_z3.append(self._ensure_bool(z3_assume))
                 assume_is_propagated.append(assume_index in propagated_range)
@@ -4155,7 +4159,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             if outcome.exits_before and not early_exits:
                 outcome.unused = "a return before the loop is not one the verifier can guard"
                 continue
-            with translator.loop_exit_scope(outcome.loop) as found:
+            with translator.loop_exit_scope(outcome.loop) as found, \
+                    translator.without_quantifier_patterns():
                 term = translator.translate_expr(outcome.expr) if found else None
             if term is not None and z3.is_int(term):
                 term = self._ensure_bool(term)

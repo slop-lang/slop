@@ -229,6 +229,7 @@ class InvariantProverMixin:
         tr = Z3Translator(self.type_env, self.filename, self.function_registry,
                           self.imported_defs, use_array_encoding=False, use_seq_encoding=True)
         tr.use_quantifier_patterns = False
+        tr.structural_contains = True
         saved = {name: getattr(self, name, _MISSING)
                  for name in ('_xp_tr', '_xp_axioms', '_xp_bound')}
         self._xp_tr = tr
