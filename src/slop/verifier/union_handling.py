@@ -305,67 +305,6 @@ class UnionHandlingMixin:
 
         return None
 
-    def _extract_union_new_field_axioms(self, union_new: SList, translator: Z3Translator) -> List:
-        """Extract field axioms for union-new with record-new payload.
-
-        For (union-new ReasonerResult reason-success (record-new ReasonerSuccess ... (iterations x) ...)),
-        adds axioms like:
-            field_iterations(union_payload_reason_success($result)) == x
-        """
-        axioms = []
-
-        # union-new Type tag payload
-        if len(union_new) < 4:
-            return axioms
-
-        result_var = translator.variables.get('$result')
-        if result_var is None:
-            return axioms
-
-        # Get tag name
-        tag_expr = union_new[2]
-        if isinstance(tag_expr, Symbol):
-            tag_name = tag_expr.name.lstrip("'")
-        elif is_form(tag_expr, 'quote') and len(tag_expr) >= 2:
-            inner = tag_expr[1]
-            tag_name = inner.name if isinstance(inner, Symbol) else None
-        else:
-            tag_name = None
-
-        if tag_name is None:
-            return axioms
-
-        # Get payload
-        payload_expr = union_new[3]
-
-        # Check if payload is record-new
-        if not is_form(payload_expr, 'record-new') or len(payload_expr) < 3:
-            return axioms
-
-        # Get or create union_payload function for this tag
-        payload_func_name = f"union_payload_{tag_name}"
-        if payload_func_name not in translator.variables:
-            payload_func = z3.Function(payload_func_name, z3.IntSort(), z3.IntSort())
-            translator.variables[payload_func_name] = payload_func
-        else:
-            payload_func = translator.variables[payload_func_name]
-
-        # payload_var represents union_payload_tag($result)
-        payload_var = payload_func(result_var)
-
-        # Extract field values from record-new
-        # (record-new Type (field1 val1) (field2 val2) ...)
-        for item in payload_expr.items[2:]:  # Skip 'record-new' and Type
-            if isinstance(item, SList) and len(item) >= 2:
-                field_name = item[0].name if isinstance(item[0], Symbol) else None
-                if field_name:
-                    field_func = translator._translate_field_for_obj(payload_var, field_name)
-                    field_value = translator.translate_expr(item[1])
-                    if field_value is not None:
-                        axioms.append(field_func == field_value)
-
-        return axioms
-
     def _detect_union_equality_function(self, fn_form: SList) -> Optional[Tuple[str, str, str]]:
         """Detect union equality function pattern.
 
