@@ -18,9 +18,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-15 is the oldest supported arm64 image (macos-14 is retired);
-        # pinned rather than macos-latest so the OS doesn't move under us.
-        os: [ubuntu-latest, macos-15]
+        # macos-14 is retired. Pinned rather than macos-latest so the OS
+        # doesn't move under us.
+        os: [ubuntu-latest, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
