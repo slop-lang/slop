@@ -14,6 +14,14 @@
 typedef struct infer_MutPath infer_MutPath;
 
 typedef enum {
+    infer_ArithClass_arith_permissive,
+    infer_ArithClass_arith_integer,
+    infer_ArithClass_arith_floating,
+    infer_ArithClass_arith_pointer,
+    infer_ArithClass_arith_other
+} infer_ArithClass;
+
+typedef enum {
     infer_StepKind_step_value,
     infer_StepKind_step_pointer,
     infer_StepKind_step_unknown
@@ -99,6 +107,10 @@ slop_option_types_ResolvedType_ptr infer_env_lookup_callable(env_TypeEnv* env, s
 uint8_t infer_types_incompatible(types_ResolvedType* expected, types_ResolvedType* actual);
 void infer_report_operand_mismatch(env_TypeEnv* env, slop_string op, slop_string what, slop_string expected, slop_string actual, int64_t line, int64_t col);
 void infer_check_list_operands(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, uint8_t has_index, int64_t line, int64_t col);
+int64_t infer_float_rank(slop_string name);
+types_ResolvedType* infer_arith_base_type(types_ResolvedType* t);
+infer_ArithClass infer_arith_operand_class(types_ResolvedType* t);
+types_ResolvedType* infer_infer_arith_expr(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t line, int64_t col);
 uint8_t infer_is_assignable_list_target(types_SExpr* expr);
 void infer_check_list_target(env_TypeEnv* env, slop_string op, types_SExpr* expr, int64_t line, int64_t col);
 infer_StepKind infer_mutation_step_kind(types_ResolvedType* t);
