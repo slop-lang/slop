@@ -55,13 +55,28 @@ static size_t resident(void) {
 #endif
 }
 
-/* Bump n MiB out of the arena a MiB at a time, touching every page */
+/* Bump n MiB out of the arena a MiB at a time, writing every page.
+ *
+ * The bytes are pseudo-random rather than one repeated byte per MiB. macOS
+ * compresses pages under memory pressure, and a compressed page no longer
+ * counts as resident, so pages of a single byte -- about the most compressible
+ * data there is -- could drop out of the very count this test measures. On a
+ * busy CI runner it read 885 of the 900 MiB it needed. Random data does not
+ * compress, so resident size tracks what was written. */
+static uint64_t fill_state = 0x9E3779B97F4A7C15ull;
+
 static void fill(slop_arena* arena, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        uint8_t* p = (uint8_t*)slop_arena_alloc(arena, MIB);
+        uint64_t* p = (uint64_t*)slop_arena_alloc(arena, MIB);
         CHECK(p != NULL && ((uintptr_t)p & 7) == 0);
-        if (p == NULL) return;
-        memset(p, (int)(i | 1), MIB);
+        if (p == NULL || ((uintptr_t)p & 7) != 0) return;
+        for (size_t w = 0; w < MIB / sizeof(uint64_t); w++) {
+            /* xorshift64, carried across calls so no two pages match */
+            fill_state ^= fill_state << 13;
+            fill_state ^= fill_state >> 7;
+            fill_state ^= fill_state << 17;
+            p[w] = fill_state;
+        }
     }
 }
 
