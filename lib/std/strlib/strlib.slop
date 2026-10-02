@@ -2,6 +2,7 @@
   (export
     ParseError
     AsciiChar
+    Byte
     cstring-to-string
     is-alpha
     is-digit
@@ -77,6 +78,13 @@
 
   (type AsciiChar (Int 0 .. 127))
 
+  ;; A byte of a String. The byte-level functions take and return this, not
+  ;; AsciiChar: a String holds UTF-8, and since range types are checked (#265) a
+  ;; byte of 128 or more would no longer pass for an AsciiChar. Bytes are read
+  ;; as (cast U8 ...) because the runtime's slop_string data is a C char, which
+  ;; is signed on some platforms.
+  (type Byte (Int 0 .. 255))
+
   ;; Internal helper
   (fn min ((a I64) (b I64))
     (@intent "Return the smaller of two integers")
@@ -90,53 +98,53 @@
     (@pure)
     (String cstr (strlen cstr)))
 
-  (fn is-alpha ((c AsciiChar))
+  (fn is-alpha ((c Byte))
     (@intent "Check if character is alphabetic (a-z, A-Z)")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (65) -> true)
     (@example (97) -> true)
     (@example (48) -> false)
     (!= (isalpha (cast Int c)) 0))
 
-  (fn is-digit ((c AsciiChar))
+  (fn is-digit ((c Byte))
     (@intent "Check if character is a decimal digit (0-9)")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (48) -> true)
     (@example (57) -> true)
     (@example (65) -> false)
     (!= (isdigit (cast Int c)) 0))
 
-  (fn is-alnum ((c AsciiChar))
+  (fn is-alnum ((c Byte))
     (@intent "Check if character is alphanumeric (a-z, A-Z, 0-9)")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (65) -> true)
     (@example (48) -> true)
     (@example (32) -> false)
     (!= (isalnum (cast Int c)) 0))
 
-  (fn is-space ((c AsciiChar))
+  (fn is-space ((c Byte))
     (@intent "Check if character is whitespace (space, tab, newline, etc.)")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (32) -> true)
     (@example (9) -> true)
     (@example (65) -> false)
     (!= (isspace (cast Int c)) 0))
 
-  (fn is-upper ((c AsciiChar))
+  (fn is-upper ((c Byte))
     (@intent "Check if character is uppercase (A-Z)")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (65) -> true)
     (@example (97) -> false)
     (!= (isupper (cast Int c)) 0))
 
-  (fn is-lower ((c AsciiChar))
+  (fn is-lower ((c Byte))
     (@intent "Check if character is lowercase (a-z)")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (97) -> true)
     (@example (65) -> false)
@@ -151,41 +159,41 @@
     (@example (-1) -> false)
     (and (>= c 0) (<= c 127)))
 
-  (fn is-printable ((c AsciiChar))
+  (fn is-printable ((c Byte))
     (@intent "Check if character is printable (visible or space)")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (65) -> true)
     (@example (32) -> true)
     (@example (0) -> false)
     (!= (isprint (cast Int c)) 0))
 
-  (fn is-control ((c AsciiChar))
+  (fn is-control ((c Byte))
     (@intent "Check if character is a control character")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (0) -> true)
     (@example (27) -> true)
     (@example (65) -> false)
     (!= (iscntrl (cast Int c)) 0))
 
-  (fn char-to-upper ((c AsciiChar))
+  (fn char-to-upper ((c Byte))
     (@intent "Convert character to uppercase if alphabetic")
-    (@spec ((AsciiChar) -> AsciiChar))
+    (@spec ((Byte) -> Byte))
     (@pure)
     (@example (97) -> 65)
     (@example (65) -> 65)
     (@example (48) -> 48)
-    (cast AsciiChar (toupper (cast Int c))))
+    (cast Byte (toupper (cast Int c))))
 
-  (fn char-to-lower ((c AsciiChar))
+  (fn char-to-lower ((c Byte))
     (@intent "Convert character to lowercase if alphabetic")
-    (@spec ((AsciiChar) -> AsciiChar))
+    (@spec ((Byte) -> Byte))
     (@pure)
     (@example (65) -> 97)
     (@example (97) -> 97)
     (@example (48) -> 48)
-    (cast AsciiChar (tolower (cast Int c))))
+    (cast Byte (tolower (cast Int c))))
 
   (fn index-of ((haystack String) (needle String))
     (@intent
@@ -325,9 +333,9 @@
         s
         (let ((mut start 0)
               (mut end slen))
-          (while (and (< start slen) (is-space (cast AsciiChar (@ (. s data) start))))
+          (while (and (< start slen) (is-space (cast U8 (@ (. s data) start))))
             (set! start (+ start 1)))
-          (while (and (> end start) (is-space (cast AsciiChar (@ (. s data) (- end 1)))))
+          (while (and (> end start) (is-space (cast U8 (@ (. s data) (- end 1)))))
             (set! end (- end 1)))
           (let ((newlen (- end start)))
             (if (== newlen 0)
@@ -350,7 +358,7 @@
       (if (== slen 0)
         s
         (let ((mut start 0))
-          (while (and (< start slen) (is-space (cast AsciiChar (@ (. s data) start))))
+          (while (and (< start slen) (is-space (cast U8 (@ (. s data) start))))
             (set! start (+ start 1)))
           (let ((newlen (- slen start)))
             (if (== newlen 0)
@@ -373,7 +381,7 @@
       (if (== slen 0)
         s
         (let ((mut end slen))
-          (while (and (> end 0) (is-space (cast AsciiChar (@ (. s data) (- end 1)))))
+          (while (and (> end 0) (is-space (cast U8 (@ (. s data) (- end 1)))))
             (set! end (- end 1)))
           (if (== end 0)
             (String (cast (Ptr U8) (arena-alloc arena 1)) (cast U64 0))
@@ -384,9 +392,9 @@
                 (cast U64 end))
               (String (cast (Ptr U8) buf) (cast U64 end))))))))
 
-  (fn pad-start ((arena Arena) (s String) (target-len (Int 0 ..)) (pad-char AsciiChar))
+  (fn pad-start ((arena Arena) (s String) (target-len (Int 0 ..)) (pad-char Byte))
     (@intent "Pad string at start to reach target length")
-    (@spec ((Arena String (Int 0 ..) AsciiChar) -> String))
+    (@spec ((Arena String (Int 0 ..) Byte) -> String))
     (@alloc arena)
     (@pure)
     (@example (arena "hello" 10 32) -> "     hello")
@@ -406,9 +414,9 @@
             (cast U64 slen))
           (String (cast (Ptr U8) buf) (cast U64 target-len))))))
 
-  (fn pad-end ((arena Arena) (s String) (target-len (Int 0 ..)) (pad-char AsciiChar))
+  (fn pad-end ((arena Arena) (s String) (target-len (Int 0 ..)) (pad-char Byte))
     (@intent "Pad string at end to reach target length")
-    (@spec ((Arena String (Int 0 ..) AsciiChar) -> String))
+    (@spec ((Arena String (Int 0 ..) Byte) -> String))
     (@alloc arena)
     (@pure)
     (@example (arena "hello" 10 32) -> "hello     ")
@@ -505,7 +513,7 @@
             (do
               (set!
                 (@ buf i)
-                (cast U8 (char-to-upper (cast AsciiChar (@ (. s data) i)))))
+                (cast U8 (char-to-upper (cast U8 (@ (. s data) i)))))
               (set! i (+ i 1))))
           (String (cast (Ptr U8) buf) (cast U64 slen))))))
 
@@ -525,7 +533,7 @@
             (do
               (set!
                 (@ buf i)
-                (cast U8 (char-to-lower (cast AsciiChar (@ (. s data) i)))))
+                (cast U8 (char-to-lower (cast U8 (@ (. s data) i)))))
               (set! i (+ i 1))))
           (String (cast (Ptr U8) buf) (cast U64 slen))))))
 
@@ -543,7 +551,7 @@
               (mut i 0)
               (mut word-start true))
           (while (< i slen)
-            (let ((c (cast AsciiChar (@ (. s data) i))))
+            (let ((c (cast U8 (@ (. s data) i))))
               (if (is-space c)
                 (do (set! (@ buf i) (cast U8 c)) (set! word-start true))
                 (if word-start
@@ -568,7 +576,7 @@
         (let ((buf (arena-alloc arena (+ slen 1))))
           (set!
             (@ buf 0)
-            (cast U8 (char-to-upper (cast AsciiChar (@ (. s data) 0)))))
+            (cast U8 (char-to-upper (cast U8 (@ (. s data) 0)))))
           (when (> slen 1)
             (memcpy
               (cast (Ptr Void) (+ buf 1))
@@ -819,8 +827,8 @@
           (mut i 0)
           (mut result 0))
       (while (and (< i min-len) (== result 0))
-        (let ((ca (char-to-lower (cast AsciiChar (@ (. a data) i))))
-              (cb (char-to-lower (cast AsciiChar (@ (. b data) i)))))
+        (let ((ca (char-to-lower (cast U8 (@ (. a data) i))))
+              (cb (char-to-lower (cast U8 (@ (. b data) i)))))
           (cond
             ((< ca cb) (set! result -1))
             ((> ca cb) (set! result 1))
@@ -834,17 +842,17 @@
 
   (fn char-at ((s String) (index (Int 0 ..)))
     (@intent "Get character at index, or 0 if out of bounds")
-    (@spec ((String (Int 0 ..)) -> AsciiChar))
+    (@spec ((String (Int 0 ..)) -> Byte))
     (@pure)
     (@example ("hello" 0) -> 104)
     (@example ("hello" 4) -> 111)
     (@example ("hello" 5) -> 0)
     (@example ("" 0) -> 0)
-    (if (>= index (cast Int (. s len))) 0 (cast AsciiChar (@ (. s data) index))))
+    (if (>= index (cast Int (. s len))) 0 (cast U8 (@ (. s data) index))))
 
-  (fn char-is-symbol-start ((c AsciiChar))
+  (fn char-is-symbol-start ((c Byte))
     (@intent "Check if character can start a SLOP symbol (a-z, A-Z, _, @, $)")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (97) -> true)
     (@example (65) -> true)
@@ -855,9 +863,9 @@
     (@example (45) -> false)
     (or (is-alpha c) (== c 95) (== c 64) (== c 36)))
 
-  (fn char-is-symbol-char ((c AsciiChar))
+  (fn char-is-symbol-char ((c Byte))
     (@intent "Check if character is valid in SLOP symbol body")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (97) -> true)
     (@example (48) -> true)
@@ -882,9 +890,9 @@
       (== c 64)
       (== c 36)))
 
-  (fn char-is-operator ((c AsciiChar))
+  (fn char-is-operator ((c Byte))
     (@intent "Check if character is a SLOP operator character")
-    (@spec ((AsciiChar) -> Bool))
+    (@spec ((Byte) -> Bool))
     (@pure)
     (@example (43) -> true)
     (@example (45) -> true)

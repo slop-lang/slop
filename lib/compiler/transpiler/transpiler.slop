@@ -42,7 +42,7 @@
                    ctx-register-struct-key-type ctx-get-struct-key-types ctx-lookup-value-key-type
                    ctx-get-deferred-lambdas ctx-clear-deferred-lambdas
                    ctx-start-function-buffer ctx-stop-function-buffer ctx-flush-function-buffer))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-container-c-type))
+  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-container-c-type param-slop-type-string))
   (import emit (emit-standard-includes emit-include))
   (import defn (transpile-type transpile-function transpile-const is-const-form emit-forward-declaration
                 is-ffi-form is-ffi-struct-form transpile-ffi transpile-ffi-struct
@@ -548,6 +548,7 @@
                         (let ((c-type (prescan-get-param-c-type ctx param-expr))
                               (param-info (cast (Ptr FuncParamType) (arena-alloc arena (sizeof FuncParamType)))))
                           (set! (. (deref param-info) c-type) c-type)
+                          (set! (. (deref param-info) slop-type) (param-slop-type-string arena param-expr))
                           (list-push result param-info)))
                       ((none) (do)))
                     (set! i (+ i 1)))))
@@ -1175,6 +1176,7 @@
                         (let ((c-type (prescan-get-param-c-type ctx param-expr))
                               (param-info (cast (Ptr FuncParamType) (arena-alloc arena (sizeof FuncParamType)))))
                           (set! (. (deref param-info) c-type) c-type)
+                          (set! (. (deref param-info) slop-type) (param-slop-type-string arena param-expr))
                           (list-push result param-info)))
                       ((none) (do)))
                     (set! i (+ i 1)))))
@@ -2493,24 +2495,14 @@
       ;; Emit _new constructor
       (ctx-emit-header ctx (ctx-str5 ctx "static inline " c-name " " c-name "_new(int64_t v) {"))
       (ctx-indent ctx)
-      ;; Emit bounds check using SLOP_PRE
-      (cond
-        ;; Both bounds
-        ((and has-min has-max)
-          (let ((min-str (int-to-string arena min-val))
-                (max-str (int-to-string arena max-val)))
-            (ctx-emit-header ctx (ctx-str ctx "SLOP_PRE(v >= " (ctx-str ctx min-str (ctx-str ctx " && v <= " (ctx-str ctx max-str (ctx-str ctx ", \"" (ctx-str ctx c-name (ctx-str ctx " in range " (ctx-str ctx min-str (ctx-str ctx ".." (ctx-str ctx max-str "\");")))))))))))))
-        ;; Only min bound
-        (has-min
-          (let ((min-str (int-to-string arena min-val)))
-            (ctx-emit-header ctx (ctx-str ctx "SLOP_PRE(v >= " (ctx-str ctx min-str (ctx-str ctx ", \"" (ctx-str ctx c-name (ctx-str ctx " >= " (ctx-str ctx min-str "\");")))))))))
-        ;; Only max bound
-        (has-max
-          (let ((max-str (int-to-string arena max-val)))
-            (ctx-emit-header ctx (ctx-str ctx "SLOP_PRE(v <= " (ctx-str ctx max-str (ctx-str ctx ", \"" (ctx-str ctx c-name (ctx-str ctx " <= " (ctx-str ctx max-str "\");")))))))))
-        (else (do)))
-      ;; Emit return
-      (ctx-emit-header ctx (ctx-str ctx "return (" (ctx-str ctx c-name ")v;")))
+      ;; The check is SLOP_RANGE's, as at every narrowing point: on in every
+      ;; build unless SLOP_NO_RANGE_CHECKS (#265). SLOP_PRE compiled out.
+      (ctx-emit-header ctx (string-build arena
+                             (list String "return SLOP_RANGE(" c-name ", v, "
+                                   (if has-min "1" "0") ", " (if has-max "1" "0") ", "
+                                   (if has-min (int-to-string arena min-val) "0") ", "
+                                   (if has-max (int-to-string arena max-val) "0") ", \""
+                                   raw-name " " (pretty-print arena body-expr) "\");")))
       (ctx-dedent ctx)
       (ctx-emit-header ctx "}")
       (ctx-emit-header ctx "")

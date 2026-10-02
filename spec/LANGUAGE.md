@@ -14,7 +14,7 @@ SLOP is designed for hybrid generation where:
 
 Core principles:
 - S-expression syntax eliminates parsing ambiguity
-- Range types catch bounds errors, at compile time where the value is known (see 6.1, Range Checking)
+- Range types catch bounds errors: at compile time where the value is known, at run time otherwise (see 6.1, Range Checking)
 - Mandatory contracts define correctness
 - Explicit holes enable fine-grained LLM generation
 - Transpiles to C for maximum portability and performance
@@ -853,10 +853,25 @@ An interval belongs to a value, never to a name: an untyped `let` binds the
 value's type without it, since a pointer from `(addr x)` could later change `x`.
 A typed `let` binds its declared range.
 
-Runtime checks at narrowing points are not emitted yet, so a value that is not
-known at compile time is not checked, and one beyond the C storage type wraps.
-`TypeName_new(v)` is generated for each named range but nothing calls it.
-Both are tracked in #265.
+Every other narrowing is checked at run time. The value is tested at full
+`int64_t` width before it is stored, so 300 aimed at a `uint8_t`-backed
+`(Int 0 .. 255)` fails instead of wrapping to 44. A failure aborts:
+
+```
+SLOP range check failed: 130 is not in Pct (Int 0 .. 100) at r.slop:7:5
+```
+
+A check is left out where the value is known to fit: an in-range literal, a
+value whose interval (above) lies inside the range, or a sized integer whose
+width does (a `U8` into `(Int 0 .. 255)`).
+
+Unlike contracts, range checks are on in every build, as Ada's are: a range is
+part of the type, not an assertion. `slop build --no-range-checks` (or
+`no_range_checks = true` under `[build]` in slop.toml) compiles them out, like
+GNAT's `-gnatp`. A value outside its range is then undefined -- in practice it
+wraps to fit the storage type.
+
+`TypeName_new(v)` is generated for each named range and checks the same way.
 
 ### 6.2 Contracts
 
@@ -893,10 +908,10 @@ SLOP                    C
    - @property testing
    - Contract assertion (debug builds)
 
-5. Runtime (debug mode)
-   - @pre/@post assertions
-   - Null checks
-   - (Range bounds checking is not emitted yet; see 6.1, Range Checking)
+5. Runtime
+   - Range bounds checking, in every build unless --no-range-checks (6.1)
+   - @pre/@post assertions (debug mode)
+   - Null checks (debug mode)
 ```
 
 ### 7.1 Executable Examples

@@ -273,6 +273,7 @@ class BuildConfig:
     sources: list = None  # Source files/directories for library builds
     arena_cap: int = 0  # Arena allocation cap in bytes (0 = use runtime default)
     no_arena_cap: bool = False  # Disable arena allocation cap entirely
+    no_range_checks: bool = False  # Compile out range-type checks (#265); a violation is then undefined
     optimize: str = "2"  # Optimization level (0, 1, 2, 3, s)
 
     def __post_init__(self):
@@ -364,6 +365,7 @@ def load_project_config(path: str = None) -> tuple[Optional[ProjectConfig], Opti
         sources=build_data.get('sources', []),
         arena_cap=build_data.get('arena_cap', 0),
         no_arena_cap=build_data.get('no_arena_cap', False),
+        no_range_checks=build_data.get('no_range_checks', False),
         optimize=build_data.get('optimize', '2'),
     ) if build_data else None
 

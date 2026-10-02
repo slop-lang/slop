@@ -1,0 +1,13 @@
+;; A value only known at run time, outside its range type, aborts at the
+;; narrowing point (#265). id hides the value from the checker.
+
+(module main
+  (type Byte (Int 0 .. 255))
+
+  (fn id ((n Int)) (@intent "Identity") (@spec ((Int) -> Int)) n)
+
+  (fn main ()
+    (@intent "300 is checked before it is stored in a uint8_t, not after it wraps to 44")
+    (@spec (() -> Int))
+    (let ((b Byte (id 300)))
+      0)))

@@ -1,0 +1,13 @@
+;; A value only known at run time, outside its range type, aborts at the
+;; narrowing point (#265). id hides the value from the checker.
+
+(module main
+  (type Cfg (record (workers (Int 1 .. 64))))
+
+  (fn id ((n Int)) (@intent "Identity") (@spec ((Int) -> Int)) n)
+
+  (fn main ()
+    (@intent "Build a Cfg with 65 workers")
+    (@spec (() -> Int))
+    (let ((c (record-new Cfg (workers (id 65)))))
+      0)))

@@ -2036,6 +2036,7 @@ def _build_library_from_sources(
     native_checker_bin,
     arena_cap: int = 0,
     no_arena_cap: bool = False,
+    no_range_checks: bool = False,
 ) -> int:
     """Build a library from multiple source files.
 
@@ -2235,6 +2236,8 @@ def _build_library_from_sources(
                 if debug:
                     compile_cmd.insert(1, "-g")
                     compile_cmd.insert(2, "-DSLOP_DEBUG")
+                if no_range_checks:
+                    compile_cmd.insert(1, "-DSLOP_NO_RANGE_CHECKS")
                 if "pthread" in link_libraries:
                     compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
                 result = subprocess.run(compile_cmd, capture_output=True, text=True)
@@ -2277,6 +2280,8 @@ def _build_library_from_sources(
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if no_range_checks:
+                compile_cmd.insert(1, "-DSLOP_NO_RANGE_CHECKS")
             if "pthread" in link_libraries:
                 compile_cmd.insert(1, "-DSLOP_INTERN_THREADSAFE")
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
@@ -2360,6 +2365,7 @@ def cmd_build(args):
             opt_level = args.optimize or build_cfg.optimize
             arena_cap = getattr(args, 'arena_cap', 0) or build_cfg.arena_cap
             no_arena_cap = getattr(args, 'no_arena_cap', False) or build_cfg.no_arena_cap
+            no_range_checks = getattr(args, 'no_range_checks', False) or build_cfg.no_range_checks
             # Map build_type to library flag format
             if build_cfg.build_type == "static":
                 library_mode = getattr(args, 'library', None) or "static"
@@ -2376,6 +2382,7 @@ def cmd_build(args):
             opt_level = args.optimize or "2"
             arena_cap = getattr(args, 'arena_cap', 0)
             no_arena_cap = getattr(args, 'no_arena_cap', False)
+            no_range_checks = getattr(args, 'no_range_checks', False)
             library_mode = getattr(args, 'library', None)
             link_libraries = []
             link_paths = []
@@ -2435,6 +2442,7 @@ def cmd_build(args):
                 native_checker_bin=native_checker_bin,
                 arena_cap=arena_cap,
                 no_arena_cap=no_arena_cap,
+                no_range_checks=no_range_checks,
             )
 
         # Parse
@@ -2617,6 +2625,8 @@ def cmd_build(args):
                         if debug:
                             compile_cmd.insert(1, "-g")
                             compile_cmd.insert(2, "-DSLOP_DEBUG")
+                        if no_range_checks:
+                            compile_cmd.insert(1, "-DSLOP_NO_RANGE_CHECKS")
                         if no_arena_cap:
                             compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
                         elif arena_cap:
@@ -2645,6 +2655,8 @@ def cmd_build(args):
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    if no_range_checks:
+                        compile_cmd.insert(1, "-DSLOP_NO_RANGE_CHECKS")
                     if no_arena_cap:
                         compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
                     elif arena_cap:
@@ -2663,6 +2675,8 @@ def cmd_build(args):
                     if debug:
                         compile_cmd.insert(1, "-g")
                         compile_cmd.insert(2, "-DSLOP_DEBUG")
+                    if no_range_checks:
+                        compile_cmd.insert(1, "-DSLOP_NO_RANGE_CHECKS")
                     if no_arena_cap:
                         compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
                     elif arena_cap:
@@ -2773,6 +2787,8 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if no_range_checks:
+                compile_cmd.insert(1, "-DSLOP_NO_RANGE_CHECKS")
             if no_arena_cap:
                 compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
             elif arena_cap:
@@ -2805,6 +2821,8 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if no_range_checks:
+                compile_cmd.insert(1, "-DSLOP_NO_RANGE_CHECKS")
             if no_arena_cap:
                 compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
             elif arena_cap:
@@ -2831,6 +2849,8 @@ def cmd_build(args):
             if debug:
                 compile_cmd.insert(1, "-g")
                 compile_cmd.insert(2, "-DSLOP_DEBUG")
+            if no_range_checks:
+                compile_cmd.insert(1, "-DSLOP_NO_RANGE_CHECKS")
             if no_arena_cap:
                 compile_cmd.insert(1, "-DSLOP_ARENA_NO_CAP")
             elif arena_cap:
@@ -4557,6 +4577,8 @@ def main():
                    help='Arena allocation cap in bytes (default: 256MB)')
     p.add_argument('--no-arena-cap', action='store_true',
                    help='Disable arena allocation cap (default: 256MB limit)')
+    p.add_argument('--no-range-checks', action='store_true',
+                   help='Compile out range-type checks; a value outside its range is then undefined')
     p.add_argument('--library', choices=['static', 'shared'],
                    help='Build as library instead of executable')
     p.add_argument('-O', '--optimize', choices=['0', '1', '2', '3', 's'],

@@ -1,0 +1,24 @@
+;; Checks the checker proves unnecessary are not emitted (#265). Of the five
+;; narrowings below only prev's can fail, so the generated C holds exactly one
+;; SLOP_RANGE. No named range is declared: its T_new would hold another.
+
+(module main
+  (fn next ((n (Int 0 ..)))
+    (@intent "One more than a count: [1 ..] fits (Int 0 ..)")
+    (@spec (((Int 0 ..)) -> (Int 0 ..)))
+    (+ n 1))
+
+  (fn prev ((n (Int 0 ..)))
+    (@intent "One less than a count: [-1 ..] may not fit, so this one is checked")
+    (@spec (((Int 0 ..)) -> (Int 0 ..)))
+    (- n 1))
+
+  (fn small ((n (Int 0 .. 9)))
+    (@intent "Widen a digit into a count")
+    (@spec (((Int 0 .. 9)) -> (Int 0 ..)))
+    n)
+
+  (fn main ()
+    (@intent "An in-range literal and a proved value need no check")
+    (@spec (() -> Int))
+    (next (small 7))))

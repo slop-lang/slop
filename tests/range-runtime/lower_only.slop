@@ -1,0 +1,15 @@
+;; A value only known at run time, outside its range type, aborts at the
+;; narrowing point (#265). id hides the value from the checker.
+
+(module main
+  (fn id ((n Int)) (@intent "Identity") (@spec ((Int) -> Int)) n)
+
+  (fn count-up ((n (Int 1 ..)))
+    (@intent "Take a positive count")
+    (@spec (((Int 1 ..)) -> Int))
+    n)
+
+  (fn main ()
+    (@intent "Pass 0 for a count of at least 1")
+    (@spec (() -> Int))
+    (count-up (id 0))))

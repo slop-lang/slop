@@ -7,7 +7,7 @@
 (module expr
   (export
     ;; Main entry point
-    transpile-expr transpile-expr-for
+    transpile-expr transpile-expr-for transpile-expr-narrowed field-slop-type
     ;; Helpers
     transpile-literal transpile-symbol
     ;; Literal pattern helpers, shared with match (which imports this module)
@@ -43,6 +43,8 @@
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-lookup-field-type-by-index ctx-lookup-field-type ctx-lookup-field-slop-type ctx-lookup-field-type-for-slop ctx-lookup-field-slop-type-for-slop ctx-register-option-type
+                   ctx-range-wrap ctx-range-bounds-of ctx-lookup-field-slop-type-by-index
+                   ctx-get-current-return-slop-type ctx-set-current-return-slop-type
                    ctx-get-fields-for-type ctx-get-union-variants FieldEntry
                    ctx-register-list-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-is-option-c-type ctx-register-chan-type
@@ -56,7 +58,7 @@
                    ends-with-star))
   (import ctype (to-c-type to-c-name type-to-identifier unwrap-ptr-container-type is-container-c-type sexpr-to-type-string
                  get-node-resolved-type resolved-type-to-c))
-  (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains))
+  (import strlib (replace starts-with ends-with substring char-at count-occurrences index-of contains string-build))
 
   ;; ============================================================
   ;; String Escaping for C
@@ -384,6 +386,39 @@
               ((none) none))
             none)))
       (else none)))
+
+  (fn transpile-expr-narrowed ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (c-type String)
+                               (slop-type String) (context String))
+    (@intent "Transpile a value flowing into a slot of this type, range-checked when the type is a range")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String String String) -> String))
+    (@pre {ctx != nil})
+    (@pre {expr != nil})
+    ;; Every narrowing point -- argument, typed let, set!, field, return,
+    ;; container element, cast -- comes through here (#265)
+    (ctx-range-wrap ctx (transpile-expr-for ctx expr c-type) c-type slop-type context expr))
+
+  (fn field-slop-type ((ctx (Ptr TranspileContext)) (target-expr (Ptr SExpr)) (field-name String))
+    (@intent "The SLOP type of a field of the record target-expr holds, or empty when unknown")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr) String) -> String))
+    (@pre {ctx != nil})
+    (@pre {target-expr != nil})
+    (let ((arena (. (deref ctx) arena))
+          (t (infer-expr-slop-type ctx target-expr))
+          (rec (if (and (starts-with t "(Ptr ") (ends-with t ")"))
+                 (substring arena t 5 (- (cast Int (string-len t)) 6))
+                 t)))
+      (if (== (string-len rec) 0)
+        ""
+        (match (ctx-lookup-field-slop-type-for-slop ctx rec field-name)
+          ((some ft) ft)
+          ((none) "")))))
+
+  (fn arg-range-context ((ctx (Ptr TranspileContext)) (param-idx Int) (fn-name String))
+    (@intent "Name an argument for a range diagnostic: argument 1 to 'bump'")
+    (@spec (((Ptr TranspileContext) Int String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena)))
+      (string-build arena (list String "argument " (int-to-string arena (+ param-idx 1)) " to '" fn-name "'"))))
 
   (fn transpile-expr-for ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)) (expected-type String))
     (@intent "Transpile an expression whose C type is fixed by where it goes: an argument, an initialiser, a return")
@@ -2827,7 +2862,12 @@
                                       ;; When casting a string literal to pointer, use .data
                                       (if (and is-ptr-cast is-str-literal)
                                         (ctx-str ctx "((" (ctx-str ctx c-type (ctx-str ctx ")(" (ctx-str ctx val-c ".data))"))))
-                                        (ctx-str5 ctx "((" c-type ")(" val-c "))")))))))
+                                        ;; A cast to a range type is a checked narrowing, not
+                                        ;; an escape hatch (#265)
+                                        (ctx-str5 ctx "((" c-type ")("
+                                          (ctx-range-wrap ctx val-c c-type
+                                            (sexpr-to-type-string (. (deref ctx) arena) type-expr) "cast" val-expr)
+                                          "))")))))))
                             ((none)
                               (do
                                 (ctx-add-error-at ctx "missing cast value" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -3283,7 +3323,10 @@
                             ((some item-expr)
                               (let ((mutation-ok (check-c-mutation ctx list-expr (c-mutation-path ctx list-expr) 'mut-push))
                                     (list-c (transpile-expr ctx list-expr))
-                                    (item-c (transpile-expr ctx item-expr))
+                                    ;; A range-typed element is a narrowing point (#265)
+                                    (item-c (transpile-expr-narrowed ctx item-expr ""
+                                              (infer-collection-element-slop-type ctx list-expr)
+                                              "'list-push' element"))
                                     ;; Determine arena source from the list expression
                                     ;; If it's a struct field access, use struct->arena
                                     (arena-c (get-arena-for-list-push-expr ctx list-expr items)))
@@ -3324,7 +3367,10 @@
                                 ((some val-expr)
                                   (let ((list-c (transpile-expr ctx list-expr))
                                         (idx-c (transpile-expr ctx idx-expr))
-                                        (val-c (transpile-expr ctx val-expr)))
+                                        ;; A range-typed element is a narrowing point (#265)
+                                        (val-c (transpile-expr-narrowed ctx val-expr ""
+                                                 (infer-collection-element-slop-type ctx list-expr)
+                                                 "'list-set' element")))
                                     (let ((s1 (ctx-str ctx "({ __auto_type _set_lst = &(" list-c))
                                           (s2 (ctx-str ctx s1 "); size_t _set_idx = (size_t)("))
                                           (s3 (ctx-str ctx s2 idx-c))
@@ -3627,9 +3673,16 @@
           ;; Check if this is a type constructor (record or union instantiation)
           (match (ctx-lookup-type ctx fn-name)
             ((some type-entry)
-              (if (. type-entry is-union)
+              (cond
+                ;; A range type: (Pct 50) is a narrowing of its one argument (#265)
+                ((match (ctx-range-bounds-of ctx fn-name) ((some _) true) ((none) false))
+                  (match (list-get items 1)
+                    ((some arg) (transpile-expr-narrowed ctx arg (. type-entry c-name) fn-name "constructor"))
+                    ((none) (ctx-str3 ctx "((" (. type-entry c-name) ")0)"))))
+                ((. type-entry is-union)
                 ;; Union type: (UnionType (tag value)) -> ((UnionType){ .tag = UnionType_tag, .data.tag = value })
-                (transpile-union-constructor ctx fn-name (. type-entry c-name) items)
+                (transpile-union-constructor ctx fn-name (. type-entry c-name) items))
+                (else
                 ;; Record type: emit compound literal
                 ;; For none arguments, look up field type and generate typed compound literal
                 (let ((c-name (. type-entry c-name))
@@ -3642,9 +3695,13 @@
                       ((some arg)
                         (let (;; Look up field type for typed none handling
                               (field-type-opt (ctx-lookup-field-type-by-index ctx type-name field-idx))
-                              (arg-c (transpile-expr-for ctx arg (match field-type-opt
-                                                                   ((some field-type) field-type)
-                                                                   ((none) ""))))
+                              (field-slop (match (ctx-lookup-field-slop-type-by-index ctx type-name field-idx)
+                                            ((some t) t)
+                                            ((none) "")))
+                              (arg-c (transpile-expr-narrowed ctx arg (match field-type-opt
+                                                                        ((some field-type) field-type)
+                                                                        ((none) ""))
+                                       field-slop "constructor"))
                               (final-arg (match field-type-opt
                                            ((some field-type)
                                              (typed-none-arg ctx field-type arg-c))
@@ -3655,7 +3712,7 @@
                           (set! field-idx (+ field-idx 1))))
                       ((none) (do)))
                     (set! i (+ i 1)))
-                  (ctx-str5 ctx "(" c-name "){" args "}"))))
+                  (ctx-str5 ctx "(" c-name "){" args "}")))))
             ((none)
               ;; Check if fn-name is a union variant constructor (e.g., xsd-string-val),
               ;; deferring to a function of the name over a variant the module doesn't see
@@ -3740,7 +3797,11 @@
                                       (expected-type (match (list-get (. func-entry param-types) param-idx)
                                                        ((some p) (. (deref p) c-type))
                                                        ((none) "")))
-                                      (arg-c (transpile-expr-for ctx arg expected-type))
+                                      (expected-slop (match (list-get (. func-entry param-types) param-idx)
+                                                       ((some p) (. (deref p) slop-type))
+                                                       ((none) "")))
+                                      (arg-c (transpile-expr-narrowed ctx arg expected-type expected-slop
+                                               (arg-range-context ctx param-idx fn-name)))
                                       ;; Convert none to typed Option if needed
                                       (arg-c2 (typed-none-arg ctx expected-type arg-c))
                                       ;; Wrap function references in slop_closure_t if needed
@@ -5395,7 +5456,10 @@
                                   (match (list-get items init-idx)
                                     ((some init-expr)
                                       ;; Check if init is (some ...) and use annotated type
-                                      (let ((init-c (transpile-typed-init ctx init-expr c-type)))
+                                      ;; ... and a narrowing when the type is a range (#265)
+                                      (let ((init-c (ctx-range-wrap ctx (transpile-typed-init ctx init-expr c-type) c-type
+                                                      (sexpr-to-type-string arena type-expr)
+                                                      (ctx-str3 ctx "'" (. name-sym name) "'") init-expr)))
                                         (ctx-str5 ctx c-type " " (ctx-str3 ctx var-name " = " init-c) ";" "")))
                                     ((none) (ctx-str5 ctx c-type " " var-name " = {0};" "")))))
                               ((none)
@@ -5573,7 +5637,8 @@
           ((some target-expr)
             (match (list-get items 2)
               ((some val-expr)
-                (let ((val-c (transpile-expr ctx val-expr)))
+                ;; The place's SLOP type: a range there makes this a narrowing (#265)
+                (let ((val-c (transpile-expr-narrowed ctx val-expr "" (infer-expr-slop-type ctx target-expr) "assignment")))
                   ;; Check if target is array indexing (@ arr idx)
                   (match (deref target-expr)
                     ((lst target-lst)
@@ -5905,9 +5970,17 @@
                                 (let ((raw-field-name (. name-sym name))
                                       (field-name (to-c-name arena raw-field-name))
                                       (field-type-opt (ctx-lookup-field-type ctx type-name raw-field-name))
-                                      (field-val (match field-type-opt
-                                                   ((some field-type) (transpile-typed-init ctx val-expr field-type))
-                                                   ((none) (transpile-expr ctx val-expr)))))
+                                      ;; A range-typed field is a narrowing point (#265)
+                                      (field-val (ctx-range-wrap ctx
+                                                   (match field-type-opt
+                                                     ((some field-type) (transpile-typed-init ctx val-expr field-type))
+                                                     ((none) (transpile-expr ctx val-expr)))
+                                                   (match field-type-opt ((some ft) ft) ((none) ""))
+                                                   (match (ctx-lookup-field-slop-type ctx type-name raw-field-name)
+                                                     ((some st) st)
+                                                     ((none) ""))
+                                                   (ctx-str3 ctx "field '" raw-field-name "'")
+                                                   val-expr)))
                                   (if first
                                     (set! result (ctx-str ctx result (ctx-str ctx "." (ctx-str ctx field-name (ctx-str ctx " = " field-val)))))
                                     (set! result (ctx-str ctx result (ctx-str ctx ", ." (ctx-str ctx field-name (ctx-str ctx " = " field-val))))))
@@ -6519,8 +6592,12 @@
                           ;; stored inline a wrong width would overrun the entry.
                           (val-c-type (map-value-c-type ctx map-expr))
                           ;; The value is transpiled for that type (see transpile-map-value)
-                          (val-c (transpile-map-value ctx val-expr val-c-type
-                                   (starts-with (infer-map-value-slop-type ctx map-expr) "(Result ")))
+                          ;; ... and checked against a range value type (#265)
+                          (val-c (ctx-range-wrap ctx
+                                   (transpile-map-value ctx val-expr val-c-type
+                                     (starts-with (infer-map-value-slop-type ctx map-expr) "(Result "))
+                                   val-c-type (infer-map-value-slop-type ctx map-expr)
+                                   "'map-put' value" val-expr))
                           ;; slop_map_put takes the arena in scope, which is not always
                           ;; the identifier "arena": growth goes to it.
                           (arena-c (resolve-arena-c-name ctx "map-put" items)))
@@ -7407,9 +7484,12 @@
         (let ((outer-arenas (ctx-take-open-arenas ctx))
               (outer-capture (ctx-is-capture-retval ctx))
               (outer-post-exit (ctx-is-post-exit ctx))
-              (outer-post-used (ctx-post-exit-used ctx)))
+              (outer-post-used (ctx-post-exit-used ctx))
+              ;; nor be range-checked against the enclosing function's return (#265)
+              (outer-return-slop (ctx-get-current-return-slop-type ctx)))
           (ctx-set-capture-retval ctx false)
           (ctx-set-post-exit ctx false)
+          (ctx-set-current-return-slop-type ctx "")
           (let ((lambda-c (if (> (list-len free-vars) 0)
                             ;; Closure: generate struct and modified lambda
                             (transpile-closure ctx items params param-names free-vars lambda-name)
@@ -7417,6 +7497,7 @@
                             (transpile-simple-lambda ctx items params lambda-name))))
             (ctx-restore-open-arenas ctx outer-arenas)
             (ctx-set-capture-retval ctx outer-capture)
+            (ctx-set-current-return-slop-type ctx outer-return-slop)
             (ctx-restore-post-exit ctx outer-post-exit outer-post-used)
             lambda-c)))))
 
@@ -7985,7 +8066,14 @@
                                        ((some p) (. (deref p) c-type))
                                        ((none) "")))
                                    ((none) "")))
-                  (arg-c (transpile-expr-for ctx arg expected-type))
+                  (expected-slop (match func-opt
+                                   ((some func-entry)
+                                     (match (list-get (. func-entry param-types) param-idx)
+                                       ((some p) (. (deref p) slop-type))
+                                       ((none) "")))
+                                   ((none) "")))
+                  (arg-c (transpile-expr-narrowed ctx arg expected-type expected-slop
+                           (arg-range-context ctx param-idx fn-name)))
                   ;; Convert none to typed Option if needed
                   (final-arg (typed-none-arg ctx expected-type arg-c)))
               (if (string-eq args "")

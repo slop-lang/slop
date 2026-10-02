@@ -32,7 +32,9 @@ TOPICS = {
 ; Bounds are integer literals. A literal, constant, or arithmetic on them that
 ; flows outside a range -- an argument, return, typed let, set!, record field,
 ; container element or cast -- is a checker error; a value whose interval can
-; never fit is a warning. Runtime checks are not emitted yet (#265).
+; never fit is a warning. Anything else is checked at run time, at full width
+; before it is stored, in every build; slop build --no-range-checks removes the
+; checks (a value outside its range is then undefined).
 ; C mapping: (Int 0 .. 255) -> uint8_t
 
 ### Collections

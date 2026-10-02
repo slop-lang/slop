@@ -25,6 +25,7 @@
                    ctx-str ctx-str3 ctx-str4 ctx-str5
                    ctx-set-current-result-type ctx-clear-current-result-type
                    ctx-set-current-return-type ctx-get-current-return-type ctx-clear-current-return-type
+                   ctx-set-current-return-slop-type
                    ctx-set-capture-retval ctx-is-capture-retval ctx-set-post-exit ctx-post-exit-used
                    ctx-lookup-result-type-alias ctx-lookup-type ctx-register-type-alias
                    ctx-push-scope ctx-pop-scope ctx-bind-var
@@ -33,10 +34,10 @@
                    to-c-type-prefixed extract-fn-c-name ctx-fail
                    ctx-set-current-fn-c-name ctx-clear-current-fn-c-name
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-int-type))
+  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-int-type param-slop-type-string))
   (import stmt (transpile-stmt))
   (import expr (transpile-expr resolve-type-alias))
-  (import strlib (starts-with ends-with substring replace))
+  (import strlib (starts-with ends-with substring replace string-build))
   (import parser (pretty-print))
 
   ;; ============================================================
@@ -942,24 +943,14 @@
       ;; Emit _new constructor
       (ctx-emit ctx (ctx-str5 ctx "static inline " qualified-name " " qualified-name "_new(int64_t v) {"))
       (ctx-indent ctx)
-      ;; Emit bounds check using SLOP_PRE
-      (cond
-        ;; Both bounds
-        ((and has-min has-max)
-          (let ((min-str (int-to-string arena min-val))
-                (max-str (int-to-string arena max-val)))
-            (ctx-emit ctx (ctx-str ctx "SLOP_PRE(v >= " (ctx-str ctx min-str (ctx-str ctx " && v <= " (ctx-str ctx max-str (ctx-str ctx ", \"" (ctx-str ctx qualified-name (ctx-str ctx " in range " (ctx-str ctx min-str (ctx-str ctx ".." (ctx-str ctx max-str "\");")))))))))))))
-        ;; Only min bound
-        (has-min
-          (let ((min-str (int-to-string arena min-val)))
-            (ctx-emit ctx (ctx-str ctx "SLOP_PRE(v >= " (ctx-str ctx min-str (ctx-str ctx ", \"" (ctx-str ctx qualified-name (ctx-str ctx " >= " (ctx-str ctx min-str "\");")))))))))
-        ;; Only max bound
-        (has-max
-          (let ((max-str (int-to-string arena max-val)))
-            (ctx-emit ctx (ctx-str ctx "SLOP_PRE(v <= " (ctx-str ctx max-str (ctx-str ctx ", \"" (ctx-str ctx qualified-name (ctx-str ctx " <= " (ctx-str ctx max-str "\");")))))))))
-        (else (do)))
-      ;; Emit return
-      (ctx-emit ctx (ctx-str ctx "return (" (ctx-str ctx qualified-name ")v;")))
+      ;; The check is SLOP_RANGE's, as at every narrowing point: on in every
+      ;; build unless SLOP_NO_RANGE_CHECKS (#265). SLOP_PRE compiled out.
+      (ctx-emit ctx (string-build arena
+                      (list String "return SLOP_RANGE(" qualified-name ", v, "
+                            (if has-min "1" "0") ", " (if has-max "1" "0") ", "
+                            (if has-min (int-to-string arena min-val) "0") ", "
+                            (if has-max (int-to-string arena max-val) "0") ", \""
+                            raw-name " " (pretty-print arena type-expr) "\");")))
       (ctx-dedent ctx)
       (ctx-emit ctx "}")
       (ctx-emit ctx "")
@@ -1044,6 +1035,8 @@
             (needs-retval (and has-post (not (string-eq actual-return "void")))))
         ;; Set current return type for typed none in return statements
         (ctx-set-current-return-type ctx actual-return)
+        ;; ... and the SLOP one, for the range check on every return (#265)
+        (ctx-set-current-return-slop-type ctx (get-slop-return-type ctx items))
         ;; Set current result type if present, otherwise clear any previous
         (match result-type-opt
           ((some result-name)
@@ -1098,6 +1091,7 @@
           (ctx-set-post-exit ctx false)
           (when (ctx-post-exit-used ctx)
             (ctx-emit ctx "_slop_post: ;")))
+        (ctx-set-current-return-slop-type ctx "")
         ;; Emit postconditions and assumptions
         (emit-postconditions ctx postconditions)
         (emit-assumptions ctx assumptions)
@@ -1226,6 +1220,7 @@
                   (let ((c-type (get-param-c-type ctx param))
                         (param-info (cast (Ptr FuncParamType) (arena-alloc arena (sizeof FuncParamType)))))
                     (set! (. (deref param-info) c-type) c-type)
+                    (set! (. (deref param-info) slop-type) (param-slop-type-string arena param))
                     (list-push result param-info)))
                 ((none) (do)))
               (set! i (+ i 1)))))

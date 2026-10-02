@@ -566,6 +566,110 @@ run_check_warning_test "$RGN/unchecked_base.slop" "range-unchecked-base" \
 run_check_clean_test "$REPO_ROOT/tests/test_range_static.slop" "range-static"
 run_check_clean_test "$REPO_ROOT/tests/range-clean/generic_default.slop" "range-generic-default"
 
+# Range checks at run time (#265 phase 2). A value only known at run time that
+# is outside its range type aborts at the narrowing point, tested at int64_t
+# width so it cannot wrap first. They are on in every build;
+# --no-range-checks removes them.
+run_runtime_abort_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local expected="$3"
+    local exe_path="$BUILD_DIR/$test_name"
+
+    echo -n "Testing $test_name (expected to abort)... "
+    if ! uv run slop build "$test_file" -o "$exe_path" >/dev/null 2>&1; then
+        echo -e "${RED}FAIL (build)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+    local output
+    output=$("$exe_path" 2>&1)
+    local exit_code=$?
+    if [ $exit_code -ne 0 ] && echo "$output" | grep -qF "$expected"; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} (exit $exit_code; expected: $expected)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_range_unchecked_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local exe_path="$BUILD_DIR/$test_name"
+
+    echo -n "Testing $test_name (--no-range-checks)... "
+    if ! uv run slop build --no-range-checks "$test_file" -o "$exe_path" >/dev/null 2>&1; then
+        echo -e "${RED}FAIL (build)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+    local output
+    output=$("$exe_path" 2>&1)
+    local exit_code=$?
+    if [ $exit_code -eq 0 ] && ! echo "$output" | grep -q "range check failed"; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} (exit $exit_code; expected the check to be compiled out)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# Transpile and count a pattern in the generated C.
+run_codegen_count_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local pattern="$3"
+    local expected="$4"
+    local c_path="$BUILD_DIR/$test_name.c"
+
+    echo -n "Testing $test_name (codegen)... "
+    if ! uv run slop transpile "$test_file" -o "$c_path" >/dev/null 2>&1; then
+        echo -e "${RED}FAIL (transpile)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+    local count
+    count=$(grep -c "$pattern" "$c_path")
+    if [ "$count" -eq "$expected" ]; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} (expected $expected '$pattern', found $count)"
+        grep -n "$pattern" "$c_path"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+RGR="$REPO_ROOT/tests/range-runtime"
+while IFS='|' read -r rr_name rr_expected <&3; do
+    run_runtime_abort_test "$RGR/$rr_name.slop" "range-runtime-$rr_name" "$rr_expected"
+done 3<<'RR_CASES'
+arg|SLOP range check failed: 300 is not in Pct (Int 0 .. 100) at arg.slop:17:11
+ret|SLOP range check failed: 130 is not in Pct (Int 0 .. 100) at ret.slop:10:5
+wrap|SLOP range check failed: 300 is not in Byte (Int 0 .. 255) at wrap.slop:12:19
+set_var|SLOP range check failed: 150 is not in Pct (Int 0 .. 100) at set_var.slop:13:15
+set_field|SLOP range check failed: 0 is not in (Int 1 .. 64) at set_field.slop:13:23
+record|SLOP range check failed: 65 is not in (Int 1 .. 64) at record.slop:12:39
+list_push|SLOP range check failed: 101 is not in Pct (Int 0 .. 100) at list_push.slop:14:23
+map_put|SLOP range check failed: 101 is not in (Int 0 .. 100) at map_put.slop:14:24
+cast|SLOP range check failed: -1 is not in Pct (Int 0 .. 100) at cast.slop:12:24
+early_return|SLOP range check failed: 500 is not in Pct (Int 0 .. 100) at early_return.slop:12:29
+lower_only|SLOP range check failed: 0 is not in (Int 1 ..) at lower_only.slop:15:15
+RR_CASES
+run_range_unchecked_test "$RGR/wrap.slop" "range-unchecked-wrap"
+# A multi-module build drops checker diagnostics (#93), so the transpiler
+# reports an out-of-range literal itself.
+run_negative_build_test "$REPO_ROOT/tests/range-build-negative/main.slop" "range-build-literal" \
+    "main.slop:11:11: error: argument 1 to 'bump': 130 is outside Pct (Int 0 .. 100)" \
+    -I "$REPO_ROOT/tests/range-build-negative"
+# Checks the checker proves unnecessary are not emitted
+run_codegen_count_test "$REPO_ROOT/tests/range-codegen/proved.slop" "range-proved" "SLOP_RANGE" 1
+
 echo ""
 
 
