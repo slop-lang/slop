@@ -1,0 +1,13 @@
+;; A value only known at run time, outside its range type, aborts at the
+;; narrowing point (#265). id hides the value from the checker.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn id ((n Int)) (@intent "Identity") (@spec ((Int) -> Int)) n)
+
+  (fn main ()
+    (@intent "A cast to a range type is checked, not an escape hatch")
+    (@spec (() -> Int))
+    (let ((p (cast Pct (id -1))))
+      0)))

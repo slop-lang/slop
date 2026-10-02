@@ -103,19 +103,37 @@ _Atomic size_t slop_global_allocated __attribute__((weak)) = 0;
         abort(); \
     } while(0)
 
-/* Expression-form range check - returns value after checking bounds.
- * Unlike SLOP_PRE, this can be used in expression contexts like return statements. */
-#ifdef SLOP_DEBUG
-    #define SLOP_RANGE_CHECK(val, cond, msg) \
-        ({ __auto_type _v = (val); \
-           if (!(cond)) { \
-               fprintf(stderr, "SLOP range check failed: %s\n  at %s:%d\n", \
-                       msg, __FILE__, __LINE__); \
-               abort(); \
-           } \
-           _v; })
+/* Range types (#265).
+ *
+ * A value narrowing into a range type -- a typed let, a set!, an argument, a
+ * return, a record field, a container element, a cast -- goes through
+ * SLOP_RANGE. The value is tested at int64_t width BEFORE it is converted to
+ * the type's storage, so 300 aimed at a uint8_t-backed (Int 0 .. 255) fails
+ * instead of wrapping to 44.
+ *
+ * Unlike the contracts above, these checks are on in every build, as Ada's are:
+ * a range is part of the type, not an assertion. SLOP_NO_RANGE_CHECKS (slop
+ * build --no-range-checks) removes them, like GNAT's -gnatp; a value that would
+ * have failed is then undefined.
+ *
+ * where names the type and the source position:
+ *   "Pct (Int 0 .. 100) at r.slop:7:5" */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noreturn, cold))
+#endif
+static inline void slop_range_fail(int64_t v, const char* where) {
+    fprintf(stderr, "SLOP range check failed: %lld is not in %s\n", (long long)v, where);
+    abort();
+}
+
+#ifndef SLOP_NO_RANGE_CHECKS
+    #define SLOP_RANGE(T, expr, has_lo, has_hi, lo, hi, where) \
+        ({ int64_t _slop_rv = (int64_t)(expr); \
+           if (((has_lo) && _slop_rv < (int64_t)(lo)) || ((has_hi) && _slop_rv > (int64_t)(hi))) \
+               slop_range_fail(_slop_rv, where); \
+           (T)_slop_rv; })
 #else
-    #define SLOP_RANGE_CHECK(val, cond, msg) (val)
+    #define SLOP_RANGE(T, expr, has_lo, has_hi, lo, hi, where) ((T)(expr))
 #endif
 
 /* ============================================================

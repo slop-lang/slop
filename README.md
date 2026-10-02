@@ -34,7 +34,7 @@ SLOP makes the spec the source of truth:
 ```
 
 - **Contracts are mandatory.** No `@intent` or `@spec`, no compilation.
-- **Range types catch bugs at compile time.** `(Int 1 .. 100)`
+- **Range types catch bugs.** `(Int 1 .. 100)` — at compile time when the value is known, at run time otherwise.
 - **Typed holes constrain generation.** LLMs fill gaps bounded by types, examples, and required variables.
 
 ## Status
@@ -56,7 +56,7 @@ SLOP inverts the traditional programming model:
 
 - **S-expression syntax**: Zero parsing ambiguity, trivial for LLMs (I like Lisp)
 - **Minimal spec**: ~50 built-ins, entire language fits in a prompt (~4K tokens)
-- **Range types**: `(Int 0 .. 100)` catches bounds errors at compile time (I also like Ada)
+- **Range types**: `(Int 0 .. 100)` catches bounds errors at compile time where it can and at run time otherwise, as Ada does (I also like Ada)
 - **Mandatory contracts**: `@intent`, `@spec`, `@pre`, `@post` define correctness
 - **Infix in contracts**: `{x > 0 and x < 100}` — readable math notation in `@pre`/`@post`
 - **Generics**: `(@generic (T))` enables polymorphic functions with type-safe unification
@@ -67,9 +67,11 @@ SLOP inverts the traditional programming model:
 
 ```lisp
 (module rate-limiter
-  (export (acquire 1))
+  (export acquire)
 
   (type Tokens (Int 0 .. 10000))
+  (type Limiter (record (tokens Tokens)))
+  (type AcquireResult (enum acquired rate-limited))
 
   (fn acquire ((limiter (Ptr Limiter)))
     (@intent "Try to acquire one token")
@@ -86,17 +88,20 @@ SLOP inverts the traditional programming model:
 Transpiles to:
 
 ```c
-AcquireResult acquire(Limiter* limiter) {
-    SLOP_PRE(limiter != NULL, "limiter != nil");
-    
-    if (limiter->tokens.value > 0) {
-        limiter->tokens = Tokens_new(limiter->tokens.value - 1);
-        return AcquireResult_acquired;
+rate_limiter_AcquireResult rate_limiter_acquire(rate_limiter_Limiter* limiter) {
+    SLOP_PRE(((limiter != NULL)), "(!= limiter nil)");
+    if (limiter->tokens > 0) {
+        limiter->tokens = SLOP_RANGE(int64_t, (limiter->tokens - 1), 1, 1, 0, 10000, "Tokens (Int 0 .. 10000) at rl.slop:15:30");
+        return rate_limiter_AcquireResult_acquired;
     } else {
-        return AcquireResult_rate_limited;
+        return rate_limiter_AcquireResult_rate_limited;
     }
 }
 ```
+
+`Tokens` is stored in a `uint16_t`. Storing into it is a narrowing, so the new
+value is range-checked first, at full width; a value out of range aborts with
+its type and source position instead of wrapping.
 
 ## Project Structure
 

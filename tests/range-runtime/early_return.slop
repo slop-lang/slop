@@ -1,0 +1,18 @@
+;; A value only known at run time, outside its range type, aborts at the
+;; narrowing point (#265). id hides the value from the checker.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn id ((n Int)) (@intent "Identity") (@spec ((Int) -> Int)) n)
+
+  (fn clamp ((n Int))
+    (@intent "Return early with a value out of range")
+    (@spec ((Int) -> Pct))
+    (when (> n 100) (return n))
+    0)
+
+  (fn main ()
+    (@intent "Return 500 as a Pct")
+    (@spec (() -> Int))
+    (clamp (id 500))))

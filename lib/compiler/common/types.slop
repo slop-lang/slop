@@ -20,7 +20,7 @@
     range-intersect range-union range-subsumes range-disjoint range-is-constant
     range-add range-sub range-mul range-to-string range-describe-values
     range-expr-has-dots range-bounds-of-expr range-expr-problem int-range-expr-bounds
-    resolved-type-with-range
+    resolved-type-with-range resolved-type-range
     ;; Predicates
     range-contains is-primitive-kind is-container-kind
     resolved-type-is-pointer resolved-type-is-union resolved-type-is-record
@@ -590,6 +590,36 @@
       (set! (deref copy) (deref t))
       (set! (. (deref copy) range) bounds)
       copy))
+
+  (fn resolved-type-range ((t (Ptr ResolvedType)))
+    (@intent "The bounds a type carries, following a symbol alias to the range it names")
+    (@spec (((Ptr ResolvedType)) -> (Option RangeBounds)))
+    (@pre (!= t nil))
+    ;; (type Score Pct) is an rk-primitive whose inner is Pct, so the bounds are
+    ;; found by following inners until a type carries some. A pointer c-name is a
+    ;; container registered under rk-primitive, not an alias, and is not followed.
+    ;; The step limit is a cycle guard only.
+    (let ((mut cur t)
+          (mut steps 0)
+          (mut found (Option RangeBounds) (none))
+          (mut done false))
+      (while (and (not done) (< steps 64))
+        (match (. (deref cur) range)
+          ((some b)
+            (do (set! found (some b))
+                (set! done true)))
+          ((none)
+            (let ((c-name (. (deref cur) c-name))
+                  (c-len (string-len c-name)))
+              (if (and (== (. (deref cur) kind) 'rk-primitive)
+                       (not (and (> c-len 0) (== (@ (. c-name data) (- c-len 1)) 42))))
+                (match (. (deref cur) inner-type)
+                  ((some next)
+                    (do (set! cur next)
+                        (set! steps (+ steps 1))))
+                  ((none) (set! done true)))
+                (set! done true))))))
+      found))
 
   (fn resolved-type-set-inner ((t (Ptr ResolvedType)) (inner (Ptr ResolvedType)))
     (@intent "Set the inner type for container types (Option, List, Ptr)")

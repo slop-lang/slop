@@ -40,6 +40,7 @@ slop_string ctype_to_c_type(slop_arena* arena, types_SExpr* expr);
 slop_string ctype_to_c_type_compound(slop_arena* arena, slop_list_types_SExpr_ptr items);
 slop_string ctype_build_fn_args_str(slop_arena* arena, types_SExpr* args_expr);
 slop_string ctype_sexpr_to_type_string(slop_arena* arena, types_SExpr* expr);
+slop_string ctype_param_slop_type_string(slop_arena* arena, types_SExpr* param);
 slop_string ctype_range_type_to_c_type(slop_arena* arena, slop_list_types_SExpr_ptr items, int64_t len);
 slop_option_types_ResolvedType_ptr ctype_get_node_resolved_type(types_SExpr* expr);
 slop_string ctype_resolved_type_to_c(slop_arena* arena, types_ResolvedType* rt);

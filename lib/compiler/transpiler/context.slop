@@ -45,6 +45,9 @@
     ctx-set-current-result-type ctx-get-current-result-type ctx-clear-current-result-type
     ;; Current function return type (for typed none in returns)
     ctx-set-current-return-type ctx-get-current-return-type ctx-clear-current-return-type
+    ;; Range types (#265)
+    ctx-set-current-return-slop-type ctx-get-current-return-slop-type
+    ctx-range-bounds-of ctx-range-wrap ctx-lookup-field-slop-type-by-index
     ;; Capture return value mode (for postconditions)
     ctx-set-capture-retval ctx-is-capture-retval
     ctx-set-post-exit ctx-is-post-exit ctx-post-exit-used ctx-restore-post-exit ctx-exit-code
@@ -108,8 +111,12 @@
     ;; Position extraction helpers
     ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col)
 
-  (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature BindingOrigin))
-  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type is-type-variable))
+  (import types (SExpr SExprList SExprSymbol ResolvedType FnSignature BindingOrigin
+                 RangeBounds int-range-expr-bounds range-subsumes range-contains range-to-string
+                 resolved-type-range))
+  (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type range-type-to-c-type is-type-variable
+                 get-node-resolved-type))
+  (import parser (parse))
   (import strlib (substring char-at starts-with string-build))
 
   ;; FFI for error handling
@@ -164,7 +171,8 @@
   ;; Use pointer to allow simpler C type ordering (pointer-element Lists are "simple")
   (type FuncParamType
     (record
-      (c-type String)))  ;; C type string for this parameter
+      (c-type String)      ;; C type string for this parameter
+      (slop-type String))) ;; SLOP type as written, for the range check on arguments (#265)
 
   (type FuncEntry
     (record
@@ -299,6 +307,8 @@
       (current-result-type (Option String))
       ;; Current function's C return type (for typed none in returns)
       (current-return-c-type (Option String))
+      ;; Current function's SLOP return type, for the range check on returns (#265)
+      (current-return-slop-type String)
       ;; Imported module names (for header includes)
       (imported-modules (List String))
       ;; Option types to generate
@@ -402,6 +412,7 @@
       (set! (deref ctx) result-types (list-new arena ResultType))
       (set! (deref ctx) current-result-type (Option String) none)
       (set! (deref ctx) current-return-c-type (Option String) none)
+      (set! (deref ctx) current-return-slop-type "")
       (set! (deref ctx) imported-modules (list-new arena String))
       (set! (deref ctx) option-types (list-new arena OptionType))
       (set! (deref ctx) list-types (list-new arena ListType))
@@ -488,6 +499,7 @@
       (set! (deref ctx) scope fresh-scope)
       (set! (deref ctx) current-result-type (Option String) none)
       (set! (deref ctx) current-return-c-type (Option String) none)
+      (set! (deref ctx) current-return-slop-type "")
       (set! (deref ctx) includes (list-new arena String))
       (set! (deref ctx) emitted-types (list-new arena String))
       ;; Clear imported-modules for the new module's imports
@@ -1293,6 +1305,27 @@
         (set! i (+ i 1)))
       result))
 
+  (fn ctx-lookup-field-slop-type-by-index ((ctx (Ptr TranspileContext)) (type-name String) (index Int))
+    (@intent "Look up the SLOP type of a field by index (position) in a record type")
+    (@spec (((Ptr TranspileContext) String Int) -> (Option String)))
+    (@pre {ctx != nil})
+    (@pre {index >= 0})
+    (let ((fields (. (deref ctx) field-types))
+          (len (list-len fields))
+          (mut field-idx 0)
+          (mut i 0)
+          (mut result (Option String) none))
+      (while (and (< i len) (match result ((none) true) ((some _) false)))
+        (match (list-get fields i)
+          ((some entry)
+            (when (string-eq (. entry type-name) type-name)
+              (if (== field-idx index)
+                (set! result (some (. entry slop-type)))
+                (set! field-idx (+ field-idx 1)))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      result))
+
   (fn ctx-get-fields-for-type ((ctx (Ptr TranspileContext)) (type-name String))
     (@intent "Get all fields for a record type")
     (@spec (((Ptr TranspileContext) String) -> (List FieldEntry)))
@@ -1801,6 +1834,174 @@
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
     (set! (deref ctx) current-return-c-type (Option String) none))
+
+  (fn ctx-set-current-return-slop-type ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "Set the current function's SLOP return type, \"\" for none")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) current-return-slop-type slop-type))
+
+  (fn ctx-get-current-return-slop-type ((ctx (Ptr TranspileContext)))
+    (@intent "The current function's SLOP return type, \"\" for none")
+    (@spec (((Ptr TranspileContext)) -> String))
+    (@pre {ctx != nil})
+    (. (deref ctx) current-return-slop-type))
+
+  ;; ============================================================
+  ;; Range Checks (#265)
+  ;;
+  ;; A value narrowing into a range type is wrapped in SLOP_RANGE (see
+  ;; slop_runtime.h) unless it is known to fit: an integer literal inside the
+  ;; range, or a value whose checker-annotated interval the range subsumes. A
+  ;; literal outside the range is an error here as well as in the checker,
+  ;; because a build drops checker diagnostics (#93).
+  ;; ============================================================
+
+  (fn ctx-range-bounds-of ((ctx (Ptr TranspileContext)) (slop-type String))
+    (@intent "The bounds of a range type held as SLOP text, following aliases, or none")
+    (@spec (((Ptr TranspileContext) String) -> (Option RangeBounds)))
+    (@pre {ctx != nil})
+    ;; Most narrowing points know their target only as text: a VarEntry's or a
+    ;; field's slop-type, a parameter's, the function's return type. A form is
+    ;; parsed back with the real parser; a name is looked up as an alias, which
+    ;; emit-range-typedef registers as its pretty-printed definition.
+    (let ((arena (. (deref ctx) arena))
+          (mut cur slop-type)
+          (mut steps 0)
+          (mut result (Option RangeBounds) none)
+          (mut done false))
+      (while (and (not done) (< steps 16))
+        (cond
+          ;; Fast exits: this runs for every argument, field and return, and
+          ;; an alias lookup scans the type table
+          ((== (string-len cur) 0) (set! done true))
+          ((range-impossible-name cur) (set! done true))
+          ((and (starts-with cur "(") (not (starts-with cur "(Int "))) (set! done true))
+          ((starts-with cur "(")
+            (do
+              (match (parse arena cur)
+                ((ok forms)
+                  (match (list-get forms 0)
+                    ((some form) (set! result (int-range-expr-bounds form)))
+                    ((none) (do))))
+                ((error _) (do)))
+              (set! done true)))
+          (else
+            (match (ctx-lookup-type-alias ctx cur)
+              ((some def)
+                (do (set! cur def)
+                    (set! steps (+ steps 1))))
+              ((none) (set! done true))))))
+      result))
+
+  (fn sized-int-bounds ((name String))
+    (@intent "The values a sized integer type can hold, or none for any other type")
+    (@spec ((String) -> (Option RangeBounds)))
+    (@pure)
+    (cond
+      ((string-eq name "U8") (some (RangeBounds true true 0 255)))
+      ((string-eq name "U16") (some (RangeBounds true true 0 65535)))
+      ((string-eq name "U32") (some (RangeBounds true true 0 4294967295)))
+      ((string-eq name "I8") (some (RangeBounds true true -128 127)))
+      ((string-eq name "I16") (some (RangeBounds true true -32768 32767)))
+      ((string-eq name "I32") (some (RangeBounds true true -2147483648 2147483647)))
+      (else none)))
+
+  (fn range-impossible-name ((name String))
+    (@intent "Whether a type name is a builtin that can never be a range")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Int") (string-eq name "String") (string-eq name "Bool")
+        (string-eq name "Float") (string-eq name "Unit") (string-eq name "Arena")
+        (string-eq name "U8") (string-eq name "U16") (string-eq name "U32") (string-eq name "U64")
+        (string-eq name "I8") (string-eq name "I16") (string-eq name "I32") (string-eq name "I64")
+        (string-eq name "F32") (string-eq name "F64") (string-eq name "Char") (string-eq name "T")))
+
+  (fn ctx-range-safe-text ((ctx (Ptr TranspileContext)) (s String))
+    (@intent "Text safe inside a C string literal: quotes, backslashes and control bytes become _")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (len (cast Int (string-len s)))
+          (buf (cast (Ptr U8) (arena-alloc arena (+ len 1)))))
+      (for (i 0 len)
+        (let ((c (cast Int (@ (. s data) i))))
+          (set! (@ buf i) (cast U8 (if (or (== c 34) (== c 92) (< c 32)) 95 c)))))
+      (String buf (cast U64 len))))
+
+  (fn ctx-range-where ((ctx (Ptr TranspileContext)) (slop-type String) (bounds RangeBounds)
+                       (line Int) (col Int))
+    (@intent "Name a range and a source position for a check's message: Pct (Int 0 .. 100) at r.slop:7:5")
+    (@spec (((Ptr TranspileContext) String RangeBounds Int Int) -> String))
+    (@pre {ctx != nil})
+    (let ((arena (. (deref ctx) arena))
+          (range-text (range-to-string arena bounds))
+          (label (if (starts-with slop-type "(")
+                   range-text
+                   (string-build arena (list String slop-type " " range-text))))
+          (file (. (deref ctx) current-file))
+          (file-len (cast Int (string-len file)))
+          (mut base-start 0))
+      (for (i 0 file-len)
+        (when (== (cast Int (@ (. file data) i)) 47)
+          (set! base-start (+ i 1))))
+      (let ((base (substring arena file base-start (- file-len base-start))))
+        (if (> line 0)
+          (string-build arena (list String label " at " (ctx-range-safe-text ctx base) ":"
+                                    (int-to-string arena line) ":" (int-to-string arena col)))
+          label))))
+
+  (fn ctx-range-wrap ((ctx (Ptr TranspileContext)) (code String) (c-type String) (slop-type String)
+                      (context String) (value-expr (Ptr SExpr)))
+    (@intent "Wrap a value's C in a range check for the range type it narrows into, unless it is known to fit")
+    (@spec (((Ptr TranspileContext) String String String String (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {value-expr != nil})
+    ;; The value is tested at int64_t width before it is converted to c-type, so
+    ;; it cannot wrap first. An empty c-type takes int64_t: the checked value
+    ;; fits the range, so the later conversion to the slot's storage is exact.
+    (match (ctx-range-bounds-of ctx slop-type)
+      ((none) code)
+      ((some bounds)
+        (let ((arena (. (deref ctx) arena))
+              (line (ctx-sexpr-line value-expr))
+              (col (ctx-sexpr-col value-expr))
+              (proved (match (get-node-resolved-type value-expr)
+                        ((some t)
+                          (match (resolved-type-range t)
+                            ((some value-range) (range-subsumes bounds value-range))
+                            ((none)
+                              ;; A sized integer holds only what its width can:
+                              ;; a U8 read of a string byte fits a (Int 0 .. 255)
+                              (match (sized-int-bounds (. (deref t) name))
+                                ((some width-range) (range-subsumes bounds width-range))
+                                ((none) false)))))
+                        ((none) false))))
+          (match (deref value-expr)
+            ((num n)
+              (cond
+                ((. n is-float) code)
+                ((range-contains bounds (. n int-value)) code)
+                (else
+                  (do
+                    (ctx-add-error-at ctx
+                      (string-build arena
+                        (list String context (if (string-eq context "") "" ": ")
+                              (int-to-string arena (cast Int (. n int-value)))
+                              " is outside " (ctx-range-where ctx slop-type bounds 0 0)))
+                      line col)
+                    code))))
+            (_
+              (if proved
+                code
+                (string-build arena
+                  (list String "SLOP_RANGE(" (if (string-eq c-type "") "int64_t" c-type)
+                        ", " code
+                        ", " (if (. bounds has-min) "1" "0")
+                        ", " (if (. bounds has-max) "1" "0")
+                        ", " (if (. bounds has-min) (int-to-string arena (cast Int (. bounds min-val))) "0")
+                        ", " (if (. bounds has-max) (int-to-string arena (cast Int (. bounds max-val))) "0")
+                        ", \"" (ctx-range-where ctx slop-type bounds line col) "\")")))))))))
 
   ;; ============================================================
   ;; Capture Return Value Mode (for postconditions)

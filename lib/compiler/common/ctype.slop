@@ -8,7 +8,7 @@
 (module ctype
   (export
     ;; Type conversion
-    to-c-type to-c-name type-to-identifier sexpr-to-type-string
+    to-c-type to-c-name type-to-identifier sexpr-to-type-string param-slop-type-string
     ;; Pointer-to-container unwrapping
     unwrap-ptr-container-type
     ;; Generated-container detection
@@ -546,6 +546,26 @@
             (set! i (+ i 1)))
           (string-concat arena result ")")))
       ;; Other forms - return empty
+      ;; A number is part of a type -- a range bound, a fixed length -- and
+      ;; dropping it turned (Int 0 .. 100) into "(Int  .. )" (#265)
+      ((num n) (. n raw))
+      (_ "")))
+
+  (fn param-slop-type-string ((arena Arena) (param (Ptr SExpr)))
+    (@intent "The SLOP type of a parameter form (name Type) or (mode name Type), as text")
+    (@spec ((Arena (Ptr SExpr)) -> String))
+    (@pre {param != nil})
+    ;; The type is the last element in either form. Kept with each function's
+    ;; parameter C types so a call can check an argument against a range (#265).
+    (match (deref param)
+      ((lst lst)
+        (let ((items (. lst items))
+              (len (list-len items)))
+          (if (>= len 2)
+            (match (list-get items (- len 1))
+              ((some type-expr) (sexpr-to-type-string arena type-expr))
+              ((none) ""))
+            "")))
       (_ "")))
 
   ;; ============================================================

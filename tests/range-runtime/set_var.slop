@@ -1,0 +1,14 @@
+;; A value only known at run time, outside its range type, aborts at the
+;; narrowing point (#265). id hides the value from the checker.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn id ((n Int)) (@intent "Identity") (@spec ((Int) -> Int)) n)
+
+  (fn main ()
+    (@intent "Assign 150 to a Pct")
+    (@spec (() -> Int))
+    (let ((mut p Pct 5))
+      (set! p (id 150))
+      0)))

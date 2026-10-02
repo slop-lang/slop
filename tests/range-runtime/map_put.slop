@@ -1,0 +1,15 @@
+;; A value only known at run time, outside its range type, aborts at the
+;; narrowing point (#265). id hides the value from the checker.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn id ((n Int)) (@intent "Identity") (@spec ((Int) -> Int)) n)
+
+  (fn main ()
+    (@intent "Put 101 into a map of Pct")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((m (map-new arena String Pct)))
+        (map-put m "a" (id 101))
+        0))))

@@ -108,7 +108,7 @@ slop_result_int_file_FileError file_file_write(file_File* f, slop_bytes data) {
         if (ferror((*f).handle) != 0) {
             return ((slop_result_int_file_FileError){ .is_ok = false, .data.err = file_FileError_io_error });
         } else {
-            return ((slop_result_int_file_FileError){ .is_ok = true, .data.ok = ((int64_t)(written)) });
+            return ((slop_result_int_file_FileError){ .is_ok = true, .data.ok = ((int64_t)(SLOP_RANGE(int64_t, written, 1, 0, 0, 0, "(Int 0 ..) at file.slop:182:30"))) });
         }
     }
 }
@@ -122,7 +122,7 @@ slop_result_int_file_FileError file_file_write_line(file_File* f, slop_string li
             if (ferror((*f).handle) != 0) {
                 return ((slop_result_int_file_FileError){ .is_ok = false, .data.err = file_FileError_io_error });
             } else {
-                return ((slop_result_int_file_FileError){ .is_ok = true, .data.ok = ((int64_t)((written1 + written2))) });
+                return ((slop_result_int_file_FileError){ .is_ok = true, .data.ok = ((int64_t)(SLOP_RANGE(int64_t, (written1 + written2), 1, 0, 0, 0, "(Int 0 ..) at file.slop:193:32"))) });
             }
         }
     }

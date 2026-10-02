@@ -1,0 +1,11 @@
+;; A literal outside a range is a transpiler error too, not only a checker
+;; one: a multi-module build drops checker diagnostics (#93), and before #265
+;; nothing else stopped 130 reaching a Pct.
+
+(module main
+  (import pct (Pct bump))
+
+  (fn main ()
+    (@intent "Pass 130 for a Pct across modules")
+    (@spec (() -> Int))
+    (bump 130)))

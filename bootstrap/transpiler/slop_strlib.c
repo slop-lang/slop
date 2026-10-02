@@ -3,17 +3,17 @@
 
 int64_t strlib_min(int64_t a, int64_t b);
 slop_string strlib_cstring_to_string(uint8_t* cstr);
-uint8_t strlib_is_alpha(strlib_AsciiChar c);
-uint8_t strlib_is_digit(strlib_AsciiChar c);
-uint8_t strlib_is_alnum(strlib_AsciiChar c);
-uint8_t strlib_is_space(strlib_AsciiChar c);
-uint8_t strlib_is_upper(strlib_AsciiChar c);
-uint8_t strlib_is_lower(strlib_AsciiChar c);
+uint8_t strlib_is_alpha(strlib_Byte c);
+uint8_t strlib_is_digit(strlib_Byte c);
+uint8_t strlib_is_alnum(strlib_Byte c);
+uint8_t strlib_is_space(strlib_Byte c);
+uint8_t strlib_is_upper(strlib_Byte c);
+uint8_t strlib_is_lower(strlib_Byte c);
 uint8_t strlib_is_ascii(int64_t c);
-uint8_t strlib_is_printable(strlib_AsciiChar c);
-uint8_t strlib_is_control(strlib_AsciiChar c);
-strlib_AsciiChar strlib_char_to_upper(strlib_AsciiChar c);
-strlib_AsciiChar strlib_char_to_lower(strlib_AsciiChar c);
+uint8_t strlib_is_printable(strlib_Byte c);
+uint8_t strlib_is_control(strlib_Byte c);
+strlib_Byte strlib_char_to_upper(strlib_Byte c);
+strlib_Byte strlib_char_to_lower(strlib_Byte c);
 slop_option_int strlib_index_of(slop_string haystack, slop_string needle);
 slop_option_int strlib_last_index_of(slop_string haystack, slop_string needle);
 uint8_t strlib_contains(slop_string haystack, slop_string needle);
@@ -23,8 +23,8 @@ int64_t strlib_count_occurrences(slop_string haystack, slop_string needle);
 slop_string strlib_trim(slop_arena* arena, slop_string s);
 slop_string strlib_trim_start(slop_arena* arena, slop_string s);
 slop_string strlib_trim_end(slop_arena* arena, slop_string s);
-slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_len, strlib_AsciiChar pad_char);
-slop_string strlib_pad_end(slop_arena* arena, slop_string s, int64_t target_len, strlib_AsciiChar pad_char);
+slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_len, strlib_Byte pad_char);
+slop_string strlib_pad_end(slop_arena* arena, slop_string s, int64_t target_len, strlib_Byte pad_char);
 slop_string strlib_reverse(slop_arena* arena, slop_string s);
 slop_string strlib_repeat(slop_arena* arena, slop_string s, int64_t n);
 slop_string strlib_substring(slop_arena* arena, slop_string s, int64_t start, int64_t len);
@@ -41,10 +41,10 @@ slop_string strlib_replace(slop_arena* arena, slop_string s, slop_string old, sl
 slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old, slop_string new);
 int64_t strlib_compare(slop_string a, slop_string b);
 int64_t strlib_compare_ignore_case(slop_string a, slop_string b);
-strlib_AsciiChar strlib_char_at(slop_string s, int64_t index);
-uint8_t strlib_char_is_symbol_start(strlib_AsciiChar c);
-uint8_t strlib_char_is_symbol_char(strlib_AsciiChar c);
-uint8_t strlib_char_is_operator(strlib_AsciiChar c);
+strlib_Byte strlib_char_at(slop_string s, int64_t index);
+uint8_t strlib_char_is_symbol_start(strlib_Byte c);
+uint8_t strlib_char_is_symbol_char(strlib_Byte c);
+uint8_t strlib_char_is_operator(strlib_Byte c);
 void strlib_fill_bytes(uint8_t* ptr, uint8_t value, int64_t len);
 
 int64_t strlib_min(int64_t a, int64_t b) {
@@ -59,27 +59,27 @@ slop_string strlib_cstring_to_string(uint8_t* cstr) {
     return (slop_string){.len = strlen(cstr), .data = cstr};
 }
 
-uint8_t strlib_is_alpha(strlib_AsciiChar c) {
+uint8_t strlib_is_alpha(strlib_Byte c) {
     return (isalpha(((int64_t)(c))) != 0);
 }
 
-uint8_t strlib_is_digit(strlib_AsciiChar c) {
+uint8_t strlib_is_digit(strlib_Byte c) {
     return (isdigit(((int64_t)(c))) != 0);
 }
 
-uint8_t strlib_is_alnum(strlib_AsciiChar c) {
+uint8_t strlib_is_alnum(strlib_Byte c) {
     return (isalnum(((int64_t)(c))) != 0);
 }
 
-uint8_t strlib_is_space(strlib_AsciiChar c) {
+uint8_t strlib_is_space(strlib_Byte c) {
     return (isspace(((int64_t)(c))) != 0);
 }
 
-uint8_t strlib_is_upper(strlib_AsciiChar c) {
+uint8_t strlib_is_upper(strlib_Byte c) {
     return (isupper(((int64_t)(c))) != 0);
 }
 
-uint8_t strlib_is_lower(strlib_AsciiChar c) {
+uint8_t strlib_is_lower(strlib_Byte c) {
     return (islower(((int64_t)(c))) != 0);
 }
 
@@ -87,20 +87,20 @@ uint8_t strlib_is_ascii(int64_t c) {
     return ((c >= 0) && (c <= 127));
 }
 
-uint8_t strlib_is_printable(strlib_AsciiChar c) {
+uint8_t strlib_is_printable(strlib_Byte c) {
     return (isprint(((int64_t)(c))) != 0);
 }
 
-uint8_t strlib_is_control(strlib_AsciiChar c) {
+uint8_t strlib_is_control(strlib_Byte c) {
     return (iscntrl(((int64_t)(c))) != 0);
 }
 
-strlib_AsciiChar strlib_char_to_upper(strlib_AsciiChar c) {
-    return ((strlib_AsciiChar)(toupper(((int64_t)(c)))));
+strlib_Byte strlib_char_to_upper(strlib_Byte c) {
+    return ((strlib_Byte)(SLOP_RANGE(strlib_Byte, toupper(((int64_t)(c))), 1, 1, 0, 255, "Byte (Int 0 .. 255) at strlib.slop:187:16")));
 }
 
-strlib_AsciiChar strlib_char_to_lower(strlib_AsciiChar c) {
-    return ((strlib_AsciiChar)(tolower(((int64_t)(c)))));
+strlib_Byte strlib_char_to_lower(strlib_Byte c) {
+    return ((strlib_Byte)(SLOP_RANGE(strlib_Byte, tolower(((int64_t)(c))), 1, 1, 0, 255, "Byte (Int 0 .. 255) at strlib.slop:196:16")));
 }
 
 slop_option_int strlib_index_of(slop_string haystack, slop_string needle) {
@@ -127,7 +127,7 @@ slop_option_int strlib_index_of(slop_string haystack, slop_string needle) {
                                 }
                             }
                             if (match_found) {
-                                return (slop_option_int){.has_value = 1, .value = ((int64_t)(i))};
+                                return (slop_option_int){.has_value = 1, .value = ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at strlib.slop:222:66")))};
                             }
                             i = (i + 1);
                         }
@@ -141,7 +141,7 @@ slop_option_int strlib_index_of(slop_string haystack, slop_string needle) {
 
 slop_option_int strlib_last_index_of(slop_string haystack, slop_string needle) {
     if (needle.len == 0) {
-        return (slop_option_int){.has_value = 1, .value = ((int64_t)(haystack.len))};
+        return (slop_option_int){.has_value = 1, .value = ((int64_t)(SLOP_RANGE(int64_t, haystack.len, 1, 0, 0, 0, "(Int 0 ..) at strlib.slop:233:30")))};
     } else {
         {
             __auto_type hlen = ((int64_t)(haystack.len));
@@ -163,7 +163,7 @@ slop_option_int strlib_last_index_of(slop_string haystack, slop_string needle) {
                                 }
                             }
                             if (match_found) {
-                                return (slop_option_int){.has_value = 1, .value = ((int64_t)(i))};
+                                return (slop_option_int){.has_value = 1, .value = ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at strlib.slop:248:66")))};
                             }
                             i = (i - 1);
                         }
@@ -233,7 +233,7 @@ int64_t strlib_count_occurrences(slop_string haystack, slop_string needle) {
                     }
                 }
             }
-            return ((int64_t)(count));
+            return ((int64_t)(SLOP_RANGE(int64_t, count, 1, 0, 0, 0, "(Int 0 ..) at strlib.slop:321:26")));
         }
     }
 }
@@ -247,10 +247,10 @@ slop_string strlib_trim(slop_arena* arena, slop_string s) {
             {
                 int64_t start = 0;
                 int64_t end = slen;
-                while ((start < slen) && strlib_is_space(((strlib_AsciiChar)(s.data[start])))) {
+                while ((start < slen) && strlib_is_space(((uint8_t)(s.data[start])))) {
                     start = (start + 1);
                 }
-                while ((end > start) && strlib_is_space(((strlib_AsciiChar)(s.data[(end - 1)])))) {
+                while ((end > start) && strlib_is_space(((uint8_t)(s.data[(end - 1)])))) {
                     end = (end - 1);
                 }
                 {
@@ -278,7 +278,7 @@ slop_string strlib_trim_start(slop_arena* arena, slop_string s) {
         } else {
             {
                 int64_t start = 0;
-                while ((start < slen) && strlib_is_space(((strlib_AsciiChar)(s.data[start])))) {
+                while ((start < slen) && strlib_is_space(((uint8_t)(s.data[start])))) {
                     start = (start + 1);
                 }
                 {
@@ -306,7 +306,7 @@ slop_string strlib_trim_end(slop_arena* arena, slop_string s) {
         } else {
             {
                 int64_t end = slen;
-                while ((end > 0) && strlib_is_space(((strlib_AsciiChar)(s.data[(end - 1)])))) {
+                while ((end > 0) && strlib_is_space(((uint8_t)(s.data[(end - 1)])))) {
                     end = (end - 1);
                 }
                 if (end == 0) {
@@ -323,7 +323,7 @@ slop_string strlib_trim_end(slop_arena* arena, slop_string s) {
     }
 }
 
-slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_len, strlib_AsciiChar pad_char) {
+slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_len, strlib_Byte pad_char) {
     {
         __auto_type slen = ((int64_t)(s.len));
         if (slen >= target_len) {
@@ -340,7 +340,7 @@ slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_le
     }
 }
 
-slop_string strlib_pad_end(slop_arena* arena, slop_string s, int64_t target_len, strlib_AsciiChar pad_char) {
+slop_string strlib_pad_end(slop_arena* arena, slop_string s, int64_t target_len, strlib_Byte pad_char) {
     {
         __auto_type slen = ((int64_t)(s.len));
         if (slen >= target_len) {
@@ -423,7 +423,7 @@ slop_string strlib_to_upper(slop_arena* arena, slop_string s) {
                 __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 int64_t i = 0;
                 while (i < slen) {
-                    buf[i] = ((uint8_t)(strlib_char_to_upper(((strlib_AsciiChar)(s.data[i])))));
+                    buf[i] = ((uint8_t)(strlib_char_to_upper(((uint8_t)(s.data[i])))));
                     i = (i + 1);
                 }
                 return (slop_string){.len = ((uint64_t)(slen)), .data = ((uint8_t*)(buf))};
@@ -442,7 +442,7 @@ slop_string strlib_to_lower(slop_arena* arena, slop_string s) {
                 __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 int64_t i = 0;
                 while (i < slen) {
-                    buf[i] = ((uint8_t)(strlib_char_to_lower(((strlib_AsciiChar)(s.data[i])))));
+                    buf[i] = ((uint8_t)(strlib_char_to_lower(((uint8_t)(s.data[i])))));
                     i = (i + 1);
                 }
                 return (slop_string){.len = ((uint64_t)(slen)), .data = ((uint8_t*)(buf))};
@@ -463,7 +463,7 @@ slop_string strlib_to_title(slop_arena* arena, slop_string s) {
                 uint8_t word_start = 1;
                 while (i < slen) {
                     {
-                        __auto_type c = ((strlib_AsciiChar)(s.data[i]));
+                        __auto_type c = ((uint8_t)(s.data[i]));
                         if (strlib_is_space(c)) {
                             buf[i] = ((uint8_t)(c));
                             word_start = 1;
@@ -492,7 +492,7 @@ slop_string strlib_capitalize(slop_arena* arena, slop_string s) {
         } else {
             {
                 __auto_type buf = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
-                buf[0] = ((uint8_t)(strlib_char_to_upper(((strlib_AsciiChar)(s.data[0])))));
+                buf[0] = ((uint8_t)(strlib_char_to_upper(((uint8_t)(s.data[0])))));
                 if (slen > 1) {
                     memcpy(((void*)((buf + 1))), ((void*)((s.data + 1))), ((uint64_t)((slen - 1))));
                 }
@@ -781,8 +781,8 @@ int64_t strlib_compare_ignore_case(slop_string a, slop_string b) {
         int64_t result = 0;
         while ((i < min_len) && (result == 0)) {
             {
-                __auto_type ca = strlib_char_to_lower(((strlib_AsciiChar)(a.data[i])));
-                __auto_type cb = strlib_char_to_lower(((strlib_AsciiChar)(b.data[i])));
+                __auto_type ca = strlib_char_to_lower(((uint8_t)(a.data[i])));
+                __auto_type cb = strlib_char_to_lower(((uint8_t)(b.data[i])));
                 if (ca < cb) {
                     result = -1;
                 } else if (ca > cb) {
@@ -806,23 +806,23 @@ int64_t strlib_compare_ignore_case(slop_string a, slop_string b) {
     }
 }
 
-strlib_AsciiChar strlib_char_at(slop_string s, int64_t index) {
+strlib_Byte strlib_char_at(slop_string s, int64_t index) {
     if (index >= ((int64_t)(s.len))) {
         return 0;
     } else {
-        return ((strlib_AsciiChar)(s.data[index]));
+        return ((uint8_t)(s.data[index]));
     }
 }
 
-uint8_t strlib_char_is_symbol_start(strlib_AsciiChar c) {
+uint8_t strlib_char_is_symbol_start(strlib_Byte c) {
     return ((strlib_is_alpha(c)) || ((c == 95)) || ((c == 64)) || ((c == 36)));
 }
 
-uint8_t strlib_char_is_symbol_char(strlib_AsciiChar c) {
+uint8_t strlib_char_is_symbol_char(strlib_Byte c) {
     return ((strlib_is_alnum(c)) || ((c == 95)) || ((c == 45)) || ((c == 47)) || ((c == 42)) || ((c == 60)) || ((c == 62)) || ((c == 61)) || ((c == 33)) || ((c == 63)) || ((c == 46)) || ((c == 64)) || ((c == 36)));
 }
 
-uint8_t strlib_char_is_operator(strlib_AsciiChar c) {
+uint8_t strlib_char_is_operator(strlib_Byte c) {
     return (((c == 43)) || ((c == 45)) || ((c == 42)) || ((c == 47)) || ((c == 33)) || ((c == 60)) || ((c == 62)) || ((c == 61)) || ((c == 38)) || ((c == 124)) || ((c == 94)) || ((c == 37)) || ((c == 63)) || ((c == 46)));
 }
 
