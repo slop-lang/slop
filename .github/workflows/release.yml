@@ -113,7 +113,12 @@ jobs:
   build-macos-arm64:
     needs: gate
     if: github.event_name == 'push' || inputs.build_macos
-    runs-on: macos-14
+    runs-on: macos-15
+    env:
+      # clang targets the build host's macOS by default, so binaries built on
+      # macos-15 would refuse to run on 14. Keep the floor the macos-14 runner
+      # gave us.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v4
 
