@@ -319,11 +319,11 @@ uint8_t types_range_is_constant(types_RangeBounds r) {
 }
 
 int64_t types_i64_max(void) {
-    return 9223372036854775807;
+    return ((int64_t)(9223372036854775807));
 }
 
 int64_t types_i64_min(void) {
-    return ((0 - 9223372036854775807) - 1);
+    return ((int64_t)(((0 - 9223372036854775807) - 1)));
 }
 
 uint8_t types_add_overflows(int64_t a, int64_t b) {
@@ -351,8 +351,8 @@ uint8_t types_mul_overflows(int64_t a, int64_t b) {
         return 1;
     } else {
         {
-            __auto_type abs_a = (((a < 0)) ? (0 - a) : a);
-            __auto_type abs_b = (((b < 0)) ? (0 - b) : b);
+            __auto_type abs_a = (((a < 0)) ? ((int64_t)((0 - a))) : a);
+            __auto_type abs_b = (((b < 0)) ? ((int64_t)((0 - b))) : b);
             return (abs_a > (types_i64_max() / abs_b));
         }
     }
