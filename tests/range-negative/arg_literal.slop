@@ -1,0 +1,14 @@
+;; A literal argument outside a range-typed parameter (#265).
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn bump ((n Pct))
+    (@intent "Add one")
+    (@spec ((Pct) -> Int))
+    (+ n 1))
+
+  (fn main ()
+    (@intent "Pass 130 for a Pct")
+    (@spec (() -> Int))
+    (bump 130)))

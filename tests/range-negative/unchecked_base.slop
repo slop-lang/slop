@@ -1,0 +1,9 @@
+;; Only (Int lo .. hi) is enforced. Another base is accepted with a warning.
+
+(module main
+  (type Age (U8 0 .. 150))
+
+  (fn main ()
+    (@intent "Nothing")
+    (@spec (() -> Int))
+    0))

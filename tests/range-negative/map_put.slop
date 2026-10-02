@@ -1,0 +1,11 @@
+;; map-put narrows its value into the map's value type.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn main ()
+    (@intent "Put 101 into a map of Pct")
+    (@spec (() -> Int))
+    (let ((m (map-new arena String Pct)))
+      (map-put m "a" 101)
+      0)))

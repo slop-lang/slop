@@ -20,7 +20,9 @@
                  resolved-type-get-variant-index resolved-type-get-variant-payload
                  resolved-type-get-variant-payloads
                  resolved-type-is-record resolved-type-has-field resolved-type-get-field-type
-                 BindingOrigin MutationKind mutation-error-message param-mode-error-message))
+                 BindingOrigin MutationKind mutation-error-message param-mode-error-message
+                 RangeBounds range-bounds-new range-bounds-unbounded range-add range-sub range-mul
+                 range-union resolved-type-with-range int-range-expr-bounds))
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
                env-bind-var env-bind-var-as env-lookup-var env-lookup-binding VarBinding env-lookup-type
                env-lookup-function env-lookup-function-direct env-lookup-variant env-lookup-constant
@@ -30,7 +32,8 @@
                env-get-unknown-type env-get-never-type
                env-make-option-type env-make-ptr-type env-make-result-type env-make-fn-type env-get-generic-type
                env-add-warning env-add-error env-get-diagnostics
-               env-set-fn-type-params env-clear-fn-type-params env-is-type-param))
+               env-set-fn-type-params env-clear-fn-type-params env-is-type-param
+               env-type-range env-check-range-narrowing env-set-current-return env-get-current-return))
   (import strlib (starts-with ends-with string-build join index-of substring))
   (import ctype (is-builtin-type))
   (import collect (find-fn-type-params))
@@ -440,7 +443,10 @@
                     (match (list-get params i)
                       ((some param-info)
                         (let ((formal-type (. param-info param-type)))
-                          (unify-types arena formal-type actual-type (addr bind-names) (addr bind-types))))
+                          ;; T binds to the argument's type, not to its interval:
+                          ;; (first-or xs 5) is not exactly 5 (#265)
+                          (unify-types arena formal-type (strip-value-range env actual-type)
+                                       (addr bind-names) (addr bind-types))))
                       ((none) (do)))))
                 ((none) (do)))))))
       ;; Substitute type variables in return type
@@ -754,9 +760,9 @@
           b
         (if (and (type-is-null-pointer b) (== (. (deref a) kind) 'rk-ptr))
           a
-        ;; If types are equal, return either
+        ;; If types are equal, return either, carrying bounds both satisfy
         (if (types-equal a b)
-          a
+          (join-ranges env a b)
           ;; Types differ - emit warning and return first type
           (let ((arena (env-arena env))
                 (msg (string-concat arena "Branch types differ: "
@@ -878,7 +884,10 @@
           ;; false "expected Float, got Int". See #94.
           (if (. num is-float)
             (env-get-float-type env)
-            (env-get-int-type env)))
+            ;; An integer literal is exactly its value, so a narrowing it flows
+            ;; into can be checked now (#265). The bounds ride on a copy of Int.
+            (resolved-type-with-range (env-arena env) (env-get-int-type env)
+              (some (range-bounds-new true (. num int-value) true (. num int-value))))))
         ((str str)
           (env-get-string-type env))
         ((lst lst)
@@ -1059,6 +1068,10 @@
 
         ;; (fn ((param Type)...) body...) - lambda expression
         ((string-eq op "fn")
+          ;; A (return e) inside the lambda returns from the lambda, not from the
+          ;; enclosing function, so that function's return type is set aside
+          (let ((saved-return (env-get-current-return env)))
+          (env-set-current-return env (none))
           ;; Push scope for lambda parameters
           (env-push-scope env)
           ;; Bind parameters - lambda params start at index 1
@@ -1091,9 +1104,10 @@
                                  ((none) (env-get-unit-type env))))
                              (env-get-unit-type env))))
             (env-pop-scope env)
+            (env-set-current-return env saved-return)
             ;; Return a function type for the lambda
             (let ((arena (env-arena env)))
-              (resolved-type-new arena 'rk-function "Fn" (none) "void*"))))
+              (resolved-type-new arena 'rk-function "Fn" (none) "void*")))))
 
         ;; (with-arena size body...) - binds 'arena' and returns last body type
         ((string-eq op "with-arena")
@@ -1102,27 +1116,36 @@
         ;; (set! var expr) - infer expr for error checking, returns Unit
         ((string-eq op "set!")
           (do (check-set-target env items len)
-              (cond
-                ;; Record field update: (set! record field value) - 4 elements
-                ((>= len 4)
-                  (match (list-get items 3)
-                    ((some val-expr) (let ((_ (infer-expr env val-expr))) (do)))
-                    ((none) (do))))
-                ;; Simple assignment: (set! var value) - 3 elements
-                ((>= len 3)
-                  (match (list-get items 2)
-                    ((some val-expr) (let ((_ (infer-expr env val-expr))) (do)))
-                    ((none) (do))))
-                (else (do)))
+              ;; The value is the last element in every form: (set! var v),
+              ;; (set! T f v) and (set! T f Type v). The last of these used to
+              ;; infer its Type in place of the value. The place written is a
+              ;; narrowing point (#265).
+              (when (>= len 3)
+                (match (list-get items (- len 1))
+                  ((some val-expr)
+                    (let ((val-type (infer-expr env val-expr)))
+                      (match (set-target-type env items len)
+                        ((some target-type)
+                          (env-check-range-narrowing env "assignment" target-type val-type
+                                                     (sexpr-line val-expr) (sexpr-col val-expr)))
+                        ((none) (do)))))
+                  ((none) (do))))
               (env-get-unit-type env)))
 
         ;; (return expr) - Never type (divergent, control flow exits)
         ((string-eq op "return")
           (do
-            ;; Still infer the expression for type checking
+            ;; Still infer the expression for type checking. An early return is a
+            ;; narrowing point into the declared return type, as the tail is (#265).
             (when (>= len 2)
               (match (list-get items 1)
-                ((some ret-expr) (let ((_ (infer-expr env ret-expr))) (do)))
+                ((some ret-expr)
+                  (let ((ret-type (infer-expr env ret-expr)))
+                    (match (env-get-current-return env)
+                      ((some declared)
+                        (env-check-range-narrowing env "return value" declared ret-type
+                                                   (sexpr-line ret-expr) (sexpr-col ret-expr)))
+                      ((none) (do)))))
                 ((none) (do))))
             (env-get-never-type env)))
 
@@ -1148,9 +1171,13 @@
         ((or (string-eq op "min") (string-eq op "max"))
           (let ((a-type (match (list-get items 1)
                           ((some a-expr) (infer-expr env a-expr))
-                          ((none) (env-get-unknown-type env)))))
-            (infer-body-exprs env expr 2)
-            a-type))
+                          ((none) (env-get-unknown-type env))))
+                (b-type (match (list-get items 2)
+                          ((some b-expr) (infer-expr env b-expr))
+                          ((none) a-type))))
+            (infer-body-exprs env expr 3)
+            ;; Either operand may be the answer, so the bounds are both of theirs
+            (join-ranges env a-type b-type)))
 
         ;; (deref ptr-expr) - dereference pointer, returns inner type
         ((string-eq op "deref")
@@ -1173,13 +1200,17 @@
           (if (>= len 2)
             (match (list-get items 1)
               ((some inner-expr)
+                ;; An interval worked out for one value is not the pointee's
+                ;; type: the pointer may later write anything into it (#265)
                 (let ((inner-type (infer-expr env inner-expr)))
-                  (env-make-ptr-type env inner-type)))
+                  (env-make-ptr-type env (strip-value-range env inner-type))))
               ((none) (env-get-unit-type env)))
             (env-get-unit-type env)))
 
-        ;; (cast TargetType expr) - cast expression to target type
+        ;; (cast TargetType expr) - cast expression to target type. A cast to a
+        ;; range type is a checked narrowing, not an escape hatch (#265).
         ((string-eq op "cast")
+          (let ((target-type
           (if (>= len 2)
             (match (list-get items 1)
               ((some type-expr)
@@ -1193,8 +1224,10 @@
                         ((some head-expr)
                           (let ((head-name (sexpr-get-symbol-name head-expr)))
                             (cond
-                              ;; Range type (Int min .. max) is Int
-                              ((string-eq head-name "Int") (env-get-int-type env))
+                              ;; Range type (Int min .. max) is Int, carrying its bounds
+                              ((string-eq head-name "Int")
+                                (resolved-type-with-range (env-arena env) (env-get-int-type env)
+                                  (int-range-expr-bounds type-expr)))
                               ;; Ptr type casts return the pointer type
                               ((string-eq head-name "Ptr")
                                 (let ((inner-type (resolve-ptr-inner-type env type-expr)))
@@ -1223,7 +1256,15 @@
                           ((string-eq type-name "Unit") (env-get-unit-type env))
                           (else (env-get-unknown-type env))))))))
               ((none) (env-get-unknown-type env)))
-            (env-get-unknown-type env)))
+            (env-get-unknown-type env))))
+            (when (>= len 3)
+              (match (list-get items 2)
+                ((some val-expr)
+                  (let ((val-type (infer-expr-quietly env val-expr)))
+                    (env-check-range-narrowing env "cast" target-type val-type
+                                               (sexpr-line val-expr) (sexpr-col val-expr))))
+                ((none) (do))))
+            target-type))
 
         ;; (quote symbol) - quoted enum variant, look up the enum type
         ((string-eq op "quote")
@@ -1249,8 +1290,10 @@
           (if (>= len 2)
             (match (list-get items 1)
               ((some inner-expr)
+                ;; (some 1) is an Option of Int, not of exactly 1: the payload
+                ;; is bound by match and can be anything of its type (#265)
                 (let ((inner-type (infer-expr env inner-expr)))
-                  (env-make-option-type env inner-type)))
+                  (env-make-option-type env (strip-value-range env inner-type))))
               ((none) (env-make-option-type env nil)))
             (env-make-option-type env nil)))
 
@@ -1260,29 +1303,36 @@
 
         ;; (record-new TypeName (field1 val1) ...) - create record instance
         ((string-eq op "record-new")
-          (do
-          ;; Visit field value expressions at indices 2+ ; each is (field val)
-          (for (fi 2 len)
-            (match (list-get items fi)
-              ((some field-pair)
-                (when (and (sexpr-is-list field-pair) (>= (sexpr-list-len field-pair) 2))
-                  (match (sexpr-list-get field-pair 1)
-                    ((some val-expr) (let ((_ (infer-expr env val-expr))) (do)))
-                    ((none) (do)))))
-              ((none) (do))))
-          (if (>= len 2)
-            (match (list-get items 1)
-              ((some type-expr)
-                (let ((type-name (sexpr-get-symbol-name type-expr)))
-                  (if (string-eq type-name "")
-                    (env-get-unit-type env)
-                    (match (env-lookup-type env type-name)
-                      ((some t) t)
-                      ((none)
-                        (do (report-type-not-imported env type-name line col)
-                            (env-get-unit-type env)))))))
-              ((none) (env-get-unit-type env)))
-            (env-get-unit-type env))))
+          (let ((rec-type (if (>= len 2)
+                            (match (list-get items 1)
+                              ((some type-expr)
+                                (let ((type-name (sexpr-get-symbol-name type-expr)))
+                                  (if (string-eq type-name "")
+                                    (env-get-unit-type env)
+                                    (match (env-lookup-type env type-name)
+                                      ((some t) t)
+                                      ((none)
+                                        (do (report-type-not-imported env type-name line col)
+                                            (env-get-unit-type env)))))))
+                              ((none) (env-get-unit-type env)))
+                            (env-get-unit-type env))))
+            ;; Visit field value expressions at indices 2+ ; each is (field val).
+            ;; A range-typed field is a narrowing point (#265).
+            (for (fi 2 len)
+              (match (list-get items fi)
+                ((some field-pair)
+                  (when (and (sexpr-is-list field-pair) (>= (sexpr-list-len field-pair) 2))
+                    (match (sexpr-list-get field-pair 1)
+                      ((some val-expr)
+                        (let ((val-type (infer-expr env val-expr)))
+                          (match (sexpr-list-get field-pair 0)
+                            ((some name-expr)
+                              (check-field-narrowing env rec-type (sexpr-get-symbol-name name-expr)
+                                                     val-type val-expr))
+                            ((none) (do)))))
+                      ((none) (do)))))
+                ((none) (do))))
+            rec-type))
 
         ;; (union-new TypeName variant value) - create union instance
         ((string-eq op "union-new")
@@ -1333,7 +1383,9 @@
             ((none)
               (match (env-lookup-type env op)
                 ;; Type constructor - return the type itself
-                ((some the-type) the-type)
+                ((some the-type)
+                  (do (check-constructor-args env the-type items len)
+                      the-type))
                 ;; Check for built-in list functions
                 ((none)
                   (cond
@@ -1498,7 +1550,7 @@
                           (match (list-get items 1)
                             ((some val-expr)
                               (let ((val-type (infer-expr env val-expr)))
-                                (resolved-type-set-inner result-type val-type)))
+                                (resolved-type-set-inner result-type (strip-value-range env val-type))))
                             ((none) (do))))
                         result-type))
                     ((string-eq op "error")
@@ -1508,7 +1560,7 @@
                           (match (list-get items 1)
                             ((some val-expr)
                               (let ((val-type (infer-expr env val-expr)))
-                                (resolved-type-set-inner2 result-type val-type)))
+                                (resolved-type-set-inner2 result-type (strip-value-range env val-type))))
                             ((none) (do))))
                         result-type))
                     ;; Array indexing builtin: (@ ptr index) returns element type
@@ -1580,6 +1632,7 @@
                     ;; map-put expects 3 args: map, key, value - returns Unit
                     ((string-eq op "map-put")
                       (do (check-builtin-args env "map-put" 3 (- len 1) line col)
+                          (check-map-put env items len)
                           (env-get-unit-type env)))
                     ;; map-has expects 2 args: map, key - returns Bool
                     ((string-eq op "map-has")
@@ -1842,7 +1895,12 @@
                                                          " to '" fn-name
                                                          "': expected " (type-display-name arena expected-type actual-type)
                                                          ", got " (type-display-name arena actual-type expected-type)))))
-                      (env-add-error env msg line col)))))
+                      (env-add-error env msg line col)))
+                  ;; A range-typed parameter is a narrowing point (#265)
+                  (env-check-range-narrowing env
+                    (string-build arena (list String "argument " (int-to-string arena (+ arg-idx 1))
+                                              " to '" fn-name "'"))
+                    expected-type actual-type (sexpr-line arg-expr) (sexpr-col arg-expr))))
               ((none) (do)))))
         ((none) (do)))))
 
@@ -1943,7 +2001,12 @@
                           (report-operand-mismatch env op "element type"
                                                    (. (deref elem-type) name)
                                                    (. (deref value-type) name)
-                                                   line col))))
+                                                   line col))
+                        ;; A range-typed element is a narrowing point (#265)
+                        (let ((arena (env-arena env)))
+                          (env-check-range-narrowing env
+                            (string-build arena (list String "'" op "' element"))
+                            elem-type value-type (sexpr-line value-arg) (sexpr-col value-arg)))))
                     ((none) (do))))
                 ((none) (do)))))))
       ((none) (do))))
@@ -2011,10 +2074,16 @@
     ;; because C's is. There is no pointer arithmetic: cast the pointer to Int.
     ;; Each bad operand is reported at its own position, and the result type is
     ;; still returned, so one bad operand does not cascade.
+    ;;
+    ;; An integer result also carries interval bounds for + - * (#265): each
+    ;; operand's bounds, or unbounded, combined left to right. / and % carry
+    ;; none.
     (let ((arena (env-arena env))
           (is-mod (string-eq op "%"))
           (len (list-len items))
-          (mut result (env-get-int-type env)))
+          (mut result (env-get-int-type env))
+          (mut acc (range-bounds-unbounded))
+          (mut seen-operand false))
       (for (i 1 len)
         (match (list-get items i)
           ((some operand)
@@ -2024,7 +2093,17 @@
                   (shown (. (deref raw-type) name))
                   (has-pos (> (sexpr-line operand) 0))
                   (op-line (if has-pos (sexpr-line operand) line))
-                  (op-col (if has-pos (sexpr-col operand) col)))
+                  (op-col (if has-pos (sexpr-col operand) col))
+                  (bounds (match (env-type-range raw-type)
+                            ((some b) b)
+                            ((none) (range-bounds-unbounded)))))
+              (cond
+                ((not seen-operand) (set! acc bounds))
+                ((string-eq op "+") (set! acc (range-add acc bounds)))
+                ((string-eq op "-") (set! acc (range-sub acc bounds)))
+                ((string-eq op "*") (set! acc (range-mul acc bounds)))
+                (else (set! acc (range-bounds-unbounded))))
+              (set! seen-operand true)
               (cond
                 ((and (== cls 'arith-floating) is-mod)
                   (report-operand-mismatch env op "needs an integer operand"
@@ -2046,7 +2125,211 @@
                                            shown op-line op-col))
                 (else (do)))))
           ((none) (do))))
-      result))
+      (if (and (string-eq (. (deref result) name) "Int")
+               (or (string-eq op "+") (string-eq op "-") (string-eq op "*"))
+               (or (. acc has-min) (. acc has-max)))
+        (resolved-type-with-range arena result (some acc))
+        result)))
+
+  ;; ============================================================
+  ;; Range Narrowing (#265)
+  ;;
+  ;; A value flowing into a range-typed place -- a typed let, a set!, an
+  ;; argument, a return, a record field, a container element, a cast -- is a
+  ;; narrowing. env-check-range-narrowing decides what to report from the
+  ;; value's interval: literals, constants and arithmetic on them carry one,
+  ;; and so does anything whose declared type is a range.
+  ;; ============================================================
+
+  (fn infer-expr-quietly ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
+    (@intent "Infer an expression's type without reporting what inferring it finds")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    ;; For an expression the checker never used to infer -- a cast operand, a
+    ;; set! target, a constructor argument, a let's declared type. Those reach
+    ;; gaps the checker has elsewhere (raw arena-alloc is typed Int, an
+    ;; ffi-struct is not a type, a type from an unloaded module is unknown), and
+    ;; reporting them would turn each gap into new false errors. Only the range
+    ;; check made with the type is reported.
+    (let ((saved-diags (env-get-diagnostics env))
+          (t (infer-expr env expr)))
+      (set! (. (deref env) diagnostics) saved-diags)
+      t))
+
+  (fn resolve-type-expr-quietly ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
+    (@intent "Resolve a written type without reporting a name that does not resolve")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    ;; A let's annotation used to be ignored, so an unresolvable one was never
+    ;; reported. Only whether it names a range type matters here.
+    (let ((saved-diags (env-get-diagnostics env))
+          (t (resolve-type-expr env type-expr)))
+      (set! (. (deref env) diagnostics) saved-diags)
+      t))
+
+  (fn join-ranges ((env (Ptr TypeEnv)) (a (Ptr ResolvedType)) (b (Ptr ResolvedType)))
+    (@intent "The first type, carrying bounds that hold for a value of either type")
+    (@spec (((Ptr TypeEnv) (Ptr ResolvedType) (Ptr ResolvedType)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= a nil))
+    (@pre (!= b nil))
+    ;; A branch join or a min/max may be either operand, so its bounds are the
+    ;; union of both. Returning a's alone gave (if c 500 x) the range [500 .. 500].
+    ;; An explicitly unbounded range, not none, marks "either is unbounded":
+    ;; none on an alias copy would let env-type-range find the alias's bounds.
+    (match (env-type-range a)
+      ((some ra)
+        (match (env-type-range b)
+          ((some rb) (resolved-type-with-range (env-arena env) a (some (range-union ra rb))))
+          ((none) (resolved-type-with-range (env-arena env) a (some (range-bounds-unbounded))))))
+      ((none) a)))
+
+  (fn strip-value-range ((env (Ptr TypeEnv)) (t (Ptr ResolvedType)))
+    (@intent "A type without an interval worked out for one value, keeping a named range type's own")
+    (@spec (((Ptr TypeEnv) (Ptr ResolvedType)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= t nil))
+    (match (. (deref t) range)
+      ((some _)
+        (if (== (. (deref t) kind) 'rk-range)
+          t
+          (resolved-type-with-range (env-arena env) t (none))))
+      ((none) t)))
+
+  (fn let-bound-type ((env (Ptr TypeEnv)) (var-name String) (type-expr (Option (Ptr SExpr)))
+                      (val-type (Ptr ResolvedType)) (val-expr (Ptr SExpr)))
+    (@intent "The type a let binds: the range type it declares, else the value's own")
+    (@spec (((Ptr TypeEnv) String (Option (Ptr SExpr)) (Ptr ResolvedType) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= val-type nil))
+    ;; A typed binding into a range type is a narrowing point, and the name then
+    ;; holds that range. Otherwise the value's type is bound, as it always was,
+    ;; less any interval worked out for the value: a pointer from (addr x) can
+    ;; change x later, and the checker does not follow pointers.
+    (match type-expr
+      ((some te)
+        (let ((declared (resolve-type-expr-quietly env te)))
+          (match (env-type-range declared)
+            ((some _)
+              (let ((arena (env-arena env)))
+                (env-check-range-narrowing env
+                  (string-build arena (list String "'" var-name "'"))
+                  declared val-type (sexpr-line val-expr) (sexpr-col val-expr))
+                declared))
+            ((none) (strip-value-range env val-type)))))
+      ((none) (strip-value-range env val-type))))
+
+  (fn resolve-type-expr ((env (Ptr TypeEnv)) (type-expr (Ptr SExpr)))
+    (@intent "Resolve a type written as a symbol or as a form")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (let ((type-name (sexpr-get-symbol-name type-expr)))
+      (cond
+        ((not (string-eq type-name "")) (resolve-simple-type env type-name))
+        ((sexpr-is-list type-expr) (resolve-complex-type-expr env type-expr))
+        (else (env-get-unknown-type env)))))
+
+  (fn fn-declared-return ((env (Ptr TypeEnv)) (fn-name String))
+    (@intent "The return type a function's signature declares, if it has one")
+    (@spec (((Ptr TypeEnv) String) -> (Option (Ptr ResolvedType))))
+    (@pre (!= env nil))
+    (match (env-lookup-function env fn-name)
+      ((some sig) (some (. (deref sig) return-type)))
+      ((none) (none))))
+
+  (fn set-target-type ((env (Ptr TypeEnv)) (items (List (Ptr SExpr))) (len Int))
+    (@intent "The type of the place a set! writes, when it is known")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr)) Int) -> (Option (Ptr ResolvedType))))
+    (@pre (!= env nil))
+    ;; (set! T f v) and (set! T f Type v) write field f of T. (set! x v) writes
+    ;; x, whose type is its binding's. (set! (. p f) v), (set! (deref p) v),
+    ;; (set! (@ a i) v) and (set! p.f v) write a place whose type is the target
+    ;; expression's own.
+    (match (list-get items 1)
+      ((some target)
+        (if (>= len 4)
+          (match (list-get items 2)
+            ((some f)
+              (let ((obj-type (infer-expr-quietly env target))
+                    (rec-type (if (resolved-type-is-pointer obj-type)
+                                (match (. (deref obj-type) inner-type)
+                                  ((some inner) inner)
+                                  ((none) obj-type))
+                                obj-type)))
+                (resolved-type-get-field-type rec-type (sexpr-get-symbol-name f))))
+            ((none) (none)))
+          (let ((name (sexpr-get-symbol-name target)))
+            (cond
+              ((sexpr-is-list target) (some (infer-expr-quietly env target)))
+              ((string-eq name "") (none))
+              ((string-contains-char name 46) (some (infer-expr-quietly env target)))
+              (else (env-lookup-var env name))))))
+      ((none) (none))))
+
+  (fn check-field-narrowing ((env (Ptr TypeEnv)) (rec-type (Ptr ResolvedType)) (field-name String)
+                             (val-type (Ptr ResolvedType)) (val-expr (Ptr SExpr)))
+    (@intent "Check a value stored into a record field against the field's range type")
+    (@spec (((Ptr TypeEnv) (Ptr ResolvedType) String (Ptr ResolvedType) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= rec-type nil))
+    (match (resolved-type-get-field-type rec-type field-name)
+      ((some field-type)
+        (let ((arena (env-arena env)))
+          (env-check-range-narrowing env
+            (string-build arena (list String "field '" field-name "' of " (. (deref rec-type) name)))
+            field-type val-type (sexpr-line val-expr) (sexpr-col val-expr))))
+      ((none) (do))))
+
+  (fn check-constructor-args ((env (Ptr TypeEnv)) (the-type (Ptr ResolvedType))
+                              (items (List (Ptr SExpr))) (len Int))
+    (@intent "Infer a positional constructor's arguments and check them against what they fill")
+    (@spec (((Ptr TypeEnv) (Ptr ResolvedType) (List (Ptr SExpr)) Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= the-type nil))
+    ;; (Pct 50) narrows its one argument into Pct; (Point 1 2) fills fields in
+    ;; declaration order. The arguments used not to be inferred at all.
+    (let ((fields (. (deref the-type) fields))
+          (is-range (match (env-type-range the-type) ((some _) true) ((none) false))))
+      (for (i 1 len)
+        (match (list-get items i)
+          ((some arg)
+            (let ((arg-type (infer-expr-quietly env arg)))
+              (if is-range
+                (when (== i 1)
+                  (env-check-range-narrowing env "constructor" the-type arg-type
+                                             (sexpr-line arg) (sexpr-col arg)))
+                (match (list-get fields (- i 1))
+                  ((some field)
+                    (check-field-narrowing env the-type (. field name) arg-type arg))
+                  ((none) (do))))))
+          ((none) (do))))))
+
+  (fn check-map-put ((env (Ptr TypeEnv)) (items (List (Ptr SExpr))) (len Int))
+    (@intent "Infer map-put's operands and check the value against the map's value type")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr)) Int) -> Unit))
+    (@pre (!= env nil))
+    (when (>= len 4)
+      (match (list-get items 1)
+        ((some map-expr)
+          (let ((map-type (infer-expr-quietly env map-expr))
+                (coll-type (if (resolved-type-is-pointer map-type)
+                             (match (. (deref map-type) inner-type)
+                               ((some inner) inner)
+                               ((none) map-type))
+                             map-type)))
+            (match (list-get items 2)
+              ((some key-expr) (let ((_ (infer-expr-quietly env key-expr))) (do)))
+              ((none) (do)))
+            (match (list-get items 3)
+              ((some val-expr)
+                (let ((val-type (infer-expr-quietly env val-expr)))
+                  (match (. (deref coll-type) inner-type2)
+                    ((some value-type)
+                      (env-check-range-narrowing env "'map-put' value" value-type val-type
+                                                 (sexpr-line val-expr) (sexpr-col val-expr)))
+                    ((none) (do)))))
+              ((none) (do)))))
+        ((none) (do)))))
 
   (fn is-assignable-list-target ((expr (Ptr SExpr)))
     (@intent "Whether the C for this expression is something we can take the address of")
@@ -3202,10 +3485,14 @@
                           (resolved-type-set-inner2 result-type err-type))))
                     ((none) (do))))
                 result-type))
-            ;; User-defined generic types - look up the base type
+            ;; User-defined generic types - look up the base type. An inline
+            ;; (Int lo .. hi) carries its bounds on a copy of Int (#265).
             (else
               (match (env-lookup-type env head-name)
-                ((some t) t)
+                ((some t)
+                  (match (int-range-expr-bounds type-expr)
+                    ((some b) (resolved-type-with-range (env-arena env) t (some b)))
+                    ((none) t)))
                 ((none) (env-get-unknown-type env)))))))
       ((none) (env-get-unknown-type env))))
 
@@ -3393,7 +3680,9 @@
                           (match (sexpr-list-get binding-form (- binding-len 1))
                             ((some val-expr)
                               (let ((val-type (infer-expr env val-expr))
-                                    (val-type-name (. (deref val-type) name)))
+                                    (val-type-name (. (deref val-type) name))
+                                    (mut-type-expr (Option (Ptr SExpr))
+                                      (if (== binding-len 4) (sexpr-list-get binding-form 2) (none))))
                                 ;; Check for generic Option without explicit type annotation
                                 ;; (mut name expr) has length 3, (mut name Type expr) has length 4
                                 (if (and (== binding-len 3)
@@ -3409,9 +3698,9 @@
                                     (list-push parts var-name)
                                     (list-push parts " (Option T) ...)")
                                     (env-add-warning env (string-build arena parts) line col)
-                                    (env-bind-var-as env var-name val-type true 'origin-local))
+                                    (env-bind-var-as env var-name (let-bound-type env var-name mut-type-expr val-type val-expr) true 'origin-local))
                                   ;; Concrete type - just bind it
-                                  (env-bind-var-as env var-name val-type true 'origin-local))))
+                                  (env-bind-var-as env var-name (let-bound-type env var-name mut-type-expr val-type val-expr) true 'origin-local))))
                             ((none) (do)))))))
                   ((none) (do))))
               ;; Immutable: (name expr) or (name Type expr)
@@ -3422,13 +3711,17 @@
                     (match (sexpr-list-get binding-form 2)
                       ((some val-expr)
                         (let ((val-type (infer-expr env val-expr)))
-                          (env-bind-var-as env first-name val-type false 'origin-local)))
+                          (env-bind-var-as env first-name
+                            (let-bound-type env first-name (sexpr-list-get binding-form 1) val-type val-expr)
+                            false 'origin-local)))
                       ((none) (do)))
                     ;; Untyped binding: (name expr) - get expr at position 1
                     (match (sexpr-list-get binding-form 1)
                       ((some val-expr)
                         (let ((val-type (infer-expr env val-expr)))
-                          (env-bind-var-as env first-name val-type false 'origin-local)))
+                          (env-bind-var-as env first-name
+                            (let-bound-type env first-name (none) val-type val-expr)
+                            false 'origin-local)))
                       ((none) (do)))))))))
         ((none) (do)))))
 
@@ -3644,6 +3937,9 @@
           (type-params (find-fn-type-params (env-arena env) fn-form)))
       ;; Set type parameters for this function (enables T to resolve in resolve-simple-type)
       (env-set-fn-type-params env type-params)
+      ;; The declared return type, for the narrowing checks on (return e) and on
+      ;; the tail value (#265)
+      (env-set-current-return env (fn-declared-return env fn-name))
       (env-push-scope env)
       ;; Extract and bind parameters using helper functions to avoid cross-module issues
       ;; fn-form is (fn name ((param Type) ...) ...)
@@ -3677,6 +3973,17 @@
                                                 (not (is-c-name-related items bi)))
                                        (set! body-type (infer-expr env body-expr))))
                                    ((none) (do))))
+                               ;; The tail value is a narrowing point into the return type
+                               (match (env-get-current-return env)
+                                 ((some declared)
+                                   (match (list-get items last-body-idx)
+                                     ((some tail-expr)
+                                       (let ((arena (env-arena env)))
+                                         (env-check-range-narrowing env
+                                           (string-build arena (list String "return value of '" fn-name "'"))
+                                           declared body-type (sexpr-line tail-expr) (sexpr-col tail-expr))))
+                                     ((none) (do))))
+                                 ((none) (do)))
                                ;; Second pass: infer types in contract annotations to populate resolved-type
                                ;; This prevents fallback warnings in the transpiler
                                (env-bind-var env "$result" body-type)
@@ -3700,6 +4007,7 @@
         (env-pop-scope env)
         ;; Clear type parameters after function processing
         (env-clear-fn-type-params env)
+        (env-set-current-return env (none))
         result-type)))
 
   ;; ============================================================

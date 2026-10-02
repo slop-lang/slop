@@ -16,6 +16,11 @@
     range-bounds-new range-bounds-unbounded
     resolved-type-new resolved-variant-new resolved-field-new
     param-info-new fn-signature-new type-error-new diagnostic-new
+    ;; Range types and interval arithmetic (#265)
+    range-intersect range-union range-subsumes range-disjoint range-is-constant
+    range-add range-sub range-mul range-to-string range-describe-values
+    range-expr-has-dots range-bounds-of-expr range-expr-problem int-range-expr-bounds
+    resolved-type-with-range
     ;; Predicates
     range-contains is-primitive-kind is-container-kind
     resolved-type-is-pointer resolved-type-is-union resolved-type-is-record
@@ -285,6 +290,251 @@
       (RangeBounds new-has-min new-has-max new-min-val new-max-val)))
 
   ;; ============================================================
+  ;; Range Type Expressions and Interval Arithmetic (#265)
+  ;; ============================================================
+
+  (fn range-expr-has-dots ((expr (Ptr SExpr)))
+    (@intent "Whether a type expression is a range form: a list holding the symbol ..")
+    (@spec (((Ptr SExpr)) -> Bool))
+    (match (deref expr)
+      ((lst l)
+        (let ((items (. l items))
+              (len (list-len items))
+              (mut found false))
+          (for (i 1 len)
+            (match (list-get items i)
+              ((some item)
+                (match (deref item)
+                  ((sym s) (when (string-eq (. s name) "..") (set! found true)))
+                  (_ (do))))
+              ((none) (do))))
+          found))
+      (_ false)))
+
+  (fn range-bounds-of-expr ((expr (Ptr SExpr)))
+    (@intent "The bounds a range form like (Int 0 .. 100) declares, unbounded on a side it omits")
+    (@spec (((Ptr SExpr)) -> RangeBounds))
+    ;; Only integer literals count. range-expr-problem reports anything else, so
+    ;; a caller that has asked it gets exactly the bounds that were written.
+    (let ((mut b (range-bounds-unbounded))
+          (mut seen-dots false))
+      (match (deref expr)
+        ((lst l)
+          (let ((items (. l items))
+                (len (list-len items)))
+            (for (i 1 len)
+              (match (list-get items i)
+                ((some item)
+                  (match (deref item)
+                    ((num n)
+                      (when (not (. n is-float))
+                        (if seen-dots
+                          (set! b (RangeBounds (. b has-min) true (. b min-val) (. n int-value)))
+                          (set! b (RangeBounds true (. b has-max) (. n int-value) (. b max-val))))))
+                    ((sym s) (when (string-eq (. s name) "..") (set! seen-dots true)))
+                    (_ (do))))
+                ((none) (do))))))
+        (_ (do)))
+      b))
+
+  (fn range-expr-problem ((expr (Ptr SExpr)))
+    (@intent "What is wrong with an integer range form, or the empty string if nothing is")
+    (@spec (((Ptr SExpr)) -> String))
+    ;; A bound is an integer literal on its own side of a single `..`.
+    ;; (Int 0 .. MAX) used to lose MAX without a word and mean (Int 0 ..).
+    (let ((mut problem "")
+          (mut dots 0)
+          (mut before 0)
+          (mut after 0))
+      (match (deref expr)
+        ((lst l)
+          (let ((items (. l items))
+                (len (list-len items)))
+            (for (i 1 len)
+              (match (list-get items i)
+                ((some item)
+                  (match (deref item)
+                    ((sym s)
+                      (if (string-eq (. s name) "..")
+                        (set! dots (+ dots 1))
+                        (set! problem "range bounds must be integer literals")))
+                    ((num n)
+                      (cond
+                        ((. n is-float) (set! problem "range bounds must be integer literals"))
+                        ((== dots 0) (set! before (+ before 1)))
+                        (else (set! after (+ after 1)))))
+                    (_ (set! problem "range bounds must be integer literals"))))
+                ((none) (do))))))
+        (_ (do)))
+      (cond
+        ((not (string-eq problem "")) problem)
+        ((!= dots 1) "a range type is written (Int lo .. hi), with a single ..")
+        ((or (> before 1) (> after 1)) "a range type has at most one bound on each side of ..")
+        (else
+          (let ((b (range-bounds-of-expr expr)))
+            (if (and (. b has-min) (. b has-max) (> (. b min-val) (. b max-val)))
+              "this range admits no value: its lower bound is above its upper bound"
+              ""))))))
+
+  (fn int-range-expr-bounds ((expr (Ptr SExpr)))
+    (@intent "The bounds of a well-formed (Int lo .. hi) form, or none for anything else")
+    (@spec (((Ptr SExpr)) -> (Option RangeBounds)))
+    ;; Only an Int range is enforced. Another base, or malformed bounds, is
+    ;; reported where the form is written, so here it is simply not a range.
+    (match (deref expr)
+      ((lst l)
+        (match (list-get (. l items) 0)
+          ((some head)
+            (match (deref head)
+              ((sym s)
+                (if (and (string-eq (. s name) "Int")
+                         (range-expr-has-dots expr)
+                         (string-eq (range-expr-problem expr) ""))
+                  (some (range-bounds-of-expr expr))
+                  (none)))
+              (_ (none))))
+          ((none) (none))))
+      (_ (none))))
+
+  (fn range-subsumes ((outer RangeBounds) (inner RangeBounds))
+    (@intent "Whether every value in inner is also in outer")
+    (@spec ((RangeBounds RangeBounds) -> Bool))
+    (@pure)
+    (and (or (not (. outer has-min))
+             (and (. inner has-min) (>= (. inner min-val) (. outer min-val))))
+         (or (not (. outer has-max))
+             (and (. inner has-max) (<= (. inner max-val) (. outer max-val))))))
+
+  (fn range-disjoint ((a RangeBounds) (b RangeBounds))
+    (@intent "Whether no value is in both ranges")
+    (@spec ((RangeBounds RangeBounds) -> Bool))
+    (@pure)
+    (or (and (. a has-max) (. b has-min) (< (. a max-val) (. b min-val)))
+        (and (. b has-max) (. a has-min) (< (. b max-val) (. a min-val)))))
+
+  (fn range-is-constant ((r RangeBounds))
+    (@intent "Whether a range holds exactly one value")
+    (@spec ((RangeBounds) -> Bool))
+    (@pure)
+    (and (. r has-min) (. r has-max) (== (. r min-val) (. r max-val))))
+
+  (fn i64-max ()
+    (@intent "The largest I64")
+    (@spec (() -> I64))
+    (@pure)
+    9223372036854775807)
+
+  (fn i64-min ()
+    (@intent "The smallest I64, built without a literal C cannot spell")
+    (@spec (() -> I64))
+    (@pure)
+    (- (- 0 9223372036854775807) 1))
+
+  (fn add-overflows ((a I64) (b I64))
+    (@intent "Whether a + b overflows I64")
+    (@spec ((I64 I64) -> Bool))
+    (@pure)
+    (if (> b 0)
+      (> a (- (i64-max) b))
+      (< a (- (i64-min) b))))
+
+  (fn sub-overflows ((a I64) (b I64))
+    (@intent "Whether a - b overflows I64")
+    (@spec ((I64 I64) -> Bool))
+    (@pure)
+    (cond
+      ((> b 0) (< a (+ (i64-min) b)))
+      ((< b 0) (> a (+ (i64-max) b)))
+      (else false)))
+
+  (fn mul-overflows ((a I64) (b I64))
+    (@intent "Whether a * b overflows I64")
+    (@spec ((I64 I64) -> Bool))
+    (@pure)
+    (cond
+      ((or (== a 0) (== b 0)) false)
+      ((or (== a (i64-min)) (== b (i64-min))) true)
+      (else
+        (let ((abs-a (if (< a 0) (- 0 a) a))
+              (abs-b (if (< b 0) (- 0 b) b)))
+          (> abs-a (/ (i64-max) abs-b))))))
+
+  ;; Interval arithmetic. A side is dropped -- unbounded -- when either operand
+  ;; lacks what it needs or the bound would overflow, so a result is never
+  ;; narrower than the values it can hold.
+  (fn range-add ((a RangeBounds) (b RangeBounds))
+    (@intent "The range of a + b")
+    (@spec ((RangeBounds RangeBounds) -> RangeBounds))
+    (@pure)
+    (let ((has-lo (and (. a has-min) (. b has-min)
+                       (not (add-overflows (. a min-val) (. b min-val)))))
+          (has-hi (and (. a has-max) (. b has-max)
+                       (not (add-overflows (. a max-val) (. b max-val))))))
+      (RangeBounds has-lo has-hi
+                   (if has-lo (+ (. a min-val) (. b min-val)) 0)
+                   (if has-hi (+ (. a max-val) (. b max-val)) 0))))
+
+  (fn range-sub ((a RangeBounds) (b RangeBounds))
+    (@intent "The range of a - b")
+    (@spec ((RangeBounds RangeBounds) -> RangeBounds))
+    (@pure)
+    (let ((has-lo (and (. a has-min) (. b has-max)
+                       (not (sub-overflows (. a min-val) (. b max-val)))))
+          (has-hi (and (. a has-max) (. b has-min)
+                       (not (sub-overflows (. a max-val) (. b min-val))))))
+      (RangeBounds has-lo has-hi
+                   (if has-lo (- (. a min-val) (. b max-val)) 0)
+                   (if has-hi (- (. a max-val) (. b min-val)) 0))))
+
+  (fn range-mul ((a RangeBounds) (b RangeBounds))
+    (@intent "The range of a * b")
+    (@spec ((RangeBounds RangeBounds) -> RangeBounds))
+    (@pure)
+    ;; Fully bounded operands take the extremes of the four corner products.
+    ;; Two non-negative lower bounds still give a lower bound. Anything else
+    ;; can change sign without limit, so it is unbounded.
+    (let ((a-lo (. a min-val)) (a-hi (. a max-val))
+          (b-lo (. b min-val)) (b-hi (. b max-val)))
+      (cond
+        ((and (. a has-min) (. a has-max) (. b has-min) (. b has-max)
+              (not (mul-overflows a-lo b-lo)) (not (mul-overflows a-lo b-hi))
+              (not (mul-overflows a-hi b-lo)) (not (mul-overflows a-hi b-hi)))
+          (let ((p1 (* a-lo b-lo)) (p2 (* a-lo b-hi))
+                (p3 (* a-hi b-lo)) (p4 (* a-hi b-hi)))
+            (RangeBounds true true
+                         (min (min p1 p2) (min p3 p4))
+                         (max (max p1 p2) (max p3 p4)))))
+        ((and (. a has-min) (. b has-min) (>= a-lo 0) (>= b-lo 0)
+              (not (mul-overflows a-lo b-lo)))
+          (RangeBounds true false (* a-lo b-lo) 0))
+        (else (range-bounds-unbounded)))))
+
+  (fn range-to-string ((arena Arena) (r RangeBounds))
+    (@intent "Spell a range as its type: (Int 0 .. 100), (Int 0 ..), (Int .. 5)")
+    (@spec ((Arena RangeBounds) -> String))
+    (string-build arena
+      (list String "(Int"
+            (if (. r has-min) " " "")
+            (if (. r has-min) (int-to-string arena (cast Int (. r min-val))) "")
+            " .."
+            (if (. r has-max) " " "")
+            (if (. r has-max) (int-to-string arena (cast Int (. r max-val))) "")
+            ")")))
+
+  (fn range-describe-values ((arena Arena) (r RangeBounds))
+    (@intent "Say which values a range holds, for a diagnostic")
+    (@spec ((Arena RangeBounds) -> String))
+    (cond
+      ((and (. r has-min) (. r has-max))
+        (string-build arena (list String "in [" (int-to-string arena (cast Int (. r min-val)))
+                                  " .. " (int-to-string arena (cast Int (. r max-val))) "]")))
+      ((. r has-min)
+        (string-build arena (list String "at least " (int-to-string arena (cast Int (. r min-val))))))
+      ((. r has-max)
+        (string-build arena (list String "at most " (int-to-string arena (cast Int (. r max-val))))))
+      (else "unbounded")))
+
+  ;; ============================================================
   ;; Resolved Type Constructors
   ;; ============================================================
 
@@ -328,6 +578,18 @@
         (none)   ;; range
         0 0))    ;; source location
       t))
+
+  (fn resolved-type-with-range ((arena Arena) (t (Ptr ResolvedType)) (bounds (Option RangeBounds)))
+    (@intent "A copy of a type carrying these bounds, leaving the original untouched")
+    (@spec ((Arena (Ptr ResolvedType) (Option RangeBounds)) -> (Ptr ResolvedType)))
+    (@alloc arena)
+    (@pre (!= t nil))
+    ;; The builtin types are shared singletons, so the bounds of one value or one
+    ;; declaration ride on a copy: setting them on Int itself would bound every Int.
+    (let ((copy (cast (Ptr ResolvedType) (arena-alloc arena (sizeof ResolvedType)))))
+      (set! (deref copy) (deref t))
+      (set! (. (deref copy) range) bounds)
+      copy))
 
   (fn resolved-type-set-inner ((t (Ptr ResolvedType)) (inner (Ptr ResolvedType)))
     (@intent "Set the inner type for container types (Option, List, Ptr)")

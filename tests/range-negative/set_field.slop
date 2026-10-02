@@ -1,0 +1,11 @@
+;; set! of a range-typed field narrows the new value into the field's type.
+
+(module main
+  (type Cfg (record (workers (Int 1 .. 64))))
+
+  (fn main ()
+    (@intent "Set workers to 0")
+    (@spec (() -> Int))
+    (let ((mut c (record-new Cfg (workers 4))))
+      (set! c workers 0)
+      0)))

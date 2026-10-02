@@ -434,6 +434,35 @@ run_negative_check_test() {
     fi
 }
 
+# A check that must pass with no errors and report the expected warning.
+run_check_warning_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local expected="$3"
+    shift 3
+
+    echo -n "Testing $test_name (check, expected warning)... "
+    local output
+    output=$(uv run slop check "$test_file" "$@" 2>&1)
+    local exit_code=$?
+    local problem=""
+
+    if [ $exit_code -ne 0 ] || echo "$output" | grep -q ': error:'; then
+        problem="expected no errors"
+    elif ! echo "$output" | grep -qF "$expected"; then
+        problem="expected: $expected"
+    fi
+
+    if [ -z "$problem" ]; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} ($problem)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
 # alpha and beta each define Pt, Color and Shape. Before, the checker took
 # whichever module registered a name first: beta's own Pt could be "Unknown
 # type", its fields were appended to alpha's Pt, and an import could bind
@@ -503,6 +532,39 @@ float_mod|float_mod.slop:7:17: error: '%' needs an integer operand: expected Int
 ptr_operand|ptr_operand.slop:8:17: error: '+' does not do pointer arithmetic: got Ptr_U8; cast the pointer to Int first
 AR_CASES
 run_check_clean_test "$REPO_ROOT/tests/test_arith_operands.slop" "arith-operands"
+
+# Range types (#265). A value known at compile time -- a literal, a constant,
+# arithmetic on them -- is checked at every narrowing point into a range type.
+# A value whose interval can never fit is a warning. A build drops checker
+# diagnostics (#93), so these run `slop check` only.
+RGN="$REPO_ROOT/tests/range-negative"
+while IFS='|' read -r rg_name rg_expected <&3; do
+    run_negative_check_test "$RGN/$rg_name.slop" "range-$rg_name" "$rg_expected"
+done 3<<'RG_CASES'
+arg_literal|arg_literal.slop:14:11: error: argument 1 to 'main:bump': 130 is outside Pct (Int 0 .. 100)
+arg_constant|arg_constant.slop:15:11: error: argument 1 to 'main:bump': 130 is outside Pct (Int 0 .. 100)
+arg_folded|arg_folded.slop:14:11: error: argument 1 to 'main:bump': 101 is outside Pct (Int 0 .. 100)
+return_tail|return_tail.slop:7:5: error: return value of 'ascii': 200 is outside (Int 0 .. 127)
+return_early|return_early.slop:9:29: error: return value: 101 is outside Pct (Int 0 .. 100)
+typed_let|typed_let.slop:9:18: error: 'p': 150 is outside Pct (Int 0 .. 100)
+set_var|set_var.slop:10:15: error: assignment: 300 is outside Pct (Int 0 .. 100)
+set_field|set_field.slop:10:23: error: assignment: 0 is outside (Int 1 .. 64)
+record_field|record_field.slop:9:39: error: field 'workers' of Cfg: 65 is outside (Int 1 .. 64)
+positional_field|positional_field.slop:10:23: error: field 'workers' of Cfg: 0 is outside (Int 1 .. 64)
+list_push|list_push.slop:10:21: error: 'list-push' element: 101 is outside Pct (Int 0 .. 100)
+map_put|map_put.slop:10:22: error: 'map-put' value: 101 is outside Pct (Int 0 .. 100)
+cast|cast.slop:9:24: error: cast: 101 is outside Pct (Int 0 .. 100)
+constant_decl|constant_decl.slop:5:20: error: constant 'LIMIT': 130 is outside Pct (Int 0 .. 100)
+symbolic_bound|symbolic_bound.slop:6:13: error: range bounds must be integer literals
+empty_range|empty_range.slop:4:15: error: this range admits no value: its lower bound is above its upper bound
+two_dots|two_dots.slop:4:13: error: a range type is written (Int lo .. hi), with a single ..
+RG_CASES
+run_check_warning_test "$RGN/always_out.slop" "range-always-out" \
+    "always_out.slop:10:5: warning: return value of 'always-out': value is always outside Pct (Int 0 .. 100) (it is in [200 .. 300]); this aborts at run time"
+run_check_warning_test "$RGN/unchecked_base.slop" "range-unchecked-base" \
+    "unchecked_base.slop:4:13: warning: a U8 range is not enforced yet: only (Int lo .. hi) is checked"
+run_check_clean_test "$REPO_ROOT/tests/test_range_static.slop" "range-static"
+run_check_clean_test "$REPO_ROOT/tests/range-clean/generic_default.slop" "range-generic-default"
 
 echo ""
 

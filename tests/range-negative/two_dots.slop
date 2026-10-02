@@ -1,0 +1,9 @@
+;; A range type has a single `..`.
+
+(module main
+  (type Odd (Int 0 .. 5 .. 9))
+
+  (fn main ()
+    (@intent "Nothing")
+    (@spec (() -> Int))
+    0))

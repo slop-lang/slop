@@ -1,0 +1,10 @@
+;; A let that declares a range type narrows its value into it.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn main ()
+    (@intent "Bind 150 as a Pct")
+    (@spec (() -> Int))
+    (let ((p Pct 150))
+      0)))

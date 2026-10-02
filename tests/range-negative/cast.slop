@@ -1,0 +1,10 @@
+;; A cast to a range type is a checked narrowing, not an escape hatch.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn main ()
+    (@intent "Cast 101 to a Pct")
+    (@spec (() -> Int))
+    (let ((p (cast Pct 101)))
+      0)))

@@ -1,0 +1,11 @@
+;; A bound must be an integer literal. (Int 0 .. MAX) used to drop MAX without
+;; a word and mean (Int 0 ..).
+
+(module main
+  (const MAX Int 100)
+  (type Pct (Int 0 .. MAX))
+
+  (fn main ()
+    (@intent "Nothing")
+    (@spec (() -> Int))
+    0))

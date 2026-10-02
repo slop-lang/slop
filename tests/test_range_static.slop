@@ -1,0 +1,74 @@
+;; Range narrowings the checker must accept (#265): in-range values at every
+;; narrowing point, widening, intervals that only partly overlap the target
+;; (left to the runtime check), and the places an interval worked out for one
+;; value must not leak into a binding or a component type.
+
+(module test-range-static
+  (type Pct (Int 0 .. 100))
+  (type Score Pct)
+  (type Temp (Int -40 .. 50))
+  (type Cfg (record (workers (Int 1 .. 64)) (name String)))
+  (const HALF Pct 50)
+
+  (fn bump ((n Pct))
+    (@intent "Add one, as an Int")
+    (@spec ((Pct) -> Int))
+    (+ n 1))
+
+  (fn widen ((n Int))
+    (@intent "Accept any Int")
+    (@spec ((Int) -> Int))
+    n)
+
+  (fn as-score ()
+    (@intent "Return through an alias of a range")
+    (@spec (() -> Score))
+    99)
+
+  (fn chill ((t Temp))
+    (@intent "Accept a negative bound")
+    (@spec ((Temp) -> Int))
+    t)
+
+  (fn half-up ((n Pct))
+    (@intent "Only partly in range: left to the runtime check")
+    (@spec ((Pct) -> Pct))
+    (if (< n 50) (+ n 50) n))
+
+  (fn lam ((n Int))
+    (@intent "A call through a lambda is Unknown, not the lambda's type")
+    (@spec ((Int) -> Pct))
+    (let ((f (fn ((x Int)) (* x 2))))
+      (f n)
+      50))
+
+  (fn main ()
+    (@intent "Exercise every narrowing point with values that fit")
+    (@spec (() -> Int))
+    (with-arena 4096
+    (let ((a (bump 100))
+          (b (bump HALF))
+          (c (bump (+ 40 2)))
+          (d (widen (cast Pct 7)))
+          (e (as-score))
+          (f (chill -40))
+          (g (half-up 80))
+          (p Pct 100)
+          (mut q Pct 0)
+          (cfg (record-new Cfg (workers 64) (name "x")))
+          (cfg2 (Cfg 1 "y"))
+          (xs (list-new arena Pct))
+          (m (map-new arena String Pct))
+          (j (match (some 1) ((some v) (let ((mut w v)) (set! w 2) w)) ((none) 0)))
+          (mut k 5))
+      (set! q 100)
+      (set! k 500)
+      (list-push xs 0)
+      (map-put m "a" 100)
+      (bump (if (> a 1) 50 60))
+      (bump (min 5 200))
+      (if (and (== a 101) (== b 51) (== c 43) (== d 7) (== e 99) (== f -40)
+               (== g 80) (== p 100) (== q 100) (== j 2) (== k 500)
+               (== (lam 2) 50))
+        0
+        1)))))

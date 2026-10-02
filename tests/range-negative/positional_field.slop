@@ -1,0 +1,11 @@
+;; A positional constructor fills fields in order, each a narrowing. Its
+;; arguments used not to be inferred at all.
+
+(module main
+  (type Cfg (record (name String) (workers (Int 1 .. 64))))
+
+  (fn main ()
+    (@intent "Build a Cfg with 0 workers")
+    (@spec (() -> Int))
+    (let ((c (Cfg "x" 0)))
+      0)))

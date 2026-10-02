@@ -71,6 +71,11 @@ SLOP_OPTION_DEFINE(types_Diagnostic, slop_option_types_Diagnostic)
 SLOP_OPTION_DEFINE(types_ParamInfo, slop_option_types_ParamInfo)
 #endif
 
+#ifndef SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+#define SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+SLOP_OPTION_DEFINE(types_RangeBounds, slop_option_types_RangeBounds)
+#endif
+
 struct env_VarBinding {
     slop_string name;
     types_ResolvedType* var_type;
@@ -215,6 +220,7 @@ struct env_TypeEnv {
     types_ResolvedType* never_type;
     slop_list_string fn_type_params;
     slop_list_env_ModuleImport module_imports;
+    slop_option_types_ResolvedType_ptr current_return;
 };
 typedef struct env_TypeEnv env_TypeEnv;
 
@@ -280,6 +286,11 @@ types_ResolvedType* env_env_make_result_type(env_TypeEnv* env);
 types_ResolvedType* env_env_make_fn_type(env_TypeEnv* env, types_FnSignature* sig);
 void env_env_add_warning(env_TypeEnv* env, slop_string message, int64_t line, int64_t col);
 void env_env_add_error(env_TypeEnv* env, slop_string message, int64_t line, int64_t col);
+slop_option_types_RangeBounds env_env_type_range(types_ResolvedType* t);
+slop_string env_env_range_label(env_TypeEnv* env, types_ResolvedType* t, types_RangeBounds bounds);
+void env_env_check_range_narrowing(env_TypeEnv* env, slop_string context, types_ResolvedType* target, types_ResolvedType* value, int64_t line, int64_t col);
+void env_env_set_current_return(env_TypeEnv* env, slop_option_types_ResolvedType_ptr ret);
+slop_option_types_ResolvedType_ptr env_env_get_current_return(env_TypeEnv* env);
 slop_list_types_Diagnostic env_env_get_diagnostics(env_TypeEnv* env);
 void env_env_clear_diagnostics(env_TypeEnv* env);
 void env_env_record_binding(env_TypeEnv* env, slop_string name, int64_t line, int64_t col, slop_string slop_type);
@@ -356,6 +367,11 @@ SLOP_OPTION_DEFINE(env_TypeEnv, slop_option_env_TypeEnv)
 #ifndef SLOP_OPTION_TYPES_PARAMINFO_DEFINED
 #define SLOP_OPTION_TYPES_PARAMINFO_DEFINED
 SLOP_OPTION_DEFINE(types_ParamInfo, slop_option_types_ParamInfo)
+#endif
+
+#ifndef SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+#define SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+SLOP_OPTION_DEFINE(types_RangeBounds, slop_option_types_RangeBounds)
 #endif
 
 

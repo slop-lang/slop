@@ -1,0 +1,7 @@
+;; The tail value is a narrowing into the declared return type, inline or named.
+
+(module main
+  (fn ascii ()
+    (@intent "Return a byte that is not ASCII")
+    (@spec (() -> (Int 0 .. 127)))
+    200))

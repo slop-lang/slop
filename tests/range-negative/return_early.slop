@@ -1,0 +1,10 @@
+;; An early (return e) is checked against the return type as the tail is.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn clamp ((n Int))
+    (@intent "Return early with a value out of range")
+    (@spec ((Int) -> Pct))
+    (when (> n 100) (return 101))
+    0))

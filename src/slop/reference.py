@@ -21,15 +21,19 @@ TOPICS = {
 (Int min ..)            ; >= min
 (Int .. max)            ; <= max
 (Int min .. max)        ; Bounded range
-(String min .. max)     ; Length-bounded string
-(Float min .. max)      ; Bounded float
+(String min .. max)     ; Length-bounded string (not enforced yet)
+(Float min .. max)      ; Bounded float (not enforced yet)
 
 ; Examples
 (type UserId (Int 1 ..))
 (type Age (Int 0 .. 150))
 (type Port (Int 1 .. 65535))
 
-; C mapping: (Int 0 .. 255) -> uint8_t with runtime check
+; Bounds are integer literals. A literal, constant, or arithmetic on them that
+; flows outside a range -- an argument, return, typed let, set!, record field,
+; container element or cast -- is a checker error; a value whose interval can
+; never fit is a warning. Runtime checks are not emitted yet (#265).
+; C mapping: (Int 0 .. 255) -> uint8_t
 
 ### Collections
 (List T)                ; Dynamic array

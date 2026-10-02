@@ -14,7 +14,7 @@ SLOP is designed for hybrid generation where:
 
 Core principles:
 - S-expression syntax eliminates parsing ambiguity
-- Range types catch bounds errors at compile time
+- Range types catch bounds errors, at compile time where the value is known (see 6.1, Range Checking)
 - Mandatory contracts define correctness
 - Explicit holes enable fine-grained LLM generation
 - Transpiles to C for maximum portability and performance
@@ -92,17 +92,17 @@ literal     = number | string | 'true | 'false | 'nil
 (Bool)                   ; true or false (uint8_t)
 
 (String)                 ; Record: { data: (Ptr U8), len: U64 }
-(String .. max-len)      ; String with max length
-(String min .. max)      ; String with length in range
+(String .. max-len)      ; String with max length      (not enforced yet)
+(String min .. max)      ; String with length in range (not enforced yet)
 
 (Bytes)                  ; Record: { data: (Ptr U8), len: U64, cap: U64 }
-(Bytes .. max-len)       ; Bounded byte buffer
+(Bytes .. max-len)       ; Bounded byte buffer         (not enforced yet)
 
 ; Collections
 (List T)                 ; Dynamic array of T
 (List T n)               ; Fixed-size array of exactly n elements
-(List T min ..)          ; List with at least min elements
-(List T min .. max)      ; List with length in range
+(List T min ..)          ; List with at least min elements (not enforced yet)
+(List T min .. max)      ; List with length in range     (not enforced yet)
 
 (Array T n)              ; Fixed-size array (stack allocated)
 (Slice T)                ; View into array/list (pointer + length)
@@ -814,7 +814,49 @@ The transpiler automatically selects the smallest C integer type that fits the r
 (Int 0 ..)              → int64_t (unbounded)
 ```
 
-Range constructors (e.g., `TypeName_new(v)`) are generated with `SLOP_PRE` checks to validate bounds at runtime.
+#### Range Checking
+
+Only integer ranges, `(Int lo .. hi)`, are enforced. A bound is an integer
+literal on its own side of a single `..`; `(Int 0 .. MAX)`, `(Int 0 127)` and
+`(Int 5 .. 3)` are checker errors. A range over any other base -- `(U8 0 .. 9)`,
+`(Float 0.0 .. 1.0)`, or a `String`, `Bytes` or `List` length -- is accepted
+with a warning that it is not enforced yet.
+
+A value narrows into a range type wherever it flows into a range-typed place:
+
+```
+(let ((p Pct e)) ...)            ; a typed let
+(set! p e)  (set! r f e)         ; set! of a variable or a field
+(f e)                            ; an argument to a range-typed parameter
+e as the result of a fn          ; its tail value, or (return e)
+(record-new R (f e))  (R ... e)  ; a record field
+(list-push xs e)  (list-set xs i e)  (map-put m k e)  ; a container element
+(cast Pct e)                     ; a cast: checked, not an escape hatch
+```
+
+Widening is free: a range-typed value may go anywhere an `Int`, or a wider
+range, is expected.
+
+At each narrowing point the checker compares the value's interval with the
+target range:
+
+- **A value known at compile time** -- a literal, a `(const N Int v)`, or
+  arithmetic on those -- that lies outside the range is an **error**:
+  `argument 1 to 'bump': 130 is outside Pct (Int 0 .. 100)`.
+- **A value whose interval cannot meet the range** is a **warning**. Intervals
+  come from declared range types and are carried through `+ - *`, `if`/`cond`/
+  `match` and `min`/`max`: for a `Pct n`, `(+ n 200)` is in `[200 .. 300]`, and
+  returning it as a `Pct` is reported as always outside.
+- **A value whose interval overlaps the range** is not reported.
+
+An interval belongs to a value, never to a name: an untyped `let` binds the
+value's type without it, since a pointer from `(addr x)` could later change `x`.
+A typed `let` binds its declared range.
+
+Runtime checks at narrowing points are not emitted yet, so a value that is not
+known at compile time is not checked, and one beyond the C storage type wraps.
+`TypeName_new(v)` is generated for each named range but nothing calls it.
+Both are tracked in #265.
 
 ### 6.2 Contracts
 
@@ -841,7 +883,7 @@ SLOP                    C
 
 3. Compile-time  
    - Type inference and checking
-   - Range analysis
+   - Range narrowing of compile-time-known values (6.1, Range Checking)
    - Contract consistency
    - Exhaustiveness checking
    - Memory safety (ownership/borrowing)
@@ -853,8 +895,8 @@ SLOP                    C
 
 5. Runtime (debug mode)
    - @pre/@post assertions
-   - Range bounds checking
    - Null checks
+   - (Range bounds checking is not emitted yet; see 6.1, Range Checking)
 ```
 
 ### 7.1 Executable Examples
@@ -892,7 +934,9 @@ rather than as a pass.
 
 SLOP uses Z3 for compile-time contract verification. The verifier automatically:
 - Checks contract consistency (pre doesn't contradict post)
-- Enforces range type bounds
+- Assumes range type bounds on parameters, results and fields. They are not
+  yet proof obligations, so a range-typed result can make a false `@post`
+  verify (#265)
 - Recognizes loop patterns (filter, count, fold) and generates axioms
 
 **Escape hatches** when automatic verification fails:

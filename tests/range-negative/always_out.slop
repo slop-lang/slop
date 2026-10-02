@@ -1,0 +1,15 @@
+;; Interval arithmetic: n + 200 for a Pct n is in [200 .. 300], which never
+;; fits a Pct. A warning, as GNAT gives one: the check stops it at run time.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn always-out ((n Pct))
+    (@intent "Return a value that is never a Pct")
+    (@spec ((Pct) -> Pct))
+    (+ n 200))
+
+  (fn main ()
+    (@intent "Nothing")
+    (@spec (() -> Int))
+    0))
