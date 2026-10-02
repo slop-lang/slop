@@ -419,6 +419,7 @@ types_ResolvedVariant* types_resolved_variant_new(slop_arena* arena, slop_string
 types_ResolvedField* types_resolved_field_new(slop_arena* arena, slop_string name, types_ResolvedType* field_type, int64_t offset);
 types_ResolvedType* types_resolved_type_new(slop_arena* arena, types_ResolvedTypeKind kind, slop_string name, slop_option_string module_name, slop_string c_name);
 types_ResolvedType* types_resolved_type_with_range(slop_arena* arena, types_ResolvedType* t, slop_option_types_RangeBounds bounds);
+slop_option_types_RangeBounds types_resolved_type_range(types_ResolvedType* t);
 void types_resolved_type_set_inner(types_ResolvedType* t, types_ResolvedType* inner);
 void types_resolved_type_set_inner2(types_ResolvedType* t, types_ResolvedType* inner);
 types_ParamInfo* types_param_info_new(slop_arena* arena, slop_string name, types_ResolvedType* param_type);

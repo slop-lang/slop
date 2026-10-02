@@ -19,8 +19,13 @@ typedef enum {
 typedef uint8_t strlib_AsciiChar;
 
 static inline strlib_AsciiChar strlib_AsciiChar_new(int64_t v) {
-SLOP_PRE(v >= 0 && v <= 127, "strlib_AsciiChar in range 0..127");
-return (strlib_AsciiChar)v;
+return SLOP_RANGE(strlib_AsciiChar, v, 1, 1, 0, 127, "AsciiChar (Int 0 .. 127)");
+}
+
+typedef uint8_t strlib_Byte;
+
+static inline strlib_Byte strlib_Byte_new(int64_t v) {
+return SLOP_RANGE(strlib_Byte, v, 1, 1, 0, 255, "Byte (Int 0 .. 255)");
 }
 
 #ifndef SLOP_RESULT_INT_STRLIB_PARSEERROR_DEFINED
@@ -35,17 +40,17 @@ typedef struct { bool is_ok; union { double ok; strlib_ParseError err; } data; }
 
 int64_t strlib_min(int64_t a, int64_t b);
 slop_string strlib_cstring_to_string(uint8_t* cstr);
-uint8_t strlib_is_alpha(strlib_AsciiChar c);
-uint8_t strlib_is_digit(strlib_AsciiChar c);
-uint8_t strlib_is_alnum(strlib_AsciiChar c);
-uint8_t strlib_is_space(strlib_AsciiChar c);
-uint8_t strlib_is_upper(strlib_AsciiChar c);
-uint8_t strlib_is_lower(strlib_AsciiChar c);
+uint8_t strlib_is_alpha(strlib_Byte c);
+uint8_t strlib_is_digit(strlib_Byte c);
+uint8_t strlib_is_alnum(strlib_Byte c);
+uint8_t strlib_is_space(strlib_Byte c);
+uint8_t strlib_is_upper(strlib_Byte c);
+uint8_t strlib_is_lower(strlib_Byte c);
 uint8_t strlib_is_ascii(int64_t c);
-uint8_t strlib_is_printable(strlib_AsciiChar c);
-uint8_t strlib_is_control(strlib_AsciiChar c);
-strlib_AsciiChar strlib_char_to_upper(strlib_AsciiChar c);
-strlib_AsciiChar strlib_char_to_lower(strlib_AsciiChar c);
+uint8_t strlib_is_printable(strlib_Byte c);
+uint8_t strlib_is_control(strlib_Byte c);
+strlib_Byte strlib_char_to_upper(strlib_Byte c);
+strlib_Byte strlib_char_to_lower(strlib_Byte c);
 slop_option_int strlib_index_of(slop_string haystack, slop_string needle);
 slop_option_int strlib_last_index_of(slop_string haystack, slop_string needle);
 uint8_t strlib_contains(slop_string haystack, slop_string needle);
@@ -55,8 +60,8 @@ int64_t strlib_count_occurrences(slop_string haystack, slop_string needle);
 slop_string strlib_trim(slop_arena* arena, slop_string s);
 slop_string strlib_trim_start(slop_arena* arena, slop_string s);
 slop_string strlib_trim_end(slop_arena* arena, slop_string s);
-slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_len, strlib_AsciiChar pad_char);
-slop_string strlib_pad_end(slop_arena* arena, slop_string s, int64_t target_len, strlib_AsciiChar pad_char);
+slop_string strlib_pad_start(slop_arena* arena, slop_string s, int64_t target_len, strlib_Byte pad_char);
+slop_string strlib_pad_end(slop_arena* arena, slop_string s, int64_t target_len, strlib_Byte pad_char);
 slop_string strlib_reverse(slop_arena* arena, slop_string s);
 slop_string strlib_repeat(slop_arena* arena, slop_string s, int64_t n);
 slop_string strlib_substring(slop_arena* arena, slop_string s, int64_t start, int64_t len);
@@ -73,10 +78,10 @@ slop_string strlib_replace(slop_arena* arena, slop_string s, slop_string old, sl
 slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old, slop_string new);
 int64_t strlib_compare(slop_string a, slop_string b);
 int64_t strlib_compare_ignore_case(slop_string a, slop_string b);
-strlib_AsciiChar strlib_char_at(slop_string s, int64_t index);
-uint8_t strlib_char_is_symbol_start(strlib_AsciiChar c);
-uint8_t strlib_char_is_symbol_char(strlib_AsciiChar c);
-uint8_t strlib_char_is_operator(strlib_AsciiChar c);
+strlib_Byte strlib_char_at(slop_string s, int64_t index);
+uint8_t strlib_char_is_symbol_start(strlib_Byte c);
+uint8_t strlib_char_is_symbol_char(strlib_Byte c);
+uint8_t strlib_char_is_operator(strlib_Byte c);
 void strlib_fill_bytes(uint8_t* ptr, uint8_t value, int64_t len);
 
 

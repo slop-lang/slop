@@ -48,6 +48,9 @@ slop_string expr_literal_pattern_cond(context_TranspileContext* ctx, slop_string
 uint8_t expr_pattern_has_literal_payload(types_SExpr* pattern);
 slop_string expr_transpile_symbol(context_TranspileContext* ctx, slop_string name);
 slop_option_string expr_quoted_variant_name(slop_arena* arena, types_SExpr* expr);
+slop_string expr_transpile_expr_narrowed(context_TranspileContext* ctx, types_SExpr* expr, slop_string c_type, slop_string slop_type, slop_string context);
+slop_string expr_field_slop_type(context_TranspileContext* ctx, types_SExpr* target_expr, slop_string field_name);
+slop_string expr_arg_range_context(context_TranspileContext* ctx, int64_t param_idx, slop_string fn_name);
 slop_string expr_transpile_expr_for(context_TranspileContext* ctx, types_SExpr* expr, slop_string expected_type);
 slop_string expr_get_prefixed_enum_value(context_TranspileContext* ctx, slop_string enum_name, slop_string variant_name);
 slop_string expr_binop_to_c(slop_string op);

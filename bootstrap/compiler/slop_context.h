@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include "slop_types.h"
 #include "slop_ctype.h"
+#include "slop_parser.h"
 #include "slop_strlib.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +68,11 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #ifndef SLOP_OPTION_CONTEXT_SCOPE_PTR_DEFINED
 #define SLOP_OPTION_CONTEXT_SCOPE_PTR_DEFINED
 SLOP_OPTION_DEFINE(context_Scope*, slop_option_context_Scope_ptr)
+#endif
+
+#ifndef SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+#define SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+SLOP_OPTION_DEFINE(types_RangeBounds, slop_option_types_RangeBounds)
 #endif
 
 struct context_TranspileError {
@@ -137,6 +143,7 @@ SLOP_LIST_DEFINE(context_TypeEntry, slop_list_context_TypeEntry)
 
 struct context_FuncParamType {
     slop_string c_type;
+    slop_string slop_type;
 };
 typedef struct context_FuncParamType context_FuncParamType;
 
@@ -451,6 +458,7 @@ struct context_TranspileContext {
     slop_list_context_ResultType result_types;
     slop_option_string current_result_type;
     slop_option_string current_return_c_type;
+    slop_string current_return_slop_type;
     slop_list_string imported_modules;
     slop_list_context_OptionType option_types;
     slop_list_context_ListType list_types;
@@ -605,6 +613,7 @@ slop_option_string context_ctx_lookup_field_slop_type(context_TranspileContext* 
 slop_option_string context_ctx_lookup_field_type_for_slop(context_TranspileContext* ctx, slop_string slop_name, slop_string field_name);
 slop_option_string context_ctx_lookup_field_slop_type_for_slop(context_TranspileContext* ctx, slop_string slop_name, slop_string field_name);
 slop_option_string context_ctx_lookup_field_type_by_index(context_TranspileContext* ctx, slop_string type_name, int64_t index);
+slop_option_string context_ctx_lookup_field_slop_type_by_index(context_TranspileContext* ctx, slop_string type_name, int64_t index);
 slop_list_context_FieldEntry context_ctx_get_fields_for_type(context_TranspileContext* ctx, slop_string type_name);
 void context_ctx_mark_pointer_var(context_TranspileContext* ctx, slop_string name);
 uint8_t context_ctx_is_pointer_var(context_TranspileContext* ctx, slop_string name);
@@ -645,6 +654,14 @@ void context_ctx_clear_current_result_type(context_TranspileContext* ctx);
 void context_ctx_set_current_return_type(context_TranspileContext* ctx, slop_string c_type);
 slop_option_string context_ctx_get_current_return_type(context_TranspileContext* ctx);
 void context_ctx_clear_current_return_type(context_TranspileContext* ctx);
+void context_ctx_set_current_return_slop_type(context_TranspileContext* ctx, slop_string slop_type);
+slop_string context_ctx_get_current_return_slop_type(context_TranspileContext* ctx);
+slop_option_types_RangeBounds context_ctx_range_bounds_of(context_TranspileContext* ctx, slop_string slop_type);
+slop_option_types_RangeBounds context_sized_int_bounds(slop_string name);
+uint8_t context_range_impossible_name(slop_string name);
+slop_string context_ctx_range_safe_text(context_TranspileContext* ctx, slop_string s);
+slop_string context_ctx_range_where(context_TranspileContext* ctx, slop_string slop_type, types_RangeBounds bounds, int64_t line, int64_t col);
+slop_string context_ctx_range_wrap(context_TranspileContext* ctx, slop_string code, slop_string c_type, slop_string slop_type, slop_string context, types_SExpr* value_expr);
 void context_ctx_set_capture_retval(context_TranspileContext* ctx, uint8_t enabled);
 uint8_t context_ctx_is_capture_retval(context_TranspileContext* ctx);
 void context_ctx_set_post_exit(context_TranspileContext* ctx, uint8_t enabled);
@@ -856,6 +873,11 @@ SLOP_OPTION_DEFINE(context_TypeLookup, slop_option_context_TypeLookup)
 #ifndef SLOP_OPTION_CONTEXT_VARIANTLOOKUP_DEFINED
 #define SLOP_OPTION_CONTEXT_VARIANTLOOKUP_DEFINED
 SLOP_OPTION_DEFINE(context_VariantLookup, slop_option_context_VariantLookup)
+#endif
+
+#ifndef SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+#define SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+SLOP_OPTION_DEFINE(types_RangeBounds, slop_option_types_RangeBounds)
 #endif
 
 #ifndef SLOP_OPTION_CONTEXT_LASTLAMBDAINFO_DEFINED

@@ -12,15 +12,15 @@ slop_string path_path_dirname(slop_arena* arena, slop_string path) {
         if (len == 0) {
             return SLOP_STR(".");
         } else {
-            __auto_type _mv_33 = strlib_last_index_of(path, SLOP_STR("/"));
-            if (_mv_33.has_value) {
-                __auto_type idx = _mv_33.value;
+            __auto_type _mv_35 = strlib_last_index_of(path, SLOP_STR("/"));
+            if (_mv_35.has_value) {
+                __auto_type idx = _mv_35.value;
                 if (idx == 0) {
                     return SLOP_STR("/");
                 } else {
                     return strlib_substring(arena, path, 0, ((int64_t)(idx)));
                 }
-            } else if (!_mv_33.has_value) {
+            } else if (!_mv_35.has_value) {
                 return SLOP_STR(".");
             }
             SLOP_UNREACHABLE();
@@ -51,19 +51,19 @@ slop_string path_path_basename(slop_arena* arena, slop_string path) {
         if (len == 0) {
             return SLOP_STR("");
         } else {
-            __auto_type _mv_34 = strlib_last_index_of(path, SLOP_STR("/"));
-            if (_mv_34.has_value) {
-                __auto_type idx = _mv_34.value;
+            __auto_type _mv_36 = strlib_last_index_of(path, SLOP_STR("/"));
+            if (_mv_36.has_value) {
+                __auto_type idx = _mv_36.value;
                 {
                     __auto_type start = (idx + 1);
                     __auto_type remaining = (len - start);
                     if (remaining <= 0) {
                         return SLOP_STR("");
                     } else {
-                        return strlib_substring(arena, path, ((int64_t)(start)), ((int64_t)(remaining)));
+                        return strlib_substring(arena, path, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at path.slop:78:56"))), ((int64_t)(SLOP_RANGE(int64_t, remaining, 1, 0, 0, 0, "(Int 0 ..) at path.slop:78:80"))));
                     }
                 }
-            } else if (!_mv_34.has_value) {
+            } else if (!_mv_36.has_value) {
                 return path;
             }
             SLOP_UNREACHABLE();
@@ -77,18 +77,18 @@ slop_string path_path_extension(slop_arena* arena, slop_string path) {
         if (len == 0) {
             return SLOP_STR("");
         } else {
-            __auto_type _mv_35 = strlib_last_index_of(path, SLOP_STR("."));
-            if (_mv_35.has_value) {
-                __auto_type idx = _mv_35.value;
+            __auto_type _mv_37 = strlib_last_index_of(path, SLOP_STR("."));
+            if (_mv_37.has_value) {
+                __auto_type idx = _mv_37.value;
                 {
                     __auto_type ext_len = (len - idx);
                     if (ext_len <= 0) {
                         return SLOP_STR("");
                     } else {
-                        return strlib_substring(arena, path, ((int64_t)(idx)), ((int64_t)(ext_len)));
+                        return strlib_substring(arena, path, ((int64_t)(idx)), ((int64_t)(SLOP_RANGE(int64_t, ext_len, 1, 0, 0, 0, "(Int 0 ..) at path.slop:96:78"))));
                     }
                 }
-            } else if (!_mv_35.has_value) {
+            } else if (!_mv_37.has_value) {
                 return SLOP_STR("");
             }
             SLOP_UNREACHABLE();
