@@ -7,7 +7,7 @@ Practical guide to the SLOP contract verifier. For annotation syntax, see `REFER
 `slop verify` uses Z3 (an SMT solver) to prove that function implementations satisfy their contracts. The verification pipeline is:
 
 ```
-SLOP source → parse → type check → contract verification (Z3) + range verification
+SLOP source → parse → type check → contract verification (Z3)
 ```
 
 The verifier checks:
@@ -15,7 +15,7 @@ The verifier checks:
 - **@post** — postconditions hold given preconditions
 - **@property** — named properties hold universally
 - **@invariant** — type invariants maintained across construction and use
-- **Range types** — bounds propagated through arithmetic
+- **Range types** — a range return type is an obligation: every value the function returns must be shown to fit
 - **Record field axioms** — `(record-new Type (field value))` implies `(. $result field) == value`
 
 Each function is verified independently. The verifier translates the function body and contracts to Z3 constraints, then asks Z3 whether the postconditions can be violated.
@@ -38,7 +38,13 @@ Given `@pre` as assumptions, the verifier proves `@post` holds for all valid inp
 
 ### Range Types
 
-Range type bounds are propagated through arithmetic. `(Int 0 .. 255)` generates the constraint `0 <= x <= 255` and maps to `uint8_t` in C.
+A range return type is a proof obligation (#265). It is checked as a postcondition on `$result`, on every return path, early returns included; a failure names it as `return value within Pct (Int 0 .. 100)`. A function whose only contract is a range return is verified, not skipped.
+
+Range bounds elsewhere are assumed: a parameter's, a record field's, a callee's range result, a local's after `set!`. That is sound because each is checked at run time where the value was stored (LANGUAGE.md 6.1, Range Checking): on a path where one did not hold, the program aborted before reaching here. The same goes for a cast: `(cast Pct e)` gives a value in `Pct` that equals `e` whenever `e` fits, and `(cast U8 e)` a value in 0..255 that equals `e` whenever `e` fits. Nothing is asserted of `e` itself.
+
+Not yet obligations: a narrowing inside the body -- an argument, a typed `let`, a `set!`, a record field, a container element, a cast -- is not proved to fit. Its run-time check stands, so a false proof cannot follow from it; only the claim that the check never fires is missing.
+
+A build with `--no-range-checks` has no run-time checks, so a result of `slop verify` is then only as good as every narrowing it relied on.
 
 ```lisp
 (fn safe-add ((a (Int 0 .. 100)) (b (Int 0 .. 100)))

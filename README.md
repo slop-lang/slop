@@ -462,7 +462,7 @@ The verifier catches the bug — when `val > hi`, returning `val` violates `$res
 
 - **`@pre` / `@post`** — preconditions and postconditions on functions
 - **`@property`** — universal assertions over results (e.g., `(forall (t $result) (pred t))`)
-- **Range types** — bounds preservation through arithmetic
+- **Range types** — every value a function returns fits its range return type
 - **Union types** — tag and payload axioms for `match` postconditions on `Option`/`Result` fields
 - **`@callback-assume`** — properties of callback arguments in higher-order functions
 

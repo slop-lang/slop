@@ -137,6 +137,7 @@ class Z3Translator:
         self._final_version_names: set = set()
         self._declared_types: Dict[str, Any] = {}
         self._record_new_counter = 0  # Counter for unique record-new values
+        self._cast_counter = 0  # Counter for unique bounded cast results
         self.enum_type_variants: set = set()  # Variants from EnumType only (not UnionType)
         self._build_enum_map()
 
@@ -1224,6 +1225,56 @@ class Z3Translator:
         elif isinstance(typ, PtrType):
             self.constraints.append(var >= 0)
 
+    # What a cast to each sized integer can hold. U64 and I64 are left out:
+    # their bounds are the model's own Int range, or beyond it.
+    _CAST_WIDTH_BOUNDS = {
+        'U8': (0, 255), 'U16': (0, 65535), 'U32': (0, 4294967295),
+        'I8': (-128, 127), 'I16': (-32768, 32767), 'I32': (-2147483648, 2147483647),
+    }
+
+    def _translate_cast(self, expr: SList) -> Optional[z3.ExprRef]:
+        """Translate (cast Type e).
+
+        A cast used to be the identity, which says nothing of a cast to U8 -- a
+        string byte read is (cast U8 ...) -- and is wrong when the value does
+        not fit, since the cast truncates. A cast into a range type is checked
+        at run time (#265), so execution goes on only with a value in range.
+
+        Either way the result is a fresh value inside the target's bounds that
+        equals the operand whenever the operand fits. Nothing is asserted of
+        the operand itself: constraints here hold on every path, and the cast
+        may sit in a branch the operand's other values take the other way.
+        Proving a range cast cannot fail is an obligation not yet made.
+        """
+        inner = self.translate_expr(expr[2])
+        if inner is None or not z3.is_int(inner):
+            return inner
+        target = expr[1]
+        bounds: Optional[Tuple[Optional[int], Optional[int]]] = None
+        if isinstance(target, Symbol) and target.name in self._CAST_WIDTH_BOUNDS:
+            bounds = self._CAST_WIDTH_BOUNDS[target.name]
+        else:
+            from .type_builder import _parse_type_expr_simple
+            registry = dict(self.type_env.type_registry)
+            registry.update(self.imported_defs.types)
+            typ = _parse_type_expr_simple(target, registry)
+            if isinstance(typ, RangeType) and typ.base == 'Int':
+                bounds = (typ.bounds.min_val, typ.bounds.max_val)
+        if bounds is None or (bounds[0] is None and bounds[1] is None):
+            return inner
+        lo, hi = bounds
+        self._cast_counter += 1
+        result = z3.Int(f"_cast_{self._cast_counter}")
+        fits = []
+        if lo is not None:
+            self.constraints.append(result >= lo)
+            fits.append(inner >= lo)
+        if hi is not None:
+            self.constraints.append(result <= hi)
+            fits.append(inner <= hi)
+        self.constraints.append(z3.Implies(z3.And(*fits), result == inner))
+        return result
+
     def _add_range_constraints(self, var: z3.ArithRef, bounds: RangeBounds):
         """Add constraints for range type bounds"""
         if bounds.min_val is not None:
@@ -1512,9 +1563,9 @@ class Z3Translator:
                 if op == 'match':
                     return self._translate_match(expr)
 
-                # Cast is a type-level operation - just translate the inner expression
+                # A cast to a sized integer or a range bounds its result (#265)
                 if op == 'cast' and len(expr) >= 3:
-                    return self.translate_expr(expr[2])
+                    return self._translate_cast(expr)
 
                 # do block - value is the last expression
                 if op == 'do' and len(expr) >= 2:
