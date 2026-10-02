@@ -422,13 +422,13 @@
     (@intent "The largest I64")
     (@spec (() -> I64))
     (@pure)
-    9223372036854775807)
+    (cast I64 9223372036854775807))
 
   (fn i64-min ()
     (@intent "The smallest I64, built without a literal C cannot spell")
     (@spec (() -> I64))
     (@pure)
-    (- (- 0 9223372036854775807) 1))
+    (cast I64 (- (- 0 9223372036854775807) 1)))
 
   (fn add-overflows ((a I64) (b I64))
     (@intent "Whether a + b overflows I64")
@@ -455,8 +455,8 @@
       ((or (== a 0) (== b 0)) false)
       ((or (== a (i64-min)) (== b (i64-min))) true)
       (else
-        (let ((abs-a (if (< a 0) (- 0 a) a))
-              (abs-b (if (< b 0) (- 0 b) b)))
+        (let ((abs-a (if (< a 0) (cast I64 (- 0 a)) a))
+              (abs-b (if (< b 0) (cast I64 (- 0 b)) b)))
           (> abs-a (/ (i64-max) abs-b))))))
 
   ;; Interval arithmetic. A side is dropped -- unbounded -- when either operand
