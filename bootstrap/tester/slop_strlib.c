@@ -808,7 +808,7 @@ int64_t strlib_compare_ignore_case(slop_string a, slop_string b) {
 
 strlib_Byte strlib_char_at(slop_string s, int64_t index) {
     if (index >= ((int64_t)(s.len))) {
-        return 0;
+        return ((uint8_t)(0));
     } else {
         return ((uint8_t)(s.data[index]));
     }
