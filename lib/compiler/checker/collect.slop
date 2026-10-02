@@ -20,12 +20,14 @@
                  resolved-type-new resolved-variant-new resolved-field-new
                  resolved-type-set-inner resolved-type-set-inner2
                  resolved-type-is-pointer
-                 fn-signature-new param-info-new))
+                 fn-signature-new param-info-new
+                 range-bounds-new range-expr-has-dots range-expr-problem int-range-expr-bounds
+                 resolved-type-with-range))
   (import env (TypeEnv env-arena env-register-type env-lookup-type env-lookup-own-type env-lookup-type-builtin
                env-register-function env-register-constant env-set-module env-get-module
                env-get-int-type env-get-bool-type env-get-string-type
                env-get-unit-type env-register-variant env-check-variant-collisions
-               env-make-option-type env-add-warning env-add-error))
+               env-make-option-type env-add-warning env-add-error env-check-range-narrowing))
   (import strlib (string-build))
   (import resolve (resolve-imports check-import-shadowing))
 
@@ -40,6 +42,8 @@
     ;; The module is set up front, so a file with no (module ...) form does
     ;; not inherit the previous file's module.
     (env-set-module env (ast-module-name ast))
+    ;; Malformed range bounds and range bases that are not enforced (#265)
+    (check-range-forms env ast)
     ;; Type names first, so the imports and type bodies below can refer to them
     (collect-type-names env ast)
     ;; Imports before any type body or signature, so a field, payload or
@@ -148,6 +152,8 @@
                                 (env-register-type env resolved)))
                             ((is-range-type-expr type-expr)
                               (let ((resolved (resolved-type-new arena 'rk-range type-name mod-name type-name)))
+                                ;; Bounds depend on no other type, so they are set here (#265)
+                                (set! (. (deref resolved) range) (int-range-expr-bounds type-expr))
                                 (env-register-type env resolved)))
                             ((is-form type-expr "Map")
                               (let ((resolved (resolved-type-new arena 'rk-map type-name mod-name "slop_map*")))
@@ -406,8 +412,12 @@
                       (resolved-type-set-inner result-type ok-type)
                       (resolved-type-set-inner2 result-type err-type)
                       result-type))
-                  ;; Unknown complex type
-                  (else (resolved-type-new arena 'rk-primitive head-name (none) head-name)))))
+                  ;; An inline (Int lo .. hi) carries its bounds (#265); any other
+                  ;; complex type is unknown here
+                  (else
+                    (resolved-type-with-range arena
+                      (resolved-type-new arena 'rk-primitive head-name (none) head-name)
+                      (int-range-expr-bounds type-expr))))))
             ((none) (env-get-unit-type env)))))
       ;; Other expression types
       (_ (env-get-unit-type env))))
@@ -660,6 +670,60 @@
                 (when (is-form item "type")
                   (resolve-type-body env arena item)))
               ((none) (do))))))))
+
+  ;; ============================================================
+  ;; Range Forms (#265)
+  ;; ============================================================
+
+  (fn check-range-forms ((env (Ptr TypeEnv)) (ast (List (Ptr SExpr))))
+    (@intent "Report every range form whose bounds are malformed or whose base is not enforced")
+    (@spec (((Ptr TypeEnv) (List (Ptr SExpr))) -> Unit))
+    (@pre (!= env nil))
+    ;; Walked once per module rather than where types are resolved: a type
+    ;; expression is resolved from several places, and each would report it.
+    (let ((len (list-len ast)))
+      (for (i 0 len)
+        (match (list-get ast i)
+          ((some expr) (check-range-forms-in env expr))
+          ((none) (do))))))
+
+  (fn check-range-forms-in ((env (Ptr TypeEnv)) (expr (Ptr SExpr)))
+    (@intent "Report the range forms within one expression")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr)) -> Unit))
+    (@pre (!= env nil))
+    ;; A range form is a list headed by its base with a `..` among its items.
+    ;; The head matters: @example uses `..` as a wildcard, and a @spec parameter
+    ;; list such as (Int Int) is headed by Int but holds no `..`.
+    (when (sexpr-is-list expr)
+      (let ((head (match (sexpr-list-get expr 0)
+                    ((some h) (sexpr-get-symbol-name h))
+                    ((none) "")))
+            (line (sexpr-line expr))
+            (col (sexpr-col expr))
+            (arena (env-arena env)))
+        (if (and (string-eq head "Int") (range-expr-has-dots expr))
+          (let ((problem (range-expr-problem expr)))
+            (when (not (string-eq problem ""))
+              (env-add-error env problem line col)))
+          (do
+            (when (and (is-unchecked-range-base head) (range-expr-has-dots expr))
+              (env-add-warning env
+                (string-build arena (list String "a " head " range is not enforced yet: only (Int lo .. hi) is checked"))
+                line col))
+            (let ((len (sexpr-list-len expr)))
+              (for (i 0 len)
+                (match (sexpr-list-get expr i)
+                  ((some child) (check-range-forms-in env child))
+                  ((none) (do))))))))))
+
+  (fn is-unchecked-range-base ((name String))
+    (@intent "Whether a range form with this head is accepted but not enforced")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq name "Float") (string-eq name "F32") (string-eq name "F64")
+        (string-eq name "I8") (string-eq name "I16") (string-eq name "I32") (string-eq name "I64")
+        (string-eq name "U8") (string-eq name "U16") (string-eq name "U32") (string-eq name "U64")
+        (string-eq name "String") (string-eq name "Bytes") (string-eq name "List")))
 
   (fn is-range-type-expr ((type-expr (Ptr SExpr)))
     (@intent "Check if expression is a range type like (Int 0 .. 127)")
@@ -934,10 +998,36 @@
                 ;; Get type at position 2
                 (match (sexpr-list-get const-form 2)
                   ((some type-expr)
-                    (let ((const-type (get-const-type env arena type-expr)))
+                    (let ((declared (get-const-type env arena type-expr))
+                          (const-type (constant-value-type env arena const-name declared const-form)))
                       (env-register-constant env const-name const-type)))
                   ((none) (do))))))
           ((none) (do))))))
+
+  (fn constant-value-type ((env (Ptr TypeEnv)) (arena Arena) (const-name String)
+                           (declared (Ptr ResolvedType)) (const-form (Ptr SExpr)))
+    (@intent "A constant's type, carrying its value when that is an integer literal")
+    (@spec (((Ptr TypeEnv) Arena String (Ptr ResolvedType) (Ptr SExpr)) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    (@pre (!= declared nil))
+    ;; (const LIMIT Pct 130) is a narrowing like any other (#265). Once it
+    ;; passes, LIMIT is known to be exactly its value wherever it is used.
+    (match (sexpr-list-get const-form 3)
+      ((some value-expr)
+        (match (deref value-expr)
+          ((num n)
+            (if (. n is-float)
+              declared
+              (let ((v (. n int-value))
+                    (exact (resolved-type-with-range arena declared
+                             (some (range-bounds-new true v true v)))))
+                (env-check-range-narrowing env
+                                           (string-build arena (list String "constant '" const-name "'"))
+                                           declared exact
+                                           (sexpr-line value-expr) (sexpr-col value-expr))
+                exact)))
+          (_ declared)))
+      ((none) declared)))
 
   (fn get-const-type ((env (Ptr TypeEnv)) (arena Arena) (type-expr (Ptr SExpr)))
     (@intent "Get resolved type for a constant type expression")

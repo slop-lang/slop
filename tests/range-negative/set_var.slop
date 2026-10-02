@@ -1,0 +1,11 @@
+;; set! of a range-typed variable narrows the new value into its type.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn main ()
+    (@intent "Assign 300 to a Pct")
+    (@spec (() -> Int))
+    (let ((mut p Pct 5))
+      (set! p 300)
+      0)))

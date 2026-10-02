@@ -1,0 +1,15 @@
+;; A constant is exactly its value, so passing it is checked like a literal.
+
+(module main
+  (type Pct (Int 0 .. 100))
+  (const LIMIT Int 130)
+
+  (fn bump ((n Pct))
+    (@intent "Add one")
+    (@spec ((Pct) -> Int))
+    (+ n 1))
+
+  (fn main ()
+    (@intent "Pass LIMIT for a Pct")
+    (@spec (() -> Int))
+    (bump LIMIT)))

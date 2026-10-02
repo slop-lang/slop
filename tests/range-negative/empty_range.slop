@@ -1,0 +1,9 @@
+;; A range whose lower bound is above its upper bound admits no value.
+
+(module main
+  (type Never (Int 5 .. 3))
+
+  (fn main ()
+    (@intent "Nothing")
+    (@spec (() -> Int))
+    0))

@@ -1,0 +1,10 @@
+;; record-new narrows each value into its field's type.
+
+(module main
+  (type Cfg (record (workers (Int 1 .. 64)) (name String)))
+
+  (fn main ()
+    (@intent "Build a Cfg with 65 workers")
+    (@spec (() -> Int))
+    (let ((c (record-new Cfg (workers 65) (name "x"))))
+      0)))

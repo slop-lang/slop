@@ -1,0 +1,23 @@
+;; T binds to an argument's type, not to an interval worked out for it:
+;; (second 200 n) returns n, so T must not become exactly 200. Had the
+;; literal's interval leaked into T, passing the result on to a Pct would be
+;; a false "200 is outside Pct" (#265).
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn second ((a T) (b T))
+    (@intent "Return the second argument")
+    (@generic (T))
+    (@spec ((T T) -> T))
+    b)
+
+  (fn bump ((n Pct))
+    (@intent "Add one")
+    (@spec ((Pct) -> Int))
+    (+ n 1))
+
+  (fn main ()
+    (@intent "Pass a generic result on to a Pct")
+    (@spec (() -> Int))
+    (bump (second 200 5))))

@@ -1,0 +1,11 @@
+;; A container's range-typed element is a narrowing point.
+
+(module main
+  (type Pct (Int 0 .. 100))
+
+  (fn main ()
+    (@intent "Push 101 onto a list of Pct")
+    (@spec (() -> Int))
+    (let ((xs (list-new arena Pct)))
+      (list-push xs 101)
+      0)))

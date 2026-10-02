@@ -1,0 +1,10 @@
+;; A constant's value is narrowed into its declared type.
+
+(module main
+  (type Pct (Int 0 .. 100))
+  (const LIMIT Pct 130)
+
+  (fn main ()
+    (@intent "Use the constant")
+    (@spec (() -> Int))
+    0))
