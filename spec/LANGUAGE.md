@@ -390,6 +390,17 @@ identifier               ; Variable reference
 (& a b) (| a b) (^ a b) (<< a n) (>> a n)
 (min a b) (max a b)              ; Minimum/maximum of two values
 
+; + - * / % take numeric operands, and the checker rejects anything else:
+;   Integers of any width (Int, I8..I64, U8..U64, a range type, an alias of
+;   one) mix freely, as in C, and give Int.
+;   A Float, F32 or F64 operand makes the result floating: F64 if any operand
+;   is F64, else F32 if any is F32, else Float. (* x 2.0) with x an F32 is F32.
+;   % is integer-only.
+;   There is no pointer arithmetic. Step a pointer through Int:
+;     (cast (Ptr U8) (+ (cast Int p) n))
+;   Bool, Char, enums, records and String are not numbers. Cast an enum to
+;   Int if its ordinal is what you mean; use U8, not Char, for byte values.
+
 ; Comparison  
 (== a b) (!= a b) (< a b) (<= a b) (> a b) (>= a b)
 

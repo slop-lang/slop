@@ -1,0 +1,9 @@
+;; There is no pointer arithmetic. A pointer is cast to Int first:
+;; (cast (Ptr U8) (+ (cast Int p) 1)).
+
+(module ptr-operand
+  (fn f ((p (Ptr U8)))
+    (@intent "Step a pointer without casting it")
+    (@spec (((Ptr U8)) -> Int))
+    (let ((q (+ p 1)))
+      0)))

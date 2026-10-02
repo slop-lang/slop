@@ -488,6 +488,22 @@ echo ""
 run_negative_check_test "$REPO_ROOT/tests/generic-negative/first_or.slop" "generic-return-specialised" \
     "first_or.slop:21:9: error: argument 1 to 'string-len': expected String, got Int"
 
+# Arithmetic operands (#264). They were inferred and thrown away, and the
+# result was always Int, so (+ n "x") reached cc. A build drops checker
+# diagnostics (#93), so these run `slop check` only.
+ARN="$REPO_ROOT/tests/arith-negative"
+while IFS='|' read -r ar_name ar_expected <&3; do
+    run_negative_check_test "$ARN/$ar_name.slop" "arith-$ar_name" "$ar_expected"
+done 3<<'AR_CASES'
+string_operand|string_operand.slop:8:10: error: '+' needs a numeric operand: expected Int or Float, got String
+bool_operand|bool_operand.slop:7:10: error: '-' needs a numeric operand: expected Int or Float, got Bool
+record_operand|record_operand.slop:9:10: error: '*' needs a numeric operand: expected Int or Float, got Pt
+enum_operand|enum_operand.slop:9:8: error: '+' needs a numeric operand: expected Int or Float, got Color
+float_mod|float_mod.slop:7:17: error: '%' needs an integer operand: expected Int, got Float
+ptr_operand|ptr_operand.slop:8:17: error: '+' does not do pointer arithmetic: got Ptr_U8; cast the pointer to Int first
+AR_CASES
+run_check_clean_test "$REPO_ROOT/tests/test_arith_operands.slop" "arith-operands"
+
 echo ""
 
 

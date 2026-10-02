@@ -899,6 +899,11 @@ expr.field                               ; Shorthand
 (== != < <= > >=)                        ; Comparison
 (and or not)                             ; Boolean
 
+Arithmetic operands must be numeric. Integer widths, range types and their
+aliases mix and give Int; a Float/F32/F64 operand gives the widest floating
+type present. % is integer-only. There is no pointer arithmetic: write
+(cast (Ptr T) (+ (cast Int p) n)).
+
 == and != are structural: String compares by contents, a record compares
 field by field, a union compares its tag then the payloads of the matching
 variant. Both recurse into nested records and unions. A (Ptr T) compares by

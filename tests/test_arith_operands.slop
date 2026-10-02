@@ -1,0 +1,72 @@
+;; Arithmetic operands the checker must accept (#264). Integers of any width
+;; mix and give Int; a floating operand gives the widest floating type among
+;; the operands; ranges and aliases are their base type; Unknown -- what the
+;; bitwise operators give -- passes; a pointer is cast to Int first.
+
+(module test-arith-operands
+  (type Pct (Int 0 .. 100))
+  (type Count Int)
+
+  (fn take-f32 ((x F32))
+    (@intent "Accept an F32")
+    (@spec ((F32) -> F32))
+    x)
+
+  (fn take-f64 ((x F64))
+    (@intent "Accept an F64")
+    (@spec ((F64) -> F64))
+    x)
+
+  (fn take-float ((x Float))
+    (@intent "Accept a Float")
+    (@spec ((Float) -> Float))
+    x)
+
+  (fn widths ((a Int) (b U8) (c I64) (d U32))
+    (@intent "Integer widths mix")
+    (@spec ((Int U8 I64 U32) -> Int))
+    (+ (* a b) (- c d)))
+
+  (fn one ()
+    (@intent "An aliased Int")
+    (@spec (() -> Count))
+    1)
+
+  (fn ranges ((p Pct) (q (Int 0 .. 10)))
+    (@intent "Named, inline and aliased integer types are their base type")
+    (@spec ((Pct (Int 0 .. 10)) -> Int))
+    (% (+ p q) (+ (one) 1)))
+
+  (fn floats ((x F32) (y F64) (z Float) (n Int))
+    (@intent "Floating results keep their width")
+    (@spec ((F32 F64 Float Int) -> Float))
+    (let ((a (take-f32 (* x 2.0)))
+          (b (take-f64 (+ y x)))
+          (c (take-float (/ z 2.0)))
+          (d (take-float (* n 1.5))))
+      (+ c d)))
+
+  (fn unknowns ((a Int) (b Int))
+    (@intent "Bitwise results are Unknown to the checker and pass")
+    (@spec ((Int Int) -> Int))
+    (+ (& a b) (- (| a b) 1)))
+
+  (fn pointer-step ((p (Ptr U8)) (n Int))
+    (@intent "A pointer is stepped through Int")
+    (@spec (((Ptr U8) Int) -> (Ptr U8)))
+    (cast (Ptr U8) (+ (cast Int p) n)))
+
+  (fn lambda-call ((n Int))
+    (@intent "A call through a local lambda is not a function value")
+    (@spec ((Int) -> Int))
+    (let ((twice (fn ((x Int)) (* x 2))))
+      (+ (twice n) 1)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (let ((w (widths 1 2 3 4))
+          (r (ranges 50 5))
+          (u (unknowns 6 3))
+          (l (lambda-call 4)))
+      (if (and (== w 1) (== r 1) (== u 8) (== l 9)) 0 1))))

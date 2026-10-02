@@ -1,0 +1,8 @@
+;; The repro from #264: a String operand to + passed the check, transpiled to
+;; `n + SLOP_STR("x")`, and was first caught by cc.
+
+(module string-operand
+  (fn f ((n (Int 0 .. 10)))
+    (@intent "Add a string to a range-typed number")
+    (@spec (((Int 0 .. 10)) -> Int))
+    (+ n "x")))

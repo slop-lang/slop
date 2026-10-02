@@ -1,0 +1,8 @@
+;; % is integer-only, as C's is: on a double cc rejects it.
+
+(module float-mod
+  (fn f ((x Float))
+    (@intent "Take a Float remainder")
+    (@spec ((Float) -> Int))
+    (let ((r (% x 2)))
+      0)))
