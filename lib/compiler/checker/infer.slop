@@ -1928,8 +1928,9 @@
     ;;
     ;; Skipped: Unknown or generic T on either side; Option_T against any
     ;; Option_*; Ptr_T against any pointer; a generic Ptr_Ptr_*; Unit for a
-    ;; pointer; any pointer for Ptr_Void; and any integer width for another,
-    ;; which FFI needs.
+    ;; pointer; any pointer for Ptr_Void; and any integer for another -- any
+    ;; width, which FFI needs, or a range over Int, since a narrowing into a
+    ;; range is checked where it happens (#265).
     (let ((expected-name (. (deref expected) name))
           (actual-name (. (deref actual) name)))
       (and (not (types-equal expected actual))
@@ -1945,8 +1946,24 @@
                      (starts-with expected-name "Ptr_")))
            (not (and (starts-with actual-name "Ptr_")
                      (string-eq expected-name "Ptr_Void")))
-           (not (and (is-integer-type actual-name)
-                     (is-integer-type expected-name))))))
+           (not (and (is-integer-like actual)
+                     (is-integer-like expected))))))
+
+  (fn is-integer-like ((t (Ptr ResolvedType)))
+    (@intent "Whether a type is an integer: any width, or a range over Int, directly or through an alias")
+    (@spec (((Ptr ResolvedType)) -> Bool))
+    (@pre (!= t nil))
+    ;; A U8 read of a string byte passed for a Byte (Int 0 .. 255) used to be
+    ;; rejected: widths matched each other, and Int matched its ranges, but a
+    ;; width did not match a range. The value is range-checked at run time,
+    ;; or proved to fit, so it is as acceptable as an Int is.
+    (let ((r (resolve-alias-chain t)))
+      (or (is-integer-type (. (deref t) name))
+          (is-integer-type (. (deref r) name))
+          (and (== (. (deref r) kind) 'rk-range)
+               (match (. (deref r) inner-type)
+                 ((some base) (is-integer-type (. (deref base) name)))
+                 ((none) false))))))
 
   (fn report-operand-mismatch ((env (Ptr TypeEnv)) (op String) (what String)
                                (expected String) (actual String) (line Int) (col Int))
