@@ -111,6 +111,17 @@ int64_t infer_float_rank(slop_string name);
 types_ResolvedType* infer_arith_base_type(types_ResolvedType* t);
 infer_ArithClass infer_arith_operand_class(types_ResolvedType* t);
 types_ResolvedType* infer_infer_arith_expr(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t line, int64_t col);
+types_ResolvedType* infer_infer_expr_quietly(env_TypeEnv* env, types_SExpr* expr);
+types_ResolvedType* infer_resolve_type_expr_quietly(env_TypeEnv* env, types_SExpr* type_expr);
+types_ResolvedType* infer_join_ranges(env_TypeEnv* env, types_ResolvedType* a, types_ResolvedType* b);
+types_ResolvedType* infer_strip_value_range(env_TypeEnv* env, types_ResolvedType* t);
+types_ResolvedType* infer_let_bound_type(env_TypeEnv* env, slop_string var_name, slop_option_types_SExpr_ptr type_expr, types_ResolvedType* val_type, types_SExpr* val_expr);
+types_ResolvedType* infer_resolve_type_expr(env_TypeEnv* env, types_SExpr* type_expr);
+slop_option_types_ResolvedType_ptr infer_fn_declared_return(env_TypeEnv* env, slop_string fn_name);
+slop_option_types_ResolvedType_ptr infer_set_target_type(env_TypeEnv* env, slop_list_types_SExpr_ptr items, int64_t len);
+void infer_check_field_narrowing(env_TypeEnv* env, types_ResolvedType* rec_type, slop_string field_name, types_ResolvedType* val_type, types_SExpr* val_expr);
+void infer_check_constructor_args(env_TypeEnv* env, types_ResolvedType* the_type, slop_list_types_SExpr_ptr items, int64_t len);
+void infer_check_map_put(env_TypeEnv* env, slop_list_types_SExpr_ptr items, int64_t len);
 uint8_t infer_is_assignable_list_target(types_SExpr* expr);
 void infer_check_list_target(env_TypeEnv* env, slop_string op, types_SExpr* expr, int64_t line, int64_t col);
 infer_StepKind infer_mutation_step_kind(types_ResolvedType* t);
@@ -183,6 +194,11 @@ SLOP_OPTION_DEFINE(types_ResolvedType*, slop_option_types_ResolvedType_ptr)
 #ifndef SLOP_OPTION_INFER_MUTPATH_DEFINED
 #define SLOP_OPTION_INFER_MUTPATH_DEFINED
 SLOP_OPTION_DEFINE(infer_MutPath, slop_option_infer_MutPath)
+#endif
+
+#ifndef SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+#define SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+SLOP_OPTION_DEFINE(types_RangeBounds, slop_option_types_RangeBounds)
 #endif
 
 

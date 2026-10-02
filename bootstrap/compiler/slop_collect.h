@@ -61,6 +61,9 @@ slop_list_types_ResolvedType_ptr collect_collect_fn_spec_params(env_TypeEnv* env
 void collect_set_module_name_from_form(env_TypeEnv* env, types_SExpr* module_form);
 void collect_register_module_type_names(env_TypeEnv* env, types_SExpr* module_form);
 void collect_resolve_module_type_bodies(env_TypeEnv* env, types_SExpr* module_form);
+void collect_check_range_forms(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
+void collect_check_range_forms_in(env_TypeEnv* env, types_SExpr* expr);
+uint8_t collect_is_unchecked_range_base(slop_string name);
 uint8_t collect_is_range_type_expr(types_SExpr* type_expr);
 types_ResolvedType* collect_get_range_base_type(env_TypeEnv* env, slop_arena* arena, types_SExpr* type_expr);
 slop_string collect_get_type_name_from_expr(types_SExpr* expr);
@@ -76,6 +79,7 @@ void collect_collect_enum_variants(env_TypeEnv* env, types_ResolvedType* enum_ty
 void collect_collect_constants(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 void collect_collect_module_constants(env_TypeEnv* env, types_SExpr* module_form);
 void collect_collect_single_constant(env_TypeEnv* env, slop_arena* arena, types_SExpr* const_form);
+types_ResolvedType* collect_constant_value_type(env_TypeEnv* env, slop_arena* arena, slop_string const_name, types_ResolvedType* declared, types_SExpr* const_form);
 types_ResolvedType* collect_get_const_type(env_TypeEnv* env, slop_arena* arena, types_SExpr* type_expr);
 void collect_collect_functions(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 void collect_collect_module_functions(env_TypeEnv* env, types_SExpr* module_form);
@@ -113,6 +117,11 @@ SLOP_OPTION_DEFINE(types_ResolvedType*, slop_option_types_ResolvedType_ptr)
 #ifndef SLOP_OPTION_TYPES_PARAMINFO_DEFINED
 #define SLOP_OPTION_TYPES_PARAMINFO_DEFINED
 SLOP_OPTION_DEFINE(types_ParamInfo, slop_option_types_ParamInfo)
+#endif
+
+#ifndef SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+#define SLOP_OPTION_TYPES_RANGEBOUNDS_DEFINED
+SLOP_OPTION_DEFINE(types_RangeBounds, slop_option_types_RangeBounds)
 #endif
 
 
