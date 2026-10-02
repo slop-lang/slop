@@ -1,0 +1,7 @@
+;; A Bool is not a number: (- 1 b) is an error, not an implicit 0 or 1.
+
+(module bool-operand
+  (fn f ((b Bool))
+    (@intent "Subtract a Bool")
+    (@spec ((Bool) -> Int))
+    (- 1 b)))

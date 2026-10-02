@@ -1138,11 +1138,10 @@
           (do (infer-body-exprs env expr 1)
               (env-get-bool-type env)))
 
-        ;; Arithmetic operators return Int
+        ;; Arithmetic operators: numeric operands, Int or floating result
         ((or (string-eq op "+") (string-eq op "-")
              (string-eq op "*") (string-eq op "/") (string-eq op "%"))
-          (do (infer-body-exprs env expr 1)
-              (env-get-int-type env)))
+          (infer-arith-expr env op items line col))
 
         ;; (min a b) / (max a b) - transpiler intrinsics (a ternary, emitted
         ;; ahead of any function lookup), so typed as their first operand
@@ -1708,10 +1707,13 @@
                             ;; called list-set was reported as an unknown
                             ;; builtin rather than called.
                             (match (env-lookup-callable env op)
-                              ((some var-type)
-                                ;; It's a local variable being called - infer args but don't error
+                              ((some _)
+                                ;; It's a local variable being called - infer args but don't error.
+                                ;; The result is Unknown, not the callee's own type: a checker
+                                ;; function type carries no return type, and typing the call as
+                                ;; Fn made (+ (twice a) 1) look like arithmetic on a function.
                                 (do (infer-builtin-args env expr)
-                                    var-type))
+                                    (env-get-unknown-type env)))
                               ((none)
                                 ;; Check if it looks like a builtin (set-, map-, list-, etc.)
                                 (if (or (starts-with op "set-")
@@ -1945,6 +1947,106 @@
                     ((none) (do))))
                 ((none) (do)))))))
       ((none) (do))))
+
+  ;; Arithmetic operands (#264). Every operand used to be inferred and thrown
+  ;; away and the result was always Int, so (+ n "x") reached cc, and Float
+  ;; arithmetic was typed Int.
+  (type ArithClass (enum arith-permissive arith-integer arith-floating arith-pointer arith-other))
+
+  (fn float-rank ((name String))
+    (@intent "Rank a floating-point type name for picking an arithmetic result")
+    (@spec ((String) -> Int))
+    (@pure)
+    (cond
+      ((string-eq name "F64") 3)
+      ((string-eq name "F32") 2)
+      ((string-eq name "Float") 1)
+      (else 0)))
+
+  (fn arith-base-type ((t (Ptr ResolvedType)))
+    (@intent "The type arithmetic sees for an operand: a range's base, else the type itself")
+    (@spec (((Ptr ResolvedType)) -> (Ptr ResolvedType)))
+    (@pre (!= t nil))
+    (if (== (. (deref t) kind) 'rk-range)
+      (match (. (deref t) inner-type)
+        ((some base) (resolve-alias-chain base))
+        ((none) t))
+      t))
+
+  (fn arith-operand-class ((t (Ptr ResolvedType)))
+    (@intent "Classify an arithmetic operand as integer, floating, pointer or other")
+    (@spec (((Ptr ResolvedType)) -> ArithClass))
+    (@pre (!= t nil))
+    ;; Unknown, generic T, a type variable and Never pass: Unknown is what an
+    ;; unmodelled form gives -- the bitwise operators among them -- and blaming
+    ;; the operand would report the checker's own gap. So does an rk-primitive
+    ;; that is not a builtin scalar: the alias chain stopped on it, so it aliases
+    ;; a form the checker does not model (#101), and guessing would risk a false
+    ;; positive. Char is for FFI only (spec, Char), so it is not a number; U8 is.
+    (let ((base (arith-base-type t))
+          (kind (. (deref base) kind))
+          (name (. (deref base) name)))
+      (cond
+        ((or (string-eq name "Unknown") (string-eq name "T")
+             (== kind 'rk-typevar) (== kind 'rk-never))
+          'arith-permissive)
+        ((is-integer-type name) 'arith-integer)
+        ((> (float-rank name) 0) 'arith-floating)
+        ((and (== kind 'rk-ptr) (not (string-eq name "<nil>"))) 'arith-pointer)
+        ((and (== kind 'rk-primitive)
+              (not (checker-is-primitive-type name))
+              (not (string-eq name "Char"))
+              (not (string-eq name "Void")))
+          'arith-permissive)
+        (else 'arith-other))))
+
+  (fn infer-arith-expr ((env (Ptr TypeEnv)) (op String) (items (List (Ptr SExpr)))
+                        (line Int) (col Int))
+    (@intent "Check an arithmetic form's operands and infer its result type")
+    (@spec (((Ptr TypeEnv) String (List (Ptr SExpr)) Int Int) -> (Ptr ResolvedType)))
+    (@pre (!= env nil))
+    ;; Integers of any width mix, as in C, and give Int. A floating operand
+    ;; makes the result floating -- F64 if one is F64, else F32 if one is F32,
+    ;; else Float -- so (* x 2.0) with x an F32 stays an F32. % is integer-only
+    ;; because C's is. There is no pointer arithmetic: cast the pointer to Int.
+    ;; Each bad operand is reported at its own position, and the result type is
+    ;; still returned, so one bad operand does not cascade.
+    (let ((arena (env-arena env))
+          (is-mod (string-eq op "%"))
+          (len (list-len items))
+          (mut result (env-get-int-type env)))
+      (for (i 1 len)
+        (match (list-get items i)
+          ((some operand)
+            (let ((raw-type (infer-expr env operand))
+                  (op-type (resolve-alias-chain raw-type))
+                  (cls (arith-operand-class op-type))
+                  (shown (. (deref raw-type) name))
+                  (has-pos (> (sexpr-line operand) 0))
+                  (op-line (if has-pos (sexpr-line operand) line))
+                  (op-col (if has-pos (sexpr-col operand) col)))
+              (cond
+                ((and (== cls 'arith-floating) is-mod)
+                  (report-operand-mismatch env op "needs an integer operand"
+                                           "Int" shown op-line op-col))
+                ((== cls 'arith-floating)
+                  (let ((base (arith-base-type op-type)))
+                    (when (> (float-rank (. (deref base) name))
+                             (float-rank (. (deref result) name)))
+                      (set! result base))))
+                ((== cls 'arith-pointer)
+                  (env-add-error env
+                    (string-build arena (list String "'" op "' does not do pointer arithmetic: got "
+                                              shown "; cast the pointer to Int first"))
+                    op-line op-col))
+                ((== cls 'arith-other)
+                  (report-operand-mismatch env op
+                                           (if is-mod "needs an integer operand" "needs a numeric operand")
+                                           (if is-mod "Int" "Int or Float")
+                                           shown op-line op-col))
+                (else (do)))))
+          ((none) (do))))
+      result))
 
   (fn is-assignable-list-target ((expr (Ptr SExpr)))
     (@intent "Whether the C for this expression is something we can take the address of")

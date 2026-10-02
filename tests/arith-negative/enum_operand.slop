@@ -1,0 +1,9 @@
+;; An enum is not a number: cast it to Int if its ordinal is what is meant.
+
+(module enum-operand
+  (type Color (enum red green blue))
+
+  (fn f ((c Color))
+    (@intent "Add to an enum value")
+    (@spec ((Color) -> Int))
+    (+ c 1)))

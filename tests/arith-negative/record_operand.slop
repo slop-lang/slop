@@ -1,0 +1,9 @@
+;; A record is not a number. The operand is reported at its own position.
+
+(module record-operand
+  (type Pt (record (x Int) (y Int)))
+
+  (fn f ((p Pt))
+    (@intent "Multiply a record")
+    (@spec ((Pt) -> Int))
+    (* 2 p)))
