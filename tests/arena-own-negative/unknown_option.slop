@@ -1,0 +1,10 @@
+;; :arena is a put's only option (#276)
+
+(module main
+  (fn main ()
+    (@intent "Name an option that does not exist")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((s (set-new arena Int)))
+        (set-put s 1 :in arena)
+        (set-len s)))))

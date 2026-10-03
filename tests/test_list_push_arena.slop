@@ -1,6 +1,7 @@
-;; Every way list-push finds the arena to grow a list in (#179): a field of
-;; a struct that carries its own arena, an Arena parameter under another
-;; name, and a named with-arena. Each push must reach the list it names.
+;; list-push through a field of a struct that carries its own arena, from a
+;; function whose Arena parameter has another name, and inside a named
+;; with-arena (#179). Each push must reach the list it names; since #276 each
+;; grows the list in the arena list-new gave it, whatever is in scope.
 
 (module main
   (type Env (record (arena Arena) (items (List Int))))

@@ -839,6 +839,11 @@ static inline slop_bytes slop_bytes_from(slop_arena* arena, const uint8_t* src, 
  * the new data pointer is returned. Every list-push, generated or
  * SLOP_LIST_IMPL's, grows through here.
  *
+ * `arena` is the list's own (the header's `arena`, recorded by list-new or
+ * the literal that made it), or the one a `(list-push xs x :arena a)` names.
+ * A header with no arena -- zero-initialized, or a copy of a module-level
+ * const list, whose elements are static -- cannot grow.
+ *
  * The buffer always moves, even when it is the last allocation in its block
  * and could be extended where it stands (slop_arena_try_extend, as a map's
  * table is). A List header is a value, and every copy of it -- a `mut`
@@ -849,6 +854,11 @@ static inline slop_bytes slop_bytes_from(slop_arena* arena, const uint8_t* src, 
  * arena, so any copy of the old header still reads it. */
 static inline void* slop_list_grow_raw(slop_arena* arena, void* data, size_t* cap,
                                        size_t len, size_t elem_size) {
+    if (arena == NULL) {
+        fprintf(stderr, "SLOP: list-push on a list with no arena "
+                        "(zero-initialized, or a copy of a module constant)\n");
+        abort();
+    }
     size_t new_cap = *cap == 0 ? SLOP_LIST_FIRST_CAPACITY : *cap * 2;
     void* new_data = slop_arena_alloc(arena, new_cap * elem_size);
     if (new_data == NULL) {
@@ -866,20 +876,23 @@ static inline void* slop_list_grow_raw(slop_arena* arena, void* data, size_t* ca
         size_t len; \
         size_t cap; \
         T* data; \
+        slop_arena* arena;  /* where push grows it: see slop_list_grow_raw */ \
     } Name;
 
 /* SLOP_LIST_IMPL: inline functions — requires sizeof(T), so T must be complete */
 #define SLOP_LIST_IMPL(T, Name) \
     static inline Name Name##_new(slop_arena* arena, size_t initial_cap) { \
         T* data = (T*)slop_arena_alloc(arena, initial_cap * sizeof(T)); \
-        return (Name){0, initial_cap, data}; \
+        return (Name){0, initial_cap, data, arena}; \
     } \
     \
-    /* An empty list may have no storage yet ({NULL, 0, 0}, as list-new \
-     * creates it): slop_list_grow_raw gives it its first buffer. */ \
+    /* An empty list may have no storage yet ({NULL, 0, 0, arena}, as \
+     * list-new creates it): slop_list_grow_raw gives it its first buffer. \
+     * It grows in `arena` if one is given, else in the list's own. */ \
     static inline void Name##_push(slop_arena* arena, Name* list, T item) { \
         if (list->len >= list->cap) { \
-            list->data = (T*)slop_list_grow_raw(arena, list->data, &list->cap, \
+            list->data = (T*)slop_list_grow_raw(arena ? arena : list->arena, \
+                                                list->data, &list->cap, \
                                                 list->len, sizeof(T)); \
         } \
         list->data[list->len++] = item; \
@@ -966,15 +979,19 @@ static inline slop_list_string string_split(slop_arena* arena, slop_string s, sl
  *   put can move the whole table, a remove moves the last entry into the
  *   hole. Generated code copies a key or value out the moment it reads one
  *   (map-get builds an Option by value, for-each binds copies).
- * - Growth doubles cap when a put finds len == cap. It extends the block in
- *   place when the block is the last allocation in its block of the put-site
- *   arena (slop_arena_try_extend); reallocs the arena block when the table is
- *   its only allocation (slop_arena_realloc_sole), which frees the old
- *   storage; and otherwise moves the table into the put-site arena, abandoning
- *   one old block. Every way the index is rebuilt from the entries in order,
- *   so the layout, and iteration order with it, is the same. Growth goes only
- *   to the arena named at the put site. (A List never grows in place: see
- *   slop_list_grow_raw.)
+ * - Growth doubles cap when a put finds len == cap. It goes to the map's own
+ *   arena -- the one map-new or set-new was given, recorded in the header --
+ *   unless the put names another (`(map-put m k v :arena a)`, which passes
+ *   `a` where a plain put passes NULL). It extends the block in place when the
+ *   block is the last allocation in its block of that arena
+ *   (slop_arena_try_extend); reallocs the arena block when the table is its
+ *   only allocation (slop_arena_realloc_sole), which frees the old storage;
+ *   and otherwise moves the table into that arena, abandoning one old block.
+ *   Every way the index is rebuilt from the entries in order, so the layout,
+ *   and iteration order with it, is the same. Growth allocates from an arena,
+ *   which only one thread may do at a time: a thread growing a map whose
+ *   arena another thread is using must name its own. (A List never grows in
+ *   place: see slop_list_grow_raw.)
  * - Iteration is entries 0..len-1: insertion order, except that a remove
  *   moves the last entry into the hole. So order is a pure function of the
  *   operations and the keys (even for Ptr keys). The language promises only
@@ -1012,6 +1029,7 @@ typedef struct slop_map {
     size_t cap;           /* entry capacity: 0 (no table yet) or a power of two */
     const slop_map_desc* desc;
     uint8_t* table;       /* NULL while cap is 0 */
+    slop_arena* arena;    /* where a put grows the table, unless it names one */
 } slop_map;
 
 /* A key or value is aligned to at most 8, the arena's alignment; the
@@ -1329,9 +1347,15 @@ static inline void slop_map_link(slop_map* m, uint64_t h, size_t i) {
  *     the table;
  *   - moved into a new allocation in `arena`, abandoning the old one.
  * All three give the same layout. The table's one pointer is m->table: no
- * other pointer into it survives a put (see the RULES above). */
+ * other pointer into it survives a put (see the RULES above). A NULL `arena`
+ * means the map's own. */
 static inline void slop_map_resize_(slop_arena* arena, slop_map* m, size_t new_cap,
                                     bool may_free_old) {
+    if (arena == NULL) arena = m->arena;
+    if (arena == NULL) {
+        fprintf(stderr, "SLOP: map growth with no arena\n");
+        abort();
+    }
     const slop_map_desc* d = m->desc;
     size_t new_bytes = slop_map_table_bytes(d, new_cap);
     bool placed = false;
@@ -1386,7 +1410,7 @@ static inline bool slop_map_in_table(const slop_map* m, const void* p) {
  * and allocated now. */
 static inline slop_map slop_map_new(slop_arena* arena, size_t capacity,
                                     const slop_map_desc* desc) {
-    slop_map m = {0, 0, desc, NULL};
+    slop_map m = {0, 0, desc, NULL, arena};
     if (capacity > 0) slop_map_resize(arena, &m, slop_map_round_cap(capacity));
     return m;
 }
@@ -1841,7 +1865,7 @@ static inline slop_gmap_list _slop_map_values_raw(void* gmap_ptr, size_t value_s
 static inline slop_list_int _slop_map_keys_raw(void* gmap_ptr) {
     slop_gmap_t* m = (slop_gmap_t*)gmap_ptr;
     if (m->gmap_len == 0) {
-        return (slop_list_int){0, 0, NULL};
+        return (slop_list_int){ .len = 0, .cap = 0, .data = NULL, .arena = NULL };
     }
     int64_t* data = (int64_t*)malloc(m->gmap_len * sizeof(int64_t));
     size_t write_idx = 0;
@@ -1851,7 +1875,7 @@ static inline slop_list_int _slop_map_keys_raw(void* gmap_ptr) {
             data[write_idx++] = m->gmap_entries[idx].gmap_key;
         }
     }
-    return (slop_list_int){m->gmap_len, m->gmap_len, data};
+    return (slop_list_int){ .len = m->gmap_len, .cap = m->gmap_len, .data = data, .arena = NULL };
 }
 
 static inline slop_list_int map_keys(void* m) {
@@ -1878,7 +1902,7 @@ static inline slop_gmap_list _slop_take_raw(slop_gmap_list lst, int64_t n) {
     } \
     static inline ListName map_values_##V(void* m) { \
         slop_gmap_list raw = _slop_map_values_raw(m, sizeof(V)); \
-        return (ListName){(V*)raw.data, raw.len, raw.cap}; \
+        return (ListName){ .len = raw.len, .cap = raw.cap, .data = (V*)raw.data, .arena = NULL }; \
     } \
     static inline ListName take_##V(int64_t n, ListName lst) { \
         if ((size_t)n < lst.len) lst.len = (size_t)n; \
@@ -1903,7 +1927,7 @@ static inline slop_gmap_list _slop_take_raw(slop_gmap_list lst, int64_t n) {
 #define SLOP_MAP_VALUES_DEFINE(V, ListType) \
     static inline ListType map_values_##V(void* m) { \
         slop_gmap_list raw = _slop_map_values_raw(m, sizeof(V)); \
-        return (ListType){(V*)raw.data, raw.len, raw.cap}; \
+        return (ListType){ .len = raw.len, .cap = raw.cap, .data = (V*)raw.data, .arena = NULL }; \
     }
 
 #define SLOP_TAKE_DEFINE(V, ListType) \

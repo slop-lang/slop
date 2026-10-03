@@ -1,0 +1,10 @@
+;; :arena takes an Arena (#276)
+
+(module main
+  (fn main ()
+    (@intent "Name something that is not an arena")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((xs (list-new arena Int)))
+        (list-push xs 1 :arena 5)
+        (list-len xs)))))

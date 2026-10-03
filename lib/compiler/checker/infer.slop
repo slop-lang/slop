@@ -1476,15 +1476,16 @@
                     ;; List operations
                     ;; list-push expects 2 args: list, item
                     ((string-eq op "list-push")
-                      (do (check-builtin-args env "list-push" 2 (- len 1) line col)
-                          (infer-builtin-args env expr)
-                          (match (list-get items 1)
-                            ((some list-arg)
-                              (do (check-list-target env "list-push" list-arg line col)
-                                  (check-mutation env list-arg (mutation-path env list-arg) 'mut-push)))
-                            ((none) (do)))
-                          (check-list-operands env "list-push" items false line col)
-                          (env-get-unit-type env)))
+                      (let ((n (arena-option-len env "list-push" items 3 line col)))
+                        (check-builtin-args env "list-push" 2 (- n 1) line col)
+                        (infer-builtin-args-before env expr n)
+                        (match (list-get items 1)
+                          ((some list-arg)
+                            (do (check-list-target env "list-push" list-arg line col)
+                                (check-mutation env list-arg (mutation-path env list-arg) 'mut-push)))
+                          ((none) (do)))
+                        (check-list-operands env "list-push" items false line col)
+                        (env-get-unit-type env)))
                     ;; list-set expects 3 args: list, index, value. Returns Bool
                     ;; rather than Unit: an index past the end is a bug the
                     ;; caller can see, the way list-get returns an Option rather
@@ -1631,9 +1632,10 @@
                             (env-make-option-type env val-type))))
                     ;; map-put expects 3 args: map, key, value - returns Unit
                     ((string-eq op "map-put")
-                      (do (check-builtin-args env "map-put" 3 (- len 1) line col)
-                          (check-map-put env items len)
-                          (env-get-unit-type env)))
+                      (let ((n (arena-option-len env "map-put" items 4 line col)))
+                        (check-builtin-args env "map-put" 3 (- n 1) line col)
+                        (check-map-put env items n)
+                        (env-get-unit-type env)))
                     ;; map-has expects 2 args: map, key - returns Bool
                     ((string-eq op "map-has")
                       (do (check-builtin-args env "map-has" 2 (- len 1) line col)
@@ -1703,8 +1705,9 @@
                               set-type))))
                     ;; set-put expects 2 args: set, element - returns Unit
                     ((string-eq op "set-put")
-                      (do (check-builtin-args env "set-put" 2 (- len 1) line col)
-                          (env-get-unit-type env)))
+                      (let ((n (arena-option-len env "set-put" items 3 line col)))
+                        (check-builtin-args env "set-put" 2 (- n 1) line col)
+                        (env-get-unit-type env)))
                     ;; set-has expects 2 args: set, element - returns Bool
                     ((string-eq op "set-has")
                       (do (check-builtin-args env "set-has" 2 (- len 1) line col)
@@ -2742,14 +2745,67 @@
     (@pre (!= env nil))
     (@pre (!= expr nil))
     (when (sexpr-is-list expr)
-      (let ((len (sexpr-list-len expr)))
-        ;; Start from index 1 (skip the operator)
-        (for (i 1 len)
-          (match (sexpr-list-get expr i)
-            ((some arg-expr)
-              (let ((_ (infer-expr env arg-expr)))
-                (do)))
-            ((none) (do)))))))
+      (infer-builtin-args-before env expr (sexpr-list-len expr))))
+
+  (fn infer-builtin-args-before ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (end Int))
+    (@intent "Infer types of a builtin call's arguments before index end")
+    (@spec (((Ptr TypeEnv) (Ptr SExpr) Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= expr nil))
+    (when (sexpr-is-list expr)
+      ;; Start from index 1 (skip the operator)
+      (for (i 1 (min end (sexpr-list-len expr)))
+        (match (sexpr-list-get expr i)
+          ((some arg-expr)
+            (let ((_ (infer-expr env arg-expr)))
+              (do)))
+          ((none) (do))))))
+
+  (fn arena-option-len ((env (Ptr TypeEnv)) (op String) (items (List (Ptr SExpr)))
+                        (base-len Int) (line Int) (col Int))
+    (@intent "Check a put's optional trailing :arena <arena>; the form's length without it")
+    (@spec (((Ptr TypeEnv) String (List (Ptr SExpr)) Int Int Int) -> Int))
+    (@pre (!= env nil))
+    ;; list-push, map-put and set-put grow a collection in the arena it was
+    ;; made in; (... :arena a) grows it in a for that call (#276). base-len is
+    ;; the form's length without the option. A keyword in the option's place
+    ;; is reported here and the option's length dropped, so the arity check
+    ;; that follows doesn't report it again; anything else is left to that
+    ;; check as an extra argument.
+    (let ((len (list-len items))
+          (kw (match (list-get items base-len)
+                ((some e) (sexpr-get-symbol-name e))
+                ((none) ""))))
+      (cond
+        ((<= len base-len) len)
+        ((string-eq kw ":arena")
+          (if (== len (+ base-len 2))
+            (match (list-get items (+ base-len 1))
+              ((some arena-expr)
+                (let ((arena-type (infer-expr env arena-expr))
+                      (arena-name (. (deref arena-type) name)))
+                  (when (and (not (string-eq arena-name "Arena"))
+                             (not (string-eq arena-name "Unknown"))
+                             (not (string-eq arena-name "T")))
+                    (report-operand-mismatch env op ":arena" "Arena" arena-name
+                                             (sexpr-line arena-expr) (sexpr-col arena-expr)))
+                  base-len))
+              ((none) base-len))
+            (do
+              (env-add-error env (string-concat (env-arena env) "'"
+                                   (string-concat (env-arena env) op
+                                     "' :arena needs exactly one arena after it"))
+                             line col)
+              base-len)))
+        ((starts-with kw ":")
+          (do
+            (env-add-error env (string-concat (env-arena env) "'"
+                                 (string-concat (env-arena env) op
+                                   (string-concat (env-arena env) "' has no option "
+                                     (string-concat (env-arena env) kw "; the only one is :arena"))))
+                           line col)
+            base-len))
+        (else len))))
 
   (fn infer-body-exprs ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (start-idx Int))
     (@intent "Infer types of all body expressions starting from given index")

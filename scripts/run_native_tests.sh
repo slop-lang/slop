@@ -363,11 +363,6 @@ run_negative_build_test "$TNEG/variant-unimported.slop" "variant-unimported-ambi
     "variant-unimported.slop:10:14: error: variant 'red' belongs to types in modules 'tint' (Paint) and 'hue' (Color) - import the type you mean" \
     -I "$TNEG" -I "$REPO_ROOT/tests/type-resolution"
 
-# list-push grows its list in an arena; with none in scope it used to emit the
-# bare identifier `arena`, which only the C compiler caught (#179).
-run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_push_no_arena.slop" "list-push-no-arena" \
-    "list_push_no_arena.slop:9:6: error: list-push: no arena in scope"
-
 # A list literal with no arena in scope was a compound literal in the
 # function's own frame, so returning it dangled (#245).
 run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_literal_no_arena.slop" "list-literal-no-arena" \
@@ -676,6 +671,51 @@ run_negative_build_test "$REPO_ROOT/tests/range-build-negative/main.slop" "range
     -I "$REPO_ROOT/tests/range-build-negative"
 # Checks the checker proves unnecessary are not emitted
 run_codegen_count_test "$REPO_ROOT/tests/range-codegen/proved.slop" "range-proved" "SLOP_RANGE" 1
+
+echo ""
+
+# A collection grows in the arena it was made in, and a spawned closure's env
+# goes in spawn's arena (#276). Each program frees the arena that used to be
+# chosen before reading what was put there, so these build under ASan, where
+# the old placement is a use after free.
+run_asan_integration_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local exe_path="$BUILD_DIR/$test_name"
+
+    echo -n "Testing $test_name (ASan)... "
+    if ! SLOP_CFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=undefined -g" \
+            uv run slop build "$test_file" -o "$exe_path" >/dev/null 2>&1; then
+        echo -e "${RED}FAIL (build)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+    local output
+    if output=$("$exe_path" 2>&1); then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+AOWN="$REPO_ROOT/tests/arena-own"
+run_asan_integration_test "$AOWN/collections.slop" "arena-own-collections"
+run_asan_integration_test "$AOWN/spawn_env.slop" "arena-own-spawn-env"
+run_asan_integration_test "$AOWN/push_no_arena_in_scope.slop" "arena-own-push-no-arena-in-scope"
+run_runtime_abort_test "$AOWN/const_push.slop" "arena-own-const-push" \
+    "SLOP: list-push on a list with no arena (zero-initialized, or a copy of a module constant)"
+AONEG="$REPO_ROOT/tests/arena-own-negative"
+while IFS='|' read -r ao_name ao_expected <&3; do
+    run_negative_check_test "$AONEG/$ao_name.slop" "arena-option-$ao_name" "$ao_expected"
+    run_negative_build_test "$AONEG/$ao_name.slop" "arena-option-$ao_name" "$ao_expected"
+done 3<<'AO_CASES'
+not_arena|not_arena.slop:9:32: error: 'list-push' :arena: expected Arena, got Int
+missing_arena|missing_arena.slop:9:9: error: 'map-put' :arena needs exactly one arena after it
+unknown_option|unknown_option.slop:9:9: error: 'set-put' has no option :in; the only one is :arena
+AO_CASES
 
 echo ""
 
