@@ -32,17 +32,26 @@ static int failures = 0;
 
 #define MIB ((size_t)1 << 20)
 
-/* Resident bytes of this process */
+/* Memory this process holds, in bytes.
+ *
+ * On macOS this is the physical footprint, not the resident size. The
+ * resident size counts only pages in RAM at the moment, and a CI runner under
+ * memory pressure compresses and swaps a growing process's pages: a 1 GiB fill
+ * read as low as 432 MiB resident there. The footprint counts dirty memory
+ * wherever it is -- resident, compressed or swapped -- so it rises by the
+ * whole fill. It falls when a block is unmapped and stays up while freed
+ * blocks are kept dirty, which is exactly what these tests look for. Linux
+ * reports resident pages; glibc maps and unmaps blocks this big itself. */
 static size_t resident(void) {
 #ifdef __APPLE__
-    mach_task_basic_info_data_t info;
-    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO,
                   (task_info_t)&info, &count) != KERN_SUCCESS) {
         fprintf(stderr, "task_info failed\n");
         exit(1);
     }
-    return (size_t)info.resident_size;
+    return (size_t)info.phys_footprint;
 #else
     FILE* f = fopen("/proc/self/statm", "r");
     unsigned long size = 0, pages = 0;
