@@ -34,7 +34,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
     SLOP_PRE((parser_is_form(import_form, SLOP_STR("import"))), "(is-form import-form \"import\")");
     {
         __auto_type arena = env_env_arena(env);
-        __auto_type sites = resolve_push_import_sites(arena, ((slop_list_resolve_ImportSite){ .data = NULL, .len = 0, .cap = 0 }), import_form);
+        __auto_type sites = resolve_push_import_sites(arena, ((slop_list_resolve_ImportSite){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), import_form);
         {
             __auto_type len = ((int64_t)((sites).len));
             for (int64_t i = 0; i < len; i++) {
@@ -51,7 +51,7 @@ void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form) {
 
 slop_list_resolve_ImportSite resolve_collect_import_sites(slop_arena* arena, slop_list_types_SExpr_ptr ast) {
     {
-        __auto_type sites = ((slop_list_resolve_ImportSite){ .data = NULL, .len = 0, .cap = 0 });
+        __auto_type sites = ((slop_list_resolve_ImportSite){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
         __auto_type len = ((int64_t)((ast).len));
         for (int64_t i = 0; i < len; i++) {
             __auto_type _mv_122 = ({ __auto_type _lst = ast; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
@@ -114,7 +114,7 @@ slop_list_resolve_ImportSite resolve_push_import_sites(slop_arena* arena, slop_l
                                                 case types_SExpr_sym:
                                                 {
                                                     __auto_type name_sym = _mv_129.data.sym;
-                                                    ({ __auto_type _lst_p = &(result); __auto_type _item = ((resolve_ImportSite){mod_sym.name, name_sym.name, name_expr}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+                                                    ({ __auto_type _lst_p = &(result); __auto_type _item = ((resolve_ImportSite){mod_sym.name, name_sym.name, name_expr}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
                                                     break;
                                                 }
                                                 default: {
@@ -149,7 +149,7 @@ slop_option_string resolve_resolve_import_target(env_TypeEnv* env, slop_string s
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type arena = env_env_arena(env);
-        __auto_type qualified = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3 }; _ll.data[0] = src; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }));
+        __auto_type qualified = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = src; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }));
         if ((({ __auto_type _mv = env_env_lookup_type_qualified(env, src, name); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) || (({ __auto_type _mv = env_env_lookup_function_direct(env, qualified); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) || (env_env_lookup_constant_in_module(env, src, name))) {
             return (slop_option_string){.has_value = 1, .value = qualified};
         } else {
@@ -172,16 +172,16 @@ void resolve_resolve_import_name(env_TypeEnv* env, resolve_ImportSite site) {
             if (_mv_131.has_value) {
                 __auto_type prev = _mv_131.value;
                 if (!(string_eq(prev, target))) {
-                    env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is imported from both '"); _ll.data[3] = resolve_qualified_module_part(arena, prev); _ll.data[4] = SLOP_STR("' and '"); _ll.data[5] = src; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
+                    env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is imported from both '"); _ll.data[3] = resolve_qualified_module_part(arena, prev); _ll.data[4] = SLOP_STR("' and '"); _ll.data[5] = src; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
                 }
             } else if (!_mv_131.has_value) {
             }
             env_env_add_import(env, local_name, target);
         } else if (!_mv_130.has_value) {
             if (!(resolve_contains_slash(src))) {
-                env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5 }; _ll.data[0] = SLOP_STR("module '"); _ll.data[1] = src; _ll.data[2] = SLOP_STR("' does not export '"); _ll.data[3] = local_name; _ll.data[4] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
+                env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("module '"); _ll.data[1] = src; _ll.data[2] = SLOP_STR("' does not export '"); _ll.data[3] = local_name; _ll.data[4] = SLOP_STR("'"); _ll; })), parser_sexpr_line(name_expr), parser_sexpr_col(name_expr));
             }
-            env_env_add_import(env, local_name, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3 }; _ll.data[0] = src; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = local_name; _ll; })));
+            env_env_add_import(env, local_name, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = src; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = local_name; _ll; })));
         }
     }
 }
@@ -212,10 +212,10 @@ void resolve_check_import_shadowing(env_TypeEnv* env, slop_list_types_SExpr_ptr 
                     __auto_type site = _mv_134.value;
                     {
                         __auto_type local_name = site.name;
-                        __auto_type own = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3 }; _ll.data[0] = cur; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = local_name; _ll; }));
+                        __auto_type own = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = cur; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = local_name; _ll; }));
                         __auto_type imported_own = ({ __auto_type _mv = env_env_resolve_import(env, local_name); _mv.has_value ? ({ __auto_type q = _mv.value; string_eq(q, own); }) : (0); });
                         if ((!(imported_own)) && (({ __auto_type _mv = resolve_resolve_import_target(env, site.source, local_name); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) && (((({ __auto_type _mv = env_env_lookup_type_qualified(env, cur, local_name); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) || (({ __auto_type _mv = env_env_lookup_function_direct(env, own); _mv.has_value ? ({ __auto_type _ = _mv.value; 1; }) : (0); })) || (env_env_lookup_constant_in_module(env, cur, local_name))))) {
-                            env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is defined in module '"); _ll.data[3] = cur; _ll.data[4] = SLOP_STR("' and also imported from '"); _ll.data[5] = site.source; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(site.name_expr), parser_sexpr_col(site.name_expr));
+                            env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = local_name; _ll.data[2] = SLOP_STR("' is defined in module '"); _ll.data[3] = cur; _ll.data[4] = SLOP_STR("' and also imported from '"); _ll.data[5] = site.source; _ll.data[6] = SLOP_STR("'"); _ll; })), parser_sexpr_line(site.name_expr), parser_sexpr_col(site.name_expr));
                         }
                     }
                 } else if (!_mv_134.has_value) {

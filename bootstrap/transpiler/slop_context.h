@@ -490,6 +490,7 @@ struct context_TranspileContext {
     uint8_t skip_trampoline_generation;
     uint8_t strict_unknown_symbols;
     slop_string current_fn_c_name;
+    slop_string closure_arena;
     int64_t pos_line;
     int64_t pos_col;
     slop_list_string reported_ambiguities;
@@ -734,6 +735,8 @@ void context_ctx_set_strict_unknown_symbols(context_TranspileContext* ctx, uint8
 uint8_t context_ctx_strict_unknown_symbols(context_TranspileContext* ctx);
 void context_ctx_set_current_fn_c_name(context_TranspileContext* ctx, slop_string name);
 void context_ctx_clear_current_fn_c_name(context_TranspileContext* ctx);
+void context_ctx_set_closure_arena(context_TranspileContext* ctx, slop_string arena_c);
+slop_string context_ctx_take_closure_arena(context_TranspileContext* ctx);
 void context_ctx_set_last_lambda_info(context_TranspileContext* ctx, uint8_t is_closure, slop_string env_type, slop_string lambda_name);
 context_LastLambdaInfo context_ctx_get_last_lambda_info(context_TranspileContext* ctx);
 void context_ctx_clear_last_lambda_info(context_TranspileContext* ctx);

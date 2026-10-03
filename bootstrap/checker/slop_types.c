@@ -397,16 +397,16 @@ types_RangeBounds types_range_mul(types_RangeBounds a, types_RangeBounds b) {
 }
 
 slop_string types_range_to_string(slop_arena* arena, types_RangeBounds r) {
-    return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("(Int"); _ll.data[1] = ((r.has_min) ? SLOP_STR(" ") : SLOP_STR("")); _ll.data[2] = ((r.has_min) ? int_to_string(arena, ((int64_t)(r.min_val))) : SLOP_STR("")); _ll.data[3] = SLOP_STR(" .."); _ll.data[4] = ((r.has_max) ? SLOP_STR(" ") : SLOP_STR("")); _ll.data[5] = ((r.has_max) ? int_to_string(arena, ((int64_t)(r.max_val))) : SLOP_STR("")); _ll.data[6] = SLOP_STR(")"); _ll; }));
+    return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("(Int"); _ll.data[1] = ((r.has_min) ? SLOP_STR(" ") : SLOP_STR("")); _ll.data[2] = ((r.has_min) ? int_to_string(arena, ((int64_t)(r.min_val))) : SLOP_STR("")); _ll.data[3] = SLOP_STR(" .."); _ll.data[4] = ((r.has_max) ? SLOP_STR(" ") : SLOP_STR("")); _ll.data[5] = ((r.has_max) ? int_to_string(arena, ((int64_t)(r.max_val))) : SLOP_STR("")); _ll.data[6] = SLOP_STR(")"); _ll; }));
 }
 
 slop_string types_range_describe_values(slop_arena* arena, types_RangeBounds r) {
     if (r.has_min && r.has_max) {
-        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5 }; _ll.data[0] = SLOP_STR("in ["); _ll.data[1] = int_to_string(arena, ((int64_t)(r.min_val))); _ll.data[2] = SLOP_STR(" .. "); _ll.data[3] = int_to_string(arena, ((int64_t)(r.max_val))); _ll.data[4] = SLOP_STR("]"); _ll; }));
+        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("in ["); _ll.data[1] = int_to_string(arena, ((int64_t)(r.min_val))); _ll.data[2] = SLOP_STR(" .. "); _ll.data[3] = int_to_string(arena, ((int64_t)(r.max_val))); _ll.data[4] = SLOP_STR("]"); _ll; }));
     } else if (r.has_min) {
-        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 2 * sizeof(slop_string)), .len = 2, .cap = 2 }; _ll.data[0] = SLOP_STR("at least "); _ll.data[1] = int_to_string(arena, ((int64_t)(r.min_val))); _ll; }));
+        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 2 * sizeof(slop_string)), .len = 2, .cap = 2, .arena = arena }; _ll.data[0] = SLOP_STR("at least "); _ll.data[1] = int_to_string(arena, ((int64_t)(r.min_val))); _ll; }));
     } else if (r.has_max) {
-        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 2 * sizeof(slop_string)), .len = 2, .cap = 2 }; _ll.data[0] = SLOP_STR("at most "); _ll.data[1] = int_to_string(arena, ((int64_t)(r.max_val))); _ll; }));
+        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 2 * sizeof(slop_string)), .len = 2, .cap = 2, .arena = arena }; _ll.data[0] = SLOP_STR("at most "); _ll.data[1] = int_to_string(arena, ((int64_t)(r.max_val))); _ll; }));
     } else {
         return SLOP_STR("unbounded");
     }
@@ -432,7 +432,7 @@ types_ResolvedField* types_resolved_field_new(slop_arena* arena, slop_string nam
 types_ResolvedType* types_resolved_type_new(slop_arena* arena, types_ResolvedTypeKind kind, slop_string name, slop_option_string module_name, slop_string c_name) {
     {
         __auto_type t = ((types_ResolvedType*)(({ __auto_type _alloc = (types_ResolvedType*)slop_arena_alloc(arena, sizeof(types_ResolvedType)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        (*t) = (types_ResolvedType){kind, name, module_name, c_name, ((slop_list_types_ResolvedVariant){ .data = NULL, .len = 0, .cap = 0 }), ((slop_list_types_ResolvedField){ .data = NULL, .len = 0, .cap = 0 }), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_RangeBounds){.has_value = false}), 0, 0};
+        (*t) = (types_ResolvedType){kind, name, module_name, c_name, ((slop_list_types_ResolvedVariant){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_types_ResolvedField){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_ResolvedType_ptr){.has_value = false}), ((slop_option_types_RangeBounds){.has_value = false}), 0, 0};
         return t;
     }
 }
@@ -512,7 +512,7 @@ types_FnSignature* types_fn_signature_new(slop_arena* arena, slop_string name, s
     SLOP_PRE(((return_type != NULL)), "(!= return-type nil)");
     {
         __auto_type sig = ((types_FnSignature*)(({ __auto_type _alloc = (types_FnSignature*)slop_arena_alloc(arena, sizeof(types_FnSignature)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        (*sig) = (types_FnSignature){name, c_name, params, return_type, 0, 0, ((slop_option_string){.has_value = false}), ((slop_list_string){ .data = NULL, .len = 0, .cap = 0 }), 0};
+        (*sig) = (types_FnSignature){name, c_name, params, return_type, 0, 0, ((slop_option_string){.has_value = false}), ((slop_list_string){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), 0};
         return sig;
     }
 }
@@ -644,7 +644,7 @@ slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_a
             __auto_type len = ((int64_t)((variants).len));
             int64_t i = 0;
             uint8_t done = 0;
-            slop_list_types_ResolvedType_ptr found = ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0 });
+            slop_list_types_ResolvedType_ptr found = ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
             while ((i < len) && !(done)) {
                 __auto_type _mv_21 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_types_ResolvedVariant _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_21.has_value) {
@@ -660,7 +660,7 @@ slop_list_types_ResolvedType_ptr types_resolved_type_get_variant_payloads(slop_a
             return found;
         }
     } else {
-        return ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0 });
+        return ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
     }
 }
 
@@ -810,34 +810,34 @@ slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_Resolved
 
 slop_string types_mutation_error_message(slop_arena* arena, types_MutationKind kind, types_BindingOrigin origin, slop_string name, uint8_t via_field) {
     {
-        __auto_type q = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3 }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("'"); _ll; }));
+        __auto_type q = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("'"); _ll; }));
         __auto_type _mv_33 = origin;
         if (_mv_33 == types_BindingOrigin_origin_param) {
             __auto_type _mv_34 = kind;
             if (_mv_34 == types_MutationKind_mut_assign) {
-                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5 }; _ll.data[0] = SLOP_STR("cannot assign to parameter "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - it is read-only; declare it (mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" T) to modify a local copy, or pass a (Ptr T) to change the caller's value"); _ll; }));
+                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("cannot assign to parameter "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - it is read-only; declare it (mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" T) to modify a local copy, or pass a (Ptr T) to change the caller's value"); _ll; }));
             } else if (_mv_34 == types_MutationKind_mut_field) {
-                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5 }; _ll.data[0] = SLOP_STR("cannot change a field of parameter "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - it is read-only; declare it (mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" T) to modify a local copy, or pass a (Ptr T) to change the caller's value"); _ll; }));
+                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("cannot change a field of parameter "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - it is read-only; declare it (mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" T) to modify a local copy, or pass a (Ptr T) to change the caller's value"); _ll; }));
             } else {
                 {
                     __auto_type verb = (((kind == types_MutationKind_mut_push)) ? SLOP_STR("push to") : SLOP_STR("pop from"));
                     if (via_field) {
-                        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("cannot "); _ll.data[1] = verb; _ll.data[2] = SLOP_STR(" a field of parameter "); _ll.data[3] = q; _ll.data[4] = SLOP_STR(" - it is read-only, and a change to a copy is lost to the caller; declare it (mut "); _ll.data[5] = name; _ll.data[6] = SLOP_STR(" T) and return it, or pass a (Ptr T)"); _ll; }));
+                        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("cannot "); _ll.data[1] = verb; _ll.data[2] = SLOP_STR(" a field of parameter "); _ll.data[3] = q; _ll.data[4] = SLOP_STR(" - it is read-only, and a change to a copy is lost to the caller; declare it (mut "); _ll.data[5] = name; _ll.data[6] = SLOP_STR(" T) and return it, or pass a (Ptr T)"); _ll; }));
                     } else {
-                        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7 }; _ll.data[0] = SLOP_STR("cannot "); _ll.data[1] = verb; _ll.data[2] = SLOP_STR(" parameter "); _ll.data[3] = q; _ll.data[4] = SLOP_STR(" - it is read-only, and a change to a copy is lost to the caller; pass a (Ptr (List T)) and use (deref "); _ll.data[5] = name; _ll.data[6] = SLOP_STR("), or return the new list"); _ll; }));
+                        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("cannot "); _ll.data[1] = verb; _ll.data[2] = SLOP_STR(" parameter "); _ll.data[3] = q; _ll.data[4] = SLOP_STR(" - it is read-only, and a change to a copy is lost to the caller; pass a (Ptr (List T)) and use (deref "); _ll.data[5] = name; _ll.data[6] = SLOP_STR("), or return the new list"); _ll; }));
                     }
                 }
             }
         } else if (_mv_33 == types_BindingOrigin_origin_local) {
             if (kind == types_MutationKind_mut_assign) {
-                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5 }; _ll.data[0] = SLOP_STR("cannot assign to "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - it is immutable; declare it (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
+                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("cannot assign to "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - it is immutable; declare it (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
             } else {
-                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5 }; _ll.data[0] = SLOP_STR("cannot change a field of "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - it is immutable; declare it (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
+                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("cannot change a field of "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - it is immutable; declare it (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
             }
         } else if (_mv_33 == types_BindingOrigin_origin_bound) {
-            return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5 }; _ll.data[0] = (((kind == types_MutationKind_mut_assign)) ? SLOP_STR("cannot assign to ") : SLOP_STR("cannot change a field of ")); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
+            return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = (((kind == types_MutationKind_mut_assign)) ? SLOP_STR("cannot assign to ") : SLOP_STR("cannot change a field of ")); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
         } else if (_mv_33 == types_BindingOrigin_origin_const) {
-            return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 2 * sizeof(slop_string)), .len = 2, .cap = 2 }; _ll.data[0] = (((kind == types_MutationKind_mut_assign)) ? SLOP_STR("cannot assign to constant ") : SLOP_STR("cannot change a field of constant ")); _ll.data[1] = q; _ll; }));
+            return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 2 * sizeof(slop_string)), .len = 2, .cap = 2, .arena = arena }; _ll.data[0] = (((kind == types_MutationKind_mut_assign)) ? SLOP_STR("cannot assign to constant ") : SLOP_STR("cannot change a field of constant ")); _ll.data[1] = q; _ll; }));
         }
         SLOP_UNREACHABLE();
     }
@@ -845,11 +845,11 @@ slop_string types_mutation_error_message(slop_arena* arena, types_MutationKind k
 
 slop_string types_param_mode_error_message(slop_arena* arena, slop_string mode, slop_string name) {
     if (string_eq(mode, SLOP_STR("mut"))) {
-        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3 }; _ll.data[0] = SLOP_STR("'mut' is not allowed on parameter '"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("' - a copy of a List, Map or Set shares the caller's storage; use (Ptr (List T)) to change the caller's list"); _ll; }));
+        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("'mut' is not allowed on parameter '"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("' - a copy of a List, Map or Set shares the caller's storage; use (Ptr (List T)) to change the caller's list"); _ll; }));
     } else if (string_eq(mode, SLOP_STR("out"))) {
-        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3 }; _ll.data[0] = SLOP_STR("'out' parameter '"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("' is not supported - use a (Ptr T) parameter and pass (addr x)"); _ll; }));
+        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("'out' parameter '"); _ll.data[1] = name; _ll.data[2] = SLOP_STR("' is not supported - use a (Ptr T) parameter and pass (addr x)"); _ll; }));
     } else {
-        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3 }; _ll.data[0] = SLOP_STR("unknown parameter mode '"); _ll.data[1] = mode; _ll.data[2] = SLOP_STR("' - write (name Type) or (mut name Type)"); _ll; }));
+        return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("unknown parameter mode '"); _ll.data[1] = mode; _ll.data[2] = SLOP_STR("' - write (name Type) or (mut name Type)"); _ll; }));
     }
 }
 
