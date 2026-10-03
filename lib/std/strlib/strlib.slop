@@ -848,7 +848,7 @@
     (@example ("hello" 4) -> 111)
     (@example ("hello" 5) -> 0)
     (@example ("" 0) -> 0)
-    (if (>= index (cast Int (. s len))) 0 (cast U8 (@ (. s data) index))))
+    (if (>= index (cast Int (. s len))) (cast U8 0) (cast U8 (@ (. s data) index))))
 
   (fn char-is-symbol-start ((c Byte))
     (@intent "Check if character can start a SLOP symbol (a-z, A-Z, _, @, $)")

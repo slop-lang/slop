@@ -1,0 +1,25 @@
+;; Any integer may go where a range over Int is expected: a width such as a U8
+;; read of a string byte, or an Int, into a range or an alias of one. The
+;; narrowing is checked at run time (#265). U8 into Byte used to be rejected:
+;; widths matched each other and Int matched its ranges, but a width did not
+;; match a range.
+
+(module main
+  (type Byte (Int 0 .. 255))
+  (type Pct (Int 0 .. 100))
+  (type Score Pct)
+
+  (fn take-byte ((b Byte))
+    (@intent "Take a byte")
+    (@spec ((Byte) -> Int))
+    b)
+
+  (fn take-score ((s Score))
+    (@intent "Take an alias of a range")
+    (@spec ((Score) -> Int))
+    s)
+
+  (fn main ()
+    (@intent "Pass widths and literals into ranges")
+    (@spec (() -> Int))
+    (+ (take-byte (cast U8 200)) (take-score 99) (take-score (cast U8 5)))))

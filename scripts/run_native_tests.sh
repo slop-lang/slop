@@ -565,6 +565,13 @@ run_check_warning_test "$RGN/unchecked_base.slop" "range-unchecked-base" \
     "unchecked_base.slop:4:13: warning: a U8 range is not enforced yet: only (Int lo .. hi) is checked"
 run_check_clean_test "$REPO_ROOT/tests/test_range_static.slop" "range-static"
 run_check_clean_test "$REPO_ROOT/tests/range-clean/generic_default.slop" "range-generic-default"
+run_check_clean_test "$REPO_ROOT/tests/range-clean/width_into_range.slop" "range-width-into-range"
+# strlib checks clean on its own: a U8 byte read passed for its Byte range was
+# an error in every module importing it, and nothing checked the library itself
+run_check_clean_test "$REPO_ROOT/lib/std/strlib/strlib.slop" "strlib-clean"
+# Likewise common/types.slop, which every compiler module imports: #267's
+# interval helpers returned Int literals as I64, an error in all of them
+run_check_clean_test "$REPO_ROOT/lib/compiler/common/types.slop" "common-types-clean"
 
 # Range checks at run time (#265 phase 2). A value only known at run time that
 # is outside its range type aborts at the narrowing point, tested at int64_t

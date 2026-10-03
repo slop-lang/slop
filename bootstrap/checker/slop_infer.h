@@ -105,6 +105,7 @@ void infer_check_fn_call_args(env_TypeEnv* env, types_FnSignature* sig, types_SE
 void infer_check_single_arg(env_TypeEnv* env, types_FnSignature* sig, types_SExpr* expr, int64_t arg_idx, int64_t line, int64_t col);
 slop_option_types_ResolvedType_ptr infer_env_lookup_callable(env_TypeEnv* env, slop_string name);
 uint8_t infer_types_incompatible(types_ResolvedType* expected, types_ResolvedType* actual);
+uint8_t infer_is_integer_like(types_ResolvedType* t);
 void infer_report_operand_mismatch(env_TypeEnv* env, slop_string op, slop_string what, slop_string expected, slop_string actual, int64_t line, int64_t col);
 void infer_check_list_operands(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, uint8_t has_index, int64_t line, int64_t col);
 int64_t infer_float_rank(slop_string name);
