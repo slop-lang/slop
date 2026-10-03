@@ -361,11 +361,13 @@ identifier               ; Variable reference
 ; literal -- build one with map-new and map-put.
 ;
 ; Inside a function, a list or set literal is built in the arena in scope (a
-; variable named `arena`, else any Arena-typed one), freshly on every
-; evaluation, so it can be returned, stored or mutated. With no arena in scope
-; it is a transpiler error: "list: no arena in scope". A module-level
+; variable named `arena`, else the innermost Arena-typed one), freshly on
+; every evaluation, so it can be returned, stored or mutated; it records that
+; arena, and pushes and puts grow it there. With no arena in scope it is a
+; transpiler error: "list: no arena in scope". A module-level
 ; (const NAME (List T) (list T ...)) needs no arena: its elements must be
-; literals (numbers, strings, true/false), and the list has static storage.
+; literals (numbers, strings, true/false), and the list has static storage
+; and no arena, so a push onto a copy of it that has to grow it aborts.
 
 ; Data access
 (. expr field)                   ; Field access (see semantics below)
@@ -985,7 +987,8 @@ Minimal runtime (~500 lines of C):
 
 ; Lists (homogeneous, type-safe)
 (list-new arena Type) -> (List Type)   ; Type parameter required for type safety
-(list-push list item) -> Unit
+(list-push list item) -> Unit          ; Grows the list in its own arena
+(list-push list item :arena a) -> Unit ; Grows it in a, for this push
 (list-get list index) -> (Option T)
 (list-set list index value) -> Bool    ; Overwrite in place; false if out of range
 (list-pop list) -> (Option T)          ; Remove and return last element
@@ -993,7 +996,8 @@ Minimal runtime (~500 lines of C):
 
 ; Maps (homogeneous, type-safe)
 (map-new arena KeyType ValueType) -> (Map KeyType ValueType)  ; Type parameters required
-(map-put map key val) -> Unit
+(map-put map key val) -> Unit            ; Grows the table in the map's own arena
+(map-put map key val :arena a) -> Unit   ; Grows it in a, for this put
 (map-get map key) -> (Option V)
 (map-has map key) -> Bool
 (map-keys map) -> (List K)               ; Return list of all keys (order: see for-each)
@@ -1008,10 +1012,21 @@ Minimal runtime (~500 lines of C):
 ; changing what map-get returned never changes the map -- except through a
 ; handle inside it (a Map, Set or Ptr value, or a List's elements).
 ;
-; A put that needs a bigger table grows it in the arena in scope at the put
-; -- a variable named `arena` if there is one, else the innermost Arena-typed
-; variable -- not the one the map was made in, so that arena must live as long
-; as the map is used. A put that fits allocates nothing.
+; A put that fits allocates nothing.
+;
+; A collection's own arena. A List, Map or Set records the arena it was made
+; in: the one given to list-new, map-new or set-new, or, for a literal,
+; map-keys or set-elements, the one it was built in. list-push, map-put and
+; set-put grow it there, whatever arenas are in scope at the push, and a
+; :arena a after the operands grows it in a for that call instead (the
+; collection keeps its own for the next). Either way the arena grown in must
+; live as long as the collection is used. A List with no arena -- a copy of a
+; module-level const list, or a List field nothing set -- aborts when a push
+; has to grow it.
+;
+; Only one thread may allocate from an arena at a time. A thread growing a
+; collection whose arena another thread is using names an arena of its own
+; with :arena.
 
 ; Options
 (some val) -> (Option T)
@@ -1030,7 +1045,8 @@ Minimal runtime (~500 lines of C):
 ; Sets (homogeneous, type-safe)
 (set-new arena ElementType) -> (Set ElementType)  ; Create empty set
 (set Type e1 e2...)                               ; Set literal
-(set-put set element) -> Unit                     ; Add element to set
+(set-put set element) -> Unit                     ; Add element; grows in the set's own arena
+(set-put set element :arena a) -> Unit            ; Grows it in a, for this put
 (set-has set element) -> Bool                     ; Check if element exists
 (set-remove set element) -> Unit                  ; Remove element from set
 (set-elements set) -> (List T)                    ; Get all elements as list (order: see for-each)
@@ -1113,7 +1129,8 @@ ChanError                ; Error enum: closed, would-block, send-on-closed
 **Thread Operations:**
 
 ```
-(spawn arena func) -> (Ptr (Thread T))      ; Spawn thread running func()
+(spawn arena func) -> (Ptr (Thread T))      ; Spawn thread running func(); its handle,
+                                            ; and a closure's env, go in arena
 (join thread) -> T                          ; Wait for thread, return result
 ```
 

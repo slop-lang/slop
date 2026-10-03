@@ -90,6 +90,24 @@ int main(void) {
     CHECK(lit.data != stack_buf && lit.len == 3 && lit.cap == 4);
     CHECK(lit.data[0] == 1.0 && lit.data[1] == 2.0 && lit.data[2] == 3.0);
 
+    /* A list grows in its own arena when the push names none (NULL, as a
+     * plain list-push does), and in the named one when it names one (#276) */
+    slop_arena own = slop_arena_new(1 << 12);
+    slop_arena named = slop_arena_new(1 << 12);
+    test_list_double r = { .len = 0, .cap = 0, .data = NULL, .arena = &own };
+    for (int i = 0; i < 10; i++) test_list_double_push(NULL, &r, (double)i);
+    CHECK((uint8_t*)r.data >= own.base && (uint8_t*)r.data < own.base + own.capacity);
+    size_t named_used = named.offset;
+    CHECK(named_used == 0);
+    for (int i = 10; i < 40; i++) test_list_double_push(&named, &r, (double)i);
+    CHECK((uint8_t*)r.data >= named.base && (uint8_t*)r.data < named.base + named.capacity);
+    CHECK(r.arena == &own);
+    for (int i = 0; i < 40; i++) CHECK(r.data[i] == (double)i);
+    test_list_double made = test_list_double_new(&own, 2);
+    CHECK(made.arena == &own);
+    slop_arena_free(&own);
+    slop_arena_free(&named);
+
     /* Growth across chained blocks keeps every element */
     slop_arena small = slop_arena_new(64);
     test_list_double c = {0, 0, NULL};

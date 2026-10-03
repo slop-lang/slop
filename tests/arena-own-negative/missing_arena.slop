@@ -1,0 +1,10 @@
+;; :arena needs the arena after it (#276)
+
+(module main
+  (fn main ()
+    (@intent "Leave out the arena")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((m (map-new arena Int Int)))
+        (map-put m 1 2 :arena)
+        (map-len m)))))

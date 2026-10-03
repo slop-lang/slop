@@ -53,6 +53,7 @@
                    ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
                    LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
+                   ctx-set-closure-arena ctx-take-closure-arena
                    ctx-add-warning ctx-add-warning-at ctx-warn-fallback ctx-has-trampoline ctx-add-trampoline ctx-skip-trampoline-generation
                    ctx-register-generic-instantiation ctx-has-generic-instantiation mangle-generic-fn-name
                    ends-with-star))
@@ -526,7 +527,7 @@
     (@spec (((Ptr TranspileContext) String) -> String))
     (@pre {ctx != nil})
     ;; emit-field-eq compares a (List T) field with memcmp over its header --
-    ;; data pointer, len, cap -- and a (Map K V) / (Set T) field by pointer, so
+    ;; data pointer, len, cap, arena -- and a (Map K V) / (Set T) field by pointer, so
     ;; two containers holding identical contents come back unequal. That is
     ;; long-standing map/set-key behaviour and is deliberately not changed
     ;; here, but == makes it reachable from ordinary code, so the site warns.
@@ -2173,7 +2174,7 @@
     (@pre {map-expr != nil})
     ;; The same derivation the map for-each emitters read values with, so
     ;; map-get, map-put and for-each agree on one type. A (Set T) or (Map K V)
-    ;; value is a slop_map*, and a (List T) the 24-byte list struct; both used
+    ;; value is a slop_map*, and a (List T) the 32-byte list struct; both used
     ;; to be read back through slop_option_ptr as a void*, which lost the
     ;; type -- (set-len s) became ((void*)s)->len -- and, for a List, all
     ;; but its first 8 bytes.
@@ -3050,7 +3051,7 @@
                     ;; map-new: (map-new arena KeyType ValueType) -> slop_map_new_ptr(arena, 0, ...)
                     ((and (string-eq op "map-new") (>= len 2))
                       (transpile-map-new ctx items))
-                    ;; map-put: (map-put map key val) -> slop_map_put(arena, map, key, &val, sizeof(val))
+                    ;; map-put: (map-put map key val [:arena a]) -> slop_map_put(NULL or a, map, key, &val, sizeof(val))
                     ((and (string-eq op "map-put") (>= len 4))
                       (transpile-map-put ctx items))
                     ;; map-get: (map-get map key) -> slop_map_get(map, key)
@@ -3301,12 +3302,13 @@
                                 ;; which the runtime predefines.
                                 (ctx-register-list-type ctx elem-c-type list-type)
                                 (ctx-register-option-type ctx elem-c-type (ctx-str ctx "slop_option_" elem-id))
-                                ;; ((slop_list_Type){ .data = NULL, .len = 0, .cap = 0 })
+                                ;; ((slop_list_Type){ .data = NULL, .len = 0, .cap = 0, .arena = A })
                                 ;; No storage until the first push, which gives it
                                 ;; SLOP_LIST_FIRST_CAPACITY slots (slop_list_grow_raw): most
-                                ;; lists a rule builds stay empty. The arena expression is
-                                ;; still transpiled, for its diagnostics, but not emitted.
-                                (ctx-str3 ctx "((" list-type "){ .data = NULL, .len = 0, .cap = 0 })")))
+                                ;; lists a rule builds stay empty. The header records the
+                                ;; arena, and every push grows the list there (#276).
+                                (ctx-str5 ctx "((" list-type "){ .data = NULL, .len = 0, .cap = 0, .arena = "
+                                  arena-c " })")))
                             ((none)
                               (do
                                 (ctx-add-error-at ctx "missing list-new type argument" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -3327,22 +3329,28 @@
                                     (item-c (transpile-expr-narrowed ctx item-expr ""
                                               (infer-collection-element-slop-type ctx list-expr)
                                               "'list-push' element"))
-                                    ;; Determine arena source from the list expression
-                                    ;; If it's a struct field access, use struct->arena
-                                    (arena-c (get-arena-for-list-push-expr ctx list-expr items)))
-                                ;; ({ __auto_type _lst_p = &(list); __auto_type _item = item;
-                                ;;    if (_lst_p->len >= _lst_p->cap) { _lst_p->data = slop_list_grow_raw(arena, ...); }
+                                    ;; The list grows in its own arena unless :arena names one
+                                    (override-c (arena-override-c ctx "list-push" items 3)))
+                                ;; ({ __auto_type _lst_p = &(list); __auto_type _item = (item);
+                                ;;    [slop_arena* _lst_a = (override);]
+                                ;;    if (_lst_p->len >= _lst_p->cap) { _lst_p->data = slop_list_grow_raw(_lst_p->arena or _lst_a, ...); }
                                 ;;    _lst_p->data[_lst_p->len++] = _item; })
-                                ;; The runtime owns the growth policy: first capacity, doubling,
-                                ;; and moving to a new buffer (never extending the shared one in
-                                ;; place, since copies of the list header point at it).
-                                (let ((s1 (ctx-str ctx "({ __auto_type _lst_p = &(" list-c))
+                                ;; The override is evaluated whether or not the list grows, after
+                                ;; the item, the order the reader sees. The runtime owns the growth
+                                ;; policy: first capacity, doubling, and moving to a new buffer
+                                ;; (never extending the shared one in place, since copies of the
+                                ;; list header point at it).
+                                (let ((has-override (> (string-len override-c) 0))
+                                      (s1 (ctx-str ctx "({ __auto_type _lst_p = &(" list-c))
                                       (s2 (ctx-str ctx s1 "); __auto_type _item = ("))
                                       (s3 (ctx-str ctx s2 item-c))
-                                      (s4 (ctx-str ctx s3 "); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw("))
-                                      (s5 (ctx-str ctx s4 arena-c))
-                                      (s6 (ctx-str ctx s5 ", _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; })")))
-                                  s6)))
+                                      (s4 (if has-override
+                                            (ctx-str4 ctx s3 "); slop_arena* _lst_a = (" override-c ")")
+                                            (ctx-str ctx s3 ")")))
+                                      (s5 (ctx-str ctx s4 "; if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw("))
+                                      (s6 (ctx-str ctx s5 (if has-override "_lst_a" "_lst_p->arena")))
+                                      (s7 (ctx-str ctx s6 ", _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; })")))
+                                  s7)))
                             ((none)
                               (do
                                 (ctx-add-error-at ctx "missing list-push item" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -5727,107 +5735,59 @@
             (starts-with (. entry slop-type) "(Fn")))
       ((none) false)))
 
-  (fn get-arena-for-list-push-expr ((ctx (Ptr TranspileContext)) (list-expr (Ptr SExpr)) (items (List (Ptr SExpr))))
-    (@intent "Resolve the arena a list-push grows its list in, or record a transpiler error")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr) (List (Ptr SExpr))) -> String))
+  (fn arena-override-c ((ctx (Ptr TranspileContext)) (op String) (items (List (Ptr SExpr))) (base-len Int))
+    (@intent "The C for a put's :arena override, or empty when it names none")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr)) Int) -> String))
     (@pre {ctx != nil})
-    (@pre {list-expr != nil})
-    ;; 1. a variable named "arena"; 2. the arena field of a ctx variable;
-    ;; 3. the arena field of the struct the list is a field of, so
-    ;; (. (deref env) types) grows in env->arena; 4. any Arena-typed variable
-    ;; in scope, else an error (resolve-arena-c-name). Tiers 2 and 3 apply only
-    ;; when the struct really has an arena field: guessing, and a last-resort
-    ;; bare "arena", left the C compiler to report a missing arena (#179).
-    (match (ctx-lookup-var ctx "arena")
-      ((some arena-var)
-        (. arena-var c-name))
-      ((none)
-        (let ((from-ctx (match (ctx-lookup-var ctx "ctx")
-                          ((some ctx-var)
-                            (arena-field-access ctx (. ctx-var c-name) (. ctx-var c-type)))
-                          ((none) ""))))
-          (if (> (string-len from-ctx) 0)
-            from-ctx
-            (let ((from-field (get-arena-from-field-access ctx list-expr)))
-              (if (> (string-len from-field) 0)
-                from-field
-                (resolve-arena-c-name ctx "list-push" items))))))))
-
-  (fn arena-field-access ((ctx (Ptr TranspileContext)) (base-c String) (base-c-type String))
-    (@intent "Access the arena field of a struct value or pointer, or empty if the struct has none")
-    (@spec (((Ptr TranspileContext) String String) -> String))
-    (@pre {ctx != nil})
-    (let ((arena (. (deref ctx) arena))
-          (is-ptr (ends-with base-c-type "*"))
-          (struct-type (if is-ptr (strip-pointer-suffix arena base-c-type) base-c-type)))
-      (match (ctx-lookup-field-type ctx struct-type "arena")
-        ((some _)
-          (ctx-str ctx base-c (if is-ptr "->arena" ".arena")))
-        ((none) ""))))
-
-  (fn get-arena-from-field-access ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
-    (@intent "Extract arena from base struct if expr is field access (. BASE FIELD)")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
-    (@pre {ctx != nil})
-    (@pre {expr != nil})
-    ;; Match pattern: (. BASE FIELD) where BASE might be (deref VAR) or VAR
-    ;; Returns arena from BASE, or empty string if not a field access
-    (match (deref expr)
-      ((lst lst)
-        (let ((items (. lst items))
-              (len (list-len items)))
-          (if (< len 3)
-            "" ;; Not enough elements for field access
-            (match (list-get items 0)
-              ((some head-expr)
-                (match (deref head-expr)
-                  ((sym sym)
-                    (if (string-eq (. sym name) ".")
-                      ;; This is a field access: (. BASE FIELD)
-                      (match (list-get items 1)
-                        ((some base-expr)
-                          ;; Get arena from the base expression
-                          (get-arena-from-base ctx base-expr))
-                        ((none) ""))
-                      "")) ;; Not a field access
-                  (else ""))) ;; Head is not a symbol
-              ((none) ""))))) ;; Missing head
-      (else ""))) ;; Not a list
-
-  (fn get-arena-from-base ((ctx (Ptr TranspileContext)) (base-expr (Ptr SExpr)))
-    (@intent "Access the arena field of a field access's base, or empty if it has none")
-    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> String))
-    (@pre {ctx != nil})
-    (@pre {base-expr != nil})
-    (match (deref base-expr)
-      ;; A variable: its own arena field
-      ((sym sym)
-        (match (ctx-lookup-var ctx (. sym name))
-          ((some entry)
-            (arena-field-access ctx (. entry c-name)
-              (if (. entry is-pointer)
-                (if (ends-with (. entry c-type) "*") (. entry c-type) (ctx-str ctx (. entry c-type) "*"))
-                (. entry c-type))))
-          ((none) "")))
-      ;; (deref ptr): the pointee's arena field, ptr->arena
-      ((lst lst)
-        (let ((items (. lst items)))
-          (if (< (list-len items) 2)
-            ""
-            (match (list-get items 0)
-              ((some head-expr)
-                (match (deref head-expr)
-                  ((sym head-sym)
-                    (if (string-eq (. head-sym name) "deref")
-                      (match (list-get items 1)
-                        ((some ptr-expr)
-                          (arena-field-access ctx (transpile-expr ctx ptr-expr)
-                            (infer-expr-c-type ctx ptr-expr)))
-                        ((none) ""))
-                      ""))
-                  (else "")))
-              ((none) "")))))
-      (else "")))
+    ;; list-push, map-put and set-put grow a collection in its own arena, the
+    ;; one list-new, map-new or set-new recorded in it (#276). A trailing
+    ;; :arena a grows it in a for that call: a thread growing a collection
+    ;; whose arena another thread allocates from names its own. base-len is
+    ;; the form's length without the option. The errors are the checker's
+    ;; (arena-option-len), since a multi-module build drops its diagnostics.
+    (let ((len (list-len items))
+          (kw (match (list-get items base-len)
+                ((some e)
+                  (match (deref e)
+                    ((sym s) (. s name))
+                    (else "")))
+                ((none) ""))))
+      (cond
+        ((<= len base-len) "")
+        ((string-eq kw ":arena")
+          (match (list-get items (+ base-len 1))
+            ((some arena-expr)
+              (if (== len (+ base-len 2))
+                (let ((arena-c (transpile-expr ctx arena-expr))
+                      (arena-c-type (infer-expr-c-type ctx arena-expr)))
+                  (if (or (string-eq arena-c-type "slop_arena*") (string-eq arena-c-type ""))
+                    arena-c
+                    (do
+                      (ctx-add-error-at ctx (ctx-str4 ctx "'" op "' :arena: expected Arena, got "
+                                              (infer-expr-slop-type ctx arena-expr))
+                        (ctx-sexpr-line arena-expr) (ctx-sexpr-col arena-expr))
+                      "")))
+                (do
+                  (ctx-add-error-at ctx (ctx-str3 ctx "'" op "' :arena needs exactly one arena after it")
+                    (ctx-list-first-line items) (ctx-list-first-col items))
+                  "")))
+            ((none)
+              (do
+                (ctx-add-error-at ctx (ctx-str3 ctx "'" op "' :arena needs exactly one arena after it")
+                  (ctx-list-first-line items) (ctx-list-first-col items))
+                ""))))
+        ((starts-with kw ":")
+          (do
+            (ctx-add-error-at ctx (ctx-str5 ctx "'" op "' has no option " kw "; the only one is :arena")
+              (ctx-list-first-line items) (ctx-list-first-col items))
+            ""))
+        (else
+          (let ((arena (. (deref ctx) arena)))
+            (ctx-add-error-at ctx
+              (ctx-str ctx (ctx-str4 ctx "'" op "' expects " (int-to-string arena (- base-len 1)))
+                (ctx-str ctx " argument(s), got " (int-to-string arena (- len 1))))
+              (ctx-list-first-line items) (ctx-list-first-col items))
+            "")))))
 
   ;; ============================================================
   ;; Map Type Helpers
@@ -6123,13 +6083,14 @@
                 (match arena-var
                   ((some arena-var)
                     ;; Arena available: generate statement expression with arena-allocated data
-                    ;; ({ slop_list_TYPE _ll = (slop_list_TYPE){ .data = (TYPE*)slop_arena_alloc(arena, N * sizeof(TYPE)), .len = N, .cap = N };
+                    ;; ({ slop_list_TYPE _ll = (slop_list_TYPE){ .data = (TYPE*)slop_arena_alloc(arena, N * sizeof(TYPE)), .len = N, .cap = N, .arena = arena };
                     ;;    _ll.data[0] = e1; _ll.data[1] = e2; ... _ll; })
                     (let ((arena-c (. arena-var c-name))
                           (list-type (ctx-str ctx "slop_list_" type-id))
                           (mut result (ctx-str ctx "({ " (ctx-str ctx list-type (ctx-str ctx " _ll = (" (ctx-str ctx list-type "){ .data = ("))))))
                       (set! result (ctx-str ctx result (ctx-str ctx elem-type (ctx-str ctx "*)slop_arena_alloc(" (ctx-str ctx arena-c (ctx-str ctx ", " (ctx-str ctx count-str (ctx-str ctx " * sizeof(" (ctx-str ctx elem-type "))")))))))))
-                      (set! result (ctx-str ctx result (ctx-str ctx ", .len = " (ctx-str ctx count-str (ctx-str ctx ", .cap = " (ctx-str ctx count-str " };"))))))
+                      ;; The list records the arena it was built in, where a push grows it
+                      (set! result (ctx-str ctx result (ctx-str ctx ", .len = " (ctx-str ctx count-str (ctx-str ctx ", .cap = " (ctx-str ctx count-str (ctx-str3 ctx ", .arena = " arena-c " };")))))))
                       ;; Add element assignments: _ll.data[0] = e1; ...
                       (set! i 0)
                       (while (< i (list-len elem-codes))
@@ -6148,7 +6109,9 @@
                     ;; (#245). A const's initializer is at module scope, where a
                     ;; compound literal has static storage; C accepts one there
                     ;; only when every element is a constant expression.
-                    ;; ((slop_list_TYPE){.len = N, .cap = N, .data = (TYPE[]){e1, e2, ...}})
+                    ;; ((slop_list_TYPE){.len = N, .cap = N, .arena = NULL, .data = (TYPE[]){e1, e2, ...}})
+                    ;; Its elements are static, so it has no arena to grow in: a push
+                    ;; onto a copy aborts in slop_list_grow_raw.
                     (cond
                       ((not (string-eq (. (deref ctx) current-fn-c-name) ""))
                         (do
@@ -6160,7 +6123,7 @@
                           "0"))
                       (else
                       (let ((mut result (ctx-str ctx "((slop_list_" (ctx-str ctx type-id "){")))
-                            (mut data-part (ctx-str ctx ".len = " (ctx-str ctx count-str (ctx-str ctx ", .cap = " (ctx-str ctx count-str (ctx-str ctx ", .data = (" (ctx-str ctx elem-type "[]){")))))))
+                            (mut data-part (ctx-str ctx ".len = " (ctx-str ctx count-str (ctx-str ctx ", .cap = " (ctx-str ctx count-str (ctx-str ctx ", .arena = NULL, .data = (" (ctx-str ctx elem-type "[]){")))))))
                             (mut first true))
                         (set! i 0)
                         (while (< i (list-len elem-codes))
@@ -6598,9 +6561,10 @@
                                      (starts-with (infer-map-value-slop-type ctx map-expr) "(Result "))
                                    val-c-type (infer-map-value-slop-type ctx map-expr)
                                    "'map-put' value" val-expr))
-                          ;; slop_map_put takes the arena in scope, which is not always
-                          ;; the identifier "arena": growth goes to it.
-                          (arena-c (resolve-arena-c-name ctx "map-put" items)))
+                          ;; NULL grows the table in the map's own arena; :arena names
+                          ;; another for this put (arena-override-c, #276).
+                          (override-c (arena-override-c ctx "map-put" items 4))
+                          (arena-c (if (> (string-len override-c) 0) override-c "NULL")))
                       (if (== (string-len val-c-type) 0)
                         (do
                           (ctx-add-error-at ctx "map-put: cannot determine the value type of this map"
@@ -6784,7 +6748,7 @@
                     "NULL"))
                 ;; Generate typed list from raw elements:
                 ;; ({ slop_set_elements_result _r = slop_set_elements_raw(ARENA, MAP);
-                ;;    (slop_list_KeyType){.data = (KeyType*)_r.data, .len = _r.len, .cap = _r.cap}; })
+                ;;    (slop_list_KeyType){.data = (KeyType*)_r.data, .len = _r.len, .cap = _r.cap, .arena = ARENA}; })
                 (else
                   ;; The typedef is named after the SLOP type (slop_list_int), not the C
                   ;; type (slop_list_int64_t); type-to-identifier is what bridges the two.
@@ -6805,7 +6769,7 @@
                             (ctx-str ctx list-type
                               (ctx-str ctx "){.data = ("
                                 (ctx-str ctx key-c-type
-                                  (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))))
+                                  (ctx-str3 ctx "*)_r.data, .len = _r.len, .cap = _r.cap, .arena = " arena-c "}; })")))))))))))))
           ((none)
             (do
               (ctx-add-error-at ctx "map-keys: missing map" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6866,7 +6830,10 @@
                       (elem-temp (ctx-gensym ctx "_key"))
                       (elem-decl (map-key-temp-decl ctx elem-c elem-expr set-expr elem-temp))
                       (elem-ptr (map-key-ptr ctx elem-c elem-expr set-expr elem-temp))
-                      (arena-c (resolve-arena-c-name ctx "set-put" items)))
+                      ;; NULL grows the table in the set's own arena; :arena names
+                      ;; another for this put (arena-override-c, #276).
+                      (override-c (arena-override-c ctx "set-put" items 3))
+                      (arena-c (if (> (string-len override-c) 0) override-c "NULL")))
                   ;; A Set stores no value: NULL, 0
                   (ctx-str ctx (ctx-str3 ctx (ctx-str3 ctx "({ " elem-decl "slop_map_put(") arena-c ", ")
                     (ctx-str ctx set-c
@@ -6962,7 +6929,7 @@
                     "NULL"))
                 ;; Generate typed list from raw elements:
                 ;; ({ slop_set_elements_result _r = slop_set_elements_raw(ARENA, SET);
-                ;;    (slop_list_ElemType){.data = (ElemType*)_r.data, .len = _r.len, .cap = _r.cap}; })
+                ;;    (slop_list_ElemType){.data = (ElemType*)_r.data, .len = _r.len, .cap = _r.cap, .arena = ARENA}; })
                 (else
                   ;; The typedef is named after the SLOP type (slop_list_int), not the C
                   ;; type (slop_list_int64_t); type-to-identifier is what bridges the two.
@@ -6983,7 +6950,7 @@
                             (ctx-str ctx list-type
                               (ctx-str ctx "){.data = ("
                                 (ctx-str ctx elem-c-type
-                                  (ctx-str ctx "*)_r.data, .len = _r.len, .cap = _r.cap}; })" "")))))))))))))
+                                  (ctx-str3 ctx "*)_r.data, .len = _r.len, .cap = _r.cap, .arena = " arena-c "}; })")))))))))))))
           ((none)
             (do
               (ctx-add-error-at ctx "set-elements: missing set" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -7572,6 +7539,9 @@
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) (List (Ptr SExpr)) (List String) (List String) String) -> String))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
+          ;; spawn's arena, if this closure is what it runs; taken before the
+          ;; body is transpiled so lambdas inside it don't inherit it
+          (env-arena (ctx-take-closure-arena ctx))
           ;; Get body expression for type inference
           (body-expr (match (list-get items (- (list-len items) 1))
                        ((some e) e)
@@ -7606,7 +7576,7 @@
               (ctx-set-last-lambda-info ctx true env-type lambda-name)
               ;; Generate closure instantiation expression
               ;; This creates the env struct and returns a packaged closure
-              (build-closure-instance ctx lambda-name env-name env-type free-vars captured-accesses)))))))
+              (build-closure-instance ctx lambda-name env-name env-type free-vars captured-accesses env-arena)))))))
 
   (fn build-closure-struct ((ctx (Ptr TranspileContext)) (env-type String) (free-vars (List String)))
     (@intent "Build typedef for closure environment struct")
@@ -7760,16 +7730,17 @@
                 ;; Genuinely no arena in scope - signal to caller to use malloc
                 "")))))))
 
-  (fn build-closure-instance ((ctx (Ptr TranspileContext)) (lambda-name String) (env-name String) (env-type String) (free-vars (List String)) (captured-accesses (List String)))
+  (fn build-closure-instance ((ctx (Ptr TranspileContext)) (lambda-name String) (env-name String) (env-type String) (free-vars (List String)) (captured-accesses (List String)) (env-arena String))
     (@intent "Build expression that creates closure instance")
-    (@spec (((Ptr TranspileContext) String String String (List String) (List String)) -> String))
+    (@spec (((Ptr TranspileContext) String String String (List String) (List String) String) -> String))
     (@pre {ctx != nil})
     ;; Return a compound statement expression that allocates env on arena and creates the closure
     ;; This ensures the env outlives the current scope when the closure is returned
     ;; ({ env_type* env_name = (env_type*)slop_arena_alloc(_arena, sizeof(env_type)); *env_name = (env_type){ .var1 = var1, ... }; (slop_closure_t){ (void*)fn, (void*)env_name }; })
     (let ((arena (. (deref ctx) arena)))
       (let ((initializer (build-env-initializer ctx free-vars captured-accesses))
-            (arena-expr (find-arena-ptr-expr ctx)))
+            ;; The env goes in the arena spawn names, else the one in scope
+            (arena-expr (if (> (string-len env-arena) 0) env-arena (find-arena-ptr-expr ctx))))
         (let ((alloc-decl (if (string-eq arena-expr "")
                             (do
                               (ctx-add-warning ctx (ctx-str ctx "closure env allocated with malloc (no arena in scope): " env-type))
@@ -8002,10 +7973,17 @@
           (let ((arena-c (transpile-expr ctx arena-expr))
                 (has-captures (lambda-has-captures ctx fn-expr)))
             (if has-captures
-              ;; Capturing lambda - transpile returns slop_closure_t
-              (let ((closure-c (transpile-expr ctx fn-expr)))
-                (ctx-str ctx "({ slop_closure_t _spawn_cl = " (ctx-str ctx closure-c
-                  (ctx-str ctx "; slop_thread_int* _spawn_th = slop_arena_alloc(" (ctx-str ctx arena-c
+              ;; Capturing lambda - transpile returns slop_closure_t. Its env
+              ;; goes in spawn's arena, evaluated once, with the thread handle:
+              ;; the arena lookup a closure otherwise makes could pick another
+              ;; (#276).
+              (let ((closure-c (do
+                                 (ctx-set-closure-arena ctx "_spawn_a")
+                                 (let ((c (transpile-expr ctx fn-expr)))
+                                   (ctx-set-closure-arena ctx "")
+                                   c))))
+                (ctx-str ctx (ctx-str3 ctx "({ slop_arena* _spawn_a = (" arena-c "); slop_closure_t _spawn_cl = ") (ctx-str ctx closure-c
+                  (ctx-str ctx "; slop_thread_int* _spawn_th = slop_arena_alloc(" (ctx-str ctx "_spawn_a"
                     (ctx-str ctx ", sizeof(slop_thread_int));"
                       (ctx-str ctx " _spawn_th->func = _spawn_cl.fn;"
                         (ctx-str ctx " _spawn_th->env = _spawn_cl.env;"

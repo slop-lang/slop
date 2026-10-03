@@ -3481,7 +3481,7 @@
               (value-hash-expr ctx err-type (slop-type-to-c-type ctx err-type)
                                (ctx-str3 ctx "(" access ").data.err"))
               "))")))
-        ;; Identity, as == warns: a List by its {data, len, cap} header, which
+        ;; Identity, as == warns: a List by its {len, cap, data, arena} header, which
         ;; has no padding, and a Map or Set by its pointer.
         ((starts-with slop-type "(List ")
           (ctx-str5 ctx "slop_hash_bytes(&(" access "), sizeof(" access "))"))

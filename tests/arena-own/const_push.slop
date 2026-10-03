@@ -1,0 +1,13 @@
+;; A module-level const list has static storage and no arena, so a push that
+;; grows a copy of it has nowhere to grow it: it aborts with a message rather
+;; than allocate from a null arena (#276).
+
+(module main
+  (const PRIMES (List Int) (list Int 2 3 5 7))
+
+  (fn main ()
+    (@intent "Grow a copy of a const list")
+    (@spec (() -> Int))
+    (let ((xs PRIMES))
+      (list-push xs 11)
+      (list-len xs))))

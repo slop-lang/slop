@@ -1,0 +1,104 @@
+;; A collection grows in the arena it was made in, not in whichever arena is
+;; nearest at the push (#276). Each grower runs with another arena nearer
+;; than the collection's own -- a let-bound one, or an unnamed with-arena,
+;; which binds `arena` -- and that arena is freed before the collection is
+;; read. Built under ASan, growth in the nearer arena is a use after free.
+;; A :arena override grows the collection where it says instead.
+
+(module main
+  (fn grow-list-past-let ((results Arena))
+    (@intent "Grow a list made in results while a let-bound arena is nearer")
+    (@spec ((Arena) -> (List Int)))
+    (let ((xs (list-new results Int)))
+      (for (i 0 100)
+        (let ((scratch (arena-new 4096)))
+          (list-push xs i)
+          (arena-free scratch)))
+      xs))
+
+  (fn grow-list-past-with-arena ((results Arena))
+    (@intent "Grow a list made in results inside an unnamed with-arena")
+    (@spec ((Arena) -> (List Int)))
+    (let ((xs (list-new results Int)))
+      (for (i 0 100)
+        (with-arena 4096
+          (list-push xs i)))
+      xs))
+
+  (fn grow-map-past-let ((results Arena))
+    (@intent "Grow a map made in results while a let-bound arena is nearer")
+    (@spec ((Arena) -> (Map Int Int)))
+    (let ((m (map-new results Int Int)))
+      (for (i 0 100)
+        (let ((scratch (arena-new 4096)))
+          (map-put m i (* i i))
+          (arena-free scratch)))
+      m))
+
+  (fn grow-set-past-with-arena ((results Arena))
+    (@intent "Grow a set made in results inside an unnamed with-arena")
+    (@spec ((Arena) -> (Set Int)))
+    (let ((s (set-new results Int)))
+      (for (i 0 100)
+        (with-arena 4096
+          (set-put s i)))
+      s))
+
+  (fn grow-list-in-other ((home Arena) (other Arena))
+    (@intent "Grow a list made in home in other, with :arena")
+    (@spec ((Arena Arena) -> (List Int)))
+    (let ((xs (list-new home Int)))
+      (for (i 0 100)
+        (list-push xs i :arena other))
+      xs))
+
+  (fn grow-map-and-set-in-other ((home Arena) (other Arena))
+    (@intent "Grow a map and a set made in home in other, with :arena")
+    (@spec ((Arena Arena) -> Bool))
+    (let ((m (map-new home Int Int))
+          (s (set-new home Int)))
+      (for (i 0 100)
+        (map-put m i (+ i 1) :arena other)
+        (set-put s i :arena other))
+      (and (== (map-len m) 100)
+           (set-has s 99)
+           (match (map-get m 99)
+             ((some v) (== v 100))
+             ((none) false)))))
+
+  (fn last-is ((xs (List Int)) (want Int))
+    (@intent "Whether a list holds 100 elements and its last is want")
+    (@spec (((List Int) Int) -> Bool))
+    (and (== (list-len xs) 100)
+         (match (list-get xs 99)
+           ((some v) (== v want))
+           ((none) false))))
+
+  (fn main ()
+    (@intent "Grow each collection past a nearer arena, then read it")
+    (@spec (() -> Int))
+    (with-arena :as results 65536
+      (let ((xs (grow-list-past-let results))
+            (ys (grow-list-past-with-arena results))
+            (m (grow-map-past-let results))
+            (s (grow-set-past-with-arena results))
+            (home (arena-new 4096))
+            (other (arena-new 4096))
+            ;; Every element of zs is in other, so freeing home leaves it whole
+            (zs (grow-list-in-other home other))
+            (both (grow-map-and-set-in-other home other)))
+        (arena-free home)
+        (let ((ok (and (last-is xs 99)
+                       (last-is ys 99)
+                       (last-is zs 99)
+                       both
+                       (== (map-len m) 100)
+                       (match (map-get m 99)
+                         ((some v) (== v 9801))
+                         ((none) false))
+                       (== (set-len s) 100)
+                       (set-has s 99))))
+          (arena-free other)
+          (if ok
+            (do (println "collections grow in their own arena: PASS") 0)
+            (do (println "collections grow in their own arena: FAIL") 1)))))))

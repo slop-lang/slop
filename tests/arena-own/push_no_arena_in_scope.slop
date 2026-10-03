@@ -1,0 +1,25 @@
+;; A push needs no arena in scope: the list grows in the one list-new gave it
+;; (#276). Before that, a push here, with no arena variable and no arena
+;; field in sight, had nowhere to grow the list -- first it emitted the bare
+;; identifier `arena` for the C compiler to reject, then it was a transpiler
+;; error (#179).
+
+(module main
+  (fn grow ((xs (Ptr (List Int))))
+    (@intent "Push with no arena in scope")
+    (@spec (((Ptr (List Int))) -> Unit))
+    (for (i 0 100)
+      (list-push (deref xs) i)))
+
+  (fn main ()
+    (@intent "Grow a list from a function with no arena, then read it")
+    (@spec (() -> Int))
+    (with-arena 1024
+      (let ((mut xs (list-new arena Int)))
+        (grow (addr xs))
+        (if (and (== (list-len xs) 100)
+                 (match (list-get xs 99)
+                   ((some v) (== v 99))
+                   ((none) false)))
+          (do (println "push with no arena in scope: PASS") 0)
+          (do (println "push with no arena in scope: FAIL") 1))))))

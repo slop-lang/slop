@@ -1,0 +1,30 @@
+;; A spawned closure's env goes in the arena given to spawn, with the thread
+;; handle (#276). It used to go wherever a closure's arena lookup led -- here
+;; the let-bound wa, which is nearer than spawn's arena and is freed while
+;; the thread still reads n from its env. The thread reads n only after the
+;; main thread has freed wa and sent, so under ASan the old placement is a
+;; use after free every run.
+
+(module main
+  (import thread (chan-buffered send recv spawn join))
+
+  (fn run ((scratch Arena) (n Int))
+    (@intent "Spawn a closure over n with a nearer arena that is freed before it reads n")
+    (@spec ((Arena Int) -> Int))
+    (let ((ch (chan-buffered Int scratch 1))
+          (wa (arena-new 4096))
+          (th (spawn scratch (fn ()
+                               (match (recv ch)
+                                 ((ok v) (+ v n))
+                                 ((error _) -1))))))
+      (arena-free wa)
+      (send ch 1)
+      (join th)))
+
+  (fn main ()
+    (@intent "Run the thread and check what it read")
+    (@spec (() -> Int))
+    (with-arena :as mem 65536
+      (if (== (run mem 41) 42)
+        (do (println "spawn env in spawn's arena: PASS") 0)
+        (do (println "spawn env in spawn's arena: FAIL") 1)))))

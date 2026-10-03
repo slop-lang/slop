@@ -82,6 +82,8 @@
     ctx-set-strict-unknown-symbols ctx-strict-unknown-symbols
     ;; Current function C name (for FFI shadowing prevention)
     ctx-set-current-fn-c-name ctx-clear-current-fn-c-name
+    ;; Arena for the next closure env (spawn)
+    ctx-set-closure-arena ctx-take-closure-arena
     ;; Last lambda info (for closure variable binding)
     LastLambdaInfo ctx-set-last-lambda-info ctx-get-last-lambda-info ctx-clear-last-lambda-info
     ;; Function output buffer for two-phase emission
@@ -371,6 +373,9 @@
       (strict-unknown-symbols Bool)
       ;; Current function C name (to detect FFI shadowing in lookup)
       (current-fn-c-name String)
+      ;; C arena for the env of the closure being transpiled, set by spawn so
+      ;; the env goes where the thread handle does; empty means look it up
+      (closure-arena String)
       ;; Position being transpiled, for errors with no node of their own
       (pos-line Int)
       (pos-col Int)
@@ -450,6 +455,7 @@
       (set! (deref ctx) strict-unknown-symbols false)
       ;; Initialize current-fn-c-name (empty = not inside a function)
       (set! (deref ctx) current-fn-c-name "")
+      (set! (deref ctx) closure-arena "")
       (set! (deref ctx) pos-line 0)
       (set! (deref ctx) pos-col 0)
       (set! (deref ctx) reported-ambiguities (list-new arena String))
@@ -3121,6 +3127,22 @@
     (@spec (((Ptr TranspileContext)) -> Unit))
     (@pre {ctx != nil})
     (set! (deref ctx) current-fn-c-name ""))
+
+  (fn ctx-set-closure-arena ((ctx (Ptr TranspileContext)) (arena-c String))
+    (@intent "Name the C arena the next closure's env is allocated in")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (set! (deref ctx) closure-arena arena-c))
+
+  (fn ctx-take-closure-arena ((ctx (Ptr TranspileContext)))
+    (@intent "The C arena set for the next closure's env, clearing it; empty if none")
+    (@spec (((Ptr TranspileContext)) -> String))
+    (@pre {ctx != nil})
+    ;; Taken by the closure itself before its body is transpiled, so a lambda
+    ;; nested in the body looks its arena up as usual
+    (let ((arena-c (. (deref ctx) closure-arena)))
+      (set! (deref ctx) closure-arena "")
+      arena-c))
 
   ;; ============================================================
   ;; Last Lambda Info Tracking

@@ -579,10 +579,29 @@ static void test_interleaved_growth(void) {
     slop_arena_free(&alone2);
 }
 
-/* Growth goes to the arena named at the put: a map made in one arena and
- * put to through another has its table moved into the second, and the first
- * is never extended */
-static void test_growth_goes_to_put_arena(void) {
+/* Growth goes to the map's own arena, the one it was made in, when the put
+ * names none (NULL, as a plain map-put passes): another arena in use at the
+ * time is never touched (#276) */
+static void test_growth_goes_to_own_arena(void) {
+    slop_arena home = slop_arena_new(1 << 16);
+    slop_arena other = slop_arena_new(1 << 12);
+    slop_map* m = slop_map_new_ptr(&home, 0, &int_bits);
+    CHECK(m->arena == &home);
+    size_t other_used = other.offset;
+    for (int64_t k = 1; k < 100; k++) put(NULL, m, k, k);
+    CHECK(other.offset == other_used && other.next == NULL);
+    CHECK(m->table >= home.base && m->table < home.base + home.capacity);
+    for (int64_t k = 1; k < 100; k++) CHECK(get(m, k) == k);
+    check_invariants(m);
+    slop_arena_free(&home);
+    slop_arena_free(&other);
+}
+
+/* A put that names an arena (map-put ... :arena a) grows the table there: a
+ * map made in one arena and put to through another has its table moved into
+ * the second, and the first is never extended. The map keeps its own arena
+ * for the puts that name none. */
+static void test_growth_goes_to_named_arena(void) {
     slop_arena home = slop_arena_new(1 << 12);
     slop_arena other = slop_arena_new(1 << 16);
     slop_map* m = slop_map_new_ptr(&home, 4, &int_bits);
@@ -591,6 +610,7 @@ static void test_growth_goes_to_put_arena(void) {
     for (int64_t k = 2; k < 100; k++) put(&other, m, k, k);
     CHECK(home.offset == home_used && home.next == NULL);
     CHECK(m->table >= other.base && m->table < other.base + other.capacity);
+    CHECK(m->arena == &home);
     for (int64_t k = 1; k < 100; k++) CHECK(get(m, k) == k);
     check_invariants(m);
 
@@ -895,7 +915,8 @@ int main(void) {
     test_remove_across_wrap(&arena);
     test_grow_in_place_and_moved();
     test_interleaved_growth();
-    test_growth_goes_to_put_arena();
+    test_growth_goes_to_own_arena();
+    test_growth_goes_to_named_arena();
     test_sole_block_realloc();
     test_put_from_own_table();
     test_index_widths();

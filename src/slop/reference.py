@@ -748,9 +748,10 @@ Language primitives that are always available without imports.
 (int-to-string arena n) -> String
 
 ### Lists
-(list-new arena Type) -> (List Type)
+(list-new arena Type) -> (List Type)   ; The list grows in arena
 (list Type e1 e2...) -> (List Type)     ; Literal, built in the arena in scope (error if none)
-(list-push list item) -> Unit
+(list-push list item) -> Unit           ; Grows in the list's own arena
+(list-push list item :arena a) -> Unit  ; Grows in a for this push
 (list-pop list) -> (Option T)
 (list-get list idx) -> (Option T)
 (list-set list idx value) -> Bool       ; Overwrite in place; false if out of range
@@ -758,7 +759,8 @@ Language primitives that are always available without imports.
 
 ### Maps
 (map-new arena K V) -> (Map K V)        ; Type parameters required
-(map-put map k v) -> Unit
+(map-put map k v) -> Unit               ; Grows in the map's own arena
+(map-put map k v :arena a) -> Unit      ; Grows in a for this put
 (map-get map k) -> (Option V)
 (map-has map k) -> Bool
 (map-keys map) -> (List K)
@@ -768,12 +770,16 @@ Language primitives that are always available without imports.
 There is no map literal. A Map or Set is a handle: copies share one table.
 map-put copies the key and value in; map-get and for-each copy them out.
 Iteration order is deterministic but unspecified; do not change a map
-inside a for-each over it. Growth uses the arena in scope at the put.
+inside a for-each over it. A put grows the table in the arena map-new was
+given, unless it names another with :arena. Only one thread may allocate from
+an arena at a time: a thread growing a collection whose arena another thread
+uses names its own.
 
 ### Sets
 (set-new arena T) -> (Set T)            ; Type parameter required
 (set T e1 e2...) -> (Set T)             ; Literal
-(set-put set e) -> Unit
+(set-put set e) -> Unit                 ; Grows in the set's own arena
+(set-put set e :arena a) -> Unit        ; Grows in a for this put
 (set-has set e) -> Bool
 (set-remove set e) -> Unit
 (set-elements set) -> (List T)

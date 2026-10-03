@@ -116,7 +116,7 @@ def generate_ffi_header(project_name, results, source_files):
                 lines.append(content)
             elif kind == "list":
                 elem_type, container_name = content
-                lines.append(f"typedef struct {{ size_t len; size_t cap; {elem_type}* data; }} {container_name};")
+                lines.append(f"typedef struct {{ size_t len; size_t cap; {elem_type}* data; slop_arena* arena; }} {container_name};")
             elif kind == "option":
                 elem_type, container_name = content
                 lines.append(f"typedef struct {{ bool has_value; {elem_type} value; }} {container_name};")
