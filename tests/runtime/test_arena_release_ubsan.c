@@ -55,14 +55,22 @@ static size_t resident(void) {
 #endif
 }
 
+/* How much of a fill must show up as resident before the release check means
+ * anything. The point of these tests is the drop: after freeing, resident size
+ * is back within 64 MiB of where it started, which a runtime that keeps freed
+ * blocks dirty fails however much it reclaimed on the way up. The rise only has
+ * to show the fill was really mapped and touched, and half of it does; asking
+ * for 900 of 1024 MiB failed on CI runners that reclaim pages from a process
+ * under memory pressure. */
+#define RISE_FLOOR(n) ((n) * MIB / 2)
+
 /* Bump n MiB out of the arena a MiB at a time, writing every page.
  *
- * The bytes are pseudo-random rather than one repeated byte per MiB. macOS
- * compresses pages under memory pressure, and a compressed page no longer
- * counts as resident, so pages of a single byte -- about the most compressible
- * data there is -- could drop out of the very count this test measures. On a
- * busy CI runner it read 885 of the 900 MiB it needed. Random data does not
- * compress, so resident size tracks what was written. */
+ * The bytes are pseudo-random, so that memory compression cannot take pages
+ * out of the resident count. That alone did not make the count reliable: on a
+ * memory-constrained CI runner the full GiB still read as low as 852 MiB above
+ * the start, with random data. The rise checks below therefore ask only for
+ * half of what was written; see RISE_FLOOR. */
 static uint64_t fill_state = 0x9E3779B97F4A7C15ull;
 
 static void fill(slop_arena* arena, size_t n) {
@@ -89,7 +97,7 @@ static void test_free_releases(void) {
     slop_arena arena = slop_arena_new(MIB);
     fill(&arena, 1024);
     size_t full = resident();
-    CHECK(full >= before + 900 * MIB);
+    CHECK(full >= before + RISE_FLOOR(1024));
 
     slop_arena_free(&arena);
     size_t after = resident();
@@ -107,7 +115,7 @@ static void test_reset_releases(void) {
     slop_arena arena = slop_arena_new(MIB);
     fill(&arena, 512);
     size_t full = resident();
-    CHECK(full >= before + 450 * MIB);
+    CHECK(full >= before + RISE_FLOOR(512));
 
     slop_arena_reset(&arena);
     size_t after = resident();
