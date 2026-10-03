@@ -49,6 +49,35 @@ if TYPE_CHECKING:
     from slop.parser import SExpr
 
 
+
+def _range_result_post(return_type: Optional[Type], return_expr: Optional[SExpr]) -> Optional[SList]:
+    """The range check on a function's result, as a postcondition on $result.
+
+    Only (Int lo .. hi) is enforced, by the checker and at run time alike, so
+    only it becomes an obligation. The post carries a label for messages: the
+    expression itself reads as a contract the user never wrote.
+    """
+    if not isinstance(return_type, RangeType) or return_type.base != 'Int':
+        return None
+    lo, hi = return_type.bounds.min_val, return_type.bounds.max_val
+    sides = []
+    if lo is not None:
+        sides.append(SList([Symbol('>='), Symbol('$result'), Number(lo)]))
+    if hi is not None:
+        sides.append(SList([Symbol('<='), Symbol('$result'), Number(hi)]))
+    if not sides:
+        return None
+    post = sides[0] if len(sides) == 1 else SList([Symbol('and')] + sides)
+    name = f"{return_expr.name} " if isinstance(return_expr, Symbol) else ""
+    post.range_label = f"return value within {name}{return_type}"
+    return post
+
+
+def _post_text(expr: SExpr) -> str:
+    """A postcondition as a message shows it: a range check by its label."""
+    from slop.parser import pretty_print
+    return getattr(expr, 'range_label', None) or pretty_print(expr)
+
 class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                        LoopAnalysisMixin, UnionHandlingMixin, ExactPushModelMixin,
                        InvariantProverMixin):
@@ -3758,6 +3787,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         assumptions: List[SExpr] = []  # @assume - trusted axioms for verification
         properties: List[Tuple[Optional[str], SExpr]] = []  # @property - (name, expr) tuples
         spec_return_type: Optional[Type] = None
+        spec_return_expr: Optional[SExpr] = None  # as written, to name it in a message
         fn_body: Optional[SExpr] = None  # Function body for path-sensitive analysis
         all_body_exprs: List[SExpr] = []  # All body expressions (for multi-statement bodies)
 
@@ -3793,6 +3823,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                         if isinstance(s, Symbol) and s.name == '->':
                             if i + 1 < len(spec):
                                 spec_return_type = _parse_type_expr_simple(spec[i + 1], self.type_env.type_registry)
+                                spec_return_expr = spec[i + 1]
                             break
             elif isinstance(item, SList) and len(item) > 0:
                 # Check if this is an annotation form
@@ -3828,6 +3859,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         # Desugar callback-taking function calls to for-each loops (verifier-internal)
         if fn_body is not None:
             fn_body = self._desugar_callback_iterations(fn_body)
+
+        # A range return type is a proof obligation, not an assumption (#265).
+        # Every build checks it at run time, so assuming it would only show the
+        # contract holds whenever the function returns; proving it shows the
+        # check cannot fail. It is checked as a postcondition on $result, so
+        # every return path - early exits included - answers it, and $result
+        # is declared without the bounds below.
+        if fn_body is not None:
+            range_post = _range_result_post(spec_return_type, spec_return_expr)
+            if range_post is not None:
+                postconditions.append(range_post)
 
         # Explicit @loop-invariants are checked - base case and inductive step -
         # before anything relies on them (loop_invariants.py). One that does not
@@ -3988,6 +4030,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     num_variants = len(spec_return_type.variants)
                     translator.constraints.append(result_var >= 0)
                     translator.constraints.append(result_var < num_variants)
+                elif isinstance(spec_return_type, RangeType):
+                    # Unbounded: the range is an obligation, stated as a post
+                    # by _range_result_post, not something to assume
+                    translator.declare_variable('$result', PrimitiveType('Int'))
                 else:
                     translator.declare_variable('$result', spec_return_type)
             else:
@@ -4261,7 +4307,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
 
         if failed_posts:
             from slop.parser import pretty_print
-            post_details = [pretty_print(p) for p in failed_posts]
+            post_details = [_post_text(p) for p in failed_posts]
             if len(failed_posts) == 1:
                 message = f"Could not translate postcondition: {post_details[0]}"
             else:
@@ -5353,8 +5399,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 solver.pop()
 
                 # Format the postcondition for display
-                from slop.parser import pretty_print
-                post_str = pretty_print(post_expr)
+                post_str = _post_text(post_expr)
 
                 if individual_result == z3.unsat:
                     verified_posts.append(post_str)

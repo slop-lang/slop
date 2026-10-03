@@ -8017,8 +8017,10 @@ class TestInconsistencyAttributionLayers:
         assert 'Precondition is unsatisfiable' in r.message
 
     def test_body_outside_the_return_range(self):
-        """$result == body is asserted directly on the main solver, not through
-        translator.constraints, so a layered replay has to carry it too."""
+        """A body outside the declared return range fails the range obligation.
+        The range used to be assumed of $result, so this surfaced only as a
+        contradiction the layered replay attributed to the return type; it is
+        now a check the body has to meet (#265)."""
         r = self._verify('''
         (module m
           (fn f ()
@@ -8027,7 +8029,7 @@ class TestInconsistencyAttributionLayers:
             2))
         ''')
         assert r.status == 'failed'
-        assert 'declared return type' in r.message
+        assert 'return value within (Int 0 .. 1)' in r.message
         assert 'verifier defect' not in r.message
 
     def test_alternative_mutable_binding_shadows(self):
@@ -13554,3 +13556,111 @@ class TestWalkedReturnSoundness:
   (@post (> $result 0))
   (for-each (x xs) (when (> x 5) (return (- x 10))))
   1)''') == 'verified'
+
+
+class TestRangeObligations:
+    """A range return type is a proof obligation, not an assumption (#265).
+
+    Every build checks it at run time, so assuming it only showed a contract
+    held whenever the function returned. A function returning (+ n 50) as a
+    Pct "proved" (<= n 50) from the bound alone.
+    """
+
+    @staticmethod
+    def _verify(src):
+        from slop.verifier import verify_source
+        return verify_source(src)[0]
+
+    def test_a_false_post_no_longer_leans_on_the_result_range(self):
+        r = self._verify('''
+        (module m
+          (type Pct (Int 0 .. 100))
+          (fn g ((n Pct))
+            (@spec ((Pct) -> Pct))
+            (@post (<= n 50))
+            (+ n 50)))
+        ''')
+        assert r.status == 'failed'
+        assert '(<= n 50)' in r.message
+        assert 'return value within Pct (Int 0 .. 100)' in r.message
+
+    def test_a_range_return_alone_is_checked(self):
+        """No written contract: the range is what makes it verifiable."""
+        r = self._verify('''
+        (module m
+          (type Pct (Int 0 .. 100))
+          (fn h ((n Pct))
+            (@spec ((Pct) -> Pct))
+            (+ n 50)))
+        ''')
+        assert r.status == 'failed'
+        assert r.message == 'Postcondition failed: return value within Pct (Int 0 .. 100)'
+
+    def test_a_result_that_fits_is_proved(self):
+        r = self._verify('''
+        (module m
+          (type Pct (Int 0 .. 100))
+          (fn clamp ((n Int))
+            (@spec ((Int) -> Pct))
+            (cond ((< n 0) 0) ((> n 100) 100) (else n))))
+        ''')
+        assert r.status == 'verified'
+
+    def test_an_early_return_is_checked(self):
+        r = self._verify('''
+        (module m
+          (type Pct (Int 0 .. 100))
+          (fn early ((n Int))
+            (@spec ((Int) -> Pct))
+            (when (> n 100) (return n))
+            0))
+        ''')
+        assert r.status == 'failed'
+        assert 'return value within Pct (Int 0 .. 100)' in r.message
+
+    def test_a_cast_to_u8_is_bounded(self):
+        """A string byte is read as (cast U8 ...); the cast used to be the
+        identity, so nothing bounded it."""
+        r = self._verify('''
+        (module m
+          (type Byte (Int 0 .. 255))
+          (fn byte-of ((n Int))
+            (@spec ((Int) -> Byte))
+            (cast U8 n)))
+        ''')
+        assert r.status == 'verified'
+
+    def test_a_cast_to_a_range_is_bounded(self):
+        """It is checked at run time, so execution goes on only in range."""
+        r = self._verify('''
+        (module m
+          (type Pct (Int 0 .. 100))
+          (fn pct-of ((n Int))
+            (@spec ((Int) -> Pct))
+            (cast Pct n)))
+        ''')
+        assert r.status == 'verified'
+
+    def test_a_cast_in_one_branch_says_nothing_of_the_other(self):
+        """The cast bounds its own result, not its operand: n can still be
+        negative on the path that never reaches the cast."""
+        r = self._verify('''
+        (module m
+          (type Pct (Int 0 .. 100))
+          (fn f ((n Int))
+            (@spec ((Int) -> Int))
+            (@post (>= n 0))
+            (if (< n 0) 0 (cast Pct n))))
+        ''')
+        assert r.status == 'failed'
+        assert '(>= n 0)' in r.message
+
+    def test_a_non_int_range_is_not_an_obligation(self):
+        """Only (Int lo .. hi) is enforced, by the checker and at run time."""
+        r = self._verify('''
+        (module m
+          (fn f ((n Int))
+            (@spec ((Int) -> (U8 0 .. 9)))
+            n))
+        ''')
+        assert r.status == 'skipped'

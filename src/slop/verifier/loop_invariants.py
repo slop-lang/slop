@@ -115,7 +115,8 @@ class InvariantOutcome:
 
     @property
     def text(self) -> str:
-        return pretty_print(self.expr)
+        # A range check stated as a post (#265) is named by its label
+        return getattr(self.expr, 'range_label', None) or pretty_print(self.expr)
 
     @property
     def what(self) -> str:

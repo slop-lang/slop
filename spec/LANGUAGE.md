@@ -949,9 +949,10 @@ rather than as a pass.
 
 SLOP uses Z3 for compile-time contract verification. The verifier automatically:
 - Checks contract consistency (pre doesn't contradict post)
-- Assumes range type bounds on parameters, results and fields. They are not
-  yet proof obligations, so a range-typed result can make a false `@post`
-  verify (#265)
+- Proves a range return type: every value returned must fit (#265). Range
+  bounds of parameters, fields and callee results are assumed, which is sound
+  because each is checked at run time where it is stored (6.1). A narrowing
+  inside the body is not yet an obligation; its run-time check stands
 - Recognizes loop patterns (filter, count, fold) and generates axioms
 
 **Escape hatches** when automatic verification fails:

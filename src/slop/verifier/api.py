@@ -16,7 +16,6 @@ from .type_builder import build_type_registry_from_ast, build_invariant_registry
 from .imports import resolve_imported_definitions
 from .native_checker import _run_native_checker
 from .contract_verifier import ContractVerifier
-from .range_verifier import RangeVerifier
 
 if TYPE_CHECKING:
     from slop.parser import SExpr
@@ -81,9 +80,8 @@ def verify_source(source: str, filename: str = "<string>",
     contract_verifier = ContractVerifier(type_env, filename, timeout_ms, function_registry, imported_defs)
     results = contract_verifier.verify_all(ast)
 
-    # Run range verification
-    range_verifier = RangeVerifier(type_env, filename, timeout_ms)
-    results.extend(range_verifier.verify_range_safety(ast))
+    # Range types are checked by ContractVerifier: a range return type is an
+    # obligation on $result (#265).
 
     return results
 
@@ -135,9 +133,8 @@ def verify_ast(ast: List['SExpr'], filename: str = "<string>",
     contract_verifier = ContractVerifier(type_env, filename, timeout_ms, function_registry, imported_defs)
     results = contract_verifier.verify_all(ast)
 
-    # Run range verification
-    range_verifier = RangeVerifier(type_env, filename, timeout_ms)
-    results.extend(range_verifier.verify_range_safety(ast))
+    # Range types are checked by ContractVerifier: a range return type is an
+    # obligation on $result (#265).
 
     return results
 
@@ -213,9 +210,8 @@ def verify_file(path: str, mode: str = "error",
     contract_verifier = ContractVerifier(type_env, path, timeout_ms, function_registry, imported_defs)
     results = contract_verifier.verify_all(ast)
 
-    # Run range verification
-    range_verifier = RangeVerifier(type_env, path, timeout_ms)
-    results.extend(range_verifier.verify_range_safety(ast))
+    # Range types are checked by ContractVerifier: a range return type is an
+    # obligation on $result (#265).
 
     return results
 

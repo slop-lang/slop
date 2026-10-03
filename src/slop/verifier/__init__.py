@@ -72,7 +72,6 @@ from .translator import Z3Translator
 
 # Verifiers
 from .contract_verifier import ContractVerifier
-from .range_verifier import RangeVerifier
 
 # Public API
 from .api import verify_source, verify_ast, verify_file
@@ -140,7 +139,6 @@ __all__ = [
 
     # Verifiers
     'ContractVerifier',
-    'RangeVerifier',
 
     # Public API
     'verify_source',
