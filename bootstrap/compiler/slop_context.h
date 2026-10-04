@@ -589,9 +589,8 @@ void context_ctx_bind_var(context_TranspileContext* ctx, context_VarEntry entry)
 slop_option_context_VarEntry context_lookup_in_scope(context_Scope* scope, slop_string name);
 slop_option_context_VarEntry context_ctx_lookup_var(context_TranspileContext* ctx, slop_string name);
 slop_option_context_VarEntry context_lookup_var_in_scope_chain(context_Scope* scope, slop_string name);
-slop_option_context_VarEntry context_find_arena_in_single_scope(context_Scope* scope);
-slop_option_context_VarEntry context_ctx_find_arena_var(context_TranspileContext* ctx);
-slop_option_context_VarEntry context_find_arena_in_scope_chain(context_Scope* scope);
+slop_list_context_VarEntry context_ctx_visible_arena_vars(context_TranspileContext* ctx);
+uint8_t context_name_in_list(slop_list_string names, slop_string name);
 void context_ctx_register_type(context_TranspileContext* ctx, context_TypeEntry entry);
 slop_option_context_TypeEntry context_find_type_entry(context_TranspileContext* ctx, slop_string name, slop_string mod, uint8_t definition);
 slop_option_context_TypeEntry context_ctx_find_type_binding(context_TranspileContext* ctx, slop_string name, slop_string mod);

@@ -78,6 +78,7 @@ void infer_check_option_predicate_arg(env_TypeEnv* env, slop_string op, slop_lis
 void infer_infer_builtin_args(env_TypeEnv* env, types_SExpr* expr);
 void infer_infer_builtin_args_before(env_TypeEnv* env, types_SExpr* expr, int64_t end);
 int64_t infer_arena_option_len(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t base_len, int64_t line, int64_t col);
+int64_t infer_literal_arena_option_at(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t line, int64_t col);
 void infer_infer_body_exprs(env_TypeEnv* env, types_SExpr* expr, int64_t start_idx);
 types_ResolvedType* infer_infer_field_access(env_TypeEnv* env, types_SExpr* expr, types_SExprList lst, int64_t line, int64_t col);
 types_ResolvedType* infer_check_field_exists(env_TypeEnv* env, types_ResolvedType* obj_type, slop_string field_name, int64_t line, int64_t col);
@@ -1928,7 +1929,7 @@ types_ResolvedType* infer_infer_special_form(env_TypeEnv* env, types_SExpr* expr
                         infer_check_len_operand(env, SLOP_STR("map-len"), SLOP_STR("Map"), items, line, col);
                         return env_env_get_int_type(env);
                     } else if (string_eq(op, SLOP_STR("map-keys"))) {
-                        infer_check_builtin_args(env, SLOP_STR("map-keys"), 1, (len - 1), line, col);
+                        infer_check_builtin_args(env, SLOP_STR("map-keys"), 1, (infer_arena_option_len(env, SLOP_STR("map-keys"), items, 2, line, col) - 1), line, col);
                         {
                             __auto_type arena = env_env_arena(env);
                             types_ResolvedType* key_type = NULL;
@@ -1959,9 +1960,13 @@ types_ResolvedType* infer_infer_special_form(env_TypeEnv* env, types_SExpr* expr
                     } else if (string_eq(op, SLOP_STR("map-remove"))) {
                         infer_check_builtin_args(env, SLOP_STR("map-remove"), 2, (len - 1), line, col);
                         return env_env_get_unit_type(env);
+                    } else if (string_eq(op, SLOP_STR("list"))) {
+                        infer_infer_builtin_args_before(env, expr, infer_literal_arena_option_at(env, op, items, line, col));
+                        return env_env_get_unknown_type(env);
                     } else if (string_eq(op, SLOP_STR("set"))) {
                         {
                             __auto_type arena = env_env_arena(env);
+                            infer_literal_arena_option_at(env, op, items, line, col);
                             return types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("Set"), ((slop_option_string){.has_value = false}), SLOP_STR("slop_map*"));
                         }
                     } else if (string_eq(op, SLOP_STR("set-new"))) {
@@ -2012,7 +2017,7 @@ types_ResolvedType* infer_infer_special_form(env_TypeEnv* env, types_SExpr* expr
                         infer_check_len_operand(env, SLOP_STR("set-len"), SLOP_STR("Set"), items, line, col);
                         return env_env_get_int_type(env);
                     } else if (string_eq(op, SLOP_STR("set-elements"))) {
-                        infer_check_builtin_args(env, SLOP_STR("set-elements"), 1, (len - 1), line, col);
+                        infer_check_builtin_args(env, SLOP_STR("set-elements"), 1, (infer_arena_option_len(env, SLOP_STR("set-elements"), items, 2, line, col) - 1), line, col);
                         {
                             __auto_type arena = env_env_arena(env);
                             types_ResolvedType* elem_type = NULL;
@@ -2794,7 +2799,7 @@ infer_MutPath infer_mutation_path(env_TypeEnv* env, types_SExpr* expr) {
                             {
                                 __auto_type arena = env_env_arena(env);
                                 __auto_type prefix = strlib_substring(arena, name, 0, idx);
-                                __auto_type field = strlib_substring(arena, name, (idx + 1), SLOP_RANGE(int64_t, (string_len(name) - (idx + 1)), 1, 0, 0, 0, "(Int 0 ..) at infer.slop:2508:66"));
+                                __auto_type field = strlib_substring(arena, name, (idx + 1), SLOP_RANGE(int64_t, (string_len(name) - (idx + 1)), 1, 0, 0, 0, "(Int 0 ..) at infer.slop:2514:66"));
                                 return infer_mutation_path_field(infer_mutation_path_root(env, prefix), field);
                             }
                         } else {
@@ -3016,6 +3021,18 @@ int64_t infer_arena_option_len(env_TypeEnv* env, slop_string op, slop_list_types
         } else if (strlib_starts_with(kw, SLOP_STR(":"))) {
             env_env_add_error(env, string_concat(env_env_arena(env), SLOP_STR("'"), string_concat(env_env_arena(env), op, string_concat(env_env_arena(env), SLOP_STR("' has no option "), string_concat(env_env_arena(env), kw, SLOP_STR("; the only one is :arena"))))), line, col);
             return base_len;
+        } else {
+            return len;
+        }
+    }
+}
+
+int64_t infer_literal_arena_option_at(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t line, int64_t col) {
+    SLOP_PRE(((env != NULL)), "(!= env nil)");
+    {
+        __auto_type len = ((int64_t)((items).len));
+        if ((len >= 2) && ({ __auto_type _mv = ({ __auto_type _lst = items; size_t _idx = (size_t)(len - 2); slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type e = _mv.value; string_eq(parser_sexpr_get_symbol_name(e), SLOP_STR(":arena")); }) : (0); })) {
+            return infer_arena_option_len(env, op, items, (len - 2), line, col);
         } else {
             return len;
         }
