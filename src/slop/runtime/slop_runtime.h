@@ -2094,4 +2094,44 @@ static inline void slop_eputc(int c) {
     fputc(c, stderr);
 }
 
+/* ============================================================
+ * Threads (spawn / join)
+ *
+ * spawn starts its thread through slop_thread_start, and join waits through
+ * slop_thread_wait. Neither can fail quietly (#192): a spawn whose thread
+ * never started would otherwise hand back a handle that join treats as a
+ * finished thread, with an unset id and an unwritten result, and work
+ * split across threads would silently lose that thread's share. Both abort
+ * with the error instead, as an arena that cannot get memory does.
+ *
+ * SLOP_PTHREAD_CREATE is what creates the thread. Tests define it, before
+ * this header, as a create that fails.
+ * ============================================================ */
+
+#ifndef _WIN32
+#include <pthread.h>
+
+#ifndef SLOP_PTHREAD_CREATE
+#define SLOP_PTHREAD_CREATE pthread_create
+#endif
+
+/* entry is a void* (*)(void*); it is passed as void* so FFI callers can
+   hand over a trampoline without a function-pointer type of their own. */
+static inline void slop_thread_start(pthread_t* id, void* entry, void* arg) {
+    int rc = SLOP_PTHREAD_CREATE(id, NULL, (void* (*)(void*))entry, arg);
+    if (rc != 0) {
+        fprintf(stderr, "SLOP: spawn: cannot start a thread: %s\n", strerror(rc));
+        abort();
+    }
+}
+
+static inline void slop_thread_wait(pthread_t id) {
+    int rc = pthread_join(id, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "SLOP: join: cannot wait for the thread: %s\n", strerror(rc));
+        abort();
+    }
+}
+#endif
+
 #endif /* SLOP_RUNTIME_H */
