@@ -53,7 +53,7 @@
     ctx-set-post-exit ctx-is-post-exit ctx-post-exit-used ctx-restore-post-exit ctx-exit-code
     ;; Scoped arenas open at the current point (with-arena), freed on return
     ctx-push-open-arena ctx-pop-open-arena ctx-take-open-arenas ctx-restore-open-arenas
-    ctx-emit-return
+    ctx-emit-return ctx-enter-loop ctx-exit-loop ctx-emit-loop-end ctx-unique-arena-local ctx-enter-switch ctx-exit-switch ctx-loop-exit
     ;; Option/List type tracking
     OptionType ListType
     ctx-register-option-type ctx-has-option-type ctx-get-option-types
@@ -336,8 +336,16 @@
       (post-exit Bool)
       ;; Whether a return has jumped to that label, so the label is emitted
       (post-exit-used Bool)
-      ;; C names of the with-arena arenas open at this point, outermost first
+      ;; C names of the with-arena arenas open at this point, outermost first,
+      ;; interleaved with "#<label>" / "#switch" markers where each enclosing
+      ;; loop body and C switch begins (see ctx-enter-loop)
       (open-arenas (List String))
+      ;; Counter for loop ids, which name the label after a loop
+      (loop-counter Int)
+      ;; Counter for with-arena blocks, which names each one's arena local
+      (arena-block-counter Int)
+      ;; Labels after loops that a break has jumped to with a goto
+      (loop-labels-used (List String))
       ;; Struct key types needing hash/eq generation (C type names)
       (struct-key-types (List String))
       ;; The subset of those hashed through their SLOP type (Option / Result keys)
@@ -431,6 +439,9 @@
       (set! (deref ctx) post-exit false)
       (set! (deref ctx) post-exit-used false)
       (set! (deref ctx) open-arenas (list-new arena String))
+      (set! (deref ctx) loop-counter 0)
+      (set! (deref ctx) arena-block-counter 0)
+      (set! (deref ctx) loop-labels-used (list-new arena String))
       (set! (deref ctx) struct-key-types (list-new arena String))
       (set! (deref ctx) value-key-types (list-new arena ValueKeyType))
       (set! (deref ctx) type-aliases (list-new arena TypeAliasEntry))
@@ -2066,6 +2077,17 @@
   ;; the block -- the block's own value in return position, or an explicit
   ;; (return x) -- never reaches that line, so every return emitted while an
   ;; arena is open frees them all first, innermost first.
+  ;;
+  ;; A break or continue leaves only the innermost loop, so it frees only the
+  ;; arenas opened inside that loop's body. Every loop emitter brackets its
+  ;; body with ctx-enter-loop / ctx-exit-loop, which push and pop a marker
+  ;; on the same stack. A loop that skipped them would let a break free the
+  ;; arenas of an outer loop, which are then freed again where their own
+  ;; block ends.
+  ;;
+  ;; A match lowered to a C switch pushes "#switch" around its arms. A C
+  ;; break there would leave only the switch, so a break with a switch
+  ;; between it and its loop jumps to a label after the loop instead.
   ;; ============================================================
 
   (fn ctx-push-open-arena ((ctx (Ptr TranspileContext)) (c-name String))
@@ -2098,6 +2120,104 @@
     (@pre {ctx != nil})
     (set! (deref ctx) open-arenas saved))
 
+  (fn ctx-unique-arena-local ((ctx (Ptr TranspileContext)) (base String))
+    (@intent "The C name of a with-arena block's arena local: base, made unique")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; Nested blocks bind the same arena name -- every unnamed one binds
+    ;; arena -- so in C the inner pointer hides the outer one, and a free of
+    ;; the outer arena by that name would free the inner one twice. Each
+    ;; block's struct local is unique instead, and frees go through it.
+    (let ((id (+ (. (deref ctx) arena-block-counter) 1)))
+      (set! (deref ctx) arena-block-counter id)
+      (ctx-str3 ctx base "_" (int-to-string (. (deref ctx) arena) id))))
+
+  (fn ctx-enter-loop ((ctx (Ptr TranspileContext)))
+    (@intent "Record that a loop body begins, so a break or continue in it frees only the arenas opened after this")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    ;; The marker is "#" followed by the label that may follow the loop.
+    (let ((id (+ (. (deref ctx) loop-counter) 1)))
+      (set! (deref ctx) loop-counter id)
+      (list-push (. (deref ctx) open-arenas)
+                 (ctx-str3 ctx "#_slop_loop_" (int-to-string (. (deref ctx) arena) id) "_end"))))
+
+  (fn ctx-exit-loop ((ctx (Ptr TranspileContext)))
+    (@intent "Record that the innermost loop body has ended; returns the statement to emit after the whole loop (\"\" for none)")
+    (@spec (((Ptr TranspileContext)) -> String))
+    (@pre {ctx != nil})
+    ;; The statement is the loop's label, when a break inside a switch
+    ;; jumped to it (ctx-loop-exit).
+    (let ((marker (match (list-pop (. (deref ctx) open-arenas))
+                    ((some m) m)
+                    ((none) "")))
+          (label (if (starts-with marker "#")
+                   (substring (. (deref ctx) arena) marker 1 (- (string-len marker) 1))
+                   ""))
+          (used (. (deref ctx) loop-labels-used))
+          (mut found false)
+          (mut i 0))
+      (while (and (< i (list-len used)) (not found))
+        (match (list-get used i)
+          ((some l) (when (string-eq l label) (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      (if (and found (not (string-eq label "")))
+        (ctx-str ctx label ": ;")
+        "")))
+
+  (fn ctx-emit-loop-end ((ctx (Ptr TranspileContext)) (after-loop String))
+    (@intent "Emit what ctx-exit-loop returned, after the whole loop has been closed")
+    (@spec (((Ptr TranspileContext) String) -> Unit))
+    (@pre {ctx != nil})
+    (when (not (string-eq after-loop ""))
+      (ctx-emit ctx after-loop)))
+
+  (fn ctx-enter-switch ((ctx (Ptr TranspileContext)))
+    (@intent "Record that the arms of a C switch begin, where a C break would leave only the switch")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (list-push (. (deref ctx) open-arenas) "#switch"))
+
+  (fn ctx-exit-switch ((ctx (Ptr TranspileContext)))
+    (@intent "Record that the arms of the innermost C switch have ended")
+    (@spec (((Ptr TranspileContext)) -> Unit))
+    (@pre {ctx != nil})
+    (match (list-pop (. (deref ctx) open-arenas))
+      ((some _) (do))
+      ((none) (do))))
+
+  (fn ctx-loop-exit ((ctx (Ptr TranspileContext)) (op String))
+    (@intent "The C for a break or continue (op): freeing the arenas opened in the innermost loop body, then leaving; \"\" outside a loop")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((open (. (deref ctx) open-arenas))
+          (mut frees "")
+          (mut through-switch false)
+          (mut label "")
+          (mut i (- (list-len open) 1)))
+      (while (and (>= i 0) (string-eq label ""))
+        (match (list-get open i)
+          ((some entry)
+            (cond
+              ((string-eq entry "#switch") (set! through-switch true))
+              ((starts-with entry "#")
+                (set! label (substring (. (deref ctx) arena) entry 1 (- (string-len entry) 1))))
+              (else
+                (set! frees (ctx-str4 ctx frees (if (string-eq frees "") "" " ") "slop_arena_free(" (ctx-str ctx entry ");"))))))
+          ((none) (do)))
+        (set! i (- i 1)))
+      (let ((sep (if (string-eq frees "") "" " ")))
+        (cond
+          ((string-eq label "") "")
+          ;; continue skips a switch by itself; break would stop at it
+          ((and through-switch (string-eq op "break"))
+            (do
+              (list-push (. (deref ctx) loop-labels-used) label)
+              (ctx-str5 ctx frees sep "goto " label ";")))
+          (else
+            (ctx-str4 ctx frees sep op ";"))))))
+
   (fn ctx-open-arena-frees ((ctx (Ptr TranspileContext)))
     (@intent "The statements freeing every open with-arena arena, innermost first; empty if none")
     (@spec (((Ptr TranspileContext)) -> String))
@@ -2108,7 +2228,9 @@
       (while (>= i 0)
         (match (list-get open i)
           ((some c-name)
-            (set! frees (ctx-str4 ctx frees (if (string-eq frees "") "" " ") "slop_arena_free(" (ctx-str ctx c-name ");"))))
+            ;; Loop and switch markers are not arenas
+            (when (not (starts-with c-name "#"))
+              (set! frees (ctx-str4 ctx frees (if (string-eq frees "") "" " ") "slop_arena_free(" (ctx-str ctx c-name ");")))))
           ((none) (do)))
         (set! i (- i 1)))
       frees))

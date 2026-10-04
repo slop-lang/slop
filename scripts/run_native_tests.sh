@@ -375,6 +375,12 @@ run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_const_non_literal.
 run_negative_build_test "$REPO_ROOT/tests/key-type-negative/list_key.slop" "list-key" \
     "list_key.slop:8:31: error: '(List Int)' cannot be a Map key or Set element - it has no structural hash"
 
+# A break or continue outside any loop is a transpiler error, not one for cc.
+# Inside a lambda that is the case even in a loop: its body is a C function of
+# its own, so it cannot leave the loop around it (#214).
+run_negative_build_test "$REPO_ROOT/tests/loop-negative/break_in_lambda.slop" "break-in-lambda" \
+    "break_in_lambda.slop:14:48: error: break outside a loop"
+
 # The checker's half of the same rule, for types, variants and re-exports.
 # `slop build` drops checker diagnostics (#93), so these run `slop check`.
 run_check_clean_test() {

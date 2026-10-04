@@ -337,8 +337,8 @@ identifier               ; Variable reference
 ; unspecified and may change between releases; sort when order matters.
 ; Changing a Map or Set inside a for-each over it is undefined: the loop may
 ; skip or repeat entries (it never reads outside the collection).
-(break)
-(continue)
+(break)                          ; Leave the innermost loop
+(continue)                       ; Next iteration of the innermost loop
 (return expr)
 
 ; Functions
@@ -728,8 +728,10 @@ Named arenas are useful when:
 ```
 
 **The arena is freed on every exit from the block** -- falling off its end,
-the block's value being the function's return value, or an explicit
-`(return x)` inside it. A value that leaves the block, whether as its result
+the block's value being the function's return value, an explicit
+`(return x)` inside it, or a `(break)` / `(continue)` that leaves it for a
+loop outside it. A `break` or `continue` frees only the arenas opened inside
+the loop it leaves; arenas opened outside that loop stay live. A value that leaves the block, whether as its result
 or through a `return`, is computed while the arena is still live and handed
 back after it is freed. It must therefore not point into that arena: return
 a scalar, or build what you return in an arena that outlives the block,

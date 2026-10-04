@@ -38,7 +38,7 @@
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer
                  BindingOrigin MutationKind mutation-error-message))
-  (import context (TranspileContext ctx-register-value-key-type ctx-take-open-arenas ctx-restore-open-arenas ctx-exit-code ctx-set-capture-retval ctx-is-capture-retval ctx-is-post-exit ctx-post-exit-used ctx-set-post-exit ctx-restore-post-exit ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
+  (import context (TranspileContext ctx-unique-arena-local ctx-register-value-key-type ctx-take-open-arenas ctx-restore-open-arenas ctx-push-open-arena ctx-pop-open-arena ctx-enter-loop ctx-exit-loop ctx-enter-switch ctx-exit-switch ctx-loop-exit ctx-exit-code ctx-set-capture-retval ctx-is-capture-retval ctx-is-post-exit ctx-post-exit-used ctx-set-post-exit ctx-restore-post-exit ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
                    ctx-get-current-result-type ctx-set-current-result-type ctx-clear-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
                    to-c-type-prefixed ctx-push-scope ctx-pop-scope ctx-bind-var
@@ -2786,9 +2786,17 @@
                     ;; while as expression (side effect only, returns 0)
                     ((and (string-eq op "while") (>= len 3))
                       (transpile-while-expr ctx items))
-                    ;; break/continue as expression (inside do blocks in loops)
+                    ;; break/continue as expression (inside do blocks in loops),
+                    ;; freeing the arenas opened inside the loop first (ctx-loop-exit)
                     ((or (string-eq op "break") (string-eq op "continue"))
-                      op)
+                      (let ((code (ctx-loop-exit ctx op)))
+                        (cond
+                          ((string-eq code "")
+                            (do
+                              (ctx-add-error-at ctx (ctx-str ctx op " outside a loop") (ctx-list-first-line items) (ctx-list-first-col items))
+                              op))
+                          ((string-eq code (ctx-str ctx op ";")) op)
+                          (else (ctx-str3 ctx "{ " code " }")))))
                     ;; Annotations (@loop-invariant, @property, etc.) - no-op, returns 0
                     ;; (bare "@" is array indexing, handled below)
                     ((and (starts-with op "@") (not (string-eq op "@")))
@@ -4990,7 +4998,8 @@
           (result-type (infer-match-result-c-type ctx items))
           (mut cases "")
           (mut i 2))
-      ;; Build switch cases
+      ;; Build switch cases; a break in an arm must leave the loop, not the switch
+      (ctx-enter-switch ctx)
       (while (< i len)
         (match (list-get items i)
           ((some branch)
@@ -5005,6 +5014,7 @@
               (else (do))))
           ((none) (do)))
         (set! i (+ i 1)))
+      (ctx-exit-switch ctx)
       ;; Build the full expression
       (if (string-eq result-type "void")
         ;; Void match - no result variable
@@ -5059,7 +5069,8 @@
           (result-type (infer-match-result-c-type ctx items))
           (mut cases "")
           (mut i 2))
-      ;; Build switch cases
+      ;; Build switch cases; a break in an arm must leave the loop, not the switch
+      (ctx-enter-switch ctx)
       (while (< i len)
         (match (list-get items i)
           ((some branch)
@@ -5081,6 +5092,7 @@
               (else (do))))
           ((none) (do)))
         (set! i (+ i 1)))
+      (ctx-exit-switch ctx)
       ;; Detect pointer scrutinee and dereference so .tag/.data accesses work
       (let ((scrut-c-type (infer-expr-c-type ctx scrutinee))
             (scrut-val (if (or (ends-with-star scrut-c-type) (is-pointer-expr ctx scrutinee))
@@ -5534,6 +5546,14 @@
               ((none) (transpile-expr-for ctx init-expr target-type))))))
       (else (transpile-expr-for ctx init-expr target-type))))
 
+  (fn loop-close-c ((ctx (Ptr TranspileContext)) (closers String) (after-loop String))
+    (@intent "Close an expression-form loop: closers, then what ctx-exit-loop returned, then the statement expression's value")
+    (@spec (((Ptr TranspileContext) String String) -> String))
+    (@pre {ctx != nil})
+    (ctx-str3 ctx closers
+              (if (string-eq after-loop "") "" (ctx-str ctx after-loop " "))
+              "(void)0; })"))
+
   (fn transpile-while-expr ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
     (@intent "Transpile while as expression (side effect only, returns 0)")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
@@ -5547,6 +5567,7 @@
             (let ((cond-c (transpile-expr ctx cond-expr))
                   (mut body-str ""))
               ;; Emit body statements
+              (ctx-enter-loop ctx)
               (let ((mut i 2))
                 (while (< i len)
                   (match (list-get items i)
@@ -5557,7 +5578,7 @@
                   (set! i (+ i 1))))
               ;; Build result string
               (let ((part1 (ctx-str3 ctx "({ while (" cond-c ") { "))
-                    (part2 (ctx-str ctx body-str "} (void)0; })")))
+                    (part2 (ctx-str ctx body-str (loop-close-c ctx "} " (ctx-exit-loop ctx)))))
                 (ctx-str ctx part1 part2))))
           ((none) "({ (void)0; })")))))
 
@@ -7046,6 +7067,7 @@
                                         (ctx-push-scope ctx)
                                         (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "" false false false "" "" 'origin-bound))
                                         ;; Process body expressions
+                                        (ctx-enter-loop ctx)
                                         (let ((mut i 2))
                                           (while (< i len)
                                             (match (list-get items i)
@@ -7056,7 +7078,7 @@
                                             (set! i (+ i 1))))
                                         (ctx-pop-scope ctx)
                                         ;; Close: } 0; })
-                                        (ctx-str ctx result "} (void)0; })")))
+                                        (ctx-str ctx result (loop-close-c ctx "} " (ctx-exit-loop ctx)))))
                                     ((none) "({ /* for: missing end */ 0; })")))
                                 ((none) "({ /* for: missing start */ 0; })"))))
                           (else "({ /* for: var must be symbol */ 0; })")))
@@ -7140,6 +7162,7 @@
             (elem-c-type (if is-ptr-elem (slop-type-to-c-type ctx elem-slop-type) "auto")))
         (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type is-ptr-elem false false "" "" 'origin-bound)))
       ;; Process body expressions
+      (ctx-enter-loop ctx)
       (let ((mut i 2))
         (while (< i len)
           (match (list-get items i)
@@ -7150,7 +7173,7 @@
           (set! i (+ i 1))))
       (ctx-pop-scope ctx)
       ;; Close: } 0; })
-      (ctx-str ctx result "} (void)0; })")))
+      (ctx-str ctx result (loop-close-c ctx "} " (ctx-exit-loop ctx)))))
 
   ;; ============================================================
   ;; For-Each Set as Expression
@@ -7182,6 +7205,7 @@
         (ctx-push-scope ctx)
         (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type false false false "" "" 'origin-bound))
         ;; Process body expressions
+        (ctx-enter-loop ctx)
         (let ((mut i 2))
           (while (< i len)
             (match (list-get items i)
@@ -7192,7 +7216,7 @@
             (set! i (+ i 1))))
         (ctx-pop-scope ctx)
         ;; Close: } } 0; })
-        (ctx-str ctx result "} } (void)0; })"))))
+        (ctx-str ctx result (loop-close-c ctx "} } " (ctx-exit-loop ctx))))))
 
   ;; ============================================================
   ;; For-Each Map Keys as Expression
@@ -7224,6 +7248,7 @@
         (ctx-push-scope ctx)
         (ctx-bind-var ctx (VarEntry (. var-sym name) var-name key-c-type key-slop-type false false false "" "" 'origin-bound))
         ;; Process body expressions
+        (ctx-enter-loop ctx)
         (let ((mut i 2))
           (while (< i len)
             (match (list-get items i)
@@ -7234,7 +7259,7 @@
             (set! i (+ i 1))))
         (ctx-pop-scope ctx)
         ;; Close: } } 0; })
-        (ctx-str ctx result "} } (void)0; })"))))
+        (ctx-str ctx result (loop-close-c ctx "} } " (ctx-exit-loop ctx))))))
 
   ;; ============================================================
   ;; For-Each Map Key-Value as Expression
@@ -7291,6 +7316,7 @@
                                           (ctx-bind-var ctx (VarEntry (. k-sym name) k-name key-c-type key-slop-type false false false "" "" 'origin-bound))
                                           (ctx-bind-var ctx (VarEntry (. v-sym name) v-name val-c-type val-slop-type false false false "" "" 'origin-bound))
                                           ;; Process body expressions
+                                          (ctx-enter-loop ctx)
                                           (let ((mut i 2))
                                             (while (< i len)
                                               (match (list-get items i)
@@ -7301,7 +7327,7 @@
                                               (set! i (+ i 1))))
                                           (ctx-pop-scope ctx)
                                           ;; Close: } } 0; })
-                                          (ctx-str ctx result "} } (void)0; })"))))
+                                          (ctx-str ctx result (loop-close-c ctx "} } " (ctx-exit-loop ctx))))))
                                     (_ "({ /* for-each: map value must be symbol */ 0; })")))
                                 (_ "({ /* for-each: map key must be symbol */ 0; })")))
                             ((none) "({ /* for-each: missing map expression */ 0; })")))
@@ -7342,9 +7368,11 @@
               (size-idx (if is-named 3 1))
               (body-start (if is-named 4 2))
               (c-arena-name (to-c-name arena arena-name))
-              (c-local (if is-named
-                         (string-concat arena "_arena_" c-arena-name)
-                         "_arena")))
+              ;; Unique per block, as in transpile-with-arena
+              (c-local (ctx-unique-arena-local ctx
+                         (if is-named
+                           (string-concat arena "_arena_" c-arena-name)
+                           "_arena"))))
           ;; Validate minimum length for named form
           (if (and is-named (< len 5))
             (do
@@ -7363,6 +7391,9 @@
                       (set! result (ctx-str5 ctx result "slop_arena* " c-arena-name " = &" (ctx-str ctx c-local "; ")))
                       ;; Bind arena variable in scope
                       (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" "" 'origin-bound))
+                      ;; Open until the expression ends: a return (from ?) or a
+                      ;; break inside it frees it first, as in transpile-with-arena
+                      (ctx-push-open-arena ctx (ctx-str ctx "&" c-local))
                       ;; Process body expressions - all but last are side-effects
                       (let ((mut i body-start))
                         (while (< i (- len 1))
@@ -7382,6 +7413,7 @@
                         ((none)
                           (let ((free-part (ctx-str3 ctx "slop_arena_free(" c-arena-name "); ")))
                             (set! result (ctx-str3 ctx result free-part "0; })")))))
+                      (ctx-pop-open-arena ctx)
                       result))
                   ((none)
                     (do
