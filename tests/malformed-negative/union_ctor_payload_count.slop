@@ -1,0 +1,11 @@
+(module main
+  (@intent "A union constructor missing a payload is an error, not a zeroed payload (#208)")
+
+  (type Edge (union (link Int Int) (loop-at Int)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (match (Edge (link 1))
+      ((link a b) (+ a b))
+      ((loop-at k) k))))

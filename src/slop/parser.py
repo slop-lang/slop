@@ -83,11 +83,16 @@ def _unescape_string(s: str) -> str:
 
 
 class ParseError(Exception):
-    def __init__(self, message: str, line: int = 0, col: int = 0):
+    def __init__(self, message: str, line: int = 0, col: int = 0, path: str = ""):
         self.message = message
         self.line = line
         self.col = col
-        super().__init__(f"Parse error at {line}:{col}: {message}")
+        self.path = path
+        if path:
+            # The file:line:col: error: form the native tools print
+            super().__init__(f"{path}:{line}:{col}: error: {message}")
+        else:
+            super().__init__(f"Parse error at {line}:{col}: {message}")
 
 
 class Lexer:
@@ -99,13 +104,16 @@ class Lexer:
         ('LBRACE', r'\{'),
         ('RBRACE', r'\}'),
         ('STRING', r'"(?:[^"\\]|\\.)*"'),
-        ('NUMBER', r'-?\d+\.?\d*'),
+        ('NUMBER', r'-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?'),
         ('QUOTE', r"'"),
         ('SYMBOL', r'[a-zA-Z_@$][a-zA-Z0-9_\-/*<>=!?.]*'),
         ('RANGE', r'\.\.'),
         ('OPERATOR', r'[+\-*/!<>=&|^%?]+|\.'),
         ('COLON', r':'),
     ]
+
+    # A character that may continue a symbol, so may not follow a number
+    NUMBER_SUFFIX = re.compile(r'[a-zA-Z0-9_\-/*<>=!?.@$]')
 
     def __init__(self, source: str):
         self.source = source
@@ -126,6 +134,16 @@ class Lexer:
 
             kind = match.lastgroup
             value = match.group()
+
+            # 3.14f used to lex as 3.14 and the symbol f, so the suffix
+            # silently meant nothing (#100). The native lexer rejects it too.
+            if kind == 'NUMBER' and match.end() < len(self.source) \
+                    and self.NUMBER_SUFFIX.match(self.source[match.end()]) \
+                    and not self.source.startswith('..', match.end()):
+                raise ParseError(
+                    f"invalid number literal: '{value}' is followed by "
+                    f"'{self.source[match.end()]}'; put a space or a delimiter after a number",
+                    line, col)
 
             if kind not in ('COMMENT', 'WHITESPACE'):
                 tokens.append((kind, value, line, col))
@@ -182,7 +200,7 @@ class Parser:
             return self.parse_list()
         elif kind == 'NUMBER':
             self.pos += 1
-            return Number(float(value) if '.' in value else int(value), line, col)
+            return Number(float(value) if any(c in value for c in '.eE') else int(value), line, col)
         elif kind == 'STRING':
             self.pos += 1
             return String(_unescape_string(value[1:-1]), line, col)
@@ -348,7 +366,7 @@ class Parser:
         # Number
         if kind == 'NUMBER':
             self.pos += 1
-            return Number(float(value) if '.' in value else int(value), line, col)
+            return Number(float(value) if any(c in value for c in '.eE') else int(value), line, col)
 
         # String
         if kind == 'STRING':
@@ -500,7 +518,13 @@ def parse(source: str) -> List[SExpr]:
 
 def parse_file(path: str) -> List[SExpr]:
     with open(path) as f:
-        return parse(f.read())
+        source = f.read()
+    try:
+        return parse(source)
+    except ParseError as e:
+        if e.path:
+            raise
+        raise ParseError(e.message, e.line, e.col, str(path)) from None
 
 
 # AST utilities

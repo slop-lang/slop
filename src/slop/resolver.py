@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from slop.parser import (
     SExpr, SList, Symbol, parse_file, is_form,
     get_imports, get_exports, parse_import, parse_export,
-    ImportSpec, ExportSpec
+    ImportSpec, ExportSpec, ParseError
 )
 
 
@@ -164,6 +164,9 @@ class ModuleResolver:
         # Parse file
         try:
             ast = parse_file(str(path))
+        except ParseError as e:
+            # Already file:line:col: error: form
+            raise ResolverError(str(e)) from e
         except Exception as e:
             # Re-raise with filename included for better error messages
             raise ResolverError(f"{path}: {e}") from e

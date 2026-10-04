@@ -1,0 +1,12 @@
+(module main
+  (@intent "An if with a fourth operand is an error, not a silent drop (#233)")
+
+  (fn pick ((c Bool))
+    (@intent "Return 1 or 2")
+    (@spec ((Bool) -> Int))
+    (if c 1 2 3))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (pick true)))

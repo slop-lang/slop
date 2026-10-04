@@ -835,6 +835,36 @@ for mtr in literal option union; do
     run_abort_test "$MTR/$mtr.slop" "match-trap-$mtr" "" "SLOP: non-exhaustive match reached"
 done
 
+# Forms the transpiler used to lower by ignoring part of them: an if with a
+# fourth operand (#233), a union called by its type name with the variant
+# unwrapped or a payload missing (#208), and a number with a suffix glued on
+# (#100). Each is reported by check and by build, since a build drops checker
+# diagnostics (#93); the number is a parse error, so both report it first.
+MFN="$REPO_ROOT/tests/malformed-negative"
+while IFS='|' read -r mf_name mf_expected <&3; do
+    run_negative_check_test "$MFN/$mf_name.slop" "malformed-check-$mf_name" "$mf_expected"
+    run_negative_build_test "$MFN/$mf_name.slop" "malformed-build-$mf_name" "$mf_expected"
+done 3<<'MF_CASES'
+if_extra_operand|if_extra_operand.slop:7:15: error: 'if' takes a condition, a then branch and an optional else branch, but has 4 operands
+union_type_ctor|union_type_ctor.slop:9:24: error: 'Node' is a union; construct it with (union-new Node variant value ...)
+union_ctor_payload_count|union_ctor_payload_count.slop:9:18: error: variant 'link' of 'Edge' takes 2 payload(s), got 1
+number_suffix|number_suffix.slop:7:15: error: invalid number literal: '3.14' is followed by 'f'
+compare_extra_operand|compare_extra_operand.slop:8:20: error: '>' compares two operands, but has 3
+union_not_variant|union_not_variant.slop:10:18: error: 'circle' is not a variant of 'Node'
+MF_CASES
+
+# The same forms in a multi-module build. A single-file build stops at the
+# checker, so only here does the transpiler's own check have to report them.
+MFM="$REPO_ROOT/tests/malformed-negative-mm"
+while IFS='|' read -r mm_name mm_expected <&3; do
+    run_negative_build_test "$MFM/$mm_name.slop" "malformed-mm-$mm_name" "$mm_expected" -I "$MFM"
+done 3<<'MFM_CASES'
+if_extra_operand|if_extra_operand.slop:7:25: error: 'if' takes a condition, a then branch and an optional else branch, but has 4 operands
+compare_extra_operand|compare_extra_operand.slop:7:20: error: '<' compares two operands, but has 3
+union_type_ctor|union_type_ctor.slop:8:22: error: 'Node' is a union; construct it with (union-new Node variant value ...)
+union_not_variant|union_not_variant.slop:9:18: error: 'circle' is not a variant of 'Node'
+MFM_CASES
+
 # Built with SLOP_DEBUG, so contracts are compiled in and checked at run time.
 run_debug_contract_test() {
     local test_file="$1"

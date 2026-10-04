@@ -24,7 +24,7 @@
                    ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
   (import strlib (starts-with ends-with char-at))
   (import ctype (to-c-name to-c-type sexpr-to-type-string))
-  (import expr (is-simple-primitive-c-type pattern-is-string-literal literal-pattern-cond pattern-has-literal-payload
+  (import expr (is-simple-primitive-c-type check-if-operands pattern-is-string-literal literal-pattern-cond pattern-has-literal-payload
                 unsupported-payload-literal
                 transpile-expr transpile-literal infer-expr-c-type infer-expr-slop-type infer-option-inner-slop-type infer-result-ok-slop-type infer-result-err-slop-type c-type-to-option-type-name
                 resolve-type-alias infer-collection-element-slop-type is-set-type is-map-type deref-container-c
@@ -1175,6 +1175,7 @@
       (if (< len 3)
         (ctx-add-error-at ctx "invalid if" (ctx-list-first-line items) (ctx-list-first-col items))
         (do
+          (check-if-operands ctx items)
           ;; Condition
           (match (list-get items 1)
             ((some cond-expr)

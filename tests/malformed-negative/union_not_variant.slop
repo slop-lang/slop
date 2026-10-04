@@ -1,0 +1,12 @@
+(module main
+  (@intent "A union built by type name with another type's variant is an error (#208)")
+
+  (type Node (union (iri String) (anon Int)))
+  (type Shape (union (dot) (circle Int)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (match (Node (circle 3))
+      ((iri _) 1)
+      ((anon k) k))))

@@ -33,7 +33,7 @@
   (fn step-at ((i Int))
     (@intent "go for the first three steps, then stop")
     (@spec ((Int) -> Step))
-    (if (< i 3) (Step go i) (Step stop i)))
+    (if (< i 3) (union-new Step go i) (union-new Step stop i)))
 
   ;; ------------------------------------------------------------
   ;; Statement position

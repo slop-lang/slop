@@ -8,7 +8,7 @@
   (export
     ;; Main entry point
     transpile-expr transpile-expr-for transpile-expr-narrowed field-slop-type
-    is-simple-primitive-c-type
+    is-simple-primitive-c-type check-if-operands
     ;; Helpers
     transpile-literal transpile-symbol
     ;; Literal pattern helpers, shared with match (which imports this module)
@@ -38,7 +38,8 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
                  ResolvedType resolved-type-is-pointer
-                 BindingOrigin MutationKind mutation-error-message))
+                 BindingOrigin MutationKind mutation-error-message
+                 if-operand-count-message union-type-constructor-message comparison-operand-count-message))
   (import context (TranspileContext ctx-unique-arena-local ctx-register-value-key-type ctx-take-open-arenas ctx-restore-open-arenas ctx-push-open-arena ctx-pop-open-arena ctx-enter-loop ctx-exit-loop ctx-enter-switch ctx-exit-switch ctx-loop-exit ctx-exit-code ctx-set-capture-retval ctx-is-capture-retval ctx-is-post-exit ctx-post-exit-used ctx-set-post-exit ctx-restore-post-exit ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
                    ctx-get-current-result-type ctx-set-current-result-type ctx-clear-current-result-type ctx-get-current-return-type ctx-prefixing-enabled ctx-prefix-type ctx-get-module
                    ctx-str ctx-str3 ctx-str4 ctx-str5 VarEntry FuncEntry FuncParamType TypeEntry
@@ -2699,6 +2700,13 @@
                         "0"))
                     ;; Comparison operators
                     ((and (is-comparison-op op) (>= len 3))
+                      ;; (> a b c) kept only a and b (#233's class)
+                      (when (> len 3)
+                        (match (list-get items 3)
+                          ((some extra)
+                            (ctx-add-error-at ctx (comparison-operand-count-message (. (deref ctx) arena) op (- len 1))
+                                              (ctx-sexpr-line extra) (ctx-sexpr-col extra)))
+                          ((none) (do))))
                       (match (list-get items 1)
                         ((some left)
                           (match (list-get items 2)
@@ -2756,6 +2764,7 @@
                         "0"))
                     ;; if expression: (if cond then else) -> (cond) ? then : else
                     ((and (string-eq op "if") (>= len 4))
+                      (check-if-operands ctx items)
                       (match (list-get items 1)
                         ((some cond-expr)
                           (match (list-get items 2)
@@ -4025,66 +4034,127 @@
                   (none))))
             (_ (none)))))))
 
+  (fn check-if-operands ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Report an if with more operands than a condition, a then and an else")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; (if c a b d) used to compile as (if c a b), dropping d (#233). Every if
+    ;; lowering calls this; the checker reports it too, but a build drops that.
+    (when (> (list-len items) 4)
+      (match (list-get items 4)
+        ((some extra)
+          (ctx-add-error-at ctx (if-operand-count-message (. (deref ctx) arena) (- (list-len items) 1))
+                            (ctx-sexpr-line extra) (ctx-sexpr-col extra)))
+        ((none) (do)))))
+
   (fn transpile-union-constructor ((ctx (Ptr TranspileContext)) (type-name String) (c-type-name String) (items (List (Ptr SExpr))))
-    (@intent "Transpile a union constructor: (UnionType (tag value)) -> ((UnionType){ .tag = UnionType_tag, .data.tag = value })")
+    (@intent "Transpile a union constructor: (UnionType (tag value ...)) or (UnionType tag) for a variant with no payload")
     (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
+    ;; Every form this did not understand used to become an empty or tag-only
+    ;; compound literal with a C comment. (Node iri x) built a Node with tag
+    ;; iri and no payload, and nothing said so (#208). Anything but one variant
+    ;; with its payloads is now an error.
     (let ((arena (. (deref ctx) arena))
           (len (list-len items)))
-      ;; First argument should be (tag value) or just (tag)
-      (if (< len 2)
-        (ctx-str3 ctx "((" c-type-name "){})")
+      (if (!= len 2)
+        (do
+          (match (list-get items (if (> len 2) 2 0))
+            ((some at) (ctx-add-error-at ctx (union-type-constructor-message arena type-name) (ctx-sexpr-line at) (ctx-sexpr-col at)))
+            ((none) (ctx-add-error ctx (union-type-constructor-message arena type-name))))
+          "0")
         (match (list-get items 1)
           ((some tag-expr)
-            (match (deref tag-expr)
-              ((lst tag-list)
-                (let ((tag-items (. tag-list items)))
-                  ;; Parse: (tag value) or (tag)
-                  (if (< (list-len tag-items) 1)
-                    (ctx-str3 ctx "((" c-type-name "){})")
+            (let ((mut tag-name "")
+                  (mut args (list-new arena (Ptr SExpr))))
+              (match (deref tag-expr)
+                ((sym sym) (set! tag-name (. sym name)))
+                ((lst tag-list)
+                  (let ((tag-items (. tag-list items)))
                     (match (list-get tag-items 0)
-                      ((some tag-name-expr)
-                        (match (deref tag-name-expr)
-                          ((sym tag-sym)
-                            (let ((tag-name (. tag-sym name))
-                                  (c-tag-name (to-c-name arena tag-name))
-                                  (c-tag-enum (ctx-str ctx c-type-name (ctx-str ctx "_" c-tag-name)))
-                                  (num-tag-items (list-len tag-items)))
-                              (cond
-                                ;; Multi-field variant: (tag v0 v1 ...) -> .data.tag = { .f0 = v0, .f1 = v1, ... }
-                                ((>= num-tag-items 3)
-                                  (let ((mut field-init String ""))
-                                    (for (fi 1 num-tag-items)
-                                      (match (list-get tag-items fi)
-                                        ((some value-expr)
-                                          (let ((value-c (transpile-expr ctx value-expr))
-                                                (field-name (ctx-str ctx ".f" (int-to-string arena (- fi 1))))
-                                                (assignment (ctx-str3 ctx field-name " = " value-c)))
-                                            (set! field-init (if (string-eq field-init "")
-                                                               assignment
-                                                               (ctx-str3 ctx field-init ", " assignment)))))
-                                        ((none) (do))))
-                                    (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum (ctx-str ctx ", .data." (ctx-str ctx c-tag-name (ctx-str ctx " = { " (ctx-str ctx field-init " } })"))))))))))
-                                ;; Single-field variant: (tag value) -> .data.tag = value
-                                ((== num-tag-items 2)
-                                  (match (list-get tag-items 1)
-                                    ((some value-expr)
-                                      (let ((value-c (transpile-expr ctx value-expr)))
-                                        (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum (ctx-str ctx ", .data." (ctx-str ctx c-tag-name (ctx-str ctx " = " (ctx-str ctx value-c " })"))))))))))
-                                    ((none) (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum " })")))))))
-                                ;; No value - just tag
-                                (else
-                                  (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum " })"))))))))
-                          (_ (ctx-str3 ctx "((" c-type-name "){})/* tag not symbol */"))))
-                      ((none) (ctx-str3 ctx "((" c-type-name "){})/* no tag */"))))))
-              ;; Not a list - might be bare symbol like (some x) or (none)
-              ((sym sym)
-                (let ((tag-name (. sym name))
-                      (c-tag-name (to-c-name arena tag-name))
-                      (c-tag-enum (ctx-str ctx c-type-name (ctx-str ctx "_" c-tag-name))))
-                  (ctx-str ctx "((" (ctx-str ctx c-type-name (ctx-str ctx "){ .tag = " (ctx-str ctx c-tag-enum " })"))))))
-              (_ (ctx-str3 ctx "((" c-type-name "){})/* unknown tag form */"))))
-          ((none) (ctx-str3 ctx "((" c-type-name "){})/* no args */"))))))
+                      ((some head)
+                        (match (deref head)
+                          ((sym head-sym)
+                            (set! tag-name (. head-sym name))
+                            (for (ai 1 (list-len tag-items))
+                              (match (list-get tag-items ai)
+                                ((some a) (list-push args a))
+                                ((none) (do)))))
+                          (else (do))))
+                      ((none) (do)))))
+                (else (do)))
+              (if (string-eq tag-name "")
+                (do
+                  (ctx-add-error-at ctx (union-type-constructor-message arena type-name) (ctx-sexpr-line tag-expr) (ctx-sexpr-col tag-expr))
+                  "0")
+                (union-constructor-of-variant ctx type-name c-type-name tag-name args tag-expr))))
+          ((none) "0")))))
+
+  (fn union-variant-payload-count ((ctx (Ptr TranspileContext)) (c-type-name String) (tag String))
+    (@intent "How many payloads a union variant carries, from the field registry")
+    (@spec (((Ptr TranspileContext) String String) -> Int))
+    (@pre {ctx != nil})
+    ;; A multi-payload variant registers tag__0 .. tag__N-1; a single payload
+    ;; registers under the tag itself; a variant with none registers nothing.
+    (match (ctx-lookup-field-type ctx c-type-name (ctx-str ctx tag "__count"))
+      ((some _)
+        (let ((mut n 0))
+          (while (match (ctx-lookup-field-type ctx c-type-name (ctx-str3 ctx tag "__" (int-to-string (. (deref ctx) arena) n)))
+                   ((some _) true)
+                   ((none) false))
+            (set! n (+ n 1)))
+          n))
+      ((none)
+        (match (ctx-lookup-field-type ctx c-type-name tag)
+          ((some _) 1)
+          ((none) 0)))))
+
+  (fn union-constructor-of-variant ((ctx (Ptr TranspileContext)) (type-name String) (c-type-name String)
+                                    (tag-name String) (args (List (Ptr SExpr))) (at (Ptr SExpr)))
+    (@intent "Build a union value of one variant, checking the variant and its payload count")
+    (@spec (((Ptr TranspileContext) String String String (List (Ptr SExpr)) (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {at != nil})
+    (let ((arena (. (deref ctx) arena))
+          (c-tag-name (to-c-name arena tag-name))
+          (c-tag-enum (ctx-str3 ctx c-type-name "_" c-tag-name))
+          (nargs (list-len args))
+          (is-variant (match (ctx-resolve-enum-variant-for ctx tag-name c-type-name at)
+                        ((some t) (string-eq t c-type-name))
+                        ((none) false))))
+      (if (not is-variant)
+        (do
+          (ctx-add-error-at ctx (ctx-str5 ctx "'" tag-name "' is not a variant of '" type-name "'") (ctx-sexpr-line at) (ctx-sexpr-col at))
+          "0")
+        (let ((want (union-variant-payload-count ctx c-type-name tag-name)))
+          (cond
+            ((!= want nargs)
+              (ctx-add-error-at ctx
+                (string-build arena (list String "variant '" tag-name "' of '" type-name "' takes "
+                                                 (int-to-string arena want) " payload(s), got " (int-to-string arena nargs)))
+                (ctx-sexpr-line at) (ctx-sexpr-col at))
+              "0")
+            ((== nargs 0)
+              (ctx-str5 ctx "((" c-type-name "){ .tag = " c-tag-enum " })"))
+            ((== nargs 1)
+              (match (list-get args 0)
+                ((some value-expr)
+                  (ctx-str5 ctx "((" c-type-name "){ .tag = " c-tag-enum
+                    (ctx-str5 ctx ", .data." c-tag-name " = " (transpile-expr ctx value-expr) " })")))
+                ((none) "0")))
+            (else
+              ;; Multi-field variant: .data.tag = { .f0 = v0, .f1 = v1, ... }
+              (let ((mut field-init ""))
+                (for (fi 0 nargs)
+                  (match (list-get args fi)
+                    ((some value-expr)
+                      (let ((assignment (ctx-str4 ctx ".f" (int-to-string arena fi) " = " (transpile-expr ctx value-expr))))
+                        (set! field-init (if (string-eq field-init "")
+                                           assignment
+                                           (ctx-str3 ctx field-init ", " assignment)))))
+                    ((none) (do))))
+                (ctx-str5 ctx "((" c-type-name "){ .tag = " c-tag-enum
+                  (ctx-str5 ctx ", .data." c-tag-name " = { " field-init " } })")))))))))
 
   ;; ============================================================
   ;; Cond Expression (nested ternary)

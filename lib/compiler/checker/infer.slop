@@ -21,6 +21,7 @@
                  resolved-type-get-variant-payloads
                  resolved-type-is-record resolved-type-has-field resolved-type-get-field-type
                  BindingOrigin MutationKind mutation-error-message param-mode-error-message
+                 if-operand-count-message union-type-constructor-message comparison-operand-count-message
                  RangeBounds range-bounds-new range-bounds-unbounded range-add range-sub range-mul
                  range-union resolved-type-with-range int-range-expr-bounds))
   (import env (TypeEnv env-arena env-push-scope env-pop-scope
@@ -924,22 +925,38 @@
       (cond
         ;; (if cond then else) - check branch types
         ((string-eq op "if")
-          (if (>= len 4)
-            (do
-            ;; Visit condition at index 1
-            (match (list-get items 1)
-              ((some cond-expr) (let ((_ (infer-expr env cond-expr))) (do)))
-              ((none) (do)))
-            (match (list-get items 2)
-              ((some then-expr)
-                (let ((then-type (infer-expr env then-expr)))
-                  (match (list-get items 3)
-                    ((some else-expr)
-                      (let ((else-type (infer-expr env else-expr)))
-                        (unify-branch-types env then-type else-type line col)))
-                    ((none) then-type))))
-              ((none) (env-get-unit-type env))))
-            (env-get-unit-type env)))
+          (do
+            ;; (if c a b d) used to check clean while d was dropped (#233)
+            (when (> len 4)
+              (match (list-get items 4)
+                ((some extra)
+                  (env-add-error env (if-operand-count-message (env-arena env) (- len 1))
+                                 (sexpr-line extra) (sexpr-col extra)))
+                ((none) (do))))
+            (if (>= len 4)
+              (do
+              ;; Visit condition at index 1
+              (match (list-get items 1)
+                ((some cond-expr) (let ((_ (infer-expr env cond-expr))) (do)))
+                ((none) (do)))
+              (match (list-get items 2)
+                ((some then-expr)
+                  (let ((then-type (infer-expr env then-expr)))
+                    (match (list-get items 3)
+                      ((some else-expr)
+                        (let ((else-type (infer-expr env else-expr)))
+                          (unify-branch-types env then-type else-type line col)))
+                      ((none) then-type))))
+                ((none) (env-get-unit-type env))))
+              ;; (if c then) with no else: still check the condition and the branch
+              (do
+                (match (list-get items 1)
+                  ((some cond-expr) (let ((_ (infer-expr env cond-expr))) (do)))
+                  ((none) (do)))
+                (match (list-get items 2)
+                  ((some then-expr) (let ((_ (infer-expr env then-expr))) (do)))
+                  ((none) (do)))
+                (env-get-unit-type env)))))
 
         ;; (cond (test1 body1) (test2 body2) ... (else bodyN))
         ((string-eq op "cond")
@@ -1153,11 +1170,19 @@
         ((or (string-eq op "break") (string-eq op "continue"))
           (env-get-never-type env))
 
-        ;; Comparison operators return Bool
+        ;; Comparison operators return Bool, and compare exactly two operands
         ((or (string-eq op "==") (string-eq op "!=")
              (string-eq op "<") (string-eq op "<=")
-             (string-eq op ">") (string-eq op ">=")
-             (string-eq op "and") (string-eq op "or") (string-eq op "not"))
+             (string-eq op ">") (string-eq op ">="))
+          (do (when (> len 3)
+                (match (list-get items 3)
+                  ((some extra)
+                    (env-add-error env (comparison-operand-count-message (env-arena env) op (- len 1))
+                                   (sexpr-line extra) (sexpr-col extra)))
+                  ((none) (do))))
+              (infer-body-exprs env expr 1)
+              (env-get-bool-type env)))
+        ((or (string-eq op "and") (string-eq op "or") (string-eq op "not"))
           (do (infer-body-exprs env expr 1)
               (env-get-bool-type env)))
 
@@ -1384,7 +1409,9 @@
               (match (env-lookup-type env op)
                 ;; Type constructor - return the type itself
                 ((some the-type)
-                  (do (check-constructor-args env the-type items len)
+                  (do (if (resolved-type-is-union the-type)
+                        (check-union-constructor env the-type expr items len)
+                        (check-constructor-args env the-type items len))
                       the-type))
                 ;; Check for built-in list functions
                 ((none)
@@ -2305,6 +2332,57 @@
             (string-build arena (list String "field '" field-name "' of " (. (deref rec-type) name)))
             field-type val-type (sexpr-line val-expr) (sexpr-col val-expr))))
       ((none) (do))))
+
+  (fn check-union-constructor ((env (Ptr TypeEnv)) (the-type (Ptr ResolvedType))
+                               (expr (Ptr SExpr)) (items (List (Ptr SExpr))) (len Int))
+    (@intent "Check (Union (variant v ...)) or (Union variant): one variant of the type, with all its payloads")
+    (@spec (((Ptr TypeEnv) (Ptr ResolvedType) (Ptr SExpr) (List (Ptr SExpr)) Int) -> Unit))
+    (@pre (!= env nil))
+    (@pre (!= the-type nil))
+    ;; A union has no fields, so check-constructor-args checked nothing, and
+    ;; (Node iri x) passed while the build dropped its payload (#208).
+    (let ((arena (env-arena env))
+          (type-name (. (deref the-type) name)))
+      (if (!= len 2)
+        (let ((at (match (list-get items 2) ((some a) a) ((none) expr))))
+          (env-add-error env (union-type-constructor-message arena type-name) (sexpr-line at) (sexpr-col at)))
+        (match (list-get items 1)
+          ((some tag-expr)
+            (let ((mut tag "")
+                  (mut args (list-new arena (Ptr SExpr))))
+              (match (deref tag-expr)
+                ((sym sym) (set! tag (. sym name)))
+                ((lst tag-list)
+                  (let ((tag-items (. tag-list items)))
+                    (match (list-get tag-items 0)
+                      ((some head)
+                        (match (deref head)
+                          ((sym head-sym)
+                            (set! tag (. head-sym name))
+                            (for (ai 1 (list-len tag-items))
+                              (match (list-get tag-items ai)
+                                ((some a) (list-push args a))
+                                ((none) (do)))))
+                          (else (do))))
+                      ((none) (do)))))
+                (else (do)))
+              (cond
+                ((string-eq tag "")
+                  (env-add-error env (union-type-constructor-message arena type-name)
+                                 (sexpr-line tag-expr) (sexpr-col tag-expr)))
+                ((match (resolved-type-get-variant-index the-type tag) ((some _) false) ((none) true))
+                  (env-add-error env (string-build arena (list String "'" tag "' is not a variant of '" type-name "'"))
+                                 (sexpr-line tag-expr) (sexpr-col tag-expr)))
+                (else
+                  (let ((want (list-len (resolved-type-get-variant-payloads arena the-type tag))))
+                    (if (!= want (list-len args))
+                      (env-add-error env (string-build arena (list String "variant '" tag "' of '" type-name "' takes "
+                                                                      (int-to-string arena want) " payload(s), got "
+                                                                      (int-to-string arena (list-len args))))
+                                     (sexpr-line tag-expr) (sexpr-col tag-expr))
+                      (for-each (a args)
+                        (let ((_ (infer-expr-quietly env a))) (do)))))))))
+          ((none) (do))))))
 
   (fn check-constructor-args ((env (Ptr TypeEnv)) (the-type (Ptr ResolvedType))
                               (items (List (Ptr SExpr))) (len Int))

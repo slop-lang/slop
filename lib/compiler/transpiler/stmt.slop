@@ -26,7 +26,7 @@
                    to-c-type-prefixed ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    LastLambdaInfo ctx-get-last-lambda-info ctx-clear-last-lambda-info))
   (import ctype (to-c-type to-c-name))
-  (import expr (is-simple-primitive-c-type transpile-expr transpile-expr-for transpile-expr-narrowed field-slop-type infer-expr-c-type infer-expr-slop-type
+  (import expr (is-simple-primitive-c-type check-if-operands transpile-expr transpile-expr-for transpile-expr-narrowed field-slop-type infer-expr-c-type infer-expr-slop-type
               infer-collection-element-slop-type c-type-to-option-type-name
               resolve-type-alias extract-set-elem-from-slop-type
               extract-map-key-from-slop-type extract-map-value-from-slop-type
@@ -403,6 +403,7 @@
           (if (< len 3)
             (ctx-add-error-at ctx "invalid if: need condition and then-branch" (ctx-sexpr-line expr) (ctx-sexpr-col expr))
             (do
+              (check-if-operands ctx items)
               ;; Get condition
               (match (list-get items 1)
                 ((some cond-expr)
