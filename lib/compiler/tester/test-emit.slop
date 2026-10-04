@@ -117,6 +117,18 @@
       (let ((c (char-at name 0)))
         (and (>= c 65) (<= c 90)))))
 
+  (fn is-field-access-head ((item (Ptr SExpr)) (i Int))
+    (@intent "Is this the . that heads a (. x f) field access?")
+    (@spec (((Ptr SExpr) Int) -> Bool))
+    (@pure)
+    (@pre {item != nil})
+    ;; A parsed ... is .. then ., so its . is never first in a list; a .
+    ;; at index 0 can only be the field-access operator.
+    (and (== i 0)
+         (match (deref item)
+           ((sym s) (string-eq (. s name) "."))
+           (else false))))
+
   (fn contains-wildcard ((expr (Ptr SExpr)))
     (@intent "Check if expression contains _ or ... wildcards")
     (@spec (((Ptr SExpr)) -> Bool))
@@ -125,6 +137,7 @@
     ;; Unlike is-wildcard-expr this looks inside a constructor
     (@example ((make-sexpr-list arena (list (Ptr SExpr) (make-sexpr-sym arena "_")))) -> true)
     (@example ((make-sexpr-list arena (list (Ptr SExpr) (make-sexpr-sym arena "x")))) -> false)
+    (@example ((make-sexpr-list arena (list (Ptr SExpr) (make-sexpr-sym arena ".") (make-sexpr-sym arena "x") (make-sexpr-sym arena "f")))) -> false)
     (match (deref expr)
       ((sym s) (or (string-eq (. s name) "_") (string-eq (. s name) "..") (string-eq (. s name) ".")))
       ((lst l)
@@ -135,7 +148,8 @@
           (while (and (< i len) (not found))
             (match (list-get items i)
               ((some item)
-                (when (contains-wildcard item)
+                ;; A "." heading a list is field access, not a wildcard (#77)
+                (when (and (not (is-field-access-head item i)) (contains-wildcard item))
                   (set! found true)))
               ((none) (do)))
             (set! i (+ i 1)))
@@ -188,7 +202,11 @@
                         (else
                           (list-push new-items (replace-wildcards arena item)))))
                     (_ (list-push new-items (replace-wildcards arena item))))
-                  (list-push new-items (replace-wildcards arena item))))
+                  ;; (. x f) keeps its head: "." there is field access, and
+                  ;; replacing it put f in argument position (#77)
+                  (if (is-field-access-head item i)
+                    (list-push new-items item)
+                    (list-push new-items (replace-wildcards arena item)))))
               ((none) (do)))
             (set! i (+ i 1)))
           (make-sexpr-list arena new-items)))

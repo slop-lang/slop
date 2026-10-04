@@ -52,4 +52,16 @@
     ;; A record result cannot be compared with C ==, so an expected value that is
     ;; not a constructor is reported as unrunnable, not handed to cc (#252)
     (@example (2) -> (diagonal 2))
-    (record-new Pt (x n) (y n))))
+    (record-new Pt (x n) (y n)))
+
+  (type Box (record (v Int)))
+  (const SAMPLE Box (Box 7))
+
+  (fn box-v-plus ((b Box))
+    (@intent "v plus one")
+    (@spec ((Box) -> Int))
+    (@pure)
+    ;; Deliberately wrong: an expected value read through a field is compared,
+    ;; so 8 against (. SAMPLE v) must fail, not be unrunnable (#77)
+    (@example ((Box 7)) -> (. SAMPLE v))
+    (+ (. b v) 1)))

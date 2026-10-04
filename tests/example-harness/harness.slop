@@ -153,4 +153,24 @@
     (@spec ((Int) -> Failure))
     (@pure)
     (@example :eq failure-eq (1) -> (missing "anything"))
-    (classify n)))
+    (classify n))
+
+  ;; An expected value may read a field (#77). The "." heading (. x f) was
+  ;; taken for a wildcard, so f landed in argument position and the example
+  ;; was reported unrunnable; inside (ok ...) it weakened the check to the tag.
+  (type Box (record (v Int)))
+  (const SAMPLE Box (Box 7))
+
+  (fn box-v ((b Box))
+    (@intent "Read v")
+    (@spec ((Box) -> Int))
+    (@pure)
+    (@example ((Box 7)) -> (. SAMPLE v))
+    (. b v))
+
+  (fn checked-v ((b Box))
+    (@intent "Read v, as a Result")
+    (@spec ((Box) -> (Result Int String)))
+    (@pure)
+    (@example ((Box 7)) -> (ok (. SAMPLE v)))
+    (ok (. b v))))
