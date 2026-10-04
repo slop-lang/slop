@@ -10151,7 +10151,7 @@ slop_string expr_transpile_spawn_closure(context_TranspileContext* ctx, slop_lis
                 if (has_captures) {
                     {
                         __auto_type closure_c = ({ context_ctx_set_closure_arena(ctx, SLOP_STR("_spawn_a")); ({ __auto_type c = expr_transpile_expr(ctx, fn_expr); context_ctx_set_closure_arena(ctx, SLOP_STR("")); c; }); });
-                        return context_ctx_str(ctx, context_ctx_str3(ctx, SLOP_STR("({ slop_arena* _spawn_a = ("), arena_c, SLOP_STR("); slop_closure_t _spawn_cl = ")), context_ctx_str(ctx, closure_c, context_ctx_str(ctx, SLOP_STR("; slop_thread_int* _spawn_th = slop_arena_alloc("), context_ctx_str(ctx, SLOP_STR("_spawn_a"), context_ctx_str(ctx, SLOP_STR(", sizeof(slop_thread_int));"), context_ctx_str(ctx, SLOP_STR(" _spawn_th->func = _spawn_cl.fn;"), context_ctx_str(ctx, SLOP_STR(" _spawn_th->env = _spawn_cl.env;"), context_ctx_str(ctx, SLOP_STR(" _spawn_th->done = false;"), context_ctx_str(ctx, SLOP_STR(" pthread_create(&_spawn_th->id, NULL, (void*)slop_thread_int_entry, (void*)_spawn_th);"), SLOP_STR(" _spawn_th; })"))))))))));
+                        return context_ctx_str(ctx, context_ctx_str3(ctx, SLOP_STR("({ slop_arena* _spawn_a = ("), arena_c, SLOP_STR("); slop_closure_t _spawn_cl = ")), context_ctx_str(ctx, closure_c, context_ctx_str(ctx, SLOP_STR("; slop_thread_int* _spawn_th = slop_arena_alloc("), context_ctx_str(ctx, SLOP_STR("_spawn_a"), context_ctx_str(ctx, SLOP_STR(", sizeof(slop_thread_int));"), context_ctx_str(ctx, SLOP_STR(" *_spawn_th = (slop_thread_int){ .func = _spawn_cl.fn, .env = _spawn_cl.env, .done = false };"), context_ctx_str(ctx, SLOP_STR(" slop_thread_start(&_spawn_th->id, (void*)slop_thread_int_entry, (void*)_spawn_th);"), SLOP_STR(" _spawn_th; })"))))))));
                     }
                 } else {
                     return expr_transpile_regular_fn_call(ctx, SLOP_STR("spawn"), items);
@@ -10281,7 +10281,7 @@ slop_string expr_extract_type_binding_from_slop_type(slop_arena* arena, slop_str
             __auto_type inner_end = expr_find_matching_paren(slop_type, inner_start);
             if (inner_end > inner_start) {
                 {
-                    __auto_type inner_type = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8130:75"))), ((int64_t)(SLOP_RANGE(int64_t, (inner_end - inner_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8131:59"))));
+                    __auto_type inner_type = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8132:75"))), ((int64_t)(SLOP_RANGE(int64_t, (inner_end - inner_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8133:59"))));
                     return expr_slop_type_to_c_identifier(arena, inner_type);
                 }
             } else {
@@ -10294,7 +10294,7 @@ slop_string expr_extract_type_binding_from_slop_type(slop_arena* arena, slop_str
             __auto_type inner_end = expr_find_matching_paren(slop_type, inner_start);
             if (inner_end > inner_start) {
                 {
-                    __auto_type inner_type = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8139:75"))), ((int64_t)(SLOP_RANGE(int64_t, (inner_end - inner_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8140:59"))));
+                    __auto_type inner_type = strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, inner_start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8141:75"))), ((int64_t)(SLOP_RANGE(int64_t, (inner_end - inner_start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8142:59"))));
                     return expr_slop_type_to_c_identifier(arena, inner_type);
                 }
             } else {
@@ -10313,7 +10313,7 @@ slop_string expr_extract_type_binding_from_c_type(slop_arena* arena, slop_string
             __auto_type end_offset = ((strlib_ends_with(c_type, SLOP_STR("*"))) ? 1 : 0);
             __auto_type len = string_len(c_type);
             if (len > start) {
-                return strlib_substring(arena, c_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8157:54"))), ((int64_t)(SLOP_RANGE(int64_t, ((((int64_t)(len)) - start) - end_offset), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8158:40"))));
+                return strlib_substring(arena, c_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8159:54"))), ((int64_t)(SLOP_RANGE(int64_t, ((((int64_t)(len)) - start) - end_offset), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8160:40"))));
             } else {
                 return SLOP_STR("int");
             }
@@ -10324,7 +10324,7 @@ slop_string expr_extract_type_binding_from_c_type(slop_arena* arena, slop_string
             __auto_type end_offset = ((strlib_ends_with(c_type, SLOP_STR("*"))) ? 1 : 0);
             __auto_type len = string_len(c_type);
             if (len > start) {
-                return strlib_substring(arena, c_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8165:54"))), ((int64_t)(SLOP_RANGE(int64_t, ((((int64_t)(len)) - start) - end_offset), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8166:40"))));
+                return strlib_substring(arena, c_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8167:54"))), ((int64_t)(SLOP_RANGE(int64_t, ((((int64_t)(len)) - start) - end_offset), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8168:40"))));
             } else {
                 return SLOP_STR("int");
             }
@@ -10374,7 +10374,7 @@ int64_t expr_find_matching_paren(slop_string s, int64_t start) {
         int64_t found = -1;
         while ((i < len) && (found < 0)) {
             {
-                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8200:46"))));
+                __auto_type c = strlib_char_at(s, ((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8202:46"))));
                 if (c == 40) {
                     depth = (depth + 1);
                 } else if (c == 41) {
@@ -10953,7 +10953,7 @@ slop_string expr_extract_first_type_arg(slop_arena* arena, slop_string slop_type
         uint8_t found = 0;
         while ((end_pos < len) && !(found)) {
             {
-                __auto_type c = strlib_char_at(slop_type, ((int64_t)(SLOP_RANGE(int64_t, end_pos, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8648:54"))));
+                __auto_type c = strlib_char_at(slop_type, ((int64_t)(SLOP_RANGE(int64_t, end_pos, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8650:54"))));
                 if (c == 40) {
                     depth = (depth + 1);
                     end_pos = (end_pos + 1);
@@ -10972,7 +10972,7 @@ slop_string expr_extract_first_type_arg(slop_arena* arena, slop_string slop_type
             }
         }
         if (end_pos > start) {
-            return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8664:53"))), ((int64_t)(SLOP_RANGE(int64_t, (end_pos - start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8664:77"))));
+            return strlib_substring(arena, slop_type, ((int64_t)(SLOP_RANGE(int64_t, start, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8666:53"))), ((int64_t)(SLOP_RANGE(int64_t, (end_pos - start), 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8666:77"))));
         } else {
             return SLOP_STR("");
         }
@@ -11157,7 +11157,7 @@ slop_string expr_infer_elem_from_type(context_TranspileContext* ctx, types_SExpr
                     {
                         __auto_type elem_len = ((string_len(resolved_type) - 6) - 1);
                         if (elem_len > 0) {
-                            return strlib_substring(arena, resolved_type, 6, ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8782:69"))));
+                            return strlib_substring(arena, resolved_type, 6, ((int64_t)(SLOP_RANGE(int64_t, elem_len, 1, 0, 0, 0, "(Int 0 ..) at expr.slop:8784:69"))));
                         } else {
                             return SLOP_STR("");
                         }
