@@ -510,11 +510,11 @@ slop_result_int_strlib_ParseError strlib_parse_int(slop_string s) {
             #ifdef SLOP_DEBUG
             SLOP_PRE((16) > 0, "with-arena size must be positive");
             #endif
-            slop_arena _arena = slop_arena_new(16);
+            slop_arena _arena_1 = slop_arena_new(16);
             #ifdef SLOP_DEBUG
-            SLOP_PRE(_arena.base != NULL, "arena allocation failed");
+            SLOP_PRE(_arena_1.base != NULL, "arena allocation failed");
             #endif
-            slop_arena* arena = &_arena;
+            slop_arena* arena = &_arena_1;
             {
                 __auto_type endptr = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 8); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 __auto_type result = strtol(((char*)(s.data)), ((char**)(endptr)), 10);
@@ -523,13 +523,13 @@ slop_result_int_strlib_ParseError strlib_parse_int(slop_string s) {
                     if (end_val == ((char*)(s.data))) {
                         {
                             slop_result_int_strlib_ParseError _wa_ret = ((slop_result_int_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_invalid_format });
-                            slop_arena_free(arena);
+                            slop_arena_free(&_arena_1);
                             return _wa_ret;
                         }
                     } else {
                         {
                             slop_result_int_strlib_ParseError _wa_ret = ((slop_result_int_strlib_ParseError){ .is_ok = true, .data.ok = result });
-                            slop_arena_free(arena);
+                            slop_arena_free(&_arena_1);
                             return _wa_ret;
                         }
                     }
@@ -548,11 +548,11 @@ slop_result_float_strlib_ParseError strlib_parse_float(slop_string s) {
             #ifdef SLOP_DEBUG
             SLOP_PRE((16) > 0, "with-arena size must be positive");
             #endif
-            slop_arena _arena = slop_arena_new(16);
+            slop_arena _arena_2 = slop_arena_new(16);
             #ifdef SLOP_DEBUG
-            SLOP_PRE(_arena.base != NULL, "arena allocation failed");
+            SLOP_PRE(_arena_2.base != NULL, "arena allocation failed");
             #endif
-            slop_arena* arena = &_arena;
+            slop_arena* arena = &_arena_2;
             {
                 __auto_type endptr = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 8); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
                 __auto_type result = strtod(((char*)(s.data)), ((char**)(endptr)));
@@ -561,13 +561,13 @@ slop_result_float_strlib_ParseError strlib_parse_float(slop_string s) {
                     if (end_val == ((char*)(s.data))) {
                         {
                             slop_result_float_strlib_ParseError _wa_ret = ((slop_result_float_strlib_ParseError){ .is_ok = false, .data.err = strlib_ParseError_invalid_format });
-                            slop_arena_free(arena);
+                            slop_arena_free(&_arena_2);
                             return _wa_ret;
                         }
                     } else {
                         {
                             slop_result_float_strlib_ParseError _wa_ret = ((slop_result_float_strlib_ParseError){ .is_ok = true, .data.ok = result });
-                            slop_arena_free(arena);
+                            slop_arena_free(&_arena_2);
                             return _wa_ret;
                         }
                     }

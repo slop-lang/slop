@@ -174,11 +174,11 @@ slop_result_int_file_FileError file_file_size(slop_string path) {
         #ifdef SLOP_DEBUG
         SLOP_PRE((256) > 0, "with-arena size must be positive");
         #endif
-        slop_arena _arena = slop_arena_new(256);
+        slop_arena _arena_3 = slop_arena_new(256);
         #ifdef SLOP_DEBUG
-        SLOP_PRE(_arena.base != NULL, "arena allocation failed");
+        SLOP_PRE(_arena_3.base != NULL, "arena allocation failed");
         #endif
-        slop_arena* arena = &_arena;
+        slop_arena* arena = &_arena_3;
         {
             __auto_type buf = ({ __auto_type _alloc = (struct stat*)slop_arena_alloc(arena, sizeof(struct stat)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
             {
@@ -186,13 +186,13 @@ slop_result_int_file_FileError file_file_size(slop_string path) {
                 if (result != 0) {
                     {
                         slop_result_int_file_FileError _wa_ret = ((slop_result_int_file_FileError){ .is_ok = false, .data.err = file_FileError_not_found });
-                        slop_arena_free(arena);
+                        slop_arena_free(&_arena_3);
                         return _wa_ret;
                     }
                 } else {
                     {
                         slop_result_int_file_FileError _wa_ret = ((slop_result_int_file_FileError){ .is_ok = true, .data.ok = ((int64_t)(((struct stat*)(buf))->st_size)) });
-                        slop_arena_free(arena);
+                        slop_arena_free(&_arena_3);
                         return _wa_ret;
                     }
                 }

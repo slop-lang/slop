@@ -472,6 +472,9 @@ struct context_TranspileContext {
     uint8_t post_exit;
     uint8_t post_exit_used;
     slop_list_string open_arenas;
+    int64_t loop_counter;
+    int64_t arena_block_counter;
+    slop_list_string loop_labels_used;
     slop_list_string struct_key_types;
     slop_list_context_ValueKeyType value_key_types;
     slop_list_context_TypeAliasEntry type_aliases;
@@ -673,6 +676,13 @@ void context_ctx_push_open_arena(context_TranspileContext* ctx, slop_string c_na
 void context_ctx_pop_open_arena(context_TranspileContext* ctx);
 slop_list_string context_ctx_take_open_arenas(context_TranspileContext* ctx);
 void context_ctx_restore_open_arenas(context_TranspileContext* ctx, slop_list_string saved);
+slop_string context_ctx_unique_arena_local(context_TranspileContext* ctx, slop_string base);
+void context_ctx_enter_loop(context_TranspileContext* ctx);
+slop_string context_ctx_exit_loop(context_TranspileContext* ctx);
+void context_ctx_emit_loop_end(context_TranspileContext* ctx, slop_string after_loop);
+void context_ctx_enter_switch(context_TranspileContext* ctx);
+void context_ctx_exit_switch(context_TranspileContext* ctx);
+slop_string context_ctx_loop_exit(context_TranspileContext* ctx, slop_string op);
 slop_string context_ctx_open_arena_frees(context_TranspileContext* ctx);
 slop_string context_ctx_exit_code(context_TranspileContext* ctx, slop_string code);
 void context_ctx_emit_return(context_TranspileContext* ctx, slop_string code);

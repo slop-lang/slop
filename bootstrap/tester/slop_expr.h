@@ -182,6 +182,7 @@ void expr_register_let_binding_in_context(context_TranspileContext* ctx, types_S
 slop_string expr_transpile_binding_expr(context_TranspileContext* ctx, types_SExpr* binding);
 uint8_t expr_binding_has_mut(slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_typed_init(context_TranspileContext* ctx, types_SExpr* init_expr, slop_string target_type);
+slop_string expr_loop_close_c(context_TranspileContext* ctx, slop_string closers, slop_string after_loop);
 slop_string expr_transpile_while_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_do_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_when_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);

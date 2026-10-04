@@ -66,11 +66,11 @@ int main(int argc, char** _c_argv) {
             #ifdef SLOP_DEBUG
             SLOP_PRE((2097152) > 0, "with-arena size must be positive");
             #endif
-            slop_arena _arena = slop_arena_new(2097152);
+            slop_arena _arena_4 = slop_arena_new(2097152);
             #ifdef SLOP_DEBUG
-            SLOP_PRE(_arena.base != NULL, "arena allocation failed");
+            SLOP_PRE(_arena_4.base != NULL, "arena allocation failed");
             #endif
-            slop_arena* arena = &_arena;
+            slop_arena* arena = &_arena_4;
             {
                 __auto_type format = parser_cli_OutputFormat_fmt_sexp;
                 int64_t file_idx = 1;
@@ -86,7 +86,7 @@ int main(int argc, char** _c_argv) {
                             printf("%.*s\n", (int)(fmt_arg).len, (fmt_arg).data);
                             {
                                 int _wa_ret = 1;
-                                slop_arena_free(arena);
+                                slop_arena_free(&_arena_4);
                                 return _wa_ret;
                             }
                         }
@@ -102,7 +102,7 @@ int main(int argc, char** _c_argv) {
                         printf("%.*s\n", (int)(path).len, (path).data);
                         {
                             int _wa_ret = 1;
-                            slop_arena_free(arena);
+                            slop_arena_free(&_arena_4);
                             return _wa_ret;
                         }
                     } else if (_mv_73.is_ok) {
@@ -114,7 +114,7 @@ int main(int argc, char** _c_argv) {
                             printf("%s\n", "Error: Could not read file");
                             {
                                 int _wa_ret = 1;
-                                slop_arena_free(arena);
+                                slop_arena_free(&_arena_4);
                                 return _wa_ret;
                             }
                         } else if (_mv_74.is_ok) {
@@ -131,7 +131,7 @@ int main(int argc, char** _c_argv) {
                                 printf("%.*s\n", (int)(e.message).len, (e.message).data);
                                 {
                                     int _wa_ret = 1;
-                                    slop_arena_free(arena);
+                                    slop_arena_free(&_arena_4);
                                     return _wa_ret;
                                 }
                             } else if (_mv_75.is_ok) {
@@ -140,14 +140,14 @@ int main(int argc, char** _c_argv) {
                                     parser_cli_print_json_array(arena, exprs);
                                     {
                                         int _wa_ret = 0;
-                                        slop_arena_free(arena);
+                                        slop_arena_free(&_arena_4);
                                         return _wa_ret;
                                     }
                                 } else {
                                     parser_cli_print_sexp_list(arena, exprs);
                                     {
                                         int _wa_ret = 0;
-                                        slop_arena_free(arena);
+                                        slop_arena_free(&_arena_4);
                                         return _wa_ret;
                                     }
                                 }

@@ -54,6 +54,8 @@ void stmt_transpile_for_each_set(context_TranspileContext* ctx, slop_string var_
 void stmt_transpile_for_each_map_keys(context_TranspileContext* ctx, slop_string var_name, types_SExprSymbol var_sym, slop_string coll_c, slop_string resolved_type, slop_list_types_SExpr_ptr items, int64_t len);
 void stmt_transpile_for_each_map_kv(context_TranspileContext* ctx, slop_list_types_SExpr_ptr binding_items, slop_list_types_SExpr_ptr items, int64_t len);
 void stmt_transpile_for_each(context_TranspileContext* ctx, types_SExpr* expr);
+slop_string stmt_transpile_loop_body(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, int64_t start);
+void stmt_transpile_loop_exit(context_TranspileContext* ctx, types_SExpr* expr, slop_string op);
 void stmt_transpile_stmt(context_TranspileContext* ctx, types_SExpr* expr, uint8_t is_return);
 void stmt_emit_typed_return_expr(context_TranspileContext* ctx, types_SExpr* expr);
 slop_string stmt_current_return_c_type(context_TranspileContext* ctx);
