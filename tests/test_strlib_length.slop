@@ -1,0 +1,70 @@
+;; ============================================================
+;; strlib reads a String by its len (#161)
+;;
+;; A String is {len, data}, and a slice of a longer one has no
+;; NUL at its end. compare used strcmp, and parse-int/parse-float
+;; strtol/strtod, so each read the bytes after a slice as well.
+;; ============================================================
+
+(module test-strlib-length
+  (export (main 0))
+  (import strlib (compare compare-ignore-case parse-int parse-float substring starts-with ends-with))
+
+  (fn compare-slice ()
+    (@intent "A 5-byte slice of applesauce equals apple")
+    (@spec (() -> Bool))
+    (let ((buf "applesauce")
+          (apple (String (. buf data) 5)))
+      (and (== (compare apple "apple") 0)
+           (== (compare-ignore-case apple "apple") 0)
+           (== (compare apple "applf") -1)
+           (== (compare "apple" apple) 0))))
+
+  (fn compare-prefix ()
+    (@intent "A proper prefix sorts first, by length after equal bytes")
+    (@spec (() -> Bool))
+    (and (== (compare "ab" "abc") -1)
+         (== (compare "abc" "ab") 1)
+         (== (compare "" "a") -1)
+         (== (compare "" "") 0)))
+
+  (fn parse-slice ()
+    (@intent "parse-int and parse-float of a slice stop at its len")
+    (@spec (() -> Bool))
+    (let ((digits "12345")
+          (two (String (. digits data) 2))
+          (pi "3.14159")
+          (short-pi (String (. pi data) 4)))
+      (and (match (parse-int two) ((ok n) (== n 12)) ((error _) false))
+           (match (parse-float short-pi) ((ok f) (and (> f 3.139) (< f 3.141))) ((error _) false)))))
+
+  (fn substring-terminated ((arena Arena))
+    (@intent "A substring is followed by a NUL, so parsing it stops there")
+    (@spec ((Arena) -> Bool))
+    (@alloc arena)
+    (let ((sub (substring arena "123456" 0 3)))
+      (match (parse-int sub) ((ok n) (== n 123)) ((error _) false))))
+
+  (fn prefix-suffix-slice ()
+    (@intent "starts-with and ends-with read a slice by its len")
+    (@spec (() -> Bool))
+    (let ((buf "abcdef")
+          (abc (String (. buf data) 3)))
+      (and (starts-with "abc" "ab")
+           (ends-with "abc" "bc")
+           (not (starts-with "abc" "abd"))
+           (ends-with abc "bc")
+           (not (ends-with abc "ef"))
+           (not (starts-with abc "abcd")))))
+
+  (fn main ()
+    (@intent "Run each, return the number that failed")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((mut failed 0))
+        (when (not (compare-slice)) (set! failed (+ failed 1)))
+        (when (not (compare-prefix)) (set! failed (+ failed 1)))
+        (when (not (parse-slice)) (set! failed (+ failed 1)))
+        (when (not (substring-terminated arena)) (set! failed (+ failed 1)))
+        (when (not (prefix-suffix-slice)) (set! failed (+ failed 1)))
+        failed))))
