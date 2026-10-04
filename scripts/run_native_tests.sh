@@ -275,6 +275,11 @@ run_lib_test "$REPO_ROOT/lib/std/xml/tests/xml_test.slop" "xml-contracts" \
 run_lib_test "$REPO_ROOT/tests/struct-key-list-guard/main.slop" "struct-key-list-guard" \
     -I "$REPO_ROOT/tests/struct-key-list-guard"
 
+# println of an imported String constant: the importer binds it without its
+# type, and it was printed as an integer (#237)
+run_lib_test "$REPO_ROOT/tests/const-import/main.slop" "const-import" \
+    -I "$REPO_ROOT/tests/const-import"
+
 # A call resolves within the calling module: its own definitions, then what it
 # imports. Several modules export f and join here; before, the one registered
 # last in the build won, whatever the caller imported, so each import order

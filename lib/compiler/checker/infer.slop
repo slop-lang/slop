@@ -1568,8 +1568,16 @@
                     ((string-eq op "sexpr-line") (env-get-int-type env))
                     ((string-eq op "sexpr-col") (env-get-int-type env))
                     ;; IO builtins
-                    ((string-eq op "print") (env-get-unit-type env))
-                    ((string-eq op "println") (env-get-unit-type env))
+                    ;; The arguments are inferred so they carry their types to the
+                    ;; transpiler, which picks the format by type; an imported
+                    ;; String constant printed with %lld (#237).
+                    ((or (string-eq op "print") (string-eq op "println"))
+                      (do
+                        (for (pi 1 len)
+                          (match (list-get items pi)
+                            ((some arg) (let ((_ (infer-expr env arg))) (do)))
+                            ((none) (do))))
+                        (env-get-unit-type env)))
                     ;; Result constructors - infer inner types
                     ((string-eq op "ok")
                       (let ((arena (env-arena env))

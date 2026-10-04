@@ -1,0 +1,6 @@
+(module texts
+  (@intent "String constants for another module to print")
+  (export GREETING PATH-SEP)
+
+  (const GREETING String "hello, \"world\"")
+  (const PATH-SEP String "\\"))
