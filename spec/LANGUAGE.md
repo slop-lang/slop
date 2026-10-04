@@ -1136,6 +1136,12 @@ ChanError                ; Error enum: closed, would-block, send-on-closed
 (join thread) -> T                          ; Wait for thread, return result
 ```
 
+A `spawn` whose thread cannot be started -- the process is out of threads,
+say -- aborts the program with `SLOP: spawn: cannot start a thread`, as an
+arena that cannot get memory does. It never returns a handle for a thread
+that is not running, so work split across threads cannot silently lose a
+share. A `join` that cannot wait for its thread aborts the same way.
+
 **Usage Pattern:**
 
 ```lisp

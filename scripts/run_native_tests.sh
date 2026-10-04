@@ -774,6 +774,46 @@ let_reassign|let_reassign.slop:10:24: error: cannot assign to 'x' - it is immuta
 match_reassign|match_reassign.slop:10:37: error: cannot assign to 'v' - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut v ...)))
 LM_CASES
 
+# A program that must abort with the expected message on stderr, built with
+# extra cc flags. Its exit code alone would not do: a run that carried on
+# past the failure can exit non-zero too.
+run_abort_test() {
+    local test_file="$1"
+    local test_name="$2"
+    local cflags="$3"
+    local expected="$4"
+
+    echo -n "Testing $test_name (expected to abort)... "
+    if ! SLOP_CFLAGS="$cflags" uv run slop build "$test_file" -o "$BUILD_DIR/$test_name" >/dev/null 2>&1; then
+        echo -e "${RED}FAIL (build)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+    local output
+    output=$("$BUILD_DIR/$test_name" 2>&1)
+    local exit_code=$?
+
+    if [ $exit_code -ne 0 ] && echo "$output" | grep -qF "$expected" \
+            && ! echo "$output" | grep -qF "spawn returned"; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} (exit $exit_code; expected: $expected)"
+        echo "$output"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# spawn when the thread cannot start (#192): failing_create.h makes every
+# pthread_create fail. Before, spawn ignored the error and join waited on an
+# unset thread id and returned an unwritten result. Both spawn lowerings are
+# covered: the inline one for a capturing closure, and the thread library's.
+SPF="$REPO_ROOT/tests/spawn-failure"
+for spf in closure function; do
+    run_abort_test "$SPF/$spf.slop" "spawn-failure-$spf" "-include $SPF/failing_create.h" \
+        "SLOP: spawn: cannot start a thread"
+done
+
 # ============================================================
 # Cleanup and Summary
 # ============================================================

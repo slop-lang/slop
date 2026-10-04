@@ -1,0 +1,11 @@
+(module spawn-fail-function
+  (@intent "spawn with a non-capturing function, the thread library's spawn, when the thread cannot start")
+  (import thread (spawn join))
+
+  (fn main ()
+    (@intent "Must abort in spawn; printing past it means the failure was ignored")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((t (spawn arena (fn () 42))))
+        (println "spawn returned")
+        (join t)))))

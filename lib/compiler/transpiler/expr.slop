@@ -8017,11 +8017,13 @@
                 (ctx-str ctx (ctx-str3 ctx "({ slop_arena* _spawn_a = (" arena-c "); slop_closure_t _spawn_cl = ") (ctx-str ctx closure-c
                   (ctx-str ctx "; slop_thread_int* _spawn_th = slop_arena_alloc(" (ctx-str ctx "_spawn_a"
                     (ctx-str ctx ", sizeof(slop_thread_int));"
-                      (ctx-str ctx " _spawn_th->func = _spawn_cl.fn;"
-                        (ctx-str ctx " _spawn_th->env = _spawn_cl.env;"
-                          (ctx-str ctx " _spawn_th->done = false;"
-                            (ctx-str ctx " pthread_create(&_spawn_th->id, NULL, (void*)slop_thread_int_entry, (void*)_spawn_th);"
-                              " _spawn_th; })"))))))))))
+                      ;; Every field set, id and result zeroed: arena memory is
+                      ;; not. slop_thread_start aborts if the thread cannot
+                      ;; start, rather than hand back a handle join would
+                      ;; treat as finished (#192).
+                      (ctx-str ctx " *_spawn_th = (slop_thread_int){ .func = _spawn_cl.fn, .env = _spawn_cl.env, .done = false };"
+                        (ctx-str ctx " slop_thread_start(&_spawn_th->id, (void*)slop_thread_int_entry, (void*)_spawn_th);"
+                          " _spawn_th; })"))))))))
               ;; Non-capturing lambda - use regular spawn call
               (transpile-regular-fn-call ctx "spawn" items))))
         ((none)

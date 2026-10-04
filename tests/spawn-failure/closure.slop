@@ -1,0 +1,12 @@
+(module spawn-fail-closure
+  (@intent "spawn with a capturing closure, the inline lowering, when the thread cannot start")
+  (import thread (spawn join))
+
+  (fn main ()
+    (@intent "Must abort in spawn; printing past it means the failure was ignored")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((k 41)
+            (t (spawn arena (fn () (+ k 1)))))
+        (println "spawn returned")
+        (join t)))))
