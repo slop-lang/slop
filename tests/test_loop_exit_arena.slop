@@ -1,0 +1,415 @@
+(module test-loop-exit-arena
+  (@intent "A break or continue inside a with-arena frees the arenas opened inside its loop, and only those")
+
+  ;; A break or continue jumped past the block's slop_arena_free, so every
+  ;; iteration leaked its arena (#214). Each shape below opens a BIG arena
+  ;; ROUNDS times; the runtime counts every arena against a 256 MB cap and
+  ;; aborts past it, so a leaking shape takes the whole test down.
+  ;;
+  ;; The shapes cover each loop kind in each of the three places the
+  ;; transpiler emits loops: statement position, the body of a match arm,
+  ;; and expression position. nested-keeps-outer checks the other side: a
+  ;; break in an inner loop must not free an arena opened in the outer loop's
+  ;; body, whose data is read after it. The nested-unnamed shapes nest two
+  ;; blocks that both bind arena, so freeing by that name would free the
+  ;; inner one twice and leak the outer.
+  ;;
+  ;; A match on a union is a C switch, where a C break leaves only the
+  ;; switch; the switch-* shapes check a break there leaves the loop.
+
+  (const ROUNDS Int 64)
+  (const BIG Int 16777216)
+
+  (type Step (union (stop Int) (go Int)))
+
+  (fn touch ((a Arena))
+    (@intent "Allocate from a; returns 1")
+    (@spec ((Arena) -> Int))
+    (@alloc a)
+    (let ((xs (list-new a Int)))
+      (list-push xs 1)
+      (list-len xs)))
+
+  (fn step-at ((i Int))
+    (@intent "go for the first three steps, then stop")
+    (@spec ((Int) -> Step))
+    (if (< i 3) (Step go i) (Step stop i)))
+
+  ;; ------------------------------------------------------------
+  ;; Statement position
+  ;; ------------------------------------------------------------
+
+  (fn while-break ()
+    (@intent "break out of a while from inside a with-arena")
+    (@spec (() -> Int))
+    (let ((mut r 0)
+          (mut n 0))
+      (while (< r ROUNDS)
+        (while true
+          (with-arena :as scratch BIG
+            (set! n (+ n (touch scratch)))
+            (break)))
+        (set! r (+ r 1)))
+      n))
+
+  (fn while-continue ()
+    (@intent "continue a while from inside a with-arena")
+    (@spec (() -> Int))
+    (let ((mut r 0)
+          (mut n 0))
+      (while (< r ROUNDS)
+        (set! r (+ r 1))
+        (with-arena :as scratch BIG
+          (set! n (+ n (touch scratch)))
+          (continue))
+        (set! n (+ n 1000)))
+      n))
+
+  (fn for-break ()
+    (@intent "break out of a for from inside a with-arena")
+    (@spec (() -> Int))
+    (let ((mut n 0))
+      (for (r 0 ROUNDS)
+        (for (k 0 10)
+          (with-arena :as scratch BIG
+            (set! n (+ n (touch scratch)))
+            (break))))
+      n))
+
+  (fn for-continue ()
+    (@intent "continue a for from inside a with-arena")
+    (@spec (() -> Int))
+    (let ((mut n 0))
+      (for (r 0 ROUNDS)
+        (with-arena :as scratch BIG
+          (set! n (+ n (touch scratch)))
+          (continue))
+        (set! n (+ n 1000)))
+      n))
+
+  (fn each-list ((a Arena))
+    (@intent "break and continue a for-each over a list from inside a with-arena")
+    (@spec ((Arena) -> Int))
+    (@alloc a)
+    (let ((xs (list-new a Int))
+          (mut n 0))
+      (for (i 0 ROUNDS)
+        (list-push xs i))
+      (for-each (x xs)
+        (with-arena :as scratch BIG
+          (set! n (+ n (touch scratch)))
+          (continue))
+        (set! n (+ n 1000)))
+      (for (r 0 ROUNDS)
+        (for-each (x xs)
+          (with-arena :as scratch BIG
+            (set! n (+ n (touch scratch)))
+            (break))))
+      n))
+
+  (fn each-set ((a Arena))
+    (@intent "break and continue a for-each over a set from inside a with-arena")
+    (@spec ((Arena) -> Int))
+    (@alloc a)
+    (let ((s (set-new a Int))
+          (mut n 0))
+      (for (i 0 ROUNDS)
+        (set-put s i))
+      (for-each (x s)
+        (with-arena :as scratch BIG
+          (set! n (+ n (touch scratch)))
+          (continue))
+        (set! n (+ n 1000)))
+      (for (r 0 ROUNDS)
+        (for-each (x s)
+          (with-arena :as scratch BIG
+            (set! n (+ n (touch scratch)))
+            (break))))
+      n))
+
+  (fn each-map ((a Arena))
+    (@intent "break and continue for-each over a map's keys and entries from inside a with-arena")
+    (@spec ((Arena) -> Int))
+    (@alloc a)
+    (let ((m (map-new a Int Int))
+          (mut n 0))
+      (for (i 0 ROUNDS)
+        (map-put m i i))
+      (for-each (k m)
+        (with-arena :as scratch BIG
+          (set! n (+ n (touch scratch)))
+          (continue))
+        (set! n (+ n 1000)))
+      (for-each ((k v) m)
+        (with-arena :as scratch BIG
+          (set! n (+ n (touch scratch)))
+          (continue))
+        (set! n (+ n 1000)))
+      (for (r 0 ROUNDS)
+        (for-each (k m)
+          (with-arena :as scratch BIG
+            (set! n (+ n (touch scratch)))
+            (break)))
+        (for-each ((k v) m)
+          (with-arena :as scratch BIG
+            (set! n (+ n (touch scratch)))
+            (break))))
+      n))
+
+  (fn nested-keeps-outer ()
+    (@intent "A break in an inner loop leaves the arena opened in the outer loop's body alone")
+    (@spec (() -> Int))
+    (let ((mut total 0))
+      (for (r 0 ROUNDS)
+        (with-arena :as outer BIG
+          (let ((xs (list-new outer Int)))
+            (list-push xs 7)
+            (while true
+              (with-arena :as inner BIG
+                (touch inner)
+                (break)))
+            (for-each (x xs)
+              (set! total (+ total x))))))
+      total))
+
+  (fn return-from-loop ()
+    (@intent "A return from inside a loop still frees every open arena")
+    (@spec (() -> Int))
+    (with-arena :as outer BIG
+      (touch outer)
+      (for (i 0 10)
+        (with-arena :as inner BIG
+          (touch inner)
+          (when (== i 2)
+            (return i))))
+      -1))
+
+  (fn nested-unnamed-break ()
+    (@intent "break out of two nested unnamed with-arenas, which both bind arena")
+    (@spec (() -> Int))
+    (let ((mut r 0)
+          (mut n 0))
+      (while (< r ROUNDS)
+        (while true
+          (with-arena BIG
+            (touch arena)
+            (with-arena BIG
+              (set! n (+ n (touch arena)))
+              (break))))
+        (set! r (+ r 1)))
+      n))
+
+  (fn nested-unnamed-return ((k Int))
+    (@intent "return from inside two nested unnamed with-arenas frees both")
+    (@spec ((Int) -> Int))
+    (with-arena BIG
+      (touch arena)
+      (with-arena BIG
+        (touch arena)
+        (when (> k 0)
+          (return k))
+        0)))
+
+  ;; ------------------------------------------------------------
+  ;; Through a C switch
+  ;; ------------------------------------------------------------
+
+  (fn switch-break ()
+    (@intent "A break inside a union match arm leaves the loop, not just the switch")
+    (@spec (() -> Int))
+    (let ((mut total 0))
+      (for (r 0 ROUNDS)
+        (let ((mut i 0))
+          (while (< i 10)
+            (with-arena :as scratch BIG
+              (touch scratch)
+              (match (step-at i)
+                ((stop s) (break))
+                ((go g) (set! i (+ i 1))))))
+          (set! total (+ total i))))
+      total))
+
+  (fn switch-continue ()
+    (@intent "A continue inside a union match arm continues the loop, freeing the arena")
+    (@spec (() -> Int))
+    (let ((mut n 0)
+          (mut i 0))
+      (while (< i ROUNDS)
+        (set! i (+ i 1))
+        (with-arena :as scratch BIG
+          (touch scratch)
+          (match (step-at 0)
+            ((go g) (continue))
+            ((stop s) (do))))
+        (set! n (+ n 1000)))
+      (+ n i)))
+
+  (fn switch-break-expr ()
+    (@intent "A break inside a union match in expression position leaves the loop")
+    (@spec (() -> Int))
+    (let ((mut total 0))
+      (for (r 0 ROUNDS)
+        (let ((mut i 0))
+          (while (< i 10)
+            (with-arena :as scratch BIG
+              (touch scratch)
+              (let ((step (match (step-at i)
+                            ((stop s) (do (break) 1))
+                            ((go g) 1))))
+                (set! i (+ i step)))))
+          (set! total (+ total i))))
+      total))
+
+  ;; ------------------------------------------------------------
+  ;; Loops in a match arm
+  ;; ------------------------------------------------------------
+
+  (fn arm-loops ((a Arena) (o (Option Int)))
+    (@intent "Loops that are the body of a match arm")
+    (@spec ((Arena (Option Int)) -> Int))
+    (@alloc a)
+    (let ((xs (list-new a Int))
+          (s (set-new a Int))
+          (m (map-new a Int Int))
+          (mut n 0)
+          (mut r 0))
+      (for (i 0 ROUNDS)
+        (list-push xs i)
+        (set-put s i)
+        (map-put m i i))
+      (match o
+        ((some k)
+          (while (< r k)
+            (set! r (+ r 1))
+            (with-arena :as scratch BIG
+              (set! n (+ n (touch scratch)))
+              (continue))))
+        ((none) (do)))
+      (match o
+        ((some k)
+          (for (i 0 k)
+            (with-arena :as scratch BIG
+              (set! n (+ n (touch scratch)))
+              (continue))))
+        ((none) (do)))
+      (match o
+        ((some k)
+          (for-each (x xs)
+            (with-arena :as scratch BIG
+              (set! n (+ n (touch scratch)))
+              (continue))))
+        ((none) (do)))
+      (match o
+        ((some k)
+          (for-each (x s)
+            (with-arena :as scratch BIG
+              (set! n (+ n (touch scratch)))
+              (continue))))
+        ((none) (do)))
+      (match o
+        ((some k)
+          (for-each (x m)
+            (with-arena :as scratch BIG
+              (set! n (+ n (touch scratch)))
+              (continue))))
+        ((none) (do)))
+      (match o
+        ((some k)
+          (for-each ((x y) m)
+            (with-arena :as scratch BIG
+              (set! n (+ n (touch scratch)))
+              (continue))))
+        ((none) (do)))
+      n))
+
+  ;; ------------------------------------------------------------
+  ;; Expression position
+  ;; ------------------------------------------------------------
+
+  (fn expr-loops ((a Arena))
+    (@intent "Loops in expression position, inside a do that is a let's value")
+    (@spec ((Arena) -> Int))
+    (@alloc a)
+    (let ((xs (list-new a Int))
+          (s (set-new a Int))
+          (m (map-new a Int Int))
+          (mut n 0)
+          (mut r 0))
+      (for (i 0 ROUNDS)
+        (list-push xs i)
+        (set-put s i)
+        (map-put m i i))
+      (let ((v (do
+                 (while (< r ROUNDS)
+                   (set! r (+ r 1))
+                   (with-arena :as scratch BIG
+                     (set! n (+ n (touch scratch)))
+                     (when (> r 0) (continue))
+                     0))
+                 (for (i 0 ROUNDS)
+                   (with-arena :as scratch BIG
+                     (set! n (+ n (touch scratch)))
+                     (when (>= i 0) (break))
+                     0))
+                 (for-each (x xs)
+                   (with-arena :as scratch BIG
+                     (set! n (+ n (touch scratch)))
+                     (when (>= x 0) (continue))
+                     0))
+                 (for-each (x s)
+                   (with-arena :as scratch BIG
+                     (set! n (+ n (touch scratch)))
+                     (when (>= x 0) (continue))
+                     0))
+                 (for-each (k m)
+                   (with-arena :as scratch BIG
+                     (set! n (+ n (touch scratch)))
+                     (when (>= k 0) (continue))
+                     0))
+                 (for-each ((k w) m)
+                   (with-arena :as scratch BIG
+                     (set! n (+ n (touch scratch)))
+                     (when (>= k 0) (continue))
+                     0))
+                 n)))
+        v)))
+
+  ;; ------------------------------------------------------------
+
+  (fn check ((name String) (got Int) (want Int))
+    (@intent "Print and count a mismatch")
+    (@spec ((String Int Int) -> Int))
+    (if (== got want)
+      0
+      (do
+        (println name)
+        1)))
+
+  (fn main ()
+    (@intent "Run every shape; the arena cap aborts a leaking one")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((mut failures 0)
+            (mut returned 0))
+        (set! failures (+ failures (check "while-break" (while-break) ROUNDS)))
+        (set! failures (+ failures (check "while-continue" (while-continue) ROUNDS)))
+        (set! failures (+ failures (check "for-break" (for-break) ROUNDS)))
+        (set! failures (+ failures (check "for-continue" (for-continue) ROUNDS)))
+        (set! failures (+ failures (check "each-list" (each-list arena) (* 2 ROUNDS))))
+        (set! failures (+ failures (check "each-set" (each-set arena) (* 2 ROUNDS))))
+        (set! failures (+ failures (check "each-map" (each-map arena) (* 4 ROUNDS))))
+        (set! failures (+ failures (check "nested-keeps-outer" (nested-keeps-outer) (* 7 ROUNDS))))
+        (for (i 0 ROUNDS)
+          (set! returned (+ returned (return-from-loop))))
+        (set! failures (+ failures (check "return-from-loop" returned (* 2 ROUNDS))))
+        (set! failures (+ failures (check "nested-unnamed-break" (nested-unnamed-break) ROUNDS)))
+        (set! returned 0)
+        (for (i 0 ROUNDS)
+          (set! returned (+ returned (nested-unnamed-return 1))))
+        (set! failures (+ failures (check "nested-unnamed-return" returned ROUNDS)))
+        (set! failures (+ failures (check "switch-break" (switch-break) (* 3 ROUNDS))))
+        (set! failures (+ failures (check "switch-break-expr" (switch-break-expr) (* 3 ROUNDS))))
+        (set! failures (+ failures (check "switch-continue" (switch-continue) ROUNDS)))
+        (set! failures (+ failures (check "arm-loops" (arm-loops arena (some ROUNDS)) (* 6 ROUNDS))))
+        (set! failures (+ failures (check "expr-loops" (expr-loops arena) (+ 1 (* 5 ROUNDS)))))
+        failures))))

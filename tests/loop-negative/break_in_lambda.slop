@@ -1,0 +1,15 @@
+(module break-in-lambda
+  (@intent "A break inside a lambda cannot leave a loop around the lambda (#214)")
+
+  (fn apply ((f (Fn (Int) Int)) (x Int))
+    (@intent "Call f on x")
+    (@spec (((Fn (Int) Int) Int) -> Int))
+    (f x))
+
+  (fn main ()
+    (@intent "The lambda is a C function of its own, outside the loop")
+    (@spec (() -> Int))
+    (let ((mut n 0))
+      (while (< n 3)
+        (set! n (+ n (apply (fn ((x Int)) (do (break) x)) 1))))
+      n)))

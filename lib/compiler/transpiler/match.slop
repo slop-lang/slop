@@ -15,7 +15,7 @@
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber))
   (import parser (sexpr-get-symbol-name sexpr-is-number sexpr-number-string))
-  (import context (TranspileContext ctx-push-open-arena ctx-pop-open-arena ctx-emit-return ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
+  (import context (TranspileContext ctx-unique-arena-local ctx-push-open-arena ctx-pop-open-arena ctx-emit-return ctx-enter-loop ctx-exit-loop ctx-emit-loop-end ctx-enter-switch ctx-exit-switch ctx-emit ctx-indent ctx-dedent ctx-push-scope ctx-pop-scope
                    ctx-bind-var ctx-lookup-var ctx-lookup-type ctx-str ctx-str3 ctx-str4 ctx-str5 ctx-strip-cond-parens VarEntry
                    ctx-resolve-enum-variant-for ctx-enum-variant-known ctx-get-current-return-type ctx-is-option-c-type ctx-gensym
                    ctx-range-wrap ctx-get-current-return-slop-type
@@ -483,6 +483,8 @@
       ;; Emit switch
       (ctx-emit ctx (ctx-str3 ctx "switch (" scrutinee-c ") {"))
       (ctx-indent ctx)
+      ;; A break in an arm must leave the loop, not the switch
+      (ctx-enter-switch ctx)
       (while (< i len)
         (match (list-get items i)
           ((some branch)
@@ -500,6 +502,7 @@
               (else (do))))
           ((none) (do)))
         (set! i (+ i 1)))
+      (ctx-exit-switch ctx)
       (ctx-dedent ctx)
       (ctx-emit ctx "}")
       (emit-match-fallthrough-trap ctx is-return has-else)))
@@ -619,6 +622,8 @@
         ;; Emit switch on the tag
         (ctx-emit ctx (ctx-str3 ctx "switch (" scrutinee-c ".tag) {"))
         (ctx-indent ctx)
+        ;; A break in an arm must leave the loop, not the switch
+        (ctx-enter-switch ctx)
         (while (< i len)
           (match (list-get items i)
             ((some branch)
@@ -651,6 +656,7 @@
                 (else (do))))
             ((none) (do)))
           (set! i (+ i 1)))
+        (ctx-exit-switch ctx)
         (ctx-dedent ctx)
         (ctx-emit ctx "}")
         (emit-match-fallthrough-trap ctx is-return has-else))))
@@ -1200,9 +1206,10 @@
             ((none) (ctx-emit ctx "while (/* missing */) {")))
           (ctx-indent ctx)
           ;; Body
-          (emit-inline-body-items ctx items 2)
-          (ctx-dedent ctx)
-          (ctx-emit ctx "}")))))
+          (let ((after-loop (emit-inline-loop-body ctx items 2)))
+            (ctx-dedent ctx)
+            (ctx-emit ctx "}")
+            (ctx-emit-loop-end ctx after-loop))))))
 
   (fn get-var-c-type-inline ((ctx (Ptr TranspileContext)) (expr (Ptr SExpr)))
     (@intent "Get the C type of a variable expression")
@@ -1548,9 +1555,11 @@
               (body-start (if is-named 4 2))
               ;; C local var: _arena for unnamed (backward compat), _arena_<name> for named
               (c-arena-name (to-c-name ctx-arena arena-name))
-              (c-local (if is-named
-                         (string-concat ctx-arena "_arena_" c-arena-name)
-                         "_arena")))
+              ;; Unique per block, as in transpile-with-arena
+              (c-local (ctx-unique-arena-local ctx
+                         (if is-named
+                           (string-concat ctx-arena "_arena_" c-arena-name)
+                           "_arena"))))
           ;; Validate minimum length for named form
           (if (and is-named (< len 4))
             (ctx-add-error-at ctx "with-arena :as requires name and size" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -1570,7 +1579,7 @@
               ;; Bind arena variable in scope
               (ctx-bind-var ctx (VarEntry arena-name c-arena-name "slop_arena*" "" true false false "" "" 'origin-bound))
               ;; Open until the block closes: a return inside it frees it first
-              (ctx-push-open-arena ctx c-arena-name)
+              (ctx-push-open-arena ctx (ctx-str ctx "&" c-local))
               ;; Process body statements
               (let ((mut i body-start))
                 (while (< i len)
@@ -1603,6 +1612,16 @@
           ((some body-expr) (emit-branch-body-item ctx body-expr false false))
           ((none) (do)))
         (set! i (+ i 1)))))
+
+  (fn emit-inline-loop-body ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (start Int))
+    (@intent "Emit a loop body's items from start on, registered as a loop; returns what goes after the loop")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> String))
+    (@pre {ctx != nil})
+    ;; As transpile-loop-body in stmt: a break or continue in the body frees
+    ;; only the arenas opened inside it (ctx-enter-loop).
+    (ctx-enter-loop ctx)
+    (emit-inline-body-items ctx items start)
+    (ctx-exit-loop ctx))
 
   ;; ============================================================
   ;; For Loop (inline, for match branch bodies)
@@ -1644,10 +1663,11 @@
                                         (ctx-push-scope ctx)
                                         (ctx-bind-var ctx (VarEntry (. var-sym name) var-name "int64_t" "Int" false false false "" "" 'origin-bound))
                                         ;; Process body
-                                        (emit-inline-body-items ctx items 2)
-                                        (ctx-pop-scope ctx)
-                                        (ctx-dedent ctx)
-                                        (ctx-emit ctx "}")))
+                                        (let ((after-loop (emit-inline-loop-body ctx items 2)))
+                                          (ctx-pop-scope ctx)
+                                          (ctx-dedent ctx)
+                                          (ctx-emit ctx "}")
+                                          (ctx-emit-loop-end ctx after-loop))))
                                     ((none) (ctx-add-error-at ctx "missing end" (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr)))))
                                 ((none) (ctx-add-error-at ctx "missing start" (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr))))))
                           (else (ctx-add-error-at ctx "for var must be symbol" (ctx-sexpr-line var-expr) (ctx-sexpr-col var-expr)))))
@@ -1685,14 +1705,15 @@
         (ctx-emit ctx assign-part))
       (ctx-push-scope ctx)
       (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type false false false "" "" 'origin-bound))
-      (emit-inline-body-items ctx items 2)
-      (ctx-pop-scope ctx)
-      (ctx-dedent ctx)
-      (ctx-emit ctx "}")
-      (ctx-dedent ctx)
-      (ctx-emit ctx "}")
-      (ctx-dedent ctx)
-      (ctx-emit ctx "}")))
+      (let ((after-loop (emit-inline-loop-body ctx items 2)))
+        (ctx-pop-scope ctx)
+        (ctx-dedent ctx)
+        (ctx-emit ctx "}")
+        (ctx-dedent ctx)
+        (ctx-emit ctx "}")
+        (ctx-dedent ctx)
+        (ctx-emit ctx "}")
+        (ctx-emit-loop-end ctx after-loop))))
 
   ;; ============================================================
   ;; For-Each Map Keys Iteration (inline, for match branch bodies)
@@ -1724,14 +1745,15 @@
         (ctx-emit ctx assign-part))
       (ctx-push-scope ctx)
       (ctx-bind-var ctx (VarEntry (. var-sym name) var-name key-c-type key-slop-type false false false "" "" 'origin-bound))
-      (emit-inline-body-items ctx items 2)
-      (ctx-pop-scope ctx)
-      (ctx-dedent ctx)
-      (ctx-emit ctx "}")
-      (ctx-dedent ctx)
-      (ctx-emit ctx "}")
-      (ctx-dedent ctx)
-      (ctx-emit ctx "}")))
+      (let ((after-loop (emit-inline-loop-body ctx items 2)))
+        (ctx-pop-scope ctx)
+        (ctx-dedent ctx)
+        (ctx-emit ctx "}")
+        (ctx-dedent ctx)
+        (ctx-emit ctx "}")
+        (ctx-dedent ctx)
+        (ctx-emit ctx "}")
+        (ctx-emit-loop-end ctx after-loop))))
 
   ;; ============================================================
   ;; For-Each Map Key-Value Iteration (inline, for match branch bodies)
@@ -1789,14 +1811,15 @@
                                         (ctx-push-scope ctx)
                                         (ctx-bind-var ctx (VarEntry (. k-sym name) k-name key-c-type key-slop-type false false false "" "" 'origin-bound))
                                         (ctx-bind-var ctx (VarEntry (. v-sym name) v-name val-c-type val-slop-type false false false "" "" 'origin-bound))
-                                        (emit-inline-body-items ctx items 2)
-                                        (ctx-pop-scope ctx)
-                                        (ctx-dedent ctx)
-                                        (ctx-emit ctx "}")
-                                        (ctx-dedent ctx)
-                                        (ctx-emit ctx "}")
-                                        (ctx-dedent ctx)
-                                        (ctx-emit ctx "}")))
+                                        (let ((after-loop (emit-inline-loop-body ctx items 2)))
+                                          (ctx-pop-scope ctx)
+                                          (ctx-dedent ctx)
+                                          (ctx-emit ctx "}")
+                                          (ctx-dedent ctx)
+                                          (ctx-emit ctx "}")
+                                          (ctx-dedent ctx)
+                                          (ctx-emit ctx "}")
+                                          (ctx-emit-loop-end ctx after-loop))))
                                     (_ (ctx-add-error ctx "Map for-each value must be symbol"))))
                                 (_ (ctx-add-error ctx "Map for-each key must be symbol"))))
                             ((none) (ctx-add-error ctx "Missing map expression"))))
@@ -1862,12 +1885,13 @@
                                                 (is-ptr-elem (starts-with elem-slop-type "(Ptr "))
                                                 (elem-c-type (if is-ptr-elem (slop-value-type-to-c-type ctx elem-slop-type) "auto")))
                                             (ctx-bind-var ctx (VarEntry (. var-sym name) var-name elem-c-type elem-slop-type is-ptr-elem false false "" "" 'origin-bound)))
-                                          (emit-inline-body-items ctx items 2)
-                                          (ctx-pop-scope ctx)
-                                          (ctx-dedent ctx)
-                                          (ctx-emit ctx "}")
-                                          (ctx-dedent ctx)
-                                          (ctx-emit ctx "}"))))))
+                                          (let ((after-loop (emit-inline-loop-body ctx items 2)))
+                                            (ctx-pop-scope ctx)
+                                            (ctx-dedent ctx)
+                                            (ctx-emit ctx "}")
+                                            (ctx-dedent ctx)
+                                            (ctx-emit ctx "}")
+                                            (ctx-emit-loop-end ctx after-loop)))))))
                                 ((none) (ctx-add-error-at ctx "missing collection" (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr))))))
                           (_ (ctx-add-error-at ctx "for-each var must be symbol or list" (ctx-sexpr-line first-elem) (ctx-sexpr-col first-elem)))))
                       ((none) (ctx-add-error-at ctx "missing var" (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr)))))))
