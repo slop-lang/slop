@@ -1,0 +1,53 @@
+;; ============================================================
+;; Record keys whose fields are typed by a plain alias (#274)
+;;
+;; (type Id U32) made a record field typed Id hash and compare
+;; through slop_hash_<mod>_Id / slop_eq_<mod>_Id, which nothing
+;; defines, so cc failed. An alias hashes as what it names.
+;; ============================================================
+
+(module test-alias-key-hash
+  (export (main 0))
+
+  (type Id U32)
+  (type Count Int)
+  (type Label String)
+  (type Tag (enum red green))
+  (type Hue Tag)
+
+  (type K (record (a Id) (b Id)))
+  (type Mixed (record (n Count) (name Label) (hue Hue)))
+
+  (fn set-of-alias-fields ((arena Arena))
+    (@intent "A Set keyed by a record of U32-alias fields finds equal keys and not others")
+    (@spec ((Arena) -> Bool))
+    (@alloc arena)
+    (let ((s (set-new arena K)))
+      (set-put s (record-new K (a (cast Id 1)) (b (cast Id 2))))
+      (set-put s (record-new K (a (cast Id 1)) (b (cast Id 2))))
+      (and (set-has s (record-new K (a (cast Id 1)) (b (cast Id 2))))
+           (not (set-has s (record-new K (a (cast Id 2)) (b (cast Id 1)))))
+           (== (cast Int (set-len s)) 1))))
+
+  (fn map-of-mixed-aliases ((arena Arena))
+    (@intent "A Map keyed by a record of Int, String and enum aliases")
+    (@spec ((Arena) -> Bool))
+    (@alloc arena)
+    (let ((m (map-new arena Mixed Int)))
+      (map-put m (record-new Mixed (n 3) (name "x") (hue 'red)) 10)
+      (map-put m (record-new Mixed (n 3) (name "x") (hue 'green)) 20)
+      (and (match (map-get m (record-new Mixed (n 3) (name "x") (hue 'red)))
+             ((some v) (== v 10))
+             ((none) false))
+           (match (map-get m (record-new Mixed (n 3) (name "y") (hue 'red)))
+             ((some _) false)
+             ((none) true)))))
+
+  (fn main ()
+    (@intent "Both keyed collections behave")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((mut failed 0))
+        (when (not (set-of-alias-fields arena)) (set! failed (+ failed 1)))
+        (when (not (map-of-mixed-aliases arena)) (set! failed (+ failed 1)))
+        failed))))

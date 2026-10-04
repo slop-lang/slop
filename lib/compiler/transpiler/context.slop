@@ -99,6 +99,7 @@
     ctx-visible-arena-vars
     ;; Type alias tracking for resolving Map/Set types
     TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias ctx-is-option-c-type
+    ctx-register-plain-type-alias ctx-lookup-plain-type-alias ctx-resolve-plain-type-alias
     ;; Generic function support
     GenericFuncInstantiation ctx-register-generic-instantiation ctx-has-generic-instantiation
     ctx-get-generic-instantiations mangle-generic-fn-name
@@ -352,6 +353,9 @@
       (value-key-types (List ValueKeyType))
       ;; Type alias definitions for resolving Map/Set type aliases
       (type-aliases (List TypeAliasEntry))
+      ;; Aliases whose body is a bare type name, e.g. (type Id U32); only key
+      ;; hashing reads these (#274)
+      (plain-type-aliases (List TypeAliasEntry))
       ;; Current file being transpiled (for error messages)
       (current-file String)
       ;; Collected transpiler errors
@@ -445,6 +449,7 @@
       (set! (deref ctx) struct-key-types (list-new arena String))
       (set! (deref ctx) value-key-types (list-new arena ValueKeyType))
       (set! (deref ctx) type-aliases (list-new arena TypeAliasEntry))
+      (set! (deref ctx) plain-type-aliases (list-new arena TypeAliasEntry))
       (set! (deref ctx) current-file "")
       (set! (deref ctx) errors (list-new arena TranspileError))
       (set! (deref ctx) warnings (list-new arena TranspileError))
@@ -3133,12 +3138,50 @@
             none)
           none))))
 
+  (fn ctx-register-plain-type-alias ((ctx (Ptr TranspileContext)) (name String) (slop-type String))
+    (@intent "Register an alias whose body is a bare type name, keyed by the alias's C name")
+    (@spec (((Ptr TranspileContext) String String) -> Unit))
+    (@pre {ctx != nil})
+    ;; Kept apart from type-aliases: resolve-type-alias and the Option checks
+    ;; read that list, and what they make of (type Id U32) is not in question.
+    ;; A record field typed Id has to hash as a U32, though; it named a
+    ;; slop_hash_<mod>_Id nothing defines (#274).
+    (list-push (. (deref ctx) plain-type-aliases) (TypeAliasEntry (alias-key-for-definition ctx name) slop-type)))
+
+  (fn ctx-lookup-plain-type-alias ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Look up an alias whose body is a bare type name, by SLOP name or C name")
+    (@spec (((Ptr TranspileContext) String) -> (Option String)))
+    (@pre {ctx != nil})
+    (let ((aliases (. (deref ctx) plain-type-aliases)))
+      (match (ctx-resolve-type ctx name)
+        ((type-found entry) (find-alias-in aliases (. entry c-name)))
+        ((type-missing) (find-alias-in aliases name))
+        ((type-ambiguous _) none))))
+
+  (fn ctx-resolve-plain-type-alias ((ctx (Ptr TranspileContext)) (name String))
+    (@intent "Follow plain aliases, (type Label String), to the type they name; a bounded walk")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    (let ((mut current name)
+          (mut depth 0)
+          (mut done false))
+      (while (and (not done) (< depth 16))
+        (match (ctx-lookup-plain-type-alias ctx current)
+          ((some underlying) (set! current underlying))
+          ((none) (set! done true)))
+        (set! depth (+ depth 1)))
+      current))
+
   (fn find-type-alias ((ctx (Ptr TranspileContext)) (key String))
     (@intent "The SLOP definition registered for an alias C name")
     (@spec (((Ptr TranspileContext) String) -> (Option String)))
     (@pre {ctx != nil})
-    (let ((aliases (. (deref ctx) type-aliases))
-          (len (list-len aliases))
+    (find-alias-in (. (deref ctx) type-aliases) key))
+
+  (fn find-alias-in ((aliases (List TypeAliasEntry)) (key String))
+    (@intent "The SLOP definition an alias list holds for a C name")
+    (@spec (((List TypeAliasEntry) String) -> (Option String)))
+    (let ((len (list-len aliases))
           (mut i 0)
           (mut result (Option String) none))
       (while (and (< i len) (match result ((none) true) ((some _) false)))

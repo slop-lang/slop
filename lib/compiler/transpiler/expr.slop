@@ -49,7 +49,7 @@
                    ctx-get-current-return-slop-type ctx-set-current-return-slop-type
                    ctx-get-fields-for-type ctx-get-union-variants FieldEntry
                    ctx-register-list-type
-                   ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-is-option-c-type ctx-register-chan-type
+                   ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-resolve-plain-type-alias ctx-is-option-c-type ctx-register-chan-type
                    ctx-visible-arena-vars
                    ctx-add-error ctx-add-error-at ctx-strict-unknown-symbols
                    ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
@@ -3964,8 +3964,9 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> (Option String)))
     (@pre {ctx != nil})
     (@pre {expr != nil})
-    ;; Use infer-expr-slop-type first, then map SLOP type to C type hint
-    (let ((slop-type (infer-expr-slop-type ctx expr)))
+    ;; Use infer-expr-slop-type first, then map SLOP type to C type hint. A
+    ;; plain alias, (type Label String), prints as the type it names.
+    (let ((slop-type (ctx-resolve-plain-type-alias ctx (infer-expr-slop-type ctx expr))))
       (cond
         ((string-eq slop-type "String") (some "slop_string"))
         ((string-eq slop-type "Bool") (some "uint8_t"))

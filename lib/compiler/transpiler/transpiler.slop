@@ -29,7 +29,7 @@
                    ctx-register-chan-type ctx-has-chan-type ctx-get-chan-types ChanType
                    ctx-register-thread-type ctx-has-thread-type ctx-get-thread-types ThreadType
                    ctx-register-result-type-alias ctx-lookup-result-type-alias ResultTypeAlias
-                   ctx-register-type-alias ctx-lookup-type-alias
+                   ctx-register-type-alias ctx-lookup-type-alias ctx-register-plain-type-alias ctx-lookup-plain-type-alias
                    ctx-get-inline-records InlineRecord
                    ctx-add-c-name-alias ctx-get-c-name-aliases FuncCNameAlias extract-fn-c-name
                    ctx-add-import ctx-get-imports ctx-add-error
@@ -222,6 +222,10 @@
                                 ;; passed to a parameter typed by an Option alias
                                 ;; needs it, or it stays _slop_option_generic.
                                 (ctx-register-type-alias ctx type-name slop-type-str))
+                              ;; (type Id U32): what a key field typed Id hashes as
+                              (match (deref body-expr)
+                                ((sym _) (ctx-register-plain-type-alias ctx type-name slop-type-str))
+                                (else (do)))
                               ;; Register whatever containers the alias body names.
                               ;; This used to run only for (Map ...) and (Set ...),
                               ;; so (type PointList (List Point)) declared the alias
@@ -3315,7 +3319,11 @@
           (set! done true)
           (match (ctx-lookup-type-alias ctx current)
             ((some underlying) (set! current underlying))
-            ((none) (set! done true))))
+            ;; A plain alias, (type Id U32), hashes as what it names (#274)
+            ((none)
+              (match (ctx-lookup-plain-type-alias ctx current)
+                ((some underlying) (set! current underlying))
+                ((none) (set! done true))))))
         (set! depth (+ depth 1)))
       current))
 
