@@ -189,7 +189,9 @@ slop_string expr_transpile_do_expr(context_TranspileContext* ctx, slop_list_type
 slop_string expr_transpile_when_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 uint8_t expr_set_is_self_assign(slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_set_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
-slop_string expr_resolve_arena_c_name(context_TranspileContext* ctx, slop_string op, slop_list_types_SExpr_ptr items);
+int64_t expr_trailing_arena_option_at(slop_list_types_SExpr_ptr items);
+slop_option_string expr_implicit_arena_c(context_TranspileContext* ctx, slop_string op, slop_string how, slop_list_types_SExpr_ptr items);
+slop_string expr_resolve_arena_c_name(context_TranspileContext* ctx, slop_string op, slop_list_types_SExpr_ptr items, int64_t base_len);
 uint8_t expr_local_callable_shadows(context_TranspileContext* ctx, slop_string name);
 slop_string expr_arena_override_c(context_TranspileContext* ctx, slop_string op, slop_list_types_SExpr_ptr items, int64_t base_len);
 uint8_t expr_is_ptr_to_ptr_map(context_TranspileContext* ctx, types_SExpr* expr);
@@ -250,7 +252,7 @@ void expr_bind_closure_captures(context_TranspileContext* ctx, slop_list_string 
 slop_list_string expr_capture_free_var_accesses(context_TranspileContext* ctx, slop_list_string free_vars);
 slop_string expr_build_closure_function(context_TranspileContext* ctx, slop_string name, slop_string env_type, slop_string ret_type, slop_string params, slop_string body, slop_list_string free_vars);
 slop_string expr_trim_parens(slop_arena* arena, slop_string s);
-slop_string expr_find_arena_ptr_expr(context_TranspileContext* ctx);
+slop_string expr_find_arena_ptr_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_build_closure_instance(context_TranspileContext* ctx, slop_string lambda_name, slop_string env_name, slop_string env_type, slop_list_string free_vars, slop_list_string captured_accesses, slop_string env_arena);
 slop_string expr_build_env_initializer(context_TranspileContext* ctx, slop_list_string free_vars, slop_list_string captured_accesses);
 slop_string expr_build_lambda_params(context_TranspileContext* ctx, slop_list_types_SExpr_ptr params);
@@ -302,11 +304,6 @@ SLOP_OPTION_DEFINE(types_SExpr*, slop_option_types_SExpr_ptr)
 #ifndef SLOP_OPTION_EXPR_CMUTPATH_DEFINED
 #define SLOP_OPTION_EXPR_CMUTPATH_DEFINED
 SLOP_OPTION_DEFINE(expr_CMutPath, slop_option_expr_CMutPath)
-#endif
-
-#ifndef SLOP_OPTION_CONTEXT_VARENTRY_DEFINED
-#define SLOP_OPTION_CONTEXT_VARENTRY_DEFINED
-SLOP_OPTION_DEFINE(context_VarEntry, slop_option_context_VarEntry)
 #endif
 
 

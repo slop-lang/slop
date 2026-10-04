@@ -49,7 +49,7 @@
                    ctx-get-fields-for-type ctx-get-union-variants FieldEntry
                    ctx-register-list-type
                    ctx-register-struct-key-type ctx-has-struct-key-type ctx-lookup-type-alias ctx-is-option-c-type ctx-register-chan-type
-                   ctx-find-arena-var
+                   ctx-visible-arena-vars
                    ctx-add-error ctx-add-error-at ctx-strict-unknown-symbols
                    ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    ctx-gensym ctx-add-deferred-lambda ctx-emit ctx-indent ctx-dedent ctx-get-output
@@ -5762,22 +5762,72 @@
   ;; Arena Detection for collection builtins
   ;; ============================================================
 
-  (fn resolve-arena-c-name ((ctx (Ptr TranspileContext)) (op String) (items (List (Ptr SExpr))))
-    (@intent "Resolve the arena's C identifier, or record a transpiler error")
-    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
+  (fn trailing-arena-option-at ((items (List (Ptr SExpr))))
+    (@intent "Where a form's trailing :arena option starts, or the form's length when it has none")
+    (@spec (((List (Ptr SExpr))) -> Int))
+    (let ((len (list-len items)))
+      (if (< len 2)
+        len
+        (match (list-get items (- len 2))
+          ((some e)
+            (match (deref e)
+              ((sym s) (if (string-eq (. s name) ":arena") (- len 2) len))
+              (else len)))
+          ((none) len)))))
+
+  (fn implicit-arena-c ((ctx (Ptr TranspileContext)) (op String) (how String) (items (List (Ptr SExpr))))
+    (@intent "The C name of the arena an allocation with no arena named goes in; none if there is no arena in scope")
+    (@spec (((Ptr TranspileContext) String String (List (Ptr SExpr))) -> (Option String)))
     (@pre {ctx != nil})
-    ;; Tier 1: a variable literally named "arena" - the unnamed with-arena form
-    ;; and the conventional (arena Arena) parameter both bind one.
-    ;; Tier 2: any slop_arena*-typed variable in scope, innermost first - this
-    ;; is what resolves (with-arena :as myname ...) and arena params under
-    ;; another name.
-    ;; Tier 3: no arena at all. Emitting the bare identifier here would defer
-    ;; the failure to the C compiler, so report it against the source instead.
+    ;; A variable named arena - the unnamed with-arena form and the
+    ;; conventional (arena Arena) parameter both bind one - else the one
+    ;; Arena variable in scope (with-arena :as, an arena parameter under
+    ;; another name). With two or more and none named arena, picking one is
+    ;; a guess: the innermost used to win, so a let-bound scratch arena took
+    ;; a literal the function returned, and it was freed under the caller
+    ;; (#277). That is an error instead; how says how to name one.
     (match (ctx-lookup-var ctx "arena")
-      ((some entry) (. entry c-name))
+      ((some entry) (some (. entry c-name)))
       ((none)
-        (match (ctx-find-arena-var ctx)
-          ((some entry) (. entry c-name))
+        (let ((vars (ctx-visible-arena-vars ctx))
+              (n (list-len vars)))
+          (cond
+            ((== n 0) none)
+            ((== n 1)
+              (match (list-get vars 0)
+                ((some entry) (some (. entry c-name)))
+                ((none) none)))
+            (else
+              (let ((mut names "")
+                    (mut i 0))
+                (while (< i n)
+                  (match (list-get vars i)
+                    ((some entry)
+                      (set! names (ctx-str3 ctx names (if (== i 0) "" ", ") (. entry name))))
+                    ((none) (do)))
+                  (set! i (+ i 1)))
+                (ctx-add-error-at ctx
+                  (ctx-str5 ctx op ": " (int-to-string (. (deref ctx) arena) n)
+                            (ctx-str3 ctx " arenas in scope (" names ") and none is named arena")
+                            (ctx-str ctx "; say which: " how))
+                  (ctx-list-first-line items) (ctx-list-first-col items))
+                (match (list-get vars 0)
+                  ((some entry) (some (. entry c-name)))
+                  ((none) none)))))))))
+
+  (fn resolve-arena-c-name ((ctx (Ptr TranspileContext)) (op String) (items (List (Ptr SExpr))) (base-len Int))
+    (@intent "The C name of the arena a collection form allocates in, or record a transpiler error")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr)) Int) -> String))
+    (@pre {ctx != nil})
+    ;; A trailing :arena a names it (base-len is the form's length without
+    ;; the option); else implicit-arena-c. With no arena at all, emitting the
+    ;; bare identifier would defer the failure to the C compiler, so report
+    ;; it against the source instead.
+    (let ((override (arena-override-c ctx op items base-len)))
+      (if (not (string-eq override ""))
+        override
+        (match (implicit-arena-c ctx op (ctx-str3 ctx "(" op " ... :arena <name>)") items)
+          ((some c-name) c-name)
           ((none)
             (do
               (ctx-add-error-at ctx (ctx-str ctx op ": no arena in scope")
@@ -6112,7 +6162,9 @@
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
-          (len (list-len items)))
+          ;; The elements end where a trailing :arena option starts
+          (len (trailing-arena-option-at items))
+          (has-override (< len (list-len items))))
       (if (< len 2)
         (do
           (ctx-add-error-at ctx "list: missing type" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -6138,18 +6190,16 @@
                       (list-push elem-codes (transpile-expr ctx elem-expr)))
                     ((none) (do)))
                   (set! i (+ i 1)))
-                ;; Check if arena variable is in scope
-                ;; Try "arena" first (most common), then search scope for any arena-typed variable
-                (let ((arena-var (match (ctx-lookup-var ctx "arena")
-                                   ((some v) (some v))
-                                   ((none) (ctx-find-arena-var ctx)))))
+                ;; The arena :arena names, else the one in scope (implicit-arena-c)
+                (let ((arena-var (if has-override
+                                   (some (arena-override-c ctx "list" items len))
+                                   (implicit-arena-c ctx "list" "(list T ... :arena <name>)" items))))
                 (match arena-var
-                  ((some arena-var)
+                  ((some arena-c)
                     ;; Arena available: generate statement expression with arena-allocated data
                     ;; ({ slop_list_TYPE _ll = (slop_list_TYPE){ .data = (TYPE*)slop_arena_alloc(arena, N * sizeof(TYPE)), .len = N, .cap = N, .arena = arena };
                     ;;    _ll.data[0] = e1; _ll.data[1] = e2; ... _ll; })
-                    (let ((arena-c (. arena-var c-name))
-                          (list-type (ctx-str ctx "slop_list_" type-id))
+                    (let ((list-type (ctx-str ctx "slop_list_" type-id))
                           (mut result (ctx-str ctx "({ " (ctx-str ctx list-type (ctx-str ctx " _ll = (" (ctx-str ctx list-type "){ .data = ("))))))
                       (set! result (ctx-str ctx result (ctx-str ctx elem-type (ctx-str ctx "*)slop_arena_alloc(" (ctx-str ctx arena-c (ctx-str ctx ", " (ctx-str ctx count-str (ctx-str ctx " * sizeof(" (ctx-str ctx elem-type "))")))))))))
                       ;; The list records the arena it was built in, where a push grows it
@@ -6797,7 +6847,7 @@
                   (key-c-type (infer-map-key-c-type ctx map-expr))
                   ;; NB: the `arena` binding above is the compiler's own allocator.
                   ;; This is the arena in the *transpiled program's* scope.
-                  (arena-c (resolve-arena-c-name ctx "map-keys" items)))
+                  (arena-c (resolve-arena-c-name ctx "map-keys" items 2)))
               (cond
                 ;; String keys: the runtime carries a dedicated slop_map_keys returning
                 ;; slop_list_string, so no typed list has to be generated at all.
@@ -6978,7 +7028,7 @@
           ((some set-expr)
             (let ((set-c (resolve-container-c ctx set-expr))
                   (elem-c-type (infer-set-elem-c-type ctx set-expr))
-                  (arena-c (resolve-arena-c-name ctx "set-elements" items)))
+                  (arena-c (resolve-arena-c-name ctx "set-elements" items 2)))
               (cond
                 ;; String elements: the runtime carries slop_map_keys, which already
                 ;; returns slop_list_string, so no typed list has to be generated.
@@ -7024,7 +7074,8 @@
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
-          (len (list-len items)))
+          ;; The elements end where a trailing :arena option starts
+          (len (trailing-arena-option-at items)))
       (if (< len 2)
         (do
           (ctx-add-error-at ctx "set: needs at least Type" (ctx-list-first-line items) (ctx-list-first-col items))
@@ -7034,7 +7085,7 @@
             (let ((elem-info (get-map-key-c-info ctx type-expr))
                   ;; NB: the `arena` binding above is the compiler's own allocator.
                   ;; This is the arena in the *transpiled program's* scope.
-                  (arena-c (resolve-arena-c-name ctx "set" items))
+                  (arena-c (resolve-arena-c-name ctx "set" items len))
                   ;; Build: ({ static const slop_map_desc _d = SLOP_SET_DESC(elem_info);
                   ;;          slop_map* _s = slop_map_new_ptr(ARENA, N, &_d);
                   ;; sized for exactly its N elements (0 for an empty literal: no
@@ -7614,8 +7665,12 @@
     (@pre {ctx != nil})
     (let ((arena (. (deref ctx) arena))
           ;; spawn's arena, if this closure is what it runs; taken before the
-          ;; body is transpiled so lambdas inside it don't inherit it
-          (env-arena (ctx-take-closure-arena ctx))
+          ;; body is transpiled so lambdas inside it don't inherit it. Else
+          ;; the arena in scope where the lambda is written ("" for none).
+          (env-arena (let ((spawn-arena (ctx-take-closure-arena ctx)))
+                       (if (> (string-len spawn-arena) 0)
+                         spawn-arena
+                         (find-arena-ptr-expr ctx items))))
           ;; Get body expression for type inference
           (body-expr (match (list-get items (- (list-len items) 1))
                        ((some e) e)
@@ -7778,9 +7833,9 @@
         s
         (substring arena s (cast (Int 0 ..) 1) (cast (Int 0 ..) (- len 2))))))
 
-  (fn find-arena-ptr-expr ((ctx (Ptr TranspileContext)))
-    (@intent "Find the arena pointer expression to use for allocation")
-    (@spec (((Ptr TranspileContext)) -> String))
+  (fn find-arena-ptr-expr ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Find the arena pointer expression a closure env written as items is allocated in")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
     ;; Check if _arena (value) is in scope - we're inside with-arena
     (match (ctx-lookup-var ctx "_arena")
@@ -7797,9 +7852,9 @@
             ;; Neither of the two conventional names. A named arena --
             ;; (with-arena :as myarena ...) -- binds something else entirely, and
             ;; without this the closure env fell back to malloc and was never
-            ;; freed. Search the scope chain for any arena-typed variable.
-            (match (ctx-find-arena-var ctx)
-              ((some entry) (. entry c-name))
+            ;; freed. The one Arena variable in scope; with several, an error.
+            (match (implicit-arena-c ctx "closure env" "(let ((arena <name>)) (fn ...))" items)
+              ((some c-name) c-name)
               ((none)
                 ;; Genuinely no arena in scope - signal to caller to use malloc
                 "")))))))
@@ -7814,7 +7869,8 @@
     (let ((arena (. (deref ctx) arena)))
       (let ((initializer (build-env-initializer ctx free-vars captured-accesses))
             ;; The env goes in the arena spawn names, else the one in scope
-            (arena-expr (if (> (string-len env-arena) 0) env-arena (find-arena-ptr-expr ctx))))
+            ;; (transpile-closure)
+            (arena-expr env-arena))
         (let ((alloc-decl (if (string-eq arena-expr "")
                             (do
                               (ctx-add-warning ctx (ctx-str ctx "closure env allocated with malloc (no arena in scope): " env-type))

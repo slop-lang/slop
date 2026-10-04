@@ -96,7 +96,7 @@
     ctx-register-struct-key-type ctx-has-struct-key-type ctx-get-struct-key-types
     ctx-register-value-key-type ctx-lookup-value-key-type
     ;; Arena discovery (any arena-typed variable, not just one literally named 'arena')
-    ctx-find-arena-var
+    ctx-visible-arena-vars
     ;; Type alias tracking for resolving Map/Set types
     TypeAliasEntry ctx-register-type-alias ctx-lookup-type-alias ctx-is-option-c-type
     ;; Generic function support
@@ -933,42 +933,45 @@
                 (lookup-var-in-scope-chain parent-scope name))
               ((none) none)))))))
 
-  (fn find-arena-in-single-scope ((scope (Ptr Scope)))
-    (@intent "Find first variable with c-type slop_arena* in a single scope")
-    (@spec (((Ptr Scope)) -> (Option VarEntry)))
-    (if (== scope nil)
-      none
-      (let ((len (list-len (. (deref scope) vars)))
-            (mut i 0)
-            (mut result (Option VarEntry) none))
-        (while (and (< i len) (match result ((none) true) ((some _) false)))
-          (match (list-get (. (deref scope) vars) i)
-            ((some entry)
-              (when (string-eq (. entry c-type) "slop_arena*")
-                (set! result (some entry))))
-            ((none) (do)))
-          (set! i (+ i 1)))
-        result)))
-
-  (fn ctx-find-arena-var ((ctx (Ptr TranspileContext)))
-    (@intent "Search all scopes for any variable with arena type")
-    (@spec (((Ptr TranspileContext)) -> (Option VarEntry)))
+  (fn ctx-visible-arena-vars ((ctx (Ptr TranspileContext)))
+    (@intent "Every Arena variable visible here, innermost first; one an inner binding of its name hides is left out")
+    (@spec (((Ptr TranspileContext)) -> (List VarEntry)))
     (@pre {ctx != nil})
-    (find-arena-in-scope-chain (. (deref ctx) scope)))
-
-  (fn find-arena-in-scope-chain ((scope (Ptr Scope)))
-    (@intent "Recursively search scope chain for arena-typed variable")
-    (@spec (((Ptr Scope)) -> (Option VarEntry)))
-    (if (== scope nil)
-      none
-      (let ((result (find-arena-in-single-scope scope)))
-        (match result
-          ((some _) result)
-          ((none)
+    (let ((arena (. (deref ctx) arena))
+          (found (list-new arena VarEntry))
+          (seen (list-new arena String))
+          (mut scope (. (deref ctx) scope))
+          (mut done false))
+      (while (not done)
+        (if (== scope nil)
+          (set! done true)
+          (let ((vars (. (deref scope) vars))
+                (mut i 0))
+            (while (< i (list-len vars))
+              (match (list-get vars i)
+                ((some entry)
+                  (when (not (name-in-list seen (. entry name)))
+                    (list-push seen (. entry name))
+                    (when (string-eq (. entry c-type) "slop_arena*")
+                      (list-push found entry))))
+                ((none) (do)))
+              (set! i (+ i 1)))
             (match (. (deref scope) parent)
-              ((some parent-scope)
-                (find-arena-in-scope-chain parent-scope))
-              ((none) none)))))))
+              ((some parent-scope) (set! scope parent-scope))
+              ((none) (set! done true))))))
+      found))
+
+  (fn name-in-list ((names (List String)) (name String))
+    (@intent "Whether name is one of names")
+    (@spec (((List String) String) -> Bool))
+    (let ((mut found false)
+          (mut i 0))
+      (while (and (< i (list-len names)) (not found))
+        (match (list-get names i)
+          ((some n) (when (string-eq n name) (set! found true)))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
 
   ;; ============================================================
   ;; Type/Function Registration

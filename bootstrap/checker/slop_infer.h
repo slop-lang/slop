@@ -141,6 +141,7 @@ void infer_check_option_predicate_arg(env_TypeEnv* env, slop_string op, slop_lis
 void infer_infer_builtin_args(env_TypeEnv* env, types_SExpr* expr);
 void infer_infer_builtin_args_before(env_TypeEnv* env, types_SExpr* expr, int64_t end);
 int64_t infer_arena_option_len(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t base_len, int64_t line, int64_t col);
+int64_t infer_literal_arena_option_at(env_TypeEnv* env, slop_string op, slop_list_types_SExpr_ptr items, int64_t line, int64_t col);
 void infer_infer_body_exprs(env_TypeEnv* env, types_SExpr* expr, int64_t start_idx);
 types_ResolvedType* infer_infer_field_access(env_TypeEnv* env, types_SExpr* expr, types_SExprList lst, int64_t line, int64_t col);
 types_ResolvedType* infer_check_field_exists(env_TypeEnv* env, types_ResolvedType* obj_type, slop_string field_name, int64_t line, int64_t col);

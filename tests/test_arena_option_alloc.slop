@@ -1,0 +1,77 @@
+(module test-arena-option-alloc
+  (@intent "A list or set literal, map-keys and set-elements allocate in the arena :arena names")
+
+  ;; Each function below runs inside a BIG scratch arena while its caller's
+  ;; arena is a, so two arenas are in scope and none is named arena. Without
+  ;; :arena that is an error (#277); with it, the result goes in a and
+  ;; survives scratch. BIG is past the runtime's map threshold, so a freed
+  ;; scratch is unmapped: had a result been built there, reading it after
+  ;; scratch is gone faults rather than reading stale bytes.
+
+  (const BIG Int 16777216)
+
+  (fn literal-list ((a Arena))
+    (@intent "A list literal built in a from inside scratch")
+    (@spec ((Arena) -> (List Int)))
+    (@alloc a)
+    (with-arena :as scratch BIG
+      (let ((tmp (list Int 100 200 :arena scratch)))
+        (list-len tmp))
+      (list Int 1 2 3 :arena a)))
+
+  (fn literal-set ((a Arena))
+    (@intent "A set literal built in a from inside scratch")
+    (@spec ((Arena) -> (Set Int)))
+    (@alloc a)
+    (with-arena :as scratch BIG
+      (set Int 4 5 :arena a)))
+
+  (fn keys-of ((a Arena) (m (Map Int Int)))
+    (@intent "map-keys into a from inside scratch")
+    (@spec ((Arena (Map Int Int)) -> (List Int)))
+    (@alloc a)
+    (with-arena :as scratch BIG
+      (map-keys m :arena a)))
+
+  (fn elements-of ((a Arena) (s (Set Int)))
+    (@intent "set-elements into a from inside scratch")
+    (@spec ((Arena (Set Int)) -> (List Int)))
+    (@alloc a)
+    (with-arena :as scratch BIG
+      (set-elements s :arena a)))
+
+  (fn one-arena ((a Arena))
+    (@intent "With one arena in scope, under another name, a literal goes there unasked")
+    (@spec ((Arena) -> (List Int)))
+    (@alloc a)
+    (list Int 7 8))
+
+  (fn sum ((xs (List Int)))
+    (@intent "Sum xs")
+    (@spec (((List Int)) -> Int))
+    (let ((mut total 0))
+      (for-each (x xs)
+        (set! total (+ total x)))
+      total))
+
+  (fn main ()
+    (@intent "Read every result after the scratch arena it was built under is gone")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((m (map-new arena Int Int))
+            (s (set-new arena Int))
+            (mut failures 0))
+        (map-put m 10 1)
+        (map-put m 20 2)
+        (set-put s 30)
+        (when (!= (sum (literal-list arena)) 6)
+          (set! failures (+ failures 1)))
+        (when (!= (set-len (literal-set arena)) 2)
+          (set! failures (+ failures 1)))
+        (when (!= (sum (keys-of arena m)) 30)
+          (set! failures (+ failures 1)))
+        (when (!= (sum (elements-of arena s)) 30)
+          (set! failures (+ failures 1)))
+        (when (!= (sum (one-arena arena)) 15)
+          (set! failures (+ failures 1)))
+        failures))))

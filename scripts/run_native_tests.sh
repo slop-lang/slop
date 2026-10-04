@@ -369,6 +369,13 @@ run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_literal_no_arena.s
     "list_literal_no_arena.slop:10:6: error: list: no arena in scope"
 run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_const_non_literal.slop" "list-const-non-literal" \
     "list_const_non_literal.slop:8:31: error: list: a module-level list literal needs literal elements"
+# With two arenas in scope and none named arena, the innermost one used to
+# take a literal or a closure env, so a let-bound scratch arena could take
+# what the function returned (#277). It is an error; :arena names one.
+run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_literal_ambiguous.slop" "list-literal-ambiguous" \
+    "list_literal_ambiguous.slop:9:8: error: list: 2 arenas in scope (scratch, a) and none is named arena"
+run_negative_build_test "$REPO_ROOT/tests/arena-negative/closure_env_ambiguous.slop" "closure-env-ambiguous" \
+    "closure_env_ambiguous.slop:13:15: error: closure env: 2 arenas in scope (scratch, a) and none is named arena"
 
 # A closure passed to spawn captures a mut local by reference, so the thread
 # read a stack slot its scope had moved on from (#193). It is an error; the

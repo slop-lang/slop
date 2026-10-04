@@ -750,6 +750,7 @@ Language primitives that are always available without imports.
 ### Lists
 (list-new arena Type) -> (List Type)   ; The list grows in arena
 (list Type e1 e2...) -> (List Type)     ; Literal, built in the arena in scope (error if none)
+(list Type e1 e2... :arena a)           ; Literal built in a
 (list-push list item) -> Unit           ; Grows in the list's own arena
 (list-push list item :arena a) -> Unit  ; Grows in a for this push
 (list-pop list) -> (Option T)
@@ -763,7 +764,8 @@ Language primitives that are always available without imports.
 (map-put map k v :arena a) -> Unit      ; Grows in a for this put
 (map-get map k) -> (Option V)
 (map-has map k) -> Bool
-(map-keys map) -> (List K)
+(map-keys map) -> (List K)              ; Built in the arena in scope
+(map-keys map :arena a) -> (List K)     ; Built in a
 (map-remove map k) -> Unit              ; Requires mutable map
 (map-len map) -> (Int 0 ..)             ; Entry count, O(1)
 
@@ -775,14 +777,21 @@ given, unless it names another with :arena. Only one thread may allocate from
 an arena at a time: a thread growing a collection whose arena another thread
 uses names its own.
 
+The arena in scope (for literals, map-keys, set-elements and a capturing
+lambda's environment) is the variable named `arena`, else the one Arena
+variable in scope. Two or more with none named `arena` is an error: name it
+with :arena, or for a lambda bind it, (let ((arena a)) (fn ...)).
+
 ### Sets
 (set-new arena T) -> (Set T)            ; Type parameter required
-(set T e1 e2...) -> (Set T)             ; Literal
+(set T e1 e2...) -> (Set T)             ; Literal, built in the arena in scope
+(set T e1 e2... :arena a)               ; Literal built in a
 (set-put set e) -> Unit                 ; Grows in the set's own arena
 (set-put set e :arena a) -> Unit        ; Grows in a for this put
 (set-has set e) -> Bool
 (set-remove set e) -> Unit
-(set-elements set) -> (List T)
+(set-elements set) -> (List T)          ; Built in the arena in scope
+(set-elements set :arena a) -> (List T) ; Built in a
 (set-len set) -> (Int 0 ..)             ; Element count, O(1)
 
 ### Options

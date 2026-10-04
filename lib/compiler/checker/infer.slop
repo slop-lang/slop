@@ -1659,7 +1659,7 @@
                           (env-get-int-type env)))
                     ;; map-keys expects 1 arg: map - returns List with map's key type
                     ((string-eq op "map-keys")
-                      (do (check-builtin-args env "map-keys" 1 (- len 1) line col)
+                      (do (check-builtin-args env "map-keys" 1 (- (arena-option-len env "map-keys" items 2 line col) 1) line col)
                           (let ((arena (env-arena env))
                                 (mut key-type (Ptr ResolvedType) nil))
                             ;; Infer the map argument's type to get key type
@@ -1680,9 +1680,15 @@
                       (do (check-builtin-args env "map-remove" 2 (- len 1) line col)
                           (env-get-unit-type env)))
                     ;; Set builtins
-                    ;; set literal: (set Type e1 e2...) - returns Set
+                    ;; list literal: (list Type e1 e2... [:arena a]) - its
+                    ;; elements are inferred, but not the option (#277)
+                    ((string-eq op "list")
+                      (do (infer-builtin-args-before env expr (literal-arena-option-at env op items line col))
+                          (env-get-unknown-type env)))
+                    ;; set literal: (set Type e1 e2... [:arena a]) - returns Set
                     ((string-eq op "set")
                       (let ((arena (env-arena env)))
+                        (literal-arena-option-at env op items line col)
                         (resolved-type-new arena 'rk-primitive "Set" (none) "slop_map*")))
                     ;; set-new expects 2 args: arena, ElementType - returns Set with tracked element type
                     ((string-eq op "set-new")
@@ -1723,7 +1729,7 @@
                           (env-get-int-type env)))
                     ;; set-elements expects 1 arg: set - returns List with set's element type
                     ((string-eq op "set-elements")
-                      (do (check-builtin-args env "set-elements" 1 (- len 1) line col)
+                      (do (check-builtin-args env "set-elements" 1 (- (arena-option-len env "set-elements" items 2 line col) 1) line col)
                           (let ((arena (env-arena env))
                                 (mut elem-type (Ptr ResolvedType) nil))
                             ;; Infer the set argument's type to get element type
@@ -2767,11 +2773,13 @@
     (@spec (((Ptr TypeEnv) String (List (Ptr SExpr)) Int Int Int) -> Int))
     (@pre (!= env nil))
     ;; list-push, map-put and set-put grow a collection in the arena it was
-    ;; made in; (... :arena a) grows it in a for that call (#276). base-len is
-    ;; the form's length without the option. A keyword in the option's place
-    ;; is reported here and the option's length dropped, so the arity check
-    ;; that follows doesn't report it again; anything else is left to that
-    ;; check as an extra argument.
+    ;; made in; (... :arena a) grows it in a for that call (#276). map-keys,
+    ;; set-elements and the list and set literals take it to name the arena
+    ;; they allocate in (#277). base-len is the form's length without the
+    ;; option. A keyword in the option's place is reported here and the
+    ;; option's length dropped, so the arity check that follows doesn't
+    ;; report it again; anything else is left to that check as an extra
+    ;; argument.
     (let ((len (list-len items))
           (kw (match (list-get items base-len)
                 ((some e) (sexpr-get-symbol-name e))
@@ -2806,6 +2814,20 @@
                            line col)
             base-len))
         (else len))))
+
+  (fn literal-arena-option-at ((env (Ptr TypeEnv)) (op String) (items (List (Ptr SExpr))) (line Int) (col Int))
+    (@intent "Check a collection literal's optional trailing :arena <arena>; where its elements end")
+    (@spec (((Ptr TypeEnv) String (List (Ptr SExpr)) Int Int) -> Int))
+    (@pre (!= env nil))
+    ;; A literal has any number of elements, so the option is recognised
+    ;; by its keyword, second from the end (#277)
+    (let ((len (list-len items)))
+      (if (and (>= len 2)
+               (match (list-get items (- len 2))
+                 ((some e) (string-eq (sexpr-get-symbol-name e) ":arena"))
+                 ((none) false)))
+        (arena-option-len env op items (- len 2) line col)
+        len)))
 
   (fn infer-body-exprs ((env (Ptr TypeEnv)) (expr (Ptr SExpr)) (start-idx Int))
     (@intent "Infer types of all body expressions starting from given index")

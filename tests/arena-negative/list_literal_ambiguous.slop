@@ -1,0 +1,9 @@
+(module list-literal-ambiguous
+  (@intent "A list literal with two arenas in scope and none named arena (#277)")
+
+  (fn build ((a Arena))
+    (@intent "The innermost arena, scratch, used to win, and scratch is freed before the caller reads the list")
+    (@spec ((Arena) -> (List Int)))
+    (@alloc a)
+    (with-arena :as scratch 4096
+      (list Int 1 2 3))))

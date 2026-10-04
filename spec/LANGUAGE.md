@@ -360,11 +360,12 @@ identifier               ; Variable reference
 ; The type is not optional and is not inferred from context. There is no map
 ; literal -- build one with map-new and map-put.
 ;
-; Inside a function, a list or set literal is built in the arena in scope (a
-; variable named `arena`, else the innermost Arena-typed one), freshly on
+; Inside a function, a list or set literal is built in an arena, freshly on
 ; every evaluation, so it can be returned, stored or mutated; it records that
-; arena, and pushes and puts grow it there. With no arena in scope it is a
-; transpiler error: "list: no arena in scope". A module-level
+; arena, and pushes and puts grow it there. A trailing :arena a names it:
+; (list Int 1 2 3 :arena a). Otherwise it is the arena in scope (see "The
+; arena in scope" below). With no arena in scope it is a transpiler error:
+; "list: no arena in scope". A module-level
 ; (const NAME (List T) (list T ...)) needs no arena: its elements must be
 ; literals (numbers, strings, true/false), and the list has static storage
 ; and no arena, so a push onto a copy of it that has to grow it aborts.
@@ -1021,6 +1022,7 @@ Minimal runtime (~500 lines of C):
 (map-get map key) -> (Option V)
 (map-has map key) -> Bool
 (map-keys map) -> (List K)               ; Return list of all keys (order: see for-each)
+(map-keys map :arena a) -> (List K)      ; ... built in a
 (map-remove map key) -> Unit             ; Remove key from mutable map
 (map-len map) -> (Int 0 ..)              ; Number of entries, O(1)
 ;
@@ -1047,6 +1049,16 @@ Minimal runtime (~500 lines of C):
 ; Only one thread may allocate from an arena at a time. A thread growing a
 ; collection whose arena another thread is using names an arena of its own
 ; with :arena.
+;
+; The arena in scope. A list or set literal, map-keys and set-elements without
+; :arena, and the environment of a capturing lambda, allocate in a variable
+; named `arena` if there is one (the unnamed with-arena form and the usual
+; (arena Arena) parameter bind it), else in the one Arena variable in scope.
+; With two or more and none named `arena` -- a parameter and a
+; (with-arena :as scratch ...), say -- it is a transpiler error, since either
+; guess can be wrong: what the function returns must not go in scratch. Name
+; the arena with :arena, or, for a lambda's environment, bind it as `arena`:
+; (let ((arena a)) (fn ...)).
 
 ; Options
 (some val) -> (Option T)
@@ -1065,11 +1077,13 @@ Minimal runtime (~500 lines of C):
 ; Sets (homogeneous, type-safe)
 (set-new arena ElementType) -> (Set ElementType)  ; Create empty set
 (set Type e1 e2...)                               ; Set literal
+(set Type e1 e2... :arena a)                      ; ... built in a
 (set-put set element) -> Unit                     ; Add element; grows in the set's own arena
 (set-put set element :arena a) -> Unit            ; Grows it in a, for this put
 (set-has set element) -> Bool                     ; Check if element exists
 (set-remove set element) -> Unit                  ; Remove element from set
 (set-elements set) -> (List T)                    ; Get all elements as list (order: see for-each)
+(set-elements set :arena a) -> (List T)           ; ... built in a
 (set-len set) -> (Int 0 ..)                       ; Number of elements, O(1)
 
 ; Results
