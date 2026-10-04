@@ -1,0 +1,13 @@
+(module closure-env-ambiguous
+  (@intent "A closure env with two arenas in scope and none named arena (#277)")
+
+  (fn apply ((f (Fn (Int) Int)) (x Int))
+    (@intent "Call f on x")
+    (@spec (((Fn (Int) Int) Int) -> Int))
+    (f x))
+
+  (fn run ((a Arena) (k Int))
+    (@intent "The env of a lambda that captures k")
+    (@spec ((Arena Int) -> Int))
+    (with-arena :as scratch 4096
+      (apply (fn ((x Int)) (+ x k)) 1))))
