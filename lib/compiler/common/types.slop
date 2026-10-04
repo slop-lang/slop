@@ -967,9 +967,21 @@
             (string-build arena (list String "cannot assign to " q " - it is immutable; declare it (let ((mut " name " ...)))"))
             (string-build arena (list String "cannot change a field of " q " - it is immutable; declare it (let ((mut " name " ...)))"))))
         ('origin-bound
-          (string-build arena (list String (if (== kind 'mut-assign) "cannot assign to " "cannot change a field of ") q
-                                           " - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut "
-                                           name " ...)))")))
+          (match kind
+            ('mut-assign
+              (string-build arena (list String "cannot assign to " q
+                                               " - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut "
+                                               name " ...)))")))
+            ('mut-field
+              (string-build arena (list String "cannot change a field of " q
+                                               " - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut "
+                                               name " ...)))")))
+            (else
+              ;; #191: the binding is a copy of a list element or payload
+              (let ((verb (if (== kind 'mut-push) "push to" "pop from")))
+                (string-build arena (list String "cannot " verb (if via-field " a field of " " ") q
+                                                 " - a for-each or match binding is a copy, so the change would be lost; change a (let ((mut "
+                                                 name " ...))) copy and write it back (list-set, map-put), or hold the element as a (Ptr T)"))))))
         ('origin-const
           (string-build arena (list String (if (== kind 'mut-assign) "cannot assign to constant " "cannot change a field of constant ") q))))))
 

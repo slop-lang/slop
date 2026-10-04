@@ -2486,12 +2486,24 @@
                ;; A push or pop on the parameter itself: only a List value
                (starts-with (. entry c-type) "slop_list_"))
            ;; A let, for, for-each, match or with-arena binding, or a constant:
-           ;; set! is the change; a push or pop on its own list is allowed. A
-           ;; field set only where the C type is known to be a value, so an
-           ;; inference gap is never mistaken for one.
+           ;; set! is the change. A field set only where the C type is known
+           ;; to be a value, so an inference gap is never mistaken for one.
            (cond
              ((== kind 'mut-assign) true)
              ((== kind 'mut-field) (is-known-value-c-type (. entry c-type)))
+             ;; A for-each or match binding is a copy of the element or
+             ;; payload: a push or pop on it, or on a List field of it, is
+             ;; lost (#191). The C type is often auto there, so the SLOP type
+             ;; decides; a binding of unknown type is left alone.
+             ((== (. entry origin) 'origin-bound)
+               (if (== (. path depth) 0)
+                 (or (starts-with (. entry c-type) "slop_list_")
+                     (starts-with (. entry slop-type) "(List "))
+                 (and (> (string-len (. entry slop-type)) 0)
+                      (not (starts-with (. entry slop-type) "(Ptr "))
+                      (not (. entry is-pointer))
+                      (not (ends-with (. entry c-type) "*")))))
+             ;; A let binding's own list: the push is not lost, and allowed
              (else false)))))
 
   (fn is-known-value-c-type ((c-type String))
@@ -4173,13 +4185,18 @@
     (@intent "Transpile a cond expression as nested ternary: (cond (t1 v1) (t2 v2) (else v3)) -> t1 ? v1 : t2 ? v2 : v3")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
-    (let ((arena (. (deref ctx) arena))
-          (len (list-len items))
+    ;; Each test clause opens one "(t ? v : " that the end closes. They used
+    ;; to be closed by counting parens in the emitted C, which also counted
+    ;; any inside a string literal, so (string-eq s "(P") in a clause produced
+    ;; an extra ")". With no else, the chain ended "t ? v : )", which cc
+    ;; rejected; a value cond now traps there, as a match does (#147).
+    (let ((len (list-len items))
           (result-type (infer-cond-result-c-type ctx items))
           (mut result "")
+          (mut opened 0)
+          (mut has-else false)
           (mut i 1))
-      ;; Process each clause (test body...) or (else body...)
-      (while (< i len)
+      (while (and (< i len) (not has-else))
         (match (list-get items i)
           ((some clause-expr)
             (match (deref clause-expr)
@@ -4189,54 +4206,37 @@
                   (when (>= clause-len 2)
                     (match (list-get clause-items 0)
                       ((some test-expr)
-                        (match (deref test-expr)
-                          ;; else clause
-                          ((sym sym)
-                            (if (string-eq (. sym name) "else")
-                              ;; else clause - get the body value (last expression)
-                              (match (list-get clause-items (- clause-len 1))
-                                ((some body-expr)
-                                  (let ((body-c (transpile-expr ctx body-expr)))
-                                    (set! result (ctx-str ctx result (typed-none ctx result-type body-c)))))
-                                ((none) (set! result (ctx-str ctx result "0"))))
-                              ;; Regular test - evaluate as condition
-                              (let ((test-c (transpile-expr ctx test-expr)))
-                                (match (list-get clause-items (- clause-len 1))
-                                  ((some body-expr)
-                                    (let ((body-c (typed-none ctx result-type (transpile-expr ctx body-expr))))
-                                      (set! result (ctx-str ctx result (ctx-str ctx "(" (ctx-str ctx test-c (ctx-str ctx " ? " (ctx-str ctx body-c " : "))))))))
-                                  ((none) (set! result (ctx-str ctx result (ctx-str ctx "(" (ctx-str ctx test-c " ? 0 : ")))))))))
-                          ;; Non-symbol test
-                          (_
-                            (let ((test-c (transpile-expr ctx test-expr)))
-                              (match (list-get clause-items (- clause-len 1))
-                                ((some body-expr)
-                                  (let ((body-c (typed-none ctx result-type (transpile-expr ctx body-expr))))
-                                    (set! result (ctx-str ctx result (ctx-str ctx "(" (ctx-str ctx test-c (ctx-str ctx " ? " (ctx-str ctx body-c " : "))))))))
-                                ((none) (set! result (ctx-str ctx result (ctx-str ctx "(" (ctx-str ctx test-c " ? 0 : "))))))))))
+                        (let ((is-else (match (deref test-expr)
+                                         ((sym sym) (string-eq (. sym name) "else"))
+                                         (else false)))
+                              ;; The test is transpiled before the body, as before
+                              (test-c (if is-else "" (transpile-expr ctx test-expr)))
+                              ;; Every form of the clause runs, not only the last
+                              (body-c (typed-none ctx result-type (transpile-body-forms ctx clause-items 1))))
+                          (if is-else
+                            (do
+                              (set! has-else true)
+                              (set! result (ctx-str ctx result body-c)))
+                            (do
+                              (set! opened (+ opened 1))
+                              (set! result (ctx-str ctx result (ctx-str5 ctx "(" test-c " ? " body-c " : ")))))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
         (set! i (+ i 1)))
-      ;; Close any open ternaries with default 0
-      (if (string-eq result "")
-        "0"
-        ;; Count open parens and close them
-        (let ((mut open-count 0)
-              (mut j 0)
-              (rlen (string-len result)))
-          (while (< j (cast Int rlen))
-            (let ((c (char-at result (cast (Int 0 ..) j))))
-              (cond
-                ((== c 40) (set! open-count (+ open-count 1)))  ;; '('
-                ((== c 41) (set! open-count (- open-count 1)))  ;; ')'
-                (else (do))))
-            (set! j (+ j 1)))
-          ;; Add closing parens for unclosed ternaries
-          (while (> open-count 0)
-            (set! result (ctx-str ctx result ")"))
-            (set! open-count (- open-count 1)))
-          result))))
+      (cond
+        ((and (== opened 0) (not has-else)) "0")
+        (else
+          (let ((mut closed (if has-else
+                              result
+                              (ctx-str ctx result (if (string-eq result-type "void")
+                                                    "((void)0)"
+                                                    (unmatched-match-value ctx result-type)))))
+                (mut k 0))
+            (while (< k opened)
+              (set! closed (ctx-str ctx closed ")"))
+              (set! k (+ k 1)))
+            closed)))))
 
   ;; ============================================================
   ;; Match Expression (GCC statement expression)

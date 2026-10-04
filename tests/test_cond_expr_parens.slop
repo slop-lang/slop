@@ -1,0 +1,46 @@
+;; ============================================================
+;; A cond in expression position whose clauses hold "(" or ")"
+;; in a string literal. Its ternaries were closed by counting
+;; parens in the emitted C, strings included, so each "(" in a
+;; string added one ")" too many and cc rejected the result.
+;; ============================================================
+
+(module test-cond-expr-parens
+  (export (main 0))
+
+  (fn classify ((ok Bool) (n Int) (s String))
+    (@intent "A cond as an operand of and, with parens inside its strings")
+    (@spec ((Bool Int String) -> Bool))
+    (and ok
+      (cond
+        ((== n 1) (string-eq s "(List "))
+        ((== n 2) (if (== (string-len s) 0) false (string-eq s ")(")))
+        (else (string-eq s "((")))))
+
+  (type Counter (record (calls Int)))
+
+  (fn bump ((c (Ptr Counter)))
+    (@intent "Count a call")
+    (@spec (((Ptr Counter)) -> Int))
+    (set! c calls (+ (. c calls) 1))
+    0)
+
+  (fn every-form-runs ((c (Ptr Counter)) (n Int))
+    (@intent "Each form of a cond clause runs, not only the last")
+    (@spec (((Ptr Counter) Int) -> Int))
+    (let ((k (cond ((== n 1) (bump c) (bump c) 20) (else 0))))
+      k))
+
+  (fn main ()
+    (@intent "Each clause picks the string it should")
+    (@spec (() -> Int))
+    (let ((mut failed 0))
+      (when (not (classify true 1 "(List ")) (set! failed (+ failed 1)))
+      (when (not (classify true 2 ")(")) (set! failed (+ failed 1)))
+      (when (not (classify true 3 "((")) (set! failed (+ failed 1)))
+      (when (classify false 1 "(List ") (set! failed (+ failed 1)))
+      (when (classify true 1 "List") (set! failed (+ failed 1)))
+      (let ((mut c (record-new Counter (calls 0))))
+        (when (!= (every-form-runs (addr c) 1) 20) (set! failed (+ failed 1)))
+        (when (!= (. c calls) 2) (set! failed (+ failed 1))))
+      failed)))

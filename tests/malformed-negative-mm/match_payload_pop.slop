@@ -1,0 +1,13 @@
+(module main
+  (@intent "Multi-module: the transpiler reports a pop from a match binding's copy (#191)")
+  (import helper (one))
+  (type Box (union (full (List Int)) (empty)))
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((xs (list-new arena Int)))
+        (list-push xs (one))
+        (match (union-new Box full xs)
+          ((full ys) (do (list-pop ys) 0))
+          ((empty) 0))))))

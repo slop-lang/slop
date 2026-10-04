@@ -792,6 +792,31 @@ let_reassign|let_reassign.slop:10:24: error: cannot assign to 'x' - it is immuta
 match_reassign|match_reassign.slop:10:37: error: cannot assign to 'v' - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut v ...)))
 LM_CASES
 
+# A push or pop on a for-each or match binding of a List, or on a List field
+# of one, changes a copy and was silently lost (#191). Both compilers report
+# it; tests/test_mutation_allowed.slop covers the pointer-holding bindings
+# that stay allowed.
+BPN="$REPO_ROOT/tests/bound-push-negative"
+while IFS='|' read -r bp_name bp_expected <&3; do
+    run_negative_check_test "$BPN/$bp_name.slop" "bound-push-check-$bp_name" "$bp_expected"
+    run_negative_build_test "$BPN/$bp_name.slop" "bound-push-build-$bp_name" "$bp_expected"
+done 3<<'BP_CASES'
+for_each_push|for_each_push.slop:10:44: error: cannot push to 'inner' - a for-each or match binding is a copy, so the change would be lost
+match_payload_pop|match_payload_pop.slop:13:36: error: cannot pop from 'ys' - a for-each or match binding is a copy, so the change would be lost
+for_each_field_push|for_each_field_push.slop:12:39: error: cannot push to a field of 'b' - a for-each or match binding is a copy, so the change would be lost
+BP_CASES
+
+# The same in a multi-module build, where the transpiler's check is the one
+# that has to report it (a single-file build stops at the checker)
+BPM="$REPO_ROOT/tests/malformed-negative-mm"
+while IFS='|' read -r bpm_name bpm_expected <&3; do
+    run_negative_build_test "$BPM/$bpm_name.slop" "bound-push-mm-$bpm_name" "$bpm_expected" -I "$BPM"
+done 3<<'BPM_CASES'
+for_each_push|for_each_push.slop:10:44: error: cannot push to 'inner' - a for-each or match binding is a copy, so the change would be lost
+match_payload_pop|match_payload_pop.slop:12:36: error: cannot pop from 'ys' - a for-each or match binding is a copy, so the change would be lost
+for_each_field_push|for_each_field_push.slop:11:39: error: cannot push to a field of 'b' - a for-each or match binding is a copy, so the change would be lost
+BPM_CASES
+
 # A program that must abort with the expected message on stderr, built with
 # extra cc flags. Its exit code alone would not do: a run that carried on
 # past the failure can exit non-zero too.
@@ -834,9 +859,10 @@ done
 
 # An expression-position match that no arm covers traps (#147). Before, a
 # literal match took its last arm untested, and an Option/Result or union match
-# handed back a zero nobody wrote.
+# handed back a zero nobody wrote. A value cond with no else traps the same
+# way; it used to end in "t ? v : )", which cc rejected.
 MTR="$REPO_ROOT/tests/match-trap"
-for mtr in literal option union; do
+for mtr in literal option union cond; do
     run_abort_test "$MTR/$mtr.slop" "match-trap-$mtr" "" "SLOP: non-exhaustive match reached"
 done
 

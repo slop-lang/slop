@@ -1,0 +1,14 @@
+;; A pop from a match binding of a List payload is lost: the binding is a copy (#191).
+
+(module main
+  (type Box (union (full (List Int)) (empty)))
+
+  (fn main ()
+    (@intent "A pop from a match payload, a copy, is lost")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((xs (list-new arena Int)))
+        (list-push xs 1)
+        (match (union-new Box full xs)
+          ((full ys) (do (list-pop ys) (cast Int (list-len ys))))
+          ((empty) 0))))))
