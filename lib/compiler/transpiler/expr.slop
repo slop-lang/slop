@@ -8,6 +8,7 @@
   (export
     ;; Main entry point
     transpile-expr transpile-expr-for transpile-expr-narrowed field-slop-type
+    is-simple-primitive-c-type
     ;; Helpers
     transpile-literal transpile-symbol
     ;; Literal pattern helpers, shared with match (which imports this module)
@@ -3553,7 +3554,7 @@
             (do
               (ctx-add-error-at ctx "spawn: need arena and function arguments" (ctx-list-first-line items) (ctx-list-first-col items))
               "NULL")
-            (match (list-get items 2)
+            (match (do (check-thread-captures ctx fn-name items) (list-get items 2))
               ((some fn-expr)
                 (if (is-capturing-lambda fn-expr)
                   ;; Capturing lambda - inline the thread creation with env
@@ -3564,6 +3565,12 @@
                 (do
                   (ctx-add-error-at ctx "spawn: missing function argument" (ctx-list-first-line items) (ctx-list-first-col items))
                   "NULL")))))
+        ;; The other ways to start a thread take a closure too (#193)
+        ((or (string-eq fn-name "spawn-closure") (ends-with fn-name ":spawn-closure")
+             (string-eq fn-name "spawn-with-chan") (ends-with fn-name ":spawn-with-chan"))
+          (do
+            (check-thread-captures ctx fn-name items)
+            (transpile-regular-fn-call ctx fn-name items)))
         ;; chan-buffered: (chan-buffered Type arena capacity) -> thread_chan_buffered(arena, capacity)
         ((or (string-eq fn-name "chan-buffered") (ends-with fn-name ":chan-buffered"))
           (if (< len 4)
@@ -5401,6 +5408,28 @@
               (else "({ (void)0; })")))
           ((none) "({ (void)0; })")))))
 
+  (fn is-simple-primitive-c-type ((t String))
+    (@intent "Check if type is a simple C primitive safe for explicit declaration")
+    (@spec ((String) -> Bool))
+    ;; Only use explicit types for primitives where __auto_type inference
+    ;; from literals could cause type mismatches (e.g., int vs int64_t).
+    ;; Excludes "Unknown" and complex types which should use __auto_type.
+    (cond
+      ((string-eq t "int64_t") true)
+      ((string-eq t "int32_t") true)
+      ((string-eq t "int16_t") true)
+      ((string-eq t "int8_t") true)
+      ((string-eq t "uint64_t") true)
+      ((string-eq t "uint32_t") true)
+      ((string-eq t "uint16_t") true)
+      ((string-eq t "uint8_t") true)
+      ((string-eq t "double") true)
+      ((string-eq t "float") true)
+      ((string-eq t "size_t") true)
+      ((string-eq t "bool") true)
+      ((string-eq t "int") true)
+      (else false)))
+
   (fn register-let-binding-in-context ((ctx (Ptr TranspileContext)) (binding (Ptr SExpr)))
     (@intent "Register a let binding's variable name in context for free var analysis")
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Unit))
@@ -5435,7 +5464,9 @@
                                           ((some init-expr)
                                             (match (get-node-resolved-type init-expr)
                                               ((some rt) (resolved-type-to-c arena rt))
-                                              ((none) "int64_t")))
+                                              ;; Not "int64_t": a mut primitive is declared
+                                              ;; with this type (transpile-binding-expr)
+                                              ((none) (infer-expr-c-type ctx init-expr))))
                                           ((none) "int64_t")))))
                           ;; Register in context so nested lambdas can find it
                           ;; With its mutability: a closure captures a mut local by reference
@@ -5488,12 +5519,23 @@
                                     (let ((init-c (transpile-expr ctx init-expr)))
                                       (ctx-str5 ctx "__auto_type " var-name " = " init-c ";")))
                                   ((none) (ctx-str3 ctx "__auto_type " var-name " = 0;")))))
-                            ;; No explicit type - use __auto_type
-                            (match (list-get items init-idx)
-                              ((some init-expr)
-                                (let ((init-c (transpile-expr ctx init-expr)))
-                                  (ctx-str5 ctx "__auto_type " var-name " = " init-c ";")))
-                              ((none) (ctx-str3 ctx "__auto_type " var-name " = 0;"))))))
+                            ;; No explicit type - __auto_type, except for a mut
+                            ;; primitive. A closure captures a mut local through a
+                            ;; pointer typed from its registered C type, so the local
+                            ;; must have that type: __auto_type n = 0 is a C int, and
+                            ;; an int64_t* to it reads 8 bytes of a 4-byte slot (#236).
+                            ;; The statement let does the same.
+                            (let ((registered-type (match (ctx-lookup-var ctx (. name-sym name))
+                                                     ((some entry) (. entry c-type))
+                                                     ((none) "")))
+                                  (decl-type (if (and has-mut (is-simple-primitive-c-type registered-type))
+                                               (ctx-str ctx registered-type " ")
+                                               "__auto_type ")))
+                              (match (list-get items init-idx)
+                                ((some init-expr)
+                                  (let ((init-c (transpile-expr ctx init-expr)))
+                                    (ctx-str5 ctx decl-type var-name " = " init-c ";")))
+                                ((none) (ctx-str3 ctx decl-type var-name " = 0;")))))))
                       (else "")))
                   ((none) ""))))))
         (else ""))))
@@ -8036,25 +8078,67 @@
     (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> Bool))
     (@pre {ctx != nil})
     (@pre {fn-expr != nil})
-    ;; Extract params and body from lambda, then check for free vars
-    (match (deref fn-expr)
-      ((lst lst)
-        (let ((items (. lst items))
-              (arena (. (deref ctx) arena)))
-          (if (< (list-len items) 2)
-            false
-            (match (list-get items 1)
-              ((some params-expr)
-                (match (deref params-expr)
-                  ((lst params-lst)
-                    (let ((params (. params-lst items))
-                          (param-names (extract-param-names arena params))
-                          (empty-pending (list-new arena String))
-                          (free-vars (find-free-vars ctx param-names items 2 empty-pending)))
-                      (> (list-len free-vars) 0)))
-                  (_ false)))
-              ((none) false)))))
-      (_ false)))
+    (> (list-len (lambda-free-vars ctx fn-expr)) 0))
+
+  (fn lambda-free-vars ((ctx (Ptr TranspileContext)) (fn-expr (Ptr SExpr)))
+    (@intent "The variables a lambda expression captures; empty for anything else")
+    (@spec (((Ptr TranspileContext) (Ptr SExpr)) -> (List String)))
+    (@pre {ctx != nil})
+    (@pre {fn-expr != nil})
+    ;; Extract params and body from lambda, then find its free vars
+    (let ((arena (. (deref ctx) arena))
+          (none-found (list-new arena String)))
+      (if (not (is-capturing-lambda fn-expr))
+        none-found
+        (match (deref fn-expr)
+          ((lst lst)
+            (let ((items (. lst items)))
+              (if (< (list-len items) 2)
+                none-found
+                (match (list-get items 1)
+                  ((some params-expr)
+                    (match (deref params-expr)
+                      ((lst params-lst)
+                        (let ((params (. params-lst items))
+                              (param-names (extract-param-names arena params))
+                              (empty-pending (list-new arena String)))
+                          (find-free-vars ctx param-names items 2 empty-pending)))
+                      (_ none-found)))
+                  ((none) none-found)))))
+          (_ none-found)))))
+
+  (fn check-thread-captures ((ctx (Ptr TranspileContext)) (op String) (items (List (Ptr SExpr))))
+    (@intent "Report each mut local that a lambda passed to a thread-starting call captures")
+    (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> Unit))
+    (@pre {ctx != nil})
+    ;; A closure captures a mut local by address (capture-free-var-accesses),
+    ;; which is sound only while the local's frame is live. A thread usually
+    ;; outlives the iteration or call that started it, so its reads land in
+    ;; a dead or reused stack slot: every HOWL worker read the share built by
+    ;; the last loop iteration (#193). An immutable binding is captured by
+    ;; value and is safe.
+    (let ((mut i 1))
+      (while (< i (list-len items))
+        (match (list-get items i)
+          ((some arg)
+            (let ((captured (lambda-free-vars ctx arg))
+                  (mut j 0))
+              (while (< j (list-len captured))
+                (match (list-get captured j)
+                  ((some name)
+                    (match (ctx-lookup-var ctx name)
+                      ((some entry)
+                        (when (. entry is-mutable)
+                          (ctx-add-error-at ctx
+                            (ctx-str5 ctx "closure passed to " op " captures mutable '" name
+                                      (ctx-str3 ctx "' by reference, and the thread can outlive it - bind an immutable copy for the thread first: (let ((" name
+                                                (ctx-str3 ctx "-now " name ")) ...)")))
+                            (ctx-sexpr-line arg) (ctx-sexpr-col arg))))
+                      ((none) (do))))
+                  ((none) (do)))
+                (set! j (+ j 1)))))
+          ((none) (do)))
+        (set! i (+ i 1)))))
 
   (fn transpile-regular-fn-call ((ctx (Ptr TranspileContext)) (fn-name String) (items (List (Ptr SExpr))))
     (@intent "Transpile regular function call (non-special cases)")
@@ -8413,12 +8497,56 @@
               ((some clause)
                 (match (deref clause)
                   ((lst clause-lst)
-                    (let ((clause-items (. clause-lst items)))
+                    (let ((clause-items (. clause-lst items))
+                          ;; The pattern's binders are local to its body, and
+                          ;; hide outer variables of the same name
+                          (clause-pending (match (list-get clause-items 0)
+                                            ((some pattern)
+                                              (list-concat (. (deref ctx) arena) pending
+                                                           (pattern-binder-names (. (deref ctx) arena) pattern)))
+                                            ((none) pending))))
                       ;; Clause is (pattern body...), collect from body only
-                      (collect-symbols-in-list ctx symbols pending clause-items 1)))
+                      (collect-symbols-in-list ctx symbols clause-pending clause-items 1)))
                   (else (do))))
               ((none) (do)))
             (set! i (+ i 1)))))))
+
+  (fn pattern-binder-names ((arena Arena) (pattern (Ptr SExpr)))
+    (@intent "The names a match pattern binds: the symbols in it after its tag, nested patterns included")
+    (@spec ((Arena (Ptr SExpr)) -> (List String)))
+    ;; (some x), (ok v), (Tag a b) and nested (Tag (some x)) bind their
+    ;; symbol operands; a bare symbol pattern binds itself. Quoted variants,
+    ;; _, else and literals bind nothing. A name listed here that is really a
+    ;; variant only keeps it from being taken as a capture.
+    (let ((mut names (list-new arena String)))
+      (collect-pattern-binders arena (addr names) pattern)
+      names))
+
+  (fn collect-pattern-binders ((arena Arena) (names (Ptr (List String))) (pattern (Ptr SExpr)))
+    (@intent "Add the names pattern binds to names")
+    (@spec ((Arena (Ptr (List String)) (Ptr SExpr)) -> Unit))
+    (match (deref pattern)
+      ((sym s)
+        (let ((name (. s name)))
+          (when (not (or (string-eq name "_") (string-eq name "else")
+                         (starts-with name "'") (starts-with name ":")))
+            (list-push (deref names) name))))
+      ((lst l)
+        (let ((items (. l items))
+              (mut i 1))
+          ;; Item 0 is the tag (some, ok, a variant), or quote for 'x
+          (when (match (list-get items 0)
+                  ((some head)
+                    (match (deref head)
+                      ((sym hs) (not (string-eq (. hs name) "quote")))
+                      (else true)))
+                  ((none) false))
+            (while (< i (list-len items))
+              (match (list-get items i)
+                ((some sub) (collect-pattern-binders arena names sub))
+                ((none) (do)))
+              (set! i (+ i 1))))))
+      (else (do))))
 
   (fn collect-symbols-in-for ((ctx (Ptr TranspileContext)) (symbols (Ptr (List String))) (pending (List String)) (items (List (Ptr SExpr))))
     (@intent "Collect symbols from for/for-each form")
