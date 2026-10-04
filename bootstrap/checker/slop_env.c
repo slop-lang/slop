@@ -881,7 +881,7 @@ void env_env_check_variant_collisions(env_TypeEnv* env) {
                 __auto_type v1 = _mv_75.value;
                 if (env_env_same_module_opt(v1.module_name, current)) {
                     {
-                        __auto_type found_collision = 0;
+                        uint8_t found_collision = 0;
                         slop_string collision_enum = SLOP_STR("");
                         for (int64_t j = (i + 1); j < len; j++) {
                             __auto_type _mv_76 = ({ __auto_type _lst = variants; size_t _idx = (size_t)j; slop_option_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });

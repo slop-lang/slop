@@ -178,6 +178,7 @@ slop_string expr_build_ternary_match_expr(context_TranspileContext* ctx, slop_st
 uint8_t expr_discard_needs_void(types_SExpr* e);
 slop_string expr_transpile_discarded_expr(context_TranspileContext* ctx, types_SExpr* e);
 slop_string expr_transpile_let_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
+uint8_t expr_is_simple_primitive_c_type(slop_string t);
 void expr_register_let_binding_in_context(context_TranspileContext* ctx, types_SExpr* binding);
 slop_string expr_transpile_binding_expr(context_TranspileContext* ctx, types_SExpr* binding);
 uint8_t expr_binding_has_mut(slop_list_types_SExpr_ptr items);
@@ -260,6 +261,8 @@ slop_string expr_build_lambda_function(context_TranspileContext* ctx, slop_strin
 uint8_t expr_is_capturing_lambda(types_SExpr* expr);
 slop_string expr_transpile_spawn_closure(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, types_SExpr* fn_expr);
 uint8_t expr_lambda_has_captures(context_TranspileContext* ctx, types_SExpr* fn_expr);
+slop_list_string expr_lambda_free_vars(context_TranspileContext* ctx, types_SExpr* fn_expr);
+void expr_check_thread_captures(context_TranspileContext* ctx, slop_string op, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_regular_fn_call(context_TranspileContext* ctx, slop_string fn_name, slop_list_types_SExpr_ptr items);
 slop_string expr_infer_generic_type_binding(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_extract_type_binding_from_slop_type(slop_arena* arena, slop_string slop_type);
@@ -273,6 +276,8 @@ void expr_collect_symbols_in_let(context_TranspileContext* ctx, slop_list_string
 uint8_t expr_is_mut_binding(slop_list_types_SExpr_ptr items);
 slop_list_string expr_extract_let_binding_names(slop_arena* arena, types_SExpr* bindings_expr);
 void expr_collect_symbols_in_match(context_TranspileContext* ctx, slop_list_string* symbols, slop_list_string pending, slop_list_types_SExpr_ptr items);
+slop_list_string expr_pattern_binder_names(slop_arena* arena, types_SExpr* pattern);
+void expr_collect_pattern_binders(slop_arena* arena, slop_list_string* names, types_SExpr* pattern);
 void expr_collect_symbols_in_for(context_TranspileContext* ctx, slop_list_string* symbols, slop_list_string pending, slop_list_types_SExpr_ptr items);
 slop_list_string expr_extract_for_loop_var_pending(slop_arena* arena, slop_list_string pending, slop_list_types_SExpr_ptr bind_items);
 void expr_collect_symbols_in_with_arena(context_TranspileContext* ctx, slop_list_string* symbols, slop_list_string pending, slop_list_types_SExpr_ptr items);

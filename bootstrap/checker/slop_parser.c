@@ -726,8 +726,8 @@ slop_result_types_SExpr_ptr_parser_ParseError parser_parse_infix_prec(slop_arena
         __auto_type left = _mv_94.data.ok;
         {
             __auto_type result = left;
-            __auto_type done = 0;
-            __auto_type has_error = 0;
+            uint8_t done = 0;
+            uint8_t has_error = 0;
             __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
             while (!(done) && !(has_error)) {
                 {
@@ -815,8 +815,8 @@ slop_result_list_types_SExpr_ptr_parser_ParseError parser_parse(slop_arena* aren
         {
             __auto_type state = parser_parser_new(tokens);
             __auto_type result = ((slop_list_types_SExpr_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
-            __auto_type done = 0;
-            __auto_type has_error = 0;
+            uint8_t done = 0;
+            uint8_t has_error = 0;
             __auto_type error_val = (parser_ParseError){SLOP_STR(""), 0, 0};
             while (!(done) && !(has_error)) {
                 {
@@ -1086,7 +1086,7 @@ slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr
                 {
                     __auto_type items = l.items;
                     __auto_type len = ((int64_t)((items).len));
-                    __auto_type i = 0;
+                    int64_t i = 0;
                     while (i < len) {
                         __auto_type _mv_114 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                         if (_mv_114.has_value) {
@@ -1094,7 +1094,7 @@ slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr
                             {
                                 __auto_type child_holes = parser_find_holes(arena, child);
                                 __auto_type child_len = ((int64_t)((child_holes).len));
-                                __auto_type j = 0;
+                                int64_t j = 0;
                                 while (j < child_len) {
                                     __auto_type _mv_115 = ({ __auto_type _lst = child_holes; size_t _idx = (size_t)j; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                     if (_mv_115.has_value) {
@@ -1135,8 +1135,8 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
                 __auto_type val = str.value;
                 __auto_type slen = ((int64_t)(val.len));
                 __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, ((slen * 2) + 3)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-                __auto_type i = 0;
-                __auto_type out = 1;
+                int64_t i = 0;
+                int64_t out = 1;
                 buf[0] = 34;
                 while (i < slen) {
                     {
@@ -1189,7 +1189,7 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
                 } else {
                     {
                         __auto_type result = parser_string_copy(arena, SLOP_STR("("));
-                        __auto_type i = 0;
+                        int64_t i = 0;
                         while (i < len) {
                             __auto_type _mv_117 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_117.has_value) {
