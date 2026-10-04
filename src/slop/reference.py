@@ -989,6 +989,8 @@ literal                     ; Literal match (number, string)
 ### Exhaustiveness
 All variants must be covered, or use wildcard (_).
 Type checker enforces exhaustive matching.
+Literal arms over Int or String need a wildcard. A match whose value is used
+aborts ("non-exhaustive match reached") on a value no arm covers.
 """,
 
     'mistakes': """## Common Mistakes

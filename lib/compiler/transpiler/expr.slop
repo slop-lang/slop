@@ -4342,13 +4342,30 @@
     (@intent "Get the body expression from a match branch")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
-    (let ((len (list-len branch-items)))
-      (if (< len 2)
-        "0"
-        (match (list-get branch-items (- len 1))
-          ((some body-expr)
-            (transpile-expr ctx body-expr))
-          ((none) "0")))))
+    (if (< (list-len branch-items) 2)
+      "0"
+      (transpile-body-forms ctx branch-items 1)))
+
+  (fn transpile-body-forms ((ctx (Ptr TranspileContext)) (forms (List (Ptr SExpr))) (start Int))
+    (@intent "The value of forms[start..] run in order: the last form's value, after the others")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) Int) -> String))
+    (@pre {ctx != nil})
+    ;; A match arm or cond clause may hold several forms. In expression
+    ;; position only the last was transpiled, so (1 (println "x") 10) never
+    ;; printed. The earlier forms now run first, in a statement expression.
+    (let ((len (list-len forms)))
+      (if (== (- len start) 1)
+        (match (list-get forms start)
+          ((some form) (transpile-expr ctx form))
+          ((none) "0"))
+        (let ((mut out "({ ")
+              (mut k start))
+          (while (< k len)
+            (match (list-get forms k)
+              ((some form) (set! out (ctx-str3 ctx out (transpile-expr ctx form) "; ")))
+              ((none) (do)))
+            (set! k (+ k 1)))
+          (ctx-str ctx out "})")))))
 
   (fn transpile-branch-body-with-binding ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr))
                                           (branch-items (List (Ptr SExpr))) (binding-name String)
@@ -4397,6 +4414,113 @@
     (ctx-add-error-at ctx
       "a literal pattern in an Option or Result payload is not supported; bind the payload and test it in the body"
       (ctx-sexpr-line pattern) (ctx-sexpr-col pattern)))
+
+  (fn match-has-wildcard-arm ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))))
+    (@intent "Does a match have an else or _ arm?")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> Bool))
+    (@pre {ctx != nil})
+    (let ((patterns (collect-match-patterns ctx items))
+          (n (list-len patterns))
+          (mut found false)
+          (mut i 0))
+      (while (and (< i n) (not found))
+        (match (list-get patterns i)
+          ((some pat)
+            (let ((tag (get-expr-pattern-tag pat)))
+              (when (or (string-eq tag "else") (string-eq tag "_"))
+                (set! found true))))
+          ((none) (do)))
+        (set! i (+ i 1)))
+      found))
+
+  (fn unmatched-match-value ((ctx (Ptr TranspileContext)) (result-type String))
+    (@intent "A C expression of result-type for the arm a match does not have: it traps")
+    (@spec (((Ptr TranspileContext) String) -> String))
+    (@pre {ctx != nil})
+    ;; An Option or Result match with no arm for one side used to yield 0 there,
+    ;; a value nobody wrote (#147). Reaching that side is the non-exhaustive
+    ;; match statement position traps in return position; an expression always
+    ;; needs its value, so here it always traps.
+    (ctx-str3 ctx "({ SLOP_UNREACHABLE(); (" result-type "){0}; })"))
+
+  (fn match-needs-trap ((ctx (Ptr TranspileContext)) (items (List (Ptr SExpr))) (result-type String))
+    (@intent "Must a switch-lowered match expression trap when no arm ran?")
+    (@spec (((Ptr TranspileContext) (List (Ptr SExpr)) String) -> Bool))
+    (@pre {ctx != nil})
+    ;; A value-producing match with no default arm used to hand back the
+    ;; zeroed _mr when nothing matched (#147). The trap goes after the switch,
+    ;; not in a default: label, so -Wswitch still sees a missing variant.
+    (and (not (string-eq result-type "void"))
+         (not (match-has-wildcard-arm ctx items))))
+
+  (fn matched-flag-decl ((track Bool))
+    (@intent "Declarations after a switch-lowered match's result type: _mr, and _mm when tracked")
+    (@spec ((Bool) -> String))
+    (@pure)
+    (if track " _mr = {0}; int _mm = 0; " " _mr = {0}; "))
+
+  (fn matched-flag-trap ((track Bool))
+    (@intent "The trap after a switch-lowered match when no arm ran")
+    (@spec ((Bool) -> String))
+    (@pure)
+    (if track "if (!_mm) { SLOP_UNREACHABLE(); } " ""))
+
+  (fn bind-union-case-payloads ((ctx (Ptr TranspileContext)) (type-name String) (tag String) (pattern (Ptr SExpr)))
+    (@intent "Bind each payload name of an expression-position union arm, returning its C declarations")
+    (@spec (((Ptr TranspileContext) String String (Ptr SExpr)) -> String))
+    (@pre {ctx != nil})
+    (@pre {pattern != nil})
+    ;; A variant with several payloads keeps them in .data.<tag>.f0, .f1, ...
+    ;; Binding only the first name, to the whole payload struct, left the rest
+    ;; undeclared and the first mistyped (#171). Statement position has always
+    ;; done this per position; see emit-union-case. The caller pushes the scope.
+    (let ((arena (. (deref ctx) arena))
+          (c-tag (to-c-name arena tag))
+          (is-multi (match (ctx-lookup-field-type ctx type-name (ctx-str ctx tag "__count"))
+                      ((some _) true)
+                      ((none) false)))
+          (mut decls ""))
+      (match (deref pattern)
+        ((lst pat-lst)
+          (let ((pat-items (. pat-lst items))
+                (pat-len (list-len pat-items)))
+            (for (bi 1 pat-len)
+              (match (list-get pat-items bi)
+                ((some binding-expr)
+                  (match (deref binding-expr)
+                    ((sym s)
+                      (let ((binding-name (. s name))
+                            (field-idx (- bi 1))
+                            (field-key (if is-multi (ctx-str3 ctx tag "__" (int-to-string arena field-idx)) tag))
+                            (has-field (if (or is-multi (== bi 1))
+                                         (match (ctx-lookup-field-slop-type ctx type-name field-key)
+                                           ((some _) true)
+                                           ((none) false))
+                                         false)))
+                        (cond
+                          ((not has-field)
+                            (ctx-add-error-at ctx
+                              (ctx-str5 ctx "pattern binds more payloads than variant '" tag "' of '" type-name "' has")
+                              (ctx-sexpr-line binding-expr) (ctx-sexpr-col binding-expr)))
+                          ((string-eq binding-name "_") (do))
+                          (else
+                            (let ((payload-slop-type (match (ctx-lookup-field-slop-type ctx type-name field-key)
+                                                       ((some st) st)
+                                                       ((none) "")))
+                                  ;; A (Ptr T) payload is registered as one, or field
+                                  ;; access on it emits `.` (#80).
+                                  (is-ptr (starts-with payload-slop-type "(Ptr "))
+                                  (c-type (if is-ptr (slop-value-type-to-c-type ctx payload-slop-type) "auto"))
+                                  (c-binding (to-c-name arena binding-name))
+                                  (access (if is-multi
+                                            (ctx-str4 ctx "_mv.data." c-tag ".f" (int-to-string arena field-idx))
+                                            (ctx-str ctx "_mv.data." c-tag))))
+                              (ctx-bind-var ctx (VarEntry binding-name c-binding c-type payload-slop-type is-ptr false false "" "" 'origin-bound))
+                              (set! decls (ctx-str ctx decls (ctx-str5 ctx "__auto_type " c-binding " = " access "; "))))))))
+                    (else (do))))
+                ((none) (do))))))
+        (else (do)))
+      decls))
 
   (fn build-option-match-expr ((ctx (Ptr TranspileContext)) (scrutinee (Ptr SExpr)) (scrutinee-c String) (items (List (Ptr SExpr))))
     (@intent "Build Option match as GCC statement expression")
@@ -4455,6 +4579,10 @@
         (when (not saw-none) (set! none-body else-body)))
       ;; Infer result type for proper none handling
       (let ((result-type (infer-match-result-c-type ctx items)))
+        ;; A side no arm covers traps rather than yield 0 (#147)
+        (when (and (string-eq else-body "") (not (string-eq result-type "void")))
+          (when (not saw-some) (set! some-body (unmatched-match-value ctx result-type)))
+          (when (not saw-none) (set! none-body (unmatched-match-value ctx result-type))))
         ;; Build the output string based on whether there's a binding
         (if (string-eq some-binding "")
           ;; No binding - use simple ternary
@@ -4562,21 +4690,41 @@
     (@intent "Infer C result type for match expression, trying branches until one succeeds")
     (@spec (((Ptr TranspileContext) (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
-    ;; Try each branch starting from index 2 until we find a non-error type
+    ;; The first arm whose type is complete. An arm that is nil, none or
+    ;; (error e) alone has only part of the match's type -- void*, an Option
+    ;; with no inner type, a Result with no ok type -- so a later arm decides,
+    ;; and the partial one is kept only if no arm does better.
     (let ((len (list-len items))
           (mut i 2)
-          (mut result "__type_error__"))
+          (mut result "__type_error__")
+          (mut partial "__type_error__"))
       (if (< len 3)
         "int64_t"
         (do
           (while (and (< i len) (string-eq result "__type_error__"))
             (match (list-get items i)
-              ((some branch) (set! result (infer-match-branch-body-type ctx branch)))
+              ((some branch)
+                (let ((t (infer-match-branch-body-type ctx branch)))
+                  (cond
+                    ((string-eq t "__type_error__") (do))
+                    ((is-partial-result-c-type t)
+                      (when (string-eq partial "__type_error__") (set! partial t)))
+                    (else (set! result t)))))
               ((none) (do)))
             (set! i (+ i 1)))
-          (if (string-eq result "__type_error__")
-            "int64_t"
-            result)))))
+          (cond
+            ((not (string-eq result "__type_error__")) result)
+            ((not (string-eq partial "__type_error__")) partial)
+            (else "int64_t"))))))
+
+  (fn is-partial-result-c-type ((t String))
+    (@intent "Is this C type only part of a value's type: nil's void*, a bare none or (error e)?")
+    (@spec ((String) -> Bool))
+    (@pure)
+    (or (string-eq t "void*")
+        (contains t "TRANSPILER_ERROR")
+        (starts-with t "slop_result_void_")
+        (string-eq t "_slop_option_generic")))
 
   (fn slop-type-to-c-type ((ctx (Ptr TranspileContext)) (slop-type String))
     (@intent "Convert a SLOP type name to its C type equivalent")
@@ -4963,6 +5111,10 @@
           (when (not (string-eq else-body ""))
             (when (not saw-ok) (set! ok-body else-body))
             (when (not saw-err) (set! err-body else-body)))
+          ;; A side no arm covers traps rather than yield 0 (#147)
+          (when (and (string-eq else-body "") (not (string-eq result-type "void")))
+            (when (not saw-ok) (set! ok-body (unmatched-match-value ctx result-type)))
+            (when (not saw-err) (set! err-body (unmatched-match-value ctx result-type))))
           ;; Build GCC statement expression with if/else
       ;; ({ __auto_type _mv = scrutinee; <type> _mr;
       ;;    if (_mv.is_ok) { ok_bind _mr = ok_body; } else { err_bind _mr = err_body; } _mr; })
@@ -5003,6 +5155,7 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (result-type (infer-match-result-c-type ctx items))
+          (track (match-needs-trap ctx items result-type))
           (mut cases "")
           (mut i 2))
       ;; Build switch cases; a break in an arm must leave the loop, not the switch
@@ -5016,7 +5169,7 @@
                   (when (>= (list-len branch-items) 2)
                     (match (list-get branch-items 0)
                       ((some pattern)
-                        (set! cases (build-enum-case-expr ctx arena cases scrut-c-type pattern branch-items result-type)))
+                        (set! cases (build-enum-case-expr ctx arena cases scrut-c-type pattern branch-items result-type track)))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -5032,15 +5185,16 @@
           s4)
         ;; Non-void match with result variable
         (let ((s1 (ctx-str ctx "({ __auto_type _mv = " scrutinee-c))
-              (s2 (ctx-str ctx s1 (ctx-str ctx "; " (ctx-str ctx result-type " _mr = {0}; switch (_mv) { "))))
-              (s3 (ctx-str ctx s2 cases))
-              (s4 (ctx-str ctx s3 " } _mr; })")))
-          s4))))
+              (s2 (ctx-str ctx s1 (ctx-str3 ctx "; " result-type (matched-flag-decl track))))
+              (s3 (ctx-str3 ctx s2 "switch (_mv) { " cases))
+              (s4 (ctx-str3 ctx s3 " } " (matched-flag-trap track))))
+          (ctx-str ctx s4 "_mr; })")))))
 
   (fn build-enum-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String) (scrut-c-type String)
-                             (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String))
+                             (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String)
+                             (track Bool))
     (@intent "Build a single enum case for expression-level match (no binding extraction)")
-    (@spec (((Ptr TranspileContext) Arena String String (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
+    (@spec (((Ptr TranspileContext) Arena String String (Ptr SExpr) (List (Ptr SExpr)) String Bool) -> String))
     (@pre {ctx != nil})
     (let ((tag (get-expr-pattern-tag pattern))
           (is-void (string-eq result-type "void")))
@@ -5058,9 +5212,13 @@
               (let ((c-tag (to-c-name arena tag))
                     (case-label (ctx-str4 ctx type-name "_" c-tag ""))
                     (body (typed-none ctx result-type (get-match-branch-body ctx branch-items))))
-                (if is-void
-                  (ctx-str ctx cases (ctx-str ctx "case " (ctx-str ctx case-label (ctx-str3 ctx ": { " body "; break; } "))))
-                  (ctx-str ctx cases (ctx-str ctx "case " (ctx-str ctx case-label (ctx-str3 ctx ": { _mr = " body "; break; } ")))))))
+                (cond
+                  (is-void
+                    (ctx-str ctx cases (ctx-str ctx "case " (ctx-str ctx case-label (ctx-str3 ctx ": { " body "; break; } ")))))
+                  (track
+                    (ctx-str ctx cases (ctx-str ctx "case " (ctx-str ctx case-label (ctx-str3 ctx ": { _mr = " body "; _mm = 1; break; } ")))))
+                  (else
+                    (ctx-str ctx cases (ctx-str ctx "case " (ctx-str ctx case-label (ctx-str3 ctx ": { _mr = " body "; break; } "))))))))
             ((none)
               (ctx-add-error-at ctx (ctx-str3 ctx "unknown enum variant '" tag "' in match expression") (ctx-sexpr-line pattern) (ctx-sexpr-col pattern))
               cases))))))
@@ -5074,6 +5232,7 @@
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
           (result-type (infer-match-result-c-type ctx items))
+          (track (match-needs-trap ctx items result-type))
           (mut cases "")
           (mut i 2))
       ;; Build switch cases; a break in an arm must leave the loop, not the switch
@@ -5094,7 +5253,7 @@
                           (ctx-add-error-at ctx
                             "a literal pattern in a variant payload is not supported for a match in expression position; bind the payload and test it in the body"
                             (ctx-sexpr-line pattern) (ctx-sexpr-col pattern))
-                          (set! cases (build-union-case-expr ctx arena cases scrutinee pattern branch-items result-type))))
+                          (set! cases (build-union-case-expr ctx arena cases scrutinee pattern branch-items result-type track))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
@@ -5115,10 +5274,10 @@
             s4)
           ;; Non-void match with result variable
           (let ((s1 (ctx-str ctx "({ __auto_type _mv = " scrut-val))
-                (s2 (ctx-str ctx s1 (ctx-str ctx "; " (ctx-str ctx result-type " _mr = {0}; switch (_mv.tag) { "))))
-                (s3 (ctx-str ctx s2 cases))
-                (s4 (ctx-str ctx s3 " } _mr; })")))
-            s4)))))
+                (s2 (ctx-str ctx s1 (ctx-str3 ctx "; " result-type (matched-flag-decl track))))
+                (s3 (ctx-str3 ctx s2 "switch (_mv.tag) { " cases))
+                (s4 (ctx-str3 ctx s3 " } " (matched-flag-trap track))))
+            (ctx-str ctx s4 "_mr; })"))))))
 
   (fn typed-none ((ctx (Ptr TranspileContext)) (result-type String) (body String))
     (@intent "Convert 'none' to typed none if result type is an Option type")
@@ -5213,9 +5372,10 @@
               trampoline-name))))))
 
   (fn build-union-case-expr ((ctx (Ptr TranspileContext)) (arena Arena) (cases String)
-                             (scrutinee (Ptr SExpr)) (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String))
+                             (scrutinee (Ptr SExpr)) (pattern (Ptr SExpr)) (branch-items (List (Ptr SExpr))) (result-type String)
+                             (track Bool))
     (@intent "Build a single union case for expression-level match")
-    (@spec (((Ptr TranspileContext) Arena String (Ptr SExpr) (Ptr SExpr) (List (Ptr SExpr)) String) -> String))
+    (@spec (((Ptr TranspileContext) Arena String (Ptr SExpr) (Ptr SExpr) (List (Ptr SExpr)) String Bool) -> String))
     (@pre {ctx != nil})
     (let ((tag (get-expr-pattern-tag pattern))
           (is-void (string-eq result-type "void")))
@@ -5231,54 +5391,49 @@
           (match (ctx-resolve-enum-variant-for ctx tag (infer-expr-c-type ctx scrutinee) pattern)
             ((some type-name)
               (let ((c-tag (to-c-name arena tag))
-                    (case-label (ctx-str4 ctx type-name "_" c-tag ""))
-                    (binding-opt (get-expr-binding-name pattern)))
-                (match binding-opt
-                  ((some binding-name)
-                    ;; Has binding - need to bind variable and transpile body with scope
-                    (let ((c-binding (to-c-name arena binding-name))
-                          (payload-slop-type (match (ctx-lookup-field-slop-type ctx type-name tag)
-                                               ((some st) st)
-                                               ((none) "")))
-                          (body (typed-none ctx result-type (transpile-branch-body-with-binding ctx scrutinee branch-items binding-name
-                                                              payload-slop-type)))
-                          (s1 (ctx-str ctx cases "case "))
-                          (s2 (ctx-str ctx s1 case-label))
-                          (s3 (ctx-str ctx s2 ": { __auto_type "))
-                          (s4 (ctx-str ctx s3 c-binding))
-                          (s5 (ctx-str ctx s4 " = _mv.data."))
-                          (s6 (ctx-str ctx s5 c-tag))
-                          (s7 (if is-void
-                                (ctx-str ctx s6 "; ")
-                                (ctx-str ctx s6 "; _mr = ")))
-                          (s8 (ctx-str ctx s7 body))
-                          (s9 (ctx-str ctx s8 "; break; } ")))
-                      s9))
-                  ((none)
-                    ;; No binding
-                    (let ((body (typed-none ctx result-type (get-match-branch-body ctx branch-items)))
-                          (s1 (ctx-str ctx cases "case "))
-                          (s2 (ctx-str ctx s1 case-label))
-                          (s3 (if is-void
-                                (ctx-str ctx s2 ": { ")
-                                (ctx-str ctx s2 ": { _mr = ")))
-                          (s4 (ctx-str ctx s3 body))
-                          (s5 (ctx-str ctx s4 "; break; } ")))
-                      s5)))))
-            ((none) cases))))))
+                    (case-label (ctx-str4 ctx type-name "_" c-tag "")))
+                (ctx-push-scope ctx)
+                (let ((decls (bind-union-case-payloads ctx type-name tag pattern))
+                      (body (typed-none ctx result-type (get-match-branch-body ctx branch-items)))
+                      ;; _mm records that an arm ran; see build-union-match-expr
+                      (assign (cond
+                                (is-void (ctx-str ctx body "; "))
+                                (track (ctx-str3 ctx "_mr = " body "; _mm = 1; "))
+                                (else (ctx-str3 ctx "_mr = " body "; ")))))
+                  (ctx-pop-scope ctx)
+                  (ctx-str ctx cases
+                    (ctx-str5 ctx "case " case-label ": { " decls (ctx-str ctx assign "break; } "))))))
+            ((none)
+              (ctx-add-error-at ctx (ctx-str3 ctx "unknown union variant '" tag "' in match expression") (ctx-sexpr-line pattern) (ctx-sexpr-col pattern))
+              cases))))))
 
   (fn build-ternary-match-expr ((ctx (Ptr TranspileContext)) (scrutinee-c String) (items (List (Ptr SExpr))))
-    (@intent "Build match as ternary chain for literals/enums")
+    (@intent "Build a literal match as a statement expression that tests each arm in order")
     (@spec (((Ptr TranspileContext) String (List (Ptr SExpr))) -> String))
     (@pre {ctx != nil})
-    ;; For exhaustive matches (no else), use last branch as default to avoid type mismatch
-    ;; Build chain in reverse: last branch becomes innermost fallback
+    ;; ({ __auto_type _mv = <scrutinee>; int _mi = (c1) ? 1 : (c2) ? 2 : 0;
+    ;;    if (!_mi) { SLOP_UNREACHABLE(); } _mi == 1 ? (b1) : (b2); })
+    ;; This was a ternary chain that embedded the scrutinee once per arm, so a
+    ;; call there ran once per test, and used the last arm as an untested
+    ;; default, so (match n (1 10) (2 20)) gave 20 for 3 (#147). Now the
+    ;; scrutinee is bound once, the tests pick an arm index in order, and an
+    ;; index no arm set traps. The value is still a ternary over the bodies,
+    ;; each written once, so C unifies their types as it always has: a typed
+    ;; _mr took its type from one arm, and nil or (error ...) there is not the
+    ;; type of the match. A void match is an if-chain that falls through, as
+    ;; statement position does.
     (let ((arena (. (deref ctx) arena))
           (len (list-len items))
-          (mut result "")
-          (mut first-branch true)
-          (mut i (- len 1)))
-      (while (>= i 2)
+          (result-type (infer-match-result-c-type ctx items))
+          (is-void (string-eq result-type "void"))
+          (mut chain "")
+          (mut picks "")
+          (mut values "")
+          (mut last-body "")
+          (mut tests 0)
+          (mut has-else false)
+          (mut i 2))
+      (while (and (< i len) (not has-else))
         (match (list-get items i)
           ((some branch)
             (match (deref branch)
@@ -5288,37 +5443,46 @@
                     (match (list-get branch-items 0)
                       ((some pattern)
                         (let ((tag (get-expr-pattern-tag pattern))
-                              (body (get-match-branch-body ctx branch-items)))
+                              (is-wild (or (string-eq tag "else") (string-eq tag "_")))
+                              ;; A string pattern needs slop_string_eq (#91)
+                              (cond-c (if is-wild "" (literal-pattern-cond ctx "_mv" pattern (transpile-expr ctx pattern))))
+                              (body (typed-none ctx result-type (get-match-branch-body ctx branch-items))))
                           (cond
-                            ;; else/_ clause - use as default
-                            ((or (string-eq tag "else") (string-eq tag "_"))
-                              (set! result body)
-                              (set! first-branch false))
-                            ;; First non-else branch in reverse order - use as default for exhaustive matches
-                            (first-branch
-                              (set! result body)
-                              (set! first-branch false))
-                            ;; Subsequent branches - wrap in ternary
+                            (is-void
+                              (let ((block (ctx-str3 ctx "{ " body "; } ")))
+                                (if is-wild
+                                  (set! chain (if (string-eq chain "") block (ctx-str3 ctx chain "else " block)))
+                                  (let ((test (ctx-str3 ctx "if (" cond-c ") ")))
+                                    (set! chain (if (string-eq chain "")
+                                                  (ctx-str ctx test block)
+                                                  (ctx-str4 ctx chain "else " test block)))))))
                             (else
-                              (let ((pattern-c (transpile-expr ctx pattern))
-                                    (cond-c (literal-pattern-cond ctx scrutinee-c pattern pattern-c)))
-                                ;; Build: (<cond> ? body : result). A string pattern
-                                ;; needs string_eq here too - this is the lowerer a
-                                ;; match in a let initializer or an argument goes
-                                ;; through (#91).
-                                (set! result (ctx-str ctx
-                                  (ctx-str ctx "(" cond-c)
-                                  (ctx-str ctx " ? "
-                                    (ctx-str ctx body
-                                      (ctx-str ctx " : " (ctx-str ctx result ")")))))))))))
+                              (let ((k (int-to-string arena (+ tests 1))))
+                                ;; Every arm but the last selected one is a test on _mi
+                                (when (not (string-eq last-body ""))
+                                  (set! values (ctx-str ctx values
+                                                 (ctx-str5 ctx "_mi == " (int-to-string arena tests) " ? (" last-body ") : "))))
+                                (set! last-body body)
+                                (set! picks (ctx-str ctx picks
+                                              (if is-wild
+                                                k
+                                                (ctx-str5 ctx "(" cond-c ") ? " k " : "))))
+                                (set! tests (+ tests 1)))))
+                          (when is-wild (set! has-else true))))
                       ((none) (do))))))
               (else (do))))
           ((none) (do)))
-        (set! i (- i 1)))
-      ;; If no branches at all, return 0
-      (if (string-eq result "")
-        "0"
-        result)))
+        (set! i (+ i 1)))
+      (let ((head (ctx-str3 ctx "({ __auto_type _mv = " scrutinee-c "; ")))
+        (cond
+          (is-void
+            (ctx-str4 ctx head chain "" "(void)0; })"))
+          ((== tests 0) "0")
+          (else
+            (let ((pick-expr (if has-else picks (ctx-str ctx picks "0")))
+                  (trap (if has-else "" "if (!_mi) { SLOP_UNREACHABLE(); } ")))
+              (ctx-str5 ctx head (ctx-str3 ctx "int _mi = " pick-expr "; ") trap
+                (ctx-str3 ctx values "(" last-body) "); })")))))))
 
   ;; ============================================================
   ;; Expression-position statement forms (GCC statement expressions)
