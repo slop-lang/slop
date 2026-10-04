@@ -740,7 +740,7 @@ slop_string strlib_replace_all(slop_arena* arena, slop_string s, slop_string old
                     int64_t src_pos = 0;
                     int64_t dst_pos = 0;
                     while (src_pos < slen) {
-                        if (((src_pos + old_len) <= slen) && ({ __auto_type match_found = 1; __auto_type k = 0; ({ while (((k < old_len) && match_found)) { (void)((((((int64_t)(s.data[(src_pos + k)])) != ((int64_t)(old.data[k])))) ? ({ match_found = 0; (void)0; }) : ({ k = (k + 1); (void)0; }))); } (void)0; }); match_found; })) {
+                        if (((src_pos + old_len) <= slen) && ({ uint8_t match_found = 1; int64_t k = 0; ({ while (((k < old_len) && match_found)) { (void)((((((int64_t)(s.data[(src_pos + k)])) != ((int64_t)(old.data[k])))) ? ({ match_found = 0; (void)0; }) : ({ k = (k + 1); (void)0; }))); } (void)0; }); match_found; })) {
                             if (new_len > 0) {
                                 memcpy(((void*)((buf + dst_pos))), ((void*)(new.data)), ((uint64_t)(new_len)));
                             }

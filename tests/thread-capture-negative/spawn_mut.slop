@@ -1,0 +1,24 @@
+(module spawn-mut
+  (@intent "A closure passed to spawn may not capture a mut local (#193)")
+  (import thread (spawn join))
+
+  (fn work ((xs (List Int)))
+    (@intent "Sum xs")
+    (@spec (((List Int)) -> Int))
+    (let ((mut s 0))
+      (for-each (x xs)
+        (set! s (+ s x)))
+      s))
+
+  (fn main ()
+    (@intent "Each iteration's thread would read the slot the next iteration reuses")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((mut total 0)
+            (mut k 0))
+        (while (< k 3)
+          (let ((mut part (list-new arena Int)))
+            (list-push part k)
+            (set! total (+ total (join (spawn arena (fn () (work part)))))))
+          (set! k (+ k 1)))
+        total))))

@@ -1,0 +1,62 @@
+(module test-closure-mut-capture
+  (@intent "A closure that captures an untyped mut local reads and writes the local itself, whichever let declared it")
+
+  ;; A closure captures a mut local through a pointer typed from the local's
+  ;; SLOP type, int64_t* for an Int. The let in a match arm and the let in
+  ;; expression position declared an untyped (mut n 0) as __auto_type, a C
+  ;; int, so the closure's writes covered 8 bytes of a 4-byte slot and, under
+  ;; optimisation, count came back 0 (#236). The statement let already gave
+  ;; a mut primitive its explicit type. Built at the default -O2.
+
+  (fn call-n ((in f (Fn (Int) Unit)) (in n Int))
+    (@intent "Call f n times")
+    (@spec (((Fn (Int) Unit) Int) -> Unit))
+    (let ((mut i 0))
+      (while (< i n)
+        (do
+          (f i)
+          (set! i (+ i 1))))))
+
+  (fn in-statement-let ((k Int))
+    (@intent "The statement let: count + other")
+    (@spec ((Int) -> Int))
+    (let ((mut count 0)
+          (mut other 0))
+      (call-n (fn ((j Int)) (do (set! count (+ count 1)) (set! other (+ other 10)))) k)
+      (+ count other)))
+
+  (fn in-match-arm ((n (Option Int)))
+    (@intent "A let that is a match arm's body: count + other")
+    (@spec (((Option Int)) -> Int))
+    (match n
+      ((some k)
+        (let ((mut count 0)
+              (mut other 0))
+          (do
+            (call-n (fn ((j Int)) (do (set! count (+ count 1)) (set! other (+ other 10)))) k)
+            (+ count other))))
+      ((none) 0)))
+
+  (fn in-expression ((k Int))
+    (@intent "A let in expression position, a binding's value: count + other")
+    (@spec ((Int) -> Int))
+    (let ((v (let ((mut count 0)
+                   (mut other 0))
+               (call-n (fn ((j Int)) (do (set! count (+ count 1)) (set! other (+ other 10)))) k)
+               (+ count other))))
+      v))
+
+  (fn main ()
+    (@intent "Each shape calls the closure 3 times: 3 + 30")
+    (@spec (() -> Int))
+    (let ((mut failures 0))
+      (when (!= (in-statement-let 3) 33)
+        (println "statement let")
+        (set! failures (+ failures 1)))
+      (when (!= (in-match-arm (some 3)) 33)
+        (println "match arm")
+        (set! failures (+ failures 1)))
+      (when (!= (in-expression 3) 33)
+        (println "expression")
+        (set! failures (+ failures 1)))
+      failures)))

@@ -407,7 +407,7 @@ slop_string ctype_build_fn_args_str(slop_arena* arena, types_SExpr* args_expr) {
                 } else {
                     {
                         __auto_type result = SLOP_STR("(");
-                        __auto_type i = 0;
+                        int64_t i = 0;
                         while (i < arg_count) {
                             __auto_type _mv_255 = ({ __auto_type _lst = arg_items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_255.has_value) {
@@ -452,7 +452,7 @@ slop_string ctype_sexpr_to_type_string(slop_arena* arena, types_SExpr* expr) {
                 __auto_type items = lst.items;
                 __auto_type len = ((int64_t)((items).len));
                 __auto_type result = SLOP_STR("(");
-                __auto_type i = 0;
+                int64_t i = 0;
                 while (i < len) {
                     __auto_type _mv_257 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_257.has_value) {

@@ -370,6 +370,12 @@ run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_literal_no_arena.s
 run_negative_build_test "$REPO_ROOT/tests/arena-negative/list_const_non_literal.slop" "list-const-non-literal" \
     "list_const_non_literal.slop:8:31: error: list: a module-level list literal needs literal elements"
 
+# A closure passed to spawn captures a mut local by reference, so the thread
+# read a stack slot its scope had moved on from (#193). It is an error; the
+# copy the message suggests is tests/test_spawn_capture_copy.slop.
+run_negative_build_test "$REPO_ROOT/tests/thread-capture-negative/spawn_mut.slop" "spawn-captures-mut" \
+    "spawn_mut.slop:22:53: error: closure passed to spawn captures mutable 'part' by reference"
+
 # A key type with no structural hash is a transpiler error. Every compound key
 # but (Ptr T) used to be hashed as a String, whatever its size.
 run_negative_build_test "$REPO_ROOT/tests/key-type-negative/list_key.slop" "list-key" \

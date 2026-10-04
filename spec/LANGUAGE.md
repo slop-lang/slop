@@ -342,7 +342,7 @@ identifier               ; Variable reference
 (return expr)
 
 ; Functions
-(fn ((param Type)...) body)      ; Lambda
+(fn ((param Type)...) body)      ; Lambda (see Captures below)
 (name arg1 arg2...)              ; Application
 
 ; Data construction
@@ -439,6 +439,24 @@ identifier               ; Variable reference
 (error reason)
 (try expr (catch pattern body))
 (? expr)                         ; Early return on error
+```
+
+**Captures.** A lambda that uses variables of the scope it is written in
+captures them. An immutable binding is captured **by value**: the lambda
+gets a copy, made where the lambda is created. A `mut` local or `mut`
+parameter is captured **by reference**: the lambda reads and writes the
+variable itself, so the outer scope sees its `set!`s. A by-reference
+capture is valid only while the variable's scope is live; a lambda that
+runs later reads a dead, possibly reused, stack slot.
+
+A lambda passed to `spawn`, `spawn-closure` or `spawn-with-chan` runs on
+another thread, typically after the scope that made it has moved on, so it
+must not capture a `mut` variable: that is a compile error. Bind an
+immutable copy for the thread and capture that:
+
+```lisp
+(let ((share part))                  ; part is mut; share is a copy
+  (spawn arena (fn () (work share))))
 ```
 
 ### 3.7 Holes (Hybrid Generation)
@@ -1141,6 +1159,10 @@ say -- aborts the program with `SLOP: spawn: cannot start a thread`, as an
 arena that cannot get memory does. It never returns a handle for a thread
 that is not running, so work split across threads cannot silently lose a
 share. A `join` that cannot wait for its thread aborts the same way.
+
+The function a thread runs must not capture a `mut` variable, which it
+would reach by reference after its scope may have ended; it is a compile
+error (see **Captures** in section 3).
 
 **Usage Pattern:**
 

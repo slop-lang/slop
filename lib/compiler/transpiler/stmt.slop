@@ -26,7 +26,7 @@
                    to-c-type-prefixed ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col
                    LastLambdaInfo ctx-get-last-lambda-info ctx-clear-last-lambda-info))
   (import ctype (to-c-type to-c-name))
-  (import expr (transpile-expr transpile-expr-for transpile-expr-narrowed field-slop-type infer-expr-c-type infer-expr-slop-type
+  (import expr (is-simple-primitive-c-type transpile-expr transpile-expr-for transpile-expr-narrowed field-slop-type infer-expr-c-type infer-expr-slop-type
               infer-collection-element-slop-type c-type-to-option-type-name
               resolve-type-alias extract-set-elem-from-slop-type
               extract-map-key-from-slop-type extract-map-value-from-slop-type
@@ -345,28 +345,6 @@
             ((sym sym) (string-eq (. sym name) "mut"))
             (else false)))
         ((none) false))))
-
-  (fn is-simple-primitive-c-type ((t String))
-    (@intent "Check if type is a simple C primitive safe for explicit declaration")
-    (@spec ((String) -> Bool))
-    ;; Only use explicit types for primitives where __auto_type inference
-    ;; from literals could cause type mismatches (e.g., int vs int64_t).
-    ;; Excludes "Unknown" and complex types which should use __auto_type.
-    (cond
-      ((string-eq t "int64_t") true)
-      ((string-eq t "int32_t") true)
-      ((string-eq t "int16_t") true)
-      ((string-eq t "int8_t") true)
-      ((string-eq t "uint64_t") true)
-      ((string-eq t "uint32_t") true)
-      ((string-eq t "uint16_t") true)
-      ((string-eq t "uint8_t") true)
-      ((string-eq t "double") true)
-      ((string-eq t "float") true)
-      ((string-eq t "size_t") true)
-      ((string-eq t "bool") true)
-      ((string-eq t "int") true)
-      (else false)))
 
   (fn get-some-value ((expr (Ptr SExpr)))
     (@intent "If expr is (some value), return the value expression")

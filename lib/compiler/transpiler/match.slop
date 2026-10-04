@@ -24,7 +24,7 @@
                    ctx-add-error ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
   (import strlib (starts-with ends-with char-at))
   (import ctype (to-c-name to-c-type sexpr-to-type-string))
-  (import expr (pattern-is-string-literal literal-pattern-cond pattern-has-literal-payload
+  (import expr (is-simple-primitive-c-type pattern-is-string-literal literal-pattern-cond pattern-has-literal-payload
                 unsupported-payload-literal
                 transpile-expr transpile-literal infer-expr-c-type infer-expr-slop-type infer-option-inner-slop-type infer-result-ok-slop-type infer-result-err-slop-type c-type-to-option-type-name
                 resolve-type-alias infer-collection-element-slop-type is-set-type is-map-type deref-container-c
@@ -988,7 +988,7 @@
                                               ;; Infer type from expression
                                               (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                                     (is-ptr (ends-with inferred-type "*")))
-                                                (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
+                                                (ctx-emit ctx (ctx-str4 ctx (let-decl-type ctx has-mut inferred-type) c-name " = " (ctx-str ctx val-c ";")))
                                                 (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "" 'origin-local)))))))
                                       ((none) (ctx-add-error-at ctx "missing value" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))
                                 ((none) (ctx-add-error-at ctx "missing type/value" (ctx-sexpr-line binding) (ctx-sexpr-col binding)))))
@@ -1010,12 +1010,24 @@
                                         ;; Infer type from expression
                                         (let ((inferred-type (infer-expr-c-type ctx val-expr))
                                               (is-ptr (ends-with inferred-type "*")))
-                                          (ctx-emit ctx (ctx-str4 ctx "__auto_type " c-name " = " (ctx-str ctx val-c ";")))
+                                          (ctx-emit ctx (ctx-str4 ctx (let-decl-type ctx has-mut inferred-type) c-name " = " (ctx-str ctx val-c ";")))
                                           (ctx-bind-var ctx (VarEntry raw-name c-name inferred-type inferred-slop-type is-ptr has-mut false "" "" 'origin-local)))))))
                                 ((none) (ctx-add-error-at ctx "missing value" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))))
                       (else (ctx-add-error-at ctx "binding name must be symbol" (ctx-sexpr-line name-expr) (ctx-sexpr-col name-expr)))))
                   ((none) (ctx-add-error-at ctx "missing binding name" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))))
         (else (ctx-add-error-at ctx "binding must be list" (ctx-sexpr-line binding) (ctx-sexpr-col binding))))))
+
+  (fn let-decl-type ((ctx (Ptr TranspileContext)) (has-mut Bool) (inferred-type String))
+    (@intent "The C declaration type, with trailing space, for an untyped let binding")
+    (@spec (((Ptr TranspileContext) Bool String) -> String))
+    (@pre {ctx != nil})
+    ;; A closure captures a mut local through a pointer of its inferred C
+    ;; type, so a mut primitive is declared with that type: __auto_type n = 0
+    ;; is a C int, and an int64_t* to it reads 8 bytes of a 4-byte slot
+    ;; (#236). The statement let does the same.
+    (if (and has-mut (is-simple-primitive-c-type inferred-type))
+      (ctx-str ctx inferred-type " ")
+      "__auto_type "))
 
   (fn binding-starts-with-mut ((items (List (Ptr SExpr))))
     (@intent "Check if binding starts with 'mut'")

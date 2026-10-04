@@ -52,6 +52,7 @@ void match_emit_branch_body_item(context_TranspileContext* ctx, types_SExpr* bod
 void match_emit_inline_let(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items, uint8_t is_return, uint8_t is_last);
 void match_emit_inline_bindings(context_TranspileContext* ctx, types_SExpr* bindings_expr);
 void match_emit_single_inline_binding(context_TranspileContext* ctx, types_SExpr* binding);
+slop_string match_let_decl_type(context_TranspileContext* ctx, uint8_t has_mut, slop_string inferred_type);
 uint8_t match_binding_starts_with_mut(slop_list_types_SExpr_ptr items);
 uint8_t match_is_type_expr(types_SExpr* expr);
 uint8_t match_is_none_form_inline(types_SExpr* expr);

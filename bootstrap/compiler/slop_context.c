@@ -864,7 +864,7 @@ context_TypeLookup context_ctx_resolve_type(context_TranspileContext* ctx, slop_
                 __auto_type arena = (*ctx).arena;
                 __auto_type types = (*ctx).types;
                 __auto_type candidates = ((slop_list_context_TypeEntry){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
-                __auto_type i = (((int64_t)(((int64_t)((types).len)))) - 1);
+                int64_t i = (((int64_t)(((int64_t)((types).len)))) - 1);
                 while (i >= 0) {
                     __auto_type _mv_122 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at context.slop:1064:55"))); slop_option_context_TypeEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_122.has_value) {
@@ -2907,7 +2907,7 @@ slop_string context_to_c_type_prefixed_compound(context_TranspileContext* ctx, s
                             } else if (string_eq(head, SLOP_STR("record"))) {
                                 {
                                     __auto_type field_str = SLOP_STR("");
-                                    __auto_type i = 1;
+                                    int64_t i = 1;
                                     while (i < len) {
                                         __auto_type _mv_200 = ({ __auto_type _lst = items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                         if (_mv_200.has_value) {
@@ -3015,7 +3015,7 @@ slop_string context_build_fn_args_str_prefixed(context_TranspileContext* ctx, ty
                     } else {
                         {
                             __auto_type result = SLOP_STR("(");
-                            __auto_type i = 0;
+                            int64_t i = 0;
                             while (i < arg_count) {
                                 __auto_type _mv_207 = ({ __auto_type _lst = arg_items; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                 if (_mv_207.has_value) {

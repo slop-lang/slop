@@ -1,0 +1,42 @@
+(module test-spawn-capture-copy
+  (@intent "What a thread's closure may capture: an immutable copy of a mut local, and a match binder that hides one")
+  (import thread (spawn join))
+
+  (fn work ((xs (List Int)))
+    (@intent "Sum xs")
+    (@spec (((List Int)) -> Int))
+    (let ((mut s 0))
+      (for-each (x xs)
+        (set! s (+ s x)))
+      s))
+
+  (fn copies ((arena Arena))
+    (@intent "The copy the error suggests: 0 + 1 + 2 = 3")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((mut total 0)
+          (mut k 0))
+      (while (< k 3)
+        (let ((mut part (list-new arena Int)))
+          (list-push part k)
+          (let ((share part))
+            (set! total (+ total (join (spawn arena (fn () (work share))))))))
+        (set! k (+ k 1)))
+      total))
+
+  (fn binder-hides ((arena Arena) (o (Option Int)))
+    (@intent "The lambda's i is its match binder, not the outer mut i, so nothing mut is captured")
+    (@spec ((Arena (Option Int)) -> Int))
+    (@alloc arena)
+    (let ((mut i 7))
+      (set! i (+ i 1))
+      (join (spawn arena (fn ()
+                           (match o
+                             ((some i) i)
+                             ((none) 0)))))))
+
+  (fn main ()
+    (@intent "Both spawns compute what they should")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (if (and (== (copies arena) 3) (== (binder-hides arena (some 5)) 5)) 0 1))))
