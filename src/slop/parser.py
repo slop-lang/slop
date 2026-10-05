@@ -154,6 +154,12 @@ def _escape_string(s: str) -> str:
              .replace('\n', '\\n').replace('\t', '\\t').replace('\r', '\\r'))
 
 
+# Contract annotations whose body may use {infix} syntax. The native parser
+# accepts infix anywhere; @invariant and @property were missing here, so
+# format/doc/fill rejected files the compiler builds (#305).
+INFIX_ANNOTATIONS = ('@pre', '@post', '@assume', '@loop-invariant', '@invariant', '@property')
+
+
 class ParseError(Exception):
     def __init__(self, message: str, line: int = 0, col: int = 0, path: str = ""):
         self.message = message
@@ -347,7 +353,7 @@ class Parser:
                 return SList(items, line, col, start=open_tok.start, end=tok.end)
 
             # Detect contract annotations after parsing first item
-            if len(items) == 0 and kind == 'SYMBOL' and value in ('@pre', '@post', '@assume', '@loop-invariant'):
+            if len(items) == 0 and kind == 'SYMBOL' and value in INFIX_ANNOTATIONS:
                 is_contract_form = True
 
             # Set in_contract context when parsing the argument of a contract
@@ -366,7 +372,7 @@ class Parser:
     def parse_infix_expr(self) -> SExpr:
         """Parse {infix expression} and convert to prefix AST.
 
-        Only allowed inside @pre, @post, @assume, or @loop-invariant contracts.
+        Only allowed inside the contract annotations in INFIX_ANNOTATIONS.
         The node returned spans the braces and keeps their exact text in
         infix_source, so the formatter can write the contract as written.
         """
@@ -375,7 +381,7 @@ class Parser:
 
         if not self.in_contract:
             raise ParseError(
-                "Infix syntax {expr} is only allowed inside @pre, @post, @assume, or @loop-invariant",
+                "Infix syntax {expr} is only allowed inside @pre, @post, @assume, @loop-invariant, @invariant or @property",
                 line, col
             )
 

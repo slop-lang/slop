@@ -325,7 +325,7 @@ class TestInfixContracts:
         """Infix outside contract raises ParseError"""
         with pytest.raises(ParseError) as exc_info:
             parse("(let x {1 + 2})")
-        assert "only allowed inside @pre, @post, @assume, or @loop-invariant" in str(exc_info.value)
+        assert "only allowed inside @pre, @post, @assume, @loop-invariant, @invariant or @property" in str(exc_info.value)
 
     def test_infix_in_regular_expression_error(self):
         """Infix in regular code raises ParseError"""
@@ -391,3 +391,23 @@ class TestInfixContracts:
             assert is_form(eq, '==')
             arith = eq[1]
             assert is_form(arith, op), f"Failed for operator {op}"
+
+
+class TestInfixInInvariants:
+    """{infix} is allowed in @invariant and @property, as the native parser allows (#305)."""
+
+    def test_invariant_accepts_infix(self):
+        from slop.parser import parse
+        forms = parse('(type T (record (x Int)) (@invariant {x > 0}))')
+        assert '(@invariant (> x 0))' in str(forms[0])
+
+    def test_property_accepts_infix(self):
+        from slop.parser import parse
+        forms = parse('(fn f ((x Int)) (@property {x >= 0}) x)')
+        assert '(@property (>= x 0))' in str(forms[0])
+
+    def test_other_forms_still_reject_infix(self):
+        import pytest
+        from slop.parser import parse, ParseError
+        with pytest.raises(ParseError):
+            parse('(foo {x > 0})')
