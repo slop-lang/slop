@@ -1,0 +1,7 @@
+(module main
+  (@intent "Multi-module: the transpiler reports a comparison with a third operand")
+  (import helper (one))
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (if (< 0 (one) 2) 0 1)))

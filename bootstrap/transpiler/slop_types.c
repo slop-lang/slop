@@ -49,6 +49,9 @@ uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name);
 slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_ResolvedType* t, slop_string name);
 slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_ResolvedType* t);
 slop_string types_mutation_error_message(slop_arena* arena, types_MutationKind kind, types_BindingOrigin origin, slop_string name, uint8_t via_field);
+slop_string types_if_operand_count_message(slop_arena* arena, int64_t operands);
+slop_string types_comparison_operand_count_message(slop_arena* arena, slop_string op, int64_t operands);
+slop_string types_union_type_constructor_message(slop_arena* arena, slop_string type_name);
 slop_string types_param_mode_error_message(slop_arena* arena, slop_string mode, slop_string name);
 
 types_RangeBounds types_range_bounds_new(uint8_t has_min, int64_t min_val, uint8_t has_max, int64_t max_val) {
@@ -841,6 +844,18 @@ slop_string types_mutation_error_message(slop_arena* arena, types_MutationKind k
         }
         SLOP_UNREACHABLE();
     }
+}
+
+slop_string types_if_operand_count_message(slop_arena* arena, int64_t operands) {
+    return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = SLOP_STR("'if' takes a condition, a then branch and an optional else branch, but has "); _ll.data[1] = int_to_string(arena, operands); _ll.data[2] = SLOP_STR(" operands; group several forms with (do ...)"); _ll; }));
+}
+
+slop_string types_comparison_operand_count_message(slop_arena* arena, slop_string op, int64_t operands) {
+    return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = op; _ll.data[2] = SLOP_STR("' compares two operands, but has "); _ll.data[3] = int_to_string(arena, operands); _ll.data[4] = SLOP_STR("; chain comparisons with (and ...)"); _ll; }));
+}
+
+slop_string types_union_type_constructor_message(slop_arena* arena, slop_string type_name) {
+    return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = type_name; _ll.data[2] = SLOP_STR("' is a union; construct it with (union-new "); _ll.data[3] = type_name; _ll.data[4] = SLOP_STR(" variant value ...) or ("); _ll.data[5] = type_name; _ll.data[6] = SLOP_STR(" (variant value ...))"); _ll; }));
 }
 
 slop_string types_param_mode_error_message(slop_arena* arena, slop_string mode, slop_string name) {

@@ -1,0 +1,8 @@
+(module main
+  (@intent "A comparison with a third operand is an error, not a silent drop")
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (let ((d 2.0) (e 5.0))
+      (if (> d 1.0 e) 1 0))))

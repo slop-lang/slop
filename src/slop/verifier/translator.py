@@ -2052,8 +2052,9 @@ class Z3Translator:
 
     def _translate_if(self, expr: SList) -> Optional[z3.ExprRef]:
         """Translate if expression to Z3 If()"""
-        # (if cond then else)
-        if len(expr) < 3:
+        # (if cond then else). More operands than that is a compile error
+        # (#233); translating the first three would prove the wrong program.
+        if len(expr) < 3 or len(expr) > 4:
             return None
 
         cond = self.translate_expr(expr[1])

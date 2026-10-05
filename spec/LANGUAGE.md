@@ -301,7 +301,7 @@ The transpiler emits both the clean name and a #define alias for the SLOP-prefix
 ```
 ; Literals
 42                       ; Integer
-3.14                     ; Float
+3.14  1.5e-3  1e10       ; Float (a dot or an exponent; a suffix such as 3.14f is a parse error)
 "hello"                  ; String
 'symbol                  ; Symbol (enum value)
 true false nil           ; Boolean and nil
@@ -316,7 +316,7 @@ identifier               ; Variable reference
 ; copy one into (let ((mut name ...))) to change it. Constants cannot be set!.
 
 ; Control flow
-(if cond then else)
+(if cond then else)                   ; else is optional; more operands is an error
 (cond (test1 expr1) (test2 expr2) ... (else default))
 (match expr ((pattern1) body1) ((pattern2) body2) ...)
 (while cond body)
@@ -352,6 +352,8 @@ identifier               ; Variable reference
 (TypeName v1 v2 ...)                     ; Struct construction (positional)
 (union-new Type Tag value)               ; Tagged union construction (single payload)
 (Tag v1 v2 ...)                          ; Tagged union construction (multi-field, inferred)
+(Type (Tag v1 v2 ...))                   ; Tagged union construction by type name; (Type Tag v)
+                                         ; without the inner parens is an error
 
 ; Collection literals carry their element type explicitly:
 ;   (list Int 1 2 3)              → (List Int)
@@ -405,7 +407,7 @@ identifier               ; Variable reference
 ;   Int if its ordinal is what you mean; use U8, not Char, for byte values.
 
 ; Comparison  
-(== a b) (!= a b) (< a b) (<= a b) (> a b) (>= a b)
+(== a b) (!= a b) (< a b) (<= a b) (> a b) (>= a b)   ; exactly two operands; chain with (and ...)
 
 ; == and != are structural on aggregates:
 ;   String            compared by contents, not by pointer

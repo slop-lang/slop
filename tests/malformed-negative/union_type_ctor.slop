@@ -1,0 +1,12 @@
+(module main
+  (@intent "Calling a union by its type name with the variant unwrapped is an error, not a dropped payload (#208)")
+
+  (type Node (union (iri String) (anon Int)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (let ((n (Node iri "http://example.org/a")))
+      (match n
+        ((iri s) (- 20 (cast Int (string-len s))))
+        ((anon k) k)))))

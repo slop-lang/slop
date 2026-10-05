@@ -1,0 +1,7 @@
+(module main
+  (@intent "A number glued to a symbol character is a parse error, not a dropped suffix (#100)")
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (cast Int 3.14f)))

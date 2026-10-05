@@ -35,7 +35,8 @@
     ;; Type string conversion
     resolved-type-to-slop-string
     ;; Mutability
-    BindingOrigin MutationKind mutation-error-message param-mode-error-message)
+    BindingOrigin MutationKind mutation-error-message param-mode-error-message
+    if-operand-count-message union-type-constructor-message comparison-operand-count-message)
 
   (import strlib (string-build))
 
@@ -971,6 +972,36 @@
                                            name " ...)))")))
         ('origin-const
           (string-build arena (list String (if (== kind 'mut-assign) "cannot assign to constant " "cannot change a field of constant ") q))))))
+
+  ;; ============================================================
+  ;; Malformed forms
+  ;;
+  ;; Forms the transpiler used to lower by ignoring part of them. Both
+  ;; compilers report these, for the same reason as mutability (#93).
+  ;; ============================================================
+
+  (fn if-operand-count-message ((arena Arena) (operands Int))
+    (@intent "Explain that an if has more operands than a condition, a then and an else")
+    (@spec ((Arena Int) -> String))
+    ;; (if c a b d) compiled as (if c a b), dropping d (#233)
+    (string-build arena (list String "'if' takes a condition, a then branch and an optional else branch, but has "
+                                     (int-to-string arena operands)
+                                     " operands; group several forms with (do ...)")))
+
+  (fn comparison-operand-count-message ((arena Arena) (op String) (operands Int))
+    (@intent "Explain that a comparison takes exactly two operands")
+    (@spec ((Arena String Int) -> String))
+    ;; (> a b c) compiled as (> a b), dropping c, the same way as #233
+    (string-build arena (list String "'" op "' compares two operands, but has "
+                                     (int-to-string arena operands)
+                                     "; chain comparisons with (and ...)")))
+
+  (fn union-type-constructor-message ((arena Arena) (type-name String))
+    (@intent "Explain that a union is built with union-new or its variant, not called by its type name")
+    (@spec ((Arena String) -> String))
+    ;; (Node iri x) on a union compiled to a Node with tag iri and no payload (#208)
+    (string-build arena (list String "'" type-name "' is a union; construct it with (union-new " type-name
+                                     " variant value ...) or (" type-name " (variant value ...))")))
 
   (fn param-mode-error-message ((arena Arena) (mode String) (name String))
     (@intent "Explain why a parameter's mode is not allowed")

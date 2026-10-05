@@ -1,0 +1,28 @@
+;; ============================================================
+;; Constructing a union by its type name (#208): (T (tag v ...))
+;; for a variant with payloads, and (T tag) or (T (tag)) for one
+;; without. Each value carries its payloads.
+;; ============================================================
+
+(module test-union-ctor-forms
+  (export (main 0))
+
+  (type Shape (union (dot) (circle Int) (rect Int Int)))
+
+  (fn area ((s Shape))
+    (@intent "A number from each variant's payloads")
+    (@spec ((Shape) -> Int))
+    (match s
+      ((dot) 0)
+      ((circle r) r)
+      ((rect w h) (* w h))))
+
+  (fn main ()
+    (@intent "Each form builds the value it names")
+    (@spec (() -> Int))
+    (let ((mut failed 0))
+      (when (!= (area (Shape dot)) 0) (set! failed (+ failed 1)))
+      (when (!= (area (Shape (dot))) 0) (set! failed (+ failed 1)))
+      (when (!= (area (Shape (circle 7))) 7) (set! failed (+ failed 1)))
+      (when (!= (area (Shape (rect 3 4))) 12) (set! failed (+ failed 1)))
+      failed)))

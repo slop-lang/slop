@@ -1,0 +1,10 @@
+(module main
+  (@intent "Multi-module: the transpiler reports (Node iri x) on a union (#208)")
+  (import helper (one))
+  (type Node (union (iri Int) (anon Int)))
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (match (Node iri (one))
+      ((iri k) (- k 1))
+      ((anon k) k))))

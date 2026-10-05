@@ -54,17 +54,18 @@
   ;; Parser-specific String Functions
   ;; ============================================================
 
-  (fn string-contains-dot ((s String))
-    (@intent "Check if string contains a decimal point")
+  (fn number-text-is-float ((s String))
+    (@intent "Is a number token a float: does it have a decimal point or an exponent?")
     (@spec ((String) -> Bool))
     (@pure)
     (let ((mut i 0)
           (slen (cast Int (. s len)))
           (mut found false))
       (while (and (< i slen) (not found))
-        (if (== (char-at s (cast (Int 0 ..) i)) (cast Byte 46))  ;; '.'
-          (set! found true)
-          (set! i (+ i 1))))
+        (let ((c (char-at s (cast (Int 0 ..) i))))
+          (if (or (== c (cast Byte 46)) (== c (cast Byte 101)) (== c (cast Byte 69)))  ;; '.' 'e' 'E'
+            (set! found true)
+            (set! i (+ i 1)))))
       found))
 
 
@@ -152,6 +153,15 @@
     (if (lexer-at-end state)
       (cast Byte 0)  ;; EOF represented as NUL
       (char-at (. (deref state) source) (. (deref state) pos))))
+
+  (fn lexer-peek-at ((state (Ptr LexerState)) (offset Int))
+    (@intent "Peek at the character offset places ahead")
+    (@spec (((Ptr LexerState) Int) -> Byte))
+    (@pure)
+    (let ((at (+ (. (deref state) pos) offset)))
+      (if (>= at (cast Int (. (. (deref state) source) len)))
+        (cast Byte 0)
+        (char-at (. (deref state) source) (cast (Int 0 ..) at)))))
 
   (fn lexer-peek-next ((state (Ptr LexerState)))
     (@intent "Peek at next character (one ahead)")
@@ -281,10 +291,14 @@
     (@pre (or (is-digit (lexer-peek state))
               (and (== (lexer-peek state) 45)  ;; '-'
                    (is-digit (lexer-peek-next state)))))
+    ;; The token text is converted with strtoll/strtod, which read to a NUL, so
+    ;; the buffer is terminated and its length bounded.
     (let ((start-line (. (deref state) line))
           (start-col (. (deref state) col))
-          (buf (cast (Ptr U8) (arena-alloc arena 64)))
-          (mut buf-pos 0))
+          (cap 64)
+          (buf (cast (Ptr U8) (arena-alloc arena cap)))
+          (mut buf-pos 0)
+          (mut too-long false))
       ;; Optional minus sign
       (when (== (lexer-peek state) 45)
         (set! (@ buf buf-pos) (cast U8 45))
@@ -292,8 +306,11 @@
         (lexer-advance state))
       ;; Integer part
       (while (and (not (lexer-at-end state)) (is-digit (lexer-peek state)))
-        (set! (@ buf buf-pos) (cast U8 (lexer-peek state)))
-        (set! buf-pos (+ buf-pos 1))
+        (if (< buf-pos (- cap 1))
+          (do
+            (set! (@ buf buf-pos) (cast U8 (lexer-peek state)))
+            (set! buf-pos (+ buf-pos 1)))
+          (set! too-long true))
         (lexer-advance state))
       ;; Check for decimal point followed by digit
       (when (and (not (lexer-at-end state))
@@ -304,12 +321,55 @@
         (lexer-advance state)
         ;; Fractional part
         (while (and (not (lexer-at-end state)) (is-digit (lexer-peek state)))
-          (set! (@ buf buf-pos) (cast U8 (lexer-peek state)))
-          (set! buf-pos (+ buf-pos 1))
+          (if (< buf-pos (- cap 1))
+            (do
+              (set! (@ buf buf-pos) (cast U8 (lexer-peek state)))
+              (set! buf-pos (+ buf-pos 1)))
+            (set! too-long true))
           (lexer-advance state)))
-      (ok (Token 'tok-number
-                 (String buf (cast U64 buf-pos))
-                 start-line start-col))))
+      ;; Exponent: e or E, an optional sign, then digits. 1.0e+307 used to
+      ;; lex as 1.0 and a symbol e+307 that the comparison then dropped.
+      (when (and (not (lexer-at-end state))
+                 (or (== (lexer-peek state) 101) (== (lexer-peek state) 69))  ;; 'e' 'E'
+                 (or (is-digit (lexer-peek-next state))
+                     (and (or (== (lexer-peek-next state) 43) (== (lexer-peek-next state) 45))  ;; '+' '-'
+                          (is-digit (lexer-peek-at state 2)))))
+        ;; The e, then the sign if there is one; the guard above ensures a
+        ;; digit follows either way
+        (let ((mut in-exponent true)
+              (mut k 0))
+          (while in-exponent
+            (let ((c (lexer-peek state)))
+              (if (< buf-pos (- cap 1))
+                (do
+                  (set! (@ buf buf-pos) (cast U8 c))
+                  (set! buf-pos (+ buf-pos 1)))
+                (set! too-long true))
+              (lexer-advance state)
+              (set! k (+ k 1))
+              (set! in-exponent
+                (and (not (lexer-at-end state))
+                     (or (is-digit (lexer-peek state))
+                         (and (== k 1) (or (== (lexer-peek state) 43) (== (lexer-peek state) 45))))))))))
+      (set! (@ buf buf-pos) (cast U8 0))
+      (let ((text (String buf (cast U64 buf-pos))))
+        (cond
+          (too-long
+            (error (ParseError (string-concat arena "number literal is too long: " text) start-line start-col)))
+          ;; 3.14f lexed as 3.14 followed by the symbol f, which most forms
+          ;; then ignored, so the suffix silently meant nothing (#100). A ..
+          ;; after the number is a range, as in (Int 0..10).
+          ((and (not (lexer-at-end state))
+                (char-is-symbol-char (lexer-peek state))
+                (not (and (== (lexer-peek state) 46) (== (lexer-peek-next state) 46))))
+            (let ((next (String (+ (. (. (deref state) source) data) (. (deref state) pos)) 1)))
+              (error (ParseError (string-concat arena "invalid number literal: '"
+                                   (string-concat arena text
+                                     (string-concat arena "' is followed by '"
+                                       (string-concat arena next "'; put a space or a delimiter after a number"))))
+                                 start-line start-col))))
+          (else
+            (ok (Token 'tok-number text start-line start-col)))))))
 
   (fn lexer-read-symbol ((arena Arena) (state (Ptr LexerState)))
     (@intent "Read a symbol token")
@@ -500,7 +560,7 @@
           (do
             (parser-advance state)
             (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr))))
-                  (is-float (string-contains-dot (. tok value))))
+                  (is-float (number-text-is-float (. tok value))))
               (if is-float
                 (set! (deref node)
                       (union-new SExpr num
@@ -723,7 +783,7 @@
           (do
             (parser-advance state)
             (let ((node (cast (Ptr SExpr) (arena-alloc arena (sizeof SExpr)))))
-              (if (string-contains-dot (. tok value))
+              (if (number-text-is-float (. tok value))
                 (set! (deref node)
                       (union-new SExpr num
                         (SExprNumber 0

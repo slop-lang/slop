@@ -1,0 +1,11 @@
+(module main
+  (@intent "Multi-module: the transpiler reports another type's variant in a union constructor (#208)")
+  (import helper (one))
+  (type Node (union (iri Int) (anon Int)))
+  (type Shape (union (dot) (circle Int)))
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (match (Node (circle (one)))
+      ((iri k) k)
+      ((anon k) k))))

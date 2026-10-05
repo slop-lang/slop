@@ -1,0 +1,24 @@
+;; ============================================================
+;; Number literals (#100): exponents are floats, and a range may
+;; be written without spaces. A suffix glued to a number is a
+;; parse error (tests/malformed-negative/number_suffix.slop).
+;; Before, 1.0e+307 lexed as 1.0 and a symbol e+307.
+;; ============================================================
+
+(module test-number-literals
+  (export (main 0))
+
+  (type Digit (Int 0..9))
+
+  (fn main ()
+    (@intent "Each literal has the value it spells")
+    (@spec (() -> Int))
+    (let ((mut failed 0)
+          (big 1.0e+307)
+          (d (cast Digit 9)))
+      (when (not (> big 1.0e306)) (set! failed (+ failed 1)))
+      (when (not (< 2E-3 0.0021)) (set! failed (+ failed 1)))
+      (when (not (> 2E-3 0.0019)) (set! failed (+ failed 1)))
+      (when (!= 1e3 1000.0) (set! failed (+ failed 1)))
+      (when (!= (cast Int d) 9) (set! failed (+ failed 1)))
+      failed)))
