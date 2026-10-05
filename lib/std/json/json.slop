@@ -296,8 +296,10 @@
     (@pre (!= val nil))
     (match (deref arr)
       ((jarr a)
-        (do (list-push (. a items) val)
-            (set! (deref arr) (jarr a))))
+        ;; a is a copy of the payload; grow a mut copy and write it back (#191)
+        (let ((mut grown a))
+          (list-push (. grown items) val)
+          (set! (deref arr) (jarr grown))))
       (_ unit)))
 
   ;; ============================================================

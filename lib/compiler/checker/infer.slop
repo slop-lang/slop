@@ -2618,11 +2618,17 @@
                ;; A push or pop on the parameter itself: only a List value
                (== (mutation-step-kind (. b var-type)) 'step-value))
              (else (. path known)))
-           ;; A let, for, for-each, match or with-arena binding: set! is the
-           ;; change; a push or pop on its own list is not lost, and allowed
            (cond
              ((== kind 'mut-assign) true)
              ((== kind 'mut-field) (. path known))
+             ;; A for-each or match binding is a copy of the element or payload,
+             ;; so a push or pop on it, or on a List field of it, changes only
+             ;; the copy, as for a parameter (#191)
+             ((== (. b origin) 'origin-bound)
+               (if (== (. path depth) 0)
+                 (== (mutation-step-kind (. b var-type)) 'step-value)
+                 (. path known)))
+             ;; A let binding's own list: the push is not lost, and allowed
              (else false)))))
 
   (fn check-mutation ((env (Ptr TypeEnv)) (target (Ptr SExpr)) (path MutPath) (kind MutationKind))

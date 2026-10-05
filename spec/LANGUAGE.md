@@ -314,6 +314,10 @@ identifier               ; Variable reference
 (let* ((name expr)...) body)          ; Sequential bindings
 ; Names bound by for, for-each, match and with-arena are immutable too;
 ; copy one into (let ((mut name ...))) to change it. Constants cannot be set!.
+; A for-each or match binding is a copy of the element or payload, so
+; list-push/list-pop on it, or on a List field of it, is an error: the change
+; would be lost. Grow a (let ((mut ...))) copy and write it back, or hold the
+; element as a (Ptr T) and push through it.
 
 ; Control flow
 (if cond then else)                   ; else is optional; more operands is an error

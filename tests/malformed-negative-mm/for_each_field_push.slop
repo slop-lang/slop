@@ -1,0 +1,12 @@
+(module main
+  (@intent "Multi-module: the transpiler reports a push onto a field of a for-each binding's copy (#191)")
+  (import helper (one))
+  (type Bag (record (items (List Int))))
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((bags (list-new arena Bag)))
+        (list-push bags (Bag (list-new arena Int)))
+        (for-each (b bags) (list-push (. b items) (one)))
+        0))))

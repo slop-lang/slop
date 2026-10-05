@@ -1,0 +1,13 @@
+;; A push onto a List field of a for-each binding of a record is lost (#191).
+
+(module main
+  (type Bag (record (items (List Int))))
+
+  (fn main ()
+    (@intent "A push onto a field of a for-each element, a copy, is lost")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((bags (list-new arena Bag)))
+        (list-push bags (Bag (list-new arena Int)))
+        (for-each (b bags) (list-push (. b items) 5))
+        0))))

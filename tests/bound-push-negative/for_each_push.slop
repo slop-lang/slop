@@ -1,0 +1,13 @@
+;; A push onto a for-each binding of a List element is lost: the binding is a copy (#191).
+
+(module main
+  (fn main ()
+    (@intent "A push onto a for-each element, a copy, is lost")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((outer (list-new arena (List Int))))
+        (list-push outer (list-new arena Int))
+        (for-each (inner outer) (list-push inner 5))
+        (match (list-get outer 0)
+          ((some first) (cast Int (list-len first)))
+          ((none) 99))))))

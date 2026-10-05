@@ -1,0 +1,13 @@
+(module main
+  (@intent "A value cond with no else traps when no test holds")
+
+  (fn f ((n Int))
+    (@intent "No else clause, and 3 passes neither test")
+    (@spec ((Int) -> Int))
+    (let ((r (cond ((== n 1) 10) ((== n 2) 20))))
+      r))
+
+  (fn main ()
+    (@intent "Before, this cond did not compile: it ended in t ? v : )")
+    (@spec (() -> Int))
+    (if (== (f 3) 0) 0 1)))

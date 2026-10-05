@@ -1,0 +1,11 @@
+(module main
+  (@intent "Multi-module: the transpiler reports a push onto a for-each binding's copy (#191)")
+  (import helper (one))
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((outer (list-new arena (List Int))))
+        (list-push outer (list-new arena Int))
+        (for-each (inner outer) (list-push inner (one)))
+        0))))
