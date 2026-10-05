@@ -53,12 +53,12 @@
   .
   (identifier) @keyword)
   (#any-of? @keyword
-    "fn" "impl" "module" "export" "import"
-    "type" "const" "alias" "record" "enum" "union"
+    "fn" "module" "export" "import"
+    "type" "const" "record" "enum" "union"
     "let" "let*" "mut" "in"
     "if" "cond" "match" "when" "while"
     "for" "for-each" "do"
-    "break" "continue" "return" "else" "guard" "catch"
+    "break" "continue" "return" "else"
     "forall" "exists" "implies"
     "hole" "ffi" "ffi-struct" "c-inline"))
 
@@ -86,7 +86,7 @@
     ; Data access
     "." "@" "set!" "deref"
     ; Result/Option
-    "ok" "error" "?" "is-ok" "unwrap" "some" "none" "is-some" "is-none"
+    "ok" "error" "?" "unwrap" "some" "none" "is-some" "is-none"
     ; Type/Memory
     "cast" "sizeof" "addr"
     ; Data construction
@@ -94,8 +94,8 @@
     ; Arena
     "arena-new" "arena-alloc" "arena-free" "with-arena"
     ; String operations
-    "string-new" "string-len" "string-concat" "string-eq" "string-slice"
-    "string-split" "string-push-char" "int-to-string"
+    "string-new" "string-len" "string-concat" "string-eq"
+    "string-push-char" "int-to-string"
     ; List operations
     "list-new" "list-push" "list-get" "list-set" "list-pop" "list-len"
     ; Map operations
