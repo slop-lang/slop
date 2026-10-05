@@ -827,6 +827,38 @@ for spf in closure function; do
         "SLOP: spawn: cannot start a thread"
 done
 
+# An expression-position match that no arm covers traps (#147). Before, a
+# literal match took its last arm untested, and an Option/Result or union match
+# handed back a zero nobody wrote.
+MTR="$REPO_ROOT/tests/match-trap"
+for mtr in literal option union; do
+    run_abort_test "$MTR/$mtr.slop" "match-trap-$mtr" "" "SLOP: non-exhaustive match reached"
+done
+
+# Built with SLOP_DEBUG, so contracts are compiled in and checked at run time.
+run_debug_contract_test() {
+    local test_file="$1"
+    local test_name="$2"
+
+    echo -n "Testing $test_name (SLOP_DEBUG)... "
+    if ! SLOP_CFLAGS="-DSLOP_DEBUG" uv run slop build "$test_file" -o "$BUILD_DIR/$test_name" >/dev/null 2>&1; then
+        echo -e "${RED}FAIL (build)${NC}"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        return
+    fi
+    if "$BUILD_DIR/$test_name" >/dev/null 2>&1; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} (exit $?)"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# A multi-payload match in a @post bound only its first name, to the whole
+# payload, so the checked contract did not compile (#171).
+run_debug_contract_test "$REPO_ROOT/tests/contract-debug/post_multi_payload.slop" "contract-debug-post-multi-payload"
+
 # ============================================================
 # Cleanup and Summary
 # ============================================================

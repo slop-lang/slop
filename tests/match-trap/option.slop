@@ -1,0 +1,13 @@
+(module main
+  (@intent "An expression-position Option match with no none arm traps on none (#147)")
+
+  (fn f ((o (Option Int)))
+    (@intent "No none arm")
+    (@spec (((Option Int)) -> Int))
+    (let ((r (match o ((some x) (+ x 1)))))
+      r))
+
+  (fn main ()
+    (@intent "Before #147 the missing side returned 0")
+    (@spec (() -> Int))
+    (if (== (f none) 0) 0 1)))

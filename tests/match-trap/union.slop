@@ -1,0 +1,15 @@
+(module main
+  (@intent "An expression-position union match with no arm for the variant traps (#147)")
+
+  (type Shape (union (circle Int) (square Int) (dot)))
+
+  (fn size ((s Shape))
+    (@intent "No arm for dot")
+    (@spec ((Shape) -> Int))
+    (let ((r (match s ((circle r) r) ((square w) w))))
+      r))
+
+  (fn main ()
+    (@intent "Before #147 the missing variant returned the zeroed result")
+    (@spec (() -> Int))
+    (if (== (size (union-new Shape dot)) 0) 0 1)))

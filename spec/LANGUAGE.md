@@ -600,6 +600,10 @@ a whole pattern and in a variant's payload position.
 
 **Exhaustiveness**: Match expressions must be exhaustive—all variants of the
 matched type must be covered, or a wildcard (`_` or `else`) must be present.
+Literal arms over an `Int` or a `String` never cover the type, so such a match
+needs a wildcard. A match whose value is used (a `let` initializer, an argument,
+a return) that meets a value no arm covers aborts with
+`SLOP: non-exhaustive match reached`; it never yields a default.
 
 ## 4. Module System
 

@@ -1,0 +1,13 @@
+(module main
+  (@intent "An expression-position literal match with no arm for the value traps (#147)")
+
+  (fn f ((n Int))
+    (@intent "No wildcard, and 3 matches neither arm")
+    (@spec ((Int) -> Int))
+    (let ((r (match n (1 10) (2 20))))
+      r))
+
+  (fn main ()
+    (@intent "Before #147 this returned 20, the last arm untested")
+    (@spec (() -> Int))
+    (if (== (f 3) 20) 0 1)))

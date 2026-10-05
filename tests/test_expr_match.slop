@@ -1,0 +1,113 @@
+;; ============================================================
+;; Expression-position match (#147, #171)
+;;
+;; A match in a let initializer, an argument or an operand of
+;; and goes through the expression lowering. It used to embed
+;; the scrutinee once per arm, take the last literal arm without
+;; testing it, and bind only the first payload of a multi-payload
+;; variant, to the whole payload.
+;; ============================================================
+
+(module test-expr-match
+  (export (main 0))
+
+  (type Pair (union (two Int Int) (one Int) (nothing)))
+
+  (type Counter (record (calls Int)))
+
+  (fn pick ((c (Ptr Counter)) (n Int))
+    (@intent "Return n, counting the call")
+    (@spec (((Ptr Counter) Int) -> Int))
+    (set! c calls (+ (. c calls) 1))
+    n)
+
+  (fn scrutinee-once ()
+    (@intent "A call in the scrutinee runs once however many arms are tested")
+    (@spec (() -> Bool))
+    (let ((mut c (record-new Counter (calls 0))))
+      (let ((r (match (pick (addr c) 3) (1 100) (2 200) (3 300) (else 0))))
+        (and (== r 300) (== (. c calls) 1)))))
+
+  (fn last-arm-tested ((n Int))
+    (@intent "The last literal arm is tested, not taken as a default")
+    (@spec ((Int) -> Int))
+    (let ((r (match n (1 10) (2 20) (_ 99))))
+      r))
+
+  (fn first-match-wins ((n Int))
+    (@intent "Arms are tried in order and a wildcard ends the chain")
+    (@spec ((Int) -> Int))
+    (let ((r (match n (2 20) (_ 1) (3 30))))
+      r))
+
+  (fn string-arm ((s String))
+    (@intent "String literal arms compare by value")
+    (@spec ((String) -> Int))
+    (let ((r (match s ("a" 1) ("bb" 2) (else 0))))
+      r))
+
+  (fn second-is ((p Pair) (x Int))
+    (@intent "The second payload of a two-payload arm, as an operand of and (#171)")
+    (@spec ((Pair Int) -> Bool))
+    (and (> x 0)
+         (match p
+           ((two a b) (and (== b x) (!= a b)))
+           (_ false))))
+
+  (fn sum-pair ((p Pair))
+    (@intent "Both payloads bound in a let initializer, with a wildcard payload elsewhere")
+    (@spec ((Pair) -> Int))
+    (let ((r (match p
+               ((two a b) (+ (* 10 a) b))
+               ((one _) -1)
+               ((nothing) 0))))
+      r))
+
+  (type Node (record (v Int)))
+
+  (type Err (enum bad worse))
+
+  (fn nil-first ((n Int) (p (Ptr Node)))
+    (@intent "A nil first arm does not decide the match's type")
+    (@spec ((Int (Ptr Node)) -> Int))
+    (let ((r (match n (0 nil) (else p))))
+      (if (== r nil) -1 (. r v))))
+
+  (fn error-first ((n Int))
+    (@intent "An (error e) first arm does not decide the match's type")
+    (@spec ((Int) -> (Result Int Err)))
+    (let ((r (match n (0 (error 'bad)) (1 (error 'worse)) (else (ok n)))))
+      r))
+
+  (fn every-form-runs ((c (Ptr Counter)) (n Int))
+    (@intent "Each form of an arm runs, not only the last")
+    (@spec (((Ptr Counter) Int) -> Int))
+    (let ((r (match n
+               (1 (pick c 0) (pick c 0) 10)
+               (else 0))))
+      r))
+
+  (fn main ()
+    (@intent "Run every case, return the number that failed")
+    (@spec (() -> Int))
+    (let ((mut failed 0))
+      (when (not (scrutinee-once)) (set! failed (+ failed 1)))
+      (when (!= (last-arm-tested 2) 20) (set! failed (+ failed 1)))
+      (when (!= (last-arm-tested 3) 99) (set! failed (+ failed 1)))
+      (when (!= (first-match-wins 3) 1) (set! failed (+ failed 1)))
+      (when (!= (first-match-wins 2) 20) (set! failed (+ failed 1)))
+      (when (!= (string-arm "bb") 2) (set! failed (+ failed 1)))
+      (when (!= (string-arm "b") 0) (set! failed (+ failed 1)))
+      (when (not (second-is (union-new Pair two 1 2) 2)) (set! failed (+ failed 1)))
+      (when (second-is (union-new Pair two 2 1) 2) (set! failed (+ failed 1)))
+      (when (!= (sum-pair (union-new Pair two 4 2)) 42) (set! failed (+ failed 1)))
+      (when (!= (sum-pair (union-new Pair one 7)) -1) (set! failed (+ failed 1)))
+      (let ((mut nd (record-new Node (v 5)))
+            (mut c (record-new Counter (calls 0))))
+        (when (!= (nil-first 1 (addr nd)) 5) (set! failed (+ failed 1)))
+        (when (!= (nil-first 0 (addr nd)) -1) (set! failed (+ failed 1)))
+        (when (match (error-first 7) ((ok v) (!= v 7)) ((error _) true)) (set! failed (+ failed 1)))
+        (when (match (error-first 1) ((ok _) true) ((error e) (!= e 'worse))) (set! failed (+ failed 1)))
+        (when (!= (every-form-runs (addr c) 1) 10) (set! failed (+ failed 1)))
+        (when (!= (. c calls) 2) (set! failed (+ failed 1))))
+      failed)))

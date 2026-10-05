@@ -17,7 +17,7 @@ slop_result_int_file_FileError file_file_size(slop_string path);
 slop_result_file_File_file_FileError file_file_open(slop_string path, file_FileMode mode) {
     SLOP_PRE(((path.len > 0)), "(> (. path len) 0)");
     {
-        __auto_type mode_str = (mode == file_FileMode_read ? SLOP_STR("r") : (mode == file_FileMode_write ? SLOP_STR("w") : (mode == file_FileMode_append ? SLOP_STR("a") : (mode == file_FileMode_read_write ? SLOP_STR("r+") : (mode == file_FileMode_write_read ? SLOP_STR("w+") : SLOP_STR("a+"))))));
+        __auto_type mode_str = ({ __auto_type _mv = mode; int _mi = (_mv == file_FileMode_read) ? 1 : (_mv == file_FileMode_write) ? 2 : (_mv == file_FileMode_append) ? 3 : (_mv == file_FileMode_read_write) ? 4 : (_mv == file_FileMode_write_read) ? 5 : (_mv == file_FileMode_append_read) ? 6 : 0; if (!_mi) { SLOP_UNREACHABLE(); } _mi == 1 ? (SLOP_STR("r")) : _mi == 2 ? (SLOP_STR("w")) : _mi == 3 ? (SLOP_STR("a")) : _mi == 4 ? (SLOP_STR("r+")) : _mi == 5 ? (SLOP_STR("w+")) : (SLOP_STR("a+")); });
         {
             __auto_type handle = fopen(((uint8_t*)(path.data)), ((uint8_t*)(mode_str.data)));
             if (handle == NULL) {

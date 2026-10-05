@@ -1,0 +1,17 @@
+(module main
+  (@intent "A multi-payload match in a @post compiles and holds under SLOP_DEBUG (#171)")
+
+  (type Edge (union (link Int Int) (loop-at Int)))
+
+  (fn make-link ((from Int) (to Int))
+    (@intent "Build a link")
+    (@spec ((Int Int) -> Edge))
+    (@post (match $result ((link a b) (and (== a from) (== b to))) (_ false)))
+    (union-new Edge link from to))
+
+  (fn main ()
+    (@intent "The checked @post must compile and pass")
+    (@spec (() -> Int))
+    (match (make-link 3 4)
+      ((link a b) (if (== (+ a b) 7) 0 1))
+      ((loop-at _) 2))))
