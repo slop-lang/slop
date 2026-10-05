@@ -1,0 +1,14 @@
+(module main
+  (@intent "println of an imported String const prints a string, not %lld (#237)")
+  (import texts (GREETING PATH-SEP))
+
+  (fn main ()
+    (@intent "Print both, then check their contents")
+    (@spec (() -> Int))
+    (do
+      (println GREETING)
+      (println PATH-SEP)
+      (if (and (string-eq GREETING "hello, \"world\"")
+               (== (cast Int (string-len PATH-SEP)) 1))
+        0
+        1))))

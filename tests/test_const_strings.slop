@@ -1,0 +1,40 @@
+;; ============================================================
+;; String constants (#238, #237)
+;;
+;; A String const was pasted into SLOP_STR("...") unescaped, so
+;; \n and \" broke the C, and \\ silently lost its backslash.
+;; println of a String const was emitted as printf("%lld").
+;; Each const must equal the same text written inline.
+;; ============================================================
+
+(module test-const-strings
+  (export (main 0))
+
+  (const PLAIN String "hello")
+  (const BACKSLASH String "back\\slash")
+  (const NEWLINE String "a\nb")
+  (const QUOTED String "say \"hi\"")
+  (const RAW-NEWLINE String "line one
+line two")
+  (const TAB String "tab\there")
+
+  (fn same ((a String) (b String) (len Int))
+    (@intent "a equals b and has the expected length")
+    (@spec ((String String Int) -> Bool))
+    (and (string-eq a b) (== (cast Int (string-len a)) len)))
+
+  (fn main ()
+    (@intent "Print each const directly, then compare it with the inline literal")
+    (@spec (() -> Int))
+    (do
+      (println PLAIN)
+      (println BACKSLASH)
+      (println QUOTED)
+      (let ((mut failed 0))
+        (when (not (same PLAIN "hello" 5)) (set! failed (+ failed 1)))
+        (when (not (same BACKSLASH "back\\slash" 10)) (set! failed (+ failed 1)))
+        (when (not (same NEWLINE "a\nb" 3)) (set! failed (+ failed 1)))
+        (when (not (same QUOTED "say \"hi\"" 8)) (set! failed (+ failed 1)))
+        (when (not (same RAW-NEWLINE "line one\nline two" 17)) (set! failed (+ failed 1)))
+        (when (not (same TAB "tab\there" 8)) (set! failed (+ failed 1)))
+        failed))))

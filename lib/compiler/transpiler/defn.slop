@@ -36,7 +36,7 @@
                    ctx-add-error-at ctx-sexpr-line ctx-sexpr-col ctx-list-first-line ctx-list-first-col))
   (import ctype (to-c-type to-c-name type-to-identifier is-builtin-c-type is-int-type param-slop-type-string))
   (import stmt (transpile-stmt))
-  (import expr (transpile-expr resolve-type-alias))
+  (import expr (transpile-expr resolve-type-alias escape-c-string))
   (import strlib (starts-with ends-with substring replace string-build))
   (import parser (pretty-print))
 
@@ -247,8 +247,10 @@
           (if (string-eq type-name "String")
             (match (deref value-expr)
               ((str str)
+                ;; Escaped as an inline literal is; pasted raw, \n broke the
+                ;; macro call and \\ lost its backslash (#238)
                 (ctx-emit ctx (ctx-str5 ctx storage c-type " " c-name
-                                (ctx-str3 ctx " = SLOP_STR(\"" (. str value) "\");"))))
+                                (ctx-str3 ctx " = SLOP_STR(\"" (escape-c-string ctx (. str value)) "\");"))))
               (else
                 (let ((value-c (eval-const-value ctx value-expr)))
                   (ctx-emit ctx (ctx-str5 ctx storage c-type " " c-name
@@ -275,7 +277,7 @@
         ((num num)
           (. num raw))
         ((str str)
-          (ctx-str3 ctx "\"" (. str value) "\""))
+          (ctx-str3 ctx "\"" (escape-c-string ctx (. str value)) "\""))
         ((sym sym)
           (to-c-name arena (. sym name)))
         ((lst lst)

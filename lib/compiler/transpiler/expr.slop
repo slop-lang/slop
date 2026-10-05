@@ -8,7 +8,7 @@
   (export
     ;; Main entry point
     transpile-expr transpile-expr-for transpile-expr-narrowed field-slop-type
-    is-simple-primitive-c-type check-if-operands
+    is-simple-primitive-c-type check-if-operands escape-c-string
     ;; Helpers
     transpile-literal transpile-symbol
     ;; Literal pattern helpers, shared with match (which imports this module)
@@ -37,7 +37,7 @@
     set-is-self-assign check-set-target-c)
 
   (import types (SExpr SExprList SExprSymbol SExprString SExprNumber
-                 ResolvedType resolved-type-is-pointer
+                 ResolvedType resolved-type-is-pointer resolved-type-to-slop-string
                  BindingOrigin MutationKind mutation-error-message
                  if-operand-count-message union-type-constructor-message comparison-operand-count-message))
   (import context (TranspileContext ctx-unique-arena-local ctx-register-value-key-type ctx-take-open-arenas ctx-restore-open-arenas ctx-push-open-arena ctx-pop-open-arena ctx-enter-loop ctx-exit-loop ctx-enter-switch ctx-exit-switch ctx-loop-exit ctx-exit-code ctx-set-capture-retval ctx-is-capture-retval ctx-is-post-exit ctx-post-exit-used ctx-set-post-exit ctx-restore-post-exit ctx-set-pos ctx-type-name-exists ctx-lookup-var ctx-lookup-func ctx-lookup-type ctx-lookup-enum-variant ctx-resolve-callable-variant ctx-resolve-enum-variant-for ctx-resolve-enum-variant-expecting ctx-enum-variant-known
@@ -1749,7 +1749,15 @@
         ((sym sym)
           (let ((name (. sym name)))
             (match (ctx-lookup-var ctx name)
-              ((some entry) (. entry slop-type))
+              ((some entry)
+                ;; An imported constant is bound without its type; the checker
+                ;; knows it. Without this (println IMPORTED) printed a String
+                ;; constant with %lld (#237).
+                (if (and (string-eq (. entry slop-type) "") (== (. entry origin) 'origin-const))
+                  (match (get-node-resolved-type expr)
+                    ((some rt) (resolved-type-to-slop-string arena rt))
+                    ((none) ""))
+                  (. entry slop-type)))
               ((none) ""))))
         ;; List expression - check for field access
         ((lst lst)

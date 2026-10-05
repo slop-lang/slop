@@ -1103,8 +1103,15 @@
               ((sym sym)
                 (let ((const-name (. sym name))
                       (base-name (to-c-name arena const-name))
-                      (c-name (ctx-prefix-type ctx base-name)))
-                  (ctx-bind-var ctx (VarEntry const-name c-name "auto" "" false false false "" "" 'origin-const))))
+                      (c-name (ctx-prefix-type ctx base-name))
+                      ;; The declared type, so code that picks C by type sees a
+                      ;; String constant as one. This binding is the one
+                      ;; lookups find first; with no type here, (println NAME)
+                      ;; printed a String constant with %lld (#237).
+                      (slop-type (match (list-get items 2)
+                                   ((some type-expr) (pretty-print arena type-expr))
+                                   ((none) ""))))
+                  (ctx-bind-var ctx (VarEntry const-name c-name "auto" slop-type false false false "" "" 'origin-const))))
               (else (do))))
           ((none) (do))))))
 
