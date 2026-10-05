@@ -838,7 +838,17 @@ slop_string types_mutation_error_message(slop_arena* arena, types_MutationKind k
                 return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("cannot change a field of "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - it is immutable; declare it (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
             }
         } else if (_mv_33 == types_BindingOrigin_origin_bound) {
-            return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = (((kind == types_MutationKind_mut_assign)) ? SLOP_STR("cannot assign to ") : SLOP_STR("cannot change a field of ")); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
+            __auto_type _mv_35 = kind;
+            if (_mv_35 == types_MutationKind_mut_assign) {
+                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("cannot assign to "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
+            } else if (_mv_35 == types_MutationKind_mut_field) {
+                return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("cannot change a field of "); _ll.data[1] = q; _ll.data[2] = SLOP_STR(" - names bound by for, for-each, match and with-arena are immutable; copy it into (let ((mut "); _ll.data[3] = name; _ll.data[4] = SLOP_STR(" ...)))"); _ll; }));
+            } else {
+                {
+                    __auto_type verb = (((kind == types_MutationKind_mut_push)) ? SLOP_STR("push to") : SLOP_STR("pop from"));
+                    return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = SLOP_STR("cannot "); _ll.data[1] = verb; _ll.data[2] = ((via_field) ? SLOP_STR(" a field of ") : SLOP_STR(" ")); _ll.data[3] = q; _ll.data[4] = SLOP_STR(" - a for-each or match binding is a copy, so the change would be lost; change a (let ((mut "); _ll.data[5] = name; _ll.data[6] = SLOP_STR(" ...))) copy and write it back (list-set, map-put), or hold the element as a (Ptr T)"); _ll; }));
+                }
+            }
         } else if (_mv_33 == types_BindingOrigin_origin_const) {
             return strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 2 * sizeof(slop_string)), .len = 2, .cap = 2, .arena = arena }; _ll.data[0] = (((kind == types_MutationKind_mut_assign)) ? SLOP_STR("cannot assign to constant ") : SLOP_STR("cannot change a field of constant ")); _ll.data[1] = q; _ll; }));
         }

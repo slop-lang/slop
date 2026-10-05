@@ -19,14 +19,14 @@ void parser_cli_print_json_array(slop_arena* arena, slop_list_types_SExpr_ptr ex
         int64_t i = 0;
         printf("%s", "[");
         while (i < len) {
-            __auto_type _mv_71 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_71.has_value) {
-                __auto_type expr = _mv_71.value;
+            __auto_type _mv_72 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_72.has_value) {
+                __auto_type expr = _mv_72.value;
                 if (i > 0) {
                     printf("%s", ",");
                 }
                 printf("%.*s", (int)(parser_json_print(arena, expr)).len, (parser_json_print(arena, expr)).data);
-            } else if (!_mv_71.has_value) {
+            } else if (!_mv_72.has_value) {
             }
             i = (i + 1);
         }
@@ -39,11 +39,11 @@ void parser_cli_print_sexp_list(slop_arena* arena, slop_list_types_SExpr_ptr exp
         __auto_type len = ((int64_t)((exprs).len));
         int64_t i = 0;
         while (i < len) {
-            __auto_type _mv_72 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
-            if (_mv_72.has_value) {
-                __auto_type expr = _mv_72.value;
+            __auto_type _mv_73 = ({ __auto_type _lst = exprs; size_t _idx = (size_t)i; slop_option_types_SExpr_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            if (_mv_73.has_value) {
+                __auto_type expr = _mv_73.value;
                 printf("%.*s\n", (int)(parser_pretty_print(arena, expr)).len, (parser_pretty_print(arena, expr)).data);
-            } else if (!_mv_72.has_value) {
+            } else if (!_mv_73.has_value) {
             }
             i = (i + 1);
         }
@@ -95,9 +95,9 @@ int main(int argc, char** _c_argv) {
                 }
                 {
                     __auto_type path = parser_cli_argv_to_string(argv, file_idx);
-                    __auto_type _mv_73 = file_file_open(path, file_FileMode_read);
-                    if (!_mv_73.is_ok) {
-                        __auto_type e = _mv_73.data.err;
+                    __auto_type _mv_74 = file_file_open(path, file_FileMode_read);
+                    if (!_mv_74.is_ok) {
+                        __auto_type e = _mv_74.data.err;
                         printf("%s", "Error: Could not open file: ");
                         printf("%.*s\n", (int)(path).len, (path).data);
                         {
@@ -105,11 +105,11 @@ int main(int argc, char** _c_argv) {
                             slop_arena_free(&_arena_4);
                             return _wa_ret;
                         }
-                    } else if (_mv_73.is_ok) {
-                        __auto_type f = _mv_73.data.ok;
-                        __auto_type _mv_74 = file_file_read_all(arena, (&f));
-                        if (!_mv_74.is_ok) {
-                            __auto_type e = _mv_74.data.err;
+                    } else if (_mv_74.is_ok) {
+                        __auto_type f = _mv_74.data.ok;
+                        __auto_type _mv_75 = file_file_read_all(arena, (&f));
+                        if (!_mv_75.is_ok) {
+                            __auto_type e = _mv_75.data.err;
                             file_file_close((&f));
                             printf("%s\n", "Error: Could not read file");
                             {
@@ -117,12 +117,12 @@ int main(int argc, char** _c_argv) {
                                 slop_arena_free(&_arena_4);
                                 return _wa_ret;
                             }
-                        } else if (_mv_74.is_ok) {
-                            __auto_type source = _mv_74.data.ok;
+                        } else if (_mv_75.is_ok) {
+                            __auto_type source = _mv_75.data.ok;
                             file_file_close((&f));
-                            __auto_type _mv_75 = parser_parse(arena, source);
-                            if (!_mv_75.is_ok) {
-                                __auto_type e = _mv_75.data.err;
+                            __auto_type _mv_76 = parser_parse(arena, source);
+                            if (!_mv_76.is_ok) {
+                                __auto_type e = _mv_76.data.err;
                                 printf("%s", "Parse error at line ");
                                 printf("%lld", (long long)(e.line));
                                 printf("%s", ", col ");
@@ -134,8 +134,8 @@ int main(int argc, char** _c_argv) {
                                     slop_arena_free(&_arena_4);
                                     return _wa_ret;
                                 }
-                            } else if (_mv_75.is_ok) {
-                                __auto_type exprs = _mv_75.data.ok;
+                            } else if (_mv_76.is_ok) {
+                                __auto_type exprs = _mv_76.data.ok;
                                 if (format == parser_cli_OutputFormat_fmt_json) {
                                     parser_cli_print_json_array(arena, exprs);
                                     {
