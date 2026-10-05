@@ -912,7 +912,6 @@ reserved.
 ### Other Forms the Compiler Lowers
 (record-new T (f v)...)  (union-new T tag v...)   ; construction
 (when cond body...)                      ; if without else, runs several forms
-(let* ((a e1) (b e2)) body)              ; sequential bindings
 (sizeof T) -> U64
 (quote x) / 'x                           ; quoted symbol (enum value)
 (& a b) (| a b) (^ a b) (<< a n) (>> a n)   ; bitwise
@@ -1005,7 +1004,7 @@ true false nil unit
 (let ((name Type expr)...) body)         ; Immutable with explicit type
 (let ((mut name expr)...) body)          ; Mutable
 (let ((mut name Type expr)...) body)     ; Mutable with explicit type
-(let* ((a e1) (b e2)) body)              ; Sequential bindings
+; let binds in order, so a later binding may use an earlier one.
 (set! var value)                         ; Mutation (requires mut)
 (set! expr field value)                  ; Field mutation (in place)
 (set! expr.field value)                  ; Same, shorthand

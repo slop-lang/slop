@@ -317,7 +317,8 @@ identifier               ; Variable reference
 (let ((name expr)...) body)           ; Immutable bindings (set! disallowed; pushing onto its own list is fine)
 (let ((mut name expr)...) body)       ; Mutable bindings (set! allowed)
 (let ((mut name Type expr)...) body)  ; Mutable with explicit type
-(let* ((name expr)...) body)          ; Sequential bindings
+(let* ((name expr)...) body)          ; Sequential bindings -- currently broken (#314);
+                                      ; let already binds in order
 ; Names bound by for, for-each, match and with-arena are immutable too;
 ; copy one into (let ((mut name ...))) to change it. Constants cannot be set!.
 ; A for-each or match binding is a copy of the element or payload, so
