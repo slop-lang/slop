@@ -69,7 +69,8 @@
     (memcpy ((dest (Ptr Void)) (src (Ptr Void)) (n U64)) (Ptr Void))
     (memset ((s (Ptr Void)) (c Int) (n U64)) (Ptr Void))
     (strcmp ((s1 (Ptr U8)) (s2 (Ptr U8))) Int)
-    (strncmp ((s1 (Ptr U8)) (s2 (Ptr U8)) (n U64)) Int))
+    (strncmp ((s1 (Ptr U8)) (s2 (Ptr U8)) (n U64)) Int)
+    (memcmp ((s1 (Ptr Void)) (s2 (Ptr Void)) (n U64)) Int))
 
   (ffi "stdio.h"
     (snprintf ((buf (Ptr Char)) (size U64) (fmt (Ptr Char)) (val Float)) Int))
@@ -267,12 +268,13 @@
     (@example ("hello world" "hello") -> true)
     (@example ("hello" "world") -> false)
     (@example ("hi" "") -> true)
+    ;; memcmp, not strncmp: a String is len bytes, and may hold a NUL (#161)
     (if (> (. prefix len) (. s len))
       false
       (==
-        (strncmp
-          (cast (Ptr U8) (. s data))
-          (cast (Ptr U8) (. prefix data))
+        (memcmp
+          (cast (Ptr Void) (. s data))
+          (cast (Ptr Void) (. prefix data))
           (. prefix len))
         0)))
 
@@ -287,9 +289,9 @@
       false
       (let ((offset (- (. s len) (. suffix len))))
         (==
-          (strncmp
-            (cast (Ptr U8) (+ (. s data) offset))
-            (cast (Ptr U8) (. suffix data))
+          (memcmp
+            (cast (Ptr Void) (+ (. s data) offset))
+            (cast (Ptr Void) (. suffix data))
             (. suffix len))
           0))))
 
@@ -488,14 +490,20 @@
     (@example (arena "hello world" 6 5) -> "world")
     (let ((slen (cast I64 (. s len)))
           (actual-len (min (cast I64 len) (cast I64 (- slen (cast I64 start))))))
+      ;; The byte after the slice is a NUL. A String does not promise one, but
+      ;; a substring reaches fopen, getenv and strtol through (. s data), and
+      ;; the spare byte was left as whatever the arena held (#161).
       (if (== actual-len 0)
-        (String (cast (Ptr U8) (arena-alloc arena 1)) (cast U64 0))
-        (let ((buf (arena-alloc arena (+ actual-len 1))))
+        (let ((buf (cast (Ptr U8) (arena-alloc arena 1))))
+          (set! (@ buf 0) (cast U8 0))
+          (String buf (cast U64 0)))
+        (let ((buf (cast (Ptr U8) (arena-alloc arena (+ actual-len 1)))))
           (memcpy
             (cast (Ptr Void) buf)
             (cast (Ptr Void) (+ (. s data) start))
             (cast U64 actual-len))
-          (String (cast (Ptr U8) buf) (cast U64 actual-len))))))
+          (set! (@ buf actual-len) (cast U8 0))
+          (String buf (cast U64 actual-len))))))
 
   (fn to-upper ((arena Arena) (s String))
     (@intent "Convert all characters to uppercase")
@@ -584,6 +592,16 @@
               (cast U64 (- slen 1))))
           (String (cast (Ptr U8) buf) (cast U64 slen))))))
 
+  (fn to-cstring-in ((arena Arena) (s String))
+    (@intent "A NUL-terminated copy of s, for a C function that reads to a NUL")
+    (@spec ((Arena String) -> (Ptr Char)))
+    (@alloc arena)
+    (let ((buf (cast (Ptr U8) (arena-alloc arena (+ (. s len) 1)))))
+      (when (> (. s len) 0)
+        (memcpy (cast (Ptr Void) buf) (cast (Ptr Void) (. s data)) (. s len)))
+      (set! (@ buf (. s len)) (cast U8 0))
+      (cast (Ptr Char) buf)))
+
   (fn parse-int ((s String))
     (@intent "Parse string as decimal integer")
     (@spec ((String) -> (Result I64 ParseError)))
@@ -595,10 +613,13 @@
     (if (== (. s len) 0)
       (error 'empty-string)
       (with-arena 16
-        (let ((endptr (arena-alloc arena 8))
-              (result (strtol (cast (Ptr Char) (. s data)) (cast (Ptr (Ptr Char)) endptr) 10)))
+        ;; strtol reads to a NUL, so it gets a NUL-terminated copy; on a slice
+        ;; it read the digits after it too (#161)
+        (let ((cstr (to-cstring-in arena s))
+              (endptr (arena-alloc arena 8))
+              (result (strtol cstr (cast (Ptr (Ptr Char)) endptr) 10)))
           (let ((end-val (deref (cast (Ptr (Ptr Char)) endptr))))
-            (if (== end-val (cast (Ptr Char) (. s data)))
+            (if (== end-val cstr)
               (error 'invalid-format)
               (ok result)))))))
 
@@ -613,10 +634,12 @@
     (if (== (. s len) 0)
       (error 'empty-string)
       (with-arena 16
-        (let ((endptr (arena-alloc arena 8))
-              (result (strtod (cast (Ptr Char) (. s data)) (cast (Ptr (Ptr Char)) endptr))))
+        ;; As parse-int: strtod gets a NUL-terminated copy (#161)
+        (let ((cstr (to-cstring-in arena s))
+              (endptr (arena-alloc arena 8))
+              (result (strtod cstr (cast (Ptr (Ptr Char)) endptr))))
           (let ((end-val (deref (cast (Ptr (Ptr Char)) endptr))))
-            (if (== end-val (cast (Ptr Char) (. s data)))
+            (if (== end-val cstr)
               (error 'invalid-format)
               (ok result)))))))
 
@@ -809,10 +832,21 @@
     (@example ("abc" "abd") -> -1)
     (@example ("abc" "abc") -> 0)
     (@example ("abd" "abc") -> 1)
-    (let ((result (strcmp (cast (Ptr U8) (. a data)) (cast (Ptr U8) (. b data)))))
+    (@example ("ab" "abc") -> -1)
+    (@example ("abc" "ab") -> 1)
+    (@example ("" "") -> 0)
+    ;; By len, not to a NUL: strcmp compared the bytes after a slice too, so
+    ;; "apple" taken from "applesauce" compared greater than "apple" (#161).
+    ;; Bytes first, then the shorter string sorts first.
+    (let ((alen (. a len))
+          (blen (. b len))
+          (n (if (< alen blen) alen blen))
+          (result (if (== n 0) 0 (memcmp (cast (Ptr Void) (. a data)) (cast (Ptr Void) (. b data)) n))))
       (cond
         ((< result 0) -1)
         ((> result 0) 1)
+        ((< alen blen) -1)
+        ((> alen blen) 1)
         (else 0))))
 
   (fn compare-ignore-case ((a String) (b String))
