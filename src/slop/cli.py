@@ -1677,6 +1677,9 @@ def cmd_fill(args):
         if parent not in include_paths:
             include_paths.append(parent)
 
+        from slop.parser import read_source
+        # The fills are spliced into this text at the holes' offsets
+        source_text = read_source(input_file)
         ast = parse_file(input_file)
 
         # Pre-check scaffold for type errors before filling
@@ -1873,8 +1876,8 @@ def cmd_fill(args):
             if not quiet:
                 print("No holes to fill")
             if args.output:
-                with open(input_file) as f:
-                    Path(args.output).write_text(f.read())
+                with open(args.output, 'w', newline='') as f:
+                    f.write(source_text)
             return 0
 
         if not quiet:
@@ -2080,37 +2083,28 @@ def cmd_fill(args):
                         error_info = f": {result.error}" if result.error else ""
                         print(f"  x {info.prompt[:50]}... ({tier.name}){error_info}")
 
-        # Replace holes in AST
         logger.debug(f"Replacements: {len(replacements)} entries, ids={list(replacements.keys())}")
-        if replacements:
-            filled_ast = replace_holes_in_ast(ast, replacements)
-        else:
-            filled_ast = ast
+        output_text = _splice_fills(source_text, all_holes, replacements)
 
-        # Generate output and format it
-        output_lines = []
-        for form in filled_ast:
-            output_lines.append(pretty_print(form))
-            output_lines.append("")
-
-        output_text = '\n'.join(output_lines)
-        output_text = format_source(output_text)
-
-        if args.stdout:
+        if output_text is None:
+            # Nothing was filled: leave the file (and any --output) alone
+            if not quiet:
+                target = args.output or input_file
+                where = "" if args.stdout else f"; {target} not written"
+                print(f"\nNo holes were filled{where}", file=sys.stderr)
+        elif args.stdout:
             # Explicit stdout output
             if not quiet:
                 print("\n--- Filled source ---")
-            print(output_text)
-        elif args.output:
-            # Write to specified output file
-            Path(args.output).write_text(output_text)
-            if not quiet:
-                print(f"\nWrote {args.output}")
+            sys.stdout.write(output_text)
         else:
-            # Default: write back to input file (in-place)
-            Path(input_file).write_text(output_text)
+            # --output, or by default back to the input file (in place).
+            # newline='' writes CRLF and \r in strings back as they were read.
+            target = args.output or input_file
+            with open(target, 'w', newline='') as f:
+                f.write(output_text)
             if not quiet:
-                print(f"\nWrote {input_file}")
+                print(f"\nWrote {target}")
 
         if not quiet:
             print(f"\n{success_count} filled, {fail_count} failed")
@@ -2121,6 +2115,49 @@ def cmd_fill(args):
             import traceback
             traceback.print_exc()
         return 1
+
+
+def _splice_fills(source_text: str, holes, replacements: dict):
+    """Write each fill over its hole's text in source_text.
+
+    holes is the (parent form, hole) pairs cmd_fill collected from a parse
+    of source_text; replacements maps id(hole) to its filled expression.
+    Everything outside the filled holes, comments and layout included, is
+    kept byte for byte. Returns the new text, or None when nothing was
+    filled.
+    """
+    from slop.formatter import format_expr, INDENT
+
+    hole_by_id = {id(h): h for _, h in holes}
+    spans = sorted(((hole_by_id[k].start, hole_by_id[k].end, expr)
+                    for k, expr in replacements.items() if k in hole_by_id),
+                   key=lambda s: (s[0], -s[1]))
+    # A hole inside another filled hole goes away with the outer one
+    kept = []
+    for span in spans:
+        if kept and span[0] < kept[-1][1]:
+            continue
+        kept.append(span)
+    if not kept:
+        return None
+
+    crlf = source_text.count('\r\n') > 0 and source_text.count('\r\n') == source_text.count('\n')
+    text = source_text
+    for start, end, expr in reversed(kept):
+        col = start - (text.rfind('\n', 0, start) + 1)
+        fill = format_expr(expr, col // INDENT)
+        # format_expr indents continuation lines from col rounded down to
+        # an indent step; move them to the hole's own column
+        shift = col % INDENT
+        if shift:
+            fill = fill.replace('\n', '\n' + ' ' * shift)
+        if crlf:
+            fill = fill.replace('\n', '\r\n')
+        text = text[:start] + fill + text[end:]
+
+    # Each fill is a whole expression, so this only fails on a bug here
+    parse(text)
+    return text
 
 
 def _extract_context(form: SList) -> dict:
@@ -3219,11 +3256,14 @@ def _load_spec(path: str) -> dict:
 def cmd_format(args):
     """Format SLOP source code."""
     from slop.formatter import format_source
+    from slop.parser import read_source
 
     exit_code = 0
     for filepath in args.input:
         try:
-            source = Path(filepath).read_text()
+            # newline='' both ways, so a \r in a string literal or a CRLF
+            # line ending is written back as it was read
+            source = read_source(filepath)
             formatted = format_source(source)
 
             if args.check:
@@ -3237,7 +3277,8 @@ def cmd_format(args):
             else:
                 # Default - format in place
                 if source != formatted:
-                    Path(filepath).write_text(formatted)
+                    with open(filepath, 'w', newline='') as f:
+                        f.write(formatted)
                     print(f"Formatted {filepath}")
                 else:
                     print(f"{filepath} unchanged")
