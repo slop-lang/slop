@@ -478,6 +478,7 @@ struct context_TranspileContext {
     slop_list_string struct_key_types;
     slop_list_context_ValueKeyType value_key_types;
     slop_list_context_TypeAliasEntry type_aliases;
+    slop_list_context_TypeAliasEntry plain_type_aliases;
     slop_string current_file;
     slop_list_context_TranspileError errors;
     slop_list_context_TranspileError warnings;
@@ -731,7 +732,11 @@ void context_ctx_register_value_key_type(context_TranspileContext* ctx, slop_str
 void context_ctx_register_type_alias(context_TranspileContext* ctx, slop_string name, slop_string slop_type);
 uint8_t context_ctx_is_option_c_type(context_TranspileContext* ctx, slop_string c_type);
 slop_option_string context_ctx_lookup_type_alias(context_TranspileContext* ctx, slop_string name);
+void context_ctx_register_plain_type_alias(context_TranspileContext* ctx, slop_string name, slop_string slop_type);
+slop_option_string context_ctx_lookup_plain_type_alias(context_TranspileContext* ctx, slop_string name);
+slop_string context_ctx_resolve_plain_type_alias(context_TranspileContext* ctx, slop_string name);
 slop_option_string context_find_type_alias(context_TranspileContext* ctx, slop_string key);
+slop_option_string context_find_alias_in(slop_list_context_TypeAliasEntry aliases, slop_string key);
 void context_ctx_add_deferred_lambda(context_TranspileContext* ctx, slop_string lambda_code);
 slop_list_string context_ctx_get_deferred_lambdas(context_TranspileContext* ctx);
 void context_ctx_clear_deferred_lambdas(context_TranspileContext* ctx);

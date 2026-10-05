@@ -1,0 +1,24 @@
+;; ============================================================
+;; A const typed by a plain alias of String (#238/#237 review)
+;;
+;; (type Label String) (const T Label "x") emitted a bare C
+;; string literal for a slop_string, and println of it chose
+;; %lld. An alias is the type it names.
+;; ============================================================
+
+(module test-alias-string-const
+  (export (main 0))
+
+  (type Label String)
+  (type Name Label)
+
+  (const GREETING Label "hi \"there\"")
+  (const WHO Name "world")
+
+  (fn main ()
+    (@intent "Print both, and compare them with the inline text")
+    (@spec (() -> Int))
+    (do
+      (println GREETING)
+      (println WHO)
+      (if (and (string-eq (cast String GREETING) "hi \"there\"") (string-eq (cast String WHO) "world")) 0 1))))

@@ -27,7 +27,7 @@
                    ctx-set-current-return-type ctx-get-current-return-type ctx-clear-current-return-type
                    ctx-set-current-return-slop-type
                    ctx-set-capture-retval ctx-is-capture-retval ctx-set-post-exit ctx-post-exit-used
-                   ctx-lookup-result-type-alias ctx-lookup-type ctx-register-type-alias
+                   ctx-lookup-result-type-alias ctx-lookup-type ctx-register-type-alias ctx-resolve-plain-type-alias
                    ctx-push-scope ctx-pop-scope ctx-bind-var
                    ctx-prefixing-enabled ctx-get-module ctx-prefix-type
                    TypeEntry FuncEntry FuncParamType VarEntry
@@ -244,7 +244,9 @@
             (ctx-emit ctx (ctx-str4 ctx "#define " c-name " (" (ctx-str ctx value-c ")")))))
         ;; Non-integer type
         (let ((storage (if is-exported "const " "static const ")))
-          (if (string-eq type-name "String")
+          ;; An alias of String is still a slop_string: (type Label String)
+          ;; made the const a bare C string literal, which cc rejected
+          (if (string-eq (ctx-resolve-plain-type-alias ctx type-name) "String")
             (match (deref value-expr)
               ((str str)
                 ;; Escaped as an inline literal is; pasted raw, \n broke the
