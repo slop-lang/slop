@@ -144,7 +144,10 @@ slop_string expr_transpile_printf_call(context_TranspileContext* ctx, slop_list_
 slop_string expr_transpile_raw_string_fn_call(context_TranspileContext* ctx, slop_string fn_name, slop_list_types_SExpr_ptr items);
 uint8_t expr_string_contains(slop_string s, slop_string substr);
 slop_option_string expr_get_expr_type_hint(context_TranspileContext* ctx, types_SExpr* expr);
+void expr_check_if_operands(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_union_constructor(context_TranspileContext* ctx, slop_string type_name, slop_string c_type_name, slop_list_types_SExpr_ptr items);
+int64_t expr_union_variant_payload_count(context_TranspileContext* ctx, slop_string c_type_name, slop_string tag);
+slop_string expr_union_constructor_of_variant(context_TranspileContext* ctx, slop_string type_name, slop_string c_type_name, slop_string tag_name, slop_list_types_SExpr_ptr args, types_SExpr* at);
 slop_string expr_transpile_cond_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_string expr_transpile_match_expr(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);
 slop_list_types_SExpr_ptr expr_collect_match_patterns(context_TranspileContext* ctx, slop_list_types_SExpr_ptr items);

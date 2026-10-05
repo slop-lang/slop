@@ -121,6 +121,7 @@ types_ResolvedType* infer_resolve_type_expr(env_TypeEnv* env, types_SExpr* type_
 slop_option_types_ResolvedType_ptr infer_fn_declared_return(env_TypeEnv* env, slop_string fn_name);
 slop_option_types_ResolvedType_ptr infer_set_target_type(env_TypeEnv* env, slop_list_types_SExpr_ptr items, int64_t len);
 void infer_check_field_narrowing(env_TypeEnv* env, types_ResolvedType* rec_type, slop_string field_name, types_ResolvedType* val_type, types_SExpr* val_expr);
+void infer_check_union_constructor(env_TypeEnv* env, types_ResolvedType* the_type, types_SExpr* expr, slop_list_types_SExpr_ptr items, int64_t len);
 void infer_check_constructor_args(env_TypeEnv* env, types_ResolvedType* the_type, slop_list_types_SExpr_ptr items, int64_t len);
 void infer_check_map_put(env_TypeEnv* env, slop_list_types_SExpr_ptr items, int64_t len);
 uint8_t infer_is_assignable_list_target(types_SExpr* expr);

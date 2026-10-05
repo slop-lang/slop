@@ -117,11 +117,12 @@ typedef struct { bool is_ok; union { types_SExpr* ok; parser_ParseError err; } d
 
 typedef slop_result_list_types_SExpr_ptr_parser_ParseError parser_ParseResult;
 
-uint8_t parser_string_contains_dot(slop_string s);
+uint8_t parser_number_text_is_float(slop_string s);
 slop_string parser_string_copy(slop_arena* arena, slop_string s);
 parser_LexerState parser_lexer_new(slop_string source);
 uint8_t parser_lexer_at_end(parser_LexerState* state);
 strlib_Byte parser_lexer_peek(parser_LexerState* state);
+strlib_Byte parser_lexer_peek_at(parser_LexerState* state, int64_t offset);
 strlib_Byte parser_lexer_peek_next(parser_LexerState* state);
 void parser_lexer_advance(parser_LexerState* state);
 void parser_lexer_skip_whitespace(parser_LexerState* state);

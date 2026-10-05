@@ -439,6 +439,9 @@ uint8_t types_resolved_type_has_field(types_ResolvedType* t, slop_string name);
 slop_option_types_ResolvedType_ptr types_resolved_type_get_field_type(types_ResolvedType* t, slop_string name);
 slop_string types_resolved_type_to_slop_string(slop_arena* arena, types_ResolvedType* t);
 slop_string types_mutation_error_message(slop_arena* arena, types_MutationKind kind, types_BindingOrigin origin, slop_string name, uint8_t via_field);
+slop_string types_if_operand_count_message(slop_arena* arena, int64_t operands);
+slop_string types_comparison_operand_count_message(slop_arena* arena, slop_string op, int64_t operands);
+slop_string types_union_type_constructor_message(slop_arena* arena, slop_string type_name);
 slop_string types_param_mode_error_message(slop_arena* arena, slop_string mode, slop_string name);
 
 #ifndef SLOP_OPTION_TYPES_RESOLVEDTYPE_PTR_DEFINED
