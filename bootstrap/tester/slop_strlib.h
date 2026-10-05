@@ -69,6 +69,7 @@ slop_string strlib_to_upper(slop_arena* arena, slop_string s);
 slop_string strlib_to_lower(slop_arena* arena, slop_string s);
 slop_string strlib_to_title(slop_arena* arena, slop_string s);
 slop_string strlib_capitalize(slop_arena* arena, slop_string s);
+char* strlib_to_cstring_in(slop_arena* arena, slop_string s);
 slop_result_int_strlib_ParseError strlib_parse_int(slop_string s);
 slop_result_float_strlib_ParseError strlib_parse_float(slop_string s);
 slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precision);
