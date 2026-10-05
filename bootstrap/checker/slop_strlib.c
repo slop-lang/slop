@@ -615,7 +615,8 @@ slop_string strlib_float_to_string(slop_arena* arena, double f, uint8_t precisio
             fmt_buf[5] = ((uint8_t)(0));
         }
         {
-            __auto_type len = snprintf(((char*)(out_buf)), ((uint64_t)(64)), ((char*)(fmt_buf)), f);
+            __auto_type written = snprintf(((char*)(out_buf)), ((uint64_t)(64)), ((char*)(fmt_buf)), f);
+            __auto_type len = ((written < 0) ? 0 : ((written > 63) ? 63 : written));
             _retval = (slop_string){.len = ((uint64_t)(len)), .data = ((uint8_t*)(out_buf))};
             goto _slop_post;
         }

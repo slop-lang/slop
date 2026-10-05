@@ -2102,7 +2102,8 @@ types_ResolvedType* infer_infer_special_form(type_env_TypeEnv* env, types_SExpr*
                             if (_mv_390.has_value) {
                                 __auto_type parent_type = _mv_390.value;
                                 {
-                                    __auto_type msg = strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = op; _ll.data[2] = SLOP_STR("' is a variant of '"); _ll.data[3] = (*parent_type).name; _ll.data[4] = SLOP_STR("'. Use (union-new Type variant value) syntax"); _ll; }));
+                                    __auto_type tn = (*parent_type).name;
+                                    __auto_type msg = ((types_resolved_type_is_union(parent_type)) ? strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 13 * sizeof(slop_string)), .len = 13, .cap = 13, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = op; _ll.data[2] = SLOP_STR("' is a variant of '"); _ll.data[3] = tn; _ll.data[4] = SLOP_STR("'; build it with ("); _ll.data[5] = tn; _ll.data[6] = SLOP_STR(" ("); _ll.data[7] = op; _ll.data[8] = SLOP_STR(" ...)) or (union-new "); _ll.data[9] = tn; _ll.data[10] = SLOP_STR(" "); _ll.data[11] = op; _ll.data[12] = SLOP_STR(" ...)"); _ll; })) : strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 6 * sizeof(slop_string)), .len = 6, .cap = 6, .arena = arena }; _ll.data[0] = SLOP_STR("'"); _ll.data[1] = op; _ll.data[2] = SLOP_STR("' is a value of enum '"); _ll.data[3] = tn; _ll.data[4] = SLOP_STR("'; write it quoted, '"); _ll.data[5] = op; _ll; })));
                                     type_env_env_add_error(env, msg, line, col);
                                     return type_env_env_get_unknown_type(env);
                                 }
@@ -2939,7 +2940,7 @@ infer_MutPath infer_mutation_path(type_env_TypeEnv* env, types_SExpr* expr) {
                             {
                                 __auto_type arena = type_env_env_arena(env);
                                 __auto_type prefix = strlib_substring(arena, name, 0, idx);
-                                __auto_type field = strlib_substring(arena, name, (idx + 1), SLOP_RANGE(int64_t, (string_len(name) - (idx + 1)), 1, 0, 0, 0, "(Int 0 ..) at infer.slop:2600:66"));
+                                __auto_type field = strlib_substring(arena, name, (idx + 1), SLOP_RANGE(int64_t, (string_len(name) - (idx + 1)), 1, 0, 0, 0, "(Int 0 ..) at infer.slop:2606:66"));
                                 return infer_mutation_path_field(infer_mutation_path_root(env, prefix), field);
                             }
                         } else {

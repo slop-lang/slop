@@ -162,6 +162,8 @@ uint8_t parser_sexpr_is_string(types_SExpr* expr);
 slop_string parser_sexpr_number_string(types_SExpr* expr);
 slop_string parser_sexpr_string_value(types_SExpr* expr);
 slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr);
+slop_string parser_float_literal_text(slop_arena* arena, types_SExprNumber num);
+slop_string parser_json_number_text(slop_arena* arena, slop_string text);
 slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr);
 slop_string parser_json_escape_string(slop_arena* arena, slop_string s);
 slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr items);

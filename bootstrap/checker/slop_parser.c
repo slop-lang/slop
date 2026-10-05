@@ -53,6 +53,8 @@ uint8_t parser_sexpr_is_string(types_SExpr* expr);
 slop_string parser_sexpr_number_string(types_SExpr* expr);
 slop_string parser_sexpr_string_value(types_SExpr* expr);
 slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr);
+slop_string parser_float_literal_text(slop_arena* arena, types_SExprNumber num);
+slop_string parser_json_number_text(slop_arena* arena, slop_string text);
 slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr);
 slop_string parser_json_escape_string(slop_arena* arena, slop_string s);
 slop_string parser_json_print_list(slop_arena* arena, slop_list_types_SExpr_ptr items);
@@ -1178,6 +1180,39 @@ slop_list_types_SExpr_ptr parser_find_holes(slop_arena* arena, types_SExpr* expr
     }
 }
 
+slop_string parser_float_literal_text(slop_arena* arena, types_SExprNumber num) {
+    if (num.raw.len > 0) {
+        return num.raw;
+    } else {
+        return strlib_float_to_string(arena, num.float_value, 15);
+    }
+}
+
+slop_string parser_json_number_text(slop_arena* arena, slop_string text) {
+    {
+        __auto_type slen = ((int64_t)(text.len));
+        __auto_type data = text.data;
+        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, (slen + 1)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        int64_t i = 0;
+        int64_t out = 0;
+        if ((i < slen) && (data[i] == 45)) {
+            buf[out] = 45;
+            out = (out + 1);
+            i = (i + 1);
+        }
+        while ((((i + 1) < slen)) && ((data[i] == 48)) && (strlib_is_digit(SLOP_RANGE(strlib_Byte, data[(i + 1)], 1, 1, 0, 255, "Byte (Int 0 .. 255) at parser.slop:1216:29")))) {
+            i = (i + 1);
+        }
+        while (i < slen) {
+            buf[out] = data[i];
+            out = (out + 1);
+            i = (i + 1);
+        }
+        buf[out] = 0;
+        return (slop_string){.len = ((uint64_t)(out)), .data = buf};
+    }
+}
+
 slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
     __auto_type _mv_117 = (*expr);
     switch (_mv_117.tag) {
@@ -1207,6 +1242,10 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
                             buf[out] = 92;
                             buf[(out + 1)] = 116;
                             out = (out + 2);
+                        } else if (c == 13) {
+                            buf[out] = 92;
+                            buf[(out + 1)] = 114;
+                            out = (out + 2);
                         } else if (c == 34) {
                             buf[out] = 92;
                             buf[(out + 1)] = 34;
@@ -1231,7 +1270,7 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
         {
             __auto_type num = _mv_117.data.num;
             if (num.is_float) {
-                return parser_string_copy(arena, SLOP_STR("<float>"));
+                return parser_float_literal_text(arena, num);
             } else {
                 return int_to_string(arena, num.int_value);
             }
@@ -1275,7 +1314,7 @@ slop_string parser_pretty_print(slop_arena* arena, types_SExpr* expr) {
 slop_string parser_json_escape_string(slop_arena* arena, slop_string s) {
     {
         __auto_type slen = ((int64_t)(s.len));
-        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, ((slen * 2) + 3)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        __auto_type buf = ((uint8_t*)(({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, ((slen * 6) + 3)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
         int64_t i = 0;
         int64_t out = 1;
         buf[0] = 34;
@@ -1302,6 +1341,17 @@ slop_string parser_json_escape_string(slop_arena* arena, slop_string s) {
                     buf[out] = 92;
                     buf[(out + 1)] = 116;
                     out = (out + 2);
+                } else if (c < 32) {
+                    {
+                        __auto_type lo = (c % 16);
+                        buf[out] = 92;
+                        buf[(out + 1)] = 117;
+                        buf[(out + 2)] = 48;
+                        buf[(out + 3)] = 48;
+                        buf[(out + 4)] = ((uint8_t)((48 + (c / 16))));
+                        buf[(out + 5)] = ((uint8_t)((((lo < 10)) ? (48 + lo) : (87 + lo))));
+                        out = (out + 6);
+                    }
                 } else {
                     buf[out] = c;
                     out = (out + 1);
@@ -1373,17 +1423,10 @@ slop_string parser_json_print(slop_arena* arena, types_SExpr* expr) {
             {
                 __auto_type line_str = int_to_string(arena, num.line);
                 __auto_type col_str = int_to_string(arena, num.col);
-                if (num.is_float) {
-                    {
-                        __auto_type val_str = strlib_float_to_string(arena, num.float_value, 15);
-                        return string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, SLOP_STR("{\"type\":\"Number\",\"value\":"), val_str), SLOP_STR(",\"is_float\":true,\"line\":")), line_str), SLOP_STR(",\"col\":")), col_str), SLOP_STR("}"));
-                    }
-                } else {
-                    {
-                        __auto_type val_str = int_to_string(arena, num.int_value);
-                        return string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, SLOP_STR("{\"type\":\"Number\",\"value\":"), val_str), SLOP_STR(",\"is_float\":false,\"line\":")), line_str), SLOP_STR(",\"col\":")), col_str), SLOP_STR("}"));
-                    }
-                }
+                __auto_type val_str = ((num.is_float) ? parser_json_number_text(arena, parser_float_literal_text(arena, num)) : int_to_string(arena, num.int_value));
+                __auto_type float_str = ((num.is_float) ? SLOP_STR("true") : SLOP_STR("false"));
+                __auto_type raw_str = parser_json_escape_string(arena, num.raw);
+                return string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, string_concat(arena, SLOP_STR("{\"type\":\"Number\",\"value\":"), val_str), SLOP_STR(",\"is_float\":")), float_str), SLOP_STR(",\"raw\":")), raw_str), SLOP_STR(",\"line\":")), line_str), SLOP_STR(",\"col\":")), col_str), SLOP_STR("}"));
             }
         }
         case types_SExpr_lst:
