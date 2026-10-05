@@ -1229,7 +1229,7 @@ These ARE in strlib and need `(import strlib ...)`:
 |---------|-------------|
 | `slop parse FILE [--holes]` | Parse and print the S-expressions (or only the holes) |
 | `slop check FILE [--json] [-I DIR]` | Type check without transpiling |
-| `slop transpile FILE [-o OUT] [-I DIR]` | Convert to C source |
+| `slop transpile FILE [-o OUT]` | Convert to C source |
 | `slop build [FILE]` | Full pipeline: parse, check, transpile, compile |
 | `slop test [FILE] [-I DIR] [-v] [--rebuild]` | Run the @example annotations |
 | `slop verify [FILE] [--mode error/warn] [--timeout MS]` | Prove contracts with Z3 |

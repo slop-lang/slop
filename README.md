@@ -265,10 +265,44 @@ slop check-hole '(helper 42)' -t Int -c myfile.slop
 # From stdin
 echo '(ok value)' | slop check-hole -t '(Result T E)'
 
+# Run the @example annotations as tests
+slop test examples/fibonacci.slop
+
+# Format source in place (comments are kept); --check for CI
+slop format src/*.slop
+slop format --check src/*.slop
+
 # Show resolved paths (useful for debugging SLOP_HOME)
-slop paths
+slop paths                     # SLOP_HOME, stdlib, and the four native binaries
 slop paths -v                  # Include examples list
 ```
+
+### Generating SLOP from Schemas (`slop derive`)
+
+`slop derive` turns an external schema into a SLOP module deterministically
+(no LLM). The output builds with the current compiler and is wrapped in a
+`(module NAME (export ...) ...)` named after the `-o` file.
+
+```bash
+slop derive schema.json -o models.slop          # JSON Schema -> types
+slop derive tables.sql -o tables.slop           # SQL DDL (CREATE TABLE / CREATE TYPE ... AS ENUM)
+slop derive petstore.yaml -o petstore.slop      # OpenAPI 3 / Swagger 2: types + one fn per operation
+slop derive petstore.yaml -s map -o store.slop  # ... with an in-memory Map-backed implementation
+```
+
+- **JSON Schema:** objects become records (optional properties are
+  `(Option T)`), string enums become enums, `oneOf`/`anyOf` become unions,
+  numeric bounds become range types, and `date`/`date-time` become `String`
+  with a comment.
+- **SQL:** one record per table; nullable columns are `(Option T)`, and
+  `VARCHAR(n)` is `(String .. n)`.
+- **OpenAPI:** each operation is a function with `@intent`, `@spec`, `@pre`
+  and a hole returning `(Result T ApiError)`. `-s` picks the storage:
+  `stub` (default; a `@requires storage` block you implement), `map` (a
+  working in-memory implementation, no holes) or `none` (types and holes only).
+
+Anything it cannot express is emitted as `String` with a `;;` comment, and
+reported on stderr; it never emits an undefined type.
 
 ### Native Components
 
