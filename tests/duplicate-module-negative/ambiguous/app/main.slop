@@ -1,0 +1,8 @@
+(module main
+  (@intent "Two importers of index, which a/ and b/ both define (#165)")
+  (import uses-a (graph-n))
+  (import uses-b (rules-k))
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (- (+ (graph-n) (rules-k)) 7)))

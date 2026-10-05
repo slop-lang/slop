@@ -23,7 +23,7 @@
                  fn-signature-new param-info-new
                  range-bounds-new range-expr-has-dots range-expr-problem int-range-expr-bounds
                  resolved-type-with-range))
-  (import env (TypeEnv env-arena env-register-type env-lookup-type env-lookup-own-type env-lookup-type-builtin
+  (import type-env (TypeEnv env-arena env-register-type env-lookup-type env-lookup-own-type env-lookup-type-builtin
                env-register-function env-register-constant env-set-module env-get-module
                env-get-int-type env-get-bool-type env-get-string-type
                env-get-unit-type env-register-variant env-check-variant-collisions

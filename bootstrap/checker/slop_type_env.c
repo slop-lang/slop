@@ -1,82 +1,82 @@
 #include "../runtime/slop_runtime.h"
-#include "slop_env.h"
+#include "slop_type_env.h"
 
-env_TypeEnv* env_env_new(slop_arena* arena);
-void env_env_register_builtin_fn(env_TypeEnv* env, slop_arena* arena, slop_string name, slop_string c_name, slop_list_types_ParamInfo params, types_ResolvedType* ret_type);
-void env_register_builtin_functions(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* int_t, types_ResolvedType* bool_t, types_ResolvedType* string_t, types_ResolvedType* arena_t, types_ResolvedType* u8_t, types_ResolvedType* unit_t);
-slop_arena* env_env_arena(env_TypeEnv* env);
-void env_env_push_scope(env_TypeEnv* env);
-void env_env_pop_scope(env_TypeEnv* env);
-void env_env_bind_var(env_TypeEnv* env, slop_string name, types_ResolvedType* var_type);
-void env_env_bind_var_as(env_TypeEnv* env, slop_string name, types_ResolvedType* var_type, uint8_t mutable, types_BindingOrigin origin);
-slop_option_env_VarBinding env_scope_lookup_binding(env_CheckerScope* scope_ptr, slop_string name);
-slop_option_env_VarBinding env_env_lookup_binding(env_TypeEnv* env, slop_string name);
-slop_option_types_ResolvedType_ptr env_scope_lookup_var(env_CheckerScope* scope_ptr, slop_string name);
-slop_option_types_ResolvedType_ptr env_env_lookup_var(env_TypeEnv* env, slop_string name);
-void env_env_register_constant(env_TypeEnv* env, slop_string name, types_ResolvedType* const_type);
-uint8_t env_env_constant_matches_module(env_ConstBinding binding, slop_string mod_name);
-uint8_t env_env_constant_is_builtin(env_ConstBinding binding);
-uint8_t env_env_lookup_constant_in_module(env_TypeEnv* env, slop_string mod_name, slop_string const_name);
-slop_option_types_ResolvedType_ptr env_env_lookup_constant(env_TypeEnv* env, slop_string name);
-void env_env_register_type(env_TypeEnv* env, types_ResolvedType* t);
-slop_option_types_ResolvedType_ptr env_env_lookup_type_direct(env_TypeEnv* env, slop_string name);
-int64_t env_find_colon_pos(slop_string name);
-slop_option_types_ResolvedType_ptr env_lookup_type_by_qualified_name(env_TypeEnv* env, slop_string qualified_name);
-slop_option_types_ResolvedType_ptr env_env_lookup_type(env_TypeEnv* env, slop_string name);
-slop_option_types_ResolvedType_ptr env_env_lookup_type_qualified(env_TypeEnv* env, slop_string module_name, slop_string type_name);
-slop_option_types_ResolvedType_ptr env_env_lookup_own_type(env_TypeEnv* env, slop_string name);
-slop_option_types_ResolvedType_ptr env_env_lookup_type_builtin(env_TypeEnv* env, slop_string name);
-slop_option_types_ResolvedType_ptr env_env_lookup_type_elsewhere(env_TypeEnv* env, slop_string name);
-uint8_t env_env_is_function_visible(env_TypeEnv* env, types_FnSignature* sig);
-void env_env_register_function(env_TypeEnv* env, types_FnSignature* sig);
-slop_option_types_FnSignature_ptr env_env_lookup_function_direct(env_TypeEnv* env, slop_string name);
-slop_option_types_FnSignature_ptr env_env_lookup_function(env_TypeEnv* env, slop_string name);
-void env_env_add_import(env_TypeEnv* env, slop_string local_name, slop_string qualified_name);
-slop_option_string env_env_resolve_import(env_TypeEnv* env, slop_string local_name);
-slop_option_string env_env_lookup_module_import(env_TypeEnv* env, slop_string mod_name, slop_string local_name);
-void env_env_clear_imports(env_TypeEnv* env);
-void env_env_register_variant(env_TypeEnv* env, slop_string variant_name, types_ResolvedType* enum_type);
-uint8_t env_env_imports_variant_type(env_TypeEnv* env, env_VariantMapping v, slop_string vmod);
-slop_option_types_ResolvedType_ptr env_env_lookup_variant(env_TypeEnv* env, slop_string variant_name, int64_t line, int64_t col);
-void env_env_check_variant_collisions(env_TypeEnv* env);
-uint8_t env_env_same_module_opt(slop_option_string a, slop_option_string b);
-void env_env_set_module(env_TypeEnv* env, slop_option_string module_name);
-slop_option_string env_env_get_module(env_TypeEnv* env);
-types_ResolvedType* env_env_get_int_type(env_TypeEnv* env);
-types_ResolvedType* env_env_get_bool_type(env_TypeEnv* env);
-types_ResolvedType* env_env_get_string_type(env_TypeEnv* env);
-types_ResolvedType* env_env_get_null_type(env_TypeEnv* env);
-types_ResolvedType* env_env_get_float_type(env_TypeEnv* env);
-types_ResolvedType* env_env_get_unit_type(env_TypeEnv* env);
-types_ResolvedType* env_env_get_arena_type(env_TypeEnv* env);
-types_ResolvedType* env_env_get_unknown_type(env_TypeEnv* env);
-types_ResolvedType* env_env_get_never_type(env_TypeEnv* env);
-types_ResolvedType* env_env_make_option_type(env_TypeEnv* env, types_ResolvedType* inner_type);
-types_ResolvedType* env_env_make_ptr_type(env_TypeEnv* env, types_ResolvedType* inner_type);
-types_ResolvedType* env_env_get_generic_type(env_TypeEnv* env);
-types_ResolvedType* env_env_make_result_type(env_TypeEnv* env);
-types_ResolvedType* env_env_make_fn_type(env_TypeEnv* env, types_FnSignature* sig);
-void env_env_add_warning(env_TypeEnv* env, slop_string message, int64_t line, int64_t col);
-void env_env_add_error(env_TypeEnv* env, slop_string message, int64_t line, int64_t col);
-slop_option_types_RangeBounds env_env_type_range(types_ResolvedType* t);
-slop_string env_env_range_label(env_TypeEnv* env, types_ResolvedType* t, types_RangeBounds bounds);
-void env_env_check_range_narrowing(env_TypeEnv* env, slop_string context, types_ResolvedType* target, types_ResolvedType* value, int64_t line, int64_t col);
-void env_env_set_current_return(env_TypeEnv* env, slop_option_types_ResolvedType_ptr ret);
-slop_option_types_ResolvedType_ptr env_env_get_current_return(env_TypeEnv* env);
-slop_list_types_Diagnostic env_env_get_diagnostics(env_TypeEnv* env);
-void env_env_clear_diagnostics(env_TypeEnv* env);
-void env_env_record_binding(env_TypeEnv* env, slop_string name, int64_t line, int64_t col, slop_string slop_type);
-slop_list_env_BindingAnnotation env_env_get_binding_annotations(env_TypeEnv* env);
-void env_env_set_current_file(env_TypeEnv* env, slop_option_string file_path);
-slop_option_string env_env_get_current_file(env_TypeEnv* env);
-void env_env_add_loaded_module(env_TypeEnv* env, slop_string module_path);
-uint8_t env_env_is_module_loaded(env_TypeEnv* env, slop_string module_path);
-void env_env_set_fn_type_params(env_TypeEnv* env, slop_list_string params);
-slop_list_string env_env_get_fn_type_params(env_TypeEnv* env);
-void env_env_clear_fn_type_params(env_TypeEnv* env);
-uint8_t env_env_is_type_param(env_TypeEnv* env, slop_string name);
+type_env_TypeEnv* type_env_env_new(slop_arena* arena);
+void type_env_env_register_builtin_fn(type_env_TypeEnv* env, slop_arena* arena, slop_string name, slop_string c_name, slop_list_types_ParamInfo params, types_ResolvedType* ret_type);
+void type_env_register_builtin_functions(type_env_TypeEnv* env, slop_arena* arena, types_ResolvedType* int_t, types_ResolvedType* bool_t, types_ResolvedType* string_t, types_ResolvedType* arena_t, types_ResolvedType* u8_t, types_ResolvedType* unit_t);
+slop_arena* type_env_env_arena(type_env_TypeEnv* env);
+void type_env_env_push_scope(type_env_TypeEnv* env);
+void type_env_env_pop_scope(type_env_TypeEnv* env);
+void type_env_env_bind_var(type_env_TypeEnv* env, slop_string name, types_ResolvedType* var_type);
+void type_env_env_bind_var_as(type_env_TypeEnv* env, slop_string name, types_ResolvedType* var_type, uint8_t mutable, types_BindingOrigin origin);
+slop_option_type_env_VarBinding type_env_scope_lookup_binding(type_env_CheckerScope* scope_ptr, slop_string name);
+slop_option_type_env_VarBinding type_env_env_lookup_binding(type_env_TypeEnv* env, slop_string name);
+slop_option_types_ResolvedType_ptr type_env_scope_lookup_var(type_env_CheckerScope* scope_ptr, slop_string name);
+slop_option_types_ResolvedType_ptr type_env_env_lookup_var(type_env_TypeEnv* env, slop_string name);
+void type_env_env_register_constant(type_env_TypeEnv* env, slop_string name, types_ResolvedType* const_type);
+uint8_t type_env_env_constant_matches_module(type_env_ConstBinding binding, slop_string mod_name);
+uint8_t type_env_env_constant_is_builtin(type_env_ConstBinding binding);
+uint8_t type_env_env_lookup_constant_in_module(type_env_TypeEnv* env, slop_string mod_name, slop_string const_name);
+slop_option_types_ResolvedType_ptr type_env_env_lookup_constant(type_env_TypeEnv* env, slop_string name);
+void type_env_env_register_type(type_env_TypeEnv* env, types_ResolvedType* t);
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type_direct(type_env_TypeEnv* env, slop_string name);
+int64_t type_env_find_colon_pos(slop_string name);
+slop_option_types_ResolvedType_ptr type_env_lookup_type_by_qualified_name(type_env_TypeEnv* env, slop_string qualified_name);
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type(type_env_TypeEnv* env, slop_string name);
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type_qualified(type_env_TypeEnv* env, slop_string module_name, slop_string type_name);
+slop_option_types_ResolvedType_ptr type_env_env_lookup_own_type(type_env_TypeEnv* env, slop_string name);
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type_builtin(type_env_TypeEnv* env, slop_string name);
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type_elsewhere(type_env_TypeEnv* env, slop_string name);
+uint8_t type_env_env_is_function_visible(type_env_TypeEnv* env, types_FnSignature* sig);
+void type_env_env_register_function(type_env_TypeEnv* env, types_FnSignature* sig);
+slop_option_types_FnSignature_ptr type_env_env_lookup_function_direct(type_env_TypeEnv* env, slop_string name);
+slop_option_types_FnSignature_ptr type_env_env_lookup_function(type_env_TypeEnv* env, slop_string name);
+void type_env_env_add_import(type_env_TypeEnv* env, slop_string local_name, slop_string qualified_name);
+slop_option_string type_env_env_resolve_import(type_env_TypeEnv* env, slop_string local_name);
+slop_option_string type_env_env_lookup_module_import(type_env_TypeEnv* env, slop_string mod_name, slop_string local_name);
+void type_env_env_clear_imports(type_env_TypeEnv* env);
+void type_env_env_register_variant(type_env_TypeEnv* env, slop_string variant_name, types_ResolvedType* enum_type);
+uint8_t type_env_env_imports_variant_type(type_env_TypeEnv* env, type_env_VariantMapping v, slop_string vmod);
+slop_option_types_ResolvedType_ptr type_env_env_lookup_variant(type_env_TypeEnv* env, slop_string variant_name, int64_t line, int64_t col);
+void type_env_env_check_variant_collisions(type_env_TypeEnv* env);
+uint8_t type_env_env_same_module_opt(slop_option_string a, slop_option_string b);
+void type_env_env_set_module(type_env_TypeEnv* env, slop_option_string module_name);
+slop_option_string type_env_env_get_module(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_get_int_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_get_bool_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_get_string_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_get_null_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_get_float_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_get_unit_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_get_arena_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_get_unknown_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_get_never_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_make_option_type(type_env_TypeEnv* env, types_ResolvedType* inner_type);
+types_ResolvedType* type_env_env_make_ptr_type(type_env_TypeEnv* env, types_ResolvedType* inner_type);
+types_ResolvedType* type_env_env_get_generic_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_make_result_type(type_env_TypeEnv* env);
+types_ResolvedType* type_env_env_make_fn_type(type_env_TypeEnv* env, types_FnSignature* sig);
+void type_env_env_add_warning(type_env_TypeEnv* env, slop_string message, int64_t line, int64_t col);
+void type_env_env_add_error(type_env_TypeEnv* env, slop_string message, int64_t line, int64_t col);
+slop_option_types_RangeBounds type_env_env_type_range(types_ResolvedType* t);
+slop_string type_env_env_range_label(type_env_TypeEnv* env, types_ResolvedType* t, types_RangeBounds bounds);
+void type_env_env_check_range_narrowing(type_env_TypeEnv* env, slop_string context, types_ResolvedType* target, types_ResolvedType* value, int64_t line, int64_t col);
+void type_env_env_set_current_return(type_env_TypeEnv* env, slop_option_types_ResolvedType_ptr ret);
+slop_option_types_ResolvedType_ptr type_env_env_get_current_return(type_env_TypeEnv* env);
+slop_list_types_Diagnostic type_env_env_get_diagnostics(type_env_TypeEnv* env);
+void type_env_env_clear_diagnostics(type_env_TypeEnv* env);
+void type_env_env_record_binding(type_env_TypeEnv* env, slop_string name, int64_t line, int64_t col, slop_string slop_type);
+slop_list_type_env_BindingAnnotation type_env_env_get_binding_annotations(type_env_TypeEnv* env);
+void type_env_env_set_current_file(type_env_TypeEnv* env, slop_option_string file_path);
+slop_option_string type_env_env_get_current_file(type_env_TypeEnv* env);
+void type_env_env_add_loaded_module(type_env_TypeEnv* env, slop_string module_path);
+uint8_t type_env_env_is_module_loaded(type_env_TypeEnv* env, slop_string module_path);
+void type_env_env_set_fn_type_params(type_env_TypeEnv* env, slop_list_string params);
+slop_list_string type_env_env_get_fn_type_params(type_env_TypeEnv* env);
+void type_env_env_clear_fn_type_params(type_env_TypeEnv* env);
+uint8_t type_env_env_is_type_param(type_env_TypeEnv* env, slop_string name);
 
-env_TypeEnv* env_env_new(slop_arena* arena) {
+type_env_TypeEnv* type_env_env_new(slop_arena* arena) {
     {
         __auto_type int_t = types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("Int"), ((slop_option_string){.has_value = false}), SLOP_STR("int64_t"));
         __auto_type bool_t = types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("Bool"), ((slop_option_string){.has_value = false}), SLOP_STR("bool"));
@@ -87,8 +87,8 @@ env_TypeEnv* env_env_new(slop_arena* arena) {
         __auto_type arena_t = types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("Arena"), ((slop_option_string){.has_value = false}), SLOP_STR("slop_arena_t*"));
         __auto_type unknown_t = types_resolved_type_new(arena, types_ResolvedTypeKind_rk_primitive, SLOP_STR("Unknown"), ((slop_option_string){.has_value = false}), SLOP_STR("void"));
         __auto_type never_t = types_resolved_type_new(arena, types_ResolvedTypeKind_rk_never, SLOP_STR("Never"), ((slop_option_string){.has_value = false}), SLOP_STR("void"));
-        __auto_type env = ((env_TypeEnv*)(({ __auto_type _alloc = (env_TypeEnv*)slop_arena_alloc(arena, sizeof(env_TypeEnv)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        (*env) = (env_TypeEnv){arena, ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_types_FnSignature_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_env_ConstBinding){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_env_ImportEntry){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_env_VariantMapping){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_env_CheckerScope_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_option_string){.has_value = false}), int_t, bool_t, string_t, float_t, null_t, unit_t, arena_t, unknown_t, ((slop_list_types_Diagnostic){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_env_BindingAnnotation){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_option_string){.has_value = false}), ((slop_list_string){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), never_t, ((slop_list_string){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_env_ModuleImport){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_option_types_ResolvedType_ptr){.has_value = false})};
+        __auto_type env = ((type_env_TypeEnv*)(({ __auto_type _alloc = (type_env_TypeEnv*)slop_arena_alloc(arena, sizeof(type_env_TypeEnv)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        (*env) = (type_env_TypeEnv){arena, ((slop_list_types_ResolvedType_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_types_FnSignature_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_type_env_ConstBinding){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_type_env_ImportEntry){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_type_env_VariantMapping){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_type_env_CheckerScope_ptr){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_option_string){.has_value = false}), int_t, bool_t, string_t, float_t, null_t, unit_t, arena_t, unknown_t, ((slop_list_types_Diagnostic){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_type_env_BindingAnnotation){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_option_string){.has_value = false}), ((slop_list_string){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), never_t, ((slop_list_string){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_list_type_env_ModuleImport){ .data = NULL, .len = 0, .cap = 0, .arena = arena }), ((slop_option_types_ResolvedType_ptr){.has_value = false})};
         ({ __auto_type _lst_p = &((*env).types); __auto_type _item = (int_t); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &((*env).types); __auto_type _item = (bool_t); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &((*env).types); __auto_type _item = (string_t); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
@@ -119,50 +119,50 @@ env_TypeEnv* env_env_new(slop_arena* arena) {
             ({ __auto_type _lst_p = &((*env).types); __auto_type _item = (f32); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
             ({ __auto_type _lst_p = &((*env).types); __auto_type _item = (f64); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
             ({ __auto_type _lst_p = &((*env).types); __auto_type _item = (threadhandle); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-            env_register_builtin_functions(env, arena, int_t, bool_t, string_t, arena_t, u8, unit_t);
+            type_env_register_builtin_functions(env, arena, int_t, bool_t, string_t, arena_t, u8, unit_t);
         }
         return env;
     }
 }
 
-void env_env_register_builtin_fn(env_TypeEnv* env, slop_arena* arena, slop_string name, slop_string c_name, slop_list_types_ParamInfo params, types_ResolvedType* ret_type) {
+void type_env_env_register_builtin_fn(type_env_TypeEnv* env, slop_arena* arena, slop_string name, slop_string c_name, slop_list_types_ParamInfo params, types_ResolvedType* ret_type) {
     {
         __auto_type sig = types_fn_signature_new(arena, name, c_name, params, ret_type);
-        env_env_register_function(env, sig);
+        type_env_env_register_function(env, sig);
     }
 }
 
-void env_register_builtin_functions(env_TypeEnv* env, slop_arena* arena, types_ResolvedType* int_t, types_ResolvedType* bool_t, types_ResolvedType* string_t, types_ResolvedType* arena_t, types_ResolvedType* u8_t, types_ResolvedType* unit_t) {
+void type_env_register_builtin_functions(type_env_TypeEnv* env, slop_arena* arena, types_ResolvedType* int_t, types_ResolvedType* bool_t, types_ResolvedType* string_t, types_ResolvedType* arena_t, types_ResolvedType* u8_t, types_ResolvedType* unit_t) {
     {
         __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("a"), string_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("b"), string_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("string-eq"), SLOP_STR("string_eq"), p, bool_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("string-eq"), SLOP_STR("string_eq"), p, bool_t);
     }
     {
         __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("arena"), arena_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("a"), string_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("b"), string_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("string-concat"), SLOP_STR("string_concat"), p, string_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("string-concat"), SLOP_STR("string_concat"), p, string_t);
     }
     {
         __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("s"), string_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("string-len"), SLOP_STR("string_len"), p, int_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("string-len"), SLOP_STR("string_len"), p, int_t);
     }
     {
         __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("s"), string_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("string-copy"), SLOP_STR("string_copy"), p, string_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("string-copy"), SLOP_STR("string_copy"), p, string_t);
     }
     {
-        __auto_type ptr_u8_t = env_env_make_ptr_type(env, u8_t);
+        __auto_type ptr_u8_t = type_env_env_make_ptr_type(env, u8_t);
         {
             __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
             ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("arena"), arena_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
             ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("cstr"), ptr_u8_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-            env_env_register_builtin_fn(env, arena, SLOP_STR("string-new"), SLOP_STR("string_new"), p, string_t);
+            type_env_env_register_builtin_fn(env, arena, SLOP_STR("string-new"), SLOP_STR("string_new"), p, string_t);
         }
     }
     {
@@ -170,68 +170,68 @@ void env_register_builtin_functions(env_TypeEnv* env, slop_arena* arena, types_R
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("s"), string_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("start"), int_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("end"), int_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("string-slice"), SLOP_STR("string_slice"), p, string_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("string-slice"), SLOP_STR("string_slice"), p, string_t);
     }
     {
         __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("arena"), arena_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("n"), int_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("int-to-string"), SLOP_STR("int_to_string"), p, string_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("int-to-string"), SLOP_STR("int_to_string"), p, string_t);
     }
     {
         __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("s"), string_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("idx"), int_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("char-at"), SLOP_STR("char_at"), p, int_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("char-at"), SLOP_STR("char_at"), p, int_t);
     }
     {
         __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("arena"), arena_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("s"), string_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("c"), int_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("string-push-char"), SLOP_STR("slop_string_push_char"), p, string_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("string-push-char"), SLOP_STR("slop_string_push_char"), p, string_t);
     }
     {
         __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("now-ms"), SLOP_STR("slop_now_ms"), p, int_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("now-ms"), SLOP_STR("slop_now_ms"), p, int_t);
     }
     {
         __auto_type p = ((slop_list_types_ParamInfo){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
         ({ __auto_type _lst_p = &(p); __auto_type _item = ((*types_param_info_new(arena, SLOP_STR("ms"), int_t))); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-        env_env_register_builtin_fn(env, arena, SLOP_STR("sleep-ms"), SLOP_STR("slop_sleep_ms"), p, unit_t);
+        type_env_env_register_builtin_fn(env, arena, SLOP_STR("sleep-ms"), SLOP_STR("slop_sleep_ms"), p, unit_t);
     }
 }
 
-slop_arena* env_env_arena(env_TypeEnv* env) {
+slop_arena* type_env_env_arena(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     return (*env).arena;
 }
 
-void env_env_push_scope(env_TypeEnv* env) {
+void type_env_env_push_scope(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type arena = (*env).arena;
-        __auto_type scope_ptr = ((env_CheckerScope*)(({ __auto_type _alloc = (env_CheckerScope*)slop_arena_alloc(arena, sizeof(env_CheckerScope)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
-        (*scope_ptr) = (env_CheckerScope){((slop_list_env_VarBinding){ .data = NULL, .len = 0, .cap = 0, .arena = arena })};
+        __auto_type scope_ptr = ((type_env_CheckerScope*)(({ __auto_type _alloc = (type_env_CheckerScope*)slop_arena_alloc(arena, sizeof(type_env_CheckerScope)); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; })));
+        (*scope_ptr) = (type_env_CheckerScope){((slop_list_type_env_VarBinding){ .data = NULL, .len = 0, .cap = 0, .arena = arena })};
         ({ __auto_type _lst_p = &((*env).scopes); __auto_type _item = (scope_ptr); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
     }
 }
 
-void env_env_pop_scope(env_TypeEnv* env) {
+void type_env_env_pop_scope(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((((int64_t)(((*env).scopes).len)) > 0)), "(> (list-len (. (deref env) scopes)) 0)");
     {
-        __auto_type _ = ({ __auto_type _lst_p = &((*env).scopes); slop_option_env_CheckerScope_ptr _r = {0}; if (_lst_p->len > 0) { _lst_p->len--; _r.has_value = true; _r.value = _lst_p->data[_lst_p->len]; } _r; });
+        __auto_type _ = ({ __auto_type _lst_p = &((*env).scopes); slop_option_type_env_CheckerScope_ptr _r = {0}; if (_lst_p->len > 0) { _lst_p->len--; _r.has_value = true; _r.value = _lst_p->data[_lst_p->len]; } _r; });
     }
 }
 
-void env_env_bind_var(env_TypeEnv* env, slop_string name, types_ResolvedType* var_type) {
+void type_env_env_bind_var(type_env_TypeEnv* env, slop_string name, types_ResolvedType* var_type) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((var_type != NULL)), "(!= var-type nil)");
-    env_env_bind_var_as(env, name, var_type, 0, types_BindingOrigin_origin_bound);
+    type_env_env_bind_var_as(env, name, var_type, 0, types_BindingOrigin_origin_bound);
 }
 
-void env_env_bind_var_as(env_TypeEnv* env, slop_string name, types_ResolvedType* var_type, uint8_t mutable, types_BindingOrigin origin) {
+void type_env_env_bind_var_as(type_env_TypeEnv* env, slop_string name, types_ResolvedType* var_type, uint8_t mutable, types_BindingOrigin origin) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((var_type != NULL)), "(!= var-type nil)");
     SLOP_PRE(((((int64_t)(((*env).scopes).len)) > 0)), "(> (list-len (. (deref env) scopes)) 0)");
@@ -239,27 +239,27 @@ void env_env_bind_var_as(env_TypeEnv* env, slop_string name, types_ResolvedType*
         __auto_type arena = (*env).arena;
         __auto_type scopes = (*env).scopes;
         __auto_type top_idx = (((int64_t)((scopes).len)) - 1);
-        __auto_type _mv_39 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)top_idx; slop_option_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+        __auto_type _mv_39 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)top_idx; slop_option_type_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
         if (_mv_39.has_value) {
             __auto_type scope_ptr = _mv_39.value;
-            ({ __auto_type _lst_p = &((*scope_ptr).bindings); __auto_type _item = ((env_VarBinding){name, var_type, mutable, origin}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+            ({ __auto_type _lst_p = &((*scope_ptr).bindings); __auto_type _item = ((type_env_VarBinding){name, var_type, mutable, origin}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
         } else if (!_mv_39.has_value) {
         }
     }
 }
 
-slop_option_env_VarBinding env_scope_lookup_binding(env_CheckerScope* scope_ptr, slop_string name) {
+slop_option_type_env_VarBinding type_env_scope_lookup_binding(type_env_CheckerScope* scope_ptr, slop_string name) {
     SLOP_PRE(((scope_ptr != NULL)), "(!= scope-ptr nil)");
     {
         __auto_type bindings = (*scope_ptr).bindings;
         __auto_type num_bindings = ((int64_t)((bindings).len));
-        slop_option_env_VarBinding result = (slop_option_env_VarBinding){.has_value = false};
+        slop_option_type_env_VarBinding result = (slop_option_type_env_VarBinding){.has_value = false};
         for (int64_t j = 0; j < num_bindings; j++) {
-            __auto_type _mv_40 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_env_VarBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_40 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_type_env_VarBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_40.has_value) {
                 __auto_type binding = _mv_40.value;
                 if (({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); }) && string_eq(binding.name, name)) {
-                    result = (slop_option_env_VarBinding){.has_value = 1, .value = binding};
+                    result = (slop_option_type_env_VarBinding){.has_value = 1, .value = binding};
                 }
             } else if (!_mv_40.has_value) {
             }
@@ -268,18 +268,18 @@ slop_option_env_VarBinding env_scope_lookup_binding(env_CheckerScope* scope_ptr,
     }
 }
 
-slop_option_env_VarBinding env_env_lookup_binding(env_TypeEnv* env, slop_string name) {
+slop_option_type_env_VarBinding type_env_env_lookup_binding(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type scopes = (*env).scopes;
         __auto_type num_scopes = ((int64_t)((scopes).len));
-        slop_option_env_VarBinding result = (slop_option_env_VarBinding){.has_value = false};
+        slop_option_type_env_VarBinding result = (slop_option_type_env_VarBinding){.has_value = false};
         for (int64_t i = 0; i < num_scopes; i++) {
             if (({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) {
-                __auto_type _mv_41 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)((num_scopes) - (1) - (i)); slop_option_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                __auto_type _mv_41 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)((num_scopes) - (1) - (i)); slop_option_type_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_41.has_value) {
                     __auto_type scope_ptr = _mv_41.value;
-                    result = env_scope_lookup_binding(scope_ptr, name);
+                    result = type_env_scope_lookup_binding(scope_ptr, name);
                 } else if (!_mv_41.has_value) {
                 }
             }
@@ -288,7 +288,7 @@ slop_option_env_VarBinding env_env_lookup_binding(env_TypeEnv* env, slop_string 
     }
 }
 
-slop_option_types_ResolvedType_ptr env_scope_lookup_var(env_CheckerScope* scope_ptr, slop_string name) {
+slop_option_types_ResolvedType_ptr type_env_scope_lookup_var(type_env_CheckerScope* scope_ptr, slop_string name) {
     SLOP_PRE(((scope_ptr != NULL)), "(!= scope-ptr nil)");
     {
         __auto_type bindings = (*scope_ptr).bindings;
@@ -296,7 +296,7 @@ slop_option_types_ResolvedType_ptr env_scope_lookup_var(env_CheckerScope* scope_
         uint8_t found = 0;
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t j = 0; j < num_bindings; j++) {
-            __auto_type _mv_42 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_env_VarBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_42 = ({ __auto_type _lst = bindings; size_t _idx = (size_t)j; slop_option_type_env_VarBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_42.has_value) {
                 __auto_type binding = _mv_42.value;
                 if (!(found) && string_eq(binding.name, name)) {
@@ -310,7 +310,7 @@ slop_option_types_ResolvedType_ptr env_scope_lookup_var(env_CheckerScope* scope_
     }
 }
 
-slop_option_types_ResolvedType_ptr env_env_lookup_var(env_TypeEnv* env, slop_string name) {
+slop_option_types_ResolvedType_ptr type_env_env_lookup_var(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type scopes = (*env).scopes;
@@ -321,10 +321,10 @@ slop_option_types_ResolvedType_ptr env_env_lookup_var(env_TypeEnv* env, slop_str
             if (!(found)) {
                 {
                     __auto_type scope_idx = ((num_scopes) - (1) - (i));
-                    __auto_type _mv_43 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)scope_idx; slop_option_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_43 = ({ __auto_type _lst = scopes; size_t _idx = (size_t)scope_idx; slop_option_type_env_CheckerScope_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_43.has_value) {
                         __auto_type scope_ptr = _mv_43.value;
-                        __auto_type _mv_44 = env_scope_lookup_var(scope_ptr, name);
+                        __auto_type _mv_44 = type_env_scope_lookup_var(scope_ptr, name);
                         if (_mv_44.has_value) {
                             __auto_type var_type = _mv_44.value;
                             found = 1;
@@ -340,13 +340,13 @@ slop_option_types_ResolvedType_ptr env_env_lookup_var(env_TypeEnv* env, slop_str
     }
 }
 
-void env_env_register_constant(env_TypeEnv* env, slop_string name, types_ResolvedType* const_type) {
+void type_env_env_register_constant(type_env_TypeEnv* env, slop_string name, types_ResolvedType* const_type) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((const_type != NULL)), "(!= const-type nil)");
-    ({ __auto_type _lst_p = &((*env).constants); __auto_type _item = ((env_ConstBinding){name, const_type, env_env_get_module(env)}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+    ({ __auto_type _lst_p = &((*env).constants); __auto_type _item = ((type_env_ConstBinding){name, const_type, type_env_env_get_module(env)}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
 }
 
-uint8_t env_env_constant_matches_module(env_ConstBinding binding, slop_string mod_name) {
+uint8_t type_env_env_constant_matches_module(type_env_ConstBinding binding, slop_string mod_name) {
     __auto_type _mv_45 = binding.module_name;
     if (_mv_45.has_value) {
         __auto_type bmod = _mv_45.value;
@@ -357,7 +357,7 @@ uint8_t env_env_constant_matches_module(env_ConstBinding binding, slop_string mo
     SLOP_UNREACHABLE();
 }
 
-uint8_t env_env_constant_is_builtin(env_ConstBinding binding) {
+uint8_t type_env_env_constant_is_builtin(type_env_ConstBinding binding) {
     __auto_type _mv_46 = binding.module_name;
     if (!_mv_46.has_value) {
         return 1;
@@ -368,7 +368,7 @@ uint8_t env_env_constant_is_builtin(env_ConstBinding binding) {
     SLOP_UNREACHABLE();
 }
 
-uint8_t env_env_lookup_constant_in_module(env_TypeEnv* env, slop_string mod_name, slop_string const_name) {
+uint8_t type_env_env_lookup_constant_in_module(type_env_TypeEnv* env, slop_string mod_name, slop_string const_name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type constants = (*env).constants;
@@ -376,10 +376,10 @@ uint8_t env_env_lookup_constant_in_module(env_TypeEnv* env, slop_string mod_name
         uint8_t found = 0;
         for (int64_t i = 0; i < len; i++) {
             if (!(found)) {
-                __auto_type _mv_47 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                __auto_type _mv_47 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                 if (_mv_47.has_value) {
                     __auto_type binding = _mv_47.value;
-                    if (string_eq(binding.name, const_name) && env_env_constant_matches_module(binding, mod_name)) {
+                    if (string_eq(binding.name, const_name) && type_env_env_constant_matches_module(binding, mod_name)) {
                         found = 1;
                     }
                 } else if (!_mv_47.has_value) {
@@ -390,12 +390,12 @@ uint8_t env_env_lookup_constant_in_module(env_TypeEnv* env, slop_string mod_name
     }
 }
 
-slop_option_types_ResolvedType_ptr env_env_lookup_constant(env_TypeEnv* env, slop_string name) {
+slop_option_types_ResolvedType_ptr type_env_env_lookup_constant(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type constants = (*env).constants;
         __auto_type len = ((int64_t)((constants).len));
-        __auto_type current_mod = env_env_get_module(env);
+        __auto_type current_mod = type_env_env_get_module(env);
         uint8_t found = 0;
         types_ResolvedType* found_type = NULL;
         __auto_type _mv_48 = current_mod;
@@ -403,10 +403,10 @@ slop_option_types_ResolvedType_ptr env_env_lookup_constant(env_TypeEnv* env, slo
             __auto_type mod = _mv_48.value;
             for (int64_t i = 0; i < len; i++) {
                 if (!(found)) {
-                    __auto_type _mv_49 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_49 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_49.has_value) {
                         __auto_type binding = _mv_49.value;
-                        if (string_eq(binding.name, name) && env_env_constant_matches_module(binding, mod)) {
+                        if (string_eq(binding.name, name) && type_env_env_constant_matches_module(binding, mod)) {
                             found = 1;
                             found_type = binding.const_type;
                         }
@@ -417,20 +417,20 @@ slop_option_types_ResolvedType_ptr env_env_lookup_constant(env_TypeEnv* env, slo
         } else if (!_mv_48.has_value) {
         }
         if (!(found)) {
-            __auto_type _mv_50 = env_env_resolve_import(env, name);
+            __auto_type _mv_50 = type_env_env_resolve_import(env, name);
             if (_mv_50.has_value) {
                 __auto_type qualified_name = _mv_50.value;
                 {
-                    __auto_type colon_pos = env_find_colon_pos(qualified_name);
+                    __auto_type colon_pos = type_env_find_colon_pos(qualified_name);
                     if (colon_pos != -1) {
                         {
                             __auto_type mod_part = (slop_string){.len = ((uint64_t)(colon_pos)), .data = qualified_name.data};
                             for (int64_t i = 0; i < len; i++) {
                                 if (!(found)) {
-                                    __auto_type _mv_51 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                                    __auto_type _mv_51 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                                     if (_mv_51.has_value) {
                                         __auto_type binding = _mv_51.value;
-                                        if (string_eq(binding.name, name) && env_env_constant_matches_module(binding, mod_part)) {
+                                        if (string_eq(binding.name, name) && type_env_env_constant_matches_module(binding, mod_part)) {
                                             found = 1;
                                             found_type = binding.const_type;
                                         }
@@ -447,10 +447,10 @@ slop_option_types_ResolvedType_ptr env_env_lookup_constant(env_TypeEnv* env, slo
         if (!(found)) {
             for (int64_t i = 0; i < len; i++) {
                 if (!(found)) {
-                    __auto_type _mv_52 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                    __auto_type _mv_52 = ({ __auto_type _lst = constants; size_t _idx = (size_t)i; slop_option_type_env_ConstBinding _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                     if (_mv_52.has_value) {
                         __auto_type binding = _mv_52.value;
-                        if (string_eq(binding.name, name) && env_env_constant_is_builtin(binding)) {
+                        if (string_eq(binding.name, name) && type_env_env_constant_is_builtin(binding)) {
                             found = 1;
                             found_type = binding.const_type;
                         }
@@ -467,13 +467,13 @@ slop_option_types_ResolvedType_ptr env_env_lookup_constant(env_TypeEnv* env, slo
     }
 }
 
-void env_env_register_type(env_TypeEnv* env, types_ResolvedType* t) {
+void type_env_env_register_type(type_env_TypeEnv* env, types_ResolvedType* t) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     ({ __auto_type _lst_p = &((*env).types); __auto_type _item = (t); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
 }
 
-slop_option_types_ResolvedType_ptr env_env_lookup_type_direct(env_TypeEnv* env, slop_string name) {
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type_direct(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type types = (*env).types;
@@ -495,7 +495,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_type_direct(env_TypeEnv* env, 
     }
 }
 
-int64_t env_find_colon_pos(slop_string name) {
+int64_t type_env_find_colon_pos(slop_string name) {
     {
         __auto_type len = string_len(name);
         int64_t colon_pos = -1;
@@ -510,12 +510,12 @@ int64_t env_find_colon_pos(slop_string name) {
     }
 }
 
-slop_option_types_ResolvedType_ptr env_lookup_type_by_qualified_name(env_TypeEnv* env, slop_string qualified_name) {
+slop_option_types_ResolvedType_ptr type_env_lookup_type_by_qualified_name(type_env_TypeEnv* env, slop_string qualified_name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
-        __auto_type colon_pos = env_find_colon_pos(qualified_name);
+        __auto_type colon_pos = type_env_find_colon_pos(qualified_name);
         if (colon_pos == -1) {
-            return env_env_lookup_type_direct(env, qualified_name);
+            return type_env_env_lookup_type_direct(env, qualified_name);
         } else {
             {
                 __auto_type mod_part = (slop_string){.len = ((uint64_t)(colon_pos)), .data = qualified_name.data};
@@ -523,39 +523,39 @@ slop_option_types_ResolvedType_ptr env_lookup_type_by_qualified_name(env_TypeEnv
                 __auto_type type_len = (((int64_t)(qualified_name.len)) - start_offset);
                 __auto_type type_data = ((uint8_t*)((((int64_t)(qualified_name.data)) + start_offset)));
                 __auto_type type_part = (slop_string){.len = ((uint64_t)(type_len)), .data = type_data};
-                return env_env_lookup_type_qualified(env, mod_part, type_part);
+                return type_env_env_lookup_type_qualified(env, mod_part, type_part);
             }
         }
     }
 }
 
-slop_option_types_ResolvedType_ptr env_env_lookup_type(env_TypeEnv* env, slop_string name) {
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    __auto_type _mv_54 = env_env_lookup_own_type(env, name);
+    __auto_type _mv_54 = type_env_env_lookup_own_type(env, name);
     if (_mv_54.has_value) {
         __auto_type t = _mv_54.value;
         return (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = t};
     } else if (!_mv_54.has_value) {
-        __auto_type _mv_55 = env_env_resolve_import(env, name);
+        __auto_type _mv_55 = type_env_env_resolve_import(env, name);
         if (_mv_55.has_value) {
             __auto_type qualified_name = _mv_55.value;
-            return env_lookup_type_by_qualified_name(env, qualified_name);
+            return type_env_lookup_type_by_qualified_name(env, qualified_name);
         } else if (!_mv_55.has_value) {
-            return env_env_lookup_type_builtin(env, name);
+            return type_env_env_lookup_type_builtin(env, name);
         }
         SLOP_UNREACHABLE();
     }
     SLOP_UNREACHABLE();
 }
 
-slop_option_types_ResolvedType_ptr env_env_lookup_type_qualified(env_TypeEnv* env, slop_string module_name, slop_string type_name) {
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type_qualified(type_env_TypeEnv* env, slop_string module_name, slop_string type_name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type types = (*env).types;
         int64_t i = (((int64_t)(((int64_t)((types).len)))) - 1);
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         while ((i >= 0) && ({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) {
-            __auto_type _mv_56 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at env.slop:630:49"))); slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_56 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at type_env.slop:630:49"))); slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_56.has_value) {
                 __auto_type t = _mv_56.value;
                 __auto_type _mv_57 = (*t).module_name;
@@ -574,18 +574,18 @@ slop_option_types_ResolvedType_ptr env_env_lookup_type_qualified(env_TypeEnv* en
     }
 }
 
-slop_option_types_ResolvedType_ptr env_env_lookup_own_type(env_TypeEnv* env, slop_string name) {
+slop_option_types_ResolvedType_ptr type_env_env_lookup_own_type(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type types = (*env).types;
-        __auto_type current = env_env_get_module(env);
+        __auto_type current = type_env_env_get_module(env);
         int64_t i = (((int64_t)(((int64_t)((types).len)))) - 1);
         slop_option_types_ResolvedType_ptr result = (slop_option_types_ResolvedType_ptr){.has_value = false};
         while ((i >= 0) && ({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) {
-            __auto_type _mv_58 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at env.slop:653:49"))); slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_58 = ({ __auto_type _lst = types; size_t _idx = (size_t)((int64_t)(SLOP_RANGE(int64_t, i, 1, 0, 0, 0, "(Int 0 ..) at type_env.slop:653:49"))); slop_option_types_ResolvedType_ptr _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_58.has_value) {
                 __auto_type t = _mv_58.value;
-                if (string_eq((*t).name, name) && env_env_same_module_opt((*t).module_name, current)) {
+                if (string_eq((*t).name, name) && type_env_env_same_module_opt((*t).module_name, current)) {
                     result = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = t};
                 }
             } else if (!_mv_58.has_value) {
@@ -596,7 +596,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_own_type(env_TypeEnv* env, slo
     }
 }
 
-slop_option_types_ResolvedType_ptr env_env_lookup_type_builtin(env_TypeEnv* env, slop_string name) {
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type_builtin(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type types = (*env).types;
@@ -616,7 +616,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_type_builtin(env_TypeEnv* env,
     }
 }
 
-slop_option_types_ResolvedType_ptr env_env_lookup_type_elsewhere(env_TypeEnv* env, slop_string name) {
+slop_option_types_ResolvedType_ptr type_env_env_lookup_type_elsewhere(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type types = (*env).types;
@@ -636,7 +636,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_type_elsewhere(env_TypeEnv* en
     }
 }
 
-uint8_t env_env_is_function_visible(env_TypeEnv* env, types_FnSignature* sig) {
+uint8_t type_env_env_is_function_visible(type_env_TypeEnv* env, types_FnSignature* sig) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((sig != NULL)), "(!= sig nil)");
     __auto_type _mv_61 = (*sig).module_name;
@@ -644,7 +644,7 @@ uint8_t env_env_is_function_visible(env_TypeEnv* env, types_FnSignature* sig) {
         return 1;
     } else if (_mv_61.has_value) {
         __auto_type mod = _mv_61.value;
-        __auto_type _mv_62 = env_env_get_module(env);
+        __auto_type _mv_62 = type_env_env_get_module(env);
         if (_mv_62.has_value) {
             __auto_type current = _mv_62.value;
             return string_eq(mod, current);
@@ -656,13 +656,13 @@ uint8_t env_env_is_function_visible(env_TypeEnv* env, types_FnSignature* sig) {
     SLOP_UNREACHABLE();
 }
 
-void env_env_register_function(env_TypeEnv* env, types_FnSignature* sig) {
+void type_env_env_register_function(type_env_TypeEnv* env, types_FnSignature* sig) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((sig != NULL)), "(!= sig nil)");
     ({ __auto_type _lst_p = &((*env).functions); __auto_type _item = (sig); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
 }
 
-slop_option_types_FnSignature_ptr env_env_lookup_function_direct(env_TypeEnv* env, slop_string name) {
+slop_option_types_FnSignature_ptr type_env_env_lookup_function_direct(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type functions = (*env).functions;
@@ -684,25 +684,25 @@ slop_option_types_FnSignature_ptr env_env_lookup_function_direct(env_TypeEnv* en
     }
 }
 
-slop_option_types_FnSignature_ptr env_env_lookup_function(env_TypeEnv* env, slop_string name) {
+slop_option_types_FnSignature_ptr type_env_env_lookup_function(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
-        __auto_type arena = env_env_arena(env);
-        __auto_type own = ({ __auto_type _mv = env_env_get_module(env); _mv.has_value ? ({ __auto_type mod = _mv.value; env_env_lookup_function_direct(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = mod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }))); }) : (((slop_option_types_FnSignature_ptr){.has_value = false})); });
+        __auto_type arena = type_env_env_arena(env);
+        __auto_type own = ({ __auto_type _mv = type_env_env_get_module(env); _mv.has_value ? ({ __auto_type mod = _mv.value; type_env_env_lookup_function_direct(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = mod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = name; _ll; }))); }) : (((slop_option_types_FnSignature_ptr){.has_value = false})); });
         __auto_type _mv_64 = own;
         if (_mv_64.has_value) {
             __auto_type _ = _mv_64.value;
             return own;
         } else if (!_mv_64.has_value) {
-            __auto_type _mv_65 = env_env_resolve_import(env, name);
+            __auto_type _mv_65 = type_env_env_resolve_import(env, name);
             if (_mv_65.has_value) {
                 __auto_type import_qualified = _mv_65.value;
-                return env_env_lookup_function_direct(env, import_qualified);
+                return type_env_env_lookup_function_direct(env, import_qualified);
             } else if (!_mv_65.has_value) {
-                __auto_type _mv_66 = env_env_lookup_function_direct(env, name);
+                __auto_type _mv_66 = type_env_env_lookup_function_direct(env, name);
                 if (_mv_66.has_value) {
                     __auto_type sig = _mv_66.value;
-                    if (env_env_is_function_visible(env, sig)) {
+                    if (type_env_env_is_function_visible(env, sig)) {
                         return (slop_option_types_FnSignature_ptr){.has_value = 1, .value = sig};
                     } else {
                         return (slop_option_types_FnSignature_ptr){.has_value = false};
@@ -718,18 +718,18 @@ slop_option_types_FnSignature_ptr env_env_lookup_function(env_TypeEnv* env, slop
     }
 }
 
-void env_env_add_import(env_TypeEnv* env, slop_string local_name, slop_string qualified_name) {
+void type_env_env_add_import(type_env_TypeEnv* env, slop_string local_name, slop_string qualified_name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    ({ __auto_type _lst_p = &((*env).imports); __auto_type _item = ((env_ImportEntry){local_name, qualified_name}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
-    __auto_type _mv_67 = env_env_get_module(env);
+    ({ __auto_type _lst_p = &((*env).imports); __auto_type _item = ((type_env_ImportEntry){local_name, qualified_name}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+    __auto_type _mv_67 = type_env_env_get_module(env);
     if (_mv_67.has_value) {
         __auto_type mod = _mv_67.value;
-        ({ __auto_type _lst_p = &((*env).module_imports); __auto_type _item = ((env_ModuleImport){mod, local_name, qualified_name}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+        ({ __auto_type _lst_p = &((*env).module_imports); __auto_type _item = ((type_env_ModuleImport){mod, local_name, qualified_name}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
     } else if (!_mv_67.has_value) {
     }
 }
 
-slop_option_string env_env_resolve_import(env_TypeEnv* env, slop_string local_name) {
+slop_option_string type_env_env_resolve_import(type_env_TypeEnv* env, slop_string local_name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type imports = (*env).imports;
@@ -737,7 +737,7 @@ slop_option_string env_env_resolve_import(env_TypeEnv* env, slop_string local_na
         uint8_t found = 0;
         slop_option_string result = (slop_option_string){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_68 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_env_ImportEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_68 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_type_env_ImportEntry _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_68.has_value) {
                 __auto_type entry = _mv_68.value;
                 if (!(found) && string_eq(entry.local, local_name)) {
@@ -751,14 +751,14 @@ slop_option_string env_env_resolve_import(env_TypeEnv* env, slop_string local_na
     }
 }
 
-slop_option_string env_env_lookup_module_import(env_TypeEnv* env, slop_string mod_name, slop_string local_name) {
+slop_option_string type_env_env_lookup_module_import(type_env_TypeEnv* env, slop_string mod_name, slop_string local_name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type imports = (*env).module_imports;
         __auto_type len = ((int64_t)((imports).len));
         slop_option_string result = (slop_option_string){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_69 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_env_ModuleImport _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_69 = ({ __auto_type _lst = imports; size_t _idx = (size_t)i; slop_option_type_env_ModuleImport _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_69.has_value) {
                 __auto_type entry = _mv_69.value;
                 if ((({ __auto_type _mv = result; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) && (string_eq(entry.module, mod_name)) && (string_eq(entry.local, local_name))) {
@@ -771,25 +771,25 @@ slop_option_string env_env_lookup_module_import(env_TypeEnv* env, slop_string mo
     }
 }
 
-void env_env_clear_imports(env_TypeEnv* env) {
+void type_env_env_clear_imports(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type arena = (*env).arena;
-        (*env).imports = ((slop_list_env_ImportEntry){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
+        (*env).imports = ((slop_list_type_env_ImportEntry){ .data = NULL, .len = 0, .cap = 0, .arena = arena });
     }
 }
 
-void env_env_register_variant(env_TypeEnv* env, slop_string variant_name, types_ResolvedType* enum_type) {
+void type_env_env_register_variant(type_env_TypeEnv* env, slop_string variant_name, types_ResolvedType* enum_type) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((enum_type != NULL)), "(!= enum-type nil)");
-    ({ __auto_type _lst_p = &((*env).enum_variants); __auto_type _item = ((env_VariantMapping){variant_name, (*enum_type).name, enum_type, env_env_get_module(env)}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+    ({ __auto_type _lst_p = &((*env).enum_variants); __auto_type _item = ((type_env_VariantMapping){variant_name, (*enum_type).name, enum_type, type_env_env_get_module(env)}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
 }
 
-uint8_t env_env_imports_variant_type(env_TypeEnv* env, env_VariantMapping v, slop_string vmod) {
+uint8_t type_env_env_imports_variant_type(type_env_TypeEnv* env, type_env_VariantMapping v, slop_string vmod) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
-        __auto_type arena = env_env_arena(env);
-        __auto_type _mv_70 = env_env_resolve_import(env, v.enum_name);
+        __auto_type arena = type_env_env_arena(env);
+        __auto_type _mv_70 = type_env_env_resolve_import(env, v.enum_name);
         if (_mv_70.has_value) {
             __auto_type qualified = _mv_70.value;
             return string_eq(qualified, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 3 * sizeof(slop_string)), .len = 3, .cap = 3, .arena = arena }; _ll.data[0] = vmod; _ll.data[1] = SLOP_STR(":"); _ll.data[2] = v.enum_name; _ll; })));
@@ -800,13 +800,13 @@ uint8_t env_env_imports_variant_type(env_TypeEnv* env, env_VariantMapping v, slo
     }
 }
 
-slop_option_types_ResolvedType_ptr env_env_lookup_variant(env_TypeEnv* env, slop_string variant_name, int64_t line, int64_t col) {
+slop_option_types_ResolvedType_ptr type_env_env_lookup_variant(type_env_TypeEnv* env, slop_string variant_name, int64_t line, int64_t col) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type variants = (*env).enum_variants;
         __auto_type len = ((int64_t)((variants).len));
-        __auto_type current = env_env_get_module(env);
-        __auto_type arena = env_env_arena(env);
+        __auto_type current = type_env_env_get_module(env);
+        __auto_type arena = type_env_env_arena(env);
         slop_option_types_ResolvedType_ptr own = (slop_option_types_ResolvedType_ptr){.has_value = false};
         slop_option_types_ResolvedType_ptr imported = (slop_option_types_ResolvedType_ptr){.has_value = false};
         slop_string imported_mod = SLOP_STR("");
@@ -814,19 +814,19 @@ slop_option_types_ResolvedType_ptr env_env_lookup_variant(env_TypeEnv* env, slop
         uint8_t reported = 0;
         slop_option_types_ResolvedType_ptr builtin = (slop_option_types_ResolvedType_ptr){.has_value = false};
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_71 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_71 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_type_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_71.has_value) {
                 __auto_type v = _mv_71.value;
                 if (string_eq(v.variant_name, variant_name)) {
                     __auto_type _mv_72 = v.module_name;
                     if (_mv_72.has_value) {
                         __auto_type vmod = _mv_72.value;
-                        if (env_env_same_module_opt(v.module_name, current)) {
+                        if (type_env_env_same_module_opt(v.module_name, current)) {
                             if (({ __auto_type _mv = own; _mv.has_value ? ({ __auto_type _ = _mv.value; 0; }) : (1); })) {
                                 own = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = v.enum_type};
                             }
                         } else {
-                            if (env_env_imports_variant_type(env, v, vmod)) {
+                            if (type_env_env_imports_variant_type(env, v, vmod)) {
                                 __auto_type _mv_73 = imported;
                                 if (!_mv_73.has_value) {
                                     imported = (slop_option_types_ResolvedType_ptr){.has_value = 1, .value = v.enum_type};
@@ -836,7 +836,7 @@ slop_option_types_ResolvedType_ptr env_env_lookup_variant(env_TypeEnv* env, slop
                                     __auto_type _ = _mv_73.value;
                                     if (!(reported) && (!(string_eq(imported_mod, vmod)) || !(string_eq(imported_type, v.enum_name)))) {
                                         reported = 1;
-                                        env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 11 * sizeof(slop_string)), .len = 11, .cap = 11, .arena = arena }; _ll.data[0] = SLOP_STR("variant '"); _ll.data[1] = variant_name; _ll.data[2] = SLOP_STR("' is ambiguous: imported from both '"); _ll.data[3] = imported_mod; _ll.data[4] = SLOP_STR("' ("); _ll.data[5] = imported_type; _ll.data[6] = SLOP_STR(") and '"); _ll.data[7] = vmod; _ll.data[8] = SLOP_STR("' ("); _ll.data[9] = v.enum_name; _ll.data[10] = SLOP_STR(")"); _ll; })), line, col);
+                                        type_env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 11 * sizeof(slop_string)), .len = 11, .cap = 11, .arena = arena }; _ll.data[0] = SLOP_STR("variant '"); _ll.data[1] = variant_name; _ll.data[2] = SLOP_STR("' is ambiguous: imported from both '"); _ll.data[3] = imported_mod; _ll.data[4] = SLOP_STR("' ("); _ll.data[5] = imported_type; _ll.data[6] = SLOP_STR(") and '"); _ll.data[7] = vmod; _ll.data[8] = SLOP_STR("' ("); _ll.data[9] = v.enum_name; _ll.data[10] = SLOP_STR(")"); _ll; })), line, col);
                                     }
                                 }
                             }
@@ -868,26 +868,26 @@ slop_option_types_ResolvedType_ptr env_env_lookup_variant(env_TypeEnv* env, slop
     }
 }
 
-void env_env_check_variant_collisions(env_TypeEnv* env) {
+void type_env_env_check_variant_collisions(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type variants = (*env).enum_variants;
         __auto_type len = ((int64_t)((variants).len));
-        __auto_type current = env_env_get_module(env);
+        __auto_type current = type_env_env_get_module(env);
         __auto_type arena = (*env).arena;
         for (int64_t i = 0; i < len; i++) {
-            __auto_type _mv_76 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+            __auto_type _mv_76 = ({ __auto_type _lst = variants; size_t _idx = (size_t)i; slop_option_type_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_76.has_value) {
                 __auto_type v1 = _mv_76.value;
-                if (env_env_same_module_opt(v1.module_name, current)) {
+                if (type_env_env_same_module_opt(v1.module_name, current)) {
                     {
                         uint8_t found_collision = 0;
                         slop_string collision_enum = SLOP_STR("");
                         for (int64_t j = (i + 1); j < len; j++) {
-                            __auto_type _mv_77 = ({ __auto_type _lst = variants; size_t _idx = (size_t)j; slop_option_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
+                            __auto_type _mv_77 = ({ __auto_type _lst = variants; size_t _idx = (size_t)j; slop_option_type_env_VariantMapping _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
                             if (_mv_77.has_value) {
                                 __auto_type v2 = _mv_77.value;
-                                if ((!(found_collision)) && (string_eq(v2.variant_name, v1.variant_name)) && (!(string_eq(v2.enum_name, v1.enum_name))) && (env_env_same_module_opt(v2.module_name, current))) {
+                                if ((!(found_collision)) && (string_eq(v2.variant_name, v1.variant_name)) && (!(string_eq(v2.enum_name, v1.enum_name))) && (type_env_env_same_module_opt(v2.module_name, current))) {
                                     found_collision = 1;
                                     collision_enum = v2.enum_name;
                                 }
@@ -895,7 +895,7 @@ void env_env_check_variant_collisions(env_TypeEnv* env) {
                             }
                         }
                         if (found_collision) {
-                            env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 6 * sizeof(slop_string)), .len = 6, .cap = 6, .arena = arena }; _ll.data[0] = SLOP_STR("Ambiguous enum variant '"); _ll.data[1] = v1.variant_name; _ll.data[2] = SLOP_STR("' exists in multiple types: "); _ll.data[3] = v1.enum_name; _ll.data[4] = SLOP_STR(", "); _ll.data[5] = collision_enum; _ll; })), 0, 0);
+                            type_env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 6 * sizeof(slop_string)), .len = 6, .cap = 6, .arena = arena }; _ll.data[0] = SLOP_STR("Ambiguous enum variant '"); _ll.data[1] = v1.variant_name; _ll.data[2] = SLOP_STR("' exists in multiple types: "); _ll.data[3] = v1.enum_name; _ll.data[4] = SLOP_STR(", "); _ll.data[5] = collision_enum; _ll; })), 0, 0);
                         }
                     }
                 }
@@ -905,7 +905,7 @@ void env_env_check_variant_collisions(env_TypeEnv* env) {
     }
 }
 
-uint8_t env_env_same_module_opt(slop_option_string a, slop_option_string b) {
+uint8_t type_env_env_same_module_opt(slop_option_string a, slop_option_string b) {
     __auto_type _mv_78 = a;
     if (!_mv_78.has_value) {
         __auto_type _mv_79 = b;
@@ -930,17 +930,17 @@ uint8_t env_env_same_module_opt(slop_option_string a, slop_option_string b) {
     SLOP_UNREACHABLE();
 }
 
-void env_env_set_module(env_TypeEnv* env, slop_option_string module_name) {
+void type_env_env_set_module(type_env_TypeEnv* env, slop_option_string module_name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     (*env).current_module = module_name;
 }
 
-slop_option_string env_env_get_module(env_TypeEnv* env) {
+slop_option_string type_env_env_get_module(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     return (*env).current_module;
 }
 
-types_ResolvedType* env_env_get_int_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_int_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     _retval = (*env).int_type;
@@ -950,7 +950,7 @@ types_ResolvedType* env_env_get_int_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_get_bool_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_bool_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     _retval = (*env).bool_type;
@@ -960,7 +960,7 @@ types_ResolvedType* env_env_get_bool_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_get_string_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_string_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     _retval = (*env).string_type;
@@ -970,7 +970,7 @@ types_ResolvedType* env_env_get_string_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_get_null_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_null_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     _retval = (*env).null_type;
@@ -980,7 +980,7 @@ types_ResolvedType* env_env_get_null_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_get_float_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_float_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     _retval = (*env).float_type;
@@ -990,7 +990,7 @@ types_ResolvedType* env_env_get_float_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_get_unit_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_unit_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     _retval = (*env).unit_type;
@@ -1000,7 +1000,7 @@ types_ResolvedType* env_env_get_unit_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_get_arena_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_arena_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     _retval = (*env).arena_type;
@@ -1010,7 +1010,7 @@ types_ResolvedType* env_env_get_arena_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_get_unknown_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_unknown_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     _retval = (*env).unknown_type;
@@ -1020,7 +1020,7 @@ types_ResolvedType* env_env_get_unknown_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_get_never_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_never_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     _retval = (*env).never_type;
@@ -1030,7 +1030,7 @@ types_ResolvedType* env_env_get_never_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_make_option_type(env_TypeEnv* env, types_ResolvedType* inner_type) {
+types_ResolvedType* type_env_env_make_option_type(type_env_TypeEnv* env, types_ResolvedType* inner_type) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     {
@@ -1047,7 +1047,7 @@ types_ResolvedType* env_env_make_option_type(env_TypeEnv* env, types_ResolvedTyp
     return _retval;
 }
 
-types_ResolvedType* env_env_make_ptr_type(env_TypeEnv* env, types_ResolvedType* inner_type) {
+types_ResolvedType* type_env_env_make_ptr_type(type_env_TypeEnv* env, types_ResolvedType* inner_type) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     {
@@ -1064,7 +1064,7 @@ types_ResolvedType* env_env_make_ptr_type(env_TypeEnv* env, types_ResolvedType* 
     return _retval;
 }
 
-types_ResolvedType* env_env_get_generic_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_get_generic_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     {
@@ -1077,7 +1077,7 @@ types_ResolvedType* env_env_get_generic_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_make_result_type(env_TypeEnv* env) {
+types_ResolvedType* type_env_env_make_result_type(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     types_ResolvedType* _retval = {0};
     {
@@ -1090,7 +1090,7 @@ types_ResolvedType* env_env_make_result_type(env_TypeEnv* env) {
     return _retval;
 }
 
-types_ResolvedType* env_env_make_fn_type(env_TypeEnv* env, types_FnSignature* sig) {
+types_ResolvedType* type_env_env_make_fn_type(type_env_TypeEnv* env, types_FnSignature* sig) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((sig != NULL)), "(!= sig nil)");
     types_ResolvedType* _retval = {0};
@@ -1105,26 +1105,26 @@ types_ResolvedType* env_env_make_fn_type(env_TypeEnv* env, types_FnSignature* si
     return _retval;
 }
 
-void env_env_add_warning(env_TypeEnv* env, slop_string message, int64_t line, int64_t col) {
+void type_env_env_add_warning(type_env_TypeEnv* env, slop_string message, int64_t line, int64_t col) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     ({ __auto_type _lst_p = &((*env).diagnostics); __auto_type _item = (types_diagnostic_new(types_DiagnosticLevel_diag_warning, message, line, col)); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
 }
 
-void env_env_add_error(env_TypeEnv* env, slop_string message, int64_t line, int64_t col) {
+void type_env_env_add_error(type_env_TypeEnv* env, slop_string message, int64_t line, int64_t col) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     ({ __auto_type _lst_p = &((*env).diagnostics); __auto_type _item = (types_diagnostic_new(types_DiagnosticLevel_diag_error, message, line, col)); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
 }
 
-slop_option_types_RangeBounds env_env_type_range(types_ResolvedType* t) {
+slop_option_types_RangeBounds type_env_env_type_range(types_ResolvedType* t) {
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     return types_resolved_type_range(t);
 }
 
-slop_string env_env_range_label(env_TypeEnv* env, types_ResolvedType* t, types_RangeBounds bounds) {
+slop_string type_env_env_range_label(type_env_TypeEnv* env, types_ResolvedType* t, types_RangeBounds bounds) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((t != NULL)), "(!= t nil)");
     {
-        __auto_type arena = env_env_arena(env);
+        __auto_type arena = type_env_env_arena(env);
         __auto_type name = (*t).name;
         if (string_eq(name, SLOP_STR("Int"))) {
             return types_range_to_string(arena, bounds);
@@ -1134,24 +1134,24 @@ slop_string env_env_range_label(env_TypeEnv* env, types_ResolvedType* t, types_R
     }
 }
 
-void env_env_check_range_narrowing(env_TypeEnv* env, slop_string context, types_ResolvedType* target, types_ResolvedType* value, int64_t line, int64_t col) {
+void type_env_env_check_range_narrowing(type_env_TypeEnv* env, slop_string context, types_ResolvedType* target, types_ResolvedType* value, int64_t line, int64_t col) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((target != NULL)), "(!= target nil)");
     SLOP_PRE(((value != NULL)), "(!= value nil)");
-    __auto_type _mv_81 = env_env_type_range(target);
+    __auto_type _mv_81 = type_env_env_type_range(target);
     if (_mv_81.has_value) {
         __auto_type target_range = _mv_81.value;
-        __auto_type _mv_82 = env_env_type_range(value);
+        __auto_type _mv_82 = type_env_env_type_range(value);
         if (_mv_82.has_value) {
             __auto_type value_range = _mv_82.value;
             {
-                __auto_type arena = env_env_arena(env);
+                __auto_type arena = type_env_env_arena(env);
                 if (types_range_is_constant(value_range)) {
                     if (!(types_range_contains(target_range, value_range.min_val))) {
-                        env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = context; _ll.data[1] = ((string_eq(context, SLOP_STR(""))) ? SLOP_STR("") : SLOP_STR(": ")); _ll.data[2] = int_to_string(arena, ((int64_t)(value_range.min_val))); _ll.data[3] = SLOP_STR(" is outside "); _ll.data[4] = env_env_range_label(env, target, target_range); _ll; })), line, col);
+                        type_env_env_add_error(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 5 * sizeof(slop_string)), .len = 5, .cap = 5, .arena = arena }; _ll.data[0] = context; _ll.data[1] = ((string_eq(context, SLOP_STR(""))) ? SLOP_STR("") : SLOP_STR(": ")); _ll.data[2] = int_to_string(arena, ((int64_t)(value_range.min_val))); _ll.data[3] = SLOP_STR(" is outside "); _ll.data[4] = type_env_env_range_label(env, target, target_range); _ll; })), line, col);
                     }
                 } else if (types_range_disjoint(target_range, value_range)) {
-                    env_env_add_warning(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = context; _ll.data[1] = ((string_eq(context, SLOP_STR(""))) ? SLOP_STR("") : SLOP_STR(": ")); _ll.data[2] = SLOP_STR("value is always outside "); _ll.data[3] = env_env_range_label(env, target, target_range); _ll.data[4] = SLOP_STR(" (it is "); _ll.data[5] = types_range_describe_values(arena, value_range); _ll.data[6] = SLOP_STR("); this aborts at run time"); _ll; })), line, col);
+                    type_env_env_add_warning(env, strlib_string_build(arena, ({ slop_list_string _ll = (slop_list_string){ .data = (slop_string*)slop_arena_alloc(arena, 7 * sizeof(slop_string)), .len = 7, .cap = 7, .arena = arena }; _ll.data[0] = context; _ll.data[1] = ((string_eq(context, SLOP_STR(""))) ? SLOP_STR("") : SLOP_STR(": ")); _ll.data[2] = SLOP_STR("value is always outside "); _ll.data[3] = type_env_env_range_label(env, target, target_range); _ll.data[4] = SLOP_STR(" (it is "); _ll.data[5] = types_range_describe_values(arena, value_range); _ll.data[6] = SLOP_STR("); this aborts at run time"); _ll; })), line, col);
                 } else {
                 }
             }
@@ -1161,22 +1161,22 @@ void env_env_check_range_narrowing(env_TypeEnv* env, slop_string context, types_
     }
 }
 
-void env_env_set_current_return(env_TypeEnv* env, slop_option_types_ResolvedType_ptr ret) {
+void type_env_env_set_current_return(type_env_TypeEnv* env, slop_option_types_ResolvedType_ptr ret) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     (*env).current_return = ret;
 }
 
-slop_option_types_ResolvedType_ptr env_env_get_current_return(env_TypeEnv* env) {
+slop_option_types_ResolvedType_ptr type_env_env_get_current_return(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     return (*env).current_return;
 }
 
-slop_list_types_Diagnostic env_env_get_diagnostics(env_TypeEnv* env) {
+slop_list_types_Diagnostic type_env_env_get_diagnostics(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     return (*env).diagnostics;
 }
 
-void env_env_clear_diagnostics(env_TypeEnv* env) {
+void type_env_env_clear_diagnostics(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type arena = (*env).arena;
@@ -1184,32 +1184,32 @@ void env_env_clear_diagnostics(env_TypeEnv* env) {
     }
 }
 
-void env_env_record_binding(env_TypeEnv* env, slop_string name, int64_t line, int64_t col, slop_string slop_type) {
+void type_env_env_record_binding(type_env_TypeEnv* env, slop_string name, int64_t line, int64_t col, slop_string slop_type) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
-    ({ __auto_type _lst_p = &((*env).binding_annotations); __auto_type _item = ((env_BindingAnnotation){name, line, col, slop_type}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
+    ({ __auto_type _lst_p = &((*env).binding_annotations); __auto_type _item = ((type_env_BindingAnnotation){name, line, col, slop_type}); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
 }
 
-slop_list_env_BindingAnnotation env_env_get_binding_annotations(env_TypeEnv* env) {
+slop_list_type_env_BindingAnnotation type_env_env_get_binding_annotations(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     return (*env).binding_annotations;
 }
 
-void env_env_set_current_file(env_TypeEnv* env, slop_option_string file_path) {
+void type_env_env_set_current_file(type_env_TypeEnv* env, slop_option_string file_path) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     (*env).current_file = file_path;
 }
 
-slop_option_string env_env_get_current_file(env_TypeEnv* env) {
+slop_option_string type_env_env_get_current_file(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     return (*env).current_file;
 }
 
-void env_env_add_loaded_module(env_TypeEnv* env, slop_string module_path) {
+void type_env_env_add_loaded_module(type_env_TypeEnv* env, slop_string module_path) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     ({ __auto_type _lst_p = &((*env).loaded_modules); __auto_type _item = (module_path); if (_lst_p->len >= _lst_p->cap) { _lst_p->data = (__typeof__(_lst_p->data))slop_list_grow_raw(_lst_p->arena, _lst_p->data, &_lst_p->cap, _lst_p->len, sizeof(*_lst_p->data)); } _lst_p->data[_lst_p->len++] = _item; (void)0; });
 }
 
-uint8_t env_env_is_module_loaded(env_TypeEnv* env, slop_string module_path) {
+uint8_t type_env_env_is_module_loaded(type_env_TypeEnv* env, slop_string module_path) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type modules = (*env).loaded_modules;
@@ -1229,22 +1229,22 @@ uint8_t env_env_is_module_loaded(env_TypeEnv* env, slop_string module_path) {
     }
 }
 
-void env_env_set_fn_type_params(env_TypeEnv* env, slop_list_string params) {
+void type_env_env_set_fn_type_params(type_env_TypeEnv* env, slop_list_string params) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     (*env).fn_type_params = params;
 }
 
-slop_list_string env_env_get_fn_type_params(env_TypeEnv* env) {
+slop_list_string type_env_env_get_fn_type_params(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     return (*env).fn_type_params;
 }
 
-void env_env_clear_fn_type_params(env_TypeEnv* env) {
+void type_env_env_clear_fn_type_params(type_env_TypeEnv* env) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     (*env).fn_type_params = ((slop_list_string){ .data = NULL, .len = 0, .cap = 0, .arena = (*env).arena });
 }
 
-uint8_t env_env_is_type_param(env_TypeEnv* env, slop_string name) {
+uint8_t type_env_env_is_type_param(type_env_TypeEnv* env, slop_string name) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type params = (*env).fn_type_params;

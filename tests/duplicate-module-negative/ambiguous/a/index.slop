@@ -1,0 +1,8 @@
+(module index
+  (@intent "One module named index")
+  (export Graph make-graph)
+  (type Graph (record (n Int)))
+  (fn make-graph ((n Int))
+    (@intent "Build a Graph")
+    (@spec ((Int) -> Graph))
+    (Graph n)))

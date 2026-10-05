@@ -1,0 +1,8 @@
+(module main
+  (@intent "uses-a and uses-b each import the index beside them, two different files (#165)")
+  (import uses-a (graph-n))
+  (import uses-b (rules-k))
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (- (+ (graph-n) (rules-k)) 7)))

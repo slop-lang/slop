@@ -13,7 +13,7 @@
                   sexpr-is-list sexpr-list-len sexpr-list-get
                   sexpr-line sexpr-col))
   (import types (ResolvedType))
-  (import env (TypeEnv env-arena env-add-import env-resolve-import env-lookup-module-import
+  (import type-env (TypeEnv env-arena env-add-import env-resolve-import env-lookup-module-import
                env-lookup-type-qualified
                env-set-module env-get-module env-get-current-file
                env-add-error env-lookup-function-direct

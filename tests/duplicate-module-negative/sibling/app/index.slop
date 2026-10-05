@@ -1,0 +1,8 @@
+(module index
+  (@intent "Another module named index")
+  (export Rules make-rules)
+  (type Rules (record (k Int)))
+  (fn make-rules ((k Int))
+    (@intent "Build Rules")
+    (@spec ((Int) -> Rules))
+    (Rules k)))

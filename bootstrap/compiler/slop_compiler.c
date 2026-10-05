@@ -7,25 +7,25 @@ void compiler_print_json_string(slop_arena* arena, slop_string s);
 slop_string compiler_lines_to_string(slop_arena* arena, slop_list_string lines);
 slop_string compiler_extract_module_name(slop_list_types_SExpr_ptr exprs);
 slop_string compiler_argv_to_string(uint8_t** argv, int64_t index);
-void compiler_type_check_with_env(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
-void compiler_check_all_functions(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
+void compiler_type_check_with_env(type_env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
+void compiler_check_all_functions(type_env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 uint8_t compiler_is_annotation_form(types_SExpr* item);
 uint8_t compiler_is_valid_toplevel_form(types_SExpr* item);
 slop_string compiler_get_form_name(types_SExpr* item);
-void compiler_check_module_functions(env_TypeEnv* env, types_SExpr* module_form);
+void compiler_check_module_functions(type_env_TypeEnv* env, types_SExpr* module_form);
 int64_t compiler_count_errors(slop_list_types_Diagnostic diagnostics);
 void compiler_print_diagnostic(slop_arena* arena, slop_string filename, types_Diagnostic diag);
 void compiler_output_diagnostics_text(slop_arena* arena, slop_string filename, slop_list_types_Diagnostic diagnostics);
 void compiler_output_diagnostics_json(slop_arena* arena, slop_list_types_Diagnostic diagnostics);
 void compiler_output_single_diagnostic_json(slop_arena* arena, types_Diagnostic diag);
 void compiler_output_check_module_json(slop_arena* arena, slop_string mod_name, slop_list_types_Diagnostic diagnostics, uint8_t first);
-int64_t compiler_check_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first);
-types_ResolvedType* compiler_resolve_type_string(env_TypeEnv* env, slop_arena* arena, slop_string type_str);
-void compiler_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_string params_str);
+int64_t compiler_check_single_file(type_env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first);
+types_ResolvedType* compiler_resolve_type_string(type_env_TypeEnv* env, slop_arena* arena, slop_string type_str);
+void compiler_parse_and_bind_params(type_env_TypeEnv* env, slop_arena* arena, slop_string params_str);
 uint8_t compiler_types_names_equal(types_ResolvedType* a, types_ResolvedType* b);
-int64_t compiler_check_expr_mode(slop_arena* arena, env_TypeEnv* env, slop_string expr_str, slop_string type_str, slop_string context_file, slop_string params_str);
+int64_t compiler_check_expr_mode(slop_arena* arena, type_env_TypeEnv* env, slop_string expr_str, slop_string type_str, slop_string context_file, slop_string params_str);
 void compiler_output_expr_result(slop_arena* arena, uint8_t valid, slop_string inferred_type, slop_string expected_type, slop_list_types_Diagnostic diagnostics);
-int64_t compiler_transpile_single_file(env_TypeEnv* env, context_TranspileContext* ctx, slop_arena* arena, uint8_t* filename, uint8_t first);
+int64_t compiler_transpile_single_file(type_env_TypeEnv* env, context_TranspileContext* ctx, slop_arena* arena, uint8_t* filename, uint8_t first);
 void compiler_output_transpile_module_json(slop_arena* arena, context_TranspileContext* ctx, slop_string mod_name, uint8_t first);
 slop_string compiler_emit_sexpr_inner(slop_arena* arena, types_SExpr* expr);
 slop_string compiler_emit_typed_sexpr(slop_arena* arena, types_SExpr* expr);
@@ -33,7 +33,7 @@ slop_string compiler_emit_typed_list(slop_arena* arena, slop_list_types_SExpr_pt
 slop_string compiler_emit_typed_toplevel(slop_arena* arena, types_SExpr* expr);
 slop_string compiler_emit_typed_module(slop_arena* arena, types_SExpr* module_form);
 slop_string compiler_emit_typed_ast(slop_arena* arena, slop_list_types_SExpr_ptr ast);
-int64_t compiler_typed_ast_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first);
+int64_t compiler_typed_ast_single_file(type_env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first);
 int compiler_main(int argc, char** _c_argv);
 
 void compiler_print_str(uint8_t* s) {
@@ -220,14 +220,14 @@ slop_string compiler_argv_to_string(uint8_t** argv, int64_t index) {
     }
 }
 
-void compiler_type_check_with_env(env_TypeEnv* env, slop_list_types_SExpr_ptr ast) {
+void compiler_type_check_with_env(type_env_TypeEnv* env, slop_list_types_SExpr_ptr ast) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((((int64_t)((ast).len)) > 0)), "(> (list-len ast) 0)");
     collect_collect_module(env, ast);
     compiler_check_all_functions(env, ast);
 }
 
-void compiler_check_all_functions(env_TypeEnv* env, slop_list_types_SExpr_ptr ast) {
+void compiler_check_all_functions(type_env_TypeEnv* env, slop_list_types_SExpr_ptr ast) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     {
         __auto_type len = ((int64_t)((ast).len));
@@ -301,7 +301,7 @@ slop_string compiler_get_form_name(types_SExpr* item) {
     }
 }
 
-void compiler_check_module_functions(env_TypeEnv* env, types_SExpr* module_form) {
+void compiler_check_module_functions(type_env_TypeEnv* env, types_SExpr* module_form) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((module_form != NULL)), "(!= module-form nil)");
     if (parser_sexpr_is_list(module_form)) {
@@ -311,7 +311,7 @@ void compiler_check_module_functions(env_TypeEnv* env, types_SExpr* module_form)
             {
                 __auto_type mod_name = parser_sexpr_get_symbol_name(name_expr);
                 if (!(string_eq(mod_name, SLOP_STR("")))) {
-                    env_env_set_module(env, (slop_option_string){.has_value = 1, .value = mod_name});
+                    type_env_env_set_module(env, (slop_option_string){.has_value = 1, .value = mod_name});
                 }
             }
         } else if (!_mv_2052.has_value) {
@@ -329,9 +329,9 @@ void compiler_check_module_functions(env_TypeEnv* env, types_SExpr* module_form)
                     } else if (compiler_is_valid_toplevel_form(item)) {
                     } else {
                         {
-                            __auto_type arena = env_env_arena(env);
+                            __auto_type arena = type_env_env_arena(env);
                             __auto_type msg = string_concat(arena, SLOP_STR("Unknown top-level form: "), compiler_get_form_name(item));
-                            env_env_add_error(env, msg, parser_sexpr_line(item), parser_sexpr_col(item));
+                            type_env_env_add_error(env, msg, parser_sexpr_line(item), parser_sexpr_col(item));
                         }
                     }
                 } else if (!_mv_2053.has_value) {
@@ -449,7 +449,7 @@ void compiler_output_check_module_json(slop_arena* arena, slop_string mod_name, 
     putchar(125);
 }
 
-int64_t compiler_check_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first) {
+int64_t compiler_check_single_file(type_env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((filename != NULL)), "(!= filename nil)");
     {
@@ -477,11 +477,11 @@ int64_t compiler_check_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t*
                     __auto_type ast = _mv_2062.data.ok;
                     {
                         __auto_type mod_name = compiler_extract_module_name(ast);
-                        env_env_clear_imports(env);
-                        env_env_clear_diagnostics(env);
+                        type_env_env_clear_imports(env);
+                        type_env_env_clear_diagnostics(env);
                         compiler_type_check_with_env(env, ast);
                         {
-                            __auto_type diagnostics = env_env_get_diagnostics(env);
+                            __auto_type diagnostics = type_env_env_get_diagnostics(env);
                             if (format == compiler_OutputFormat_fmt_json) {
                                 compiler_output_check_module_json(arena, mod_name, diagnostics, first);
                             }
@@ -510,13 +510,13 @@ int64_t compiler_check_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t*
     }
 }
 
-types_ResolvedType* compiler_resolve_type_string(env_TypeEnv* env, slop_arena* arena, slop_string type_str) {
+types_ResolvedType* compiler_resolve_type_string(type_env_TypeEnv* env, slop_arena* arena, slop_string type_str) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     __auto_type _mv_2063 = parser_parse(arena, type_str);
     if (_mv_2063.is_ok) {
         __auto_type type_ast = _mv_2063.data.ok;
         if (((int64_t)((type_ast).len)) == 0) {
-            return env_env_get_int_type(env);
+            return type_env_env_get_int_type(env);
         } else {
             __auto_type _mv_2064 = ({ __auto_type _lst = type_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; });
             if (_mv_2064.has_value) {
@@ -527,25 +527,25 @@ types_ResolvedType* compiler_resolve_type_string(env_TypeEnv* env, slop_arena* a
                     {
                         __auto_type name = parser_sexpr_get_symbol_name(type_expr);
                         if (string_eq(name, SLOP_STR(""))) {
-                            return env_env_get_int_type(env);
+                            return type_env_env_get_int_type(env);
                         } else {
                             return infer_resolve_simple_type(env, name);
                         }
                     }
                 }
             } else if (!_mv_2064.has_value) {
-                return env_env_get_int_type(env);
+                return type_env_env_get_int_type(env);
             }
             SLOP_UNREACHABLE();
         }
     } else if (!_mv_2063.is_ok) {
         __auto_type _ = _mv_2063.data.err;
-        return env_env_get_int_type(env);
+        return type_env_env_get_int_type(env);
     }
     SLOP_UNREACHABLE();
 }
 
-void compiler_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_string params_str) {
+void compiler_parse_and_bind_params(type_env_TypeEnv* env, slop_arena* arena, slop_string params_str) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     __auto_type _mv_2065 = parser_parse(arena, params_str);
     if (_mv_2065.is_ok) {
@@ -594,7 +594,7 @@ void compiler_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_st
                                                                                 __auto_type type_sym = _mv_2073.data.sym;
                                                                                 {
                                                                                     __auto_type param_type = compiler_resolve_type_string(env, arena, type_sym.name);
-                                                                                    env_env_bind_var(env, param_name, param_type);
+                                                                                    type_env_env_bind_var(env, param_name, param_type);
                                                                                 }
                                                                                 break;
                                                                             }
@@ -603,12 +603,12 @@ void compiler_parse_and_bind_params(env_TypeEnv* env, slop_arena* arena, slop_st
                                                                                 __auto_type _ = _mv_2073.data.lst;
                                                                                 {
                                                                                     __auto_type param_type = infer_resolve_complex_type_expr(env, type_expr);
-                                                                                    env_env_bind_var(env, param_name, param_type);
+                                                                                    type_env_env_bind_var(env, param_name, param_type);
                                                                                 }
                                                                                 break;
                                                                             }
                                                                             default: {
-                                                                                env_env_bind_var(env, param_name, env_env_get_int_type(env));
+                                                                                type_env_env_bind_var(env, param_name, type_env_env_get_int_type(env));
                                                                                 break;
                                                                             }
                                                                         }
@@ -749,7 +749,7 @@ uint8_t compiler_types_names_equal(types_ResolvedType* a, types_ResolvedType* b)
     }
 }
 
-int64_t compiler_check_expr_mode(slop_arena* arena, env_TypeEnv* env, slop_string expr_str, slop_string type_str, slop_string context_file, slop_string params_str) {
+int64_t compiler_check_expr_mode(slop_arena* arena, type_env_TypeEnv* env, slop_string expr_str, slop_string type_str, slop_string context_file, slop_string params_str) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     if (string_len(context_file) > 0) {
         __auto_type _mv_2082 = file_file_open(context_file, file_FileMode_read);
@@ -768,20 +768,20 @@ int64_t compiler_check_expr_mode(slop_arena* arena, env_TypeEnv* env, slop_strin
                 if (_mv_2084.is_ok) {
                     __auto_type context_ast = _mv_2084.data.ok;
                     collect_collect_module(env, context_ast);
-                    env_env_clear_diagnostics(env);
+                    type_env_env_clear_diagnostics(env);
                 } else if (!_mv_2084.is_ok) {
                     __auto_type _ = _mv_2084.data.err;
                 }
             }
         }
     }
-    env_env_push_scope(env);
+    type_env_env_push_scope(env);
     if (string_len(params_str) > 0) {
         compiler_parse_and_bind_params(env, arena, params_str);
     }
     {
-        __auto_type result = ({ __auto_type _mv = parser_parse(arena, expr_str); int64_t _mr; if (_mv.is_ok) { __auto_type expr_ast = _mv.data.ok; _mr = (((((int64_t)((expr_ast).len)) == 0)) ? ({ compiler_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n").data))); 1; }) : ({ __auto_type _mv = ({ __auto_type _lst = expr_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type expr = _mv.value; ({ ({ __auto_type inferred_type = infer_infer_expr(env, expr); ({ __auto_type expected_type = compiler_resolve_type_string(env, arena, type_str); __auto_type diagnostics = env_env_get_diagnostics(env); __auto_type num_errors = compiler_count_errors(diagnostics); ({ __auto_type type_match = compiler_types_names_equal(inferred_type, expected_type); __auto_type final_diagnostics = env_env_get_diagnostics(env); __auto_type final_errors = compiler_count_errors(final_diagnostics); __auto_type is_valid = (type_match && (final_errors == 0)); compiler_output_expr_result(arena, is_valid, (*inferred_type).name, type_str, final_diagnostics); ((is_valid) ? 0 : 1); }); }); }); }); }) : (({ compiler_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n").data))); 1; })); })); } else { __auto_type parse_err = _mv.data.err; _mr = ({ compiler_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":").data))); compiler_print_string(int_to_string(arena, parse_err.line)); compiler_print_str(((uint8_t*)(SLOP_STR(",\"col\":").data))); compiler_print_string(int_to_string(arena, parse_err.col)); compiler_print_str(((uint8_t*)(SLOP_STR(",\"message\":").data))); compiler_print_json_string(arena, parse_err.message); compiler_print_str(((uint8_t*)(SLOP_STR("}]}\n").data))); 1; }); } _mr; });
-        env_env_pop_scope(env);
+        __auto_type result = ({ __auto_type _mv = parser_parse(arena, expr_str); int64_t _mr; if (_mv.is_ok) { __auto_type expr_ast = _mv.data.ok; _mr = (((((int64_t)((expr_ast).len)) == 0)) ? ({ compiler_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n").data))); 1; }) : ({ __auto_type _mv = ({ __auto_type _lst = expr_ast; size_t _idx = (size_t)0; struct { bool has_value; __typeof__(_lst.data[0]) value; } _r = {0}; if (_idx < _lst.len) { _r.has_value = true; _r.value = _lst.data[_idx]; } else { _r.has_value = false; } _r; }); _mv.has_value ? ({ __auto_type expr = _mv.value; ({ ({ __auto_type inferred_type = infer_infer_expr(env, expr); ({ __auto_type expected_type = compiler_resolve_type_string(env, arena, type_str); __auto_type diagnostics = type_env_env_get_diagnostics(env); __auto_type num_errors = compiler_count_errors(diagnostics); ({ __auto_type type_match = compiler_types_names_equal(inferred_type, expected_type); __auto_type final_diagnostics = type_env_env_get_diagnostics(env); __auto_type final_errors = compiler_count_errors(final_diagnostics); __auto_type is_valid = (type_match && (final_errors == 0)); compiler_output_expr_result(arena, is_valid, (*inferred_type).name, type_str, final_diagnostics); ((is_valid) ? 0 : 1); }); }); }); }); }) : (({ compiler_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":1,\"col\":1,\"message\":\"Empty expression\"}]}\n").data))); 1; })); })); } else { __auto_type parse_err = _mv.data.err; _mr = ({ compiler_print_str(((uint8_t*)(SLOP_STR("{\"valid\":false,\"diagnostics\":[{\"level\":\"error\",\"line\":").data))); compiler_print_string(int_to_string(arena, parse_err.line)); compiler_print_str(((uint8_t*)(SLOP_STR(",\"col\":").data))); compiler_print_string(int_to_string(arena, parse_err.col)); compiler_print_str(((uint8_t*)(SLOP_STR(",\"message\":").data))); compiler_print_json_string(arena, parse_err.message); compiler_print_str(((uint8_t*)(SLOP_STR("}]}\n").data))); 1; }); } _mr; });
+        type_env_env_pop_scope(env);
         return result;
     }
 }
@@ -802,7 +802,7 @@ void compiler_output_expr_result(slop_arena* arena, uint8_t valid, slop_string i
     compiler_print_str(((uint8_t*)(SLOP_STR("}\n").data)));
 }
 
-int64_t compiler_transpile_single_file(env_TypeEnv* env, context_TranspileContext* ctx, slop_arena* arena, uint8_t* filename, uint8_t first) {
+int64_t compiler_transpile_single_file(type_env_TypeEnv* env, context_TranspileContext* ctx, slop_arena* arena, uint8_t* filename, uint8_t first) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((ctx != NULL)), "(!= ctx nil)");
     SLOP_PRE(((filename != NULL)), "(!= filename nil)");
@@ -832,8 +832,8 @@ int64_t compiler_transpile_single_file(env_TypeEnv* env, context_TranspileContex
                     __auto_type ast = _mv_2087.data.ok;
                     {
                         __auto_type mod_name = compiler_extract_module_name(ast);
-                        env_env_clear_imports(env);
-                        env_env_clear_diagnostics(env);
+                        type_env_env_clear_imports(env);
+                        type_env_env_clear_diagnostics(env);
                         compiler_type_check_with_env(env, ast);
                         context_ctx_reset_for_new_module(ctx, mod_name);
                         transpiler_transpile_file(ctx, ast);
@@ -1028,7 +1028,7 @@ slop_string compiler_emit_typed_ast(slop_arena* arena, slop_list_types_SExpr_ptr
     }
 }
 
-int64_t compiler_typed_ast_single_file(env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first) {
+int64_t compiler_typed_ast_single_file(type_env_TypeEnv* env, slop_arena* arena, uint8_t* filename, compiler_OutputFormat format, uint8_t first) {
     SLOP_PRE(((env != NULL)), "(!= env nil)");
     SLOP_PRE(((filename != NULL)), "(!= filename nil)");
     {
@@ -1056,8 +1056,8 @@ int64_t compiler_typed_ast_single_file(env_TypeEnv* env, slop_arena* arena, uint
                     __auto_type ast = _mv_2095.data.ok;
                     {
                         __auto_type mod_name = compiler_extract_module_name(ast);
-                        env_env_clear_imports(env);
-                        env_env_clear_diagnostics(env);
+                        type_env_env_clear_imports(env);
+                        type_env_env_clear_diagnostics(env);
                         compiler_type_check_with_env(env, ast);
                         {
                             __auto_type typed_str = compiler_emit_typed_ast(arena, ast);
@@ -1136,7 +1136,7 @@ int main(int argc, char** _c_argv) {
                         slop_arena* arena = &_arena_4;
                         if (string_eq(compiler_argv_to_string(argv, 2), SLOP_STR("--expr"))) {
                             {
-                                __auto_type env = env_env_new(arena);
+                                __auto_type env = type_env_env_new(arena);
                                 slop_string expr_str = SLOP_STR("");
                                 slop_string type_str = SLOP_STR("Int");
                                 slop_string context_file = SLOP_STR("");
@@ -1186,7 +1186,7 @@ int main(int argc, char** _c_argv) {
                             }
                         } else {
                             {
-                                __auto_type env = env_env_new(arena);
+                                __auto_type env = type_env_env_new(arena);
                                 int64_t total_errors = 0;
                                 __auto_type format = compiler_OutputFormat_fmt_text;
                                 int64_t file_start = 2;
@@ -1247,7 +1247,7 @@ int main(int argc, char** _c_argv) {
                         #endif
                         slop_arena* arena = &_arena_5;
                         {
-                            __auto_type env = env_env_new(arena);
+                            __auto_type env = type_env_env_new(arena);
                             __auto_type ctx = context_context_new(arena);
                             context_ctx_set_prefixing(ctx, 1);
                             putchar(123);
@@ -1301,7 +1301,7 @@ int main(int argc, char** _c_argv) {
                         #endif
                         slop_arena* arena = &_arena_6;
                         {
-                            __auto_type env = env_env_new(arena);
+                            __auto_type env = type_env_env_new(arena);
                             __auto_type format = compiler_OutputFormat_fmt_text;
                             int64_t file_start = 2;
                             int64_t total_errors = 0;

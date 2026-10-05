@@ -1,0 +1,8 @@
+(module uses-a
+  (@intent "Imports index for Graph")
+  (export graph-n)
+  (import index (Graph make-graph))
+  (fn graph-n ()
+    (@intent "n of a Graph")
+    (@spec (() -> Int))
+    (. (make-graph 3) n)))

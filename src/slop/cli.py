@@ -24,7 +24,7 @@ from slop.providers import (
     MockProvider, create_default_configs, load_config, create_from_config, Tier,
     load_project_config, ProjectConfig, BuildConfig, TestConfig, VerifyConfig
 )
-from slop.resolver import ModuleResolver, ResolverError
+from slop.resolver import ModuleResolver, ResolverError, duplicate_module_message
 from slop import __version__, paths
 
 
@@ -2067,9 +2067,13 @@ def _build_library_from_sources(
             graph = resolver.build_dependency_graph(source_file)
             # Merge modules and dependencies from this graph
             for mod_name, mod_info in graph.modules.items():
-                if mod_name not in combined_graph.modules:
+                existing = combined_graph.modules.get(mod_name)
+                if existing is None:
                     combined_graph.modules[mod_name] = mod_info
                     combined_graph.dependencies[mod_name] = graph.dependencies.get(mod_name, [])
+                elif existing.path != mod_info.path:
+                    # The first one used to win silently (#165)
+                    raise ResolverError(duplicate_module_message(mod_name, [existing.path, mod_info.path]))
         except ResolverError as e:
             sys.stdout.flush()
             print(f"  Module resolution failed: {e}", file=sys.stderr)

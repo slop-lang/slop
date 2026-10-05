@@ -13,7 +13,7 @@ Comparing the table against the checker's own tables would not have caught it,
 in either direction:
 
   * `char-at`, `string-copy` and `string-slice` are registered builtins in
-    `lib/compiler/checker/env.slop` that the transpiler has no lowering for, so
+    `lib/compiler/checker/type_env.slop` that the transpiler has no lowering for, so
     a hole using one gets `undefined function` at transpile time;
   * `min` and `max` are lowered fine with no checker dispatch behind them.
 
