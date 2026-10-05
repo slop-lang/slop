@@ -353,6 +353,32 @@ run_negative_build_test "$NEG/unimported.slop" "import-unimported" \
     "unimported.slop:9:15: error: undefined function 'f' - check imports" \
     -I "$NEG" -I "$REPO_ROOT/tests/import-resolution"
 
+# Two files that both declare (module index) in one build (#165). Before, the
+# graph kept one of them: on two search paths, the first silently won and the
+# other importer was told its names were not exported; beside their importers,
+# both were built and one's C overwrote the other's.
+DUP="$REPO_ROOT/tests/duplicate-module-negative"
+run_negative_build_test "$DUP/sibling/app/main.slop" "duplicate-module-siblings" \
+    "sibling/app/index.slop: error: module 'index' is also defined by tests/duplicate-module-negative/sibling/a/index.slop" \
+    -I "$DUP/sibling/a"
+
+# On two search paths the first still wins (builds rely on the order), but an
+# import the winner cannot satisfy now names the file it shadowed, rather than
+# only blaming the importer.
+echo -n "Testing duplicate-module-shadowed (expected to fail)... "
+dup_output=$(uv run slop build "$DUP/ambiguous/app/main.slop" -o "$BUILD_DIR/duplicate-module-shadowed" \
+    -I "$DUP/ambiguous/a" -I "$DUP/ambiguous/b" -I "$DUP/ambiguous/app" 2>&1)
+dup_exit=$?
+if [ $dup_exit -ne 0 ] && echo "$dup_output" | grep -qF "'Rules' not exported from 'index' (resolved to" \
+        && echo "$dup_output" | grep -qF "ambiguous/b/index.slop also defines a module of that name and is shadowed by search order"; then
+    echo -e "${GREEN}PASS${NC}"
+    PASS_COUNT=$((PASS_COUNT + 1))
+else
+    echo -e "${RED}FAIL${NC} (exit $dup_exit)"
+    echo "$dup_output"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+fi
+
 TNEG="$REPO_ROOT/tests/type-resolution-negative"
 run_negative_build_test "$TNEG/both.slop" "type-import-ambiguous" \
     "both.slop:4:17: error: 'Pt' is imported from both 'alpha' and 'beta'" \

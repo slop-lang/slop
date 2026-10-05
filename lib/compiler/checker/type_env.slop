@@ -8,7 +8,7 @@
 ;; - Scope stack (variable bindings)
 ;; ============================================================
 
-(module env
+(module type-env
   (export
     ;; Core types
     TypeEnv CheckerScope VarBinding ImportEntry BindingAnnotation

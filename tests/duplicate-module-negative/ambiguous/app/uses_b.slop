@@ -1,0 +1,8 @@
+(module uses-b
+  (@intent "Imports index for Rules")
+  (export rules-k)
+  (import index (Rules make-rules))
+  (fn rules-k ()
+    (@intent "k of a Rules")
+    (@spec (() -> Int))
+    (. (make-rules 4) k)))

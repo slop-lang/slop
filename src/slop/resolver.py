@@ -36,6 +36,24 @@ class ResolverError(Exception):
     pass
 
 
+class DuplicateModuleError(ResolverError):
+    """More than one file defines a module name (#165)."""
+    pass
+
+
+def duplicate_module_message(module_name: str, paths) -> str:
+    """Report a module name that more than one file defines, at the last of them."""
+    def show(p):
+        try:
+            return str(Path(p).resolve().relative_to(Path.cwd()))
+        except ValueError:
+            return str(p)
+    shown = [show(p) for p in paths]
+    others = shown[0] if len(shown) == 2 else ', '.join(shown[:-1])
+    return (f"{shown[-1]}: error: module '{module_name}' is also defined by {others}; "
+            f"module names must be unique in a build")
+
+
 class ModuleResolver:
     """Resolves module imports and builds dependency graphs."""
 
@@ -119,32 +137,54 @@ class ModuleResolver:
         Raises:
             ResolverError: If module cannot be found
         """
-        filename = f"{module_name}.slop"
         search_dirs = []
 
-        # Start with directory of importing file
+        # The importing file's own directory wins outright
         if from_path:
+            found = self._find_in_dir(from_path.parent, module_name)
+            if found:
+                return found
             search_dirs.append(from_path.parent)
 
-        # Add configured search paths
+        # Then the configured search paths, in order: the first wins. Builds
+        # rely on that order (slop-compiler's own puts the checker's env ahead
+        # of std/os/env), so a later file of the same name is shadowed, not an
+        # error; validate_imports names it when an import then fails (#165).
+        candidates = self.search_path_candidates(module_name)
         search_dirs.extend(self.search_paths)
+        if candidates:
+            return candidates[0]
 
-        # Add current directory as fallback
+        # Current directory as fallback
+        found = self._find_in_dir(Path('.'), module_name)
+        if found:
+            return found
         search_dirs.append(Path('.'))
-
-        for dir_path in search_dirs:
-            candidate = dir_path / filename
-            if candidate.exists():
-                return candidate.resolve()
-            # Try underscore variant (import-a -> import_a)
-            if '-' in module_name:
-                underscore_name = module_name.replace('-', '_')
-                candidate = dir_path / f"{underscore_name}.slop"
-                if candidate.exists():
-                    return candidate.resolve()
 
         searched = ', '.join(str(p) for p in search_dirs)
         raise ResolverError(f"Module '{module_name}' not found (searched: {searched})")
+
+    def search_path_candidates(self, module_name: str) -> List[Path]:
+        """Every distinct file the search paths hold for module_name, in search order."""
+        candidates = []
+        for dir_path in self.search_paths:
+            found = self._find_in_dir(dir_path, module_name)
+            if found and found not in candidates:
+                candidates.append(found)
+        return candidates
+
+    @staticmethod
+    def _find_in_dir(dir_path: Path, module_name: str) -> Optional[Path]:
+        """The resolved .slop file for module_name in dir_path, if there is one."""
+        candidate = Path(dir_path) / f"{module_name}.slop"
+        if candidate.exists():
+            return candidate.resolve()
+        # Try underscore variant (import-a -> import_a)
+        if '-' in module_name:
+            candidate = Path(dir_path) / f"{module_name.replace('-', '_')}.slop"
+            if candidate.exists():
+                return candidate.resolve()
+        return None
 
     def load_module(self, path: Path) -> ModuleInfo:
         """Parse a .slop file and extract module information.
@@ -224,8 +264,13 @@ class ModuleResolver:
                 continue
             processed.add(path)
 
-            # Load module
+            # Load module. Module names become C identifiers and output file
+            # names, so two files with one name cannot both be built; the
+            # second used to replace the first in the graph (#165).
             info = self.load_module(path)
+            existing = graph.modules.get(info.name)
+            if existing is not None and existing.path != info.path:
+                raise DuplicateModuleError(duplicate_module_message(info.name, [existing.path, info.path]))
             graph.modules[info.name] = info
             graph.dependencies[info.name] = []
 
@@ -354,11 +399,21 @@ class ModuleResolver:
 
                 source = graph.modules[imp.module_name]
 
+                # Another file of the same name that the search order hid. When
+                # an import fails, that file is the likely one meant (#165).
+                shadowed = [p for p in self.search_path_candidates(imp.module_name)
+                            if p != source.path]
+                note = ""
+                if shadowed:
+                    note = (f" (resolved to {source.path}; "
+                            f"{', '.join(str(p) for p in shadowed)} also defines a module of that name "
+                            f"and is shadowed by search order)")
+
                 # Check each imported symbol
                 for name in imp.symbols:
                     if name not in source.exports:
                         errors.append(
-                            f"{info.path}:{imp.line}: '{name}' not exported from '{imp.module_name}'"
+                            f"{info.path}:{imp.line}: '{name}' not exported from '{imp.module_name}'{note}"
                         )
 
         return errors
