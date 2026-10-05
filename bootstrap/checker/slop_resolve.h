@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #include "slop_parser.h"
 #include "slop_types.h"
-#include "slop_env.h"
+#include "slop_type_env.h"
 #include "slop_strlib.h"
 #include "slop_path.h"
 #include "slop_file.h"
@@ -42,14 +42,14 @@ SLOP_OPTION_DEFINE(resolve_ImportSite, slop_option_resolve_ImportSite)
 SLOP_LIST_DEFINE(resolve_ImportSite, slop_list_resolve_ImportSite)
 #endif
 
-void resolve_resolve_imports(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
-void resolve_resolve_import_stmt(env_TypeEnv* env, types_SExpr* import_form);
+void resolve_resolve_imports(type_env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
+void resolve_resolve_import_stmt(type_env_TypeEnv* env, types_SExpr* import_form);
 slop_list_resolve_ImportSite resolve_collect_import_sites(slop_arena* arena, slop_list_types_SExpr_ptr ast);
 slop_list_resolve_ImportSite resolve_push_import_sites(slop_arena* arena, slop_list_resolve_ImportSite sites, types_SExpr* import_form);
-slop_option_string resolve_resolve_import_target(env_TypeEnv* env, slop_string src, slop_string name);
-void resolve_resolve_import_name(env_TypeEnv* env, resolve_ImportSite site);
+slop_option_string resolve_resolve_import_target(type_env_TypeEnv* env, slop_string src, slop_string name);
+void resolve_resolve_import_name(type_env_TypeEnv* env, resolve_ImportSite site);
 slop_string resolve_qualified_module_part(slop_arena* arena, slop_string qualified);
-void resolve_check_import_shadowing(env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
+void resolve_check_import_shadowing(type_env_TypeEnv* env, slop_list_types_SExpr_ptr ast);
 uint8_t resolve_contains_slash(slop_string s);
 slop_option_string resolve_resolve_module_file(slop_arena* arena, slop_string module_name, slop_option_string from_file);
 
