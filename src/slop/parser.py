@@ -4,12 +4,24 @@ SLOP Parser - S-expression parser for SLOP language
 Intentionally simple - S-expressions are trivially parseable.
 """
 
-from dataclasses import dataclass
-from typing import Union, List, Optional, Any
+from dataclasses import dataclass, field
+from typing import NamedTuple, Union, List, Optional, Any, Tuple
+import math
 import re
 
 
 # AST Node Types
+#
+# Every node carries its source span as character offsets: start is the
+# offset of its first character, end is one past its last. The spans, the
+# raw token text of strings and numbers, and infix_source (the exact {...}
+# text a contract was written in, on the node that infix produced) are
+# compare=False, so two trees are equal whatever text they were parsed from.
+# Nodes built in code rather than parsed have them all None.
+
+def _span(**kw):
+    return field(default=None, compare=False, repr=False, **kw)
+
 
 @dataclass
 class Symbol:
@@ -17,6 +29,9 @@ class Symbol:
     line: int = 0
     col: int = 0
     resolved_type: Optional[Any] = None  # Set by type checker
+    start: Optional[int] = _span()
+    end: Optional[int] = _span()
+    infix_source: Optional[str] = _span()
     def __repr__(self): return self.name
 
 @dataclass
@@ -25,9 +40,15 @@ class String:
     line: int = 0
     col: int = 0
     resolved_type: Optional[Any] = None  # Set by type checker
+    start: Optional[int] = _span()
+    end: Optional[int] = _span()
+    infix_source: Optional[str] = _span()
+    # The text between the quotes as written, escapes and all
+    raw: Optional[str] = _span()
     def __repr__(self):
-        escaped = self.value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\t', '\\t')
-        return f'"{escaped}"'
+        if self.raw is not None and _unescape_string(self.raw) == self.value:
+            return f'"{self.raw}"'
+        return f'"{_escape_string(self.value)}"'
 
 @dataclass
 class Number:
@@ -35,7 +56,20 @@ class Number:
     line: int = 0
     col: int = 0
     resolved_type: Optional[Any] = None  # Set by type checker
-    def __repr__(self): return str(self.value)
+    start: Optional[int] = _span()
+    end: Optional[int] = _span()
+    infix_source: Optional[str] = _span()
+    # The literal as written: 1e+307 stays 1e+307, not 1e+307's float repr
+    raw: Optional[str] = _span()
+    def __repr__(self):
+        if isinstance(self.value, float) and not math.isfinite(self.value):
+            # A float literal that overflows (1e400) would print as inf,
+            # which reads back as a symbol
+            what = self.raw if self.raw is not None else repr(self.value)
+            raise ValueError(f"float literal {what} is out of range")
+        if self.raw is not None:
+            return self.raw
+        return repr(self.value)
 
 @dataclass
 class SList:
@@ -43,6 +77,9 @@ class SList:
     line: int = 0
     col: int = 0
     resolved_type: Optional[Any] = None  # Set by type checker
+    start: Optional[int] = _span()
+    end: Optional[int] = _span()
+    infix_source: Optional[str] = _span()
 
     def __repr__(self):
         return f"({' '.join(repr(x) for x in self.items)})"
@@ -52,6 +89,33 @@ class SList:
     def __iter__(self): return iter(self.items)
 
 SExpr = Union[Symbol, String, Number, SList]
+
+
+class Token(NamedTuple):
+    kind: str
+    value: str
+    line: int
+    col: int
+    start: int
+    end: int
+
+
+class Comment(NamedTuple):
+    """A ; comment: text runs from the ; to the end of the line, without
+    the line ending. start/end are character offsets into the source."""
+    text: str
+    start: int
+    end: int
+    line: int
+    col: int
+
+
+def _copy_span(dst: SExpr, src: SExpr) -> SExpr:
+    """Give a rebuilt node the span of the node it replaces."""
+    dst.start = src.start
+    dst.end = src.end
+    dst.infix_source = src.infix_source
+    return dst
 
 
 def _unescape_string(s: str) -> str:
@@ -80,6 +144,20 @@ def _unescape_string(s: str) -> str:
             result.append(s[i])
             i += 1
     return ''.join(result)
+
+
+def _escape_string(s: str) -> str:
+    """Escape a string value for a SLOP literal: the inverse of
+    _unescape_string. SLOP has escapes for \\, \", newline, tab and
+    carriage return only; any other control character is written as is."""
+    return (s.replace('\\', '\\\\').replace('"', '\\"')
+             .replace('\n', '\\n').replace('\t', '\\t').replace('\r', '\\r'))
+
+
+# Contract annotations whose body may use {infix} syntax. The native parser
+# accepts infix anywhere; @invariant and @property were missing here, so
+# format/doc/fill rejected files the compiler builds (#305).
+INFIX_ANNOTATIONS = ('@pre', '@post', '@assume', '@loop-invariant', '@invariant', '@property')
 
 
 class ParseError(Exception):
@@ -120,9 +198,12 @@ class Lexer:
         self.pattern = '|'.join(f'(?P<{name}>{pattern})'
                                 for name, pattern in self.TOKEN_PATTERNS)
         self.regex = re.compile(self.pattern)
+        # Filled by tokenize(): every ; comment, in source order
+        self.comments: List[Comment] = []
 
-    def tokenize(self):
+    def tokenize(self) -> List[Token]:
         tokens = []
+        self.comments = []
         line, col = 1, 1
         pos = 0  # Track current position for gap detection
 
@@ -145,8 +226,13 @@ class Lexer:
                     f"'{self.source[match.end()]}'; put a space or a delimiter after a number",
                     line, col)
 
-            if kind not in ('COMMENT', 'WHITESPACE'):
-                tokens.append((kind, value, line, col))
+            if kind == 'COMMENT':
+                # The pattern stops at \n, so a CRLF file leaves the \r on
+                text = value.rstrip('\r')
+                self.comments.append(Comment(text, match.start(),
+                                             match.start() + len(text), line, col))
+            elif kind != 'WHITESPACE':
+                tokens.append(Token(kind, value, line, col, match.start(), match.end()))
 
             newlines = value.count('\n')
             if newlines:
@@ -176,9 +262,28 @@ INFIX_PRECEDENCE = {
 }
 
 
+def _number(tok: Token) -> Number:
+    value = tok.value
+    n = float(value) if any(c in value for c in '.eE') else int(value)
+    return Number(n, tok.line, tok.col, start=tok.start, end=tok.end, raw=value)
+
+
+def _string(tok: Token) -> String:
+    raw = tok.value[1:-1]
+    return String(_unescape_string(raw), tok.line, tok.col,
+                  start=tok.start, end=tok.end, raw=raw)
+
+
+def _symbol(tok: Token) -> Symbol:
+    return Symbol(tok.value, tok.line, tok.col, start=tok.start, end=tok.end)
+
+
 class Parser:
     def __init__(self, source: str):
-        self.tokens = Lexer(source).tokenize()
+        self.source = source
+        lexer = Lexer(source)
+        self.tokens = lexer.tokenize()
+        self.comments = lexer.comments
         self.pos = 0
         self.in_contract = False  # Track if inside @pre/@post/@assume
 
@@ -192,7 +297,8 @@ class Parser:
         if self.pos >= len(self.tokens):
             raise ParseError("Unexpected end of input")
 
-        kind, value, line, col = self.tokens[self.pos]
+        tok = self.tokens[self.pos]
+        kind, value, line, col = tok.kind, tok.value, tok.line, tok.col
 
         if kind == 'LBRACE':
             return self.parse_infix_expr()
@@ -200,35 +306,37 @@ class Parser:
             return self.parse_list()
         elif kind == 'NUMBER':
             self.pos += 1
-            return Number(float(value) if any(c in value for c in '.eE') else int(value), line, col)
+            return _number(tok)
         elif kind == 'STRING':
             self.pos += 1
-            return String(_unescape_string(value[1:-1]), line, col)
+            return _string(tok)
         elif kind == 'QUOTE':
             self.pos += 1
-            return SList([Symbol('quote', line, col), self.parse_expr()], line, col)
-        elif kind == 'SYMBOL':
+            quoted = self.parse_expr()
+            # The quote symbol shares the list's start: that is how the
+            # formatter tells 'x from a written-out (quote x)
+            return SList([Symbol('quote', line, col, start=tok.start, end=tok.end), quoted],
+                         line, col, start=tok.start, end=quoted.end)
+        elif kind in ('SYMBOL', 'OPERATOR'):
             self.pos += 1
-            return Symbol(value, line, col)
-        elif kind == 'OPERATOR':
-            self.pos += 1
-            return Symbol(value, line, col)
+            return _symbol(tok)
         elif kind == 'COLON':
             self.pos += 1
             if self.pos < len(self.tokens):
-                _, next_val, _, _ = self.tokens[self.pos]
+                nxt = self.tokens[self.pos]
                 self.pos += 1
-                return Symbol(':' + next_val, line, col)
+                return Symbol(':' + nxt.value, line, col, start=tok.start, end=nxt.end)
             raise ParseError("Expected symbol after ':'", line, col)
         elif kind == 'RANGE':
             self.pos += 1
-            return Symbol('..', line, col)
+            return Symbol('..', line, col, start=tok.start, end=tok.end)
         else:
             raise ParseError(f"Unexpected token: {value}", line, col)
 
     def parse_list(self) -> SList:
-        kind, _, line, col = self.tokens[self.pos]
-        if kind != 'LPAREN':
+        open_tok = self.tokens[self.pos]
+        line, col = open_tok.line, open_tok.col
+        if open_tok.kind != 'LPAREN':
             raise ParseError("Expected '('", line, col)
 
         self.pos += 1
@@ -238,13 +346,14 @@ class Parser:
         is_contract_form = False
 
         while self.pos < len(self.tokens):
-            kind, value, _, _ = self.tokens[self.pos]
+            tok = self.tokens[self.pos]
+            kind, value = tok.kind, tok.value
             if kind == 'RPAREN':
                 self.pos += 1
-                return SList(items, line, col)
+                return SList(items, line, col, start=open_tok.start, end=tok.end)
 
             # Detect contract annotations after parsing first item
-            if len(items) == 0 and kind == 'SYMBOL' and value in ('@pre', '@post', '@assume', '@loop-invariant'):
+            if len(items) == 0 and kind == 'SYMBOL' and value in INFIX_ANNOTATIONS:
                 is_contract_form = True
 
             # Set in_contract context when parsing the argument of a contract
@@ -263,13 +372,16 @@ class Parser:
     def parse_infix_expr(self) -> SExpr:
         """Parse {infix expression} and convert to prefix AST.
 
-        Only allowed inside @pre, @post, @assume, or @loop-invariant contracts.
+        Only allowed inside the contract annotations in INFIX_ANNOTATIONS.
+        The node returned spans the braces and keeps their exact text in
+        infix_source, so the formatter can write the contract as written.
         """
-        _, _, line, col = self.tokens[self.pos]
+        lbrace = self.tokens[self.pos]
+        line, col = lbrace.line, lbrace.col
 
         if not self.in_contract:
             raise ParseError(
-                "Infix syntax {expr} is only allowed inside @pre, @post, @assume, or @loop-invariant",
+                "Infix syntax {expr} is only allowed inside @pre, @post, @assume, @loop-invariant, @invariant or @property",
                 line, col
             )
 
@@ -279,7 +391,7 @@ class Parser:
             raise ParseError("Unexpected end of input in infix expression", line, col)
 
         # Check for empty braces
-        if self.tokens[self.pos][0] == 'RBRACE':
+        if self.tokens[self.pos].kind == 'RBRACE':
             raise ParseError("Empty infix expression", line, col)
 
         ast = self._parse_infix_precedence(0)
@@ -287,11 +399,14 @@ class Parser:
         # Expect RBRACE
         if self.pos >= len(self.tokens):
             raise ParseError("Expected '}' to close infix expression", line, col)
-        if self.tokens[self.pos][0] != 'RBRACE':
-            _, val, ln, cl = self.tokens[self.pos]
-            raise ParseError(f"Expected '}}', got '{val}'", ln, cl)
+        rbrace = self.tokens[self.pos]
+        if rbrace.kind != 'RBRACE':
+            raise ParseError(f"Expected '}}', got '{rbrace.value}'", rbrace.line, rbrace.col)
         self.pos += 1
 
+        ast.start = lbrace.start
+        ast.end = rbrace.end
+        ast.infix_source = self.source[lbrace.start:rbrace.end]
         return ast
 
     def _parse_infix_precedence(self, min_prec: int) -> SExpr:
@@ -307,14 +422,15 @@ class Parser:
                 break
 
             # Consume operator
-            _, _, op_line, op_col = self.tokens[self.pos]
+            op_tok = self.tokens[self.pos]
             self.pos += 1
 
             # Left associative: use op_prec + 1 for right operand
             right = self._parse_infix_precedence(op_prec + 1)
 
             # Convert to prefix form: a + b -> (+ a b)
-            left = SList([Symbol(op, op_line, op_col), left, right], left.line, left.col)
+            left = SList([_symbol(op_tok), left, right], left.line, left.col,
+                         start=left.start, end=right.end)
 
         return left
 
@@ -323,7 +439,7 @@ class Parser:
         if self.pos >= len(self.tokens):
             return None
 
-        kind, value, _, _ = self.tokens[self.pos]
+        kind, value = self.tokens[self.pos].kind, self.tokens[self.pos].value
 
         # Check for RBRACE or RPAREN - end of expression
         if kind in ('RBRACE', 'RPAREN'):
@@ -344,20 +460,23 @@ class Parser:
         if self.pos >= len(self.tokens):
             raise ParseError("Unexpected end of input in infix expression")
 
-        kind, value, line, col = self.tokens[self.pos]
+        tok = self.tokens[self.pos]
+        kind, value, line, col = tok.kind, tok.value, tok.line, tok.col
 
         # Unary 'not'
         if kind == 'SYMBOL' and value == 'not':
             self.pos += 1
             operand = self._parse_infix_atom()
-            return SList([Symbol('not', line, col), operand], line, col)
+            return SList([_symbol(tok), operand], line, col,
+                         start=tok.start, end=operand.end)
 
         # Unary minus (only at start or after operator, handled by context)
         if kind == 'OPERATOR' and value == '-':
             self.pos += 1
             operand = self._parse_infix_atom()
             # Convert to (- 0 x) for unary negation
-            return SList([Symbol('-', line, col), Number(0, line, col), operand], line, col)
+            return SList([_symbol(tok), Number(0, line, col), operand], line, col,
+                         start=tok.start, end=operand.end)
 
         # Parenthesized expression - could be grouping OR prefix S-expression
         if kind == 'LPAREN':
@@ -366,23 +485,24 @@ class Parser:
         # Number
         if kind == 'NUMBER':
             self.pos += 1
-            return Number(float(value) if any(c in value for c in '.eE') else int(value), line, col)
+            return _number(tok)
 
         # String
         if kind == 'STRING':
             self.pos += 1
-            return String(_unescape_string(value[1:-1]), line, col)
+            return _string(tok)
 
         # Symbol (variable, $result, etc.)
         if kind == 'SYMBOL':
             self.pos += 1
-            return Symbol(value, line, col)
+            return _symbol(tok)
 
         # Quote
         if kind == 'QUOTE':
             self.pos += 1
             quoted = self._parse_infix_atom()
-            return SList([Symbol('quote', line, col), quoted], line, col)
+            return SList([Symbol('quote', line, col, start=tok.start, end=tok.end), quoted],
+                         line, col, start=tok.start, end=quoted.end)
 
         raise ParseError(f"Unexpected token in infix expression: {value}", line, col)
 
@@ -393,7 +513,7 @@ class Parser:
         - Grouping: (a + b) -> recurse infix
         - Prefix form: (len arr) or (. ptr field) -> parse as S-expression
         """
-        _, _, line, col = self.tokens[self.pos]
+        line, col = self.tokens[self.pos].line, self.tokens[self.pos].col
 
         # Look ahead to determine if this is a function call or grouping
         # Save position for potential backtracking
@@ -403,23 +523,24 @@ class Parser:
         if self.pos >= len(self.tokens):
             raise ParseError("Unexpected end of input after '('", line, col)
 
-        kind, value, _, _ = self.tokens[self.pos]
+        tok = self.tokens[self.pos]
+        kind, value = tok.kind, tok.value
 
         # If first element is a symbol, check if it's followed by an operator
         # If not followed by an operator, it's likely a function call
         if kind == 'SYMBOL':
             # Check next token
             if self.pos + 1 < len(self.tokens):
-                next_kind, next_val, _, _ = self.tokens[self.pos + 1]
+                nxt = self.tokens[self.pos + 1]
                 # If next is RPAREN, it could be (x) grouping or (x) single element
                 # If next is not an operator, treat as prefix call
-                if next_kind == 'RPAREN':
+                if nxt.kind == 'RPAREN':
                     # Single element in parens, treat as grouping
                     self.pos += 1  # consume symbol
-                    result = Symbol(value, line, col)
+                    result = _symbol(tok)
                     self.pos += 1  # consume RPAREN
                     return result
-                elif next_kind not in ('OPERATOR',) and next_val not in ('and', 'or'):
+                elif nxt.kind not in ('OPERATOR',) and nxt.value not in ('and', 'or'):
                     # This is a function call like (len arr) - parse as prefix
                     self.pos = save_pos
                     # Temporarily exit contract mode to parse the S-expression normally
@@ -437,9 +558,9 @@ class Parser:
         # Expect RPAREN
         if self.pos >= len(self.tokens):
             raise ParseError("Expected ')' in infix grouping", line, col)
-        if self.tokens[self.pos][0] != 'RPAREN':
-            _, val, ln, cl = self.tokens[self.pos]
-            raise ParseError(f"Expected ')', got '{val}'", ln, cl)
+        if self.tokens[self.pos].kind != 'RPAREN':
+            bad = self.tokens[self.pos]
+            raise ParseError(f"Expected ')', got '{bad.value}'", bad.line, bad.col)
         self.pos += 1
 
         return expr
@@ -456,11 +577,11 @@ def _normalize_quotes(expr: SExpr) -> SExpr:
             inner = expr[1]
             if isinstance(inner, Symbol):
                 # (quote foo) -> 'foo
-                return Symbol(f"'{inner.name}", expr.line, expr.col)
+                return _copy_span(Symbol(f"'{inner.name}", expr.line, expr.col), expr)
     # Recursively normalize children
     if isinstance(expr, SList):
         normalized = [_normalize_quotes(item) for item in expr.items]
-        return SList(normalized, expr.line, expr.col)
+        return _copy_span(SList(normalized, expr.line, expr.col), expr)
     return expr
 
 
@@ -472,53 +593,59 @@ def _normalize_bare_forms(ast: List[SExpr]) -> List[SExpr]:
         (enum Name variant ...)        → (type Name (enum variant ...))
 
     This allows the transpiler to handle a single form instead of both.
+    The rebuilt lists take the span of the form they replace.
     """
     result = []
     for form in ast:
         if is_form(form, 'record') and len(form) >= 2 and isinstance(form[1], Symbol):
             # (record Name fields...) → (type Name (record fields...))
             name = form[1]
-            record_body = SList([Symbol('record')] + list(form.items[2:]))
-            # Preserve source location if available
-            if hasattr(form, 'line'):
-                record_body.line = form.line
-            wrapped = SList([Symbol('type'), name, record_body])
-            if hasattr(form, 'line'):
-                wrapped.line = form.line
+            record_body = _copy_span(SList([Symbol('record')] + list(form.items[2:]), form.line), form)
+            wrapped = _copy_span(SList([Symbol('type'), name, record_body], form.line), form)
             result.append(wrapped)
         elif is_form(form, 'enum') and len(form) >= 2 and isinstance(form[1], Symbol):
             # (enum Name variants...) → (type Name (enum variants...))
             name = form[1]
-            enum_body = SList([Symbol('enum')] + list(form.items[2:]))
-            if hasattr(form, 'line'):
-                enum_body.line = form.line
-            wrapped = SList([Symbol('type'), name, enum_body])
-            if hasattr(form, 'line'):
-                wrapped.line = form.line
+            enum_body = _copy_span(SList([Symbol('enum')] + list(form.items[2:]), form.line), form)
+            wrapped = _copy_span(SList([Symbol('type'), name, enum_body], form.line), form)
             result.append(wrapped)
         elif is_form(form, 'module'):
             # Recursively normalize inside module
             # Keep module keyword and name, normalize the rest
             normalized_items = list(form.items[:2])  # 'module' and name
             normalized_items.extend(_normalize_bare_forms(list(form.items[2:])))
-            normalized = SList(normalized_items)
-            if hasattr(form, 'line'):
-                normalized.line = form.line
-            result.append(normalized)
+            result.append(_copy_span(SList(normalized_items, form.line), form))
         else:
             result.append(form)
     return result
 
 
-def parse(source: str) -> List[SExpr]:
-    forms = Parser(source).parse()
+def parse_with_comments(source: str) -> Tuple[List[SExpr], List[Comment]]:
+    """Parse source, returning its forms and its ; comments in source order.
+
+    The forms are what parse() returns; every parsed node carries its
+    start/end offsets into source.
+    """
+    parser = Parser(source)
+    forms = parser.parse()
     forms = [_normalize_quotes(form) for form in forms]
     forms = _normalize_bare_forms(forms)
-    return forms
+    return forms, parser.comments
+
+
+def parse(source: str) -> List[SExpr]:
+    return parse_with_comments(source)[0]
+
+
+def read_source(path) -> str:
+    """Read a SLOP file as written: newline='' keeps a \\r in a string
+    literal (and CRLF line endings) instead of translating them to \\n."""
+    with open(path, newline='') as f:
+        return f.read()
+
 
 def parse_file(path: str) -> List[SExpr]:
-    with open(path) as f:
-        source = f.read()
+    source = read_source(path)
     try:
         return parse(source)
     except ParseError as e:

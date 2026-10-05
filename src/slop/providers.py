@@ -113,26 +113,87 @@ class OpenAICompatibleProvider(Provider):
             raise RuntimeError(f"API HTTP error {e.code}: {e.read().decode()}")
 
 
+_MOCK_INT_TYPES = {'Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64', 'Uint'}
+
+
+def _mock_default_value(type_expr) -> str:
+    """A SLOP expression of the given type, where one can be written without context."""
+    from slop.parser import SList, Symbol, Number
+    if isinstance(type_expr, Symbol):
+        name = type_expr.name
+        if name in _MOCK_INT_TYPES:
+            return "0"
+        if name == 'Bool':
+            return "false"
+        if name == 'String':
+            return '""'
+        if name in ('Float', 'F32', 'F64'):
+            return "0.0"
+        if name in ('Unit', 'Void'):
+            return "unit"
+    elif isinstance(type_expr, SList) and len(type_expr) > 0 and isinstance(type_expr[0], Symbol):
+        head = type_expr[0].name
+        if head in _MOCK_INT_TYPES:
+            # A range type: its lower bound is in range, 0 may not be
+            if len(type_expr) > 1 and isinstance(type_expr[1], Number):
+                return str(type_expr[1].value)
+            return "0"
+        if head == 'Option':
+            return "(none)"
+        if head == 'Result' and len(type_expr) > 1:
+            return f"(ok {_mock_default_value(type_expr[1])})"
+        if head in ('Ptr', 'OptPtr'):
+            return "nil"
+    # A record, union or collection cannot be built without knowing its fields
+    # or an arena in scope; the validator rejects this, as it should.
+    return "0"
+
+
 class MockProvider(Provider):
-    """Mock LLM provider for testing"""
+    """Mock LLM provider for testing.
+
+    Answers from the hole being filled, not the whole prompt: build_prompt
+    embeds the language spec and stdlib signatures, whose words would
+    otherwise match nearly every keyword. A prompt without a "## Hole to Fill"
+    section is read whole.
+    """
+
+    _HOLE_SECTION = re.compile(r'^## Hole to Fill\n(.*?)(?=^## |\Z)', re.M | re.S)
+
+    @classmethod
+    def _hole_parts(cls, prompt: str) -> tuple:
+        """(description, type string) of the hole the prompt asks to fill."""
+        section = cls._HOLE_SECTION.search(prompt)
+        if not section:
+            return prompt, ""
+        body = section.group(1)
+        type_match = re.search(r'^Type: (.*)$', body, re.M)
+        desc_match = re.search(r'^Description: (.*)$', body, re.M)
+        return (desc_match.group(1) if desc_match else "",
+                type_match.group(1).strip() if type_match else "")
 
     def complete(self, prompt: str, config: ModelConfig) -> str:
-        # Return mock responses based on prompt content
-        prompt_lower = prompt.lower()
-        if "withdraw" in prompt_lower or "balance" in prompt_lower:
+        description, type_str = self._hole_parts(prompt)
+        words = set(re.findall(r'[a-z]+', description.lower()))
+        if words & {'withdraw', 'balance'}:
             return """(if (< (. account balance) amount)
   (error 'insufficient-funds)
-  (ok (put account balance (- (. account balance) amount))))"""
-        elif "hash" in prompt_lower:
-            return "(crypto-hash-password (. input password))"
-        elif "adult" in prompt_lower:
+  (do
+    (set! account balance (- (. account balance) amount))
+    (ok account)))"""
+        if 'adult' in words:
             return "(>= (. user age) 18)"
-        elif "add" in prompt_lower and "x" in prompt_lower and "y" in prompt_lower:
+        if words & {'add', 'sum'}:
             return "(+ x y)"
-        elif "sum" in prompt_lower:
-            return "(+ x y)"
-        else:
-            return "(ok nil)"
+        if type_str:
+            from slop.parser import parse, ParseError
+            try:
+                parsed = parse(type_str)
+            except ParseError:
+                parsed = []
+            if parsed:
+                return _mock_default_value(parsed[0])
+        return "0"
 
 
 class InteractiveProvider(Provider):

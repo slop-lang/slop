@@ -1,4 +1,15 @@
 ; SLOP syntax highlighting queries for tree-sitter
+;
+; Ordering: when several patterns capture the same node, the LAST matching
+; pattern wins in the tree-sitter CLI (tree-sitter-highlight), Neovim, Zed and
+; Helix (25.07+, which reversed its old first-match order). So the catch-alls
+; (`(type_name) @type`, `(identifier) @variable`) come FIRST and the specific
+; head-of-list / definition rules follow and override them. Do not move the
+; catch-alls to the bottom: every head would then be colored as a variable.
+;
+; The definition rules capture the head (fn, type, const, module) as @keyword
+; rather than a private @_name capture: in tree-sitter-highlight a later private
+; capture on the head would replace @keyword and leave it uncolored.
 
 ; Comments
 (comment) @comment
@@ -13,46 +24,54 @@
 (boolean) @constant.builtin
 (nil) @constant.builtin
 
-; Quoted symbols (enum values like 'ok, 'error)
+; Quoted symbols (enum values like 'ok, 'Fizz)
 (quoted_symbol) @constant
 
-; Keywords (:complexity, :required, etc.)
+; Keywords (:complexity, :required, :c-name, :arena, etc.)
 (keyword) @property
 
-; Type names (PascalCase)
-(type_name) @type
-
-; Annotations (@intent, @spec, @pre, @post)
+; Annotations (@intent, @spec, @pre, @post, @callback-assume, ...)
 (annotation) @attribute
 
 ; Range dots
 (range_dots) @operator
 
-; Generic identifiers (variables, function calls).
-; NOTE: This catch-all is intentionally placed BEFORE the specific head-of-list
-; rules below. Zed and Neovim resolve overlapping captures with last-match-wins,
-; so the more specific keyword/operator/function/constant/namespace rules that
-; follow override this fallback. (Do not move this to the bottom of the file.)
-(identifier) @variable
+; Type names (PascalCase). Catch-all: overridden by the rules below.
+(type_name) @type
+
+; Generic identifiers (variables, function calls). Catch-all: overridden by
+; the rules below.
+((identifier) @variable
+  (#not-match? @variable "^\\$"))
+
+; Compiler-provided names ($result, $callback-arg, ...)
+((identifier) @variable.builtin
+  (#match? @variable.builtin "^\\$"))
 
 ; Special forms - first identifier in a list
-; Function definition
-(list
+((list
   .
-  (identifier) @keyword
+  (identifier) @keyword)
   (#any-of? @keyword
-    "fn" "impl" "module" "export" "import"
-    "type" "const" "alias" "record" "enum" "union"
-    "let" "let*" "mut"
+    "fn" "module" "export" "import"
+    "type" "const" "record" "enum" "union"
+    "let" "let*" "mut" "in"
     "if" "cond" "match" "when" "while"
-    "for" "for-each" "do" "loop"
-    "break" "continue" "return" "else" "guard" "catch"
+    "for" "for-each" "do"
+    "break" "continue" "return" "else"
+    "forall" "exists" "implies"
     "hole" "ffi" "ffi-struct" "c-inline"))
 
-; Built-in operators as first element
-(list
-  .
-  (identifier) @operator
+; Built-in operators as first element (also prefix calls inside infix:
+; {(. $result len) >= 1})
+([
+  (list
+    .
+    (identifier) @operator)
+  (infix_group
+    .
+    (identifier) @operator)
+  ]
   (#any-of? @operator
     ; Arithmetic
     "+" "-" "*" "/" "%"
@@ -65,20 +84,20 @@
     ; Min/Max
     "min" "max"
     ; Data access
-    "." "@" "put" "set!" "deref"
+    "." "@" "set!" "deref"
     ; Result/Option
-    "ok" "error" "try" "?" "is-ok" "unwrap" "some" "none"
+    "ok" "error" "?" "unwrap" "some" "none" "is-some" "is-none"
     ; Type/Memory
     "cast" "sizeof" "addr"
     ; Data construction
-    "array" "list" "map" "set" "record-new" "union-new"
+    "quote" "list" "set" "record-new" "union-new"
     ; Arena
     "arena-new" "arena-alloc" "arena-free" "with-arena"
     ; String operations
-    "string-new" "string-len" "string-concat" "string-eq" "string-slice"
-    "string-split" "string-push-char" "int-to-string"
+    "string-new" "string-len" "string-concat" "string-eq"
+    "string-push-char" "int-to-string"
     ; List operations
-    "list-new" "list-push" "list-get" "list-pop" "list-len"
+    "list-new" "list-push" "list-get" "list-set" "list-pop" "list-len"
     ; Map operations
     "map-new" "map-put" "map-get" "map-has" "map-keys" "map-remove" "map-len"
     ; Set operations
@@ -91,36 +110,36 @@
     "print" "println"))
 
 ; Function name (second element after 'fn')
-(list
+((list
   .
-  (identifier) @_fn
-  (#eq? @_fn "fn")
+  (identifier) @keyword
   .
   (identifier) @function)
+  (#eq? @keyword "fn"))
 
 ; Type name in type definition
-(list
+((list
   .
-  (identifier) @_type
-  (#eq? @_type "type")
+  (identifier) @keyword
   .
   (type_name) @type.definition)
+  (#eq? @keyword "type"))
 
-; Constant name in const definition
-(list
+; Constant name in const definition (MAX_CONN or max-conn)
+((list
   .
-  (identifier) @_const
-  (#eq? @_const "const")
+  (identifier) @keyword
   .
-  (identifier) @constant)
+  [(identifier) (type_name)] @constant)
+  (#eq? @keyword "const"))
 
 ; Module name
-(list
+((list
   .
-  (identifier) @_mod
-  (#eq? @_mod "module")
+  (identifier) @keyword
   .
-  (identifier) @namespace)
+  (identifier) @module)
+  (#eq? @keyword "module"))
 
 ; Brackets
 "(" @punctuation.bracket

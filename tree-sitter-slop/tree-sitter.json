@@ -1,0 +1,25 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "slop",
+      "camelcase": "Slop",
+      "scope": "source.slop",
+      "path": ".",
+      "file-types": [
+        "slop"
+      ],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "injection-regex": "^slop$"
+    }
+  ],
+  "metadata": {
+    "version": "0.4.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for SLOP (Symbolic LLM-Optimized Programming)",
+    "links": {
+      "repository": "https://github.com/slop-lang/slop"
+    }
+  }
+}

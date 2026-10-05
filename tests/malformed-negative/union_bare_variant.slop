@@ -1,0 +1,11 @@
+(module main
+  (@intent "A union variant called on its own is an error that says how to build it")
+
+  (type Shape (union (circle Int) (dot)))
+
+  (fn main ()
+    (@intent "Entry point")
+    (@spec (() -> Int))
+    (match (circle 3)
+      ((circle r) (- r 3))
+      ((dot) 1))))

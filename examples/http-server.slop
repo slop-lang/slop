@@ -78,7 +78,7 @@
             (setsockopt sock 1 2 (cast (Ptr Void) opt) 4)
 
             ;; Zero out sockaddr_in
-            (memset addr 0 (cast U64 (sizeof sockaddr_in)))
+            (memset (cast (Ptr Void) addr) 0 (cast U64 (sizeof sockaddr_in)))
 
             ;; Configure address (AF_INET=2, INADDR_ANY=0)
             (set! addr.sin_family 2)
@@ -105,12 +105,12 @@
                   (let ((client (accept sock nil nil)))
                     (when (>= client 0)
                       (with-arena 4096
-                        (let ((buf (arena-alloc arena 4096)))
+                        (let ((buf (cast (Ptr U8) (arena-alloc arena 4096))))
                           ;; Read request
                           (recv client buf 4095 0)
 
                           ;; Route request
-                          (let ((resp (if (!= (strstr buf (. "GET /health" data)) nil)
+                          (let ((resp (if (!= (strstr buf (cast (Ptr U8) (. "GET /health" data))) nil)
                                         (response-ok)
                                         (response-404))))
                             ;; Send response

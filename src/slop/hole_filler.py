@@ -6,6 +6,7 @@ with automatic escalation on verification failure.
 """
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,38 +47,63 @@ _STDLIB_SIGNATURES: Optional[str] = None
 # Cache for example patterns
 _EXAMPLE_PATTERNS: Optional[str] = None
 
-# Valid built-in expression forms from SLOP spec
-# Note: BUILTIN_FUNCTIONS (from types.py) is unioned with these special forms
+# Special forms a hole may use, unioned with BUILTIN_FUNCTIONS (types.py).
+#
+# Every name here compiles all the way through -- checker, transpiler and cc
+# -- when written as the spec describes; each was confirmed by building a
+# probe module with the 0.4.0 toolchain. The compiler's own list is
+# is-reserved-builtin-name in lib/compiler/checker/collect.slop, the names
+# transpile-list-expr in lib/compiler/transpiler/expr.slop dispatches on.
+#
+# Deliberately absent, because the toolchain rejects them:
+#   map    -- there is no map literal; build one with map-new and map-put
+#   put    -- no functional update; use set! on a mut copy or a Ptr
+#   try    -- no try/catch; match on the Result, or use (? expr)
+#   array  -- no array literal
+#   let*   -- dispatched, but its bindings are not in scope in its body;
+#             plain let already binds sequentially
+#   bit-and, bit-or, bit-xor, bit-not -- the transpiler lowers the first
+#             three, but the checker rejects all four; use & | ^
+#   is-ok, is-error -- unknown to the checker; match on the Result
+# quote is accepted by the compiler, but a fill's (quote sym) is rewritten to
+# 'sym by _transform_lisp_forms and any other (quote ...) is refused.
 VALID_EXPRESSION_FORMS = {
     # Control flow
     'if', 'cond', 'match', 'when', 'while', 'for', 'for-each',
     'break', 'continue', 'return', 'else',
     # Binding
-    'let', 'let*',
-    # Data construction
-    'array', 'list', 'map', 'record-new', 'union-new',
+    'let',
+    # Lambda: (fn ((param Type)...) body). A named (fn name ...) is a
+    # definition, which _validate refuses separately.
+    'fn',
+    # Data construction: list and set literals carry their element type,
+    # (list Int 1 2) and (set Int 1 2); unions are built with union-new or
+    # (Type (tag v...)), records with record-new or (Type v...)
+    'list', 'set', 'record-new', 'union-new',
     'ok', 'error', 'some', 'none',
     # Data access
-    '.', '@', 'put', 'set!', 'deref',
-    # Arithmetic
+    '.', '@', 'set!', 'deref', 'addr',
+    # Arithmetic and bitwise
     '+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>',
     # Comparison
     '==', '!=', '<', '<=', '>', '>=', '=',
     # Boolean
     'and', 'or', 'not',
     # Type/memory
-    'cast', 'sizeof', 'addr', 'with-arena',
-    # Error handling
-    'try', '?',
+    'cast', 'sizeof', 'with-arena',
+    # Error propagation
+    '?',
     # Sequencing
     'do',
     # FFI
     'c-inline',
-    # Type constructors (appear in cast, sizeof, type expressions)
-    # These are not functions but can appear as heads of nested lists
-    'Ptr', 'OwnPtr', 'OptPtr', 'Option', 'Result', 'List', 'Array', 'Map',
-    'Int', 'U8', 'U16', 'U32', 'U64', 'I8', 'I16', 'I32', 'I64',
-    'String', 'Bool', 'Float', 'Void', 'Unit', 'Arena',
+    # Built-in type constructors. _extract_function_calls skips the type
+    # operands of the forms it knows (cast, sizeof, list-new, typed let
+    # bindings...), but a type can still reach it from a form it does not
+    # model, so the names stay allowed.
+    'Ptr', 'OwnPtr', 'OptPtr', 'Option', 'Result', 'List', 'Array', 'Map', 'Set',
+    'Fn', 'Int', 'U8', 'U16', 'U32', 'U64', 'I8', 'I16', 'I32', 'I64',
+    'String', 'Bool', 'Float', 'F32', 'F64', 'Char', 'Void', 'Unit', 'Arena',
     'ffi-struct',  # Nested FFI struct type
 } | BUILTIN_FUNCTIONS
 
@@ -191,25 +217,53 @@ def _transform_lisp_forms(expr: SExpr) -> SExpr:
     return SList(new_items)
 
 
-def _extract_function_calls(expr: SExpr) -> set:
+# Forms whose operands after the head start with type expressions, mapped to
+# the indices (into the full form) holding a type. Types are not calls, so
+# they are skipped rather than scanned.
+_TYPE_OPERANDS = {
+    'cast': {1},             # (cast Type expr)
+    'sizeof': {1},           # (sizeof Type)
+    'list': {1},             # (list Type e... :arena a)
+    'set': {1},              # (set Type e... :arena a)
+    'list-new': {2},         # (list-new arena Type)
+    'set-new': {2},          # (set-new arena Type)
+    'map-new': {2, 3},       # (map-new arena K V)
+}
+
+
+def _extract_function_calls(expr: SExpr, union_tags: Optional[Dict[str, set]] = None) -> set:
     """Extract all function/form names called in an expression.
 
-    Skips known binding forms where identifiers are not function calls:
-    - (let ((x val)) body) - x is a binding, not a call
-    - (for (i start end) body) - i is a binding
-    - (for-each (x list) body) - x is a binding
-    - (match expr (Pattern body)) - Pattern is a tag, not a call
-    - (record-new Type (field val)) - field is a field name
+    Args:
+        expr: The expression to scan.
+        union_tags: Union type name -> its variant tags. With it, the tag in a
+            type-name constructor (Shape (circle 3)) is read as a tag, not as a
+            call; without it that tag is reported like any other call.
+
+    Skips positions where an identifier or list is not a call:
+    - (let ((x val) (mut y Type val)) body) - binding names, mut, and types
+    - (for (i start end) body), (for-each (x coll) body),
+      (for-each ((k v) map) body) - loop binders
+    - (match expr (pattern body)...) - patterns
+    - (fn ((p Type)...) body) - lambda parameters
+    - (record-new Type (field val)...) - Type and field names
+    - (union-new Type tag v...) - Type and tag
+    - (Type (tag v...)) - the tag, for a union Type in union_tags
+    - (cast Type e), (sizeof Type), (list Type e...), (list-new a Type), ... - types
+    - :arena a and other keyword options are symbols, never calls
     """
     calls = set()
     if not isinstance(expr, SList) or len(expr) == 0:
         return calls
 
+    def scan(items):
+        for item in items:
+            calls.update(_extract_function_calls(item, union_tags))
+
     head = expr[0]
     if not isinstance(head, Symbol):
         # Head is not a symbol, recurse on all items
-        for item in expr.items:
-            calls.update(_extract_function_calls(item))
+        scan(expr.items)
         return calls
 
     head_name = head.name
@@ -217,68 +271,98 @@ def _extract_function_calls(expr: SExpr) -> set:
     # Always add the head as a call (we'll filter builtins later)
     calls.add(head_name)
 
-    # Handle special forms that introduce bindings (don't recurse into binding positions)
-    if head_name in ('let', 'let*') and len(expr) >= 3:
-        # (let ((x val) (y val2)) body) - skip binding names, recurse on values and body
+    if head_name in ('let', 'let*') and len(expr) >= 2:
+        # Each binding is (name val), (mut name val), (name Type val) or
+        # (mut name Type val): only the value, always last, is code.
         bindings = expr[1]
         if isinstance(bindings, SList):
             for binding in bindings.items:
                 if isinstance(binding, SList) and len(binding) >= 2:
-                    # Skip first element (binding name), recurse on value
-                    calls.update(_extract_function_calls(binding[1]))
-        # Recurse on body
-        for item in expr.items[2:]:
-            calls.update(_extract_function_calls(item))
+                    calls.update(_extract_function_calls(binding[-1], union_tags))
+        scan(expr.items[2:])
 
-    elif head_name == 'for' and len(expr) >= 3:
-        # (for (i start end) body) - skip i, recurse on start, end, body
+    elif head_name == 'for' and len(expr) >= 2:
+        # (for (i start end) body) - skip i
         loop_spec = expr[1]
-        if isinstance(loop_spec, SList) and len(loop_spec) >= 3:
-            calls.update(_extract_function_calls(loop_spec[1]))  # start
-            calls.update(_extract_function_calls(loop_spec[2]))  # end
-        for item in expr.items[2:]:
-            calls.update(_extract_function_calls(item))
+        if isinstance(loop_spec, SList):
+            scan(loop_spec.items[1:])
+        scan(expr.items[2:])
 
-    elif head_name == 'for-each' and len(expr) >= 3:
-        # (for-each (x list) body) - skip x, recurse on list, body
+    elif head_name == 'for-each' and len(expr) >= 2:
+        # (for-each (x coll) body) / (for-each ((k v) map) body) - skip binders
         loop_spec = expr[1]
-        if isinstance(loop_spec, SList) and len(loop_spec) >= 2:
-            calls.update(_extract_function_calls(loop_spec[1]))  # list expr
-        for item in expr.items[2:]:
-            calls.update(_extract_function_calls(item))
+        if isinstance(loop_spec, SList):
+            scan(loop_spec.items[1:])
+        scan(expr.items[2:])
 
     elif head_name == 'match' and len(expr) >= 2:
-        # (match expr (Pattern body) ...) - skip pattern heads, recurse on bodies
-        calls.update(_extract_function_calls(expr[1]))  # matched expr
+        # (match expr (pattern body...) ...) - skip patterns
+        calls.update(_extract_function_calls(expr[1], union_tags))
         for clause in expr.items[2:]:
             if isinstance(clause, SList) and len(clause) >= 2:
-                # Skip pattern (first element), recurse on body (rest)
-                for item in clause.items[1:]:
-                    calls.update(_extract_function_calls(item))
+                scan(clause.items[1:])
+
+    elif head_name == 'fn' and len(expr) >= 2 and isinstance(expr[1], SList):
+        # Lambda: (fn ((p Type)...) body) - skip the parameter list
+        scan(expr.items[2:])
 
     elif head_name == 'record-new' and len(expr) >= 2:
         # (record-new Type (field val) ...) - skip Type and field names
         for item in expr.items[2:]:
             if isinstance(item, SList) and len(item) >= 2:
-                # Skip field name, recurse on value
-                calls.update(_extract_function_calls(item[1]))
+                scan(item.items[1:])
+
+    elif head_name == 'union-new':
+        # (union-new Type tag v...) - skip Type and tag
+        scan(expr.items[3:])
+
+    elif head_name in _TYPE_OPERANDS:
+        type_positions = _TYPE_OPERANDS[head_name]
+        scan(item for i, item in enumerate(expr.items)
+             if i > 0 and i not in type_positions)
 
     elif head_name == 'cond':
         # (cond (test body) ... (else body)) - recurse on all tests and bodies
         for clause in expr.items[1:]:
             if isinstance(clause, SList):
-                for item in clause.items:
-                    # Skip 'else' keyword
-                    if isinstance(item, Symbol) and item.name == 'else':
-                        continue
-                    calls.update(_extract_function_calls(item))
+                scan(item for item in clause.items
+                     if not (isinstance(item, Symbol) and item.name == 'else'))
+
+    elif (union_tags and head_name in union_tags and len(expr) == 2
+          and isinstance(expr[1], SList) and len(expr[1]) >= 1
+          and isinstance(expr[1][0], Symbol)
+          and expr[1][0].name in union_tags[head_name]):
+        # (Shape (circle 3)) - circle is Shape's tag, not a call
+        scan(expr[1].items[1:])
 
     else:
         # Default: recurse on all items after head
-        for item in expr.items[1:]:
-            calls.update(_extract_function_calls(item))
+        scan(expr.items[1:])
 
     return calls
+
+
+def _extract_let_bound_names(expr: SExpr) -> set:
+    """Names an expression binds with let, (mut name ...) included.
+
+    A local bound to a lambda is called like a function, (f 2); it is not an
+    undefined function.
+    """
+    names = set()
+    if not isinstance(expr, SList):
+        return names
+    if is_form(expr, 'let') or is_form(expr, 'let*'):
+        if len(expr) >= 2 and isinstance(expr[1], SList):
+            for binding in expr[1].items:
+                if isinstance(binding, SList) and len(binding) >= 2:
+                    first = binding[0]
+                    if isinstance(first, Symbol) and first.name == 'mut' and len(binding) >= 3:
+                        first = binding[1]
+                    if isinstance(first, Symbol):
+                        names.add(first.name)
+    for item in expr.items:
+        names |= _extract_let_bound_names(item)
+    return names
 
 
 def load_skill_spec() -> str:
@@ -684,7 +768,7 @@ FUNCTION_ALTERNATIVES = {
     'cons': 'No cons in SLOP. Use (list ...) to create lists',
     'append': 'No append in SLOP. Build new list with for-each',
     'length': 'Use string-len for strings, list-len for lists, map-len / set-len for maps and sets (all builtins)',
-    'null?': 'No null? in SLOP. Use (== x nil) or (none? x) for Option',
+    'null?': 'No null? in SLOP. Use (== x nil) for pointers or (is-none x) for Option',
     'nil?': 'No nil? in SLOP. Use (== x nil)',
     'empty?': 'No empty? in SLOP. Check length or use == nil',
     'atom?': 'No atom? in SLOP. Type checking is static',
@@ -704,63 +788,126 @@ FUNCTION_ALTERNATIVES = {
 }
 
 
-def _extract_enum_variants(context: Dict[str, Any]) -> set:
-    """Extract all enum variant names from type definitions.
+@dataclass
+class _TypeDefs:
+    """What the hole's type context defines, read from its (type ...) forms."""
+    names: set               # every defined type name
+    records: Dict[str, List[str]]                  # record -> field names
+    unions: Dict[str, List[tuple]]                 # union -> [(tag, [payload type str])]
+    enums: Dict[str, List[str]]                    # enum -> variant names
 
-    This allows enum variant constructors like (literal "pets") to be
-    recognized as valid forms, not undefined functions.
-    """
-    variants = set()
-    all_type_defs = context.get('type_defs', []) + [t['type_def'] for t in context.get('imported_types', [])]
+    @property
+    def union_tags(self) -> Dict[str, set]:
+        return {name: {tag for tag, _ in variants} for name, variants in self.unions.items()}
 
-    for type_def_str in all_type_defs:
+    @property
+    def tag_owner(self) -> Dict[str, str]:
+        """Union tag -> the union that declares it."""
+        return {tag: name for name, variants in self.unions.items() for tag, _ in variants}
+
+    @property
+    def enum_variants(self) -> set:
+        return {v for variants in self.enums.values() for v in variants}
+
+    @property
+    def constructors(self) -> set:
+        """Type names callable as constructors: (Pt 1 2), (Shape (circle 3))."""
+        return set(self.records) | set(self.unions)
+
+
+def _all_type_def_strings(context: Dict[str, Any]) -> List[str]:
+    return context.get('type_defs', []) + [t['type_def'] for t in context.get('imported_types', [])]
+
+
+def _parse_type_defs(type_def_strs: List[str]) -> List[SExpr]:
+    """Parse type definition strings, all in one native parser run when possible."""
+    if not type_def_strs:
+        return []
+    try:
+        return _native_parse('\n'.join(type_def_strs))
+    except ParseError as e:
+        logger.debug(f"Native parse of type context failed, parsing each definition: {e}")
+    from slop.parser import parse as py_parse
+    forms = []
+    for type_def_str in type_def_strs:
         try:
-            type_ast = _native_parse(type_def_str)
-            if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
-                type_expr = type_ast[0][2]
-                if is_form(type_expr, 'enum'):
-                    for v in type_expr.items[1:]:
-                        if isinstance(v, Symbol):
-                            variants.add(v.name)
-                        elif isinstance(v, SList) and len(v) > 0 and isinstance(v[0], Symbol):
-                            # Variant with payload like (literal String)
-                            variants.add(v[0].name)
-        except Exception:
-            pass
+            forms.extend(py_parse(type_def_str))
+        except ParseError as e:
+            logger.warning(f"Skipping unparseable type definition {type_def_str[:60]!r}: {e}")
+    return forms
 
-    return variants
+
+def _extract_type_defs(context: Dict[str, Any]) -> _TypeDefs:
+    """Collect the record, union and enum definitions in a hole's context.
+
+    Reads (type Name (record ...)), (type Name (union (tag P...) ...)),
+    (type Name (enum a b ...)) and any other (type Name ...) as just a name.
+    """
+    info = _TypeDefs(names=set(), records={}, unions={}, enums={})
+    for form in _parse_type_defs(_all_type_def_strings(context)):
+        if not (is_form(form, 'type') and len(form) > 2 and isinstance(form[1], Symbol)):
+            continue
+        name = form[1].name
+        body = form[2]
+        info.names.add(name)
+        if is_form(body, 'record'):
+            info.records[name] = [f[0].name for f in body.items[1:]
+                                  if isinstance(f, SList) and len(f) >= 1 and isinstance(f[0], Symbol)]
+        elif is_form(body, 'union'):
+            variants = []
+            for v in body.items[1:]:
+                if isinstance(v, SList) and len(v) >= 1 and isinstance(v[0], Symbol):
+                    variants.append((v[0].name, [str(p) for p in v.items[1:]]))
+                elif isinstance(v, Symbol):
+                    variants.append((v.name, []))
+            info.unions[name] = variants
+        elif is_form(body, 'enum'):
+            info.enums[name] = [v.name for v in body.items[1:] if isinstance(v, Symbol)]
+    return info
+
+
+def _parse_params(params_str: str) -> List[tuple]:
+    """Read a parameter list into (name, type) pairs.
+
+    Handles both plain params '((arena Arena) (request (Ptr Request)))' and
+    mode params '((in arena Arena) (mut count Int))': a three-element param is
+    (mode name Type), as the compiler reads it.
+    """
+    if not params_str:
+        return []
+    try:
+        parsed = _native_parse(params_str)
+    except ParseError as e:
+        logger.debug(f"Could not parse params {params_str!r}: {e}")
+        return []
+    if not parsed or not isinstance(parsed[0], SList):
+        return []
+    params = []
+    for param in parsed[0].items:
+        if not isinstance(param, SList):
+            continue
+        if len(param) >= 3 and isinstance(param[1], Symbol):
+            params.append((param[1].name, param[2]))
+        elif len(param) == 2 and isinstance(param[0], Symbol):
+            params.append((param[0].name, param[1]))
+    return params
 
 
 def _extract_param_names(params_str: str) -> List[str]:
     """Extract variable names from params string.
 
     Handles both simple format: '((arena Arena) (request (Ptr Request)))'
-    and annotated format: '((in arena Arena) (out result (Ptr Result)))'
+    and mode format: '((in arena Arena) (mut count Int))'
     """
-    if not params_str:
-        return []
+    return [name for name, _ in _parse_params(params_str)]
 
-    try:
-        parsed = _native_parse(params_str)
-        if not parsed or not isinstance(parsed[0], SList):
-            return []
-        names = []
-        for param in parsed[0].items:
-            if isinstance(param, SList) and len(param) >= 1:
-                first = param[0]
-                if isinstance(first, Symbol):
-                    # Check if first element is an annotation (in/out/inout/mut)
-                    if len(param) >= 3:
-                        # Format: (mode name Type), any three-element form, as
-                        # the compiler reads it - extract second element
-                        if isinstance(param[1], Symbol):
-                            names.append(param[1].name)
-                    else:
-                        # Format: (name Type) - extract first element
-                        names.append(first.name)
-        return names
-    except Exception:
-        return []
+
+_TOKEN_RE = re.compile(r"[^\s()\[\]{}'\"]+")
+
+
+def _tokens(text: str) -> set:
+    """The atoms in a type or signature string, so User does not match UserId."""
+    return set(_TOKEN_RE.findall(text))
 
 
 def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
@@ -769,14 +916,10 @@ def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
     This enables context-aware prompt filtering - only include enum values and
     record fields for types that are actually used by the hole.
     """
-    import re
-
     # Collect all known type names from type definitions
-    all_type_defs = context.get('type_defs', []) + [t['type_def'] for t in context.get('imported_types', [])]
     type_names = set()
-    for type_def_str in all_type_defs:
-        # Extract name from "(type Name ...)"
-        match = re.match(r'\(type\s+(\w+)', type_def_str)
+    for type_def_str in _all_type_def_strings(context):
+        match = re.match(r'\s*\(type\s+([^\s()]+)', type_def_str)
         if match:
             type_names.add(match.group(1))
 
@@ -784,10 +927,7 @@ def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
 
     # 1. Include types from the hole's return type
     if hole.type_expr:
-        hole_type_str = str(hole.type_expr)
-        for type_name in type_names:
-            if type_name in hole_type_str:
-                referenced.add(type_name)
+        referenced |= type_names & _tokens(str(hole.type_expr))
 
     # Use context list (whitelist of available items) for type extraction
     context_items = hole.context or []
@@ -803,27 +943,13 @@ def _extract_referenced_types(hole: 'Hole', context: Dict[str, Any]) -> set:
         if not spec:
             continue
         signature = spec.get('params', '') + ' ' + spec.get('return_type', '')
-        for type_name in type_names:
-            if type_name in signature:
-                referenced.add(type_name)
+        referenced |= type_names & _tokens(signature)
 
     # 3. Include types from function parameters (context often lists param names)
-    params_str = context.get('params', '')
-    if params_str and context_set:
-        try:
-            params_ast = _native_parse(params_str)
-            if params_ast and isinstance(params_ast[0], SList):
-                for param in params_ast[0].items:
-                    if isinstance(param, SList) and len(param) >= 2:
-                        param_name = param[0].name if isinstance(param[0], Symbol) else str(param[0])
-                        if param_name in context_set:
-                            # Extract type names from this param's type
-                            param_type_str = str(param[1])
-                            for type_name in type_names:
-                                if type_name in param_type_str:
-                                    referenced.add(type_name)
-        except Exception:
-            pass
+    if context_set:
+        for param_name, param_type in _parse_params(context.get('params', '')):
+            if param_name in context_set:
+                referenced |= type_names & _tokens(str(param_type))
 
     return referenced
 
@@ -916,6 +1042,10 @@ def build_prompt(
         "   - WRONG: (Ptr User (arena-alloc ...))  -- Ptr is NOT a function!",
         "   - The pattern is: (cast (Ptr Type) allocation-expression)",
         "   - Always use 'cast' to convert (Ptr Void) from arena-alloc to specific pointer type",
+        "11. COLLECTION LITERALS name their element type: (list Int 1 2 3), (set String \"a\" \"b\")",
+        "   - There is NO map literal: build a map with (map-new arena K V) and (map-put m k v)",
+        "   - There is NO put (functional update), try/catch, or array literal",
+        "   - Propagate an error with (? expr), or match on the Result",
     ])
 
     # Add type-specific syntax hints
@@ -955,7 +1085,8 @@ def build_prompt(
         "Fill: (match (lookup id) ((some pet) (ok pet)) ((none) (error 'not-found)))",
         "",
         "Hole: (hole (Result Unit ApiError) \"Delete or return error\")",
-        "Fill: (if success (ok ()) (error 'not-found))",
+        "Fill: (if success (ok unit) (error 'not-found))",
+        "(The Unit value is the symbol unit. () is an empty list, not a value.)",
     ])
 
     sections.extend([
@@ -1032,76 +1163,63 @@ def build_prompt(
             sections.append("These functions are imported and available to use:")
             sections.append(f"  {', '.join(sorted(imported))}")
 
-    # Extract enum values and record fields from type_defs and imported_types
-    all_type_defs = context.get('type_defs', []) + [t['type_def'] for t in context.get('imported_types', [])]
+    # Enum values, union variants and record fields from type_defs and imported_types
+    type_info = _extract_type_defs(context)
+    enum_info = [(name, ', '.join(f"'{v}" for v in variants))
+                 for name, variants in type_info.enums.items() if variants]
+    union_info = []
+    for name, variants in type_info.unions.items():
+        shown = [f"({tag} {' '.join(payload)})" if payload else tag for tag, payload in variants]
+        if shown:
+            union_info.append((name, ', '.join(shown)))
+    record_info = [(name, ', '.join(fields))
+                   for name, fields in type_info.records.items() if fields]
 
-    enum_info = []
-    record_info = []
-
-    for type_def_str in all_type_defs:
-        try:
-            type_ast = _native_parse(type_def_str)
-            if type_ast and is_form(type_ast[0], 'type') and len(type_ast[0]) > 2:
-                name = type_ast[0][1].name if isinstance(type_ast[0][1], Symbol) else str(type_ast[0][1])
-                type_expr = type_ast[0][2]
-
-                if is_form(type_expr, 'enum'):
-                    # Extract enum variants with payload info
-                    variants = []
-                    for v in type_expr.items[1:]:
-                        if isinstance(v, Symbol):
-                            variants.append(f"'{v.name}")
-                        elif isinstance(v, SList) and len(v) > 0 and isinstance(v[0], Symbol):
-                            # Variant with payload - show as (variant-name PayloadType)
-                            variant_name = v[0].name
-                            if len(v) > 1:
-                                payload_type = str(v[1])
-                                variants.append(f"({variant_name} {payload_type})")
-                            else:
-                                variants.append(f"'{variant_name}")
-                    if variants:
-                        enum_info.append(f"{name}: {', '.join(variants)}")
-
-                elif is_form(type_expr, 'record'):
-                    # Extract field names
-                    fields = []
-                    for field in type_expr.items[1:]:
-                        if isinstance(field, SList) and len(field) >= 1:
-                            field_name = field[0].name if isinstance(field[0], Symbol) else str(field[0])
-                            fields.append(field_name)
-                    if fields:
-                        record_info.append(f"{name}: {', '.join(fields)}")
-        except Exception:
-            pass
-
-    # Filter enum_info and record_info to only include types referenced by this hole
+    # Filter to only the types referenced by this hole
     if hole.context:
         referenced_types = _extract_referenced_types(hole, context)
-        filtered_enum_info = [e for e in enum_info if e.split(':')[0] in referenced_types]
-        filtered_record_info = [r for r in record_info if r.split(':')[0] in referenced_types]
-        # Safety: if filtering removed everything but there were items, fall back to all
-        if not filtered_enum_info and enum_info:
-            filtered_enum_info = enum_info
-        if not filtered_record_info and record_info:
-            filtered_record_info = record_info
-    else:
-        # No context whitelist - include all types
-        filtered_enum_info = enum_info
-        filtered_record_info = record_info
 
-    if filtered_enum_info:
+        def only_referenced(infos):
+            kept = [i for i in infos if i[0] in referenced_types]
+            # Safety: if filtering removed everything but there were items, fall back to all
+            return kept or infos
+
+        enum_info = only_referenced(enum_info)
+        union_info = only_referenced(union_info)
+        record_info = only_referenced(record_info)
+
+    if enum_info:
         sections.append("")
         sections.append("## Enum Values")
-        sections.append("Simple variants: use quoted like 'ok, 'created (NOT integers!)")
-        sections.append("Variants with payload: (variant-name value) e.g., (literal \"pets\"), (param \"id\")")
-        for info in filtered_enum_info:
-            sections.append(f"  {info}")
+        sections.append("An enum value is a QUOTED symbol: 'active, 'created (NOT integers, NOT calls)")
+        for name, shown in enum_info:
+            sections.append(f"  {name}: {shown}")
 
-    if filtered_record_info:
+    if union_info:
+        shown_unions = {name for name, _ in union_info}
+        example = next(((name, tag, payload)
+                        for name, variants in type_info.unions.items() if name in shown_unions
+                        for tag, payload in variants if payload), None)
+        sections.append("")
+        sections.append("## Union Variants")
+        sections.append("A union value is built through its type, never by calling the tag alone:")
+        sections.append("  (Type (tag v ...))        - e.g. (Shape (circle 3)), (Shape (rect 3 4))")
+        sections.append("  (union-new Type tag v ...) - the same value, spelled out")
+        sections.append("  (Type tag) or (Type (tag)) - a variant with no payload")
+        sections.append("  WRONG: (circle 3) - a bare tag call is rejected by the checker")
+        if example:
+            name, tag, payload = example
+            args = ' '.join(f"<{p}>" for p in payload)
+            sections.append(f"  For this file: ({name} ({tag} {args}))")
+        sections.append("Match a union on its tags: (match s ((circle r) ...) ((rect w h) ...))")
+        for name, shown in union_info:
+            sections.append(f"  {name}: {shown}")
+
+    if record_info:
         sections.append("")
         sections.append("## Record Fields (use (. record field-name) to access)")
-        for info in filtered_record_info:
-            sections.append(f"  {info}")
+        for name, shown in record_info:
+            sections.append(f"  {name}: {shown}")
 
     # Range type guidance - SLOP-specific, LLMs may not understand
     sections.append("")
@@ -1170,7 +1288,6 @@ def build_prompt(
 
     # Include feedback from failed attempts
     if failed_attempts:
-        import re
         sections.append("")
         sections.append("## Previous Failed Attempts")
         sections.append("Your previous attempts were rejected. Fix ALL of these issues:")
@@ -1231,6 +1348,19 @@ def _context_to_temp_file(type_defs: list) -> Optional[str]:
         return None
 
 
+def _params_for_checker(params: str) -> str:
+    """Rewrite a parameter list as the (name Type) pairs `check --params` reads.
+
+    The expression checker binds the first two elements of each param, so a
+    mode param (mut n Int) bound a variable named mut of type n, and the hole
+    then failed with "Unknown type: n".
+    """
+    pairs = _parse_params(params)
+    if not pairs:
+        return params
+    return '(' + ' '.join(f'({name} {type_expr})' for name, type_expr in pairs) + ')'
+
+
 def _try_native_checker(
     expr_str: str,
     expected_type: str,
@@ -1268,7 +1398,7 @@ def _try_native_checker(
         if context_file:
             cmd.extend(['--context', context_file])
         if params:
-            cmd.extend(['--params', params])
+            cmd.extend(['--params', _params_for_checker(params)])
 
         # Run native checker
         result = subprocess.run(
@@ -1671,9 +1801,13 @@ class HoleFiller:
         invalid_forms = ['fn', 'type', 'module', 'impl', 'ffi', 'ffi-struct',
                          '@intent', '@spec', '@pre', '@post', '@example', '@pure', '@alloc']
         for form_name in invalid_forms:
-            if is_form(expr, form_name):
-                errors.append(f"Do not return a '{form_name}' form - fill the hole with an expression, not a definition")
-                break  # Only report first matching definition form
+            if not is_form(expr, form_name):
+                continue
+            # (fn ((x Int)) ...) is a lambda, a value; only (fn name ...) defines
+            if form_name == 'fn' and len(expr) >= 2 and isinstance(expr[1], SList):
+                continue
+            errors.append(f"Do not return a '{form_name}' form - fill the hole with an expression, not a definition")
+            break  # Only report first matching definition form
 
         # Check 3: Recursive check for invented forms (quote, block, etc.)
         invalid_form = self._find_invalid_form(expr)
@@ -1685,14 +1819,26 @@ class HoleFiller:
         if syntax_error:
             errors.append(syntax_error)
 
-        # Check 4: Undefined function calls
+        # Check 4: Undefined function calls. A record or union type name is
+        # callable as a constructor, (Pt 1 2) and (Shape (circle 3)); a union
+        # tag only inside its type's constructor, never called bare.
         defined_fns = set(context.get('defined_functions', []))
-        enum_variants = _extract_enum_variants(context)  # Allow enum variant constructors
-        allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | enum_variants
-        calls = _extract_function_calls(expr)
+        type_info = _extract_type_defs(context)
+        constructors = type_info.constructors
+        # A (Fn ...) parameter or a let-bound lambda is called by name
+        local_callables = set(_extract_param_names(context.get('params', ''))) | _extract_let_bound_names(expr)
+        allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | constructors | local_callables
+        calls = _extract_function_calls(expr, type_info.union_tags)
         undefined = calls - allowed
         if undefined:
             errors.append(f"Undefined function(s): {', '.join(sorted(undefined))}. Only use built-ins or functions defined in this file.")
+            tag_owner = type_info.tag_owner
+            for tag in sorted(undefined & set(tag_owner)):
+                owner = tag_owner[tag]
+                errors.append(f"'{tag}' is a variant of union {owner}: build it with "
+                              f"({owner} ({tag} ...)) or (union-new {owner} {tag} ...)")
+            for variant in sorted(undefined & type_info.enum_variants):
+                errors.append(f"'{variant}' is an enum value, not a function: write '{variant}")
 
         # Check 5a: context whitelist (limits what functions/identifiers can be used)
         if hole.context:
@@ -1702,13 +1848,15 @@ class HoleFiller:
             # Include function parameters - they're valid context items
             param_names = set(_extract_param_names(context.get('params', '')))
             # Validate context items are actually defined
-            valid_items = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | enum_variants | ffi_names | param_names
+            valid_items = (VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | ffi_names | param_names
+                           | type_info.names | type_info.enum_variants | set(type_info.tag_owner))
             invalid_context = context_set - valid_items
             if invalid_context:
                 errors.append(f"Invalid context items (not defined): {', '.join(sorted(invalid_context))}")
-            # Allow built-in forms, built-in functions, enum variants, FFI functions, context items, and required items
+            # Allow built-in forms, built-in functions, type constructors, FFI functions, context items, and required items
             required_set = set(hole.required) if hole.required else set()
-            context_allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | enum_variants | ffi_names | context_set | required_set
+            context_allowed = (VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | constructors | ffi_names
+                               | local_callables | context_set | required_set)
             disallowed = calls - context_allowed
             if disallowed:
                 errors.append(f"Only allowed to use: {', '.join(hole.context)}")
@@ -1887,8 +2035,9 @@ class HoleFiller:
 
         # Check for undefined calls (should be 0 if validation passed)
         defined_fns = set(context.get('defined_functions', []))
-        allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns
-        calls = _extract_function_calls(expr)
+        type_info = _extract_type_defs(context)
+        allowed = VALID_EXPRESSION_FORMS | BUILTIN_FUNCTIONS | defined_fns | type_info.constructors
+        calls = _extract_function_calls(expr, type_info.union_tags)
         undefined = calls - allowed
         metrics['no_undefined_calls'] = 1.0 if not undefined else 0.0
 
@@ -2038,7 +2187,6 @@ class HoleFiller:
             response = '\n'.join(lines[1:-1] if lines[-1].strip() == '```' else lines[1:])
 
         # Split by [HOLE N] markers
-        import re
         parts = re.split(r'\[HOLE\s+\d+\]', response)
         # First part is usually empty or preamble
         parts = [p.strip() for p in parts[1:] if p.strip()]

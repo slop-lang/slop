@@ -910,6 +910,7 @@ union_ctor_payload_count|union_ctor_payload_count.slop:9:18: error: variant 'lin
 number_suffix|number_suffix.slop:7:15: error: invalid number literal: '3.14' is followed by 'f'
 compare_extra_operand|compare_extra_operand.slop:8:20: error: '>' compares two operands, but has 3
 union_not_variant|union_not_variant.slop:10:18: error: 'circle' is not a variant of 'Node'
+union_bare_variant|union_bare_variant.slop:9:12: error: 'circle' is a variant of 'Shape'; build it with (Shape (circle ...)) or (union-new Shape circle ...)
 MF_CASES
 
 # The same forms in a multi-module build. A single-file build stops at the
@@ -947,6 +948,84 @@ run_debug_contract_test() {
 # A multi-payload match in a @post bound only its first name, to the whole
 # payload, so the checked contract did not compile (#171).
 run_debug_contract_test "$REPO_ROOT/tests/contract-debug/post_multi_payload.slop" "contract-debug-post-multi-payload"
+
+# ============================================================
+# Parser Output Tests
+# ============================================================
+# slop-parser's sexp printer showed every float as <float>, and its JSON
+# printer formatted floats with %.15f, which zeroed 1e-20 and overran the
+# format buffer for 1e300, so the JSON did not parse. Strings with a raw
+# control byte other than \n \r \t also made invalid JSON.
+run_parser_output_test() {
+    local name="parser-output-literals"
+    local parser="$REPO_ROOT/bin/slop-parser"
+    local src="$REPO_ROOT/tests/test_number_literals.slop"
+    local edge="$BUILD_DIR/parser_edge.slop"
+    local problem=""
+    local sexp json
+
+    echo -n "Testing $name... "
+    printf '(a 007.5 1e-20 1e300 "cr\\rlf" "ctl\001x" "q\\xz")\n' > "$edge"
+
+    sexp=$("$parser" "$src" 2>&1)
+    if [ $? -ne 0 ]; then
+        problem="slop-parser failed on $src"
+    elif echo "$sexp" | grep -qF '<float>'; then
+        problem="sexp output still has <float>"
+    elif ! echo "$sexp" | grep -qF '1.0e+307' || ! echo "$sexp" | grep -qF '2E-3'; then
+        problem="sexp output lacks the float literals 1.0e+307 and 2E-3"
+    fi
+
+    if [ -z "$problem" ]; then
+        json=$("$parser" --format json "$src" 2>&1)
+        if ! echo "$json" | python3 -c '
+import json, sys
+nums = []
+def walk(n):
+    if isinstance(n, list):
+        for x in n: walk(x)
+    elif n["type"] == "List":
+        walk(n["items"])
+    elif n["type"] == "Number" and n["is_float"]:
+        nums.append(n["value"])
+walk(json.load(sys.stdin))
+sys.exit(0 if 1e307 in nums and 2e-3 in nums else 1)'; then
+            problem="JSON output is invalid or lacks 1e307 and 2e-3"
+        fi
+    fi
+
+    if [ -z "$problem" ]; then
+        json=$("$parser" --format json "$edge" 2>&1)
+        if ! echo "$json" | python3 -c '
+import json, sys
+items = [n.get("value") for n in json.load(sys.stdin)[0]["items"]]
+want = [None, 7.5, 1e-20, 1e300, "cr\rlf", "ctl\x01x", "q\\xz"]
+sys.exit(0 if items == want else 1)'; then
+            problem="JSON for $edge does not hold the literal values: $json"
+        fi
+    fi
+
+    if [ -z "$problem" ]; then
+        # The printed form re-parses to the same printed form
+        "$parser" "$edge" > "$BUILD_DIR/parser_edge2.slop" 2>&1
+        sexp=$("$parser" "$BUILD_DIR/parser_edge2.slop" 2>&1)
+        if [ "$sexp" != "$(cat "$BUILD_DIR/parser_edge2.slop")" ]; then
+            problem="sexp output does not round-trip: $sexp"
+        elif ! echo "$sexp" | grep -qF '"cr\rlf"'; then
+            problem="carriage return not printed as \\r: $sexp"
+        fi
+    fi
+
+    if [ -z "$problem" ]; then
+        echo -e "${GREEN}PASS${NC}"
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${RED}FAIL${NC} ($problem)"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+run_parser_output_test
 
 # ============================================================
 # Cleanup and Summary

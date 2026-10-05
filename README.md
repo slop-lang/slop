@@ -125,20 +125,28 @@ slop/
 │       ├── strlib/          String manipulation
 │       ├── math/            Math utilities
 │       ├── os/              OS interface (env vars, etc.)
+│       ├── path/            Path manipulation
+│       ├── json/            JSON parse and emit
+│       ├── xml/             XML parse and emit
 │       └── thread/          Concurrency (channels, spawn/join)
 ├── spec/                    Language specifications
 │   ├── LANGUAGE.md          Grammar, types, semantics
-│   ├── HYBRID_PIPELINE.md   Generation architecture
-│   └── REFERENCE.md         Quick reference
+│   ├── REFERENCE.md         Quick reference (fed to the hole filler)
+│   ├── VERIFICATION.md      What slop verify proves, and how
+│   └── HYBRID_PIPELINE.md   Generation architecture
 ├── src/slop/                Python CLI and support toolchain
 │   ├── runtime/
-│   │   └── slop_runtime.h   Minimal C runtime (~400 lines)
-│   ├── parser.py            S-expression parser
-│   ├── verifier.py          Contract verification via Z3
+│   │   └── slop_runtime.h   C runtime: arenas, strings, collections, threads
+│   ├── cli.py               Command-line interface
+│   ├── parser.py            S-expression parser (format, doc, fill, verify)
+│   ├── formatter.py         slop format
+│   ├── reference.py         slop ref
+│   ├── resolver.py          Module resolution for multi-module builds
+│   ├── paths.py             SLOP_HOME and path resolution
+│   ├── verifier/            Contract verification via Z3
 │   ├── hole_filler.py       LLM integration with tiered routing
 │   ├── providers.py         LLM providers (Ollama, OpenAI, etc.)
-│   ├── schema_converter.py  JSON Schema → SLOP types
-│   └── cli.py               Command-line interface
+│   └── schema_converter.py  slop derive: JSON Schema, SQL, OpenAPI → SLOP
 ├── examples/                Example SLOP programs
 │   ├── rate-limiter.slop    Token bucket rate limiter
 │   ├── hello.slop           Minimal example
@@ -257,10 +265,44 @@ slop check-hole '(helper 42)' -t Int -c myfile.slop
 # From stdin
 echo '(ok value)' | slop check-hole -t '(Result T E)'
 
+# Run the @example annotations as tests
+slop test examples/fibonacci.slop
+
+# Format source in place (comments are kept); --check for CI
+slop format src/*.slop
+slop format --check src/*.slop
+
 # Show resolved paths (useful for debugging SLOP_HOME)
-slop paths
+slop paths                     # SLOP_HOME, stdlib, and the four native binaries
 slop paths -v                  # Include examples list
 ```
+
+### Generating SLOP from Schemas (`slop derive`)
+
+`slop derive` turns an external schema into a SLOP module deterministically
+(no LLM). The output builds with the current compiler and is wrapped in a
+`(module NAME (export ...) ...)` named after the `-o` file.
+
+```bash
+slop derive schema.json -o models.slop          # JSON Schema -> types
+slop derive tables.sql -o tables.slop           # SQL DDL (CREATE TABLE / CREATE TYPE ... AS ENUM)
+slop derive petstore.yaml -o petstore.slop      # OpenAPI 3 / Swagger 2: types + one fn per operation
+slop derive petstore.yaml -s map -o store.slop  # ... with an in-memory Map-backed implementation
+```
+
+- **JSON Schema:** objects become records (optional properties are
+  `(Option T)`), string enums become enums, `oneOf`/`anyOf` become unions,
+  numeric bounds become range types, and `date`/`date-time` become `String`
+  with a comment.
+- **SQL:** one record per table; nullable columns are `(Option T)`, and
+  `VARCHAR(n)` is `(String .. n)`.
+- **OpenAPI:** each operation is a function with `@intent`, `@spec`, `@pre`
+  and a hole returning `(Result T ApiError)`. `-s` picks the storage:
+  `stub` (default; a `@requires storage` block you implement), `map` (a
+  working in-memory implementation, no holes) or `none` (types and holes only).
+
+Anything it cannot express is emitted as `String` with a `;;` comment, and
+reported on stderr; it never emits an undefined type.
 
 ### Native Components
 
@@ -510,8 +552,8 @@ Running `slop fill` replaces the hole with a valid implementation:
 
 ```lisp
 (if (and (>= age 18) (<= age 120))
-    (union-new Result ok age)
-    (union-new Result error "Age must be between 18 and 120"))
+    (ok age)
+    (error "Age must be between 18 and 120"))
 ```
 
 ## Generics
@@ -676,16 +718,18 @@ Arena allocation handles 90% of cases:
 - ✓ Type checker with range inference and path-sensitive analysis
 - ✓ Self-hosting compiler (parser, checker, transpiler, merged compiler — all written in SLOP)
 - ✓ Generics (`@generic` with type parameter unification)
-- ✓ Standard library (`lib/std/`: strlib, io, math, os, thread)
+- ✓ Standard library (`lib/std/`: strlib, io, math, os, path, json, xml, thread)
 - ✓ Bootstrap build system (build from pre-generated C — no SLOP installation required)
 - ✓ Concurrency primitives (channels, spawn/join via `lib/std/thread`)
-- ✓ Runtime contract assertions (`SLOP_PRE`/`SLOP_POST` macros)
+- ✓ Range types enforced: at compile time where the value is known, at run time otherwise
+- ✓ Runtime contract assertions in `--debug` builds (`SLOP_PRE`/`SLOP_POST`)
 - ✓ FFI struct mapping (`ffi-struct` for C struct layouts)
 - ✓ C interop libraries (`:c-name` for clean exports, public header generation)
 - ✓ Hole extraction, classification, and tiered model routing
 - ✓ LLM providers (Ollama, OpenAI-compatible, Interactive, Multi-provider)
 - ✓ Hole filler with quality scoring and pattern library
-- ✓ CLI tooling (`slop` command)
+- ✓ CLI tooling (`slop` command): build, check, test, verify, fill, format, doc, derive, ref
+- ✓ Editor support: tree-sitter grammar and an Emacs mode (`tree-sitter-slop/`)
 - ✓ Runtime header with arena allocation
 - ✓ Contract verification via Z3 (`slop verify`) — path-sensitive body analysis, loop invariants, pattern detection
 - ✓ Test suite
@@ -693,6 +737,7 @@ Arena allocation handles 90% of cases:
 **Not Yet Implemented:**
 - Full generics (monomorphization, generic type definitions, type variable substitution in codegen)
 - Property-based testing generation
+- The forms listed in spec/LANGUAGE.md section 10 (`array`, `put`, `try`/`catch`, structured patterns, `Slice`, ...)
 
 ## License
 

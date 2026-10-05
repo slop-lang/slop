@@ -146,7 +146,20 @@ def _json_to_ast(json_data):
     elif t == 'String':
         return String(json_data['value'], line, col)
     elif t == 'Number':
-        return Number(json_data['value'], line, col)
+        # is_float decides the Python type: json.loads may read a float
+        # literal such as 1e3 or a fallback "2" as an int.
+        value = json_data['value']
+        value = float(value) if json_data.get('is_float') else int(value)
+        node = Number(value, line, col)
+        # The literal as written (1.0e+307, 2E-3), when the native parser
+        # sends it. Number may not declare raw, so set it as an attribute.
+        raw = json_data.get('raw')
+        if raw:
+            try:
+                node.raw = raw
+            except AttributeError:
+                pass
+        return node
     elif t == 'List':
         items = [_json_to_ast(item) for item in json_data['items']]
         return SList(items, line, col)
@@ -178,7 +191,9 @@ def parse_native_json(input_file: str):
             text=True
         )
         if result.returncode != 0:
-            return result.stderr or "Native parser failed", False
+            # The native parser reports parse and file errors on stdout
+            detail = '\n'.join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+            return detail or f"Native parser failed (exit status {result.returncode})", False
 
         # Parse JSON and convert to Python AST
         json_ast = json.loads(result.stdout)
@@ -247,6 +262,31 @@ def _deduplicate_trampolines(code: str) -> str:
     return '\n'.join(result_lines)
 
 
+def _report_native_compiler_failure(result) -> str:
+    """Forward a failed `slop-compiler transpile` run's errors to stderr.
+
+    The compiler prints transpiler errors to stderr, but file and parse errors
+    (`file:line:col: error: ...`, `Error: Could not read file: f`) to stdout,
+    interleaved with the JSON it was writing. Callers have already forwarded
+    stderr; this forwards the error lines found on stdout and returns a short
+    summary for the caller to print.
+    """
+    import re
+    # An error starts a line, or follows the '{' / '}' of the JSON the
+    # compiler had written so far (that JSON contains no newlines)
+    error_re = re.compile(
+        r'(?:^|(?<=[{}]))((?:Error|Usage): .*|[^\s{}"][^{}"]*:\d+:\d+: error: .*)$')
+    found = False
+    for line in result.stdout.splitlines():
+        m = error_re.search(line)
+        if m:
+            print(m.group(1), file=sys.stderr)
+            found = True
+    if not found and not result.stderr.strip():
+        return f"slop-compiler exited with status {result.returncode} and reported no error"
+    return f"slop-compiler exited with status {result.returncode}"
+
+
 def transpile_native(input_file: str, dep_files: list[str] = None):
     """Transpile using native transpiler, returns (c_code, success).
 
@@ -255,7 +295,8 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
         dep_files: Optional list of dependency files (in dependency order)
 
     Returns tuple of (output, success). If native transpiler isn't available,
-    returns (None, False).
+    returns (None, False). On failure the compiler's errors have already been
+    printed to stderr and output is a short message for the caller to print.
     """
     import subprocess
     import json
@@ -281,9 +322,7 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
             print(result.stderr, end='', file=sys.stderr)
         if result.returncode == 0:
             # Parse JSON output and combine into single C file
-            stdout = result.stdout
-            stdout = stdout.replace('Error: Could not read file\n', '')
-            data = json.loads(stdout)
+            data = json.loads(result.stdout)
             c_parts = ['#include "slop_runtime.h"', '']
             main_mod = None
             # Collect all module C names for stripping includes
@@ -309,7 +348,7 @@ def transpile_native(input_file: str, dep_files: list[str] = None):
             if dep_files:
                 combined = _deduplicate_trampolines(combined)
             return combined, True
-        return result.stderr, False
+        return _report_native_compiler_failure(result), False
     except json.JSONDecodeError as e:
         return f"Failed to parse transpiler output: {e}", False
     except Exception as e:
@@ -321,14 +360,15 @@ def transpile_native_split(input_file: str):
 
     Returns tuple of (results, success) where results is a dict of:
       module_name -> (header, impl)
-    If native transpiler isn't available, returns ({}, False).
+    If native transpiler isn't available, returns (None, False). On any other
+    failure the errors have been printed to stderr and it returns ({}, False).
     """
     import subprocess
     import json
 
     compiler_bin = find_native_component('compiler')
     if not compiler_bin:
-        return {}, False
+        return None, False
 
     try:
         cmd = [str(compiler_bin), 'transpile']
@@ -342,19 +382,20 @@ def transpile_native_split(input_file: str):
         if result.stderr:
             print(result.stderr, end='', file=sys.stderr)
         if result.returncode == 0:
-            stdout = result.stdout
-            stdout = stdout.replace('Error: Could not read file\n', '')
-            data = json.loads(stdout)
+            data = json.loads(result.stdout)
             results = {}
             for mod_name, mod_data in data.items():
                 header = mod_data['header']
                 impl = mod_data['impl']
                 results[mod_name] = (header, impl)
             return results, True
+        print(_report_native_compiler_failure(result), file=sys.stderr)
         return {}, False
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse transpiler output: {e}", file=sys.stderr)
         return {}, False
-    except Exception:
+    except Exception as e:
+        print(f"Error running slop-compiler: {e}", file=sys.stderr)
         return {}, False
 
 
@@ -414,7 +455,11 @@ def transpile_to_cache(module_path: Path, cache_dir: Path, search_paths: list) -
             impl_path.write_text(impl_with_includes)
         return True
 
-    print(f"Error: Native SLOP compiler not found. Run 'make build-native' to build the native toolchain.", file=sys.stderr)
+    if results is None:
+        print("Error: Native SLOP compiler not found. Run 'make build-native' to build the native toolchain.", file=sys.stderr)
+    elif success:
+        print(f"Error: slop-compiler produced no modules for {module_path}", file=sys.stderr)
+    # Otherwise transpile_native_split has already reported the errors
     return False
 
 
@@ -497,26 +542,54 @@ def parse_with_fallback(input_file: str, prefer_native: bool = False, verbose: b
     return parse_file(input_file)
 
 
+def _print_holes(ast) -> None:
+    """Print every hole in an AST (for `slop parse --holes`)."""
+    total = 0
+    for form in ast:
+        for h in find_holes(form):
+            info = extract_hole(h)
+            tier = classify_tier(info)
+            total += 1
+            print(f"Hole: {info.prompt}")
+            print(f"  Type: {info.type_expr}")
+            print(f"  Tier: {tier.name}")
+            if info.context:
+                print(f"  Context: {', '.join(info.context)}")
+            if info.required:
+                print(f"  Required: {', '.join(info.required)}")
+            print()
+    print(f"Found {total} holes", file=sys.stderr)
+
+
 def cmd_parse(args):
     """Parse and display SLOP file"""
     try:
-        # Try native parser first
         import subprocess
         parser_bin = find_native_component('parser')
         if parser_bin:
             print(f"Using native parser: {parser_bin}", file=sys.stderr)
-            result = subprocess.run(
-                [str(parser_bin), args.input],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0:
-                if result.stdout:
-                    print(result.stdout, end='')
-                return 0
+            if args.holes:
+                ast, ok = parse_native_json(args.input)
+                if ok:
+                    _print_holes(ast)
+                    return 0
+                print(f"Native parser failed: {ast}", file=sys.stderr)
+                print("Falling back to Python", file=sys.stderr)
             else:
-                # Native parser failed, fall back to Python
-                print("Native parser failed, falling back to Python", file=sys.stderr)
+                result = subprocess.run(
+                    [str(parser_bin), args.input],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    if result.stdout:
+                        print(result.stdout, end='')
+                    return 0
+                # The native parser reports its errors on stdout
+                detail = (result.stdout + result.stderr).strip()
+                if detail:
+                    print(f"Native parser failed: {detail}", file=sys.stderr)
+                print("Falling back to Python", file=sys.stderr)
         else:
             print("Native parser not found, falling back to Python", file=sys.stderr)
 
@@ -524,22 +597,7 @@ def cmd_parse(args):
         ast = parse_file(args.input)
 
         if args.holes:
-            total = 0
-            for form in ast:
-                holes = find_holes(form)
-                for h in holes:
-                    info = extract_hole(h)
-                    tier = classify_tier(info)
-                    total += 1
-                    print(f"Hole: {info.prompt}")
-                    print(f"  Type: {info.type_expr}")
-                    print(f"  Tier: {tier.name}")
-                    if info.context:
-                        print(f"  Context: {', '.join(info.context)}")
-                    if info.required:
-                        print(f"  Required: {', '.join(info.required)}")
-                    print()
-            print(f"Found {total} holes", file=sys.stderr)
+            _print_holes(ast)
         else:
             for form in ast:
                 print(pretty_print(form))
@@ -558,10 +616,11 @@ def cmd_transpile(args):
 
         c_code, success = transpile_native(str(input_path))
         if not success:
-            if c_code:  # c_code contains error message on failure
-                print(f"Transpilation failed: {c_code}", file=sys.stderr)
-            else:
+            if c_code is None:
                 print("Error: Native SLOP compiler not found. Run 'make build-native' to build the native toolchain.", file=sys.stderr)
+            else:
+                # The compiler's own errors have already been printed
+                print(f"Transpilation failed: {c_code}", file=sys.stderr)
             return 1
 
         if args.output:
@@ -1009,24 +1068,36 @@ def extract_file_context(filepath: str, fn_name: str = None) -> dict:
 def extract_documentation(ast) -> dict:
     """Extract structured documentation from SLOP AST.
 
-    Returns dict with module info, types, functions, and constants.
+    Returns a dict with the module's name, intent, doc and exports, and its
+    types, functions, constants and FFI declarations. Every type expression is
+    rendered on a single line; a type's `definition` is the formatted source.
     """
     from slop.parser import Symbol, String
+    from slop.formatter import inline, format_expr
 
     doc = {
         'module': None,
+        'intent': None,
+        'doc': None,
         'exports': [],
         'types': [],
         'functions': [],
         'constants': [],
+        'ffi': [],
+        'ffi_structs': [],
     }
 
-    # Find module name and exports
+    def name_of(expr) -> str:
+        return expr.name if isinstance(expr, Symbol) else inline(expr)
+
+    def text_of(expr) -> str:
+        return expr.value if isinstance(expr, String) else inline(expr)
+
+    # Find module name, intent, doc and exports
     for form in ast:
         if is_form(form, 'module') and len(form) >= 2:
             if isinstance(form[1], Symbol):
                 doc['module'] = form[1].name
-            # Check for export list
             for item in form.items[2:]:
                 if is_form(item, 'export'):
                     for exp in item.items[1:]:
@@ -1036,61 +1107,144 @@ def extract_documentation(ast) -> dict:
                             # (fn-name arity) form
                             if isinstance(exp[0], Symbol):
                                 doc['exports'].append(exp[0].name)
+                elif is_form(item, '@intent') and len(item) > 1:
+                    doc['intent'] = text_of(item[1])
+                elif is_form(item, '@doc') and len(item) > 1:
+                    doc['doc'] = text_of(item[1])
             break
 
     export_set = set(doc['exports'])
+
+    def is_exported(name: str) -> bool:
+        # Without an export list every definition is public
+        return name in export_set or not doc['exports']
+
+    def is_range_form(body) -> bool:
+        """(Int lo .. hi), (U8 .. 10), (String 1 ..), (Float 0.0 .. 1.0), ..."""
+        return (isinstance(body, SList) and len(body) >= 2
+                and isinstance(body[0], Symbol)
+                and any(isinstance(x, Symbol) and x.name == '..' for x in body.items[1:]))
 
     def extract_type_info(type_form) -> dict:
         """Extract type definition info."""
         if len(type_form) < 2:
             return None
 
-        name = type_form[1].name if isinstance(type_form[1], Symbol) else str(type_form[1])
-        type_info = {'name': name, 'definition': pretty_print(type_form)}
+        name = name_of(type_form[1])
+        type_info = {
+            'name': name,
+            'exported': is_exported(name),
+            'definition': format_expr(type_form, 0),
+        }
 
-        if len(type_form) > 2:
-            body = type_form[2]
-            if is_form(body, 'record'):
-                type_info['kind'] = 'record'
-                type_info['fields'] = []
-                for field in body.items[1:]:
-                    if isinstance(field, SList) and len(field) >= 2:
-                        fname = field[0].name if isinstance(field[0], Symbol) else str(field[0])
-                        ftype = pretty_print(field[1]) if len(field) > 1 else 'Unknown'
-                        type_info['fields'].append({'name': fname, 'type': ftype})
-            elif is_form(body, 'enum'):
-                type_info['kind'] = 'enum'
-                type_info['variants'] = []
-                for v in body.items[1:]:
-                    if isinstance(v, Symbol):
-                        type_info['variants'].append(v.name)
-            elif isinstance(body, SList) and len(body) >= 3:
-                # Range type: (Int min .. max)
-                type_info['kind'] = 'range'
-            else:
-                type_info['kind'] = 'alias'
-        else:
+        if len(type_form) < 3:
             type_info['kind'] = 'alias'
+            type_info['target'] = None
+            return type_info
+
+        body = type_form[2]
+        if is_form(body, 'record'):
+            type_info['kind'] = 'record'
+            type_info['fields'] = []
+            for field in body.items[1:]:
+                if isinstance(field, SList) and len(field) >= 2:
+                    type_info['fields'].append({
+                        'name': name_of(field[0]),
+                        'type': ' '.join(inline(t) for t in field.items[1:]),
+                    })
+        elif is_form(body, 'enum'):
+            type_info['kind'] = 'enum'
+            type_info['variants'] = []
+            for v in body.items[1:]:
+                if isinstance(v, Symbol):
+                    type_info['variants'].append(v.name)
+                elif isinstance(v, SList) and len(v) >= 1:
+                    type_info['variants'].append(name_of(v[0]))
+        elif is_form(body, 'union'):
+            type_info['kind'] = 'union'
+            type_info['variants'] = []
+            for v in body.items[1:]:
+                if isinstance(v, Symbol):
+                    type_info['variants'].append({'name': v.name, 'types': []})
+                elif isinstance(v, SList) and len(v) >= 1:
+                    type_info['variants'].append({
+                        'name': name_of(v[0]),
+                        'types': [inline(t) for t in v.items[1:]],
+                    })
+        elif is_range_form(body):
+            type_info['kind'] = 'range'
+            items = body.items[1:]
+            dots = next(i for i, x in enumerate(items)
+                        if isinstance(x, Symbol) and x.name == '..')
+            type_info['base'] = name_of(body[0])
+            type_info['min'] = inline(items[dots - 1]) if dots > 0 else None
+            type_info['max'] = inline(items[dots + 1]) if dots + 1 < len(items) else None
+        else:
+            # Map, Ptr, Option, a bare type name, ...
+            type_info['kind'] = 'alias'
+            type_info['target'] = inline(body)
 
         return type_info
+
+    def render_example(item) -> dict:
+        """(@example [:eq fn] (args...) -> result) as a call and its result."""
+        parts = list(item.items[1:])
+        eq_fn = None
+        if (len(parts) >= 2 and isinstance(parts[0], Symbol)
+                and parts[0].name == ':eq'):
+            eq_fn = inline(parts[1])
+            parts = parts[2:]
+        # Tolerate the whole example wrapped in one list: (@example ((args) -> r))
+        if (len(parts) == 1 and isinstance(parts[0], SList)
+                and any(isinstance(x, Symbol) and x.name == '->' for x in parts[0].items)):
+            parts = list(parts[0].items)
+        arrow = next((i for i, x in enumerate(parts)
+                      if isinstance(x, Symbol) and x.name == '->'), None)
+        if arrow is None:
+            args_exprs, result_exprs = parts, []
+        else:
+            args_exprs, result_exprs = parts[:arrow], parts[arrow + 1:]
+        # The argument list is spliced into the call: (1 2) -> (f 1 2)
+        if len(args_exprs) == 1 and isinstance(args_exprs[0], SList):
+            args_exprs = list(args_exprs[0].items)
+        case = {
+            'args': ' '.join(inline(a) for a in args_exprs),
+            'expected': ' '.join(inline(r) for r in result_exprs) if arrow is not None else None,
+        }
+        if eq_fn:
+            case['eq'] = eq_fn
+        return case
+
+    def example_text(fn_name: str, case: dict) -> str:
+        call = f"({fn_name} {case['args']})" if case['args'] else f"({fn_name})"
+        text = call
+        if case['expected'] is not None:
+            text += f" ;=> {case['expected']}"
+        if case.get('eq'):
+            text += f" (:eq {case['eq']})"
+        return text
 
     def extract_fn_info(fn_form) -> dict:
         """Extract function documentation info."""
         if len(fn_form) < 3:
             return None
 
-        name = fn_form[1].name if isinstance(fn_form[1], Symbol) else str(fn_form[1])
+        name = name_of(fn_form[1])
 
         fn_info = {
             'name': name,
-            'exported': name in export_set or not doc['exports'],
+            'exported': is_exported(name),
             'params': [],
             'intent': None,
             'doc': None,
             'spec': None,
+            'generic': [],
             'pre': [],
             'post': [],
+            'assume': [],
+            'properties': [],
             'examples': [],
+            'example_cases': [],
             'pure': False,
             'alloc': None,
             'deprecated': None,
@@ -1101,46 +1255,47 @@ def extract_documentation(ast) -> dict:
         if isinstance(params_list, SList):
             for p in params_list.items:
                 if isinstance(p, SList) and len(p) >= 2:
-                    # Handle different param forms: (name Type), (in name Type), (out name Type)
                     if len(p) >= 3 and isinstance(p[0], Symbol):
                         # Mode param: (mode name Type), as the compiler reads any
                         # three-element form (in and mut are the modes)
-                        pname = p[1].name if isinstance(p[1], Symbol) else str(p[1])
-                        ptype = pretty_print(p[2]) if len(p) > 2 else 'Unknown'
-                        fn_info['params'].append({'name': pname, 'type': ptype, 'direction': p[0].name})
+                        fn_info['params'].append({
+                            'name': name_of(p[1]),
+                            'type': inline(p[2]),
+                            'direction': p[0].name,
+                        })
                     else:
                         # Regular param: (name Type)
-                        pname = p[0].name if isinstance(p[0], Symbol) else str(p[0])
-                        ptype = pretty_print(p[1]) if len(p) > 1 else 'Unknown'
-                        fn_info['params'].append({'name': pname, 'type': ptype})
-
-        def compact(s: str) -> str:
-            """Normalize whitespace to single spaces."""
-            import re
-            return re.sub(r'\s+', ' ', s).strip()
+                        fn_info['params'].append({'name': name_of(p[0]), 'type': inline(p[1])})
 
         # Extract annotations
         for item in fn_form.items[3:]:
             if is_form(item, '@intent') and len(item) > 1:
-                fn_info['intent'] = item[1].value if isinstance(item[1], String) else str(item[1])
+                fn_info['intent'] = text_of(item[1])
             elif is_form(item, '@doc') and len(item) > 1:
-                fn_info['doc'] = item[1].value if isinstance(item[1], String) else str(item[1])
+                fn_info['doc'] = text_of(item[1])
             elif is_form(item, '@spec') and len(item) > 1:
-                fn_info['spec'] = compact(pretty_print(item[1]))
+                fn_info['spec'] = inline(item[1])
+            elif is_form(item, '@generic') and len(item) > 1:
+                params = item[1].items if isinstance(item[1], SList) else item.items[1:]
+                fn_info['generic'].extend(name_of(t) for t in params)
             elif is_form(item, '@pre') and len(item) > 1:
-                fn_info['pre'].append(compact(pretty_print(item[1])))
+                fn_info['pre'].append(inline(item[1]))
             elif is_form(item, '@post') and len(item) > 1:
-                fn_info['post'].append(compact(pretty_print(item[1])))
+                fn_info['post'].append(inline(item[1]))
+            elif is_form(item, '@assume') and len(item) > 1:
+                fn_info['assume'].append(inline(item[1]))
+            elif is_form(item, '@property') and len(item) > 1:
+                fn_info['properties'].append(inline(item[1]))
             elif is_form(item, '@example') and len(item) > 1:
-                # Format: (@example (args...) -> result)
-                example_str = compact(pretty_print(SList(item.items[1:])))
-                fn_info['examples'].append(example_str)
+                case = render_example(item)
+                fn_info['example_cases'].append(case)
+                fn_info['examples'].append(example_text(name, case))
             elif is_form(item, '@pure'):
                 fn_info['pure'] = True
             elif is_form(item, '@alloc') and len(item) > 1:
-                fn_info['alloc'] = item[1].name if isinstance(item[1], Symbol) else str(item[1])
+                fn_info['alloc'] = name_of(item[1])
             elif is_form(item, '@deprecated') and len(item) > 1:
-                fn_info['deprecated'] = item[1].value if isinstance(item[1], String) else str(item[1])
+                fn_info['deprecated'] = text_of(item[1])
 
         return fn_info
 
@@ -1149,41 +1304,93 @@ def extract_documentation(ast) -> dict:
         if len(const_form) < 4:
             return None
 
-        name = const_form[1].name if isinstance(const_form[1], Symbol) else str(const_form[1])
-        type_expr = pretty_print(const_form[2])
-        value = pretty_print(const_form[3])
+        name = name_of(const_form[1])
+        return {
+            'name': name,
+            'exported': is_exported(name),
+            'type': inline(const_form[2]),
+            'value': inline(const_form[3]),
+        }
 
-        return {'name': name, 'type': type_expr, 'value': value}
+    def extract_ffi_info(ffi_form) -> dict:
+        """(ffi "header.h" (fn ((p T)) Ret) (CONST Type) ...)"""
+        if len(ffi_form) < 2:
+            return None
+        info = {'header': text_of(ffi_form[1]), 'functions': [], 'constants': []}
+        for decl in ffi_form.items[2:]:
+            if not (isinstance(decl, SList) and len(decl) >= 2):
+                continue
+            name = name_of(decl[0])
+            if isinstance(decl[1], SList) and (len(decl[1]) == 0 or isinstance(decl[1][0], SList)):
+                # Function: (name ((param Type)...) ReturnType [:variadic])
+                params = [{'name': name_of(p[0]), 'type': inline(p[1])}
+                          for p in decl[1].items
+                          if isinstance(p, SList) and len(p) >= 2]
+                rest = decl.items[2:]
+                variadic = any(isinstance(x, Symbol) and x.name == ':variadic' for x in rest)
+                returns = [x for x in rest
+                           if not (isinstance(x, Symbol) and x.name.startswith(':'))]
+                info['functions'].append({
+                    'name': name,
+                    'exported': is_exported(name),
+                    'params': params,
+                    'returns': inline(returns[0]) if returns else 'Unit',
+                    'variadic': variadic,
+                    'signature': inline(decl),
+                })
+            else:
+                # Constant: (NAME Type)
+                info['constants'].append({'name': name, 'type': inline(decl[1])})
+        return info
 
-    # Process top-level forms
-    for form in ast:
+    def extract_ffi_struct_info(form) -> dict:
+        """(ffi-struct "header.h" name [:c-name "c"] (field Type)...)"""
+        if len(form) < 3:
+            return None
+        name = name_of(form[2])
+        info = {
+            'header': text_of(form[1]),
+            'name': name,
+            'exported': is_exported(name),
+            'c_name': None,
+            'fields': [],
+        }
+        items = form.items[3:]
+        i = 0
+        while i < len(items):
+            x = items[i]
+            if isinstance(x, Symbol) and x.name == ':c-name' and i + 1 < len(items):
+                info['c_name'] = text_of(items[i + 1])
+                i += 2
+                continue
+            if isinstance(x, SList) and len(x) >= 2:
+                info['fields'].append({'name': name_of(x[0]), 'type': inline(x[1])})
+            i += 1
+        return info
+
+    def process(form):
         if is_form(form, 'type'):
-            info = extract_type_info(form)
-            if info:
-                doc['types'].append(info)
+            target, info = doc['types'], extract_type_info(form)
         elif is_form(form, 'fn') or is_form(form, 'impl'):
-            info = extract_fn_info(form)
-            if info:
-                doc['functions'].append(info)
+            target, info = doc['functions'], extract_fn_info(form)
         elif is_form(form, 'const'):
-            info = extract_const_info(form)
-            if info:
-                doc['constants'].append(info)
-        elif is_form(form, 'module'):
-            # Process forms inside module
+            target, info = doc['constants'], extract_const_info(form)
+        elif is_form(form, 'ffi'):
+            target, info = doc['ffi'], extract_ffi_info(form)
+        elif is_form(form, 'ffi-struct'):
+            target, info = doc['ffi_structs'], extract_ffi_struct_info(form)
+        else:
+            return
+        if info:
+            target.append(info)
+
+    # Process top-level forms, and the forms inside a module
+    for form in ast:
+        if is_form(form, 'module'):
             for item in form.items:
-                if is_form(item, 'type'):
-                    info = extract_type_info(item)
-                    if info:
-                        doc['types'].append(info)
-                elif is_form(item, 'fn') or is_form(item, 'impl'):
-                    info = extract_fn_info(item)
-                    if info:
-                        doc['functions'].append(info)
-                elif is_form(item, 'const'):
-                    info = extract_const_info(item)
-                    if info:
-                        doc['constants'].append(info)
+                process(item)
+        else:
+            process(form)
 
     return doc
 
@@ -1192,6 +1399,9 @@ def render_markdown(doc: dict) -> str:
     """Render documentation dict as Markdown."""
     lines = []
 
+    def heading(level: str, name: str, exported: bool = True) -> str:
+        return f"{level} {name}" if exported else f"{level} {name} *(internal)*"
+
     # Module header
     if doc['module']:
         lines.append(f"# {doc['module']}")
@@ -1199,13 +1409,22 @@ def render_markdown(doc: dict) -> str:
         lines.append("# Module Documentation")
     lines.append("")
 
+    if doc.get('intent'):
+        lines.append(f"> {doc['intent']}")
+        lines.append("")
+    if doc.get('doc'):
+        lines.append(doc['doc'])
+        lines.append("")
+
     # Types section
     if doc['types']:
         lines.append("## Types")
         lines.append("")
 
         for t in doc['types']:
-            lines.append(f"### {t['name']}")
+            lines.append(heading("###", t['name'], t.get('exported', True)))
+            lines.append("")
+            lines.append(f"**Kind:** {t['kind']}")
             lines.append("")
             lines.append("```lisp")
             lines.append(t['definition'])
@@ -1215,10 +1434,26 @@ def render_markdown(doc: dict) -> str:
                 lines.append("")
                 lines.append("**Fields:**")
                 for f in t['fields']:
-                    lines.append(f"- `{f['name']}` — {f['type']}")
+                    lines.append(f"- `{f['name']}` — `{f['type']}`")
             elif t['kind'] == 'enum' and t.get('variants'):
                 lines.append("")
                 lines.append("**Variants:** " + ", ".join(f"`{v}`" for v in t['variants']))
+            elif t['kind'] == 'union' and t.get('variants'):
+                lines.append("")
+                lines.append("**Variants:**")
+                for v in t['variants']:
+                    if v['types']:
+                        payload = ", ".join(f"`{ty}`" for ty in v['types'])
+                        lines.append(f"- `{v['name']}` — {payload}")
+                    else:
+                        lines.append(f"- `{v['name']}`")
+            elif t['kind'] == 'range':
+                bounds = " ".join(x for x in (t.get('min'), '..', t.get('max')) if x)
+                lines.append("")
+                lines.append(f"**Range:** `{t['base']}` `{bounds}`")
+            elif t['kind'] == 'alias' and t.get('target'):
+                lines.append("")
+                lines.append(f"**Alias of:** `{t['target']}`")
 
             lines.append("")
             lines.append("---")
@@ -1230,11 +1465,47 @@ def render_markdown(doc: dict) -> str:
         lines.append("")
 
         for c in doc['constants']:
-            lines.append(f"### {c['name']}")
+            lines.append(heading("###", c['name'], c.get('exported', True)))
             lines.append("")
             lines.append(f"**Type:** `{c['type']}`")
             lines.append("")
             lines.append(f"**Value:** `{c['value']}`")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
+    # FFI section
+    if doc.get('ffi') or doc.get('ffi_structs'):
+        lines.append("## FFI")
+        lines.append("")
+
+        for block in doc.get('ffi', []):
+            lines.append(f"### `{block['header']}`")
+            lines.append("")
+            if block['functions']:
+                lines.append("**Functions:**")
+                for f in block['functions']:
+                    marker = "" if f.get('exported', True) else " *(internal)*"
+                    lines.append(f"- `{f['signature']}`{marker}")
+                lines.append("")
+            if block['constants']:
+                lines.append("**Constants:**")
+                for c in block['constants']:
+                    lines.append(f"- `{c['name']}` — `{c['type']}`")
+                lines.append("")
+            lines.append("---")
+            lines.append("")
+
+        for s in doc.get('ffi_structs', []):
+            lines.append(heading("###", s['name'], s.get('exported', True)))
+            lines.append("")
+            c_name = f", C name `{s['c_name']}`" if s.get('c_name') else ""
+            lines.append(f"C struct from `{s['header']}`{c_name}")
+            if s['fields']:
+                lines.append("")
+                lines.append("**Fields:**")
+                for f in s['fields']:
+                    lines.append(f"- `{f['name']}` — `{f['type']}`")
             lines.append("")
             lines.append("---")
             lines.append("")
@@ -1245,11 +1516,7 @@ def render_markdown(doc: dict) -> str:
         lines.append("")
 
         for fn in doc['functions']:
-            # Function name with internal marker if not exported
-            if fn['exported']:
-                lines.append(f"### {fn['name']}")
-            else:
-                lines.append(f"### {fn['name']} *(internal)*")
+            lines.append(heading("###", fn['name'], fn['exported']))
             lines.append("")
 
             # Deprecation warning
@@ -1272,34 +1539,34 @@ def render_markdown(doc: dict) -> str:
                 lines.append(f"**Signature:** `{fn['spec']}`")
                 lines.append("")
 
+            if fn.get('generic'):
+                lines.append("**Type parameters:** " + ", ".join(f"`{g}`" for g in fn['generic']))
+                lines.append("")
+
             # Parameters
             if fn['params']:
                 lines.append("**Parameters:**")
                 for p in fn['params']:
                     direction = f" *({p['direction']})* " if p.get('direction') else " "
-                    lines.append(f"- `{p['name']}`{direction}— {p['type']}")
+                    lines.append(f"- `{p['name']}`{direction}— `{p['type']}`")
                 lines.append("")
 
-            # Preconditions
-            if fn['pre']:
-                lines.append("**Preconditions:**")
-                for pre in fn['pre']:
-                    lines.append(f"- `{pre}`")
-                lines.append("")
-
-            # Postconditions
-            if fn['post']:
-                lines.append("**Postconditions:**")
-                for post in fn['post']:
-                    lines.append(f"- `{post}`")
-                lines.append("")
+            for key, title in (('pre', 'Preconditions'),
+                               ('post', 'Postconditions'),
+                               ('assume', 'Assumptions'),
+                               ('properties', 'Properties')):
+                if fn.get(key):
+                    lines.append(f"**{title}:**")
+                    for expr in fn[key]:
+                        lines.append(f"- `{expr}`")
+                    lines.append("")
 
             # Examples
             if fn['examples']:
                 lines.append("**Examples:**")
                 lines.append("```lisp")
                 for ex in fn['examples']:
-                    lines.append(f"({fn['name']} {ex})")
+                    lines.append(ex)
                 lines.append("```")
                 lines.append("")
 
@@ -1410,6 +1677,9 @@ def cmd_fill(args):
         if parent not in include_paths:
             include_paths.append(parent)
 
+        from slop.parser import read_source
+        # The fills are spliced into this text at the holes' offsets
+        source_text = read_source(input_file)
         ast = parse_file(input_file)
 
         # Pre-check scaffold for type errors before filling
@@ -1606,8 +1876,8 @@ def cmd_fill(args):
             if not quiet:
                 print("No holes to fill")
             if args.output:
-                with open(input_file) as f:
-                    Path(args.output).write_text(f.read())
+                with open(args.output, 'w', newline='') as f:
+                    f.write(source_text)
             return 0
 
         if not quiet:
@@ -1813,37 +2083,28 @@ def cmd_fill(args):
                         error_info = f": {result.error}" if result.error else ""
                         print(f"  x {info.prompt[:50]}... ({tier.name}){error_info}")
 
-        # Replace holes in AST
         logger.debug(f"Replacements: {len(replacements)} entries, ids={list(replacements.keys())}")
-        if replacements:
-            filled_ast = replace_holes_in_ast(ast, replacements)
-        else:
-            filled_ast = ast
+        output_text = _splice_fills(source_text, all_holes, replacements)
 
-        # Generate output and format it
-        output_lines = []
-        for form in filled_ast:
-            output_lines.append(pretty_print(form))
-            output_lines.append("")
-
-        output_text = '\n'.join(output_lines)
-        output_text = format_source(output_text)
-
-        if args.stdout:
+        if output_text is None:
+            # Nothing was filled: leave the file (and any --output) alone
+            if not quiet:
+                target = args.output or input_file
+                where = "" if args.stdout else f"; {target} not written"
+                print(f"\nNo holes were filled{where}", file=sys.stderr)
+        elif args.stdout:
             # Explicit stdout output
             if not quiet:
                 print("\n--- Filled source ---")
-            print(output_text)
-        elif args.output:
-            # Write to specified output file
-            Path(args.output).write_text(output_text)
-            if not quiet:
-                print(f"\nWrote {args.output}")
+            sys.stdout.write(output_text)
         else:
-            # Default: write back to input file (in-place)
-            Path(input_file).write_text(output_text)
+            # --output, or by default back to the input file (in place).
+            # newline='' writes CRLF and \r in strings back as they were read.
+            target = args.output or input_file
+            with open(target, 'w', newline='') as f:
+                f.write(output_text)
             if not quiet:
-                print(f"\nWrote {input_file}")
+                print(f"\nWrote {target}")
 
         if not quiet:
             print(f"\n{success_count} filled, {fail_count} failed")
@@ -1854,6 +2115,49 @@ def cmd_fill(args):
             import traceback
             traceback.print_exc()
         return 1
+
+
+def _splice_fills(source_text: str, holes, replacements: dict):
+    """Write each fill over its hole's text in source_text.
+
+    holes is the (parent form, hole) pairs cmd_fill collected from a parse
+    of source_text; replacements maps id(hole) to its filled expression.
+    Everything outside the filled holes, comments and layout included, is
+    kept byte for byte. Returns the new text, or None when nothing was
+    filled.
+    """
+    from slop.formatter import format_expr, INDENT
+
+    hole_by_id = {id(h): h for _, h in holes}
+    spans = sorted(((hole_by_id[k].start, hole_by_id[k].end, expr)
+                    for k, expr in replacements.items() if k in hole_by_id),
+                   key=lambda s: (s[0], -s[1]))
+    # A hole inside another filled hole goes away with the outer one
+    kept = []
+    for span in spans:
+        if kept and span[0] < kept[-1][1]:
+            continue
+        kept.append(span)
+    if not kept:
+        return None
+
+    crlf = source_text.count('\r\n') > 0 and source_text.count('\r\n') == source_text.count('\n')
+    text = source_text
+    for start, end, expr in reversed(kept):
+        col = start - (text.rfind('\n', 0, start) + 1)
+        fill = format_expr(expr, col // INDENT)
+        # format_expr indents continuation lines from col rounded down to
+        # an indent step; move them to the hole's own column
+        shift = col % INDENT
+        if shift:
+            fill = fill.replace('\n', '\n' + ' ' * shift)
+        if crlf:
+            fill = fill.replace('\n', '\r\n')
+        text = text[:start] + fill + text[end:]
+
+    # Each fill is a whole expression, so this only fails on a bug here
+    parse(text)
+    return text
 
 
 def _extract_context(form: SList) -> dict:
@@ -2876,11 +3180,13 @@ def cmd_build(args):
 
 
 def cmd_derive(args):
-    """Derive SLOP types from external schemas"""
-    import json
-    from slop.schema_converter import (
-        convert_json_schema, convert_sql, OpenApiConverter, detect_schema_format
-    )
+    """Derive SLOP types from external schemas
+
+    The output is one module named after the output file (or, printing to
+    stdout, the input file), so it can be imported under that name. Schema
+    constructs with no SLOP equivalent are reported as warnings on stderr.
+    """
+    from slop.schema_converter import convert_json_schema, convert_sql, convert_openapi
 
     input_path = Path(args.input)
 
@@ -2891,16 +3197,23 @@ def cmd_derive(args):
         fmt = _detect_format(input_path)
 
     # Get storage mode (only applies to OpenAPI)
-    storage_mode = getattr(args, 'storage', 'stub')
+    storage_mode = getattr(args, 'storage', None) or 'stub'
+    module_name = Path(args.output).stem if args.output else input_path.stem
+    warnings = []
 
     try:
         if fmt == 'sql':
-            output = convert_sql(str(input_path))
+            output = convert_sql(str(input_path), module_name=module_name,
+                                 warnings=warnings)
         elif fmt == 'openapi':
-            spec = _load_spec(str(input_path))
-            output = OpenApiConverter(storage_mode=storage_mode).convert(spec)
+            output = convert_openapi(str(input_path), storage_mode=storage_mode,
+                                     module_name=module_name, warnings=warnings)
         else:  # jsonschema
-            output = convert_json_schema(str(input_path))
+            output = convert_json_schema(str(input_path), module_name=module_name,
+                                         warnings=warnings)
+
+        for warning in warnings:
+            print(f"warning: {warning}", file=sys.stderr)
 
         if args.output:
             Path(args.output).write_text(output)
@@ -2936,30 +3249,21 @@ def _detect_format(path: Path) -> str:
 
 def _load_spec(path: str) -> dict:
     """Load spec from JSON or YAML file"""
-    import json
-
-    if path.endswith(('.yaml', '.yml')):
-        try:
-            import yaml
-            with open(path) as f:
-                return yaml.safe_load(f)
-        except ImportError:
-            raise ImportError(
-                "PyYAML required for YAML files. Install with: pip install pyyaml"
-            )
-    else:
-        with open(path) as f:
-            return json.load(f)
+    from slop.schema_converter import load_spec
+    return load_spec(path)
 
 
 def cmd_format(args):
     """Format SLOP source code."""
     from slop.formatter import format_source
+    from slop.parser import read_source
 
     exit_code = 0
     for filepath in args.input:
         try:
-            source = Path(filepath).read_text()
+            # newline='' both ways, so a \r in a string literal or a CRLF
+            # line ending is written back as it was read
+            source = read_source(filepath)
             formatted = format_source(source)
 
             if args.check:
@@ -2973,7 +3277,8 @@ def cmd_format(args):
             else:
                 # Default - format in place
                 if source != formatted:
-                    Path(filepath).write_text(formatted)
+                    with open(filepath, 'w', newline='') as f:
+                        f.write(formatted)
                     print(f"Formatted {filepath}")
                 else:
                     print(f"{filepath} unchanged")
@@ -4466,7 +4771,7 @@ def cmd_paths(args):
     print("Native Binaries:")
     print("-" * 50)
 
-    binaries = ['parser', 'transpiler', 'checker']
+    binaries = ['parser', 'checker', 'compiler', 'tester']
     for name in binaries:
         binary_path = paths.find_native_binary(name)
         if binary_path:
@@ -4521,8 +4826,6 @@ def main():
     p = subparsers.add_parser('transpile', help='Convert to C')
     p.add_argument('input')
     p.add_argument('-o', '--output')
-    p.add_argument('-I', '--include', action='append', default=[],
-                   help='Add search path for module imports')
 
     # fill
     p = subparsers.add_parser('fill', help='Fill holes with LLM')
@@ -4624,9 +4927,11 @@ def main():
         help='Show counterexamples and skipped contracts')
 
     # ref
+    from slop.reference import list_topics
     p = subparsers.add_parser('ref', help='Language reference for AI assistants')
     p.add_argument('topic', nargs='?', default='all',
-        help='Topic: types, functions, contracts, holes, memory, ffi, stdlib, expressions, patterns')
+        help=f"Topic: {', '.join(list_topics())}; or a stdlib module name "
+             "(e.g. strlib) for its generated docs (default: all)")
     p.add_argument('--list', action='store_true',
         help='List available topics')
 

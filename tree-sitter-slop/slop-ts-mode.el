@@ -4,7 +4,7 @@
 
 ;; Author: SLOP Authors
 ;; Keywords: languages, lisp, tree-sitter
-;; Version: 0.1.0
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "29.1"))
 
 ;;; Commentary:
@@ -34,6 +34,60 @@
   "Number of spaces for each indentation step in `slop-ts-mode'."
   :type 'integer
   :group 'slop)
+
+;; Keep these lists in sync with queries/highlights.scm.
+(defconst slop-ts-mode--keywords
+  '("fn" "module" "export" "import"
+    "type" "const" "record" "enum" "union"
+    "let" "let*" "mut" "in"
+    "if" "cond" "match" "when" "while"
+    "for" "for-each" "do"
+    "break" "continue" "return" "else"
+    "forall" "exists" "implies"
+    "hole" "ffi" "ffi-struct" "c-inline")
+  "Special forms highlighted as keywords when they head a list.")
+
+(defconst slop-ts-mode--builtins
+  '(;; Arithmetic
+    "+" "-" "*" "/" "%"
+    ;; Bitwise
+    "&" "|" "^" "<<" ">>"
+    ;; Comparison
+    "==" "!=" "<" "<=" ">" ">="
+    ;; Boolean
+    "and" "or" "not"
+    ;; Min/Max
+    "min" "max"
+    ;; Data access
+    "." "@" "set!" "deref"
+    ;; Result/Option
+    "ok" "error" "?" "unwrap" "some" "none" "is-some" "is-none"
+    ;; Type/Memory
+    "cast" "sizeof" "addr"
+    ;; Data construction
+    "quote" "list" "set" "record-new" "union-new"
+    ;; Arena
+    "arena-new" "arena-alloc" "arena-free" "with-arena"
+    ;; String operations
+    "string-new" "string-len" "string-concat" "string-eq"
+    "string-push-char" "int-to-string"
+    ;; List operations
+    "list-new" "list-push" "list-get" "list-set" "list-pop" "list-len"
+    ;; Map operations
+    "map-new" "map-put" "map-get" "map-has" "map-keys" "map-remove" "map-len"
+    ;; Set operations
+    "set-new" "set-put" "set-has" "set-remove" "set-elements" "set-len"
+    ;; Concurrency
+    "chan" "chan-buffered" "chan-close" "send" "recv" "try-recv" "spawn" "join"
+    ;; Time
+    "now-ms" "sleep-ms"
+    ;; Console I/O
+    "print" "println")
+  "Built-in operators and functions highlighted when they head a list.")
+
+(defun slop-ts-mode--word-regexp (words)
+  "Return a regexp matching exactly one of WORDS."
+  (concat "\\`" (regexp-opt words) "\\'"))
 
 ;; Font-lock settings
 (defvar slop-ts-mode--font-lock-settings
@@ -70,18 +124,24 @@
 
    :language 'slop
    :feature 'keyword
-   '((list
+   `((list
       :anchor
       (identifier) @font-lock-keyword-face
-      (:match "^\\(fn\\|impl\\|module\\|export\\|import\\|type\\|const\\|alias\\|record\\|enum\\|union\\|let\\|let\\*\\|mut\\|if\\|cond\\|match\\|when\\|while\\|for\\|for-each\\|do\\|loop\\|break\\|continue\\|return\\|else\\|guard\\|catch\\|hole\\|ffi\\|ffi-struct\\|c-inline\\)$"
+      (:match ,(slop-ts-mode--word-regexp slop-ts-mode--keywords)
               @font-lock-keyword-face)))
 
    :language 'slop
    :feature 'operator
-   '((list
+   `((list
       :anchor
       (identifier) @font-lock-operator-face
-      (:match "^\\(\\+\\|-\\|\\*\\|/\\|%\\|&\\||\\|\\^\\|<<\\|>>\\|==\\|!=\\|<\\|<=\\|>\\|>=\\|and\\|or\\|not\\|min\\|max\\|\\.\\|@\\|put\\|set!\\|deref\\|ok\\|error\\|try\\|\\?\\|is-ok\\|unwrap\\|some\\|none\\|cast\\|sizeof\\|addr\\|array\\|list\\|map\\|set\\|record-new\\|union-new\\|arena-new\\|arena-alloc\\|arena-free\\|with-arena\\|string-new\\|string-len\\|string-concat\\|string-eq\\|string-slice\\|string-split\\|string-push-char\\|int-to-string\\|list-new\\|list-push\\|list-get\\|list-pop\\|list-len\\|map-new\\|map-put\\|map-get\\|map-has\\|map-keys\\|map-remove\\|map-len\\|set-new\\|set-put\\|set-has\\|set-remove\\|set-elements\\|set-len\\|chan\\|chan-buffered\\|chan-close\\|send\\|recv\\|try-recv\\|spawn\\|join\\|now-ms\\|sleep-ms\\|print\\|println\\)$"
+      (:match ,(slop-ts-mode--word-regexp slop-ts-mode--builtins)
+              @font-lock-operator-face))
+     ;; Prefix calls inside infix: {(. $result len) >= 1}
+     (infix_group
+      :anchor
+      (identifier) @font-lock-operator-face
+      (:match ,(slop-ts-mode--word-regexp slop-ts-mode--builtins)
               @font-lock-operator-face))
      (range_dots) @font-lock-operator-face)
 
@@ -91,6 +151,7 @@
       :anchor
       (identifier) @_fn
       (:match "^fn$" @_fn)
+      :anchor
       (identifier) @font-lock-function-name-face))
 
    :language 'slop
@@ -99,7 +160,26 @@
       :anchor
       (identifier) @_type
       (:match "^type$" @_type)
+      :anchor
       (type_name) @font-lock-type-face))
+
+   ;; Override: a MAX_CONN-style name is a type_name, already faced by the
+   ;; `type' feature.
+   :language 'slop
+   :feature 'definition
+   :override t
+   '((list
+      :anchor
+      (identifier) @_const
+      (:match "^const$" @_const)
+      :anchor
+      [(identifier) (type_name)] @font-lock-constant-face))
+
+   ;; Compiler-provided names: $result, $callback-arg, ...
+   :language 'slop
+   :feature 'definition
+   '(((identifier) @font-lock-builtin-face
+      (:match "^\\$" @font-lock-builtin-face)))
 
    ;; NOTE: no `:override t' here. The variable feature runs in the last
    ;; feature-list level, so with override it would re-fontify every head
@@ -132,6 +212,32 @@
      ((parent-is "infix_expr") parent-bol slop-ts-mode-indent-offset)))
   "Tree-sitter indentation rules for SLOP.")
 
+;; Navigation
+(defconst slop-ts-mode--defun-heads '("fn" "type" "module")
+  "Heads of the list forms that `slop-ts-mode' treats as defuns.")
+
+(defun slop-ts-mode--head (node)
+  "Return the text of NODE's leading identifier, or nil if it has none."
+  (let ((head (treesit-node-child node 0 t)))
+    (when (and head (equal (treesit-node-type head) "identifier"))
+      (treesit-node-text head t))))
+
+(defun slop-ts-mode--defun-p (node)
+  "Return non-nil if NODE is a top-level fn, type or module form.
+Top level means a direct child of the source file or of a module form,
+so nested lists such as (fn ...) inside a body do not count."
+  (and (member (slop-ts-mode--head node) slop-ts-mode--defun-heads)
+       (let ((parent (treesit-node-parent node)))
+         (and parent
+              (or (equal (treesit-node-type parent) "source_file")
+                  (equal (slop-ts-mode--head parent) "module"))))))
+
+(defun slop-ts-mode--defun-name (node)
+  "Return the name of the fn, type or module form NODE, or nil."
+  (when (member (slop-ts-mode--head node) slop-ts-mode--defun-heads)
+    (let ((name (treesit-node-child node 1 t)))
+      (and name (treesit-node-text name t)))))
+
 ;;;###autoload
 (define-derived-mode slop-ts-mode prog-mode "SLOP"
   "Major mode for editing SLOP files, powered by tree-sitter.
@@ -160,8 +266,10 @@
   ;; Indentation
   (setq-local treesit-simple-indent-rules slop-ts-mode--indent-rules)
 
-  ;; Navigation (S-expression aware)
-  (setq-local treesit-defun-type-regexp "list")
+  ;; Navigation: top-level fn/type/module forms are defuns
+  (setq-local treesit-defun-type-regexp
+              (cons "\\`list\\'" #'slop-ts-mode--defun-p))
+  (setq-local treesit-defun-name-function #'slop-ts-mode--defun-name)
 
   (treesit-major-mode-setup))
 

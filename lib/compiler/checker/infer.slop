@@ -1790,9 +1790,15 @@
                       (let ((arena (env-arena env)))
                         (match (env-lookup-variant env op line col)
                           ((some parent-type)
-                            (let ((msg (string-build arena (list String "'" op "' is a variant of '"
-                                                                 (. (deref parent-type) name)
-                                                                 "'. Use (union-new Type variant value) syntax"))))
+                            (let ((tn (. (deref parent-type) name))
+                                  ;; Say what to write: a union value by its type, an
+                                  ;; enum value quoted
+                                  (msg (if (resolved-type-is-union parent-type)
+                                         (string-build arena (list String "'" op "' is a variant of '" tn
+                                                                          "'; build it with (" tn " (" op " ...)) or (union-new "
+                                                                          tn " " op " ...)"))
+                                         (string-build arena (list String "'" op "' is a value of enum '" tn
+                                                                          "'; write it quoted, '" op)))))
                               (env-add-error env msg line col)
                               (env-get-unknown-type env)))
                           ((none)

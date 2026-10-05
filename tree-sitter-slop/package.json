@@ -1,6 +1,6 @@
 {
   "name": "tree-sitter-slop",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Tree-sitter grammar for SLOP (Symbolic LLM-Optimized Programming)",
   "main": "bindings/node",
   "keywords": [
@@ -12,18 +12,18 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/slop"
+    "url": "https://github.com/slop-lang/slop"
   },
   "license": "MIT",
   "dependencies": {
     "nan": "^2.17.0"
   },
   "devDependencies": {
-    "tree-sitter-cli": "^0.20.8"
+    "tree-sitter-cli": "^0.26.9"
   },
   "scripts": {
-    "generate": "tree-sitter generate",
-    "build": "tree-sitter generate && node-gyp rebuild",
+    "generate": "tree-sitter generate --abi 14",
+    "build": "tree-sitter generate --abi 14 && node-gyp rebuild",
     "test": "tree-sitter test",
     "parse": "tree-sitter parse"
   },
@@ -35,7 +35,8 @@
         "slop"
       ],
       "highlights": "queries/highlights.scm",
-      "indents": "queries/indents.scm"
+      "indents": "queries/indents.scm",
+      "locals": "queries/locals.scm"
     }
   ]
 }
