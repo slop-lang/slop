@@ -19,7 +19,9 @@ module.exports = grammar({
 
   // Precedence for infix operators (higher = binds tighter)
   precedences: $ => [
-    ['unary', 'multiplicative', 'additive', 'comparison', 'and', 'or'],
+    // Mirrors INFIX_PRECEDENCE in src/slop/parser.py: equality (== !=) binds
+    // looser than ordering (< <= > >=).
+    ['unary', 'multiplicative', 'additive', 'comparison', 'equality', 'and', 'or'],
   ],
 
   // No conflicts needed - prefix calls explicitly require identifier
@@ -60,8 +62,10 @@ module.exports = grammar({
       prec.left('or', seq($._infix_expr, 'or', $._infix_expr)),
       // and
       prec.left('and', seq($._infix_expr, 'and', $._infix_expr)),
+      // equality
+      prec.left('equality', seq($._infix_expr, choice('==', '!='), $._infix_expr)),
       // comparison
-      prec.left('comparison', seq($._infix_expr, choice('==', '!=', '<', '<=', '>', '>='), $._infix_expr)),
+      prec.left('comparison', seq($._infix_expr, choice('<', '<=', '>', '>='), $._infix_expr)),
       // additive
       prec.left('additive', seq($._infix_expr, choice('+', '-'), $._infix_expr)),
       // multiplicative (highest binary precedence)
@@ -113,14 +117,8 @@ module.exports = grammar({
     comment: $ => token(seq(';', /.*/)),
 
     // Literals
-    number: $ => token(choice(
-      // Integer
-      /-?[0-9]+/,
-      // Float
-      /-?[0-9]+\.[0-9]+/,
-      // Hex
-      /0x[0-9a-fA-F]+/
-    )),
+    // Integer or float: 42, -7, 3.14, 1.5e-3, 2E-3, 1.0e+307
+    number: $ => token(/-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?/),
 
     string: $ => token(seq(
       '"',
@@ -131,10 +129,10 @@ module.exports = grammar({
       '"'
     )),
 
-    // Quoted symbol (enum value)
+    // Quoted symbol (enum value): 'red, 'Fizz
     quoted_symbol: $ => token(seq(
       "'",
-      /[a-z][a-z0-9-]*/
+      /[a-zA-Z_][a-zA-Z0-9_-]*/
     )),
 
     // Boolean and nil
@@ -153,11 +151,19 @@ module.exports = grammar({
       /[a-z][a-z0-9-]*/
     )),
 
-    // Type names (PascalCase)
-    type_name: $ => /[A-Z][a-zA-Z0-9]*/,
+    // Type names (PascalCase) and UPPER_SNAKE constants (MAX_CONN)
+    type_name: $ => /[A-Z][a-zA-Z0-9_]*/,
 
-    // Identifiers (kebab-case, includes special forms and operators)
-    identifier: $ => /[a-z_+\-*\/%<>=!&|^.@?][a-z0-9_+\-*\/%<>=!&|^.@?]*/,
+    // Identifiers: special forms, variables, operators
+    identifier: $ => token(choice(
+      // symbols: kebab-case, $result, @ (index), snake_case/camelCase C names
+      /[a-z_$@][a-zA-Z0-9_\-\/*<>=!?.]*/,
+      // operators: + - * / % < > = ! & | ^ ? and combinations (->, <=, !=)
+      /[+\-*\/!<>=&|^%?]+/,
+      // field access operator
+      '.',
+      '...'
+    )),
 
     // Range dots for type bounds
     range_dots: $ => '..',
