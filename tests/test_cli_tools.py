@@ -158,7 +158,7 @@ class TestDoc:
         assert fns["f"]["exported"] and not fns["first-of"]["exported"]
         assert fns["first-of"]["generic"] == ["T"]
         assert fns["first-of"]["properties"] == ["(forall (x Int) (== x x))"]
-        assert fns["first-of"]["assume"] == ["(>= (list-len xs) 0)"]
+        assert fns["first-of"]["assume"] == ["{(list-len xs) >= 0}"]  # written as in the source
         [ffi] = doc["ffi"]
         assert ffi["header"] == "math.h"
         assert ffi["functions"][0]["signature"] == "(sqrt ((x Float)) Float)"
