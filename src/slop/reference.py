@@ -812,8 +812,8 @@ Language primitives that are always available without imports.
 
 ### Memory
 (arena-new size) -> Arena
-(arena-alloc arena size) -> (Ptr U8)
 (arena-alloc arena (sizeof T)) -> (Ptr T) ; also (arena-alloc arena T)
+(cast (Ptr U8) (arena-alloc arena n))    ; raw bytes: cast (a bare byte count is typed Int, #313)
 (arena-free arena) -> Unit
 (with-arena size body) -> T              ; Scoped arena, binds 'arena'
 (with-arena :as name size body) -> T     ; Named arena, binds 'name'

@@ -148,8 +148,8 @@
       "Look up user by ID in database, return not-found if missing"
       :complexity tier-1
       :required (arena id db-get-user)
-      :examples (((id: 1) -> (ok user))
-                 ((id: 99999) -> (error not-found)))))
+      :examples (((1) -> (ok user))
+                 ((99999) -> (error 'not-found)))))
   
   ;; ----------------------------------------------------------
   ;; Find by Email
