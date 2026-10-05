@@ -910,6 +910,7 @@ union_ctor_payload_count|union_ctor_payload_count.slop:9:18: error: variant 'lin
 number_suffix|number_suffix.slop:7:15: error: invalid number literal: '3.14' is followed by 'f'
 compare_extra_operand|compare_extra_operand.slop:8:20: error: '>' compares two operands, but has 3
 union_not_variant|union_not_variant.slop:10:18: error: 'circle' is not a variant of 'Node'
+union_bare_variant|union_bare_variant.slop:9:12: error: 'circle' is a variant of 'Shape'; build it with (Shape (circle ...)) or (union-new Shape circle ...)
 MF_CASES
 
 # The same forms in a multi-module build. A single-file build stops at the
