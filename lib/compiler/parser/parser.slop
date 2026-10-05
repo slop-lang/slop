@@ -1183,6 +1183,45 @@
         (_ (do)))
       result))
 
+  (fn float-literal-text ((arena Arena) (num SExprNumber))
+    (@intent "Source text of a float literal: its token, or a formatted value when it has none")
+    (@spec ((Arena SExprNumber) -> String))
+    (@alloc arena)
+    ;; Every float node the toolchain builds carries its token text in raw,
+    ;; which re-lexes to the same value; formatting the double would lose
+    ;; small values (1e-20 at any fixed precision) and the spelling.
+    (if (> (. (. num raw) len) 0)
+      (. num raw)
+      (float-to-string arena (. num float-value) 15)))
+
+  (fn json-number-text ((arena Arena) (text String))
+    (@intent "Rewrite a SLOP number literal as a JSON number")
+    (@spec ((Arena String) -> String))
+    (@alloc arena)
+    ;; A SLOP number token is -?[0-9]+(.[0-9]+)?([eE][+-]?[0-9]+)?, which is
+    ;; JSON's number grammar except that JSON forbids leading zeros in the
+    ;; integer part (007.5). Drop those, keeping the digit before the point
+    ;; or exponent; the rest (1.0e+307, 2E-3) is already valid JSON.
+    (let ((slen (cast Int (. text len)))
+          (data (. text data))
+          (buf (cast (Ptr U8) (arena-alloc arena (+ slen 1))))
+          (mut i 0)
+          (mut out 0))
+      (when (and (< i slen) (== (@ data i) 45))  ;; '-'
+        (set! (@ buf out) 45)
+        (set! out (+ out 1))
+        (set! i (+ i 1)))
+      (while (and (< (+ i 1) slen)
+                  (== (@ data i) 48)  ;; '0'
+                  (is-digit (@ data (+ i 1))))
+        (set! i (+ i 1)))
+      (while (< i slen)
+        (set! (@ buf out) (@ data i))
+        (set! out (+ out 1))
+        (set! i (+ i 1)))
+      (set! (@ buf out) 0)
+      (String buf (cast U64 out))))
+
   (fn pretty-print ((arena Arena) (expr (Ptr SExpr)))
     (@intent "Pretty-print S-expression as string")
     (@spec ((Arena (Ptr SExpr)) -> String))
@@ -1192,7 +1231,14 @@
       ((sym sym)
         (string-copy arena (. sym name)))
 
-      ;; String: return quoted with escapes
+      ;; String: return quoted with escapes. The printed literal re-lexes to
+      ;; the same value, not necessarily the same spelling. The lexer keeps
+      ;; an unknown escape such as \x as the two bytes backslash and x, the
+      ;; same value that \\x lexes to, so the value cannot say which was
+      ;; written. Every backslash is therefore printed as \\, the one
+      ;; spelling that means a backslash whatever follows it. The Python
+      ;; parser stores unknown escapes the same way and its String repr
+      ;; doubles backslashes too.
       ((str str)
         (let ((val (. str value))
               (slen (cast Int (. val len)))
@@ -1213,6 +1259,11 @@
                   (do
                     (set! (@ buf out) 92)
                     (set! (@ buf (+ out 1)) 116) ;; 't'
+                    (set! out (+ out 2))))
+                ((== c 13)  ;; carriage return
+                  (do
+                    (set! (@ buf out) 92)
+                    (set! (@ buf (+ out 1)) 114) ;; 'r'
                     (set! out (+ out 2))))
                 ((== c 34)  ;; quote
                   (do
@@ -1236,8 +1287,7 @@
       ;; Number: convert to string
       ((num num)
         (if (. num is-float)
-          ;; For floats, just return a placeholder (float-to-string is complex)
-          (string-copy arena "<float>")
+          (float-literal-text arena num)
           (int-to-string arena (. num int-value))))
 
       ;; List: ( children... )
@@ -1268,8 +1318,9 @@
     (@spec ((Arena String) -> String))
     (@alloc arena)
     (let ((slen (cast Int (. s len)))
-          ;; Allocate extra space for escapes and quotes (worst case: every char escaped + 2 quotes)
-          (buf (cast (Ptr U8) (arena-alloc arena (+ (* slen 2) 3))))
+          ;; Worst case: every byte is a control byte written as \u00XX (6
+          ;; bytes), plus 2 quotes
+          (buf (cast (Ptr U8) (arena-alloc arena (+ (* slen 6) 3))))
           (mut i 0)
           (mut out 1))
       (set! (@ buf 0) 34)  ;; opening quote
@@ -1301,6 +1352,15 @@
                 (set! (@ buf out) 92)
                 (set! (@ buf (+ out 1)) 116)
                 (set! out (+ out 2))))
+            ((< c 32)    ;; other control bytes, which JSON forbids raw -> \u00XX
+              (let ((lo (% c 16)))
+                (set! (@ buf out) 92)
+                (set! (@ buf (+ out 1)) 117)  ;; 'u'
+                (set! (@ buf (+ out 2)) 48)
+                (set! (@ buf (+ out 3)) 48)
+                (set! (@ buf (+ out 4)) (cast U8 (+ 48 (/ c 16))))
+                (set! (@ buf (+ out 5)) (cast U8 (if (< lo 10) (+ 48 lo) (+ 87 lo))))  ;; 0-9 a-f
+                (set! out (+ out 6))))
             (else
               (do
                 (set! (@ buf out) c)
@@ -1369,35 +1429,37 @@
               col-str)
             "}")))
 
-      ;; Number: {"type":"Number","value":N,"is_float":bool,"line":N,"col":N}
+      ;; Number: {"type":"Number","value":N,"is_float":bool,"raw":"...","line":N,"col":N}
+      ;; A float's value is its literal text made valid JSON, so no precision
+      ;; is lost (1e-20) and no huge value overruns a format buffer (1e300).
+      ;; raw is the token as written.
       ((num num)
         (let ((line-str (int-to-string arena (. num line)))
-              (col-str (int-to-string arena (. num col))))
-          (if (. num is-float)
-            (let ((val-str (float-to-string arena (. num float-value) 15)))
+              (col-str (int-to-string arena (. num col)))
+              (val-str (if (. num is-float)
+                         (json-number-text arena (float-literal-text arena num))
+                         (int-to-string arena (. num int-value))))
+              (float-str (if (. num is-float) "true" "false"))
+              (raw-str (json-escape-string arena (. num raw))))
+          (string-concat arena
+            (string-concat arena
               (string-concat arena
                 (string-concat arena
                   (string-concat arena
                     (string-concat arena
                       (string-concat arena
-                        (string-concat arena "{\"type\":\"Number\",\"value\":" val-str)
-                        ",\"is_float\":true,\"line\":")
-                      line-str)
-                    ",\"col\":")
-                  col-str)
-                "}"))
-            (let ((val-str (int-to-string arena (. num int-value))))
-              (string-concat arena
-                (string-concat arena
-                  (string-concat arena
-                    (string-concat arena
-                      (string-concat arena
-                        (string-concat arena "{\"type\":\"Number\",\"value\":" val-str)
-                        ",\"is_float\":false,\"line\":")
-                      line-str)
-                    ",\"col\":")
-                  col-str)
-                "}")))))
+                        (string-concat arena
+                          (string-concat arena
+                            (string-concat arena "{\"type\":\"Number\",\"value\":" val-str)
+                            ",\"is_float\":")
+                          float-str)
+                        ",\"raw\":")
+                      raw-str)
+                    ",\"line\":")
+                  line-str)
+                ",\"col\":")
+              col-str)
+            "}")))
 
       ;; List: {"type":"List","items":[...],"line":N,"col":N}
       ((lst lst)

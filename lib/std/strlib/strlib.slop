@@ -668,7 +668,14 @@
           (set! (@ fmt-buf 3) (cast U8 (+ 48 (% precision 10))))
           (set! (@ fmt-buf 4) (cast U8 102))
           (set! (@ fmt-buf 5) (cast U8 0))))
-      (let ((len (snprintf (cast (Ptr Char) out-buf) (cast U64 64) (cast (Ptr Char) fmt-buf) f)))
+      ;; snprintf returns the length it would have written, which exceeds
+      ;; the buffer for large values (1e300 with %.15f is 300+ digits);
+      ;; the String must cover only the 63 bytes actually written.
+      (let ((written (snprintf (cast (Ptr Char) out-buf) (cast U64 64) (cast (Ptr Char) fmt-buf) f))
+            (len (cond
+                   ((< written 0) 0)
+                   ((> written 63) 63)
+                   (else written))))
         (String (cast (Ptr U8) out-buf) (cast U64 len)))))
 
   (fn join ((arena Arena) (strings (List String)) (separator String))

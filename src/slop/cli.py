@@ -146,7 +146,20 @@ def _json_to_ast(json_data):
     elif t == 'String':
         return String(json_data['value'], line, col)
     elif t == 'Number':
-        return Number(json_data['value'], line, col)
+        # is_float decides the Python type: json.loads may read a float
+        # literal such as 1e3 or a fallback "2" as an int.
+        value = json_data['value']
+        value = float(value) if json_data.get('is_float') else int(value)
+        node = Number(value, line, col)
+        # The literal as written (1.0e+307, 2E-3), when the native parser
+        # sends it. Number may not declare raw, so set it as an attribute.
+        raw = json_data.get('raw')
+        if raw:
+            try:
+                node.raw = raw
+            except AttributeError:
+                pass
+        return node
     elif t == 'List':
         items = [_json_to_ast(item) for item in json_data['items']]
         return SList(items, line, col)
