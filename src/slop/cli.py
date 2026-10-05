@@ -3130,11 +3130,13 @@ def cmd_build(args):
 
 
 def cmd_derive(args):
-    """Derive SLOP types from external schemas"""
-    import json
-    from slop.schema_converter import (
-        convert_json_schema, convert_sql, OpenApiConverter, detect_schema_format
-    )
+    """Derive SLOP types from external schemas
+
+    The output is one module named after the output file (or, printing to
+    stdout, the input file), so it can be imported under that name. Schema
+    constructs with no SLOP equivalent are reported as warnings on stderr.
+    """
+    from slop.schema_converter import convert_json_schema, convert_sql, convert_openapi
 
     input_path = Path(args.input)
 
@@ -3145,16 +3147,23 @@ def cmd_derive(args):
         fmt = _detect_format(input_path)
 
     # Get storage mode (only applies to OpenAPI)
-    storage_mode = getattr(args, 'storage', 'stub')
+    storage_mode = getattr(args, 'storage', None) or 'stub'
+    module_name = Path(args.output).stem if args.output else input_path.stem
+    warnings = []
 
     try:
         if fmt == 'sql':
-            output = convert_sql(str(input_path))
+            output = convert_sql(str(input_path), module_name=module_name,
+                                 warnings=warnings)
         elif fmt == 'openapi':
-            spec = _load_spec(str(input_path))
-            output = OpenApiConverter(storage_mode=storage_mode).convert(spec)
+            output = convert_openapi(str(input_path), storage_mode=storage_mode,
+                                     module_name=module_name, warnings=warnings)
         else:  # jsonschema
-            output = convert_json_schema(str(input_path))
+            output = convert_json_schema(str(input_path), module_name=module_name,
+                                         warnings=warnings)
+
+        for warning in warnings:
+            print(f"warning: {warning}", file=sys.stderr)
 
         if args.output:
             Path(args.output).write_text(output)
@@ -3190,20 +3199,8 @@ def _detect_format(path: Path) -> str:
 
 def _load_spec(path: str) -> dict:
     """Load spec from JSON or YAML file"""
-    import json
-
-    if path.endswith(('.yaml', '.yml')):
-        try:
-            import yaml
-            with open(path) as f:
-                return yaml.safe_load(f)
-        except ImportError:
-            raise ImportError(
-                "PyYAML required for YAML files. Install with: pip install pyyaml"
-            )
-    else:
-        with open(path) as f:
-            return json.load(f)
+    from slop.schema_converter import load_spec
+    return load_spec(path)
 
 
 def cmd_format(args):

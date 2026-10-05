@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Drawing",
+  "type": "object",
+  "properties": {
+    "id": { "type": "integer", "minimum": 1 },
+    "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "status": { "type": "string", "enum": ["draft", "published", "archived"] },
+    "visibility": { "type": "string", "enum": ["public", "private", "draft"] },
+    "version": { "enum": ["1.0", "2.0", "2.0-beta", "", "Release Candidate", "UPPER_CASE", "none"] },
+    "primary": {
+      "oneOf": [
+        { "$ref": "#/$defs/Circle" },
+        { "$ref": "#/$defs/Square" }
+      ]
+    },
+    "secondary": {
+      "oneOf": [
+        { "$ref": "#/$defs/Circle" },
+        { "type": "string" }
+      ]
+    },
+    "label": { "anyOf": [ { "type": "string" }, { "type": "null" } ] },
+    "tags": { "type": ["array", "null"], "items": { "type": "string" } },
+    "created_at": { "type": "string", "format": "date-time" },
+    "published_on": { "type": "string", "format": "date" },
+    "kind": { "const": "drawing" },
+    "metadata": { "type": "object" },
+    "counts": { "type": "object", "additionalProperties": { "type": "integer" } },
+    "anything": {},
+    "scale": { "type": "number", "minimum": 0, "maximum": 10.5 },
+    "layer": { "type": "integer", "exclusiveMinimum": 0, "exclusiveMaximum": 10 },
+    "owner": { "$ref": "#/$defs/Person" },
+    "parent": { "$ref": "#/$defs/Node" },
+    "@type": { "type": "string" },
+    "ratio": { "type": ["number", "null"] }
+  },
+  "required": ["id", "title", "status", "primary", "created_at", "kind"],
+  "$defs": {
+    "Circle": {
+      "type": "object",
+      "properties": {
+        "radius": { "type": "number" },
+        "fill": { "type": "string", "enum": ["red", "green", "draft"] }
+      },
+      "required": ["radius"]
+    },
+    "Square": {
+      "type": "object",
+      "properties": { "side": { "type": "number" } },
+      "required": ["side"]
+    },
+    "Named": {
+      "type": "object",
+      "properties": { "name": { "type": "string" } },
+      "required": ["name"]
+    },
+    "Person": {
+      "allOf": [
+        { "$ref": "#/$defs/Named" },
+        {
+          "type": "object",
+          "properties": { "email": { "type": "string", "format": "email" } }
+        }
+      ]
+    },
+    "Node": {
+      "type": "object",
+      "properties": {
+        "value": { "type": "integer" },
+        "next": { "$ref": "#/$defs/Node" }
+      },
+      "required": ["value"]
+    },
+    "Age": { "type": "integer", "minimum": 0, "maximum": 150 },
+    "Status": { "type": "string", "enum": ["draft", "published", "archived"] }
+  }
+}
