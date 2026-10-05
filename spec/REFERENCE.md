@@ -8,15 +8,15 @@ These functions/patterns do NOT exist in SLOP - use the alternatives:
 
 | Don't Use | Use Instead |
 |-----------|-------------|
-| `print-int n` | `(println (int-to-string arena n))` |
-| `print-float n` | `(println (float-to-string arena n))` |
+| `print-int n` | `(println n)` -- println takes a String, Int, Bool or Float |
+| `print-float n` | `(println x)`, or strlib `(float-to-string arena x precision)` |
 | `(println enum-value)` | Use `match` to print different strings |
 | `arena` outside with-arena | Wrap code in `(with-arena size ...)` |
 | `(block ...)` | `(do ...)` for sequencing |
 | `(begin ...)` | `(do ...)` for sequencing |
 | `(progn ...)` | `(do ...)` for sequencing |
 | `read-line` | FFI to stdio.h |
-| `sqrt`, `sin`, `cos` | FFI to math.h |
+| `sqrt`, `sin`, `cos` | `(import mathlib (...))`, or FFI to math.h |
 | `strlen s` | `(string-len s)` |
 | `malloc` | `(arena-alloc arena size)` |
 | `arr.length` | Arrays are fixed size - use declared size |
@@ -27,9 +27,17 @@ These functions/patterns do NOT exist in SLOP - use the alternatives:
 | `hash-get` | `(map-get map key)` |
 | `(== opt (none))` | `(is-none opt)` -- `==` on an Option is an error |
 | `(!= opt (none))` | `(is-some opt)` |
-| `parse-int` | Implement manually or FFI |
-| `json-parse` | Implement manually or FFI |
-| `string-find` | Iterate with for-each |
+| `string->int`, `atoi` | strlib `(parse-int s)` -> `(Result Int ParseError)` |
+| `json-parse` | `(import json (...))` |
+| `string-find` | strlib `(index-of s needle)` |
+| `(list 1 2 3)` | `(list Int 1 2 3)` -- the element type is required |
+| `(Shape circle 5)`, `(circle 5)` | `(Shape (circle 5))` or `(union-new Shape circle 5)` |
+| `(if c a b d)` | `(if c (do a b) d)` -- at most three operands |
+| `(< a b c)` | `(and (< a b) (< b c))` |
+| `3.14f`, `1.` | `3.14`, `1.0` |
+| `(set! x v)` on a plain let | `(let ((mut x ...)) ...)` |
+| `(list-push x v)` where x is a for-each/match binding | grow a `(let ((mut c x)))` copy and write it back, or use `(Ptr T)` elements |
+| `(is-ok r)`, `(try ...)`, `(put ...)`, `(array ...)` | not implemented: `match` the Result; `(let ((mut c r)) (set! c f v) c)`; `(list T ...)` |
 | Definitions outside `(module ...)` | All `(type)`, `(fn)`, `(const)` go inside the module form |
 
 ## Module Structure
@@ -60,11 +68,11 @@ All definitions must be inside the module form:
 
 ## Built-in Functions
 
-### I/O (Strings Only)
+### I/O
 
 ```lisp
-(print str)              ; print string, no newline
-(println str)            ; print string with newline
+(print v)                ; print a String, Int, Bool or Float, no newline
+(println v)              ; ... with newline
 ```
 
 ### String Operations
@@ -74,8 +82,7 @@ All definitions must be inside the module form:
 (string-len s)            ; String -> Int
 (string-concat arena a b) ; String String -> String
 (string-eq a b)           ; String String -> Bool
-(string-slice s start end) ; NOT IMPLEMENTED (#83) - use strlib's substring
-(string-split arena s delim) ; NOT IMPLEMENTED (#83)
+; More in strlib: substring, index-of, starts-with, contains, trim, replace, parse-int, ...
 ```
 
 ### Memory
@@ -97,10 +104,11 @@ All definitions must be inside the module form:
 (ok val)                 ; Result success
 (error 'variant)         ; Result error (QUOTE the variant!)
 (some val)               ; Option some
-(none)                   ; Option none
+none                     ; Option none (also written (none))
 (record-new Type (field1 val1) ...)  ; create record
-(list Type elem1 ...)    ; create list literal (type required)
-(array elem1 elem2 ...)  ; create array literal
+(union-new Type tag v ...)           ; create a union value; also (Type (tag v ...))
+(list Type elem1 ...)    ; create list literal (type required; built in the arena in scope)
+(set Type elem1 ...)     ; create set literal
 ```
 
 ### Collections
@@ -108,7 +116,7 @@ All definitions must be inside the module form:
 ```lisp
 (list-new arena Type)    ; create empty list (type parameter required)
 (list Type e1 e2...)     ; list literal
-(list-push list elem)    ; append element to list
+(list-push list elem)    ; append; grows in the list's own arena (:arena a overrides)
 (list-pop list)          ; remove and return last element -> Option
 (list-get list idx)      ; get element at index -> Option
 (list-len list)          ; get list length
@@ -138,12 +146,15 @@ All definitions must be inside the module form:
 (@ arr idx)              ; array indexing
 ```
 
+A `for-each` or `match` binding is a copy: `list-push`/`list-pop` on it, or on a
+List field of it, is an error.
+
 ## Loop Patterns
 
 ### Find Index Matching Predicate
 
 ```lisp
-(let ((result -1))
+(let ((mut result -1))
   (for (i 0 SIZE)
     (when PREDICATE
       (do
@@ -155,7 +166,7 @@ All definitions must be inside the module form:
 ### Count Matching Elements
 
 ```lisp
-(let ((count 0))
+(let ((mut count 0))
   (for (i 0 SIZE)
     (when PREDICATE
       (set! count (+ count 1))))
@@ -165,7 +176,7 @@ All definitions must be inside the module form:
 ### Sum Values
 
 ```lisp
-(let ((total 0))
+(let ((mut total 0))
   (for (i 0 SIZE)
     (set! total (+ total ACCESSOR)))
   total)
@@ -174,7 +185,7 @@ All definitions must be inside the module form:
 ### Find Empty Slot
 
 ```lisp
-(let ((idx -1))
+(let ((mut idx -1))
   (for (i 0 SIZE)
     (when (== (. (@ storage i) id) 0)
       (do
@@ -194,18 +205,27 @@ All definitions must be inside the module form:
 
 ### Simple Enums (No Bindings)
 
-Simple enums have no data - use bare variant names:
+Simple enums have no data - QUOTE the variant name. A bare name is a binding
+that matches anything:
 
 ```lisp
 (match status
-  (Pending (println "waiting"))
-  (Active (println "running"))
-  (Done (println "finished")))
+  ('pending (println "waiting"))
+  ('active (println "running"))
+  ('done (println "finished")))
 ```
 
 ### Tagged Unions (With Bindings)
 
-Result and Option carry data - bind with parens:
+Union variants, Result and Option carry data - bind with parens, one name per
+payload:
+
+```lisp
+(match shape
+  ((circle r) (* 3.0 (* r r)))
+  ((rect w h) (* w h))
+  ((point) 0.0))
+```
 
 ```lisp
 (match result
@@ -285,9 +305,10 @@ For functions that allocate:
 
 ```lisp
 (fn process-all ((arena Arena) (paths (List String)))
+  (@intent "Read every file, stopping at the first error")
   (@spec ((Arena (List String)) -> (Result (List Data) Error)))
 
-  (let ((results (list-new arena)))
+  (let ((results (list-new arena Data)))
     (for-each (path paths)
       (let ((data (? (read-file arena path))))  ; returns early on error
         (list-push results data)))
@@ -316,7 +337,7 @@ The verifier automatically detects common loop patterns and generates axioms:
 **Filter pattern** - collecting items matching a predicate:
 
 ```lisp
-(let ((mut result (make-list arena)))
+(let ((mut result (list-new arena Int)))
   (for-each (x items)
     (if predicate (list-push result x)))
   result)
@@ -351,6 +372,7 @@ When automatic verification fails, use these annotations:
 
 ```lisp
 (fn use-ffi-result ((ptr (Ptr Data)))
+  (@intent "Read the value an FFI call returned")
   (@spec (((Ptr Data)) -> Int))
   (@assume (!= ptr nil))  ;; FFI guarantees non-null
   (. ptr value))
@@ -360,6 +382,7 @@ When automatic verification fails, use these annotations:
 
 ```lisp
 (fn complex-loop ((items (List Int)))
+  (@intent "Sum of absolute values")
   (@spec (((List Int)) -> Int))
   (@post (>= $result 0))
   (let ((mut sum 0))
@@ -372,9 +395,9 @@ When automatic verification fails, use these annotations:
 **`@callback-assume`** - Declare properties of callback arguments in higher-order functions:
 
 ```lisp
-(fn for-each-item ((g Graph) (callback (Fn (Item) Unit)))
+(fn for-each-item ((g Graph) (callback (Fn (Item) -> Unit)))
   (@intent "Apply callback to each item in graph")
-  (@spec ((Graph (Fn (Item) Unit)) -> Unit))
+  (@spec ((Graph (Fn (Item) -> Unit)) -> Unit))
   (@callback-assume callback (graph-contains g $callback-arg))
   ...)
 ;; $callback-arg refers to each argument passed to the callback

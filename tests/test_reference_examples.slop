@@ -1,0 +1,86 @@
+;; ============================================================
+;; Examples from `slop ref` (src/slop/reference.py), built and run.
+;;
+;; The reference is what AI assistants read before writing SLOP, so its
+;; examples have to compile. Each function here is lifted from a topic;
+;; keep them in step when the reference changes.
+;; ============================================================
+
+(module test-reference-examples
+  (export (main 0))
+
+  ;; types: ranges, unions, constants
+  (type Digit (Int 0..9))
+  (type Shape (union (circle Float) (rect Float Float) (point)))
+  (const MAX_CONN Int 128)
+  (const GREETING String "hi\n")
+  (const PRIMES (List Int) (list Int 2 3 5))
+
+  (fn area ((s Shape))
+    (@intent "Area of a shape")
+    (@spec ((Shape) -> Float))
+    (match s
+      ((circle r) (* 3.0 (* r r)))
+      ((rect w h) (* w h))
+      ((point) 0.0)))
+
+  ;; functions: change the caller's list through a pointer
+  (fn add-one ((ys (Ptr (List Int))))
+    (@intent "Append 1 to the caller's list")
+    (@spec (((Ptr (List Int))) -> Unit))
+    (list-push (deref ys) 1))
+
+  ;; functions: generics
+  (fn choose ((a T) (b T) (first Bool))
+    (@intent "Pick one of two values of the same type")
+    (@generic (T))
+    (@spec ((T T Bool) -> T))
+    (if first a b))
+
+  (fn twice ((n Int))
+    (@intent "Double n")
+    (@spec ((Int) -> Int))
+    (* 2 n))
+
+  (fn apply ((f (Fn (Int) -> Int)) (n Int))
+    (@intent "Call f on n")
+    (@spec (((Fn (Int) -> Int) Int) -> Int))
+    (f n))
+
+  ;; verification: the fully verified example
+  (fn increment-counter ((counter (Int 0 .. 100)))
+    (@intent "Add 1 to counter, clamped to 100")
+    (@spec (((Int 0 .. 100)) -> (Int 0 .. 100)))
+    (@post {$result >= counter})
+    (@post {$result <= 100})
+    (if (< counter 100) (+ counter 1) 100))
+
+  (fn main ()
+    (@intent "Run each example; return the number that failed")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((mut failed 0)
+            (mut ys (list-new arena Int))
+            (d (cast Digit 7))
+            (s (set String "a" "b"))
+            (n 5)
+            (add-n (fn ((x Int)) (+ x n))))
+        (list-push ys 1)
+        (add-one (addr ys))
+        (when (!= (list-len ys) 2) (set! failed (+ failed 1)))
+        (when (!= (area (union-new Shape circle 2.0)) 12.0) (set! failed (+ failed 1)))
+        (when (!= (area (Shape (rect 2.0 3.0))) 6.0) (set! failed (+ failed 1)))
+        (when (!= (area (Shape point)) 0.0) (set! failed (+ failed 1)))
+        (when (!= (choose 9 8 true) 9) (set! failed (+ failed 1)))
+        (when (!= (apply twice 4) 8) (set! failed (+ failed 1)))
+        (when (!= (add-n 1) 6) (set! failed (+ failed 1)))
+        (when (!= (increment-counter 100) 100) (set! failed (+ failed 1)))
+        (when (not (set-has s "b")) (set! failed (+ failed 1)))
+        (when (!= (+ (cast Int d) MAX_CONN) 135) (set! failed (+ failed 1)))
+        (when (!= (string-len GREETING) 3) (set! failed (+ failed 1)))
+        (when (!= (list-len PRIMES) 3) (set! failed (+ failed 1)))
+        (when (not (< 1.5e-3 2E-3)) (set! failed (+ failed 1)))
+        (when (not (and (< 1 2) (< 2 3))) (set! failed (+ failed 1)))
+        (when (!= (& 6 3) 2) (set! failed (+ failed 1)))
+        (when (!= (^ 0 -1) -1) (set! failed (+ failed 1)))
+        failed))))

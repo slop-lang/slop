@@ -20,41 +20,57 @@ TOPICS = {
 ### Range Types
 (Int min ..)            ; >= min
 (Int .. max)            ; <= max
-(Int min .. max)        ; Bounded range
-(String min .. max)     ; Length-bounded string (not enforced yet)
-(Float min .. max)      ; Bounded float (not enforced yet)
+(Int min .. max)        ; Bounded range; (Int 0..9) also reads as a range
+(String min .. max)     ; Length-bounded string (accepted, not enforced yet)
+(Float min .. max)      ; Bounded float (accepted, not enforced yet)
+; Only (Int ...) ranges are enforced. A range over any other base type is
+; accepted with a warning. Bounds must be integer literals: (Int 0 .. MAX),
+; (Int 0 127) and an empty (Int 5 .. 3) are errors.
 
 ; Examples
 (type UserId (Int 1 ..))
 (type Age (Int 0 .. 150))
 (type Port (Int 1 .. 65535))
+(type Digit (Int 0..9))
 
 ; Bounds are integer literals. A literal, constant, or arithmetic on them that
 ; flows outside a range -- an argument, return, typed let, set!, record field,
 ; container element or cast -- is a checker error; a value whose interval can
 ; never fit is a warning. Anything else is checked at run time, at full width
-; before it is stored, in every build; slop build --no-range-checks removes the
-; checks (a value outside its range is then undefined).
+; before it is stored, in every build; slop build --no-range-checks (or
+; no_range_checks = true under [build] in slop.toml) removes the checks (a value
+; outside its range is then undefined). A failed check aborts with
+;   SLOP range check failed: 130 is not in Pct (Int 0 .. 100) at r.slop:7:5
+; Widening into a larger range is free. Each range type also gets a C
+; constructor, TypeName_new(v), that checks.
 ; C mapping: (Int 0 .. 255) -> uint8_t
 
 ### Collections
 (List T)                ; Dynamic array
 (List T n)              ; Exactly n elements
-(List T min ..)         ; At least min
+(List T min ..)         ; At least min (not enforced yet)
 (Array T n)             ; Fixed-size, stack-allocated
 (Map K V)               ; Hash map
 (Set T)                 ; Hash set
 
-; Literals
-(list Int 1 2 3)                    ; Explicit type
-(list 1 2 3)                        ; Inferred type
-(map String Int ("a" 1) ("b" 2))    ; Explicit types
-(map ("a" 1) ("b" 2))               ; Inferred types
+; Literals: the element type is required and never inferred
+(list Int 1 2 3)                    ; (List Int)
+(set String "a" "b")                ; (Set String)
+(list Int 1 2 3 :arena a)           ; built in arena a
+; A literal is built in the arena in scope: arena, else the only Arena
+; variable in scope; with several, name one with :arena. No arena in scope is
+; an error. There is no map literal: map-new, then map-put.
 
 ### Algebraic Types
 (type Status (enum pending active done))
 (type User (record (id Int) (name String)))
 (type Shape (union (circle Float) (rect Float Float) (point)))
+
+; Building a union value
+(union-new Shape circle 2.0)
+(Shape (rect 2.0 3.0))
+(Shape point)                       ; variant with no payload
+; (Shape circle 2.0) and a bare (circle 2.0) are errors.
 
 Note: Variant names must be globally unique across all enum and union types
 in a module. Using the same variant name in different types causes a compile error.
@@ -67,9 +83,8 @@ struct). Use (Ptr T) or (List T) for self-referencing variants:
   (ok-next (Ptr Tree))      ; OK — pointer is fixed size
 
 ### Pointers
-(Ptr T)                 ; Borrowed pointer (T*)
+(Ptr T)                 ; Borrowed pointer (T*); may be nil
 (ScopedPtr T)           ; Scoped, auto-freed on scope exit
-(OptPtr T)              ; Nullable pointer
 
 ### Utility Types
 (Option T)              ; T or none
@@ -82,8 +97,14 @@ struct). Use (Ptr T) or (List T) for self-referencing variants:
 
 ### Type Aliases
 (type UserId (Int 1 ..))
-(alias Handler (Fn (Request) -> Response))
+(type Handler (Fn (Request) -> Response))
 (type Ids (Map String Int))              ; interchangeable with (Map String Int)
+
+### Constants
+(const MAX_CONN Int 128)                 ; integer -> #define
+(const GREETING String "hi\n")           ; other types -> static const; escaped like a literal
+(const PRIMES (List Int) (list Int 2 3 5))
+; A module-level list constant needs literal elements and has no arena.
 """,
 
     'functions': """## Functions
@@ -104,8 +125,39 @@ struct). Use (Ptr T) or (List T) for self-referencing variants:
   Map/Set contents, list-set elements, and writes through a Ptr are allowed.
 - mut: the caller never sees the change (functional update: change, return).
   Not allowed on List/Map/Set parameters, whose copies share storage.
-- There is no `out` mode: use a (Ptr T) parameter.
+- There is no `out` mode: use a (Ptr T) parameter. No other word may sit in
+  first position of a 3-element parameter.
 - let bindings without mut, and for/for-each/match/with-arena names, cannot be set!.
+  Pushing onto an immutable let's own list is fine.
+- A for-each or match binding is a copy of the element or payload: list-push or
+  list-pop on it, or on a List field of it, is an error (the change would be lost).
+  Grow a (let ((mut c x))) copy and write it back (list-set, map-put), or hold
+  elements as (Ptr T).
+
+; Change the caller's list through a pointer
+(fn add-one ((ys (Ptr (List Int))))
+  (@intent "Append 1 to the caller's list")
+  (@spec (((Ptr (List Int))) -> Unit))
+  (list-push (deref ys) 1))
+; caller: (add-one (addr ys))
+
+### Lambdas and Captures
+(fn ((x Int)) (+ x n))           ; a lambda; uses n from the enclosing scope
+- An immutable binding is captured by value (a copy made where the lambda is
+  created); a mut local or parameter is captured by reference.
+- A lambda passed to spawn / spawn-closure / spawn-with-chan must not capture a
+  mut variable (compile error): bind an immutable copy and capture that:
+    (let ((share part)) (spawn arena (fn () (work share))))
+- A capturing lambda's environment is allocated in the arena in scope; name
+  one with (let ((arena a)) (fn ...)).
+
+### Generic Functions
+(fn choose ((a T) (b T) (first Bool))
+  (@intent "Pick one of two values of the same type")
+  (@generic (T))
+  (@spec ((T T Bool) -> T))
+  (if first a b))
+; At a call the checker binds T from the arguments: (choose 1 2 true) is an Int.
 
 ### With Arena (for allocating functions)
 (fn create-user ((arena Arena) (name String))
@@ -115,10 +167,6 @@ struct). Use (Ptr T) or (List T) for self-referencing variants:
   (let ((user (arena-alloc arena (sizeof User))))
     (set! user.name name)
     user))
-
-### Impl (implementation without annotations)
-(impl helper ((x Int))
-  (+ x 1))
 
 ### C Name Override (for external interop)
 (fn slop-parse-int ((s (Ptr Char)))
@@ -160,6 +208,13 @@ Annotations should appear in this order at the top of a function body:
   (@example ...)             ; 8. Examples (zero or more)
   (@deprecated "...")        ; 9. Deprecation (if applicable)
   body)
+
+(@doc "...") attaches longer documentation; module-level @intent/@doc describe a module.
+
+### When Contracts Run
+@pre, @post and @assume are compiled into runtime checks only in debug builds
+(slop build --debug, which defines SLOP_DEBUG). A normal build compiles them
+out; slop verify proves them statically. @example is checked by slop test.
 
 ### Preconditions (@pre)
 
@@ -311,7 +366,7 @@ Use @trusted for:
 ### @assume — Verification Hints
 
 (@assume condition) is an axiom the verifier trusts without proof.
-Runtime still checks it.
+A --debug build still checks it at run time.
 
 ; FFI behavior the verifier can't deduce
 (fn sqrt ((x Float))
@@ -445,7 +500,7 @@ For a List result, `:eq` compares element by element.
 
 ; Conditional callback assumptions
 (@callback-assume callback
-  (implies (!= subj (none))
+  (implies (is-some subj)
     (term-eq (triple-subject $callback-arg) (unwrap subj))))
 
 ### Loop Invariants
@@ -496,37 +551,43 @@ The verifier uses Z3 to prove that functions satisfy their contracts.
 ### Running Verification
 slop verify file.slop                   ; Verify a file
 slop verify file.slop -I path -v        ; With includes, verbose
+slop verify file.slop --mode warn       ; Report failures as warnings (default: error)
+slop verify file.slop --timeout 10000   ; Per-check Z3 timeout in ms (default 5000)
 
-### What the Verifier Can Prove
+### What the Verifier Proves
+- @post on every return path, using @pre and the callee contracts it can see.
+- Range return types: a function returning (Int 0 .. 100) must provably stay
+  in range ("return value within Pct (Int 0 .. 100)"). Parameter, field and
+  callee ranges are assumed.
+- Loop invariants: (@loop-invariant ...) is proved on entry and preserved by
+  each iteration before it is used. In a for-each, (list-visited xs) names the
+  prefix already visited, for completeness claims.
 
-#### 1. String Literal Lengths
+#### String literal lengths
 (fn error-code ((arena Arena))
+  (@intent "An error code")
   (@spec ((Arena) -> String))
-  (@post {(> (string-len $result) 0)})  ; PASSES: "error" has length 5
+  (@post {(string-len $result) > 0})    ; PASSES: "error" has length 5
   "error")
 
-#### 2. Pure Function Inlining
+#### Pure function inlining
 Functions marked @pure with single-expression bodies are inlined:
 
 (fn iri-eq ((a IRI) (b IRI))
-  (@pure)
+  (@intent "IRIs are equal")
   (@spec ((IRI IRI) -> Bool))
+  (@pure)
   (string-eq (. a value) (. b value)))  ; Inlined during verification
 
-; When verifying (iri-eq x y), the verifier expands to (string-eq (. x value) (. y value))
-
-#### 3. Postcondition Propagation
-When calling a function, its postconditions become axioms:
+#### Postcondition propagation
+When calling a function, its postconditions become facts at the call:
 
 (fn make-delta ((arena Arena) (iteration Int))
+  (@intent "A delta for an iteration")
   (@spec ((Arena Int) -> (Ptr Delta)))
-  (@post {(. $result iteration) == iteration})  ; Postcondition
+  (@post {(. $result iteration) == iteration})
   ...)
-
-(fn use-delta ((arena Arena))
-  (let ((d (make-delta arena 5)))
-    ; Verifier knows: d.iteration == 5 (from make-delta's postcondition)
-    ...))
+; After (let ((d (make-delta arena 5))) ...) the verifier knows d.iteration == 5.
 
 ### Function Inlining Criteria
 A function is inlined if ALL of these are true:
@@ -535,48 +596,42 @@ A function is inlined if ALL of these are true:
 3. Not recursive
 
 ### When to Use @assume
-Use @assume for properties the verifier cannot deduce:
+Use @assume for a fact the verifier cannot deduce and you vouch for:
 
 (fn count-items ((items (List Item)))
+  (@intent "Count the items")
   (@spec (((List Item)) -> Int))
-  (@post {(>= $result 0)})               ; Want to prove this
-  (@assume {(>= (list-len items) 0)})    ; Verifier needs this hint
+  (@assume {(list-len items) >= 0})     ; Verifier needs this hint
+  (@post {$result >= 0})
   (list-len items))
 
-Common uses:
-- Loop invariants: Properties preserved through iterations
-- FFI properties: External function behavior
-- Collection bounds: List/array length properties
-- Algebraic identities: Mathematical properties
+Common uses: FFI behaviour, collection bounds, algebraic identities. For
+loops, write a @loop-invariant, which is proved rather than assumed.
 
 ### When to Use @trusted
 Skip verification entirely for functions that cannot be verified:
 
 (fn platform-random ((arena Arena))
-  (@trusted)                             ; Skip verification
+  (@intent "A random number from the platform")
   (@spec ((Arena) -> Int))
-  (ffi-call "random"))
+  (@trusted)                             ; Skip verification
+  (c-random))
 
-Use @trusted for:
-- FFI wrappers with unprovable contracts
-- Performance-critical code verified manually
-- Platform-specific implementations
+Use @trusted for FFI wrappers with unprovable contracts and
+platform-specific code.
 
 ### Verification Limitations
 The verifier CANNOT prove:
-- Loop-dependent properties (use @loop-invariant)
-- Quantified predicates over collections
+- Quantified predicates over collections without an invariant
 - Complex recursive function properties
 - Properties requiring induction
 
 ### Example: Fully Verified Function
-(fn increment-counter ((counter Int))
+(fn increment-counter ((counter (Int 0 .. 100)))
   (@intent "Add 1 to counter, clamped to 100")
   (@spec (((Int 0 .. 100)) -> (Int 0 .. 100)))
-  (@pre {(>= counter 0)})
-  (@pre {(<= counter 100)})
-  (@post {(>= $result counter)})         ; Result >= input
-  (@post {(<= $result 100)})             ; Result <= 100
+  (@post {$result >= counter})           ; Result >= input
+  (@post {$result <= 100})               ; Result <= 100
   (if (< counter 100) (+ counter 1) 100))
 """,
 
@@ -591,6 +646,7 @@ Holes support two modes: generation (new code) and refactoring (improve existing
   :complexity tier-2          ; tier-1 to tier-4
   :context (var1 fn1)         ; Whitelist of available identifiers
   :required (var1)            ; Identifiers that MUST appear in output
+  :constraints (expr...)      ; Conditions the result must satisfy
   :examples ((in) -> out))    ; Example behavior
 
 ### Refactoring Mode (existing code provided)
@@ -615,7 +671,7 @@ tier-4: 70B+ models   ; Complex algorithms, multi-step logic
   :complexity tier-3
   :context (input compare)
   :required (input)
-  :examples (((list 3 1 2)) -> (list 1 2 3)))
+  :examples (((list Int 3 1 2)) -> (list Int 1 2 3)))
 
 ; Refactoring: Simplify nested conditionals
 (hole Bool "simplify this logic"
@@ -651,9 +707,13 @@ tier-4: 70B+ models   ; Complex algorithms, multi-step logic
     ...))  ; Arena auto-freed at end, binds 'arena'
 
 The arena is freed on every exit from the block, including when its value is
-the function's return value and on (return x). What leaves the block must not
-point into its arena: return a scalar, or build the result in an arena that
-outlives the block (usually a caller's Arena parameter).
+the function's return value, on (return x), and on a (break) or (continue)
+that leaves it (only arenas opened inside the loop being left are freed).
+What leaves the block must not point into its arena: return a scalar, or build
+the result in an arena that outlives the block (usually a caller's Arena
+parameter). The compiler does not yet reject returning arena data.
+(break)/(continue) outside a loop, including inside a lambda written in a
+loop, is an error: "break outside a loop".
 
 ;; Named arena - binds custom name instead of 'arena'
 (with-arena :as scratch 4096
@@ -664,19 +724,31 @@ outlives the block (usually a caller's Arena parameter).
   (with-arena :as temp 4096
     (build-result output (parse temp input))))
 
+### Collections and Arenas
+A List, Map or Set records the arena it was created in, and every push or put
+grows it there, wherever the push happens. To grow into another arena for one
+call: (list-push xs v :arena a), (map-put m k v :arena a), (set-put s v :arena a).
+Literals, map-keys, set-elements and lambda environments use the arena in
+scope: a variable named arena, else the only Arena variable in scope. With
+several in scope and none named arena it is an error; pass :arena a, or bind
+(let ((arena a)) ...).
+
+### Arena Cap
+All arenas together are capped at 256 MB by default; past it, allocation aborts.
+slop build --arena-cap BYTES or arena_cap = N in slop.toml changes it;
+--no-arena-cap / no_arena_cap = true removes it.
+
 ### Pointer Types
-(Ptr T)                          ; Borrowed, non-owning
+(Ptr T)                          ; Borrowed, non-owning; may be nil
 (ScopedPtr T)                    ; Auto-freed on scope exit
-(OptPtr T)                       ; Nullable
 
 ### Pointer Operations
 (deref ptr)                      ; Dereference: (Ptr T) -> T
 (addr expr)                      ; Address-of: T -> (Ptr T)
 (. ptr field)                    ; Field access (auto -> vs .)
 
-### Slices (Borrowed Views)
-(Slice T)                        ; Non-owning view into array/list
-(string-slice s start end)       ; NOT IMPLEMENTED (#83) - see strlib substring
+; There is no Slice type; use (List T), or a (Ptr T) plus a length.
+; For strings use strlib's substring.
 """,
 
     'ffi': """## FFI (Foreign Function Interface)
@@ -708,6 +780,14 @@ outlives the block (usually a caller's Arena parameter).
   (sin_port U16)
   (sin_addr U32))
 
+### Variadic Functions
+(ffi "stdio.h"
+  (printf ((fmt (Ptr Char))) Int :variadic))   ; extra arguments allowed
+
+### Linking
+slop build app.slop -o app -lssl -lcrypto      ; -l flags on the command line
+; or in slop.toml:  [build.link]  libraries = ["ssl", "crypto"]
+
 ### C Inline Escape
 (c-inline "CONSTANT")            ; Emit C constant
 (c-inline "sizeof(struct foo)")  ; Emit C expression
@@ -733,6 +813,7 @@ Language primitives that are always available without imports.
 ### Memory
 (arena-new size) -> Arena
 (arena-alloc arena size) -> (Ptr U8)
+(arena-alloc arena (sizeof T)) -> (Ptr T) ; also (arena-alloc arena T)
 (arena-free arena) -> Unit
 (with-arena size body) -> T              ; Scoped arena, binds 'arena'
 (with-arena :as name size body) -> T     ; Named arena, binds 'name'
@@ -742,14 +823,13 @@ Language primitives that are always available without imports.
 (string-len s) -> (Int 0 ..)
 (string-concat arena a b) -> String
 (string-eq a b) -> Bool
-(string-slice s start end) -> (Slice U8)          ; NOT IMPLEMENTED (#83)
-(string-split arena s delim) -> (List String)     ; NOT IMPLEMENTED (#83)
 (string-push-char arena s c) -> String             ; append a U8 char to a string
 (int-to-string arena n) -> String
 
 ### Lists
 (list-new arena Type) -> (List Type)   ; The list grows in arena
 (list Type e1 e2...) -> (List Type)     ; Literal, built in the arena in scope (error if none)
+                                        ; A module-level const list needs literal elements
 (list Type e1 e2... :arena a)           ; Literal built in a
 (list-push list item) -> Unit           ; Grows in the list's own arena
 (list-push list item :arena a) -> Unit  ; Grows in a for this push
@@ -812,20 +892,44 @@ record-new, with-arena or any other builtin is a compile error. Library
 functions such as starts-with or substring are ordinary functions and are not
 reserved.
 
+(unwrap opt) -> T                       ; Option only; aborts on none in --debug builds
+
 ### Results
 (ok val) -> (Result T E)
 (error e) -> (Result T E)
-(is-ok r) -> Bool
-(is-error r) -> Bool
-(unwrap r) -> T                          ; Panics on error
+(? r)                                    ; Early-return the error, else the ok value
+; Inspect a Result with match.
 
 ### I/O
 (print val) -> Unit                      ; Print to stdout (no newline)
 (println val) -> Unit                    ; Print to stdout with newline
+; val may be a String, Int, Bool or Float.
 
 ### Time
 (now-ms) -> (Int 0 ..)
 (sleep-ms ms) -> Unit
+
+### Other Forms the Compiler Lowers
+(record-new T (f v)...)  (union-new T tag v...)   ; construction
+(when cond body...)                      ; if without else, runs several forms
+(let* ((a e1) (b e2)) body)              ; sequential bindings
+(sizeof T) -> U64
+(quote x) / 'x                           ; quoted symbol (enum value)
+(& a b) (| a b) (^ a b) (<< a n) (>> a n)   ; bitwise
+
+### Threads (import thread)
+(import thread (chan chan-buffered chan-close send recv try-recv spawn join))
+(chan T arena) -> (Ptr (Chan T))                 ; unbuffered
+(chan-buffered T arena cap) -> (Ptr (Chan T))
+(send ch v) -> (Result Unit ChanError)
+(recv ch) -> (Result T ChanError)                ; blocks; error once closed and empty
+(try-recv ch) -> (Result T ChanError)            ; never blocks
+(chan-close ch) -> Unit
+(spawn arena (fn () ...)) -> (Ptr (Thread T))    ; also spawn-closure, spawn-with-chan
+(join t) -> T
+; spawn aborts with "SLOP: spawn: cannot start a thread" if the thread cannot
+; be created; join aborts likewise. A spawned lambda that captures a mut
+; variable is a compile error: capture an immutable copy.
 """,
 
     'stdlib': """## Standard Library Modules
@@ -840,6 +944,11 @@ Use `slop ref <module>` for detailed documentation, or `slop doc <path>`.
 | thread    | Concurrency primitives           | `(import thread (...))`         |
 | env       | Environment variables            | `(import env (...))`            |
 | path      | Path manipulation                | `(import path (...))`           |
+| json      | JSON parse and emit              | `(import json (...))`           |
+| xml       | XML parse and emit               | `(import xml (...))`            |
+
+strlib works on a String's len, never a terminating NUL: compare (-1/0/1) is
+bytewise then shorter-first, and parse-int/parse-float read only the String.
 
 ### Example Usage
 
@@ -869,61 +978,90 @@ appears (a parameter, field, typed let or return type). Any other name that
 reaches a module without an import is accepted only if exactly one module in
 the build defines it; otherwise the error asks you to import the one you mean.
 
+Module names are global within a build: two files that declare the same
+module name are an error naming both files.
+
 ### See Also
 
 - `slop ref builtins` - Language primitives (always available, no import needed)
-- `slop doc lib/std/<module>/<module>.slop` - Full module documentation
+- `slop doc <module>` - Full module documentation; files live under lib/std/
+  (strlib/strlib.slop, io/file.slop, math/mathlib.slop, os/env.slop, path/path.slop,
+  thread/thread.slop, json/json.slop, xml/xml.slop)
 """,
 
     'expressions': """## Expressions
 
+### Literals
+42  -7                                   ; Int
+3.14  1.5e-3  2E10                       ; Float: a dot or an exponent
+"text"                                   ; String; escapes \\n \\t \\r \\" \\\\
+'red                                     ; Quoted symbol (enum value)
+true false nil unit
+; A number must be followed by a space or delimiter: 3.14f, 1. and 0x1F are
+; parse errors. (Int 0..9) is fine: .. after a number is a range.
+
 ### Bindings
 (let ((name expr)...) body)              ; Immutable
+(let ((name Type expr)...) body)         ; Immutable with explicit type
 (let ((mut name expr)...) body)          ; Mutable
 (let ((mut name Type expr)...) body)     ; Mutable with explicit type
+(let* ((a e1) (b e2)) body)              ; Sequential bindings
 (set! var value)                         ; Mutation (requires mut)
+(set! expr field value)                  ; Field mutation (in place)
+(set! expr.field value)                  ; Same, shorthand
 
 ### Control Flow
-(if cond then else)
+(if cond then else)                      ; At most three operands
 (if cond then)                           ; else is Unit
-(cond (test1 e1) (test2 e2) (else default))
+(when cond body...)                      ; if without else, several forms
+(cond (test1 e1...) (test2 e2...) (else default))
 (match expr ((pat1) body1) ((pat2) body2)...)
+; A cond or match whose value is used and that no clause covers aborts at
+; run time; every form of a multi-form clause or arm runs.
 
 ### Loops
 (for (i start end) body)                 ; i from start to end-1
 (for-each (x collection) body)           ; Iterate List/Set/Map-keys
 (for-each ((k v) map) body)              ; Iterate Map key-value pairs
 (while cond body)
-(break)                                  ; Exit loop
-(continue)                               ; Next iteration
+(break)                                  ; Leave the innermost loop (frees its arenas)
+(continue)                               ; Next iteration of the innermost loop
 (return expr)                            ; Early return
+; break/continue outside a loop is an error.
 
 ### Sequencing
 (do e1 e2 e3...)                         ; Evaluate in order, return last
 
 ### Data Construction
-(array e1 e2...)                         ; Array literal
 (list Type e1 e2...)                     ; List literal (needs an arena in scope)
 (set Type e1 e2...)                      ; Set literal
 (record-new Type (f1 v1) (f2 v2)...)     ; Record constructor
-(TypeName v1 v2...)                      ; Positional constructor
+(TypeName v1 v2...)                      ; Positional record constructor
+(union-new Type tag v1 v2...)            ; Union value
+(Type (tag v1 v2...))                    ; Union value, by type name
+(Type tag)                               ; Union variant with no payload
+; (Type tag v) and a bare (tag v) are errors; every payload is required.
+(some v)  none  (ok v)  (error e)        ; Option and Result
 
 ### Data Access
-(. expr field)                           ; Field access
+(. expr field)                           ; Field access (auto -> vs .)
 expr.field                               ; Shorthand
 (@ expr idx)                             ; Index access
-(put expr field val)                     ; Functional update (new copy)
-(set! expr.field val)                    ; Mutation (in-place)
+(deref ptr)  (addr expr)                 ; Pointers
+(cast Type expr)                         ; Conversion
 
 ### Operators
 (+ - * / %)                              ; Arithmetic
-(== != < <= > >=)                        ; Comparison
+(== != < <= > >=)                        ; Comparison: exactly two operands
 (and or not)                             ; Boolean
+(& a b) (| a b) (^ a b) (<< a n) (>> a n) ; Bitwise; for NOT use (^ a -1)
+(min a b) (max a b)                      ; Min/max
+; Chain comparisons with and: (and (< a b) (< b c)); (< a b c) is an error.
 
 Arithmetic operands must be numeric. Integer widths, range types and their
 aliases mix and give Int; a Float/F32/F64 operand gives the widest floating
-type present. % is integer-only. There is no pointer arithmetic: write
-(cast (Ptr T) (+ (cast Int p) n)).
+type present. % is integer-only. Bool, Char, enums, records and String are
+rejected. There is no pointer arithmetic: write (cast (Ptr T) (+ (cast Int p) n)).
 
 == and != are structural: String compares by contents, a record compares
 field by field, a union compares its tag then the payloads of the matching
@@ -934,18 +1072,16 @@ Two caveats. A container field -- (List T), (Map K V), (Set T), (Option T),
 (Result T E) -- inside a record is compared by identity rather than contents;
 the transpiler warns and names the field. And == on a container itself is a
 transpiler error: match on the variants, or compare the fields you mean.
-(& | ^ << >> ~)                          ; Bitwise
-(min a b) (max a b)                      ; Min/max
 
 ### Error Handling
 (? fallible-expr)                        ; Early return on error
-(try expr (catch e body))                ; Try-catch
+; Handle an error in place with match on the Result.
 """,
 
     'patterns': """## Pattern Matching
 
 ### Basic Patterns
-_                           ; Wildcard (matches anything)
+_  else                     ; Wildcard (matches anything)
 identifier                  ; Binding (captures value)
 literal                     ; Literal match (number, string)
 'symbol                     ; Quoted symbol (for enum variants)
@@ -955,6 +1091,7 @@ literal                     ; Literal match (number, string)
   ('active ...)             ; Quote the variant
   ('inactive ...)
   (_ ...))                  ; Wildcard for default
+; ((active) ...) on an enum variant is an error: it has no payload.
 
 ### String Matching (compares by value)
 (match token
@@ -962,20 +1099,17 @@ literal                     ; Literal match (number, string)
   ("U32" 32)
   (_ 0))                    ; Wildcard for default
 
-### Structured Patterns
-(array p1 p2...)           ; Array destructuring
-(list p1 p2... | rest)     ; List with rest binding
-(record Type (f1 p1)...)   ; Record destructuring
-(union Tag pat)            ; Union variant matching
-
-### Guarded Patterns
-(guard pat when expr)      ; Pattern with condition
-
-; Example
-(match value
-  ((guard n when (> n 0)) (handle-positive n))
-  ((guard n when (< n 0)) (handle-negative n))
-  (0 (handle-zero)))
+### Union Matching
+(match shape
+  ((circle r) (* 3.14 (* r r)))
+  ((rect w h) (* w h))      ; one name (or _) per payload
+  ((point) 0.0))
+(match tok
+  ((word "if") 'keyword)    ; a string literal in a payload position
+  ((word _) 'identifier))
+; A pattern with more names than the variant has payloads, or a variant the
+; type does not have, is an error. Bound names are copies: no list-push or
+; list-pop on them.
 
 ### Result/Option Matching
 (match result
@@ -988,7 +1122,7 @@ literal                     ; Literal match (number, string)
 
 ### Exhaustiveness
 All variants must be covered, or use wildcard (_).
-Type checker enforces exhaustive matching.
+The checker warns about a non-exhaustive match.
 Literal arms over Int or String need a wildcard. A match whose value is used
 aborts ("non-exhaustive match reached") on a value no arm covers.
 """,
@@ -999,8 +1133,8 @@ These DO NOT exist in SLOP - use the alternatives:
 
 | Don't Use | Use Instead |
 |-----------|-------------|
-| `print-int n` | `(println (int-to-string arena n))` |
-| `print-float n` | `(println (float-to-string arena n))` |
+| `print-int n` | `(println n)` -- println takes an Int, Bool or Float directly |
+| `print-float n` | `(println x)`, or `(float-to-string arena x precision)` from strlib |
 | `(println enum-value)` | Use `match` to print different strings |
 | `arena` outside with-arena | Wrap code in `(with-arena size ...)` |
 | `(block ...)` | `(do ...)` for sequencing |
@@ -1014,8 +1148,21 @@ These DO NOT exist in SLOP - use the alternatives:
 | `(== opt (none))` | `(is-none opt)` -- `==` on an Option is an error |
 | `(!= opt (none))` | `(is-some opt)` |
 | Deeply nested `(or (or ...))` | `(cond ...)` for multi-way conditionals |
-| Nested `(string-concat ...)` | `(string-build arena ...)` from strlib |
+| Nested `(string-concat ...)` | `(string-build arena (list String a b c))` from strlib |
 | Definitions outside module | All `(type)`, `(fn)`, `(const)` inside `(module ...)` |
+| `(list 1 2 3)` | `(list Int 1 2 3)` -- the element type is required |
+| `(map ...)` literal | `(map-new arena K V)` then `map-put` |
+| `(Shape circle 5.0)` / `(circle 5.0)` | `(Shape (circle 5.0))` or `(union-new Shape circle 5.0)` |
+| `(if c a b d)` | `(if c (do a b) d)` -- at most three operands |
+| `(< a b c)` | `(and (< a b) (< b c))` |
+| `3.14f`, `1.` | `3.14`, `1.0` |
+| `~x` | `(^ x -1)` -- there is no ~ |
+| `(is-ok r)`, `(unwrap result)` | `(match r ((ok v) ...) ((error e) ...))` |
+| `(put r f v)` | `(let ((mut c r)) (set! c f v) c)` |
+| `(try e (catch ...))` | `match` on the Result, or `(? e)` |
+| `(list-push x v)` on a for-each/match binding | grow a `(let ((mut c x)))` copy and write it back, or use `(Ptr T)` elements |
+| a `mut` variable captured by a spawned lambda | `(let ((share v)) (spawn arena (fn () ... share ...)))` |
+| `(break)` outside a loop | `(return ...)`, or restructure the loop |
 
 ### Module Structure
 
@@ -1053,8 +1200,6 @@ These string/list functions are BUILTINS - do NOT import from strlib:
 | `(string-concat arena a b)` | Concatenate strings |
 | `(string-eq a b)` | Compare strings |
 | `(string-new arena cstr)` | Create string from C string |
-| `(string-slice s start end)` | **Not implemented** (#83) - use strlib `substring` |
-| `(string-split arena s delim)` | **Not implemented** (#83) |
 | `(int-to-string arena n)` | Convert int to string |
 | `(list-len list)` | Get list length |
 | `(list-get list idx)` | Get element at index |
@@ -1083,58 +1228,57 @@ These ARE in strlib and need `(import strlib ...)`:
 
 | Command | Description |
 |---------|-------------|
-| `slop parse FILE` | Parse and display AST |
-| `slop check FILE` | Type check without transpiling |
-| `slop transpile FILE` | Convert to C source |
-| `slop build FILE` | Full pipeline: parse, check, transpile, compile |
-| `slop fill FILE` | Fill holes with LLM-generated code |
-| `slop verify FILE` | Verify contracts with Z3 |
-| `slop ref [TOPIC]` | Show language reference |
-| `slop doc FILE` | Generate documentation |
+| `slop parse FILE [--holes]` | Parse and print the S-expressions (or only the holes) |
+| `slop check FILE [--json] [-I DIR]` | Type check without transpiling |
+| `slop transpile FILE [-o OUT] [-I DIR]` | Convert to C source |
+| `slop build [FILE]` | Full pipeline: parse, check, transpile, compile |
+| `slop test [FILE] [-I DIR] [-v] [--rebuild]` | Run the @example annotations |
+| `slop verify [FILE] [--mode error/warn] [--timeout MS]` | Prove contracts with Z3 |
+| `slop fill [FILE]` | Fill holes with LLM-generated code |
+| `slop check-hole EXPR -t TYPE` | Check an expression against an expected type |
+| `slop format FILE... [--stdout] [--check]` | Format source in place (comments kept) |
+| `slop doc FILE [-f markdown/json] [-o OUT]` | Generate documentation |
+| `slop derive SCHEMA [-f FORMAT] [-s MODE] [-o OUT]` | Generate SLOP types from JSON Schema, SQL or OpenAPI |
+| `slop ref [TOPIC] [--list]` | Show this language reference |
+| `slop paths [-v]` | Show SLOP_HOME, the native binaries and stdlib paths |
 
-### Native Components (default)
+### Native Toolchain
+Parsing, checking and transpiling run on the native, self-hosted tools in
+bin/: slop-parser, slop-checker, slop-compiler (checker + transpiler) and
+slop-tester. Build them with `make build-native`. Without them, check, build
+and transpile stop with "Native SLOP compiler not found"; only parse falls back
+to the Python parser.
 
-SLOP includes self-hosted compiler components written in SLOP. **Native tools are used by default.** Use `--python` to fall back to Python implementations:
+### build Options
+| Option | Description |
+|--------|-------------|
+| `-o, --output` | Output binary or library path |
+| `-c, --config` | slop.toml to use |
+| `-I, --include` | Add a module search path |
+| `--debug` | Debug symbols, and SLOP_DEBUG: @pre/@post/@assume checked at run time |
+| `-O {0,1,2,3,s}` | C optimization level (default 2) |
+| `--arena-cap N` / `--no-arena-cap` | Cap all arenas at N bytes (default 256MB) / no cap |
+| `--no-range-checks` | Compile out run-time range checks |
+| `--library {static,shared}` | Build a library instead of an executable |
+| `--skip-check` | Skip type checking (bootstrapping only) |
+| `-lNAME` | Link a C library |
 
-```bash
-slop parse FILE               # Uses native parser (default)
-slop check FILE               # Uses native type checker (default)
-slop build FILE               # Uses native parser + transpiler (default)
-
-slop parse FILE --python      # Use Python parser
-slop check FILE --python      # Use Python type checker
-slop build FILE --python      # Use Python toolchain
-```
-
-Native components are in `lib/compiler/`:
-- `slop-parser` - S-expression parser (outputs JSON AST)
-- `slop-checker` - Type checker with diagnostics
-- `slop-transpiler` - SLOP to C transpiler
-
-If a native component isn't found, automatically falls back to Python.
-
-### Common Options
-
-| Option | Commands | Description |
-|--------|----------|-------------|
-| `-o, --output` | transpile, build | Output file path |
-| `-I, --include` | transpile, build | Add module search path |
-| `--python` | parse, check, build | Use Python fallback |
-| `--debug` | build | Include debug symbols |
-| `--holes` | parse | Show only holes |
-| `-v, --verbose` | fill, verify | Increase verbosity |
+### fill Options
+`-o OUT`, `--stdout`, `-c CONFIG`, `-v`/`-vv`, `-q`, `-p` (parallel),
+`--max-workers N`, `--batch-interactive`, `-I DIR`.
 
 ### Build Configuration
 
 With `slop.toml`, commands use project settings:
 
 ```bash
-slop build                    # Uses [project].entry, native tools
-slop build --python           # Python toolchain + config
+slop build                    # Uses [project].entry
 slop fill                     # Uses entry from config
+slop test                     # Uses [test] settings
 ```
 
-See `slop.toml.example` for configuration options.
+[build] keys include no_range_checks, arena_cap and no_arena_cap; [build.link]
+libraries lists C libraries. See `slop.toml.example`.
 """,
 }
 

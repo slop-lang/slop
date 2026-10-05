@@ -180,8 +180,9 @@ From signatures, infer contract templates:
 │ Example: (hole (Result Account Error) "Withdraw if sufficient") │
 │ Output:  (if (< (. account balance) amount)                     │
 │            (error 'insufficient-funds)                          │
-│            (ok (put account balance (- (. account balance)      │
-│                                         amount))))              │
+│            (do (set! account balance                            │
+│                  (- (. account balance) amount))                │
+│                (ok account)))                                   │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
@@ -386,7 +387,9 @@ SLOP:
   
   (if (< (. account balance) amount)
     (error 'insufficient-funds)
-    (ok (put account balance (- (. account balance) amount)))))
+    (do
+      (set! account balance (- (. account balance) amount))
+      (ok account))))
 
 C:
 // Withdraw funds from account

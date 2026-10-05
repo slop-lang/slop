@@ -2,7 +2,7 @@
 
 **Symbolic LLM-Optimized Programming**
 
-Version 0.2.0
+Version 0.4.0
 
 ## 1. Design Philosophy
 
@@ -26,12 +26,17 @@ Core principles:
 ;; Documentation comments use double semicolon
 
 ; Atoms
-identifier  = [a-z][a-z0-9-]*
-type-name   = [A-Z][a-zA-Z0-9]*
-keyword     = [a-z]+
-number      = -?[0-9]+(\.[0-9]+)?
-string      = "([^"\\]|\\.)*"
-symbol      = '[a-z][a-z0-9-]*
+identifier  = [a-z_$@][a-zA-Z0-9_\-/*<>=!?.]*   ; $result, @intent, snake_case, kebab-case
+operator    = [+\-*/!<>=&|^%?]+                 ; +  ->  <=  !=  ...
+type-name   = [A-Z][a-zA-Z0-9_]*                 ; also UPPER_SNAKE constants: MAX_CONN
+keyword     = :[a-z][a-z0-9-]*                   ; :arena  :c-name  :complexity
+number      = -?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?   ; 42  -7  3.14  1.5e-3  2E10
+string      = "([^"\\]|\\.)*"                  ; escapes: \n \t \r \" \\
+symbol      = '[a-zA-Z_][a-zA-Z0-9_-]*            ; 'red  'Fizz
+range       = ..                                 ; (Int 0 .. 9); (Int 0..9) also reads as a range
+
+; A number must be followed by whitespace, a delimiter or `..`: 3.14f, 1e and
+; 0x1F are parse errors. There are no hex, octal or suffixed literals.
 
 ; Delimiters
 (  )        ; S-expression bounds
@@ -105,7 +110,6 @@ literal     = number | string | 'true | 'false | 'nil
 (List T min .. max)      ; List with length in range     (not enforced yet)
 
 (Array T n)              ; Fixed-size array (stack allocated)
-(Slice T)                ; View into array/list (pointer + length)
 
 (Map K V)                ; Hash map from K to V
 (Set T)                  ; Hash set of T
@@ -124,9 +128,8 @@ literal     = number | string | 'true | 'false | 'nil
 ;   (ok-next (Ptr MyUnion))       ; OK — pointer is fixed size
 
 ; Pointers (explicit when needed)
-(Ptr T)                  ; Pointer to T
+(Ptr T)                  ; Pointer to T (may be nil)
 (ScopedPtr T)            ; Scoped pointer (freed when scope ends)
-(OptPtr T)               ; Nullable pointer
 
 ; Function types
 (Fn (T1 T2) -> R)        ; Function pointer
@@ -140,8 +143,11 @@ literal     = number | string | 'true | 'false | 'nil
 (Thread T)               ; Thread handle with result type T
 
 ; Type aliases
-(alias Name Type)
+(type Name Type)         ; e.g. (type UserId (Int 1 ..)), (type Handler (Fn (Request) -> Response))
 ```
+
+(`(Slice T)`, `(OptPtr T)` and an `(alias ...)` form are planned but not
+implemented; see section 10.)
 
 A `(type Name (Map K V))`, `(Set T)`, `(List T)` or `(Option T)` names that
 container. A value of the container type can be passed where the alias is
@@ -321,7 +327,8 @@ identifier               ; Variable reference
 
 ; Control flow
 (if cond then else)                   ; else is optional; more operands is an error
-(cond (test1 expr1) (test2 expr2) ... (else default))
+(cond (test1 expr1) (test2 expr2) ... (else default))   ; a cond whose value is used
+                                      ; and has no else aborts when no test holds
 (match expr ((pattern1) body1) ((pattern2) body2) ...)
 (while cond body)
 (for (i start end) body)
@@ -350,14 +357,17 @@ identifier               ; Variable reference
 (name arg1 arg2...)              ; Application
 
 ; Data construction
-(array e1 e2...)                         ; Fixed array literal
 (list Type e1 e2...)                     ; Dynamic list (Type required)
+(set Type e1 e2...)                      ; Set literal (Type required)
 (record-new Type (f1 v1) (f2 v2)...)     ; Struct construction (named fields)
 (TypeName v1 v2 ...)                     ; Struct construction (positional)
-(union-new Type Tag value)               ; Tagged union construction (single payload)
-(Tag v1 v2 ...)                          ; Tagged union construction (multi-field, inferred)
-(Type (Tag v1 v2 ...))                   ; Tagged union construction by type name; (Type Tag v)
-                                         ; without the inner parens is an error
+(union-new Type Tag v1 v2 ...)           ; Tagged union construction
+(Type (Tag v1 v2 ...))                   ; Tagged union construction by type name
+(Type Tag)                               ; ... for a variant with no payload
+; Every payload must be given and the tag must be a variant of Type.
+; (Type Tag v), without the inner parens, is an error, and so is a bare
+; (Tag v): use one of the forms above. Option and Result are built with
+; (some v) / none and (ok v) / (error e).
 
 ; Collection literals carry their element type explicitly:
 ;   (list Int 1 2 3)              → (List Int)
@@ -379,7 +389,6 @@ identifier               ; Variable reference
 ; Data access
 (. expr field)                   ; Field access (see semantics below)
 (@ expr index)                   ; Index access: expr[index]
-(put expr field value)           ; Functional update (returns new)
 (set! var value)                 ; Variable mutation (requires mut binding)
 (set! expr field value)          ; Field mutation (modifies in place)
 (deref ptr)                      ; Dereference pointer: (Ptr T) -> T
@@ -444,9 +453,11 @@ identifier               ; Variable reference
 ; Error handling
 (ok value)
 (error reason)
-(try expr (catch pattern body))
 (? expr)                         ; Early return on error
 ```
+
+(`(array ...)` literals, `(put expr field value)` and `(try expr (catch ...))`
+are planned but not implemented; see section 10.)
 
 **Captures.** A lambda that uses variables of the scope it is written in
 captures them. An immutable binding is captured **by value**: the lambda
@@ -569,13 +580,20 @@ _                            ; Wildcard
 identifier                   ; Binding (captures matched value)
 'identifier                  ; Quoted value (enum variant match)
 literal                      ; Literal match (number, string)
-(array p1 p2...)             ; Array pattern
-(list p1 p2... | rest)       ; List with rest
-(record Type (f1 p1)...)     ; Struct pattern
-(union Tag pattern)          ; Tagged union variant (single payload)
-(Tag p1 p2 ...)              ; Multi-field variant destructuring
-(guard pattern when expr)    ; Guarded pattern
+else                         ; Same as _
+(Tag p)                      ; Union variant, binding its payload
+(Tag p1 p2 ...)              ; Multi-field variant: one name (or _) per payload
+(Tag)                        ; Variant with no payload
+(some x) (none) (ok x) (error e)   ; Option and Result
 ```
+
+A pattern naming more payloads than its variant has, or a variant the
+matched type does not have, is an error. Names a pattern binds are copies of
+the payload: a `list-push`/`list-pop` on one is an error, because the change
+would be lost.
+
+(Array, list-rest, record, `(union Tag p)` and guard patterns are planned but
+not implemented; see section 10.)
 
 **Enum matching**: Use quoted symbols `'Fizz` for enum value matches. Bare identifiers
 are bindings (capture the value), not value matches. An enum variant has no
@@ -616,8 +634,7 @@ a return) that meets a value no arm covers aborts with
 ```
 (module user-service
   (export create find update delete)
-  (import core arena-new arena-free)
-  (import strings concat len)
+  (import strlib (contains starts-with))
   
   (type UserId (Int 1 ..))
   (type User (record
@@ -632,6 +649,13 @@ a return) that meets a value no arm covers aborts with
     (@alloc arena)
     ...))
 ```
+
+A module's name is its identity in a build: it becomes the prefix of every C
+name it defines and the name of its generated files. Two files that declare
+the same module name in one build are an error that names both files. When
+two search paths each hold a file for an imported module name, the first in
+search order is used; if an import then fails against it, the error also
+names the file it shadowed.
 
 ### 4.1 Name Resolution
 
@@ -767,6 +791,12 @@ a scalar, or build what you return in an arena that outlives the block,
 typically one the caller passes in. Returning data that lives in the scoped
 arena is a use-after-free. The compiler does not yet reject it.
 
+**Arena cap.** All arenas in a program together may hold at most 256 MB by
+default; an allocation past the cap aborts with `SLOP: arena allocation cap
+exceeded`. Raise or lower it with `slop build --arena-cap BYTES` or
+`arena_cap = N` under `[build]` in slop.toml; `--no-arena-cap` (or
+`no_arena_cap = true`) removes it.
+
 Named and unnamed arenas can be mixed:
 
 ```lisp
@@ -793,13 +823,15 @@ For data that outlives a request:
 
 ### 5.3 Borrowing (Views)
 
-For read-only access without ownership:
+For read-only access without ownership, pass the value itself: a `String` is
+already a `{len, data}` view, and an unmarked parameter is read-only. A
+dedicated `(Slice T)` view type is planned (section 10).
 
 ```
-(fn process-name ((name (Slice U8)))
+(fn process-name ((name String))
   (@intent "Process a name without copying")
   (@pure)
-  ; name is a view, no allocation or freeing
+  ; name is a view of the caller's bytes; no allocation or freeing
   ...)
 ```
 
@@ -1011,8 +1043,6 @@ Minimal runtime (~500 lines of C):
 (string-len s) -> (Int 0 ..)
 (string-concat arena a b) -> String
 (string-eq a b) -> Bool
-(string-slice s start end) -> (Slice U8)   ; NOT IMPLEMENTED (#83)
-(string-split arena s delimiter) -> (List String)  ; NOT IMPLEMENTED (#83)
 (string-push-char arena s c) -> String             ; append a U8 char to a string
 (int-to-string arena n) -> String                  ; Convert integer to string
 
@@ -1096,11 +1126,13 @@ Minimal runtime (~500 lines of C):
 (set-elements set :arena a) -> (List T)           ; ... built in a
 (set-len set) -> (Int 0 ..)                       ; Number of elements, O(1)
 
-; Results
+; Results and options
 (ok val) -> (Result T E)
 (error e) -> (Result T E)
-(is-ok result) -> Bool
-(unwrap result) -> T
+(is-some opt) -> Bool
+(is-none opt) -> Bool
+(unwrap opt) -> T        ; Option only; checked under --debug (SLOP_DEBUG)
+; Inspect a Result with match. (is-ok/is-error are planned, see section 10.)
 
 ; Time
 (now-ms) -> (Int 0 ..)
@@ -1194,15 +1226,17 @@ error (see **Captures** in section 3).
 (with-arena 4096
   (let ((ch (chan-buffered Int arena 10)))  ;; Buffered channel for Int
     (let ((producer (spawn arena (fn ()
-        (for i 1 10 (send ch i))
-        (chan-close ch)
-        0))))
+        (do
+          (for (i 1 11) (send ch i))
+          (chan-close ch)
+          0)))))
       ;; Consume in main thread
-      (let ((sum 0))
-        (loop
+      (let ((mut sum 0)
+            (mut open true))
+        (while open
           (match (recv ch)
             ((ok val) (set! sum (+ sum val)))
-            ((error closed) (break))))
+            ((error _) (set! open false))))
         (join producer)
         sum))))  ;; Returns 55
 ```
@@ -1325,3 +1359,27 @@ Link required libraries when building:
 ```bash
 slop build app.slop -o app -lssl -lcrypto -lcurl -lpq
 ```
+
+## 10. Planned, Not Implemented
+
+These forms appear in earlier drafts of this specification and are part of
+the intended design, but the compiler does not implement them. Using one is
+an error (usually "undefined function" or "Unknown top-level form"). Do not
+generate them.
+
+| Form | Intended meaning | Use instead |
+|---|---|---|
+| `(array e1 e2 ...)` | Fixed array literal | `(list T e1 e2 ...)` |
+| `(put expr field value)` | Functional record update | `(let ((mut c expr)) (set! c field value) c)` |
+| `(try expr (catch pattern body))` | Handle an error in place | `match` on the Result, or `(? expr)` |
+| `(is-ok r)`, `(is-error r)` | Test a Result's tag | `(match r ((ok _) true) ((error _) false))` |
+| `(unwrap r)` on a Result | Take the ok value | `match`; `unwrap` is Option-only |
+| `(alias Name Type)` | Type alias | `(type Name Type)` |
+| `(Slice T)` | View into an array or list | `(List T)` or `(Ptr T)` plus a length |
+| `(OptPtr T)` | Nullable pointer | `(Ptr T)`, which may be `nil` |
+| `(impl name params body)` | Function without annotations | `fn` with `@intent` and `@spec` |
+| `(array p1 ...)` pattern | Match a fixed array | index with `@` |
+| `(list p1 p2 \| rest)` pattern | Destructure a list | `list-get`, `list-len` |
+| `(record Type (f p) ...)` pattern | Destructure a record | `(. r f)` |
+| `(union Tag p)` pattern | Variant match | `(Tag p)` |
+| `(guard p when e)` pattern | Guarded arm | test inside the arm body |
