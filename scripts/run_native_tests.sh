@@ -162,10 +162,17 @@ run_runtime_test() {
             ;;
     esac
 
+    # A test that needs more than one translation unit keeps the others in a
+    # directory named after it
+    local srcs=("$test_file")
+    if [ -d "${test_file%.c}" ]; then
+        srcs+=("${test_file%.c}"/*.c)
+    fi
+
     echo -n "Testing $test_name... "
     local output
     if ! output=$(cc -g -O1 $sanitize \
-            -I "$RUNTIME_DIR" -o "$exe_path" "$test_file" 2>&1); then
+            -I "$RUNTIME_DIR" -o "$exe_path" "${srcs[@]}" 2>&1); then
         echo -e "${RED}FAIL (build)${NC}"
         echo "$output"
         FAIL_COUNT=$((FAIL_COUNT + 1))

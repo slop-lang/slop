@@ -1,0 +1,45 @@
+;; ============================================================
+;; Test: Channels of a non-Int element type
+;;
+;; A (Chan Float) gets send and recv functions generated for its
+;; element type, separate from the thread module's Int ones. This
+;; drives both through the runtime's portable locks:
+;; - the buffered ring, including a send that waits for space
+;; - the unbuffered handoff, where send waits for the receiver
+;; ============================================================
+
+(module test-chan-float
+  (export main)
+
+  (import thread (chan chan-buffered send recv spawn join))
+
+  (fn recv-or ((ch (Ptr (Chan Float))) (fallback Float))
+    (@intent "Receive a Float, or the fallback when the channel is closed")
+    (@spec (((Ptr (Chan Float)) Float) -> Float))
+    (match (recv ch)
+      ((ok v) v)
+      ((error _) fallback)))
+
+  (fn main ()
+    (@intent "Pass Floats through buffered and unbuffered channels between threads")
+    (@spec (() -> Int))
+    (with-arena 65536
+      (let ((buffered (chan-buffered Float arena 2))
+            (handoff (chan Float arena)))
+        ;; Three sends into a buffer of two: the third waits for space
+        (let ((producer (spawn arena (fn ()
+                          (send buffered 1.5)
+                          (send buffered 2.25)
+                          (send buffered 4.0)
+                          (send handoff 8.5)
+                          0))))
+          (let ((total (+ (+ (recv-or buffered 0.0) (recv-or buffered 0.0))
+                          (+ (recv-or buffered 0.0) (recv-or handoff 0.0)))))
+            (join producer)
+            (if (== total 16.25)
+              (do
+                (println "PASS: Float channels carried 16.25")
+                0)
+              (do
+                (println "FAIL: expected 16.25")
+                1))))))))

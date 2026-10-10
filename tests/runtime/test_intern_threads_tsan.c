@@ -1,26 +1,22 @@
 /*
  * Test: Thread-safe string intern pool
  *
- * Compile:
- *   cc -DSLOP_INTERN_THREADSAFE -DSLOP_ARENA_NO_CAP -O2 \
- *      -I src/slop/runtime -o test_intern_threadsafe \
- *      tests/test_intern_threadsafe.c -lpthread
- *
- * Run:
- *   ./test_intern_threadsafe
+ * Run by scripts/run_native_tests.sh under ThreadSanitizer (the _tsan
+ * suffix), and on Windows by scripts/run_windows_tests.sh. Threads start
+ * through the runtime's own slop_thread_start, so the same test drives the
+ * pthread backend and the Win32 one.
  *
  * Tests:
  *   1. Concurrent interning from N threads doesn't crash/corrupt
  *   2. Identical strings interned from different threads get same pointer (dedup)
  *   3. Distinct strings remain distinct
+ *   4. Lookups after the threads finish still find the same storage
  */
 
-/* SLOP_INTERN_THREADSAFE must be defined via -D flag at compile time */
 #ifndef SLOP_INTERN_THREADSAFE
 #define SLOP_INTERN_THREADSAFE
 #endif
 #include "slop_runtime.h"
-#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
@@ -78,16 +74,16 @@ int main(void) {
     printf("Test 1: Concurrent interning with %d threads, %d strings each...\n",
            NUM_THREADS, STRINGS_PER_THREAD);
 
-    pthread_t threads[NUM_THREADS];
+    slop_thread_t threads[NUM_THREADS];
     thread_data tdata[NUM_THREADS];
 
     for (int i = 0; i < NUM_THREADS; i++) {
         tdata[i].thread_id = i;
-        pthread_create(&threads[i], NULL, intern_worker, &tdata[i]);
+        slop_thread_start(&threads[i], (void*)intern_worker, &tdata[i]);
     }
 
     for (int i = 0; i < NUM_THREADS; i++) {
-        pthread_join(threads[i], NULL);
+        slop_thread_wait(threads[i]);
     }
 
     printf("  PASS: No crashes or corruption\n");
