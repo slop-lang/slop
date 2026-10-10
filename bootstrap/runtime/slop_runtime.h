@@ -12,6 +12,19 @@
 #ifndef SLOP_RUNTIME_H
 #define SLOP_RUNTIME_H
 
+/* The Microsoft CRT marks standard C functions (fopen, strerror, ...) and
+ * POSIX names (access, strdup, ...) deprecated. SLOP code calls them on
+ * purpose, so silence that before the first CRT header. Generated code
+ * includes this header first. */
+#ifdef _WIN32
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+#ifndef _CRT_NONSTDC_NO_DEPRECATE
+#define _CRT_NONSTDC_NO_DEPRECATE
+#endif
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -19,20 +32,33 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdatomic.h>
+#include <inttypes.h>
 
-/* Arena blocks come from the OS (see the Arena Allocator section) */
+/* Arena blocks come from the OS (see the Arena Allocator section), and
+ * threads and locks from the OS thread API (see Threads and locks).
+ *
+ * windows.h is trimmed of what the runtime doesn't use, which also keeps its
+ * min/max and winsock 1 definitions out of generated code. */
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
+#include <process.h>
+#include <errno.h>
+#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0600
+#error "SLOP needs _WIN32_WINNT >= 0x0600 (Windows Vista) for SRW locks, condition variables and GetTickCount64"
+#endif
 #else
 #include <sys/mman.h>
 #include <unistd.h>
+#include <pthread.h>
 #ifdef __linux__
 #include <sys/syscall.h>
 #endif
-#endif
-
-#ifdef SLOP_INTERN_THREADSAFE
-#include <pthread.h>
 #endif
 
 /* ============================================================
@@ -51,9 +77,210 @@
 #define SLOP_ARENA_MAX_TOTAL_BYTES (256UL * 1024UL * 1024UL)  /* 256 MB */
 #endif
 
-/* Global allocation tracking across all arenas (atomic for thread safety).
- * Weak attribute ensures linker merges all TU definitions into one symbol. */
-_Atomic size_t slop_global_allocated __attribute__((weak)) = 0;
+/* A global that every translation unit including this header defines, and
+ * that must still be one object in the program. On ELF and Mach-O a weak
+ * definition does that: the linker keeps one. On Windows (COFF) a weak
+ * symbol is a weak external with a per-TU default, not a merged definition,
+ * so it is a selectany COMDAT there instead, which the linker also keeps one
+ * copy of. Both need an initializer. */
+#ifdef _WIN32
+#define SLOP_SHARED_GLOBAL __declspec(selectany)
+#else
+#define SLOP_SHARED_GLOBAL __attribute__((weak))
+#endif
+
+/* Global allocation tracking across all arenas (atomic for thread safety) */
+SLOP_SHARED_GLOBAL _Atomic size_t slop_global_allocated = 0;
+
+/* ============================================================
+ * Threads and locks
+ *
+ * One API over pthreads (POSIX) and the Win32 thread API. Generated code,
+ * std/thread and the intern pool use only these names, so nothing
+ * pthread-specific reaches generated C. On POSIX each type is the pthread
+ * type itself, so struct layouts are the same as with pthreads directly.
+ *
+ * spawn starts its thread through slop_thread_start, and join waits through
+ * slop_thread_wait. Neither can fail quietly (#192): a spawn whose thread
+ * never started would otherwise hand back a handle that join treats as a
+ * finished thread, with an unset id and an unwritten result, and work
+ * split across threads would silently lose that thread's share. Both abort
+ * with the error instead, as an arena that cannot get memory does. The lock
+ * and condition calls abort the same way on the errors pthreads can report.
+ *
+ * SLOP_PTHREAD_CREATE is what creates the thread on POSIX. Tests define it,
+ * before this header, as a create that fails.
+ * ============================================================ */
+
+#ifdef _WIN32
+
+typedef HANDLE slop_thread_t;
+typedef SRWLOCK slop_mutex_t;
+typedef CONDITION_VARIABLE slop_cond_t;
+typedef INIT_ONCE slop_once_t;
+#define SLOP_ONCE_INIT INIT_ONCE_STATIC_INIT
+
+/* _beginthreadex wants an unsigned __stdcall routine; spawn's entries are
+   void* (*)(void*). The entry and its argument travel in a heap block that
+   the new thread frees before running the entry. */
+typedef struct {
+    void* (*entry)(void*);
+    void* arg;
+} slop_thread_boot_;
+
+static inline unsigned __stdcall slop_thread_boot_run_(void* p) {
+    slop_thread_boot_ boot = *(slop_thread_boot_*)p;
+    free(p);
+    boot.entry(boot.arg);
+    return 0;
+}
+
+/* entry is a void* (*)(void*); it is passed as void* so FFI callers can
+   hand over a trampoline without a function-pointer type of their own. */
+static inline void slop_thread_start(slop_thread_t* id, void* entry, void* arg) {
+    slop_thread_boot_* boot = (slop_thread_boot_*)malloc(sizeof(slop_thread_boot_));
+    if (boot == NULL) {
+        fprintf(stderr, "SLOP: spawn: cannot start a thread: %s\n", strerror(ENOMEM));
+        abort();
+    }
+    boot->entry = (void* (*)(void*))entry;
+    boot->arg = arg;
+    uintptr_t h = _beginthreadex(NULL, 0, slop_thread_boot_run_, boot, 0, NULL);
+    if (h == 0) {
+        int err = errno;
+        free(boot);
+        fprintf(stderr, "SLOP: spawn: cannot start a thread: %s\n", strerror(err));
+        abort();
+    }
+    *id = (slop_thread_t)h;
+}
+
+static inline void slop_thread_wait(slop_thread_t id) {
+    if (WaitForSingleObject(id, INFINITE) != WAIT_OBJECT_0) {
+        fprintf(stderr, "SLOP: join: cannot wait for the thread: Windows error %lu\n",
+                (unsigned long)GetLastError());
+        abort();
+    }
+    CloseHandle(id);
+}
+
+/* SRW locks and condition variables can't fail to initialize, lock or
+   signal, and need no destroy. */
+static inline void slop_mutex_init(slop_mutex_t* m) { InitializeSRWLock(m); }
+static inline void slop_mutex_destroy(slop_mutex_t* m) { (void)m; }
+static inline void slop_mutex_lock(slop_mutex_t* m) { AcquireSRWLockExclusive(m); }
+static inline void slop_mutex_unlock(slop_mutex_t* m) { ReleaseSRWLockExclusive(m); }
+
+static inline void slop_cond_init(slop_cond_t* c) { InitializeConditionVariable(c); }
+static inline void slop_cond_destroy(slop_cond_t* c) { (void)c; }
+static inline void slop_cond_signal(slop_cond_t* c) { WakeConditionVariable(c); }
+static inline void slop_cond_broadcast(slop_cond_t* c) { WakeAllConditionVariable(c); }
+
+static inline void slop_cond_wait(slop_cond_t* c, slop_mutex_t* m) {
+    if (!SleepConditionVariableSRW(c, m, INFINITE, 0)) {
+        fprintf(stderr, "SLOP: condition wait failed: Windows error %lu\n",
+                (unsigned long)GetLastError());
+        abort();
+    }
+}
+
+/* InitOnceExecuteOnce takes its own callback shape; the function to run
+   arrives as a pointer to the caller's function-pointer variable. */
+static inline BOOL CALLBACK slop_once_run_(PINIT_ONCE once, PVOID fn, PVOID* ctx) {
+    (void)once;
+    (void)ctx;
+    (*(void (**)(void))fn)();
+    return TRUE;
+}
+
+static inline void slop_once(slop_once_t* once, void (*fn)(void)) {
+    if (!InitOnceExecuteOnce(once, slop_once_run_, (PVOID)&fn, NULL)) {
+        fprintf(stderr, "SLOP: one-time initialization failed: Windows error %lu\n",
+                (unsigned long)GetLastError());
+        abort();
+    }
+}
+
+#else /* POSIX */
+
+typedef pthread_t slop_thread_t;
+typedef pthread_mutex_t slop_mutex_t;
+typedef pthread_cond_t slop_cond_t;
+typedef pthread_once_t slop_once_t;
+#define SLOP_ONCE_INIT PTHREAD_ONCE_INIT
+
+#ifndef SLOP_PTHREAD_CREATE
+#define SLOP_PTHREAD_CREATE pthread_create
+#endif
+
+static inline void slop_sync_fail_(const char* what, int rc) {
+    fprintf(stderr, "SLOP: %s: %s\n", what, strerror(rc));
+    abort();
+}
+
+/* entry is a void* (*)(void*); it is passed as void* so FFI callers can
+   hand over a trampoline without a function-pointer type of their own. */
+static inline void slop_thread_start(slop_thread_t* id, void* entry, void* arg) {
+    int rc = SLOP_PTHREAD_CREATE(id, NULL, (void* (*)(void*))entry, arg);
+    if (rc != 0) slop_sync_fail_("spawn: cannot start a thread", rc);
+}
+
+static inline void slop_thread_wait(slop_thread_t id) {
+    int rc = pthread_join(id, NULL);
+    if (rc != 0) slop_sync_fail_("join: cannot wait for the thread", rc);
+}
+
+static inline void slop_mutex_init(slop_mutex_t* m) {
+    int rc = pthread_mutex_init(m, NULL);
+    if (rc != 0) slop_sync_fail_("mutex init failed", rc);
+}
+
+static inline void slop_mutex_destroy(slop_mutex_t* m) {
+    int rc = pthread_mutex_destroy(m);
+    if (rc != 0) slop_sync_fail_("mutex destroy failed", rc);
+}
+
+static inline void slop_mutex_lock(slop_mutex_t* m) {
+    int rc = pthread_mutex_lock(m);
+    if (rc != 0) slop_sync_fail_("mutex lock failed", rc);
+}
+
+static inline void slop_mutex_unlock(slop_mutex_t* m) {
+    int rc = pthread_mutex_unlock(m);
+    if (rc != 0) slop_sync_fail_("mutex unlock failed", rc);
+}
+
+static inline void slop_cond_init(slop_cond_t* c) {
+    int rc = pthread_cond_init(c, NULL);
+    if (rc != 0) slop_sync_fail_("condition init failed", rc);
+}
+
+static inline void slop_cond_destroy(slop_cond_t* c) {
+    int rc = pthread_cond_destroy(c);
+    if (rc != 0) slop_sync_fail_("condition destroy failed", rc);
+}
+
+static inline void slop_cond_wait(slop_cond_t* c, slop_mutex_t* m) {
+    int rc = pthread_cond_wait(c, m);
+    if (rc != 0) slop_sync_fail_("condition wait failed", rc);
+}
+
+static inline void slop_cond_signal(slop_cond_t* c) {
+    int rc = pthread_cond_signal(c);
+    if (rc != 0) slop_sync_fail_("condition signal failed", rc);
+}
+
+static inline void slop_cond_broadcast(slop_cond_t* c) {
+    int rc = pthread_cond_broadcast(c);
+    if (rc != 0) slop_sync_fail_("condition broadcast failed", rc);
+}
+
+static inline void slop_once(slop_once_t* once, void (*fn)(void)) {
+    int rc = pthread_once(once, fn);
+    if (rc != 0) slop_sync_fail_("one-time initialization failed", rc);
+}
+
+#endif /* _WIN32 */
 
 /* ============================================================
  * Contracts
@@ -334,7 +561,7 @@ typedef struct {
     size_t entry_count;
     slop_arena* arena;  /* Pool owns its own arena */
 #ifdef SLOP_INTERN_THREADSAFE
-    pthread_mutex_t lock;
+    slop_mutex_t lock;
 #endif
 } slop_intern_pool;
 
@@ -606,7 +833,7 @@ static inline uint64_t slop_hash_string_data(const char* str, size_t len) {
 
 /* Initialize the global intern pool (called lazily) */
 #ifdef SLOP_INTERN_THREADSAFE
-static pthread_once_t slop_intern_once = PTHREAD_ONCE_INIT;
+static slop_once_t slop_intern_once = SLOP_ONCE_INIT;
 static void slop_intern_pool_init_impl(void) {
     slop_global_intern_pool = (slop_intern_pool*)malloc(sizeof(slop_intern_pool));
     slop_global_intern_pool->bucket_count = SLOP_INTERN_BUCKET_COUNT;
@@ -615,10 +842,10 @@ static void slop_intern_pool_init_impl(void) {
         SLOP_INTERN_BUCKET_COUNT, sizeof(slop_intern_entry*));
     slop_global_intern_pool->arena = (slop_arena*)malloc(sizeof(slop_arena));
     *slop_global_intern_pool->arena = slop_arena_new(1024 * 1024);
-    pthread_mutex_init(&slop_global_intern_pool->lock, NULL);
+    slop_mutex_init(&slop_global_intern_pool->lock);
 }
 static inline void slop_intern_pool_init(void) {
-    pthread_once(&slop_intern_once, slop_intern_pool_init_impl);
+    slop_once(&slop_intern_once, slop_intern_pool_init_impl);
 }
 #else
 static inline void slop_intern_pool_init(void) {
@@ -644,7 +871,7 @@ static inline slop_string slop_intern_string(const char* str, size_t len) {
     size_t bucket = hash % slop_global_intern_pool->bucket_count;
 
 #ifdef SLOP_INTERN_THREADSAFE
-    pthread_mutex_lock(&slop_global_intern_pool->lock);
+    slop_mutex_lock(&slop_global_intern_pool->lock);
 #endif
 
     /* Check existing entries */
@@ -655,7 +882,7 @@ static inline slop_string slop_intern_string(const char* str, size_t len) {
             memcmp(entry->data, str, len) == 0) {
             /* Found existing - return it */
 #ifdef SLOP_INTERN_THREADSAFE
-            pthread_mutex_unlock(&slop_global_intern_pool->lock);
+            slop_mutex_unlock(&slop_global_intern_pool->lock);
 #endif
             return (slop_string){entry->len, entry->data};
         }
@@ -678,7 +905,7 @@ static inline slop_string slop_intern_string(const char* str, size_t len) {
     slop_global_intern_pool->entry_count++;
 
 #ifdef SLOP_INTERN_THREADSAFE
-    pthread_mutex_unlock(&slop_global_intern_pool->lock);
+    slop_mutex_unlock(&slop_global_intern_pool->lock);
 #endif
     return (slop_string){len, data};
 }
@@ -792,7 +1019,7 @@ static inline int64_t string_to_int(slop_string s) {
 
 static inline slop_string int_to_string(slop_arena* arena, int64_t n) {
     char buf[32];
-    int len = snprintf(buf, sizeof(buf), "%ld", (long)n);
+    int len = snprintf(buf, sizeof(buf), "%" PRId64, n);
     return slop_string_new_len(arena, buf, len);
 }
 
@@ -2072,7 +2299,7 @@ static inline void sleep_ms(int64_t ms) {
 
 static inline slop_string slop_int_to_string(slop_arena* arena, int64_t n) {
     char buf[32];
-    int len = snprintf(buf, sizeof(buf), "%ld", (long)n);
+    int len = snprintf(buf, sizeof(buf), "%" PRId64, n);
     return slop_string_new_len(arena, buf, len);
 }
 
@@ -2093,45 +2320,5 @@ static inline void slop_eprint(const char* s) {
 static inline void slop_eputc(int c) {
     fputc(c, stderr);
 }
-
-/* ============================================================
- * Threads (spawn / join)
- *
- * spawn starts its thread through slop_thread_start, and join waits through
- * slop_thread_wait. Neither can fail quietly (#192): a spawn whose thread
- * never started would otherwise hand back a handle that join treats as a
- * finished thread, with an unset id and an unwritten result, and work
- * split across threads would silently lose that thread's share. Both abort
- * with the error instead, as an arena that cannot get memory does.
- *
- * SLOP_PTHREAD_CREATE is what creates the thread. Tests define it, before
- * this header, as a create that fails.
- * ============================================================ */
-
-#ifndef _WIN32
-#include <pthread.h>
-
-#ifndef SLOP_PTHREAD_CREATE
-#define SLOP_PTHREAD_CREATE pthread_create
-#endif
-
-/* entry is a void* (*)(void*); it is passed as void* so FFI callers can
-   hand over a trampoline without a function-pointer type of their own. */
-static inline void slop_thread_start(pthread_t* id, void* entry, void* arg) {
-    int rc = SLOP_PTHREAD_CREATE(id, NULL, (void* (*)(void*))entry, arg);
-    if (rc != 0) {
-        fprintf(stderr, "SLOP: spawn: cannot start a thread: %s\n", strerror(rc));
-        abort();
-    }
-}
-
-static inline void slop_thread_wait(pthread_t id) {
-    int rc = pthread_join(id, NULL);
-    if (rc != 0) {
-        fprintf(stderr, "SLOP: join: cannot wait for the thread: %s\n", strerror(rc));
-        abort();
-    }
-}
-#endif
 
 #endif /* SLOP_RUNTIME_H */
