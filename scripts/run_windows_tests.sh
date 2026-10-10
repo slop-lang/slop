@@ -107,7 +107,9 @@ if [ "${1:-}" = "--clang-cl" ]; then
             fail "(transpile)" "$out"
             continue
         fi
-        if out=$(clang-cl -nologo -c -W3 -DSLOP_ARENA_NO_CAP -DSLOP_INTERN_THREADSAFE \
+        # The paths are Windows paths already; MSYS2's conversion of
+        # arguments that look like paths would mangle -Fo<path>
+        if out=$(MSYS2_ARG_CONV_EXCL='*' clang-cl -nologo -c -W3 -DSLOP_ARENA_NO_CAP -DSLOP_INTERN_THREADSAFE \
                 -I "$RUNTIME_DIR" -Fo"$CL_DIR/$name.obj" "$CL_DIR/$name.c" 2>&1); then
             pass
         else
