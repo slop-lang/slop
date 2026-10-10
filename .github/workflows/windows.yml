@@ -1,0 +1,70 @@
+name: Windows
+
+# SLOP on Windows: the toolchain built from the bootstrap C, then programs
+# built, run and tested through the CLI, with MinGW-w64 gcc and with LLVM
+# clang targeting MSVC. The clang leg also compiles the std modules' C with
+# clang-cl, as cc-rs does for a Rust -sys crate that vendors it.
+#
+# Unlike ci.yml, this runs on pull requests whatever their base, so every
+# layer of a stacked PR gets it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: windows (${{ matrix.toolchain }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # MINGW64 is msvcrt-based, like Rust's x86_64-pc-windows-gnu
+          - toolchain: mingw-gcc
+            cc: gcc
+            packages: mingw-w64-x86_64-gcc make
+          # The runner's LLVM, which finds Visual Studio's headers and libs
+          - toolchain: clang-msvc
+            cc: clang
+            packages: make
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      CC: ${{ matrix.cc }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          # Keep the runner's PATH, for uv and LLVM's clang and clang-cl
+          path-type: inherit
+          install: ${{ matrix.packages }}
+
+      - name: Build the toolchain from bootstrap
+        run: |
+          make -C bootstrap CC="$CC"
+          mkdir -p bin
+          for t in bootstrap/bin/slop-*; do
+            case "$t" in
+              *.exe) cp "$t" bin/ ;;
+              *) cp "$t" "bin/$(basename "$t").exe" ;;
+            esac
+          done
+          for t in bin/slop-*.exe; do "$t" --version; done
+
+      - name: Set up the CLI
+        run: uv sync
+
+      - name: Run the Windows test suite
+        run: ./scripts/run_windows_tests.sh ${{ matrix.toolchain == 'clang-msvc' && '--clang-cl' || '' }}

@@ -47,7 +47,12 @@ $WrapperContent = @'
 setlocal
 set SCRIPT_DIR=%~dp0
 set SLOP_ROOT=%SCRIPT_DIR%..
+rem The CLI finds the native tools in SLOP_HOME\bin and the standard
+rem library in SLOP_HOME\lib\std
+if not defined SLOP_HOME set SLOP_HOME=%SLOP_ROOT%
 set PYTHONPATH=%SLOP_ROOT%\lib\python;%PYTHONPATH%
+rem Generated C and the tools' output are UTF-8, not the console code page
+set PYTHONUTF8=1
 python -m slop.cli %*
 '@
 Set-Content -Path "dist\$DistName\bin\slop.cmd" -Value $WrapperContent

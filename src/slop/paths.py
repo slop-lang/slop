@@ -138,7 +138,7 @@ def get_bin_dir() -> Optional[Path]:
 def find_native_binary(name: str) -> Optional[Path]:
     """Find a native SLOP component binary.
 
-    Search order:
+    Search order (slop-{name}.exe on Windows):
     1. SLOP_HOME/bin/slop-{name}
     2. Package-relative bin/slop-{name}
     3. Package-relative lib/compiler/{name}/slop-{name}
@@ -151,7 +151,8 @@ def find_native_binary(name: str) -> Optional[Path]:
     Returns:
         Path to binary if found, None otherwise.
     """
-    binary_name = f"slop-{name}"
+    # Windows executables carry .exe, and Path.exists needs the full name
+    binary_name = f"slop-{name}.exe" if os.name == "nt" else f"slop-{name}"
     pkg_root = _get_package_root()
 
     # Build search locations in priority order
