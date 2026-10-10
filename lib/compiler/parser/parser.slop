@@ -270,6 +270,11 @@
                               (set! buf-pos (+ buf-pos 1))
                               (set! (@ buf buf-pos) (cast U8 next))
                               (set! buf-pos (+ buf-pos 1)))))))))
+              ;; A CRLF line break is a newline, whatever line endings the
+              ;; file was saved with (git checks files out with CRLF on
+              ;; Windows): the CR is dropped and the LF read as a character
+              ((and (== c 13) (== (lexer-peek-next state) 10))
+                (lexer-advance state))
               ;; Regular character
               (else
                 (do
