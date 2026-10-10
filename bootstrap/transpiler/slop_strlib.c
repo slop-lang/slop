@@ -535,7 +535,7 @@ slop_result_int_strlib_ParseError strlib_parse_int(slop_string s) {
             {
                 __auto_type cstr = strlib_to_cstring_in(arena, s);
                 __auto_type endptr = ({ __auto_type _alloc = (uint8_t*)slop_arena_alloc(arena, 8); if (_alloc == NULL) { fprintf(stderr, "SLOP: arena alloc failed at %s:%d\n", __FILE__, __LINE__); abort(); } _alloc; });
-                __auto_type result = strtol(cstr, ((char**)(endptr)), 10);
+                __auto_type result = strtoll(cstr, ((char**)(endptr)), 10);
                 {
                     __auto_type end_val = (*((char**)(endptr)));
                     if (end_val == cstr) {

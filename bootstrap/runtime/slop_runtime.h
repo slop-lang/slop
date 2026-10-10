@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdatomic.h>
 #include <inttypes.h>
+#include <sys/stat.h>
 
 /* Arena blocks come from the OS (see the Arena Allocator section), and
  * threads and locks from the OS thread API (see Threads and locks).
@@ -48,6 +49,7 @@
 #endif
 #include <windows.h>
 #include <process.h>
+#include <io.h>
 #include <errno.h>
 #if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0600
 #error "SLOP needs _WIN32_WINNT >= 0x0600 (Windows Vista) for SRW locks, condition variables and GetTickCount64"
@@ -2262,6 +2264,74 @@ static inline const char* slop_error_str(slop_error e) {
 SLOP_RESULT_DEFINE(int64_t, slop_error, slop_result_int)
 SLOP_RESULT_DEFINE(void*, slop_error, slop_result_ptr)
 SLOP_RESULT_DEFINE(slop_string, slop_error, slop_result_string)
+
+/* ============================================================
+ * Files and the environment
+ *
+ * The few POSIX calls std/io and std/os need, in a form that builds on the
+ * Microsoft CRT too, with 64-bit offsets and sizes everywhere: on Windows
+ * long, and the default struct stat's st_size, are 32 bits, so ftell, fseek
+ * and stat lose a file past 2 GiB.
+ * ============================================================ */
+
+/* Whether a file or directory exists at path */
+static inline bool slop_file_exists(const char* path) {
+#ifdef _WIN32
+    return _access(path, 0) == 0;
+#else
+    return access(path, F_OK) == 0;
+#endif
+}
+
+/* The size of the file at path in bytes, or -1 when it can't be read */
+static inline int64_t slop_file_size(const char* path) {
+#ifdef _WIN32
+    struct _stat64 st;
+    if (_stat64(path, &st) != 0) return -1;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+#endif
+    return (int64_t)st.st_size;
+}
+
+/* ftell with a 64-bit result: -1 on error */
+static inline int64_t slop_ftell64(void* file) {
+#ifdef _WIN32
+    return (int64_t)_ftelli64((FILE*)file);
+#else
+    return (int64_t)ftello((FILE*)file);
+#endif
+}
+
+/* fseek with a 64-bit offset: 0 on success */
+static inline int slop_fseek64(void* file, int64_t offset, int whence) {
+#ifdef _WIN32
+    return _fseeki64((FILE*)file, offset, whence);
+#else
+    return fseeko((FILE*)file, (off_t)offset, whence);
+#endif
+}
+
+/* Set an environment variable, replacing any value: 0 on success. The
+ * Microsoft CRT can't hold an empty value; setting one there removes the
+ * variable, as unsetting does. */
+static inline int slop_setenv(const char* name, const char* value) {
+#ifdef _WIN32
+    return _putenv_s(name, value) == 0 ? 0 : -1;
+#else
+    return setenv(name, value, 1);
+#endif
+}
+
+/* Remove an environment variable: 0 on success */
+static inline int slop_unsetenv(const char* name) {
+#ifdef _WIN32
+    return _putenv_s(name, "") == 0 ? 0 : -1;
+#else
+    return unsetenv(name);
+#endif
+}
 
 /* ============================================================
  * Time

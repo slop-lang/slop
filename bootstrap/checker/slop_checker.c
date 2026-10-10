@@ -770,11 +770,11 @@ int main(int argc, char** _c_argv) {
             #ifdef SLOP_DEBUG
             SLOP_PRE((4194304) > 0, "with-arena size must be positive");
             #endif
-            slop_arena _arena_4 = slop_arena_new(4194304);
+            slop_arena _arena_3 = slop_arena_new(4194304);
             #ifdef SLOP_DEBUG
-            SLOP_PRE(_arena_4.base != NULL, "arena allocation failed");
+            SLOP_PRE(_arena_3.base != NULL, "arena allocation failed");
             #endif
-            slop_arena* arena = &_arena_4;
+            slop_arena* arena = &_arena_3;
             if (string_eq(checker_argv_to_string(argv, 1), SLOP_STR("--expr"))) {
                 {
                     __auto_type env = type_env_env_new(arena);
@@ -814,13 +814,13 @@ int main(int argc, char** _c_argv) {
                         printf("%s\n", "Error: --expr requires an expression argument");
                         {
                             int _wa_ret = 1;
-                            slop_arena_free(&_arena_4);
+                            slop_arena_free(&_arena_3);
                             return _wa_ret;
                         }
                     } else {
                         {
                             int _wa_ret = checker_check_expr_mode(arena, env, expr_str, type_str, context_file, params_str);
-                            slop_arena_free(&_arena_4);
+                            slop_arena_free(&_arena_3);
                             return _wa_ret;
                         }
                     }
@@ -858,13 +858,13 @@ int main(int argc, char** _c_argv) {
                     if (total_errors > 0) {
                         {
                             int _wa_ret = 1;
-                            slop_arena_free(&_arena_4);
+                            slop_arena_free(&_arena_3);
                             return _wa_ret;
                         }
                     } else {
                         {
                             int _wa_ret = 0;
-                            slop_arena_free(&_arena_4);
+                            slop_arena_free(&_arena_3);
                             return _wa_ret;
                         }
                     }
