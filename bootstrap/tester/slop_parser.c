@@ -224,6 +224,8 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_string(slop_arena* 
                                 }
                             }
                         }
+                    } else if ((c == 13) && (parser_lexer_peek_next(state) == 10)) {
+                        parser_lexer_advance(state);
                     } else {
                         buf[buf_pos] = ((uint8_t)(c));
                         buf_pos = (buf_pos + 1);
@@ -232,12 +234,12 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_string(slop_arena* 
                 }
             }
             if (!(done) && !(has_error)) {
-                return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Unterminated string"), SLOP_RANGE(int64_t, start_line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:280:52"), SLOP_RANGE(int64_t, start_col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:280:63")} });
+                return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Unterminated string"), SLOP_RANGE(int64_t, start_line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:285:52"), SLOP_RANGE(int64_t, start_col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:285:63")} });
             } else {
                 if (has_error) {
-                    return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Invalid escape sequence"), SLOP_RANGE(int64_t, start_line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:282:58"), SLOP_RANGE(int64_t, start_col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:282:69")} });
+                    return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Invalid escape sequence"), SLOP_RANGE(int64_t, start_line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:287:58"), SLOP_RANGE(int64_t, start_col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:287:69")} });
                 } else {
-                    return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_string, (slop_string){.len = ((uint64_t)(buf_pos)), .data = buf}, SLOP_RANGE(int64_t, start_line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:285:24"), SLOP_RANGE(int64_t, start_col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:285:35")} });
+                    return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_string, (slop_string){.len = ((uint64_t)(buf_pos)), .data = buf}, SLOP_RANGE(int64_t, start_line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:290:24"), SLOP_RANGE(int64_t, start_col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:290:35")} });
                 }
             }
         }
@@ -305,14 +307,14 @@ slop_result_parser_Token_parser_ParseError parser_lexer_read_number(slop_arena* 
         {
             __auto_type text = (slop_string){.len = ((uint64_t)(buf_pos)), .data = buf};
             if (too_long) {
-                return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){string_concat(arena, SLOP_STR("number literal is too long: "), text), SLOP_RANGE(int64_t, start_line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:358:90"), SLOP_RANGE(int64_t, start_col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:358:101")} });
+                return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){string_concat(arena, SLOP_STR("number literal is too long: "), text), SLOP_RANGE(int64_t, start_line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:363:90"), SLOP_RANGE(int64_t, start_col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:363:101")} });
             } else if ((!(parser_lexer_at_end(state))) && (strlib_char_is_symbol_char(parser_lexer_peek(state))) && (!(((parser_lexer_peek(state) == 46) && (parser_lexer_peek_next(state) == 46))))) {
                 {
                     __auto_type next = (slop_string){.len = 1, .data = ((*state).source.data + (*state).pos)};
-                    return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){string_concat(arena, SLOP_STR("invalid number literal: '"), string_concat(arena, text, string_concat(arena, SLOP_STR("' is followed by '"), string_concat(arena, next, SLOP_STR("'; put a space or a delimiter after a number"))))), SLOP_RANGE(int64_t, start_line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:370:34"), SLOP_RANGE(int64_t, start_col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:370:45")} });
+                    return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){string_concat(arena, SLOP_STR("invalid number literal: '"), string_concat(arena, text, string_concat(arena, SLOP_STR("' is followed by '"), string_concat(arena, next, SLOP_STR("'; put a space or a delimiter after a number"))))), SLOP_RANGE(int64_t, start_line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:375:34"), SLOP_RANGE(int64_t, start_col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:375:45")} });
                 }
             } else {
-                return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_number, text, SLOP_RANGE(int64_t, start_line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:372:41"), SLOP_RANGE(int64_t, start_col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:372:52")} });
+                return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_number, text, SLOP_RANGE(int64_t, start_line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:377:41"), SLOP_RANGE(int64_t, start_col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:377:52")} });
             }
         }
     }
@@ -330,7 +332,7 @@ parser_Token parser_lexer_read_symbol(slop_arena* arena, parser_LexerState* stat
             buf_pos = (buf_pos + 1);
             parser_lexer_advance(state);
         }
-        return (parser_Token){parser_TokenType_tok_symbol, (slop_string){.len = ((uint64_t)(buf_pos)), .data = buf}, SLOP_RANGE(int64_t, start_line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:391:14"), SLOP_RANGE(int64_t, start_col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:391:25")};
+        return (parser_Token){parser_TokenType_tok_symbol, (slop_string){.len = ((uint64_t)(buf_pos)), .data = buf}, SLOP_RANGE(int64_t, start_line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:396:14"), SLOP_RANGE(int64_t, start_col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:396:25")};
     }
 }
 
@@ -346,7 +348,7 @@ parser_Token parser_lexer_read_operator(slop_arena* arena, parser_LexerState* st
             buf_pos = (buf_pos + 1);
             parser_lexer_advance(state);
         }
-        return (parser_Token){parser_TokenType_tok_operator, (slop_string){.len = ((uint64_t)(buf_pos)), .data = buf}, SLOP_RANGE(int64_t, start_line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:410:14"), SLOP_RANGE(int64_t, start_col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:410:25")};
+        return (parser_Token){parser_TokenType_tok_operator, (slop_string){.len = ((uint64_t)(buf_pos)), .data = buf}, SLOP_RANGE(int64_t, start_line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:415:14"), SLOP_RANGE(int64_t, start_col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:415:25")};
     }
 }
 
@@ -357,25 +359,25 @@ slop_result_parser_Token_parser_ParseError parser_lexer_next_token(slop_arena* a
         __auto_type col = (*state).col;
         __auto_type c = parser_lexer_peek(state);
         if (c == 0) {
-            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_eof, SLOP_STR(""), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:424:36"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:424:41")} });
+            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_eof, SLOP_STR(""), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:429:36"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:429:41")} });
         } else if (c == 40) {
             parser_lexer_advance(state);
-            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_lparen, SLOP_STR("("), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:428:44"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:428:49")} });
+            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_lparen, SLOP_STR("("), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:433:44"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:433:49")} });
         } else if (c == 41) {
             parser_lexer_advance(state);
-            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_rparen, SLOP_STR(")"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:431:44"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:431:49")} });
+            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_rparen, SLOP_STR(")"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:436:44"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:436:49")} });
         } else if (c == 123) {
             parser_lexer_advance(state);
-            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_lbrace, SLOP_STR("{"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:434:44"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:434:49")} });
+            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_lbrace, SLOP_STR("{"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:439:44"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:439:49")} });
         } else if (c == 125) {
             parser_lexer_advance(state);
-            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_rbrace, SLOP_STR("}"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:437:44"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:437:49")} });
+            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_rbrace, SLOP_STR("}"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:442:44"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:442:49")} });
         } else if (c == 39) {
             parser_lexer_advance(state);
-            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_quote, SLOP_STR("'"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:440:43"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:440:48")} });
+            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_quote, SLOP_STR("'"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:445:43"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:445:48")} });
         } else if (c == 58) {
             parser_lexer_advance(state);
-            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_colon, SLOP_STR(":"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:443:43"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:443:48")} });
+            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_colon, SLOP_STR(":"), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:448:43"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:448:48")} });
         } else if (c == 34) {
             return parser_lexer_read_string(arena, state);
         } else if (strlib_is_digit(c) || ((c == 45) && strlib_is_digit(parser_lexer_peek_next(state)))) {
@@ -386,14 +388,14 @@ slop_result_parser_Token_parser_ParseError parser_lexer_next_token(slop_arena* a
             if (parser_lexer_peek_next(state) == 46) {
                 parser_lexer_advance(state);
                 parser_lexer_advance(state);
-                return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_range, SLOP_STR(".."), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:459:46"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:459:51")} });
+                return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = (parser_Token){parser_TokenType_tok_range, SLOP_STR(".."), SLOP_RANGE(int64_t, line, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:464:46"), SLOP_RANGE(int64_t, col, 1, 0, 1, 0, "(Int 1 ..) at parser.slop:464:51")} });
             } else {
                 return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = parser_lexer_read_operator(arena, state) });
             }
         } else if (strlib_char_is_operator(c)) {
             return ((slop_result_parser_Token_parser_ParseError){ .is_ok = true, .data.ok = parser_lexer_read_operator(arena, state) });
         } else {
-            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Unexpected character"), SLOP_RANGE(int64_t, line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:466:55"), SLOP_RANGE(int64_t, col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:466:60")} });
+            return ((slop_result_parser_Token_parser_ParseError){ .is_ok = false, .data.err = (parser_ParseError){SLOP_STR("Unexpected character"), SLOP_RANGE(int64_t, line, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:471:55"), SLOP_RANGE(int64_t, col, 1, 0, 0, 0, "(Int 0 ..) at parser.slop:471:60")} });
         }
     }
 }
@@ -1200,7 +1202,7 @@ slop_string parser_json_number_text(slop_arena* arena, slop_string text) {
             out = (out + 1);
             i = (i + 1);
         }
-        while ((((i + 1) < slen)) && ((data[i] == 48)) && (strlib_is_digit(SLOP_RANGE(strlib_Byte, data[(i + 1)], 1, 1, 0, 255, "Byte (Int 0 .. 255) at parser.slop:1216:29")))) {
+        while ((((i + 1) < slen)) && ((data[i] == 48)) && (strlib_is_digit(SLOP_RANGE(strlib_Byte, data[(i + 1)], 1, 1, 0, 255, "Byte (Int 0 .. 255) at parser.slop:1221:29")))) {
             i = (i + 1);
         }
         while (i < slen) {
