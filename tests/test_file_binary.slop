@@ -1,0 +1,55 @@
+;; ============================================================
+;; std/io writes and reads a file's bytes as they are
+;;
+;; Files open in binary mode. In text mode, Windows writes "\n" as
+;; "\r\n" and reads "\r\n" back as "\n", so the bytes written,
+;; file-size and file-read-all would all disagree there. On POSIX
+;; the two modes are the same; the Windows CI job is what this
+;; guards.
+;; ============================================================
+
+(module test-file-binary
+  (export (main 0))
+  (import file (file-open file-close file-write-line file-read-all file-size))
+
+  (ffi "stdio.h"
+    (remove ((path (Ptr U8))) Int))
+
+  (const TEST_FILE String "slop_test_file_binary.tmp")
+
+  (fn write-lines ()
+    (@intent "Write the lines x and p-CR: 5 bytes, x LF p CR LF")
+    (@spec (() -> Bool))
+    (match (file-open TEST_FILE 'write)
+      ((ok f)
+        (do
+          (file-write-line (addr f) "x")
+          (file-write-line (addr f) "p\r")
+          (file-close (addr f))
+          true))
+      ((error _) false)))
+
+  (fn read-back ((arena Arena))
+    (@intent "file-size and file-read-all both see the 5 bytes, the CR included")
+    (@spec ((Arena) -> Bool))
+    (@alloc arena)
+    (and (match (file-size TEST_FILE) ((ok n) (== n 5)) ((error _) false))
+         (match (file-open TEST_FILE 'read)
+           ((ok f)
+             (let ((all (file-read-all arena (addr f))))
+               (file-close (addr f))
+               (match all
+                 ((ok s) (and (== (. s len) 5) (== (cast Int (@ (. s data) 3)) 13)))
+                 ((error _) false))))
+           ((error _) false))))
+
+  (fn main ()
+    (@intent "Run each, return the number that failed")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((mut failed 0))
+        (remove (cast (Ptr U8) (. TEST_FILE data)))
+        (when (not (write-lines)) (set! failed (+ failed 1)))
+        (when (not (read-back arena)) (set! failed (+ failed 1)))
+        (remove (cast (Ptr U8) (. TEST_FILE data)))
+        failed))))

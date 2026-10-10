@@ -61,7 +61,7 @@
     (tolower ((c Int)) Int))
 
   (ffi "stdlib.h"
-    (strtol ((s (Ptr Char)) (endptr (Ptr (Ptr Char))) (base Int)) I64)
+    (strtoll ((s (Ptr Char)) (endptr (Ptr (Ptr Char))) (base Int)) I64)
     (strtod ((s (Ptr Char)) (endptr (Ptr (Ptr Char)))) Float))
 
   (ffi "string.h"
@@ -491,7 +491,7 @@
     (let ((slen (cast I64 (. s len)))
           (actual-len (min (cast I64 len) (cast I64 (- slen (cast I64 start))))))
       ;; The byte after the slice is a NUL. A String does not promise one, but
-      ;; a substring reaches fopen, getenv and strtol through (. s data), and
+      ;; a substring reaches fopen, getenv and strtoll through (. s data), and
       ;; the spare byte was left as whatever the arena held (#161).
       (if (== actual-len 0)
         (let ((buf (cast (Ptr U8) (arena-alloc arena 1))))
@@ -610,14 +610,17 @@
     (@example ("-456") -> (ok -456))
     (@example ("abc") -> (error 'invalid-format))
     (@example ("") -> (error 'empty-string))
+    (@example ("3000000000") -> (ok 3000000000))
+    (@example ("-3000000000") -> (ok -3000000000))
     (if (== (. s len) 0)
       (error 'empty-string)
       (with-arena 16
-        ;; strtol reads to a NUL, so it gets a NUL-terminated copy; on a slice
-        ;; it read the digits after it too (#161)
+        ;; strtoll reads to a NUL, so it gets a NUL-terminated copy; on a slice
+        ;; it read the digits after it too (#161). strtoll, not strtol: long
+        ;; is 32 bits on Windows.
         (let ((cstr (to-cstring-in arena s))
               (endptr (arena-alloc arena 8))
-              (result (strtol cstr (cast (Ptr (Ptr Char)) endptr) 10)))
+              (result (strtoll cstr (cast (Ptr (Ptr Char)) endptr) 10)))
           (let ((end-val (deref (cast (Ptr (Ptr Char)) endptr))))
             (if (== end-val cstr)
               (error 'invalid-format)
