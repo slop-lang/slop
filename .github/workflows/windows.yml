@@ -68,3 +68,24 @@ jobs:
 
       - name: Run the Windows test suite
         run: ./scripts/run_windows_tests.sh ${{ matrix.toolchain == 'clang-msvc' && '--clang-cl' || '' }}
+
+      # The release zip, and an install of it, as release.yml builds them from
+      # MinGW binaries: slop.cmd, its native tools and stdlib, and `slop mcp`
+      # must all work from the package alone (smoke_dist.py unsets SLOP_HOME)
+      - uses: actions/setup-python@v5
+        if: matrix.toolchain == 'mingw-gcc'
+        with:
+          python-version: '3.12'
+
+      - name: Smoke-test the release package
+        if: matrix.toolchain == 'mingw-gcc'
+        shell: pwsh
+        run: |
+          ./scripts/package.ps1 | Out-Null
+          $dist = "dist\slop-dev-windows-x64"
+          python scripts\smoke_dist.py "$dist\bin\slop.cmd" "$dist\examples\fibonacci.slop"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:SLOP_PREFIX = "$env:RUNNER_TEMP\slop"
+          & "$dist\install.ps1" | Out-Null
+          python scripts\smoke_dist.py "$env:SLOP_PREFIX\bin\slop.cmd" "$dist\examples\fibonacci.slop"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

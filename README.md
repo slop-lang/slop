@@ -192,7 +192,8 @@ curl -LO https://github.com/slop-lang/slop/releases/download/VERSION/slop-VERSIO
 tar -xzf slop-VERSION-linux-x64.tar.gz
 cd slop-VERSION-linux-x64
 
-# Install to /usr/local (or set PREFIX=~/.local for a user install)
+# Install to /usr/local (or set PREFIX=~/.local for a user install): the
+# distribution goes to $PREFIX/lib/slop, the commands to $PREFIX/bin
 ./install.sh
 
 slop --help        # Python CLI wrapper (requires Python 3.11+)
@@ -323,7 +324,7 @@ claude mcp add --scope project slop -- slop mcp   # Claude Code, in the project'
 codex mcp add slop -- slop mcp                    # Codex
 ```
 
-Paths given to the tools are relative to the directory the server starts in, which for Claude Code is the project directory.
+`slop mcp` comes with every install: Homebrew, the release archives (and their `install.sh` / `install.ps1`), and a source install. On Windows, `slop` is `slop.cmd`, a batch file, so an agent starts it through `cmd`: `claude mcp add slop -- cmd /c slop mcp`. Paths given to the tools are relative to the directory the server starts in, which for Claude Code is the project directory.
 
 ### Generating SLOP from Schemas (`slop derive`)
 

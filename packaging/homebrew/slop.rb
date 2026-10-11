@@ -57,6 +57,9 @@ class Slop < Formula
       The standalone native tools (slop-parser, slop-checker, slop-compiler,
       slop-tester) run without Python; `slop` is a Python wrapper that
       orchestrates them.
+
+      `slop mcp` serves SLOP's reference, docs, checker and formatter to a
+      coding agent over MCP. For Claude Code:  claude mcp add slop -- slop mcp
     EOS
   end
 
@@ -64,5 +67,26 @@ class Slop < Formula
     assert_match version.to_s, shell_output("#{bin}/slop-compiler --version")
     assert_match version.to_s, shell_output("#{bin}/slop --version")
     assert_predicate prefix/"lib/std", :directory?
+
+    # slop mcp: an MCP session that reads the stdlib and runs the native checker
+    (testpath/"ok.slop").write <<~SLOP
+      (module ok
+        (fn f ((x Int))
+          (@intent "Add one")
+          (@spec ((Int) -> Int))
+          (+ x 1)))
+    SLOP
+    session = [
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18",' \
+      '"capabilities":{},"clientInfo":{"name":"brew","version":"0"}}}',
+      '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"doc",' \
+      '"arguments":{"module":"strlib","symbol":"trim"}}}',
+      '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"check",' \
+      '"arguments":{"path":"ok.slop"}}}',
+    ]
+    output = pipe_output("#{bin}/slop mcp", "#{session.join("\n")}\n")
+    assert_match "\"version\": \"#{version}\"", output
+    assert_match "### trim", output
+    assert_match "OK: no errors or warnings", output
   end
 end

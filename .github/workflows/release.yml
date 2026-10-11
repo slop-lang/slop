@@ -105,6 +105,19 @@ jobs:
         env:
           RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # `slop`, its native tools and stdlib, and `slop mcp` must all work from
+      # the package alone, and from an install.sh install of it
+      - name: Smoke-test the package and an install of it
+        run: |
+          DIST="dist/slop-${RELEASE_VERSION}-linux-x64"
+          python scripts/smoke_dist.py "$DIST/bin/slop" "$DIST/examples/fibonacci.slop"
+          PREFIX="$RUNNER_TEMP/slop-prefix" "$DIST/install.sh" > /dev/null
+          python scripts/smoke_dist.py "$RUNNER_TEMP/slop-prefix/bin/slop" "$DIST/examples/fibonacci.slop"
+
       - uses: actions/upload-artifact@v4
         with:
           name: slop-linux-x64
@@ -185,6 +198,19 @@ jobs:
         env:
           RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # `slop`, its native tools and stdlib, and `slop mcp` must all work from
+      # the package alone, and from an install.sh install of it
+      - name: Smoke-test the package and an install of it
+        run: |
+          DIST="dist/slop-${RELEASE_VERSION}-macos-arm64"
+          python scripts/smoke_dist.py "$DIST/bin/slop" "$DIST/examples/fibonacci.slop"
+          PREFIX="$RUNNER_TEMP/slop-prefix" "$DIST/install.sh" > /dev/null
+          python scripts/smoke_dist.py "$RUNNER_TEMP/slop-prefix/bin/slop" "$DIST/examples/fibonacci.slop"
+
       - uses: actions/upload-artifact@v4
         with:
           name: slop-macos-arm64
@@ -221,6 +247,23 @@ jobs:
         run: ./scripts/package.ps1
         env:
           RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # slop.cmd, its native tools and stdlib, and `slop mcp` must all work
+      # from the package alone, and from an install.ps1 install of it
+      - name: Smoke-test the package and an install of it
+        shell: pwsh
+        run: |
+          $dist = "dist\slop-$env:RELEASE_VERSION-windows-x64"
+          python scripts\smoke_dist.py "$dist\bin\slop.cmd" "$dist\examples\fibonacci.slop"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:SLOP_PREFIX = "$env:RUNNER_TEMP\slop"
+          & "$dist\install.ps1" | Out-Null
+          python scripts\smoke_dist.py "$env:SLOP_PREFIX\bin\slop.cmd" "$dist\examples\fibonacci.slop"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       - uses: actions/upload-artifact@v4
         with:

@@ -10,6 +10,13 @@ A language designed for hybrid human-machine code generation where:
 
 __version__ = "0.4.2"
 
+import sys
+
+# Say so plainly, rather than fail on the first newer syntax the import meets
+if sys.version_info < (3, 11):
+    sys.exit(f"slop needs Python 3.11 or newer; {sys.executable} is "
+             f"Python {sys.version.split()[0]}")
+
 from slop.parser import parse, parse_file
 from slop.hole_filler import check_hole_impl, CheckResult
 # Re-export type classes and constants from types module for backwards compatibility
