@@ -14,6 +14,7 @@ Commands:
 import argparse
 import sys
 import os
+import re
 import shlex
 import shutil
 from pathlib import Path
@@ -316,23 +317,25 @@ def _deduplicate_trampolines(code: str) -> str:
     return '\n'.join(result_lines)
 
 
+# A file or parse error the native tools print to stdout, interleaved with the
+# JSON they were writing (`file:line:col: error: ...`, `Error: Could not read
+# file: f`). An error starts a line, or follows the '{' / '}' of the JSON
+# written so far (that JSON contains no newlines).
+NATIVE_ERROR_RE = re.compile(
+    r'(?:^|(?<=[{}]))((?:Error|Usage): .*|[^\s{}"][^{}"]*:\d+:\d+: error: .*)$')
+
+
 def _report_native_compiler_failure(result) -> str:
     """Forward a failed `slop-compiler transpile` run's errors to stderr.
 
     The compiler prints transpiler errors to stderr, but file and parse errors
-    (`file:line:col: error: ...`, `Error: Could not read file: f`) to stdout,
-    interleaved with the JSON it was writing. Callers have already forwarded
-    stderr; this forwards the error lines found on stdout and returns a short
-    summary for the caller to print.
+    to stdout (NATIVE_ERROR_RE). Callers have already forwarded stderr; this
+    forwards the error lines found on stdout and returns a short summary for
+    the caller to print.
     """
-    import re
-    # An error starts a line, or follows the '{' / '}' of the JSON the
-    # compiler had written so far (that JSON contains no newlines)
-    error_re = re.compile(
-        r'(?:^|(?<=[{}]))((?:Error|Usage): .*|[^\s{}"][^{}"]*:\d+:\d+: error: .*)$')
     found = False
     for line in result.stdout.splitlines():
-        m = error_re.search(line)
+        m = NATIVE_ERROR_RE.search(line)
         if m:
             print(m.group(1), file=sys.stderr)
             found = True
@@ -1649,14 +1652,9 @@ def cmd_doc(args):
     input_path = args.input
     if not os.path.exists(input_path) and '/' not in input_path and '\\' not in input_path:
         # Looks like a module name, check stdlib
-        stdlib_modules = {p.stem: p for p in paths.list_stdlib_modules()}
-        if input_path in stdlib_modules:
-            input_path = str(stdlib_modules[input_path])
-        elif input_path.endswith('.slop'):
-            # Try without extension
-            base = input_path[:-5]
-            if base in stdlib_modules:
-                input_path = str(stdlib_modules[base])
+        module_path = paths.find_stdlib_module(input_path)
+        if module_path:
+            input_path = str(module_path)
 
     try:
         ast = parse_file(input_path)
@@ -3382,8 +3380,9 @@ def cmd_ref(args):
     topic = args.topic or 'all'
 
     # Check if it's a stdlib module - generate docs dynamically
-    if topic in stdlib_modules:
-        module_path = stdlib_modules[topic]
+    module_path = (paths.find_stdlib_module(topic)
+                   if topic != 'all' and topic not in TOPICS else None)
+    if module_path:
         try:
             ast = parse_file(str(module_path))
             doc = extract_documentation(ast)
@@ -4798,6 +4797,12 @@ def cmd_verify(args):
     return 0
 
 
+def cmd_mcp(args):
+    """Serve the ref, doc, check and format tools over MCP (stdio)."""
+    from slop.mcp_server import main as mcp_main
+    return mcp_main()
+
+
 def cmd_paths(args):
     """Show resolved SLOP paths for debugging."""
     resolved = paths.get_resolved_paths()
@@ -5028,6 +5033,10 @@ def main():
     p.add_argument('-v', '--verbose', action='store_true',
         help='Show additional details (examples list)')
 
+    # mcp - tools for coding agents
+    subparsers.add_parser('mcp',
+        help='Run an MCP server on stdio with ref, doc, check and format tools for coding agents')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5048,6 +5057,7 @@ def main():
         'doc': cmd_doc,
         'test': cmd_test,
         'paths': cmd_paths,
+        'mcp': cmd_mcp,
     }
 
     return commands[args.command](args)

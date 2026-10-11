@@ -1240,6 +1240,7 @@ These ARE in strlib and need `(import strlib ...)`:
 | `slop derive SCHEMA [-f FORMAT] [-s MODE] [-o OUT]` | Generate SLOP types from JSON Schema, SQL or OpenAPI |
 | `slop ref [TOPIC] [--list]` | Show this language reference |
 | `slop paths [-v]` | Show SLOP_HOME, the native binaries and stdlib paths |
+| `slop mcp` | MCP server on stdio: ref, doc, check and format tools for coding agents |
 
 ### Native Toolchain
 Parsing, checking and transpiling run on the native, self-hosted tools in

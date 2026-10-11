@@ -188,6 +188,23 @@ class TestPaths:
         assert "slop-transpiler" not in out
 
 
+class TestStdlibModuleLookup:
+    def test_by_stem_file_name_or_directory(self):
+        from slop import paths
+        assert paths.find_stdlib_module("strlib").name == "strlib.slop"
+        assert paths.find_stdlib_module("strlib.slop").name == "strlib.slop"
+        assert paths.find_stdlib_module("math").name == "mathlib.slop"
+        assert paths.find_stdlib_module("no-such-module") is None
+
+    def test_ref_and_doc_take_a_module_name(self, monkeypatch, capsys):
+        rc, out, _ = run_cli(monkeypatch, capsys, "ref", "strlib")
+        assert rc == 0 and out.startswith("# strlib")
+        rc, out, _ = run_cli(monkeypatch, capsys, "ref", "math")
+        assert rc == 0 and out.startswith("# mathlib")
+        rc, out, _ = run_cli(monkeypatch, capsys, "doc", "strlib.slop")
+        assert rc == 0 and out.startswith("# strlib")
+
+
 HOLES_MODULE = """\
 (module holes
   (fn double ((x Int))

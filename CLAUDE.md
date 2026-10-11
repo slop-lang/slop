@@ -39,6 +39,9 @@ uv run slop build examples/rate-limiter.slop -o binary
 
 # Build the native toolchain
 make build-native
+
+# MCP server (stdio) with ref, doc, check and format tools for coding agents
+uv run slop mcp
 ```
 
 ## Architecture
@@ -65,6 +68,8 @@ Type checking and transpilation are handled by the native toolchain (`slop-compi
 - **resolver.py**: Module import/export resolution
 
 - **paths.py**: Centralized path resolution with SLOP_HOME support
+
+- **mcp_server.py**: `slop mcp`, a stdlib-only MCP server on stdio. Its tools (`ref`, `doc`, `check`, `format`) call the same code as the CLI commands of the same names, so a change to one of those commands reaches agents too.
 
 ### Language Spec
 

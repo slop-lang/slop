@@ -141,6 +141,7 @@ slop/
 │   ├── parser.py            S-expression parser (format, doc, fill, verify)
 │   ├── formatter.py         slop format
 │   ├── reference.py         slop ref
+│   ├── mcp_server.py        slop mcp: ref, doc, check and format for coding agents
 │   ├── resolver.py          Module resolution for multi-module builds
 │   ├── paths.py             SLOP_HOME and path resolution
 │   ├── verifier/            Contract verification via Z3
@@ -298,7 +299,31 @@ slop format --check src/*.slop
 # Show resolved paths (useful for debugging SLOP_HOME)
 slop paths                     # SLOP_HOME, stdlib, and the four native binaries
 slop paths -v                  # Include examples list
+
+# MCP server for coding agents, on stdio (see below)
+slop mcp
 ```
+
+### Coding Agents (`slop mcp`)
+
+`slop mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio, so a coding agent can call SLOP's tools directly:
+
+| Tool | What it returns |
+|------|-----------------|
+| `ref` | The language reference by topic (no topic lists them), or a stdlib module's API |
+| `doc` | A module's types, functions and contracts, or just one `symbol`'s; a stdlib module name or a `.slop` path |
+| `check` | The native checker's diagnostics, one `file:line:col: level: message` line each, for a `path` or unsaved `source` |
+| `format` | The canonical layout of `source`, or a `path` formatted in place |
+
+The server also tells the agent when to use them: `ref` before writing an unfamiliar form, `doc` before calling a stdlib function, `check` after every edit. Add it to an agent:
+
+```bash
+claude mcp add slop -- slop mcp                   # Claude Code, for you
+claude mcp add --scope project slop -- slop mcp   # Claude Code, in the project's .mcp.json
+codex mcp add slop -- slop mcp                    # Codex
+```
+
+Paths given to the tools are relative to the directory the server starts in, which for Claude Code is the project directory.
 
 ### Generating SLOP from Schemas (`slop derive`)
 
