@@ -766,8 +766,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         A call past a statement that may return is reached only on the paths
         that took no early exit. A call to a function that may change state -
         not @pure, and given a list, a map or a pointer - is the same term at
-        every call with the same arguments (#227), so what one call returns is
-        not what another does, and only the call the function returns is safe.
+        every call with the same arguments (#227), and the model reads state as
+        if it never changed: of its contract only what reads no state is
+        assumed, except at the call the function returns, whose end state is
+        the caller's.
 
         Returns (axioms, tail_axioms). The tail axioms are the same facts with
         `$result` read as the caller's own, for a call that is the body's
@@ -777,7 +779,8 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         add_tail_axiom.
         """
         from .callee_contracts import (
-            instantiate_callee_contract, callee_is_pure, params_are_values)
+            instantiate_callee_contract, callee_is_pure, params_are_values,
+            contract_is_state_free)
         axioms: List = []
         tail_axioms: List = []
         tail_call = self._straight_line_tail_call(body)
@@ -794,11 +797,14 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     continue
                 if reached_guard is not None:
                     guard = z3.And(guard, reached_guard)
+            keep = None
             if not (callee_is_pure(translator, site.fn_name)
                     or params_are_values(translator, site.fn_name)):
-                continue
+                def keep(expr, fn_name=site.fn_name):
+                    return contract_is_state_free(translator, fn_name, expr)
             axioms.extend(instantiate_callee_contract(
-                translator, site.fn_name, site.term, site.args, guard, patterns=False))
+                translator, site.fn_name, site.term, site.args, guard,
+                keep_pre=keep, keep_post=keep, patterns=False))
         return axioms, tail_axioms
 
     @staticmethod

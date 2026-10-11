@@ -40,6 +40,11 @@ def _str_hash(s: str) -> int:
 # arm says "this name exists, and nothing can be proved about it".
 _UNTRANSLATABLE = z3.Function('#untranslatable', z3.IntSort(), z3.IntSort()) if Z3_AVAILABLE else None
 
+def _byte_length(text: str) -> int:
+    """The length of a string literal as SLOP counts it: UTF-8 bytes."""
+    return len(text.encode('utf-8'))
+
+
 # A path condition the recorder cannot state: a loop body, a closure, a quoted
 # form. A call under one is not recorded at all.
 _NO_PATH = object()
@@ -1381,8 +1386,17 @@ class Z3Translator:
                 self.variables[func_name] = func
             else:
                 func = self.variables[func_name]
-            # Add axiom: string_len(this_string_id) == actual_length
-            self.constraints.append(func(str_var) == z3.IntVal(len(expr.value)))
+            # Add axiom: string_len(this_string_id) == actual_length. A SLOP
+            # string's length is its byte count, which is what `.len` and
+            # string-len return at run time: "é" is 2, not 1.
+            length = z3.IntVal(_byte_length(expr.value))
+            self.constraints.append(func(str_var) == length)
+            # `(. s len)` reads the same length through the field accessor;
+            # without this, a callee's `(@pre (> (. s len) 0))` could not be
+            # established for a literal argument.
+            len_accessor = self.field_accessor('len')
+            if len_accessor.range() == z3.IntSort():
+                self.constraints.append(len_accessor(str_var) == length)
             return str_var
 
         if isinstance(expr, Symbol):
@@ -1553,7 +1567,7 @@ class Z3Translator:
                         arg = expr[1]
                         # Handle string literals directly - return actual length
                         if isinstance(arg, String):
-                            return z3.IntVal(len(arg.value))
+                            return z3.IntVal(_byte_length(arg.value))
 
                         s = self.translate_expr(arg)
                         if s is None:

@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterable, List, Optional, Sequence, Set, Tuple
 
 import z3
 
-from slop.parser import SList, Symbol, is_form
+from slop.parser import SList, Symbol, Number, String, is_form
 from slop.types import (
     PrimitiveType, RangeType, EnumType, RecordType, UnionType, OptionType, ResultType,
 )
@@ -139,6 +139,83 @@ def is_value_type(tr, typ, seen) -> bool:
         return all(is_value_type(tr, getattr(typ, f), seen)
                    for f in ('ok_type', 'err_type') if hasattr(typ, f))
     return False        # lists, maps, sets, pointers, channels, functions
+
+
+def _callee_types(tr, fn_name: str):
+    """({param: type}, return type) of a user function, or None if unknown."""
+    registry = tr.function_registry
+    if registry is not None and fn_name in registry.functions:
+        from .type_builder import _parse_type_expr_simple
+        fn_def = registry.functions[fn_name]
+        if len(fn_def.param_type_exprs) != len(fn_def.params):
+            return None
+        types = {}
+        for name, expr in zip(fn_def.params, fn_def.param_type_exprs):
+            types[name] = (None if expr is None
+                           else _parse_type_expr_simple(expr, tr.type_env.type_registry))
+        ret = fn_def.return_type_expr
+        return types, (None if ret is None
+                       else _parse_type_expr_simple(ret, tr.type_env.type_registry))
+    sig = tr.imported_defs.functions.get(fn_name)
+    if sig is not None and len(sig.param_types) == len(sig.params):
+        return dict(zip(sig.params, sig.param_types)), sig.return_type
+    return None
+
+
+# Operators whose value is a function of their operands' values alone. A
+# String is a value - its bytes never change - so the string builtins are too.
+_VALUE_OPERATORS = frozenset((
+    '==', '!=', '<', '<=', '>', '>=', '+', '-', '*', '/', '%',
+    'and', 'or', 'not', 'implies', 'if',
+    'string-len', 'starts-with', 'ends-with', 'string-eq', 'string-contains',
+))
+
+
+def contract_is_state_free(tr, fn_name: str, expr) -> bool:
+    """True if `expr`, part of `fn_name`'s contract, reads no mutable state.
+
+    A callee that may change state - not @pure, and given a list, a map or a
+    pointer - is one term for every call with the same arguments (#227), and
+    the model reads state as if it never changed: `(. c n)` is one value
+    wherever it is read. A contract that reads the counter it bumps would then
+    claim, for every call, what is true only of one. One that reads nothing
+    mutable - `(!= $result nil)`, `(>= $result 0)`, a field of a record passed
+    or returned by value - is true of whatever each call returned, and is
+    kept.
+    """
+    types = _callee_types(tr, fn_name)
+    if types is None:
+        return False
+    param_types, return_type = types
+    value_roots = {name for name, typ in param_types.items()
+                   if typ is not None and is_value_type(tr, typ, set())}
+    if return_type is not None and is_value_type(tr, return_type, set()):
+        value_roots.add('$result')
+
+    def value_rooted(node) -> bool:
+        if isinstance(node, Symbol):
+            return node.name in value_roots
+        if is_form(node, '.') and len(node) >= 3:
+            return value_rooted(node[1])
+        return False
+
+    def free(node) -> bool:
+        if isinstance(node, (Symbol, Number, String)):
+            return True
+        if not isinstance(node, SList) or len(node) == 0:
+            return True
+        head = node[0]
+        if not isinstance(head, Symbol):
+            return False
+        if head.name == 'quote':
+            return True
+        if head.name == '.':
+            return value_rooted(node)
+        if head.name in _VALUE_OPERATORS:
+            return all(free(item) for item in node.items[1:])
+        return False
+
+    return free(expr)
 
 
 def contract_closed_over(tr, expr, allowed) -> bool:
@@ -308,6 +385,7 @@ def _translate_contract_term(tr, expr, patterns: bool):
 def instantiate_callee_contract(tr, fn_name: str, call_term, arg_terms: Sequence[Any],
                                 guard, *, result_term=None,
                                 keep_post: Optional[Callable[[Any], bool]] = None,
+                                keep_pre: Optional[Callable[[Any], bool]] = None,
                                 patterns: bool = True) -> List[Any]:
     """`Implies(And(guard, *pre), post)` for each @post and @property of the call.
 
@@ -320,7 +398,9 @@ def instantiate_callee_contract(tr, fn_name: str, call_term, arg_terms: Sequence
     parameters, reads one of their collections by name, or does not translate -
     nothing is assumed: a post without its precondition is a promise the call
     did not earn. A post that cannot be stated is skipped on its own.
-    `keep_post(post)` may refuse a post this caller cannot read soundly.
+    `keep_post(post)` may refuse a post this caller cannot read soundly, and
+    `keep_pre(pre)` a precondition - which, like one that cannot be stated,
+    leaves nothing assumed.
     """
     contract = callee_contract(tr, fn_name)
     if contract is None:
@@ -343,6 +423,8 @@ def instantiate_callee_contract(tr, fn_name: str, call_term, arg_terms: Sequence
         pre_terms = []
         for pre in pres:
             if not contract_closed_over(tr, pre, allowed) or reads_collection_of(pre, hidden):
+                return []
+            if keep_pre is not None and not keep_pre(pre):
                 return []
             term = _translate_contract_term(tr, pre, patterns)
             if term is None:
