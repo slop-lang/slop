@@ -13894,6 +13894,30 @@ _CALLEE_POST_LEAKS['dotted-state-read-of-a-stateful-callee'] = '''(module m
           (set! c.n 0)
           a)))'''
 
+# A `mut` parameter is the callee's own copy (#180); a post naming it is about
+# that copy as the callee left it, not the caller's argument (#230).
+_CALLEE_POST_LEAKS['post-about-a-mut-parameter'] = '''(module probe
+      (fn zap ((mut n Int))
+        (@spec ((Int) -> Int))
+        (@post {n == 0})
+        (do (set! n 0) 0))
+      (fn f ((k Int))
+        (@spec ((Int) -> Int))
+        (@post {$result == 0})
+        (do (zap k) k)))'''
+_CALLEE_POST_LEAKS['post-about-a-mut-record-parameter-field'] = '''(module m
+      (type R (record (n Int)))
+      (type C (record (v Int)))
+      (fn g ((mut r R) (p (Ptr C)))
+        (@spec ((R (Ptr C)) -> Int))
+        (@post (== $result r.n))
+        (do (set! r.n 1) r.n))
+      (fn f ((r R) (p (Ptr C)))
+        (@spec ((R (Ptr C)) -> Int))
+        (@pre (== r.n 0))
+        (@post (== $result r.n))
+        (let ((x (g r p))) x)))'''
+
 # And these claim what is true, through a callee's contract.
 _CALLEE_POST_HOLDS = {
     # A post that reads no state holds of whatever each call returned, even

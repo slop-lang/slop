@@ -56,6 +56,36 @@ def callee_contract(tr, fn_name: str) -> Optional[Tuple[List[str], List[Any], Li
     return None
 
 
+def callee_mut_params(tr, fn_name: str) -> Set[str]:
+    """The parameters of `fn_name` declared `mut`.
+
+    A `mut` parameter is the callee's own copy of the value (#180). Named in a
+    postcondition it means the copy as the callee left it, which the caller
+    never sees: the caller's argument keeps the value it passed (#230).
+    """
+    registry = tr.function_registry
+    if registry is not None and fn_name in registry.functions:
+        fn_def = registry.functions[fn_name]
+        return {p for p, mode in zip(fn_def.params, fn_def.param_modes) if mode == 'mut'}
+    sig = tr.imported_defs.functions.get(fn_name)
+    if sig is not None:
+        return {p for p, mode in zip(sig.params, getattr(sig, 'param_modes', []) or [])
+                if mode == 'mut'}
+    return set()
+
+
+def _names_any(expr, names: Set[str]) -> bool:
+    """True if `expr` names one of `names`, bare or as the root of `p.field`."""
+    if isinstance(expr, Symbol):
+        name = expr.name
+        if '.' in name[1:] and not name.startswith("'"):
+            name = name.split('.', 1)[0]
+        return name in names
+    if isinstance(expr, SList):
+        return any(_names_any(item, names) for item in expr.items)
+    return False
+
+
 def callee_has_contract(tr, fn_name: str) -> bool:
     """True if `fn_name` is a user function with a @post or @property to assume."""
     contract = callee_contract(tr, fn_name)
@@ -503,8 +533,13 @@ def instantiate_callee_contract(tr, fn_name: str, call_term, arg_terms: Sequence
                 return []
             pre_terms.append(term)
         assumption = z3.And(guard, *pre_terms) if pre_terms else guard
+        # A post about a `mut` parameter is about the callee's own copy as it
+        # left it; a @pre reads the value passed in, which is the argument.
+        mut_params = callee_mut_params(tr, fn_name)
         for post in posts:
             if not contract_closed_over(tr, post, allowed) or reads_collection_of(post, hidden):
+                continue
+            if mut_params and _names_any(post, mut_params):
                 continue
             if keep_post is not None and not keep_post(post):
                 continue
