@@ -1,0 +1,105 @@
+(module test-let-star
+  (@intent "let* binds in order and its names are in scope in its body")
+  (import thread (spawn join))
+
+  ;; The checker dispatched only "let", so a let* fell through to the generic
+  ;; path: its bindings were never added to the environment and every use of
+  ;; one in the body was "Undefined variable", even (let* ((a 1)) a). The
+  ;; transpiler's match-arm and closure-capture walks were let-only too (#314).
+
+  (type Shape (union (circle Int) (square Int)))
+
+  (fn sequential ()
+    (@intent "A later binding sees an earlier one")
+    (@spec (() -> Int))
+    (let* ((a 1)
+           (b (+ a 1))
+           (c (* b 3)))
+      (- c 6)))
+
+  (fn single ()
+    (@intent "A lone binding is in scope in the body")
+    (@spec (() -> Int))
+    (let* ((a 7))
+      a))
+
+  (fn in-match-arm ((s Shape))
+    (@intent "let* as a match arm body, emitted as a block")
+    (@spec ((Shape) -> Int))
+    (match s
+      ((circle r)
+        (let* ((d (* r 2))
+               (e (+ d 1)))
+          e))
+      ((square w)
+        (let* ((mut acc w))
+          (set! acc (+ acc w))
+          acc))))
+
+  (fn in-closure ((k Int))
+    (@intent "let* inside a lambda: its own names are not captured, k is")
+    (@spec ((Int) -> Int))
+    (let ((f (fn ((x Int))
+               (let* ((y (+ x k))
+                      (z (* y 2)))
+                 z))))
+      (f 1)))
+
+  (fn in-closure-typed ((k Int))
+    (@intent "A typed let* binding's value is walked for captures, not its type")
+    (@spec ((Int) -> Int))
+    (let ((f (fn ((x Int))
+               (let* ((y Int (+ x k))
+                      (mut z Int (* y 2)))
+                 (set! z (+ z 1))
+                 z))))
+      (f 1)))
+
+  ;; A later value reads the binding before it, not an outer variable that
+  ;; binding shadows: the closure walk must not report the outer one as a
+  ;; capture. Captured, an outer mut y is taken by address, which a thread's
+  ;; closure is refused for (#193), and the read would see the outer value.
+  (fn spawn-hides ((arena Arena))
+    (@intent "The lambda's y is its own let* binding, not the outer mut y")
+    (@spec ((Arena) -> Int))
+    (@alloc arena)
+    (let ((mut y 7))
+      (set! y (+ y 1))
+      (join (spawn arena (fn ()
+                           (let* ((y 1)
+                                  (z Int (+ y 1)))
+                             z))))))
+
+  (fn value-hides ((k Int))
+    (@intent "An untyped later value inside a lambda reads the local y")
+    (@spec ((Int) -> Int))
+    (let ((mut y 100))
+      (set! y (+ y k))
+      (let ((f (fn ((x Int))
+                 (let* ((y x)
+                        (z (+ y 1)))
+                   z))))
+        (f 1))))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any let* is wrong")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((mut fails 0))
+        (when (!= (sequential) 0)
+          (set! fails (+ fails 1)))
+        (when (!= (single) 7)
+          (set! fails (+ fails 1)))
+        (when (!= (in-match-arm (Shape (circle 4))) 9)
+          (set! fails (+ fails 1)))
+        (when (!= (in-match-arm (Shape (square 5))) 10)
+          (set! fails (+ fails 1)))
+        (when (!= (in-closure 3) 8)
+          (set! fails (+ fails 1)))
+        (when (!= (in-closure-typed 3) 9)
+          (set! fails (+ fails 1)))
+        (when (!= (spawn-hides arena) 2)
+          (set! fails (+ fails 1)))
+        (when (!= (value-hides 5) 2)
+          (set! fails (+ fails 1)))
+        fails))))

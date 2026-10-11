@@ -1330,7 +1330,9 @@
           (mut out 1))
       (set! (@ buf 0) 34)  ;; opening quote
       (while (< i slen)
-        (let ((c (@ (. s data) i)))
+        ;; Read the byte unsigned: data is char*, signed on arm64 and x86-64,
+        ;; so a UTF-8 byte >= 0x80 would otherwise test as a control byte (#325)
+        (let ((c (cast U8 (@ (. s data) i))))
           (cond
             ((== c 34)   ;; quote -> \"
               (do

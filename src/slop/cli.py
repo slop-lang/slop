@@ -2248,7 +2248,8 @@ def cmd_check(args):
         import subprocess
         cmd = [str(checker_bin)]
         if compiler_bin:
-            print(f"  Using merged compiler: {compiler_bin}")
+            # stderr, so `slop check --json` prints only the JSON on stdout (#319)
+            print(f"  Using merged compiler: {compiler_bin}", file=sys.stderr)
             cmd.append('check')
         if getattr(args, 'json', False):
             cmd.append('--json')
@@ -3007,7 +3008,7 @@ def cmd_build(args):
                             return 1
                         obj_files.append(obj_file)
 
-                    lib_file = f"{output}.a"
+                    lib_file = f"{output}.a" if not output.endswith('.a') else output
                     ar_cmd = ["ar", "rcs", lib_file] + obj_files
                     result = subprocess.run(ar_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
@@ -3017,7 +3018,7 @@ def cmd_build(args):
 
                 elif library_mode == 'shared':
                     ext = ".dylib" if sys.platform == "darwin" else ".so"
-                    lib_file = f"{output}{ext}"
+                    lib_file = f"{output}{ext}" if not output.endswith(ext) else output
                     compile_cmd = _cc_command() + ["-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir,
                                   "-o", lib_file] + c_files + link_flags
                     if debug:
@@ -3088,13 +3089,22 @@ def cmd_build(args):
             # Transpile using native transpiler
             print("  Transpiling to C...")
             native_module_headers = {}  # Module headers from native transpiler (for library builds)
-            module_name = input_path.stem
-            c_mod_name = module_name.replace('-', '_').replace('/', '_')
 
             if library_mode and native_compiler_bin:
                 # For library builds with native transpiler, use split output to get separate header
                 split_results, success = transpile_native_split(str(input_path))
-                if success and module_name in split_results:
+                # Name the header after the (module ...) form, which need not
+                # match the file name (#304)
+                module_name = input_path.stem
+                if success and module_name not in split_results:
+                    if len(split_results) != 1:
+                        names = ', '.join(sorted(split_results)) or 'none'
+                        print(f"  Error: expected one module in {input_path}, the transpiler "
+                              f"produced {len(split_results)} ({names})", file=sys.stderr)
+                        return 1
+                    module_name = next(iter(split_results))
+                if success:
+                    c_mod_name = module_name.replace('-', '_').replace('/', '_')
                     header, impl = split_results[module_name]
                     native_module_headers[module_name] = header
                     # Build C file with proper includes
@@ -3149,7 +3159,8 @@ def cmd_build(args):
         if library_mode == 'static':
             # Compile to object file, then create static library
             obj_file = f"{output}.o"
-            lib_file = f"{output}.a"
+            # Keep a suffix -o already has: -o m.a writes m.a, not m.a.a (#304)
+            lib_file = f"{output}.a" if not output.endswith('.a') else output
 
             compile_cmd = _cc_command() + ["-c", f"-O{opt_level}", "-I", str(runtime_path), "-o", obj_file, c_file]
             if debug:
@@ -3182,7 +3193,7 @@ def cmd_build(args):
         elif library_mode == 'shared':
             # Compile to shared library
             ext = ".dylib" if sys.platform == "darwin" else ".so"
-            lib_file = f"{output}{ext}"
+            lib_file = f"{output}{ext}" if not output.endswith(ext) else output
 
             compile_cmd = _cc_command() + ["-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path),
                           "-o", lib_file, c_file] + link_flags

@@ -1,0 +1,28 @@
+(module test-unwrap-inline
+  (@intent "unwrap takes an Option written inline, whose C carries commas")
+
+  ;; (some x) lowers to a compound literal such as
+  ;; ((slop_option_int){.has_value = 1, .value = 1}). The runtime's unwrap was a
+  ;; one-argument macro, so the preprocessor split that literal at its commas
+  ;; and cc rejected the call: "too many arguments provided to function-like
+  ;; macro invocation". Unwrapping a call's result never hit it, since a call
+  ;; has no top-level comma (#306).
+
+  (type Point (record (x Int) (y Int)))
+
+  (fn some-int ((n Int))
+    (@intent "An Option result from a call, the form that already worked")
+    (@spec ((Int) -> (Option Int)))
+    (some n))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if an inline unwrap is wrong")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (!= (unwrap (some 1)) 1)
+        (set! fails (+ fails 1)))
+      (when (!= (. (unwrap (some (Point 3 4))) y) 4)
+        (set! fails (+ fails 1)))
+      (when (!= (unwrap (some-int 5)) 5)
+        (set! fails (+ fails 1)))
+      fails)))

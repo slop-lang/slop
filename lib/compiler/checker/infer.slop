@@ -975,8 +975,9 @@
                   ((none) (env-get-unit-type env)))
                 (env-get-unit-type env))))
 
-        ;; (let ((bindings)) body...) - bind variables and infer body type
-        ((string-eq op "let")
+        ;; (let ((bindings)) body...) - bind variables and infer body type.
+        ;; let binds in order, so it already has let*'s sequential scoping (#314)
+        ((or (string-eq op "let") (string-eq op "let*"))
           (infer-let-expr env expr))
 
         ;; (when cond body...) - check condition and all body expressions, return Unit

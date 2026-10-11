@@ -282,3 +282,100 @@ class TestRefHelp:
         for topic in TOPICS:
             assert topic in out
         assert "stdlib module" in out
+
+
+CLEAN_MODULE = """\
+(module clean
+  (fn f ((x Int))
+    (@intent "Add one")
+    (@spec ((Int) -> Int))
+    (+ x 1)))
+"""
+
+
+class TestCheckJson:
+    @needs_compiler
+    def test_json_stdout_is_only_json(self, monkeypatch, capsys, tmp_path):
+        # The "Using merged compiler" status line went to stdout ahead of the
+        # JSON document, so a consumer had to skip to the last line (#319)
+        path = tmp_path / "clean.slop"
+        path.write_text(CLEAN_MODULE)
+        rc, out, err = run_cli(monkeypatch, capsys, "check", "--json", str(path))
+        assert rc == 0
+        json.loads(out)
+        assert "Using merged compiler" not in out
+        assert "Using merged compiler" in err
+
+
+# A module whose name differs from its file's
+MATHY_MODULE = """\
+(module mathy
+  (export add)
+  (fn add ((a Int) (b Int))
+    (@intent "Add two numbers")
+    (@spec ((Int Int) -> Int))
+    (+ a b)))
+"""
+
+USES_MATHY_MODULE = """\
+(module app
+  (import mathy (add))
+  (export twice)
+  (fn twice ((x Int))
+    (@intent "Double a number")
+    (@spec ((Int) -> Int))
+    (add x x)))
+"""
+
+needs_library_build = pytest.mark.skipif(
+    cli._WINDOWS, reason="library builds aren't supported on Windows")
+
+
+@needs_compiler
+@needs_library_build
+class TestBuildLibrary:
+    def test_module_name_differs_from_file(self, monkeypatch, capsys, tmp_path):
+        # The single-file library path looked the module up by the file's
+        # stem, did not find "helpers" among the transpiled modules, and
+        # stopped (#304)
+        src = tmp_path / "helpers.slop"
+        src.write_text(MATHY_MODULE)
+        rc, out, err = run_cli(monkeypatch, capsys, "build", str(src),
+                               "--library", "static", "-o", str(tmp_path / "helpers"))
+        assert rc == 0, out + err
+        assert (tmp_path / "helpers.a").exists()
+        assert (tmp_path / "slop_mathy.h").exists()
+
+    def test_static_output_keeps_given_suffix(self, monkeypatch, capsys, tmp_path):
+        # -o m.a wrote m.a.a (#304). The intermediate C keeps its m.a.c name,
+        # as in 0.4.1, so a build never overwrites an m.c beside it
+        (tmp_path / "m.c").write_text("/* not ours */\n")
+        src = tmp_path / "mathy.slop"
+        src.write_text(MATHY_MODULE)
+        rc, out, err = run_cli(monkeypatch, capsys, "build", str(src),
+                               "--library", "static", "-o", str(tmp_path / "m.a"))
+        assert rc == 0, out + err
+        assert (tmp_path / "m.a").exists()
+        assert not (tmp_path / "m.a.a").exists()
+        assert (tmp_path / "m.c").read_text() == "/* not ours */\n"
+
+    def test_shared_output_keeps_given_suffix(self, monkeypatch, capsys, tmp_path):
+        ext = ".dylib" if sys.platform == "darwin" else ".so"
+        src = tmp_path / "mathy.slop"
+        src.write_text(MATHY_MODULE)
+        rc, out, err = run_cli(monkeypatch, capsys, "build", str(src),
+                               "--library", "shared", "-o", str(tmp_path / f"libm{ext}"))
+        assert rc == 0, out + err
+        assert (tmp_path / f"libm{ext}").exists()
+        assert not (tmp_path / f"libm{ext}{ext}").exists()
+
+    def test_multi_module_output_keeps_given_suffix(self, monkeypatch, capsys, tmp_path):
+        # The multi-module path had the same unguarded suffix (#304)
+        (tmp_path / "mathy.slop").write_text(MATHY_MODULE)
+        src = tmp_path / "app.slop"
+        src.write_text(USES_MATHY_MODULE)
+        rc, out, err = run_cli(monkeypatch, capsys, "build", str(src),
+                               "--library", "static", "-o", str(tmp_path / "app.a"))
+        assert rc == 0, out + err
+        assert (tmp_path / "app.a").exists()
+        assert not (tmp_path / "app.a.a").exists()

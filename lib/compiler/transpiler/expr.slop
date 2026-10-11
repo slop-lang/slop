@@ -8655,8 +8655,8 @@
                   ((sym head-sym)
                     (let ((op (. head-sym name)))
                       (cond
-                        ;; let: skip binding names, recurse into values and body
-                        ((string-eq op "let")
+                        ;; let/let*: skip binding names, recurse into values and body (#314)
+                        ((or (string-eq op "let") (string-eq op "let*"))
                           (collect-symbols-in-let ctx symbols pending items))
                         ;; fn: collect free vars from nested lambda (they need to be captured by us too)
                         ((string-eq op "fn")
@@ -8708,9 +8708,11 @@
                   (updated-pending (list-concat arena pending new-names)))
               (match (deref bindings-expr)
                 ((lst bindings-lst)
-                  ;; For each binding, only collect from the value (with original pending)
+                  ;; For each binding, only collect from the value. let and let*
+                  ;; bind in order, so a value sees the names bound before it (#314)
                   (let ((bindings (. bindings-lst items))
                         (binding-count (list-len bindings))
+                        (mut seen pending)
                         (mut i 0))
                     (while (< i binding-count)
                       (match (list-get bindings i)
@@ -8718,14 +8720,28 @@
                           (match (deref binding)
                             ((lst bind-lst)
                               (let ((bind-items (. bind-lst items)))
-                                ;; binding is (name value) or (mut name value)
-                                ;; Collect from value only
+                                ;; binding is (name value), (mut name value),
+                                ;; (name Type value) or (mut name Type value):
+                                ;; the value is always last. Collect from it only;
+                                ;; reading index 1/2 took a typed binding's type
+                                ;; and missed what its value captures (#314)
                                 (when (>= (list-len bind-items) 2)
-                                  (let ((val-idx (if (is-mut-binding bind-items) 2 1)))
+                                  (let ((val-idx (- (list-len bind-items) 1)))
                                     (match (list-get bind-items val-idx)
                                       ((some val-expr)
-                                        (collect-symbols-in-expr ctx symbols pending val-expr))
-                                      ((none) (do)))))))
+                                        (collect-symbols-in-expr ctx symbols seen val-expr))
+                                      ((none) (do)))))
+                                ;; Later values see this binding's name, not an outer
+                                ;; variable it shadows
+                                (match (list-get bind-items (if (is-mut-binding bind-items) 1 0))
+                                  ((some name-expr)
+                                    (match (deref name-expr)
+                                      ((sym name-sym)
+                                        (let ((one (list-new arena String)))
+                                          (list-push one (. name-sym name))
+                                          (set! seen (list-concat arena seen one))))
+                                      (else (do))))
+                                  ((none) (do)))))
                             (else (do))))
                         ((none) (do)))
                       (set! i (+ i 1)))))
@@ -8958,6 +8974,7 @@
     (@spec ((String) -> Bool))
     ;; Special forms, operators, and type names
     (or (string-eq name "let")
+        (string-eq name "let*")
         (string-eq name "if")
         (string-eq name "cond")
         (string-eq name "match")
