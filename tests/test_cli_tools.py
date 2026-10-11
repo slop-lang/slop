@@ -347,7 +347,9 @@ class TestBuildLibrary:
         assert (tmp_path / "slop_mathy.h").exists()
 
     def test_static_output_keeps_given_suffix(self, monkeypatch, capsys, tmp_path):
-        # -o m.a wrote m.a.a, next to an m.a.c (#304)
+        # -o m.a wrote m.a.a (#304). The intermediate C keeps its m.a.c name,
+        # as in 0.4.1, so a build never overwrites an m.c beside it
+        (tmp_path / "m.c").write_text("/* not ours */\n")
         src = tmp_path / "mathy.slop"
         src.write_text(MATHY_MODULE)
         rc, out, err = run_cli(monkeypatch, capsys, "build", str(src),
@@ -355,8 +357,7 @@ class TestBuildLibrary:
         assert rc == 0, out + err
         assert (tmp_path / "m.a").exists()
         assert not (tmp_path / "m.a.a").exists()
-        assert not (tmp_path / "m.a.c").exists()
-        assert not (tmp_path / "m.a.o").exists()
+        assert (tmp_path / "m.c").read_text() == "/* not ours */\n"
 
     def test_shared_output_keeps_given_suffix(self, monkeypatch, capsys, tmp_path):
         ext = ".dylib" if sys.platform == "darwin" else ".so"
