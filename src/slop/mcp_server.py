@@ -85,7 +85,8 @@ def _module_doc(path: Path) -> dict:
     try:
         return extract_documentation(parse_file(str(path)))
     except ParseError as e:
-        raise ToolError(f"{path}: {e}")
+        # parse_file has put the path in: path:line:col: error: message
+        raise ToolError(str(e))
     except OSError as e:
         raise ToolError(f"Cannot read {path}: {e.strerror or e}")
 
@@ -361,6 +362,13 @@ def tool_check(args: dict) -> str:
     return _run_check(target, include, {})
 
 
+def _parse_error_at(name: str, e) -> str:
+    """A ParseError in the form check reports one: name:line:col: error: ..."""
+    if e.line:
+        return f"{name}:{e.line}:{e.col}: error: {e.message}"
+    return f"{name}: error: {e.message}"
+
+
 def _write_text(path: Path, text: str) -> None:
     # In place, as `slop format` writes: the file keeps its inode, so its
     # owner, permissions, hard links and open readers all see the change
@@ -388,7 +396,9 @@ def tool_format(args: dict) -> str:
         with open(path, encoding='utf-8', newline='') as f:
             source = f.read()
         formatted = format_source(source)
-    except (ParseError, FormatError) as e:
+    except ParseError as e:
+        raise ToolError(_parse_error_at(args.get("path") or "<source>", e))
+    except FormatError as e:
         raise ToolError(str(e))
     except UnicodeDecodeError:
         raise ToolError(f"{args['path']} is not UTF-8 text, so it was left as it is.")

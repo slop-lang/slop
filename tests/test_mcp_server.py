@@ -222,6 +222,11 @@ class TestDoc:
         text, is_error = call("doc", module="docmod.slop", symbol="nope")
         assert is_error and text.endswith("It defines: shout")
 
+    def test_file_that_does_not_parse(self, tmp_path, monkeypatch):
+        (tmp_path / "m.slop").write_text("(module m (fn f")
+        monkeypatch.chdir(tmp_path)
+        assert call("doc", module="m.slop") == ("m.slop:1:11: error: Unclosed list", True)
+
     def test_bad_arguments(self):
         text, is_error = call("doc", module="no-such-module")
         assert is_error and "no standard library module" in text
@@ -485,9 +490,16 @@ class TestFormat:
         assert not call("format", path=str(path))[1]
         assert b"\r\n" in path.read_bytes() and b"\n" not in path.read_bytes().replace(b"\r\n", b"")
 
-    def test_parse_error(self):
-        text, is_error = call("format", source="(module m (fn f")
-        assert is_error and "Unclosed list" in text
+    def test_parse_error(self, tmp_path, monkeypatch):
+        # Located as check locates one: the file, or <source>, then line:col
+        assert call("format", source="(module m (fn f") == (
+            "<source>:1:11: error: Unclosed list", True)
+        assert call("format", source="'") == (
+            "<source>: error: Unexpected end of input", True)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "m.slop").write_text("(module m (fn f")
+        assert call("format", path="m.slop") == ("m.slop:1:11: error: Unclosed list", True)
+        assert (tmp_path / "m.slop").read_text() == "(module m (fn f"
 
     def test_read_and_written_as_utf8(self, tmp_path):
         path = tmp_path / "u.slop"
