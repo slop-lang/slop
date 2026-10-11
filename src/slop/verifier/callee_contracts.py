@@ -75,6 +75,129 @@ def callee_mut_params(tr, fn_name: str) -> Set[str]:
     return set()
 
 
+# Forms that change the collection their first operand names.
+_COLLECTION_WRITES = frozenset((
+    'list-push', 'list-pop', 'list-set', 'list-clear', 'list-insert', 'list-remove',
+    'map-put', 'map-remove', 'map-clear', 'set-put', 'set-remove', 'set-clear',
+))
+
+
+def _root_and_field(target):
+    """(name, first field or None) for `p`, `p.f...` or `(. ... (. p f) ...)`."""
+    if isinstance(target, Symbol):
+        parts = target.name.split('.')
+        return parts[0], (parts[1] if len(parts) > 1 else None)
+    if is_form(target, '.') and len(target) >= 3:
+        root, field_name = _root_and_field(target[1])
+        if root is None:
+            return None, None
+        if field_name is None:
+            field_name = target[2].name if isinstance(target[2], Symbol) else '?'
+        return root, field_name
+    return None, None
+
+
+def _writes_to(body, name: str) -> Optional[Set[str]]:
+    """The fields of `name` that `body` may change, or None if it may change all of it.
+
+    A `set!` of the name or a field of it, a collection write through it, its
+    address taken, or a closure capturing it (a `mut` parameter is captured by
+    reference). Over-approximate: a shadowing local of the same name counts.
+    """
+    fields: Set[str] = set()
+    whole = False
+
+    def note(target):
+        nonlocal whole
+        root, field_name = _root_and_field(target)
+        if root == name:
+            if field_name is None:
+                whole = True
+            else:
+                fields.add(field_name)
+
+    def walk(node):
+        nonlocal whole
+        if not isinstance(node, SList) or len(node) == 0:
+            return
+        head = node[0]
+        if isinstance(head, Symbol):
+            if head.name == 'quote':
+                return
+            if head.name == 'set!':
+                if (len(node) == 4 and isinstance(node[1], Symbol) and node[1].name == name
+                        and isinstance(node[2], Symbol)):
+                    fields.add(node[2].name)        # (set! p f v)
+                elif len(node) >= 2:
+                    note(node[1])
+            elif head.name in _COLLECTION_WRITES and len(node) >= 2:
+                note(node[1])
+            elif head.name in ('addr', 'fn', 'lambda') and _names_any(node, {name}):
+                whole = True
+        for item in node.items:
+            walk(item)
+
+    walk(body)
+    return None if whole else fields
+
+
+def _mut_reads_unchanged(tr, fn_name: str, expr, mut_params: Set[str]) -> bool:
+    """True if every read of a `mut` parameter in `expr` sees what was passed in.
+
+    A `mut` parameter in a postcondition is the callee's copy as it left it
+    (#230). Where the callee never changes the part read, that is the value
+    the caller passed: a field of value type the body never writes, or the
+    whole parameter when the body writes none of it. growl's delta-add pushes
+    to `(. d triples)` and posts about `(. d iteration)`.
+    """
+    registry = tr.function_registry
+    fn_def = registry.functions.get(fn_name) if registry is not None else None
+    types = _callee_types(tr, fn_name)
+    if types is None:
+        return False
+    param_types = types[0]
+    if fn_def is not None:
+        forms = list(getattr(fn_def, 'body_forms', None) or [])
+        if not forms:
+            return False
+        body = SList([Symbol('do')] + forms)
+        writes = {name: _writes_to(body, name) for name in mut_params}
+    else:
+        sig = tr.imported_defs.functions.get(fn_name)
+        recorded = getattr(sig, 'mut_writes', None) or {}
+        if sig is None or any(name not in recorded for name in mut_params):
+            return False
+        writes = {name: recorded[name] for name in mut_params}
+
+    def ok(node) -> bool:
+        if isinstance(node, Symbol):
+            root, field_name = _root_and_field(node)
+            if root not in mut_params:
+                return True
+            if field_name is None:
+                return writes[root] == set()
+            return field_read_ok(root, field_name)
+        if not isinstance(node, SList) or len(node) == 0:
+            return True
+        if is_form(node, '.') and len(node) >= 3:
+            root, field_name = _root_and_field(node)
+            if root in mut_params:
+                return field_read_ok(root, field_name)
+        return all(ok(item) for item in node.items)
+
+    def field_read_ok(root: str, field_name: str) -> bool:
+        changed = writes[root]
+        if changed is None or field_name in changed:
+            return False
+        record = _resolve(tr, param_types.get(root))
+        if not isinstance(record, RecordType) or field_name not in record.fields:
+            return False
+        # A field holding a handle can change through another name for it.
+        return is_value_type(tr, record.fields[field_name], set())
+
+    return ok(expr)
+
+
 def _names_any(expr, names: Set[str]) -> bool:
     """True if `expr` names one of `names`, bare or as the root of `p.field`."""
     if isinstance(expr, Symbol):
@@ -545,12 +668,14 @@ def instantiate_callee_contract(tr, fn_name: str, call_term, arg_terms: Sequence
             pre_terms.append(term)
         assumption = z3.And(guard, *pre_terms) if pre_terms else guard
         # A post about a `mut` parameter is about the callee's own copy as it
-        # left it; a @pre reads the value passed in, which is the argument.
+        # left it, which is the argument only where the callee changed nothing
+        # the post reads; a @pre reads the value passed in.
         mut_params = callee_mut_params(tr, fn_name)
         for post in posts:
             if not contract_closed_over(tr, post, allowed) or reads_collection_of(post, hidden):
                 continue
-            if mut_params and _names_any(post, mut_params):
+            if (mut_params and _names_any(post, mut_params)
+                    and not _mut_reads_unchanged(tr, fn_name, post, mut_params)):
                 continue
             if keep_post is not None and not keep_post(post):
                 continue

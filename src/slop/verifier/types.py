@@ -6,7 +6,7 @@ These are lightweight type containers with no dependencies on other verifier mod
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from slop.parser import SExpr
@@ -82,6 +82,10 @@ class FunctionSignature:
     is_pure: bool = False  # declared @pure
     param_modes: List[Optional[str]] = field(default_factory=list)  # 'in'/'out'/'mut' or None, per param
     properties: List['SExpr'] = field(default_factory=list)  # @property expressions (name dropped)
+    # For each `mut` parameter, the fields its body may change, or None if it
+    # may change the whole value (callee_contracts._writes_to): what a post
+    # about the parameter can still say about the caller's argument.
+    mut_writes: Dict[str, Optional[Set[str]]] = field(default_factory=dict)
 
 
 @dataclass

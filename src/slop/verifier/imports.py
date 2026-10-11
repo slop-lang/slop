@@ -145,8 +145,19 @@ def _extract_function_signature(fn_form: SList, registry: Dict[str, Type]) -> Op
                     CallbackAssumption(item[1].name, item[2])
                 )
 
+    # What the body may change of each `mut` parameter, while the body is at
+    # hand: a caller reads a post about one only where it is unchanged.
+    from .callee_contracts import _writes_to
+    body = SList([Symbol('do')] + [item for item in fn_form.items[3:]
+                                   if not (isinstance(item, SList) and len(item) > 0
+                                           and isinstance(item[0], Symbol)
+                                           and item[0].name.startswith('@'))])
+    mut_writes = {param: _writes_to(body, param)
+                  for param, mode in zip(param_names, param_modes) if mode == 'mut'}
+
     return FunctionSignature(name, param_types, return_type, param_names, postconditions, assumptions,
-                             callback_assumptions, preconditions, is_pure, param_modes, properties)
+                             callback_assumptions, preconditions, is_pure, param_modes, properties,
+                             mut_writes)
 
 
 def _extract_const_value(expr: 'SExpr') -> Any:

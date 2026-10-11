@@ -13918,8 +13918,36 @@ _CALLEE_POST_LEAKS['post-about-a-mut-record-parameter-field'] = '''(module m
         (@post (== $result r.n))
         (let ((x (g r p))) x)))'''
 
+# The write to the field the post reads is in an earlier body form.
+_CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
+      (type D (record (items (List Int)) (it Int)))
+      (fn add ((arena Arena) (mut d D) (x Int))
+        (@spec ((Arena D Int) -> D))
+        (@post (== (. $result it) (. d it)))
+        (set! d.it 5)
+        d)
+      (fn f ((arena Arena) (d D))
+        (@spec ((Arena D) -> Int))
+        (@pre (== (. d it) 1))
+        (@post (== $result 1))
+        (let ((e (add arena d 3))) (. e it))))'''
+
 # And these claim what is true, through a callee's contract.
 _CALLEE_POST_HOLDS = {
+    # A post about a field of a `mut` parameter the callee never writes is
+    # about what was passed in (growl delta-add).
+    'post-about-an-unchanged-field-of-a-mut-parameter': '''(module m
+      (type D (record (items (List Int)) (it Int)))
+      (fn add ((arena Arena) (mut d D) (x Int))
+        (@spec ((Arena D Int) -> D))
+        (@post (== (. $result it) (. d it)))
+        (list-push (. d items) x)
+        d)
+      (fn f ((arena Arena) (d D))
+        (@spec ((Arena D) -> Int))
+        (@pre (== (. d it) 1))
+        (@post (== $result 1))
+        (let ((e (add arena d 3))) (. e it))))''',
     # A post that reads no state holds of whatever each call returned, even
     # for a callee that may change state.
     'state-free-post-of-a-stateful-callee': '''(module m
@@ -14239,3 +14267,38 @@ class TestImportedContractPre:
     def test_a_pre_that_cannot_be_stated_drops_the_post(self):
         # list-visited names nothing outside a loop invariant.
         assert self._axioms(["(== n (list-len (list-visited n)))"]) == []
+
+
+class TestImportedMutWrites:
+    """An imported signature records what each `mut` parameter's body may
+    change, so a caller in another module can read a post about a field the
+    callee never writes (#230)."""
+
+    def _sig(self, src):
+        from slop.parser import parse
+        from slop.verifier.imports import _extract_function_signature
+        return _extract_function_signature(parse(src)[0], {})
+
+    def test_a_field_push_is_a_write_to_that_field(self):
+        sig = self._sig('''(fn add ((arena Arena) (mut d D) (x Int))
+            (@spec ((Arena D Int) -> D))
+            (@post (== (. $result it) (. d it)))
+            (list-push (. d items) x)
+            d)''')
+        assert sig.mut_writes == {'d': {'items'}}
+
+    def test_every_body_form_is_read(self):
+        sig = self._sig('''(fn add ((arena Arena) (mut d D) (x Int))
+            (@spec ((Arena D Int) -> D))
+            (set! d.it 5)
+            d)''')
+        assert sig.mut_writes == {'d': {'it'}}
+
+    def test_a_whole_assignment_or_a_closure_changes_everything(self):
+        assert self._sig('''(fn z ((mut n Int))
+            (@spec ((Int) -> Int))
+            (set! n 0)
+            n)''').mut_writes == {'n': None}
+        assert self._sig('''(fn z ((mut n Int))
+            (@spec ((Int) -> Int))
+            (let ((g (fn () (set! n 1)))) n))''').mut_writes == {'n': None}
