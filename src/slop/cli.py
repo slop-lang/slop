@@ -14,7 +14,6 @@ Commands:
 import argparse
 import sys
 import os
-import re
 import shlex
 import shutil
 from pathlib import Path
@@ -317,25 +316,23 @@ def _deduplicate_trampolines(code: str) -> str:
     return '\n'.join(result_lines)
 
 
-# A file or parse error the native tools print to stdout, interleaved with the
-# JSON they were writing (`file:line:col: error: ...`, `Error: Could not read
-# file: f`). An error starts a line, or follows the '{' / '}' of the JSON
-# written so far (that JSON contains no newlines).
-NATIVE_ERROR_RE = re.compile(
-    r'(?:^|(?<=[{}]))((?:Error|Usage): .*|[^\s{}"][^{}"]*:\d+:\d+: error: .*)$')
-
-
 def _report_native_compiler_failure(result) -> str:
     """Forward a failed `slop-compiler transpile` run's errors to stderr.
 
     The compiler prints transpiler errors to stderr, but file and parse errors
-    to stdout (NATIVE_ERROR_RE). Callers have already forwarded stderr; this
-    forwards the error lines found on stdout and returns a short summary for
-    the caller to print.
+    (`file:line:col: error: ...`, `Error: Could not read file: f`) to stdout,
+    interleaved with the JSON it was writing. Callers have already forwarded
+    stderr; this forwards the error lines found on stdout and returns a short
+    summary for the caller to print.
     """
+    import re
+    # An error starts a line, or follows the '{' / '}' of the JSON the
+    # compiler had written so far (that JSON contains no newlines)
+    error_re = re.compile(
+        r'(?:^|(?<=[{}]))((?:Error|Usage): .*|[^\s{}"][^{}"]*:\d+:\d+: error: .*)$')
     found = False
     for line in result.stdout.splitlines():
-        m = NATIVE_ERROR_RE.search(line)
+        m = error_re.search(line)
         if m:
             print(m.group(1), file=sys.stderr)
             found = True
@@ -2344,6 +2341,18 @@ def _has_imports(ast) -> bool:
 def _resolve_check_files(input_path_str: str, include_paths: list) -> list:
     """Resolve module dependencies for type checking.
     Returns list of file paths in topological order."""
+    return resolve_check_files(input_path_str, include_paths)[0]
+
+
+def resolve_check_files(input_path_str: str, include_paths: list):
+    """Resolve module dependencies for type checking.
+
+    Returns (files, error): the file paths in topological order, and the
+    ResolverError that made resolution fall back to the input file alone
+    (an imported module that does not parse, a cycle), or None. The input
+    file's own read or parse failure is not returned: the native checker
+    reports that one.
+    """
     input_path = Path(input_path_str).resolve()
 
     try:
@@ -2351,10 +2360,10 @@ def _resolve_check_files(input_path_str: str, include_paths: list) -> list:
             source = f.read()
         ast = parse(source)
     except Exception:
-        return [str(input_path)]
+        return [str(input_path)], None
 
     if not _has_imports(ast):
-        return [str(input_path)]
+        return [str(input_path)], None
 
     search_paths = [Path(p) for p in include_paths]
     search_paths.extend(paths.get_stdlib_include_paths())
@@ -2364,9 +2373,9 @@ def _resolve_check_files(input_path_str: str, include_paths: list) -> list:
     try:
         graph = resolver.build_dependency_graph(input_path)
         order = resolver.topological_sort(graph)
-        return [_native_path(graph.modules[name].path) for name in order]
-    except Exception:
-        return [str(input_path)]
+        return [_native_path(graph.modules[name].path) for name in order], None
+    except Exception as e:
+        return [str(input_path)], e
 
 
 def _has_exports(ast) -> bool:

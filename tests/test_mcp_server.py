@@ -107,9 +107,14 @@ class TestProtocol:
             request(1, "resources/list"),
             request(2, "tools/call", {"name": "lint", "arguments": {}}),
             {"jsonrpc": "1.0", "id": 3, "method": "ping"},
+            request(4, "initialize", dict(INITIALIZE, protocolVersion=20250618)),
+            {"jsonrpc": "2.0", "method": 42},
+            {"jsonrpc": "2.0", "id": {}, "method": "ping"},
+            {"jsonrpc": "2.0", "id": True, "method": "ping"},
             raw_lines=["not json"])
-        codes = {r["id"]: r["error"]["code"] for r in replies}
-        assert codes == {1: -32601, 2: -32602, 3: -32600, None: -32700}
+        assert [(r["id"], r["error"]["code"]) for r in replies] == [
+            (1, -32601), (2, -32602), (3, -32600), (4, -32602),
+            (None, -32600), (None, -32600), (None, -32600), (None, -32700)]
 
     def test_batch(self):
         replies, _ = session([request(1, "ping"),
@@ -275,6 +280,22 @@ HELPER = """\
     (* x 2)))
 """
 
+BROKEN_HELPER = """\
+(module helper
+  (export twice)
+  (fn twice ((x Int))
+    (@intent "Double")
+    (@spec ((Int) -> Int))
+    (* x 2.0f)))
+"""
+
+NO_MODULE = """\
+(fn f ((x Int))
+  (@intent "Mixed types")
+  (@spec ((Int) -> String))
+  (+ x "a"))
+"""
+
 USES_XML = """\
 (module uses-xml
   (import xml (xml-parse))
@@ -324,6 +345,21 @@ class TestCheck:
         assert lines[0].startswith("app.slop:3:3: error:")
         assert lines[1].startswith("helper.slop:3:3: error: return value of 'twice'")
 
+    def test_imported_module_that_does_not_parse(self, project):
+        # The import resolution stops at it, and the checker sees app alone;
+        # the parse error has to be reported, not just what follows from it
+        (project / "helper.slop").write_text(BROKEN_HELPER)
+        text, _ = call("check", path="app.slop")
+        assert "helper.slop:6:10: error: invalid number literal" in text
+        assert "A file did not parse" in text.splitlines()[-1]
+
+    def test_file_without_a_module_form(self, project):
+        # The checker keys its diagnostics `unknown`
+        (project / "loose.slop").write_text(NO_MODULE)
+        text, _ = call("check", path="loose.slop")
+        assert "loose.slop:4:8: error: '+' needs a numeric operand" in text
+        assert "unknown" not in text
+
     def test_source(self, project):
         text, is_error = call("check", source=BAD)
         assert not is_error
@@ -341,6 +377,24 @@ class TestCheck:
         assert is_error and text == "Pass exactly one of: path, source."
         text, is_error = call("check", path="missing.slop")
         assert is_error and text.startswith("No such file: missing.slop")
+
+
+def test_check_output_keeps_the_entries_around_an_error_line():
+    # What `slop-compiler check --json a.slop b.slop c.slop` prints when b
+    # does not parse: b's error replaces its entry, mid-object
+    out = ('{"a":{"diagnostics":[{"level":"error","line":8,"col":10,"message":"m1"}]}'
+           'b.slop:7:15: error: invalid number literal\n'
+           ',"c":{"diagnostics":[]}}\n')
+    entries, errors = mcp_server.read_check_output(out)
+    assert [m for m, _ in entries] == ["a", "c"]
+    assert entries[0][1]["diagnostics"][0]["message"] == "m1"
+    assert errors == ["b.slop:7:15: error: invalid number literal"]
+    # The last file failing, and a file that cannot be opened
+    assert mcp_server.read_check_output('{x.slop:1:1: error: Unterminated list\n}\n') == (
+        [], ["x.slop:1:1: error: Unterminated list"])
+    assert mcp_server.read_check_output('{Error: Could not open file: y.slop\n}') == (
+        [], ["Error: Could not open file: y.slop"])
+    assert mcp_server.read_check_output("Usage: slop-compiler check ...") is None
 
 
 def test_check_without_a_native_compiler(monkeypatch, tmp_path):
@@ -377,3 +431,32 @@ class TestFormat:
     def test_parse_error(self):
         text, is_error = call("format", source="(module m (fn f")
         assert is_error and "Unclosed list" in text
+
+    def test_read_and_written_as_utf8(self, tmp_path):
+        path = tmp_path / "u.slop"
+        path.write_bytes(MESSY.replace('"i"', '"café"').encode("utf-8"))
+        assert not call("format", path=str(path))[1]
+        assert '"café"' in path.read_bytes().decode("utf-8")
+        latin1 = tmp_path / "l.slop"
+        latin1.write_bytes(MESSY.replace('"i"', '"café"').encode("latin-1"))
+        text, is_error = call("format", path=str(latin1))
+        assert is_error and "is not UTF-8" in text
+        assert latin1.read_bytes() == MESSY.replace('"i"', '"café"').encode("latin-1")
+
+    def test_failed_write_leaves_the_file_whole(self, tmp_path, monkeypatch):
+        path = tmp_path / "m.slop"
+        path.write_text(MESSY)
+        path.chmod(0o640)
+
+        def fail(src, dst):
+            raise OSError(28, "No space left on device")
+        monkeypatch.setattr(mcp_server.os, "replace", fail)
+        text, is_error = call("format", path=str(path))
+        assert is_error and "No space left on device" in text
+        assert path.read_text() == MESSY
+        assert [p.name for p in tmp_path.iterdir()] == ["m.slop"]   # no temp file left
+        monkeypatch.undo()
+        monkeypatch.setenv("SLOP_HOME", str(REPO_ROOT))
+        assert not call("format", path=str(path))[1]
+        if os.name != "nt":
+            assert path.stat().st_mode & 0o777 == 0o640

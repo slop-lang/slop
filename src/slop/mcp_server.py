@@ -17,6 +17,7 @@ Homebrew formula installs no other Python package.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -188,63 +189,110 @@ def _shown(path_str: str, aliases: Dict[str, str]) -> str:
         return path_str
 
 
+def read_check_output(text: str):
+    """Read `check --json` output as ([(module, entry)], [error lines]).
+
+    The output is one JSON object keyed by module name, but a file that
+    cannot be read or parsed gets a line of text (`file:line:col: error: ...`
+    or `Error: ...`) in place of its entry, in the middle of the object, and
+    the entries around it are still written. Returns None if the output is
+    not that object.
+    """
+    decoder = json.JSONDecoder(strict=False)
+    entries: List[Tuple[str, object]] = []
+    errors: List[str] = []
+    i = len(text) - len(text.lstrip())
+    if text[i:i + 1] != '{':
+        return None
+    i += 1
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in ' \t\r\n,':
+            i += 1
+        elif c == '}':
+            i += 1
+            break
+        elif c == '"':
+            try:
+                module, i = decoder.raw_decode(text, i)
+                while i < n and text[i] in ' \t\r\n':
+                    i += 1
+                if text[i:i + 1] != ':':
+                    return None
+                i += 1
+                while i < n and text[i] in ' \t\r\n':
+                    i += 1
+                entry, i = decoder.raw_decode(text, i)
+            except ValueError:
+                return None
+            entries.append((module, entry))
+        else:
+            end = text.find('\n', i)
+            end = n if end < 0 else end
+            errors.append(text[i:end].strip())
+            i = end + 1
+    errors += [line.strip() for line in text[i:].splitlines() if line.strip()]
+    return entries, errors
+
+
 def _run_check(target: Path, include: List[str], aliases: Dict[str, str]) -> str:
-    from slop.cli import find_native_component, _resolve_check_files, NATIVE_ERROR_RE
+    from slop.cli import find_native_component, resolve_check_files
+    from slop.parser import ParseError
     compiler = find_native_component('compiler')
     checker = compiler or find_native_component('checker')
     if not checker:
         raise ToolError("Native SLOP compiler not found. Build it with "
                         "`make build-native`, or set SLOP_HOME to a SLOP install.")
     cmd = [str(checker)] + (['check'] if compiler else []) + ['--json']
-    files = _resolve_check_files(str(target), include)
+    files, resolve_error = resolve_check_files(str(target), include)
     # stdin is the protocol stream: never let the tool read it
     result = subprocess.run(cmd + files, capture_output=True, text=True,
                             encoding='utf-8', errors='replace',
                             stdin=subprocess.DEVNULL)
+    read = read_check_output(result.stdout)
+    if read is None:
+        raise ToolError(f"The checker exited with status {result.returncode} "
+                        f"and its output was not understood.\n"
+                        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+    entries, error_lines = read
 
-    # The JSON is keyed by module name; map each back to its file
-    file_of = {}
+    # The JSON is keyed by module name, `unknown` for a file without a
+    # (module ...) form; map each back to its file
+    file_of: Dict[str, str] = {}
     for f in files:
-        name = _module_name(_read_text(f))
-        if name and name not in file_of:
-            file_of[name] = f
+        file_of.setdefault(_module_name(_read_text(f)) or 'unknown', f)
     order = {f: i for i, f in enumerate(reversed(files))}   # the target first
     stdlib = paths.get_stdlib_dir()
 
     diagnostics: List[Tuple[str, int, int, str, str]] = []
     hidden = 0
-    parse_failed = False
-    try:
-        data = json.loads(result.stdout, strict=False)
-    except ValueError:
-        data = None
-    if isinstance(data, dict):
-        for module, entry in data.items():
-            file = file_of.get(module, module)
-            for d in (entry or {}).get('diagnostics', []):
-                level = d.get('level', 'error')
-                if level == 'warning' and _under(Path(file), stdlib):
-                    hidden += 1
-                    continue
-                diagnostics.append((file, d.get('line', 0), d.get('col', 0),
-                                    level, d.get('message', '')))
-    else:
-        # A parse or file error interrupts the JSON (NATIVE_ERROR_RE)
-        for line in result.stdout.splitlines():
-            m = NATIVE_ERROR_RE.search(line)
-            if not m:
+    for module, entry in entries:
+        file = file_of.get(module, module)
+        for d in (entry.get('diagnostics', []) if isinstance(entry, dict) else []):
+            level = d.get('level', 'error')
+            if level == 'warning' and _under(Path(file), stdlib):
+                hidden += 1
                 continue
+            diagnostics.append((file, d.get('line', 0), d.get('col', 0),
+                                level, d.get('message', '')))
+    parse_failed = bool(error_lines)
+    for line in error_lines:
+        d = _DIAGNOSTIC_RE.match(line)
+        if d:
+            diagnostics.append((d.group(1), int(d.group(2)), int(d.group(3)),
+                                d.group(4), d.group(5)))
+        else:
+            diagnostics.append(('', 0, 0, 'error', line))
+    # An imported module that does not parse stops the import resolution, and
+    # the checker then sees the file alone; say why
+    if resolve_error is not None:
+        cause = resolve_error.__cause__
+        if isinstance(cause, ParseError) and cause.path:
+            diagnostics.append((cause.path, cause.line, cause.col, 'error', cause.message))
             parse_failed = True
-            d = _DIAGNOSTIC_RE.match(m.group(1))
-            if d:
-                diagnostics.append((d.group(1), int(d.group(2)), int(d.group(3)),
-                                    d.group(4), d.group(5)))
-            else:
-                diagnostics.append(('', 0, 0, 'error', m.group(1)))
-        if not diagnostics:
-            raise ToolError(f"The checker exited with status {result.returncode} "
-                            f"and its output was not understood.\n"
-                            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+        else:
+            diagnostics.append(('', 0, 0, 'error', f"cannot resolve the imports: {resolve_error}"))
 
     errors = sum(1 for d in diagnostics if d[3] == 'error')
     warnings = len(diagnostics) - errors
@@ -263,7 +311,8 @@ def _run_check(target: Path, include: List[str], aliases: Dict[str, str]) -> str
         summary = (f"{errors} error{'s' if errors != 1 else ''}, "
                    f"{warnings} warning{'s' if warnings != 1 else ''}")
     if parse_failed:
-        summary += ". The file did not parse, so it was not type-checked; fix this and check again"
+        summary += (". A file did not parse, so the type check is incomplete; "
+                    "fix the parse error and check again")
     if hidden:
         summary += f" ({hidden} warning{'s' if hidden != 1 else ''} in standard library modules not shown)"
     lines.append(summary)
@@ -295,9 +344,27 @@ def tool_check(args: dict) -> str:
     return _run_check(target, include, {})
 
 
+def _replace_file(path: Path, text: str) -> None:
+    """Write `text` to `path` as UTF-8, all or nothing: into a temporary file
+    beside it, then renamed over it, keeping its permissions."""
+    real = path.resolve()
+    fd, tmp = tempfile.mkstemp(dir=real.parent, prefix=f".{real.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
+        shutil.copymode(real, tmp)
+        os.replace(tmp, real)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def tool_format(args: dict) -> str:
     from slop.formatter import format_source, FormatError
-    from slop.parser import read_source, ParseError
+    from slop.parser import ParseError
     check = bool(args.get("check"))
     try:
         if _one_of(args, "path", "source") == "source":
@@ -309,12 +376,16 @@ def tool_format(args: dict) -> str:
         path = Path(args["path"]).expanduser()
         if not path.is_file():
             raise ToolError(f"No such file: {args['path']} (relative to {Path.cwd()})")
-        # newline='' both ways, as `slop format` does, so CRLF and a \r in a
-        # string literal are written back as they were read
-        source = read_source(str(path))
+        # SLOP source is UTF-8, whatever the locale. newline='' both ways, as
+        # `slop format` does, so CRLF and a \r in a string literal are
+        # written back as they were read.
+        with open(path, encoding='utf-8', newline='') as f:
+            source = f.read()
         formatted = format_source(source)
     except (ParseError, FormatError) as e:
         raise ToolError(str(e))
+    except UnicodeDecodeError:
+        raise ToolError(f"{args['path']} is not UTF-8 text, so it was left as it is.")
     except OSError as e:
         raise ToolError(f"Cannot read {args.get('path')}: {e.strerror or e}")
     if source == formatted:
@@ -322,10 +393,9 @@ def tool_format(args: dict) -> str:
     if check:
         return f"{args['path']}: needs formatting"
     try:
-        with open(path, 'w', encoding='utf-8', newline='') as f:
-            f.write(formatted)
+        _replace_file(path, formatted)
     except OSError as e:
-        raise ToolError(f"Cannot write {args['path']}: {e.strerror or e}")
+        raise ToolError(f"Cannot write {args['path']}: {e.strerror or e}; it was left as it was.")
     return f"{args['path']}: formatted"
 
 
@@ -492,6 +562,8 @@ def _error(id_, code: int, message: str) -> dict:
 
 def _initialize(params: dict) -> dict:
     requested = params.get("protocolVersion")
+    if not isinstance(requested, str):
+        raise ProtocolError(INVALID_PARAMS, "initialize needs a protocolVersion string")
     version = requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
     return {
         "protocolVersion": version,
@@ -525,20 +597,30 @@ _METHODS: Dict[str, Callable[[dict], dict]] = {
 }
 
 
+def _valid_id(id_) -> bool:
+    """MCP request ids are strings or integers."""
+    return isinstance(id_, str) or (isinstance(id_, int) and not isinstance(id_, bool))
+
+
 def handle_message(msg) -> Optional[dict]:
     """The reply to one JSON-RPC message, or None for a notification or a
     response (this server sends no requests)."""
-    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
-        return _error(msg.get("id") if isinstance(msg, dict) else None,
-                      INVALID_REQUEST, "Invalid Request")
-    method = msg.get("method")
-    if "id" not in msg:
-        return None                     # a notification
-    if method is None and ("result" in msg or "error" in msg):
-        return None                     # a response; this server sends no requests
-    id_ = msg["id"]
-    if not isinstance(method, str):
+    if not isinstance(msg, dict):
+        return _error(None, INVALID_REQUEST, "Invalid Request")
+    has_id = "id" in msg
+    # An id that cannot be used is answered with null, as JSON-RPC asks
+    id_ = msg["id"] if has_id and _valid_id(msg["id"]) else None
+    if msg.get("jsonrpc") != "2.0":
         return _error(id_, INVALID_REQUEST, "Invalid Request")
+    if "method" not in msg:
+        if has_id and ("result" in msg or "error" in msg):
+            return None                 # a response; this server sends no requests
+        return _error(id_, INVALID_REQUEST, "Invalid Request")
+    method = msg["method"]
+    if not isinstance(method, str) or (has_id and id_ is None):
+        return _error(id_, INVALID_REQUEST, "Invalid Request")
+    if not has_id:
+        return None                     # a notification
     handler = _METHODS.get(method)
     if handler is None:
         return _error(id_, METHOD_NOT_FOUND, f"Method not found: {method}")
