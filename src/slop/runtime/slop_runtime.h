@@ -754,7 +754,10 @@ typedef struct { bool has_value; int64_t value; } _slop_option_generic;
 #define some(v) ((_slop_option_generic){true, (int64_t)(v)})
 #define none ((_slop_option_generic){false, 0})
 /* Generic unwrap for any Option type */
-#define unwrap(opt) ({ __auto_type _opt = (opt); SLOP_PRE(_opt.has_value, "unwrap on None"); _opt.value; })
+/* Variadic so an argument containing commas, such as the compound literal
+ * (some x) lowers to, reaches the body whole rather than as several
+ * macro arguments (#306) */
+#define unwrap(...) ({ __auto_type _opt = (__VA_ARGS__); SLOP_PRE(_opt.has_value, "unwrap on None"); _opt.value; })
 
 /* Generic Result type for native transpiler */
 /* ok/error constructors produce generic result that can be assigned to typed results */
