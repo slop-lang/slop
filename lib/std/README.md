@@ -27,7 +27,7 @@ Or configure in `slop.toml`:
 include = ["lib/std/strlib", "lib/std/io", "lib/std/thread"]
 
 [build.link]
-libraries = ["pthread"]  # Required for thread module
+libraries = ["pthread"]  # thread module on POSIX; left out of the link on Windows
 ```
 
 ---
@@ -302,7 +302,9 @@ libraries = ["pthread"]  # Required for thread module
 (import thread (chan chan-buffered send recv spawn join ChanError))
 ```
 
-**Requires:** Link with pthread (`libraries = ["pthread"]` in slop.toml)
+**Requires:** On POSIX, link with pthread (`libraries = ["pthread"]` in slop.toml).
+On Windows the runtime uses the Win32 thread API, and the CLI leaves `pthread`
+out of the link.
 
 ### Types
 

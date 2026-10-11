@@ -212,6 +212,29 @@ folder instead of installing, clear the whole folder once:
 xattr -dr com.apple.quarantine slop-VERSION-macos-arm64
 ```
 
+#### Windows
+
+Unzip the Windows archive and run `install.ps1`, or call `bin\slop.cmd` from
+the extracted folder. Besides Python 3.11+, `slop build` and `slop test` need
+a C compiler on PATH:
+
+- MinGW-w64 gcc (MSYS2's `mingw-w64-x86_64-gcc`, for example), or
+- LLVM clang, which targets MSVC and finds the Visual Studio headers and
+  libraries itself.
+
+The CLI uses `CC` when it is set (on every platform), and on Windows otherwise
+the first of `cc`, `gcc` and `clang` it finds. `pthread` and `m` in a
+`slop.toml`'s libraries are left out of the link there, since the C runtime and
+the Win32 API cover them. Library builds (`--library`) aren't supported on
+Windows yet. To build SLOP's generated C inside another build, such as a Rust
+`-sys` crate, compile it with clang-cl or MinGW gcc against `slop_runtime.h`;
+it needs no pthreads library.
+
+`slop.cmd` sets `PYTHONUTF8=1`. Run the CLI some other way, through `uv run
+slop` or a pip-installed `slop`, and set it yourself: without it, Python reads
+the tools' UTF-8 output in the console code page and a build of non-ASCII
+source fails with a `'charmap' codec` error.
+
 ### Build from source
 
 ```bash

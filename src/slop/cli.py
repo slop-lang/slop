@@ -15,6 +15,7 @@ import argparse
 import sys
 import os
 import shlex
+import shutil
 from pathlib import Path
 
 from slop.parser import parse, parse_file, pretty_print, find_holes, is_form, SList, get_imports
@@ -28,14 +29,67 @@ from slop.resolver import ModuleResolver, ResolverError, duplicate_module_messag
 from slop import __version__, paths
 
 
+_WINDOWS = os.name == "nt"
+
+
 def _cc_command():
     """The C compiler invocation every build step starts from.
+
+    CC names the compiler, as for make. Unset, it is cc; on Windows, which
+    has no cc of its own, the first of cc, gcc and clang on PATH (MinGW-w64
+    gcc, or LLVM's clang, which targets MSVC there and takes the same flags).
 
     SLOP_CFLAGS is appended verbatim (shell-split), so a whole build -- the
     generated C and the runtime header it includes -- can be compiled with
     extra flags, e.g. SLOP_CFLAGS="-fsanitize=address,undefined -g".
     """
-    return ["cc"] + shlex.split(os.environ.get("SLOP_CFLAGS", ""))
+    cc = os.environ.get("CC")
+    if cc:
+        # A Windows CC is a program path, which may hold spaces and
+        # backslashes; elsewhere it may carry a wrapper or flags ("ccache cc")
+        cc_cmd = [cc] if _WINDOWS else shlex.split(cc)
+    elif _WINDOWS:
+        found = next((name for name in ("cc", "gcc", "clang") if shutil.which(name)), None)
+        if found is None:
+            sys.exit("Error: no C compiler found. Install MinGW-w64 gcc or LLVM clang "
+                     "and put it on PATH, or set CC to one.")
+        cc_cmd = [found]
+    else:
+        cc_cmd = ["cc"]
+    return cc_cmd + shlex.split(os.environ.get("SLOP_CFLAGS", ""), posix=not _WINDOWS)
+
+
+# Libraries a POSIX build links that Windows has no library for: the C
+# runtime holds the math functions, and the runtime's threads and locks use
+# the Win32 API rather than pthreads.
+_WINDOWS_BUILTIN_LIBS = {"m", "pthread"}
+
+
+def _link_lib_flags(libraries):
+    """-l flags for the given library names, leaving out on Windows those
+    the C runtime and Win32 already provide."""
+    flags = []
+    for lib in libraries:
+        if _WINDOWS and lib in _WINDOWS_BUILTIN_LIBS:
+            continue
+        flags.extend(["-l", lib])
+    return flags
+
+
+def _exe_path(output):
+    """The file an executable build writes. On Windows that is output with
+    .exe added when it has no extension, so the name the CLI reports and
+    runs is the file the linker wrote, whichever linker that is."""
+    if _WINDOWS and not os.path.splitext(output)[1]:
+        return output + ".exe"
+    return output
+
+
+def _native_path(path):
+    """A source path as the native tools get it. They split paths on '/'
+    (a path-style import resolves against its importer's directory), and
+    Windows accepts '/' as well as '\\'."""
+    return Path(path).as_posix() if _WINDOWS else str(path)
 
 
 def extract_requires_blocks(ast):
@@ -2311,7 +2365,7 @@ def _resolve_check_files(input_path_str: str, include_paths: list) -> list:
     try:
         graph = resolver.build_dependency_graph(input_path)
         order = resolver.topological_sort(graph)
-        return [str(graph.modules[name].path) for name in order]
+        return [_native_path(graph.modules[name].path) for name in order]
     except Exception:
         return [str(input_path)]
 
@@ -2418,7 +2472,7 @@ def _build_library_from_sources(
         return 1
 
     # Use native type checker - pass files in dependency order
-    source_files_ordered = [str(all_modules[name].path) for name in order]
+    source_files_ordered = [_native_path(all_modules[name].path) for name in order]
     cmd = [native_checker_bin, '--json'] + source_files_ordered
     result = subprocess.run(cmd, capture_output=True, text=True)
     try:
@@ -2458,7 +2512,7 @@ def _build_library_from_sources(
     results = {}
     if native_compiler_bin:
         # Use native compiler - it outputs JSON with per-module header/impl
-        source_files_ordered = [str(all_modules[name].path) for name in order]
+        source_files_ordered = [_native_path(all_modules[name].path) for name in order]
         cmd = [str(native_compiler_bin), 'transpile'] + source_files_ordered
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
@@ -2532,8 +2586,7 @@ def _build_library_from_sources(
         link_flags = []
         for lpath in link_paths:
             link_flags.extend(["-L", lpath])
-        for lib in link_libraries:
-            link_flags.extend(["-l", lib])
+        link_flags.extend(_link_lib_flags(link_libraries))
 
         if library_mode == 'static':
             # Compile to object files, then create static library
@@ -2706,6 +2759,14 @@ def cmd_build(args):
             library_mode = "static"
             print(f"  Defaulting to static library for sources-based build")
 
+        # Library builds use ar and -shared -fPIC with .a/.so names, which
+        # Windows toolchains don't take as they are
+        if library_mode and _WINDOWS:
+            print("Error: library builds aren't supported on Windows yet. Build an "
+                  "executable, or compile the C from 'slop transpile' with your own "
+                  "toolchain.", file=sys.stderr)
+            return 1
+
         if source_files:
             print(f"Building library -> {output}")
         else:
@@ -2804,7 +2865,7 @@ def cmd_build(args):
                 # Use native type checker - pass files in dependency order
                 import subprocess
                 import json
-                source_files = [str(graph.modules[name].path) for name in order]
+                source_files = [_native_path(graph.modules[name].path) for name in order]
                 cmd = [native_checker_bin, '--json'] + source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 # Note: native checker returns non-zero on errors, but we still
@@ -2850,7 +2911,7 @@ def cmd_build(args):
             results = {}
             if native_compiler_bin:
                 # Use native compiler - it outputs JSON with per-module header/impl
-                source_files = [str(graph.modules[name].path) for name in order]
+                source_files = [_native_path(graph.modules[name].path) for name in order]
                 cmd = [str(native_compiler_bin), 'transpile'] + source_files
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
@@ -2921,8 +2982,7 @@ def cmd_build(args):
                 link_flags = []
                 for lpath in link_paths:
                     link_flags.extend(["-L", lpath])
-                for lib in link_libraries:
-                    link_flags.extend(["-l", lib])
+                link_flags.extend(_link_lib_flags(link_libraries))
 
                 if library_mode == 'static':
                     # Compile to object files, then create static library
@@ -2979,6 +3039,7 @@ def cmd_build(args):
 
                 else:
                     # Default: build executable
+                    output = _exe_path(output)
                     compile_cmd = _cc_command() + [f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir, "-o", output] + c_files + link_flags
                     if debug:
                         compile_cmd.insert(1, "-g")
@@ -3083,8 +3144,7 @@ def cmd_build(args):
         link_flags = []
         for lpath in link_paths:
             link_flags.extend(["-L", lpath])
-        for lib in link_libraries:
-            link_flags.extend(["-l", lib])
+        link_flags.extend(_link_lib_flags(link_libraries))
 
         if library_mode == 'static':
             # Compile to object file, then create static library
@@ -3147,6 +3207,7 @@ def cmd_build(args):
 
         else:
             # Default: build executable
+            output = _exe_path(output)
             compile_cmd = _cc_command() + [
                 f"-O{opt_level}",
                 "-I", str(runtime_path),
@@ -3726,7 +3787,7 @@ def cmd_test(args):
                     # Write to temp file and compile
                     with tempfile.TemporaryDirectory() as tmpdir:
                         test_c_path = os.path.join(tmpdir, "test.c")
-                        test_bin_path = os.path.join(tmpdir, "test_runner")
+                        test_bin_path = _exe_path(os.path.join(tmpdir, "test_runner"))
 
                         with open(test_c_path, 'w') as f:
                             f.write(test_code)
@@ -3741,8 +3802,7 @@ def cmd_test(args):
                             "-I", str(runtime_path),
                             "-o", test_bin_path,
                             test_c_path,
-                            "-lm"
-                        ]
+                        ] + _link_lib_flags(["m"])
 
                         result = subprocess.run(compile_cmd, capture_output=True, text=True)
                         if result.returncode != 0:
@@ -3942,7 +4002,7 @@ def cmd_test(args):
         # Write to temp file and compile
         with tempfile.TemporaryDirectory() as tmpdir:
             test_c_path = os.path.join(tmpdir, "test.c")
-            test_bin_path = os.path.join(tmpdir, "test_runner")
+            test_bin_path = _exe_path(os.path.join(tmpdir, "test_runner"))
 
             with open(test_c_path, 'w') as f:
                 f.write(test_code)
@@ -3956,8 +4016,7 @@ def cmd_test(args):
                 "-I", str(cache_dir),
                 "-o", test_bin_path,
                 test_c_path,
-                "-lm"  # Link math library for math.h functions
-            ]
+            ] + _link_lib_flags(["m"])  # Link math library for math.h functions
 
             result = subprocess.run(compile_cmd, capture_output=True, text=True)
             if result.returncode != 0:

@@ -213,6 +213,9 @@ jobs:
       - name: Build release binaries
         run: cd bootstrap && make release
 
+      - name: Smoke-test the binaries
+        run: for t in bootstrap/bin/slop-*.exe; do "$t" --version; done
+
       - name: Package distribution
         shell: pwsh
         run: ./scripts/package.ps1

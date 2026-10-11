@@ -864,8 +864,8 @@ SLOP                    C
 (Ptr T)                 T*
 (ScopedPtr T)           T* (with cleanup)
 (Fn (A B) -> R)         R (*)(A, B)
-(Chan T)                slop_chan_T (via SLOP_CHAN_DEFINE macro)
-(Thread T)              slop_thread_T (via SLOP_THREAD_DEFINE macro)
+(Chan T)                slop_chan_T (struct generated for each element type)
+(Thread T)              slop_thread_T (struct generated for each result type)
 ```
 
 #### Range Type Optimization
@@ -1174,7 +1174,10 @@ functions and are **not** reserved; only what the transpiler lowers itself is.
 
 ### 8.1 Concurrency (thread library)
 
-For concurrency primitives, import from the thread library (requires `-lpthread`):
+For concurrency primitives, import from the thread library. It is built on the
+runtime's portable threads and locks: pthreads on POSIX (link `pthread` where
+libc doesn't include it), the Win32 thread API on Windows, which needs no
+library:
 
 ```
 (import thread (chan chan-buffered chan-close send recv try-recv spawn join))
