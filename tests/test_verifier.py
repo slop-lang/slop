@@ -13918,6 +13918,22 @@ _CALLEE_POST_LEAKS['post-about-a-mut-record-parameter-field'] = '''(module m
         (@post (== $result r.n))
         (let ((x (g r p))) x)))'''
 
+# The callee's copy of xs keeps its length; the caller's grows through the
+# pointer to it (Codex review round 5). The caller's own xs is a mut local.
+_CALLEE_POST_LEAKS['length-post-with-a-pointer-to-the-same-list'] = '''(module m
+      (fn g ((xs (List Int)) (p (Ptr (List Int))))
+        (@spec (((List Int) (Ptr (List Int))) -> Int))
+        (@post (== $result (list-len xs)))
+        (do
+          (list-push (deref p) 1)
+          (cast Int (list-len xs))))
+      (fn f ((arena Arena))
+        (@spec ((Arena) -> Int))
+        (@post (== $result 0))
+        (let ((mut xs (list-new arena Int)))
+          (let ((a (g xs (addr xs))))
+            (- (cast Int (list-len xs)) a)))))'''
+
 # The write to the field the post reads is in an earlier body form.
 _CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
       (type D (record (items (List Int)) (it Int)))

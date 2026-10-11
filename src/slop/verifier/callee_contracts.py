@@ -24,7 +24,7 @@ import z3
 from slop.parser import SList, Symbol, Number, String, is_form
 from slop.types import (
     PrimitiveType, RangeType, EnumType, RecordType, UnionType, OptionType, ResultType,
-    ListType,
+    ListType, ArrayType, MapType, PtrType,
 )
 
 _MISSING = object()
@@ -351,6 +351,101 @@ def _payload_types(tr, scrutinee_type, tag: str):
     return None
 
 
+_SCALARS = frozenset(('Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64',
+                      'Float', 'F32', 'F64', 'Bool', 'String', 'Unit', 'Arena'))
+
+
+def _parts(tr, typ):
+    """The types a value of `typ` holds by value, or None if `typ` is not known."""
+    if isinstance(typ, PrimitiveType):
+        return () if typ.name in _SCALARS else None
+    if isinstance(typ, (RangeType, EnumType)):
+        return ()
+    if isinstance(typ, RecordType):
+        return tuple(typ.fields.values())
+    if isinstance(typ, UnionType):
+        parts = []
+        for tag in typ.variants:
+            recorded = typ.payload_types.get(tag)
+            if recorded is None:
+                first = typ.variants[tag]
+                recorded = (first,) if first is not None else ()
+            parts.extend(p for p in recorded if p is not None)
+        return tuple(parts)
+    if isinstance(typ, OptionType):
+        return (typ.inner,)
+    if isinstance(typ, ResultType):
+        return (typ.ok_type, typ.err_type)
+    if isinstance(typ, (ListType, ArrayType)):
+        return (typ.element_type,)
+    if isinstance(typ, MapType):
+        return (typ.key_type, typ.value_type)
+    return None         # closures, channels, threads, anything unknown
+
+
+def _pointee_types(tr, types):
+    """Every type a pointer reachable from values of `types` may point to.
+
+    None if some type on the way is not known well enough to say.
+    """
+    pointees = []
+    seen = set()
+    stack = list(types)
+    while stack:
+        typ = _resolve(tr, stack.pop())
+        if typ is None:
+            return None
+        if id(typ) in seen:
+            continue
+        seen.add(id(typ))
+        if isinstance(typ, PtrType):
+            pointees.append(typ.pointee)
+            stack.append(typ.pointee)
+            continue
+        parts = _parts(tr, typ)
+        if parts is None:
+            return None
+        stack.extend(parts)
+    return pointees
+
+
+def _holds_list(tr, typ, element_key: str, seen=frozenset()) -> bool:
+    """True if a value of `typ` holds, by value, a List header of that element type."""
+    typ = _resolve(tr, typ)
+    if typ is None:
+        return True
+    if id(typ) in seen:
+        return False
+    seen = seen | {id(typ)}
+    if isinstance(typ, ListType) and str(typ.element_type) == element_key:
+        return True
+    if isinstance(typ, PtrType):
+        return False    # behind a pointer, not by value
+    parts = _parts(tr, typ)
+    if parts is None:
+        return True
+    return any(_holds_list(tr, part, element_key, seen) for part in parts)
+
+
+def _list_length_is_the_callers(tr, param_types, list_type) -> bool:
+    """True if the callee cannot change the caller's length of a List of `list_type`.
+
+    A List is a header held by value: the callee's copy of one has its own
+    length. The caller's changes only through a pointer to where the caller
+    keeps that header - `(g xs (addr xs))` pushes to the caller's xs while a
+    post reads the callee's copy. So no pointer reachable from the
+    parameters may lead to a value holding a header of this element type.
+    """
+    list_type = _resolve(tr, list_type)
+    if not isinstance(list_type, ListType):
+        return False
+    pointees = _pointee_types(tr, param_types)
+    if pointees is None:
+        return False
+    key = str(list_type.element_type)
+    return not any(_holds_list(tr, target, key) for target in pointees)
+
+
 def contract_is_state_free(tr, fn_name: str, expr) -> bool:
     """True if `expr`, part of `fn_name`'s contract, reads no mutable state.
 
@@ -363,12 +458,9 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
     What is read out of a value is fixed once the call returns: a field of a
     record passed or returned by value - whatever else the record holds -
     and the payload of a Result, an Option or a union, through `match`. So
-    is a String's length, and the length of a List the callee cannot grow or
-    shrink: a parameter (or a List field of one) is read-only to it unless
-    `mut` (spec 3.4), and a post naming a `mut` parameter is never assumed;
-    the List it returns is its own. (Through another handle to the same List
-    - a pointer to a record holding it - the callee could still change it;
-    the model follows no aliasing anywhere, #242.) Anything read through a
+    is a String's length, and the length of a List - a header held by value -
+    unless a pointer the callee can reach could lead to where the caller
+    keeps that header (_list_length_is_the_callers). Anything read through a
     pointer, out of a collection's contents, or by calling a function is not.
     """
     types = _callee_types(tr, fn_name)
@@ -377,6 +469,8 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
     param_types, return_type = types
     env = dict(param_types)
     env['$result'] = return_type
+    if any(t is None for t in param_types.values()):
+        return False
 
     def type_of(node, env):
         """The declared type of a name or a by-value field chain, or None."""
@@ -421,10 +515,11 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
         if head.name == '.':
             return len(node) == 3 and free(node[1], env) and by_value_record(node[1], env)
         if head.name == 'list-len':
-            # The length of a parameter, or of a List field of one held by
-            # value, or of the List returned: not a read through a handle.
+            # The length in a List header the callee holds by value: a
+            # parameter, a List field of one, or the List returned.
             return (len(node) == 2 and free(node[1], env)
-                    and isinstance(_resolve(tr, type_of(node[1], env)), ListType))
+                    and _list_length_is_the_callers(tr, list(param_types.values()),
+                                                    type_of(node[1], env)))
         if head.name == 'match' and len(node) >= 3:
             if not free(node[1], env):
                 return False
