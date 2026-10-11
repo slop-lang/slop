@@ -773,8 +773,9 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         for the state the caller started with. Of its posts only those that
         read no state are assumed, at a tail call too, and a post naming a
         parameter only if the callee cannot have changed the caller's value
-        of that argument (callee_contracts.unstable_arguments). Its @pre still
-        guards them, read as every @pre is.
+        of that argument (callee_contracts.unstable_arguments). Its @pre must
+        pass the same test: a precondition about a field the callee writes
+        would read, here, the value the field was left with.
 
         Returns (axioms, tail_axioms). The tail axioms are the same facts with
         `$result` read as the caller's own, for a call in tail position - the
@@ -812,7 +813,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     and site.term.sort() == result_var.sort():
                 tail_axioms.extend(instantiate_callee_contract(
                     translator, site.fn_name, site.term, site.args, site.path,
-                    result_term=result_var, keep_post=keep, patterns=False))
+                    result_term=result_var, keep_post=keep, keep_pre=keep, patterns=False))
             guard = site.path
             if site.past_exit:
                 if early_exits is None:
@@ -821,7 +822,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     guard = z3.And(guard, reached_guard)
             axioms.extend(instantiate_callee_contract(
                 translator, site.fn_name, site.term, site.args, guard,
-                keep_post=keep, patterns=False))
+                keep_post=keep, keep_pre=keep, patterns=False))
         return axioms, tail_axioms
 
     @staticmethod

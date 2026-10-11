@@ -14017,6 +14017,23 @@ _CALLEE_POST_LEAKS['tail-call-to-a-callee-whose-post-reads-a-map-it-grew'] = '''
         (@post (== $result 0))
         (g m)))'''
 
+# The callee's @pre reads a field it then writes: as one value before and
+# after the call, the pre looks met wherever the caller's post reads the new
+# value (Codex review round 9).
+_CALLEE_POST_LEAKS['pre-reading-state-the-callee-writes'] = '''(module m
+      (type R (record (n Int)))
+      (fn g ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@pre (== p.n 1))
+        (@post (== $result 1))
+        (let ((old p.n))
+          (set! p.n 1)
+          old))
+      (fn f ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@post (implies (== p.n 1) (== $result 1)))
+        (g p)))'''
+
 # The write to the field the post reads is in an earlier body form.
 _CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
       (type D (record (items (List Int)) (it Int)))
