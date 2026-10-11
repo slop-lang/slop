@@ -194,13 +194,19 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
 
     def value_rooted(node) -> bool:
         if isinstance(node, Symbol):
-            return node.name in value_roots
+            return node.name.split('.', 1)[0] in value_roots
         if is_form(node, '.') and len(node) >= 3:
             return value_rooted(node[1])
         return False
 
     def free(node) -> bool:
-        if isinstance(node, (Symbol, Number, String)):
+        if isinstance(node, Symbol):
+            # `p.field` is a field read, as `(. p field)` is; a bare name is
+            # the value the call was given.
+            if '.' in node.name[1:]:
+                return value_rooted(node)
+            return True
+        if isinstance(node, (Number, String)):
             return True
         if not isinstance(node, SList) or len(node) == 0:
             return True

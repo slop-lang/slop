@@ -13864,8 +13864,68 @@ _CALLEE_POST_LEAKS = {
         (if c (let ((xs (pos arena n))) 0) 1)))''',
 }
 
+# A callee that may change state is one term for every call with the same
+# arguments (#227); a post reading the state it changes would speak for every
+# call at once.
+_CALLEE_POST_LEAKS['state-read-of-a-stateful-callee'] = '''(module m
+      (type Counter (record (n Int)))
+      (fn bump ((c (Ptr Counter)))
+        (@spec (((Ptr Counter)) -> Int))
+        (@post (== $result (. c n)))
+        (do (set! (. c n) (+ (. c n) 1)) (. c n)))
+      (fn f ((c (Ptr Counter)))
+        (@spec (((Ptr Counter)) -> Int))
+        (@post (== $result (. c n)))
+        (let ((a (bump c)))
+          (set! (. c n) 0)
+          a)))'''
+
+# The same, through the `c.n` shorthand for a field read.
+_CALLEE_POST_LEAKS['dotted-state-read-of-a-stateful-callee'] = '''(module m
+      (type Counter (record (n Int)))
+      (fn bump ((c (Ptr Counter)))
+        (@spec (((Ptr Counter)) -> Int))
+        (@post (== $result c.n))
+        (do (set! (. c n) (+ (. c n) 1)) (. c n)))
+      (fn f ((c (Ptr Counter)))
+        (@spec (((Ptr Counter)) -> Int))
+        (@post (== $result c.n))
+        (let ((a (bump c)))
+          (set! (. c n) 0)
+          a)))'''
+
 # And these claim what is true, through a callee's contract.
 _CALLEE_POST_HOLDS = {
+    # A post that reads no state holds of whatever each call returned, even
+    # for a callee that may change state.
+    'state-free-post-of-a-stateful-callee': '''(module m
+      (type Node (record (tag Int)))
+      (fn make ((arena Arena) (proto (Ptr Node)))
+        (@spec ((Arena (Ptr Node)) -> (Ptr Node)))
+        (@alloc arena)
+        (@pre (!= proto nil))
+        (@post (!= $result nil))
+        (let ((p (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+          p))
+      (fn f ((arena Arena) (proto (Ptr Node)))
+        (@spec ((Arena (Ptr Node)) -> (Ptr Node)))
+        (@alloc arena)
+        (@pre (!= proto nil))
+        (@post (!= $result nil))
+        (let ((n (make arena proto)))
+          (set! (. proto tag) 1)
+          n)))''',
+    # A callee's @pre about a literal's length is established by the literal.
+    'pre-on-a-string-literal': '''(module m
+      (fn q ((s String))
+        (@spec ((String) -> Int))
+        (@pre (> (. s len) 0))
+        (@post (== $result 1))
+        1)
+      (fn f ()
+        (@spec (() -> Int))
+        (@post (== $result 1))
+        (q "p")))''',
     'tail-call': _with_one('''
       (fn f ((n Int))
         (@spec ((Int) -> Int))
@@ -14035,6 +14095,24 @@ class TestTranslatorArms:
             (@post (== $result true))
             (and (or (== k 'f-a) (== k 'f-b))
                  (or (== (. l form) 'f-a) (== (. l form) 'f-b)))))''').status == 'verified'
+
+    def test_a_string_literal_is_as_long_as_its_bytes(self):
+        """string-len and .len count UTF-8 bytes at run time: "é" is 2.
+
+        Built without the parser, which cannot read a non-ASCII literal
+        until #325's fix ships."""
+        import z3
+        from slop.verifier import MinimalTypeEnv, Z3Translator
+        from slop.parser import SList, Symbol, String
+
+        translator = Z3Translator(MinimalTypeEnv())
+        literal = String("é")
+        by_function = translator.translate_expr(SList([Symbol('string-len'), literal]))
+        by_field = translator.translate_expr(SList([Symbol('.'), literal, Symbol('len')]))
+        solver = z3.Solver()
+        solver.add(*translator.constraints)
+        solver.add(z3.Or(by_function != 2, by_field != 2))
+        assert solver.check() == z3.unsat
 
     def test_a_field_two_records_declare_differently_is_not_bounded(self):
         assert _status_of('''(module m
