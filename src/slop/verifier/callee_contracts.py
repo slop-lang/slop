@@ -424,7 +424,7 @@ def _caller_bindings(body) -> dict:
     return sources
 
 
-def _written_in_place(body) -> Set[str]:
+def written_in_place(body) -> Set[str]:
     """The names `body` changes in place: a field of one set, a collection
     write through one or a field of one. Not a `set!` of the bare name, which
     the translator gives a new version."""
@@ -456,6 +456,40 @@ def _written_in_place(body) -> Set[str]:
     return names
 
 
+# Forms that read only the value of a `$result` they are given, never what
+# it holds: comparisons and arithmetic, and (a String being immutable) the
+# string builtins.
+_READS_THE_VALUE_ONLY = frozenset((
+    '==', '!=', '<', '<=', '>', '>=', '+', '-', '*', '/', '%',
+    'and', 'or', 'not', 'implies', 'if',
+    'string-len', 'starts-with', 'ends-with', 'string-eq', 'string-contains',
+))
+
+
+def reads_into_result(expr) -> bool:
+    """True if `expr` reads something `$result` holds: a field, a length, a payload.
+
+    The caller may change that in place after the call - push onto the List a
+    call returned, set a field of the record it built - which the model does
+    not version (#242), so such a post would outlive the change.
+    """
+    def walk(node, value_position: bool) -> bool:
+        if isinstance(node, Symbol):
+            if node.name == '$result':
+                return not value_position
+            return node.name.startswith('$result.')
+        if not isinstance(node, SList) or len(node) == 0:
+            return False
+        head = node[0]
+        if isinstance(head, Symbol) and head.name == 'quote':
+            return False
+        value_args = isinstance(head, Symbol) and head.name in _READS_THE_VALUE_ONLY
+        return any(walk(item, value_args) for item in node.items[1:]) or \
+            (not isinstance(head, Symbol) and walk(head, False))
+
+    return walk(expr, True)
+
+
 def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
                        caller_param_types) -> Set[str]:
     """The parameters whose argument a stateful callee might change behind the call.
@@ -479,8 +513,8 @@ def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
     # parameter declared as a pointer is not among them: a field set through
     # it changes what it points to, not the pointer passed, and a read through
     # it is a state read the contract filter already refuses.
-    written_in_place = {
-        name for name in _written_in_place(caller_body)
+    changed_in_place = {
+        name for name in written_in_place(caller_body)
         if not isinstance(_resolve(tr, caller_param_types.get(name)), PtrType)
         or name in sources}
 
@@ -489,7 +523,7 @@ def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
         return typ if isinstance(typ, RecordType) else None
 
     def field_chain_ok(root: str, fields: Sequence[str]) -> bool:
-        if root in sources or root in written_in_place:
+        if root in sources or root in changed_in_place:
             return False        # a local's type is not known here
         record = by_value_record(root)
         for index, field_name in enumerate(fields):
@@ -516,7 +550,7 @@ def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,
     visiting: Set[str] = set()
 
     def stable_name(name: str) -> bool:
-        if name in written_in_place:
+        if name in changed_in_place:
             return False
         if name not in sources:
             return True         # a parameter, a constant, an enum value

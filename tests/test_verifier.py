@@ -14050,6 +14050,23 @@ _CALLEE_POST_LEAKS['argument-the-caller-changes-in-place-after-the-call'] = '''(
             (set! r.n 1)
             (- r.n x)))))'''
 
+# The caller pushes onto the List a call returned; the model does not version
+# a push onto a list from a call, so its length is the term from before
+# (Codex review round 11).
+_CALLEE_POST_LEAKS['result-the-caller-changes-in-place-after-the-call'] = '''(module m
+      (fn make ((arena Arena))
+        (@spec ((Arena) -> (List Int)))
+        (@alloc arena)
+        (@post (== (list-len $result) 0))
+        (list-new arena Int))
+      (fn f ((arena Arena))
+        (@spec ((Arena) -> Int))
+        (@alloc arena)
+        (@post (== $result 0))
+        (let ((mut xs (make arena)))
+          (list-push xs 1)
+          (cast Int (list-len xs)))))'''
+
 # The write to the field the post reads is in an earlier body form.
 _CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
       (type D (record (items (List Int)) (it Int)))
