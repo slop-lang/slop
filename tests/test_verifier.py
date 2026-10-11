@@ -13991,6 +13991,32 @@ _CALLEE_POST_LEAKS['tail-call-with-an-argument-copied-out-of-a-pointer'] = '''(m
         (let ((xs (deref p)))
           (g xs p))))'''
 
+# A stateful callee's post reads the state it left; the model reads a field
+# as one value before and after the call, so the caller's @pre about the
+# state it started with would meet it (Codex review round 8). At a tail call
+# too, and for a Map's size.
+_CALLEE_POST_LEAKS['tail-call-to-a-callee-whose-post-reads-what-it-wrote'] = '''(module m
+      (type R (record (n Int)))
+      (fn g ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@post (== $result p.n))
+        (do (set! p n 1) p.n))
+      (fn f ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@pre (== p.n 0))
+        (@post (== $result 0))
+        (g p)))'''
+_CALLEE_POST_LEAKS['tail-call-to-a-callee-whose-post-reads-a-map-it-grew'] = '''(module m
+      (fn g ((m (Map Int Int)))
+        (@spec (((Map Int Int)) -> Int))
+        (@post (== $result (map-len m)))
+        (do (map-put m 1 10) (map-len m)))
+      (fn f ((m (Map Int Int)))
+        (@spec (((Map Int Int)) -> Int))
+        (@pre (== (map-len m) 0))
+        (@post (== $result 0))
+        (g m)))'''
+
 # The write to the field the post reads is in an earlier body form.
 _CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
       (type D (record (items (List Int)) (it Int)))
@@ -14040,22 +14066,6 @@ _CALLEE_POST_HOLDS = {
         (let ((n (make arena proto)))
           (set! proto.tag 1)
           n)))''',
-    # Each arm returns what its callee does; the callees change state, so
-    # their posts are taken only where the call is the value returned.
-    'tail-calls-in-both-arms-of-a-stateful-callee': '''(module m
-      (type Counter (record (n Int)))
-      (fn bump-a ((c (Ptr Counter)) (k Int))
-        (@spec (((Ptr Counter) Int) -> Int))
-        (@post (> $result c.n))
-        (do (set! c.n k) (+ k 1)))
-      (fn bump-b ((c (Ptr Counter)) (k Int))
-        (@spec (((Ptr Counter) Int) -> Int))
-        (@post (> $result c.n))
-        (do (set! c.n k) (+ k 2)))
-      (fn f ((c (Ptr Counter)) (b Bool) (k Int))
-        (@spec (((Ptr Counter) Bool Int) -> Int))
-        (@post (> $result c.n))
-        (if b (bump-a c k) (bump-b c k))))''',
     # What a match reads out of a returned Result, and a field of a record
     # held by value, are fixed once the call returns.
     'value-read-post-of-a-stateful-callee': '''(module m

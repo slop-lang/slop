@@ -768,22 +768,22 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         that took no early exit. A call to a function that may change state -
         not @pure, and given a list, a map or a pointer - is the same term at
         every call with the same arguments (#227), and the model reads state as
-        if it never changed: of its posts only those that read no state are
-        assumed, except at a call the function returns, whose end state is the
-        caller's. Its @pre still guards them, read as every @pre is. And
-        wherever the call is, a post naming a parameter is kept only if the
-        callee cannot have changed the caller's value of that argument
-        (callee_contracts.unstable_arguments).
+        if it never changed (#242): one term for a field before the call and
+        after it, so a post about the state the callee left would also speak
+        for the state the caller started with. Of its posts only those that
+        read no state are assumed, at a tail call too, and a post naming a
+        parameter only if the callee cannot have changed the caller's value
+        of that argument (callee_contracts.unstable_arguments). Its @pre still
+        guards them, read as every @pre is.
 
         Returns (axioms, tail_axioms). The tail axioms are the same facts with
         `$result` read as the caller's own, for a call in tail position - the
         body's last form, through `do`, `let` and the arms of `if`, `cond` and
         `match` - under the path the call was recorded on. On that path the
         call is what the function returns, so this keeps a post the call's
-        term cannot carry - one about the elements of a returned list, or one
-        reading state, whose end state is the caller's. They describe the
-        result only where the trailing form does, so they go through
-        add_tail_axiom.
+        term cannot carry - one about the elements of a returned list. They
+        describe the result only where the trailing form does, so they go
+        through add_tail_axiom.
         """
         from .callee_contracts import (
             instantiate_callee_contract, callee_is_pure, params_are_values,
@@ -798,15 +798,12 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             # A post about an argument is about it as it was at the call; a
             # stateful callee may change the caller's value through a pointer,
             # after which the model still reads the same term (#242).
-            keep_tail = keep = None
+            keep = None
             if stateful:
                 contract = callee_contract(translator, site.fn_name)
                 unstable = unstable_arguments(
                     translator, site.expr, contract[0] if contract else [], body,
                     caller_param_types)
-
-                def keep_tail(expr, unstable=unstable):
-                    return not _names_any(expr, unstable)
 
                 def keep(expr, fn_name=site.fn_name, unstable=unstable):
                     return (contract_is_state_free(translator, fn_name, expr)
@@ -815,7 +812,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     and site.term.sort() == result_var.sort():
                 tail_axioms.extend(instantiate_callee_contract(
                     translator, site.fn_name, site.term, site.args, site.path,
-                    result_term=result_var, keep_post=keep_tail, patterns=False))
+                    result_term=result_var, keep_post=keep, patterns=False))
             guard = site.path
             if site.past_exit:
                 if early_exits is None:
