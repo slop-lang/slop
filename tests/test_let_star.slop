@@ -1,0 +1,61 @@
+(module test-let-star
+  (@intent "let* binds in order and its names are in scope in its body")
+
+  ;; The checker dispatched only "let", so a let* fell through to the generic
+  ;; path: its bindings were never added to the environment and every use of
+  ;; one in the body was "Undefined variable", even (let* ((a 1)) a). The
+  ;; transpiler's match-arm and closure-capture walks were let-only too (#314).
+
+  (type Shape (union (circle Int) (square Int)))
+
+  (fn sequential ()
+    (@intent "A later binding sees an earlier one")
+    (@spec (() -> Int))
+    (let* ((a 1)
+           (b (+ a 1))
+           (c (* b 3)))
+      (- c 6)))
+
+  (fn single ()
+    (@intent "A lone binding is in scope in the body")
+    (@spec (() -> Int))
+    (let* ((a 7))
+      a))
+
+  (fn in-match-arm ((s Shape))
+    (@intent "let* as a match arm body, emitted as a block")
+    (@spec ((Shape) -> Int))
+    (match s
+      ((circle r)
+        (let* ((d (* r 2))
+               (e (+ d 1)))
+          e))
+      ((square w)
+        (let* ((mut acc w))
+          (set! acc (+ acc w))
+          acc))))
+
+  (fn in-closure ((k Int))
+    (@intent "let* inside a lambda: its own names are not captured, k is")
+    (@spec ((Int) -> Int))
+    (let ((f (fn ((x Int))
+               (let* ((y (+ x k))
+                      (z (* y 2)))
+                 z))))
+      (f 1)))
+
+  (fn main ()
+    (@intent "Entry point: non-zero exit if any let* is wrong")
+    (@spec (() -> Int))
+    (let ((mut fails 0))
+      (when (!= (sequential) 0)
+        (set! fails (+ fails 1)))
+      (when (!= (single) 7)
+        (set! fails (+ fails 1)))
+      (when (!= (in-match-arm (Shape (circle 4))) 9)
+        (set! fails (+ fails 1)))
+      (when (!= (in-match-arm (Shape (square 5))) 10)
+        (set! fails (+ fails 1)))
+      (when (!= (in-closure 3) 8)
+        (set! fails (+ fails 1)))
+      fails)))

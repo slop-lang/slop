@@ -8655,8 +8655,8 @@
                   ((sym head-sym)
                     (let ((op (. head-sym name)))
                       (cond
-                        ;; let: skip binding names, recurse into values and body
-                        ((string-eq op "let")
+                        ;; let/let*: skip binding names, recurse into values and body (#314)
+                        ((or (string-eq op "let") (string-eq op "let*"))
                           (collect-symbols-in-let ctx symbols pending items))
                         ;; fn: collect free vars from nested lambda (they need to be captured by us too)
                         ((string-eq op "fn")
@@ -8958,6 +8958,7 @@
     (@spec ((String) -> Bool))
     ;; Special forms, operators, and type names
     (or (string-eq name "let")
+        (string-eq name "let*")
         (string-eq name "if")
         (string-eq name "cond")
         (string-eq name "match")

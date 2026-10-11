@@ -810,8 +810,8 @@
                     ((sym sym)
                       (let ((op (. sym name)))
                         (cond
-                          ;; let - emit block with bindings
-                          ((string-eq op "let")
+                          ;; let/let* - emit block with bindings, in order (#314)
+                          ((or (string-eq op "let") (string-eq op "let*"))
                             (emit-inline-let ctx items is-return is-last))
                           ;; do - emit each item
                           ((string-eq op "do")
