@@ -1,0 +1,3 @@
+# Stored with CRLF line endings on purpose: the lexer must read a CRLF line
+# break inside a string literal as a newline
+tests/test_crlf_source.slop -text

@@ -1129,11 +1129,11 @@ int main(int argc, char** _c_argv) {
                         #ifdef SLOP_DEBUG
                         SLOP_PRE((4194304) > 0, "with-arena size must be positive");
                         #endif
-                        slop_arena _arena_4 = slop_arena_new(4194304);
+                        slop_arena _arena_3 = slop_arena_new(4194304);
                         #ifdef SLOP_DEBUG
-                        SLOP_PRE(_arena_4.base != NULL, "arena allocation failed");
+                        SLOP_PRE(_arena_3.base != NULL, "arena allocation failed");
                         #endif
-                        slop_arena* arena = &_arena_4;
+                        slop_arena* arena = &_arena_3;
                         if (string_eq(compiler_argv_to_string(argv, 2), SLOP_STR("--expr"))) {
                             {
                                 __auto_type env = type_env_env_new(arena);
@@ -1173,13 +1173,13 @@ int main(int argc, char** _c_argv) {
                                     printf("%s\n", "Error: --expr requires an expression argument");
                                     {
                                         int _wa_ret = 1;
-                                        slop_arena_free(&_arena_4);
+                                        slop_arena_free(&_arena_3);
                                         return _wa_ret;
                                     }
                                 } else {
                                     {
                                         int _wa_ret = compiler_check_expr_mode(arena, env, expr_str, type_str, context_file, params_str);
-                                        slop_arena_free(&_arena_4);
+                                        slop_arena_free(&_arena_3);
                                         return _wa_ret;
                                     }
                                 }
@@ -1217,13 +1217,13 @@ int main(int argc, char** _c_argv) {
                                 if (total_errors > 0) {
                                     {
                                         int _wa_ret = 1;
-                                        slop_arena_free(&_arena_4);
+                                        slop_arena_free(&_arena_3);
                                         return _wa_ret;
                                     }
                                 } else {
                                     {
                                         int _wa_ret = 0;
-                                        slop_arena_free(&_arena_4);
+                                        slop_arena_free(&_arena_3);
                                         return _wa_ret;
                                     }
                                 }
@@ -1241,11 +1241,11 @@ int main(int argc, char** _c_argv) {
                         #ifdef SLOP_DEBUG
                         SLOP_PRE((16777216) > 0, "with-arena size must be positive");
                         #endif
-                        slop_arena _arena_5 = slop_arena_new(16777216);
+                        slop_arena _arena_4 = slop_arena_new(16777216);
                         #ifdef SLOP_DEBUG
-                        SLOP_PRE(_arena_5.base != NULL, "arena allocation failed");
+                        SLOP_PRE(_arena_4.base != NULL, "arena allocation failed");
                         #endif
-                        slop_arena* arena = &_arena_5;
+                        slop_arena* arena = &_arena_4;
                         {
                             __auto_type env = type_env_env_new(arena);
                             __auto_type ctx = context_context_new(arena);
@@ -1271,13 +1271,13 @@ int main(int argc, char** _c_argv) {
                                 if (had_error) {
                                     {
                                         int _wa_ret = 1;
-                                        slop_arena_free(&_arena_5);
+                                        slop_arena_free(&_arena_4);
                                         return _wa_ret;
                                     }
                                 } else {
                                     {
                                         int _wa_ret = 0;
-                                        slop_arena_free(&_arena_5);
+                                        slop_arena_free(&_arena_4);
                                         return _wa_ret;
                                     }
                                 }
@@ -1295,11 +1295,11 @@ int main(int argc, char** _c_argv) {
                         #ifdef SLOP_DEBUG
                         SLOP_PRE((4194304) > 0, "with-arena size must be positive");
                         #endif
-                        slop_arena _arena_6 = slop_arena_new(4194304);
+                        slop_arena _arena_5 = slop_arena_new(4194304);
                         #ifdef SLOP_DEBUG
-                        SLOP_PRE(_arena_6.base != NULL, "arena allocation failed");
+                        SLOP_PRE(_arena_5.base != NULL, "arena allocation failed");
                         #endif
-                        slop_arena* arena = &_arena_6;
+                        slop_arena* arena = &_arena_5;
                         {
                             __auto_type env = type_env_env_new(arena);
                             __auto_type format = compiler_OutputFormat_fmt_text;
@@ -1332,13 +1332,13 @@ int main(int argc, char** _c_argv) {
                             if (total_errors > 0) {
                                 {
                                     int _wa_ret = 1;
-                                    slop_arena_free(&_arena_6);
+                                    slop_arena_free(&_arena_5);
                                     return _wa_ret;
                                 }
                             } else {
                                 {
                                     int _wa_ret = 0;
-                                    slop_arena_free(&_arena_6);
+                                    slop_arena_free(&_arena_5);
                                     return _wa_ret;
                                 }
                             }

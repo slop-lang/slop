@@ -1,0 +1,34 @@
+;; ============================================================
+;; Int text past 32 bits
+;;
+;; long is 32 bits on Windows. int-to-string formatted an Int
+;; through (long), and parse-int read one with strtol, so both cut
+;; values past 2^31 there. On POSIX long is 64 bits and this passed
+;; before too; the Windows CI job is what it guards.
+;; ============================================================
+
+(module test-int64-text
+  (export (main 0))
+  (import strlib (parse-int))
+
+  (fn int-to-string-wide ((arena Arena))
+    (@intent "int-to-string writes Ints past 32 bits in full")
+    (@spec ((Arena) -> Bool))
+    (@alloc arena)
+    (and (string-eq (int-to-string arena 5000000000) "5000000000")
+         (string-eq (int-to-string arena -5000000000) "-5000000000")))
+
+  (fn parse-int-wide ()
+    (@intent "parse-int reads Ints past 32 bits in full")
+    (@spec (() -> Bool))
+    (and (match (parse-int "5000000000") ((ok n) (== n 5000000000)) ((error _) false))
+         (match (parse-int "-5000000000") ((ok n) (== n -5000000000)) ((error _) false))))
+
+  (fn main ()
+    (@intent "Run each, return the number that failed")
+    (@spec (() -> Int))
+    (with-arena 4096
+      (let ((mut failed 0))
+        (when (not (int-to-string-wide arena)) (set! failed (+ failed 1)))
+        (when (not (parse-int-wide)) (set! failed (+ failed 1)))
+        failed))))

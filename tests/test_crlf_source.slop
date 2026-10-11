@@ -1,0 +1,25 @@
+;; ============================================================
+;; A source file with CRLF line endings
+;;
+;; This file is stored with CRLF line endings, and .gitattributes
+;; keeps them. A line break inside a string literal is a newline
+;; whatever the file's line endings, so each literal below holds
+;; LF alone. Before, the CR came along too: on Windows, where git
+;; checks files out with CRLF, test_const_strings failed that way.
+;; ============================================================
+
+(module test-crlf-source
+  (export (main 0))
+
+  (const RAW String "one
+two")
+
+  (fn main ()
+    (@intent "String literals spanning a CRLF line break hold LF alone")
+    (@spec (() -> Int))
+    (let ((inline "split
+here"))
+      (if (and (string-eq RAW "one\ntwo")
+               (string-eq inline "split\nhere"))
+        0
+        1))))

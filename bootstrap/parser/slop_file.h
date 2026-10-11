@@ -5,8 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <slop_runtime.h>
 
 typedef struct file_File file_File;
 
