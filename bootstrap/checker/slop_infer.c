@@ -1173,7 +1173,7 @@ types_ResolvedType* infer_infer_special_form(type_env_TypeEnv* env, types_SExpr*
             } else {
                 return type_env_env_get_unit_type(env);
             }
-        } else if (string_eq(op, SLOP_STR("let"))) {
+        } else if (string_eq(op, SLOP_STR("let")) || string_eq(op, SLOP_STR("let*"))) {
             return infer_infer_let_expr(env, expr);
         } else if (string_eq(op, SLOP_STR("when"))) {
             infer_infer_body_exprs(env, expr, 1);
@@ -2940,7 +2940,7 @@ infer_MutPath infer_mutation_path(type_env_TypeEnv* env, types_SExpr* expr) {
                             {
                                 __auto_type arena = type_env_env_arena(env);
                                 __auto_type prefix = strlib_substring(arena, name, 0, idx);
-                                __auto_type field = strlib_substring(arena, name, (idx + 1), SLOP_RANGE(int64_t, (string_len(name) - (idx + 1)), 1, 0, 0, 0, "(Int 0 ..) at infer.slop:2606:66"));
+                                __auto_type field = strlib_substring(arena, name, (idx + 1), SLOP_RANGE(int64_t, (string_len(name) - (idx + 1)), 1, 0, 0, 0, "(Int 0 ..) at infer.slop:2607:66"));
                                 return infer_mutation_path_field(infer_mutation_path_root(env, prefix), field);
                             }
                         } else {

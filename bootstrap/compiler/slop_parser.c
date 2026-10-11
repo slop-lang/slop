@@ -1322,7 +1322,7 @@ slop_string parser_json_escape_string(slop_arena* arena, slop_string s) {
         buf[0] = 34;
         while (i < slen) {
             {
-                __auto_type c = s.data[i];
+                __auto_type c = ((uint8_t)(s.data[i]));
                 if (c == 34) {
                     buf[out] = 92;
                     buf[(out + 1)] = 34;
