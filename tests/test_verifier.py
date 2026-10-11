@@ -2774,53 +2774,53 @@ class TestLetBindingAxioms:
     """Test let binding axioms for non-function-call expressions"""
 
     def test_simple_arithmetic_binding(self):
-        """Let binding for arithmetic expression adds axiom"""
-        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator
+        """A let binding's definition is recorded where the binding is."""
+        from slop.verifier import MinimalTypeEnv, Z3Translator
         from slop.parser import parse
         from slop.types import PrimitiveType
 
         env = MinimalTypeEnv()
-        verifier = ContractVerifier(env)
         translator = Z3Translator(env)
-
-        # Declare delta variable
         translator.declare_variable('delta', PrimitiveType('Int'))
 
-        # Process binding: (next-iter (+ delta 1))
-        binding = parse("(next-iter (+ delta 1))")[0]
-        axioms = []
+        with translator.recording_call_sites() as (_, facts):
+            translator.translate_expr(parse("(let ((next-iter (+ delta 1))) next-iter)")[0])
 
-        verifier._process_let_binding(binding, translator, axioms)
-
-        # Should have added an axiom
-        assert len(axioms) >= 1
-        # next-iter should be declared
-        assert 'next-iter' in translator.variables
+        assert len(facts) == 1
+        assert 'next-iter' in str(facts[0]) and 'delta' in str(facts[0])
 
     def test_field_access_binding(self):
-        """Let binding with field access adds axiom"""
-        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator
+        """Let binding with field access records the field read"""
+        from slop.verifier import MinimalTypeEnv, Z3Translator
         from slop.parser import parse
         from slop.types import PrimitiveType
 
         env = MinimalTypeEnv()
-        verifier = ContractVerifier(env)
         translator = Z3Translator(env)
-
-        # Declare delta variable
         translator.declare_variable('delta', PrimitiveType('Int'))
 
-        # Process binding: (next-iter (+ (. delta iteration) 1))
-        binding = parse("(next-iter (+ (. delta iteration) 1))")[0]
-        axioms = []
+        with translator.recording_call_sites() as (_, facts):
+            translator.translate_expr(
+                parse("(let ((next-iter (+ (. delta iteration) 1))) next-iter)")[0])
 
-        verifier._process_let_binding(binding, translator, axioms)
+        assert len(facts) == 1
+        assert 'next-iter' in str(facts[0]) and 'field_iteration' in str(facts[0])
 
-        # Should have added an axiom
-        assert len(axioms) >= 1
-        # Axiom should relate next-iter to delta's iteration field
-        axiom_str = str(axioms[0])
-        assert 'next-iter' in axiom_str
+    def test_a_binding_in_a_loop_body_is_not_recorded(self):
+        """A loop body binds its locals once per iteration; one constant cannot
+        be defined by all of those values."""
+        from slop.verifier import MinimalTypeEnv, Z3Translator
+        from slop.parser import parse
+        from slop.types import PrimitiveType, ListType
+
+        env = MinimalTypeEnv()
+        translator = Z3Translator(env)
+        translator.declare_variable('xs', ListType(PrimitiveType('Int')))
+
+        with translator.recording_call_sites() as (_, facts):
+            translator.translate_expr(parse("(for-each (x xs) (let ((y (+ x 1))) y))")[0])
+
+        assert facts == []
 
     def test_union_constructor_axioms(self):
         """Union constructors like (ok result) add tag and payload axioms"""
@@ -3507,50 +3507,28 @@ class TestSSATracking:
         assert subst[1][1].name == 'result'  # $result -> result
         assert subst[2][1].name == '__old_result'  # d -> __old_result
 
-    def test_old_variable_created_in_set_binding(self):
-        """Processing set! creates __old_ variable when self-reference detected"""
-        from slop.verifier import ContractVerifier, MinimalTypeEnv, Z3Translator, FunctionRegistry, FunctionDef
-        from slop.parser import parse
-        from slop.types import PrimitiveType, RecordType
-
-        # Set up type environment
-        type_registry = {'Delta': RecordType('Delta', [('iteration', PrimitiveType('Int'))])}
-        env = MinimalTypeEnv(type_registry=type_registry)
-
-        # Set up function registry with a delta-add that has postconditions
-        fn_registry = FunctionRegistry()
-        fn_registry.functions['delta-add'] = FunctionDef(
-            name='delta-add',
-            params=['arena', 'd', 't'],
-            body=None,
-            is_pure=False,
-            postconditions=[parse("(== (. $result iteration) (. d iteration))")[0]]
-        )
-
-        verifier = ContractVerifier(env, function_registry=fn_registry)
-        translator = Z3Translator(env, function_registry=fn_registry)
-
-        # Declare the 'result' variable
-        translator.declare_variable('result', PrimitiveType('Int'))
-
-        # Process: (set! result (delta-add arena result t))
-        call_expr = parse("(delta-add arena result t)")[0]
-        axioms = []
-
-        verifier._process_set_binding('result', call_expr, translator, axioms)
-
-        # Check that __old_result was created
-        assert '__old_result' in translator.variables
-
-        # Check that a constraint was added: __old_result == result
-        # The constraint should be in translator.constraints
-        found_old_constraint = False
-        for c in translator.constraints:
-            cstr = str(c)
-            if '__old_result' in cstr and 'result' in cstr:
-                found_old_constraint = True
-                break
-        assert found_old_constraint, "Should have constraint linking __old_result to result"
+    def test_an_assignment_from_a_call_relates_new_to_old(self):
+        """`(set! result (delta-add result t))`: the callee's post about its
+        result and its `d` relates the assigned value to the one it replaced.
+        The assignment is `after == call` and the post is about the call, so
+        no separate `__old_` version is needed for it (#169)."""
+        from slop.verifier import verify_source
+        src = """
+        (module m
+          (type Delta (record (iteration Int) (size Int)))
+          (fn delta-add ((d Delta) (t Int))
+            (@spec ((Delta Int) -> Delta))
+            (@post (== (. $result iteration) (. d iteration)))
+            (record-new Delta (iteration (. d iteration)) (size (+ (. d size) t))))
+          (fn f ((d Delta))
+            (@spec ((Delta) -> Delta))
+            (@post (== (. $result iteration) (. d iteration)))
+            (let ((mut result d))
+              (set! result (delta-add result 1))
+              result)))
+        """
+        results = {r.name: r.status for r in verify_source(src, filename="probe.slop")}
+        assert results['f'] == 'verified'
 
 
 class TestArrayEncoding:
@@ -13664,3 +13642,830 @@ class TestRangeObligations:
             n))
         ''')
         assert r.status == 'skipped'
+
+
+# ---------------------------------------------------------------------------
+# A callee's contract is assumed where its call runs, of the call's own result
+# (#169, #134). The main model used to read a callee's `$result` as the
+# caller's, for every call it reached - in one arm, as a statement, in a loop -
+# on every path and without the callee's @pre. Reported from HOWL (sriq): a
+# constructor's post decided what every caller returned.
+# ---------------------------------------------------------------------------
+
+_HOWL_FALSEPOST = '''
+(module falsepost3
+  (type K (enum k-x k-y k-u k-f))
+  (type T (record (kind K) (n Int)))
+  (type S (record (x T) (bound Bool)))
+
+  (fn mk-u ((n Int))
+    (@spec ((Int) -> T))
+    (@pure)
+    (@post (== (. $result kind) 'k-u))
+    (record-new T (kind 'k-u) (n n)))
+
+  (fn ap ((sub S) (t T))
+    (@spec ((S T) -> T))
+    (@pure)
+    {post}
+    (match (. t kind)
+      ('k-x (. sub x))
+      ('k-y t)
+      ('k-u t)
+      {kf})))
+'''
+_HOWL_KF_CALL = "('k-f (if (== (. (. sub x) kind) 'k-u) (mk-u (. t n)) t))"
+
+_HOWL_INCONSISTENT = '''
+(module inconsistent
+  (type Form (enum f-a f-b))
+  (type Lit (record (form Form) (v Int)))
+
+  (fn mk-a ((v Int))
+    (@spec ((Int) -> Lit))
+    (@pure)
+    (@post (== (. $result form) 'f-a))
+    (record-new Lit (form 'f-a) (v v)))
+
+  (fn mk-b ((v Int))
+    (@spec ((Int) -> Lit))
+    (@pure)
+    (@post (== (. $result form) 'f-b))
+    (record-new Lit (form 'f-b) (v v)))
+
+  (fn bump ((l Lit))
+    (@spec ((Lit) -> Lit))
+    (@pure)
+    (@post (== (. $result form) (. l form)))
+    (match (. l form)
+      ('f-a (mk-a (+ (. l v) 1)))
+      ('f-b (mk-b (+ (. l v) 1))))))
+'''
+
+_ONE = '''
+  (fn one ((n Int))
+    (@spec ((Int) -> Int))
+    (@pure)
+    (@post (== $result 1))
+    1)
+'''
+
+
+def _with_one(body, extra=''):
+    return '(module m\n' + _ONE + extra + body + ')'
+
+
+# Every one of these claims something the body does not do, and verified
+# before #169 was fixed: a callee's post spoke for the caller's result.
+_CALLEE_POST_LEAKS = {
+    'if-arm': _with_one('''
+      (fn f ((b Bool))
+        (@spec ((Bool) -> Int))
+        (@post (== $result 1))
+        (if b (one 0) 2))'''),
+    'cond-arm': _with_one('''
+      (fn f ((n Int))
+        (@spec ((Int) -> Int))
+        (@post (== $result 1))
+        (cond ((> n 0) (one 0)) (else 2)))'''),
+    'match-arm': _with_one('''
+      (fn f ((c C))
+        (@spec ((C) -> Int))
+        (@post (== $result 1))
+        (match c ('red (one 0)) ('blue 2)))''', '  (type C (enum red blue))\n'),
+    'do-statement': _with_one('''
+      (fn f ((n Int))
+        (@spec ((Int) -> Int))
+        (@post (== $result 1))
+        (do (one 0) n))'''),
+    'loop-body': _with_one('''
+      (fn f ((n Int) (xs (List Int)))
+        (@spec ((Int (List Int)) -> Int))
+        (@post (== $result 1))
+        (do (for-each (x xs) (one x)) n))'''),
+    'let-body-statement': _with_one('''
+      (fn f ((n Int))
+        (@spec ((Int) -> Int))
+        (@post (== $result 1))
+        (let ((k 2)) (one k) n))'''),
+    'tail-call-past-an-early-return': _with_one('''
+      (fn f ((b Bool))
+        (@spec ((Bool) -> Int))
+        (@post (== $result 1))
+        (do (when b (return 5)) (one 0)))'''),
+    'property': _with_one('''
+      (fn f ((b Bool))
+        (@spec ((Bool) -> Int))
+        (@property ones (== $result 1))
+        (if b (one 0) 2))'''),
+    # #169's own repro: `dec`'s posts, asserted on every path, forced x >= 1
+    # on the else path where dec is never called.
+    'let-bound-in-a-branch': '''(module probe
+      (fn dec ((x Int))
+        (@spec ((Int) -> Int))
+        (@pure)
+        (@pre (>= x 1))
+        (@post (>= $result 0))
+        (@post (== $result (- x 1)))
+        (- x 1))
+      (fn f ((x Int))
+        (@spec ((Int) -> Int))
+        (@pure)
+        (@post (>= x 1))
+        (if (> x 0) (let ((y (dec x))) y) 0)))''',
+    # #134: g promises 1 only for a positive n, and f does not establish it.
+    'pre-not-met-direct': '''(module m
+      (fn g ((n Int))
+        (@spec ((Int) -> Int))
+        (@pre (> n 0))
+        (@post (== $result 1))
+        (if (> n 0) 1 2))
+      (fn f ((n Int))
+        (@spec ((Int) -> Int))
+        (@post (== $result 1))
+        (g n)))''',
+    'pre-not-met-let-bound': '''(module m
+      (fn g ((n Int))
+        (@spec ((Int) -> Int))
+        (@pre (> n 0))
+        (@post (== $result 1))
+        (if (> n 0) 1 2))
+      (fn f ((n Int))
+        (@spec ((Int) -> Int))
+        (@post (== $result 1))
+        (let ((r (g n))) r)))''',
+    # The payload `n` is the arm's own; the walk that replaced the caller's
+    # scope afterwards read the parameter n instead.
+    'binder-shadowing-a-parameter': '''(module m
+      (fn relay ((x Int))
+        (@spec ((Int) -> Int))
+        (@pure)
+        (@post (== $result x))
+        x)
+      (fn f ((o (Option Int)) (n Int))
+        (@spec (((Option Int) Int) -> Int))
+        (@post (== $result n))
+        (match o ((some n) (relay n)) ((none) n))))''',
+    # The second assignment is what y holds; the walk put the first one's
+    # post on the end-of-scope value.
+    'two-assignments': '''(module m
+      (fn seven ((x Int))
+        (@spec ((Int) -> Int))
+        (@pure)
+        (@post (== $result 7))
+        7)
+      (fn relay ((x Int))
+        (@spec ((Int) -> Int))
+        (@pure)
+        (@post (== $result x))
+        x)
+      (fn f ((x Int) (y Int))
+        (@spec ((Int Int) -> Int))
+        (@post (== $result 7))
+        (let ((mut y 0))
+          (set! y (seven x))
+          (set! y (relay x))
+          y)))''',
+    # `one` here is the parameter, not the module function of that name.
+    'callee-name-shadowed-by-a-parameter': '''(module m
+      (fn one ((n Int))
+        (@spec ((Int) -> Int))
+        (@pure)
+        (@post (== $result 1))
+        1)
+      (fn f ((one (Fn (Int) -> Int)) (n Int))
+        (@spec (((Fn (Int) -> Int) Int) -> Int))
+        (@post (== $result 1))
+        (one n)))''',
+    # A callee's post over its result's elements read the caller's own
+    # result sequence, in the exact push model as in the main one.
+    'collection-post-in-a-push-body': '''(module m
+      (fn nines ((arena Arena) (n Int))
+        (@spec ((Arena Int) -> (List Int)))
+        (@pure)
+        (@post (forall (t $result) (== t 99)))
+        (list-new arena Int))
+      (fn f ((arena Arena) (n Int))
+        (@spec ((Arena Int) -> (List Int)))
+        (@property all99 (forall (v $result) (== v 99)))
+        (let ((mut r (list-new arena Int)))
+          (let ((k (nines arena n)))
+            (list-push r 5))
+          r)))''',
+    'collection-post-in-a-branch': '''(module m
+      (fn pos ((arena Arena) (n Int))
+        (@spec ((Arena Int) -> (List Int)))
+        (@pure)
+        (@post (forall (x $result) (> x 0)))
+        (list-new arena Int))
+      (fn f ((arena Arena) (c Bool) (n Int))
+        (@spec ((Arena Bool Int) -> Int))
+        (@post (== $result 1))
+        (if c (let ((xs (pos arena n))) 0) 1)))''',
+}
+
+# A callee that may change state is one term for every call with the same
+# arguments (#227); a post reading the state it changes would speak for every
+# call at once.
+_CALLEE_POST_LEAKS['state-read-of-a-stateful-callee'] = '''(module m
+      (type Counter (record (n Int)))
+      (fn bump ((c (Ptr Counter)))
+        (@spec (((Ptr Counter)) -> Int))
+        (@post (== $result (. c n)))
+        (do (set! c.n (+ (. c n) 1)) (. c n)))
+      (fn f ((c (Ptr Counter)))
+        (@spec (((Ptr Counter)) -> Int))
+        (@post (== $result (. c n)))
+        (let ((a (bump c)))
+          (set! c.n 0)
+          a)))'''
+
+# The same, through the `c.n` shorthand for a field read.
+_CALLEE_POST_LEAKS['dotted-state-read-of-a-stateful-callee'] = '''(module m
+      (type Counter (record (n Int)))
+      (fn bump ((c (Ptr Counter)))
+        (@spec (((Ptr Counter)) -> Int))
+        (@post (== $result c.n))
+        (do (set! c.n (+ (. c n) 1)) (. c n)))
+      (fn f ((c (Ptr Counter)))
+        (@spec (((Ptr Counter)) -> Int))
+        (@post (== $result c.n))
+        (let ((a (bump c)))
+          (set! c.n 0)
+          a)))'''
+
+# A `mut` parameter is the callee's own copy (#180); a post naming it is about
+# that copy as the callee left it, not the caller's argument (#230).
+_CALLEE_POST_LEAKS['post-about-a-mut-parameter'] = '''(module probe
+      (fn zap ((mut n Int))
+        (@spec ((Int) -> Int))
+        (@post {n == 0})
+        (do (set! n 0) 0))
+      (fn f ((k Int))
+        (@spec ((Int) -> Int))
+        (@post {$result == 0})
+        (do (zap k) k)))'''
+_CALLEE_POST_LEAKS['post-about-a-mut-record-parameter-field'] = '''(module m
+      (type R (record (n Int)))
+      (type C (record (v Int)))
+      (fn g ((mut r R) (p (Ptr C)))
+        (@spec ((R (Ptr C)) -> Int))
+        (@post (== $result r.n))
+        (do (set! r.n 1) r.n))
+      (fn f ((r R) (p (Ptr C)))
+        (@spec ((R (Ptr C)) -> Int))
+        (@pre (== r.n 0))
+        (@post (== $result r.n))
+        (let ((x (g r p))) x)))'''
+
+# The callee's copy of xs keeps its length; the caller's grows through the
+# pointer to it (Codex review round 5). The caller's own xs is a mut local.
+_CALLEE_POST_LEAKS['length-post-with-a-pointer-to-the-same-list'] = '''(module m
+      (fn g ((xs (List Int)) (p (Ptr (List Int))))
+        (@spec (((List Int) (Ptr (List Int))) -> Int))
+        (@post (== $result (list-len xs)))
+        (do
+          (list-push (deref p) 1)
+          (cast Int (list-len xs))))
+      (fn f ((arena Arena))
+        (@spec ((Arena) -> Int))
+        (@post (== $result 0))
+        (let ((mut xs (list-new arena Int)))
+          (let ((a (g xs (addr xs))))
+            (- (cast Int (list-len xs)) a)))))'''
+
+# g's copy of r keeps n; the caller's r changes through the pointer to it
+# (Codex review round 6) - for a mut copy and for a plain one.
+_CALLEE_POST_LEAKS['post-about-an-argument-the-callee-changes-through-a-pointer'] = '''(module m
+      (type R (record (n Int)))
+      (fn g ((mut r R) (p (Ptr R)))
+        (@spec ((R (Ptr R)) -> Int))
+        (@post (== $result r.n))
+        (do (set! p.n 1) r.n))
+      (fn f ()
+        (@spec (() -> Int))
+        (@post (== $result 0))
+        (let ((mut r (record-new R (n 0))))
+          (let ((a (g r (addr r))))
+            (- r.n a)))))'''
+_CALLEE_POST_LEAKS['post-about-a-plain-argument-changed-through-a-pointer'] = (
+    _CALLEE_POST_LEAKS['post-about-an-argument-the-callee-changes-through-a-pointer']
+    .replace('(fn g ((mut r R)', '(fn g ((r R)'))
+_CALLEE_POST_LEAKS['length-post-with-a-pointer-to-an-alias-of-the-list-type'] = '''(module m
+      (type NonNegative (Int 0 ..))
+      (fn g ((xs (List Int)) (p (Ptr (List NonNegative))))
+        (@spec (((List Int) (Ptr (List NonNegative))) -> Int))
+        (@post (== $result (list-len xs)))
+        (do (list-push (deref p) 1)
+            (cast Int (list-len xs))))
+      (fn f ((arena Arena))
+        (@spec ((Arena) -> Int))
+        (@post (== $result 0))
+        (let ((mut xs (list-new arena Int)))
+          (let ((a (g xs (cast (Ptr (List NonNegative)) (addr xs)))))
+            (- (cast Int (list-len xs)) a)))))'''
+
+# A local copied out of a pointer is the same term as the pointee in the
+# model; the callee grows the pointee (Codex review round 7).
+_CALLEE_POST_LEAKS['argument-copied-out-of-a-pointer-the-callee-writes'] = '''(module m
+      (fn g ((xs (List Int)) (p (Ptr (List Int))))
+        (@spec (((List Int) (Ptr (List Int))) -> Int))
+        (@post (== $result (list-len xs)))
+        (do (list-push (deref p) 1) (cast Int (list-len xs))))
+      (fn f ((p (Ptr (List Int))))
+        (@spec (((Ptr (List Int))) -> Int))
+        (@pre (== (list-len (deref p)) 0))
+        (@post (== $result 0))
+        (let ((xs (deref p)))
+          (let ((a (g xs p)))
+            (- (cast Int (list-len (deref p))) a)))))'''
+_CALLEE_POST_LEAKS['tail-call-with-an-argument-copied-out-of-a-pointer'] = '''(module m
+      (fn g ((xs (List Int)) (p (Ptr (List Int))))
+        (@spec (((List Int) (Ptr (List Int))) -> Int))
+        (@post (== $result (list-len xs)))
+        (do (list-push (deref p) 1) (cast Int (list-len xs))))
+      (fn f ((p (Ptr (List Int))))
+        (@spec (((Ptr (List Int))) -> Int))
+        (@pre (== (list-len (deref p)) 0))
+        (@post (== $result (cast Int (list-len (deref p)))))
+        (let ((xs (deref p)))
+          (g xs p))))'''
+
+# A stateful callee's post reads the state it left; the model reads a field
+# as one value before and after the call, so the caller's @pre about the
+# state it started with would meet it (Codex review round 8). At a tail call
+# too, and for a Map's size.
+_CALLEE_POST_LEAKS['tail-call-to-a-callee-whose-post-reads-what-it-wrote'] = '''(module m
+      (type R (record (n Int)))
+      (fn g ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@post (== $result p.n))
+        (do (set! p n 1) p.n))
+      (fn f ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@pre (== p.n 0))
+        (@post (== $result 0))
+        (g p)))'''
+_CALLEE_POST_LEAKS['tail-call-to-a-callee-whose-post-reads-a-map-it-grew'] = '''(module m
+      (fn g ((m (Map Int Int)))
+        (@spec (((Map Int Int)) -> Int))
+        (@post (== $result (map-len m)))
+        (do (map-put m 1 10) (map-len m)))
+      (fn f ((m (Map Int Int)))
+        (@spec (((Map Int Int)) -> Int))
+        (@pre (== (map-len m) 0))
+        (@post (== $result 0))
+        (g m)))'''
+
+# The callee's @pre reads a field it then writes: as one value before and
+# after the call, the pre looks met wherever the caller's post reads the new
+# value (Codex review round 9).
+_CALLEE_POST_LEAKS['pre-reading-state-the-callee-writes'] = '''(module m
+      (type R (record (n Int)))
+      (fn g ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@pre (== p.n 1))
+        (@post (== $result 1))
+        (let ((old p.n))
+          (set! p.n 1)
+          old))
+      (fn f ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@post (implies (== p.n 1) (== $result 1)))
+        (g p)))'''
+
+# The caller itself sets a field of the argument after the call, which the
+# model does not version (Codex review round 10).
+_CALLEE_POST_LEAKS['argument-the-caller-changes-in-place-after-the-call'] = '''(module m
+      (type R (record (n Int)))
+      (fn g ((r R) (p (Ptr R)))
+        (@spec ((R (Ptr R)) -> Int))
+        (@post (== $result r.n))
+        (do (set! p.n 2) r.n))
+      (fn f ((p (Ptr R)))
+        (@spec (((Ptr R)) -> Int))
+        (@post (== $result 0))
+        (let ((mut r (record-new R (n 0))))
+          (let ((x (g r p)))
+            (set! r.n 1)
+            (- r.n x)))))'''
+
+# The caller pushes onto the List a call returned; the model does not version
+# a push onto a list from a call, so its length is the term from before
+# (Codex review round 11).
+_CALLEE_POST_LEAKS['result-the-caller-changes-in-place-after-the-call'] = '''(module m
+      (fn make ((arena Arena))
+        (@spec ((Arena) -> (List Int)))
+        (@alloc arena)
+        (@post (== (list-len $result) 0))
+        (list-new arena Int))
+      (fn f ((arena Arena))
+        (@spec ((Arena) -> Int))
+        (@alloc arena)
+        (@post (== $result 0))
+        (let ((mut xs (make arena)))
+          (list-push xs 1)
+          (cast Int (list-len xs)))))'''
+
+# The caller sets a field of the record a call returned, through the pointer
+# it returned.
+_CALLEE_POST_LEAKS['returned-pointer-the-caller-writes-through'] = '''(module m
+      (type Node (record (val Int)))
+      (fn mk ((arena Arena) (v Int))
+        (@spec ((Arena Int) -> (Ptr Node)))
+        (@alloc arena)
+        (@post (== (. $result val) v))
+        (let ((n (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+          (set! n.val v)
+          n))
+      (fn f ((arena Arena))
+        (@spec ((Arena) -> Int))
+        (@alloc arena)
+        (@post (== $result 1))
+        (let ((n (mk arena 1)))
+          (set! n.val 2)
+          (. n val))))'''
+
+# The write to the field the post reads is in an earlier body form.
+_CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
+      (type D (record (items (List Int)) (it Int)))
+      (fn add ((arena Arena) (mut d D) (x Int))
+        (@spec ((Arena D Int) -> D))
+        (@post (== (. $result it) (. d it)))
+        (set! d.it 5)
+        d)
+      (fn f ((arena Arena) (d D))
+        (@spec ((Arena D) -> Int))
+        (@pre (== (. d it) 1))
+        (@post (== $result 1))
+        (let ((e (add arena d 3))) (. e it))))'''
+
+# And these claim what is true, through a callee's contract.
+_CALLEE_POST_HOLDS = {
+    # A post about a field of a `mut` parameter the callee never writes is
+    # about what was passed in (growl delta-add).
+    'post-about-an-unchanged-field-of-a-mut-parameter': '''(module m
+      (type D (record (items (List Int)) (it Int)))
+      (fn add ((arena Arena) (mut d D) (x Int))
+        (@spec ((Arena D Int) -> D))
+        (@post (== (. $result it) (. d it)))
+        (list-push (. d items) x)
+        d)
+      (fn f ((arena Arena) (d D))
+        (@spec ((Arena D) -> Int))
+        (@pre (== (. d it) 1))
+        (@post (== $result 1))
+        (let ((e (add arena d 3))) (. e it))))''',
+    # A post that reads no state holds of whatever each call returned, even
+    # for a callee that may change state.
+    'state-free-post-of-a-stateful-callee': '''(module m
+      (type Node (record (tag Int)))
+      (fn make ((arena Arena) (proto (Ptr Node)))
+        (@spec ((Arena (Ptr Node)) -> (Ptr Node)))
+        (@alloc arena)
+        (@pre (!= proto nil))
+        (@post (!= $result nil))
+        (let ((p (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+          p))
+      (fn f ((arena Arena) (proto (Ptr Node)))
+        (@spec ((Arena (Ptr Node)) -> (Ptr Node)))
+        (@alloc arena)
+        (@pre (!= proto nil))
+        (@post (!= $result nil))
+        (let ((n (make arena proto)))
+          (set! proto.tag 1)
+          n)))''',
+    # What a match reads out of a returned Result, and a field of a record
+    # held by value, are fixed once the call returns.
+    'value-read-post-of-a-stateful-callee': '''(module m
+      (type Delta (record (iteration Int) (items (List Int))))
+      (type Report (record (code Int)))
+      (fn collect ((arena Arena) (sink (Ptr Report)) (next Int))
+        (@spec ((Arena (Ptr Report) Int) -> (Result Delta Report)))
+        (@pre (>= next 1))
+        (@post (match $result ((ok d) (== (. d iteration) next)) ((error _) true)))
+        (ok (record-new Delta (iteration next) (items (list-new arena Int)))))
+      (fn f ((arena Arena) (sink (Ptr Report)) (iter Int))
+        (@spec ((Arena (Ptr Report) Int) -> (Result Delta Report)))
+        (@pre (>= iter 0))
+        (@post (match $result ((ok d) (== (. d iteration) (+ iter 1))) ((error _) true)))
+        (let ((result (collect arena sink (+ iter 1))))
+          (set! sink.code 0)
+          result)))''',
+    # The length of a List parameter the callee cannot push to, and of the
+    # List it returns, are not state the callee changes (HOWL copy-decoded).
+    'length-post-of-a-stateful-callee': '''(module m
+      (type Doc (record (items (List Int)) (n Int)))
+      (fn copy-items ((arena Arena) (xs (List Int)))
+        (@spec ((Arena (List Int)) -> (List Int)))
+        (@post (== (list-len $result) (list-len xs)))
+        (let ((mut out (list-new arena Int)))
+          (for-each (x xs) (list-push out x))
+          out))
+      (fn f ((arena Arena) (d Doc))
+        (@spec ((Arena Doc) -> Doc))
+        (@post (== (list-len (. $result items)) (list-len (. d items))))
+        (let ((items (copy-items arena (. d items))))
+          (record-new Doc (items items) (n (. d n))))))''',
+    # The caller changes a list of its own in place; the call's result is not
+    # that list (HOWL advance-round).
+    'in-place-write-to-another-local': '''(module m
+      (type D (record (it Int)))
+      (fn next ((d D))
+        (@spec ((D) -> D))
+        (@post (== (. $result it) (+ (. d it) 1)))
+        (record-new D (it (+ (. d it) 1))))
+      (fn f ((arena Arena) (d D))
+        (@spec ((Arena D) -> D))
+        (@post (== (. $result it) (+ (. d it) 1)))
+        (let ((mut xs (list-new arena Int))
+              (n (next d)))
+          (list-push xs 1)
+          n)))''',
+    # A callee's @pre about a literal's length is established by the literal.
+    'pre-on-a-string-literal': '''(module m
+      (fn q ((s String))
+        (@spec ((String) -> Int))
+        (@pre (> (. s len) 0))
+        (@post (== $result 1))
+        1)
+      (fn f ()
+        (@spec (() -> Int))
+        (@post (== $result 1))
+        (q "p")))''',
+    'tail-call': _with_one('''
+      (fn f ((n Int))
+        (@spec ((Int) -> Int))
+        (@post (== $result 1))
+        (one n))'''),
+    'let-bound': _with_one('''
+      (fn f ((n Int))
+        (@spec ((Int) -> Int))
+        (@post (== $result 2))
+        (let ((a (one n))) (+ a 1)))'''),
+    'every-arm-calls': _with_one('''
+      (fn f ((b Bool))
+        (@spec ((Bool) -> Int))
+        (@post (== $result 1))
+        (if b (one 0) (one 1)))'''),
+    'pre-met': '''(module m
+      (fn g ((n Int))
+        (@spec ((Int) -> Int))
+        (@pre (> n 0))
+        (@post (== $result 1))
+        (if (> n 0) 1 2))
+      (fn f ((n Int))
+        (@spec ((Int) -> Int))
+        (@pre (> n 5))
+        (@post (== $result 1))
+        (g n)))''',
+    'zero-argument-callee': '''(module m
+      (fn seven ()
+        (@spec (() -> Int))
+        (@pure)
+        (@post (== $result 7))
+        7)
+      (fn f ((n Int))
+        (@spec ((Int) -> Int))
+        (@post (== $result 8))
+        (let ((a (seven))) (+ a 1))))''',
+    'list-post-of-a-returned-call': '''(module m
+      (fn pos ((arena Arena) (n Int))
+        (@spec ((Arena Int) -> (List Int)))
+        (@pure)
+        (@post (forall (x $result) (> x 0)))
+        (list-new arena Int))
+      (fn f ((arena Arena) (n Int))
+        (@spec ((Arena Int) -> (List Int)))
+        (@post (forall (x $result) (> x 0)))
+        (pos arena n)))''',
+    'and-operand': _with_one('''
+      (fn f ((b Bool))
+        (@spec ((Bool) -> Bool))
+        (@post (implies $result b))
+        (and b (== (one 0) 1)))'''),
+    # The state after an assignment from a call carries the callee's post
+    # about it, relating the new value to the old one.
+    'assignment-from-a-call': '''(module m
+      (type Delta (record (iteration Int) (size Int)))
+      (fn delta-add ((d Delta) (t Int))
+        (@spec ((Delta Int) -> Delta))
+        (@post (== (. $result iteration) (. d iteration)))
+        (record-new Delta (iteration (. d iteration)) (size (+ (. d size) t))))
+      (fn f ((d Delta))
+        (@spec ((Delta) -> Delta))
+        (@post (== (. $result iteration) (. d iteration)))
+        (let ((mut result d))
+          (set! result (delta-add result 1))
+          result)))''',
+}
+
+
+class TestCalleeContractAtCallSite:
+    """Phase 12 assumes `Implies(path ∧ pre, post)` about each call's own term."""
+
+    def test_howl_false_post_fails_with_a_counterexample(self):
+        """`ap`'s k-y arm returns t unchanged, so its kind is k-y, not k-u.
+        `mk-u`, called on another arm, used to make it verify - and once that
+        stopped, mk-u's quantified field facts left Z3 no counterexample in time."""
+        r = _status_of(_HOWL_FALSEPOST.format(
+            post="(@post (implies (== (. t kind) 'k-y) (== (. $result kind) 'k-u)))",
+            kf=_HOWL_KF_CALL), 'ap')
+        assert r.status != 'verified'
+        assert r.status == 'failed'
+        assert r.counterexample
+
+    def test_howl_control_without_the_call_still_fails(self):
+        r = _status_of(_HOWL_FALSEPOST.format(
+            post="(@post (implies (== (. t kind) 'k-y) (== (. $result kind) 'k-u)))",
+            kf="('k-f t)"), 'ap')
+        assert r.status == 'failed'
+
+    def test_howl_two_constructors_no_longer_contradict(self):
+        """mk-a's and mk-b's posts were both asserted about bump's result."""
+        r = _status_of(_HOWL_INCONSISTENT, 'bump')
+        assert r.status == 'verified'
+
+    def test_a_guarded_post_and_its_negated_twin(self):
+        """The partial vacuity HOWL saw: the leaked post contradicted the body
+        only under `t.kind == k-y`, so every claim guarded by that verified -
+        a post and its negation alike - while `(@post false)` still failed."""
+        holds = _status_of(_HOWL_FALSEPOST.format(
+            post="(@post (implies (== (. t kind) 'k-y) (== (. $result kind) 'k-y)))",
+            kf=_HOWL_KF_CALL), 'ap')
+        twin = _status_of(_HOWL_FALSEPOST.format(
+            post="(@post (implies (== (. t kind) 'k-y) (not (== (. $result kind) 'k-y))))",
+            kf=_HOWL_KF_CALL), 'ap')
+        assert holds.status == 'verified'
+        assert twin.status == 'failed'
+
+    def test_a_callee_post_that_holds_on_every_path_still_flows(self):
+        r = _status_of(_HOWL_FALSEPOST.replace('''    (match (. t kind)
+      ('k-x (. sub x))
+      ('k-y t)
+      ('k-u t)
+      {kf})))''', '''    (if (. sub bound) (mk-u (. t n)) (mk-u 0))))''').format(
+            post="(@post (== (. $result kind) 'k-u))"), 'ap')
+        assert r.status == 'verified'
+
+    @pytest.mark.parametrize("shape", sorted(_CALLEE_POST_LEAKS))
+    def test_a_callee_post_does_not_speak_for_the_caller(self, shape):
+        # Refuted, not merely unproved: before the fix some of these came back
+        # unknown because the leaked facts contradicted each other.
+        assert _status_of(_CALLEE_POST_LEAKS[shape]).status == 'failed'
+
+    @pytest.mark.parametrize("shape", sorted(_CALLEE_POST_HOLDS))
+    def test_a_callee_post_holds_where_its_call_runs(self, shape):
+        assert _status_of(_CALLEE_POST_HOLDS[shape]).status == 'verified'
+
+
+class TestTranslatorArms:
+    """Arms the If chain could not read exactly used to be left out, making
+    the arm before them the default; now the whole form is untranslatable."""
+
+    def test_every_form_of_a_cond_clause_runs(self):
+        """#229: `(c (one 0) 3)` yields 3."""
+        assert _status_of(_with_one('''
+          (fn f ((n Int))
+            (@spec ((Int) -> Int))
+            (@post (implies (> n 0) (== $result 3)))
+            (cond ((> n 0) (one 0) 3) (else 1)))''')).status == 'verified'
+
+    def test_every_form_of_a_match_arm_runs(self):
+        assert _status_of('''(module m
+          (type O (union (some-v Int) (nothing)))
+          (fn seven ((x Int))
+            (@spec ((Int) -> Int))
+            (@pure)
+            (@post (== $result 7))
+            7)
+          (fn f ((o O))
+            (@spec ((O) -> Int))
+            (@post (== $result 7))
+            (match o ((some-v v) (seven v) 3) ((nothing) 7))))''').status != 'verified'
+
+    def test_a_literal_pattern_is_not_skipped(self):
+        """`(match n (0 0) (_ 7))` returns 0 for 0."""
+        assert _status_of('''(module m
+          (fn f ((n Int))
+            (@spec ((Int) -> Int))
+            (@post (== $result 7))
+            (match n (0 0) (_ 7))))''').status != 'verified'
+
+    def test_an_exhaustive_enum_match_needs_no_default(self):
+        """An enum value is one of its variants, as parameter and as field."""
+        assert _status_of('''(module m
+          (type Form (enum f-a f-b))
+          (type Lit (record (form Form) (v Int)))
+          (fn f ((k Form) (l Lit))
+            (@spec ((Form Lit) -> Bool))
+            (@post (== $result true))
+            (and (or (== k 'f-a) (== k 'f-b))
+                 (or (== (. l form) 'f-a) (== (. l form) 'f-b)))))''').status == 'verified'
+
+    def test_a_string_literal_is_as_long_as_its_bytes(self):
+        """string-len and .len count UTF-8 bytes at run time: "é" is 2.
+
+        Built without the parser, which cannot read a non-ASCII literal
+        until #325's fix ships."""
+        import z3
+        from slop.verifier import MinimalTypeEnv, Z3Translator
+        from slop.parser import SList, Symbol, String
+
+        translator = Z3Translator(MinimalTypeEnv())
+        literal = String("é")
+        by_function = translator.translate_expr(SList([Symbol('string-len'), literal]))
+        by_field = translator.translate_expr(SList([Symbol('.'), literal, Symbol('len')]))
+        solver = z3.Solver()
+        solver.add(*translator.constraints)
+        solver.add(z3.Or(by_function != 2, by_field != 2))
+        assert solver.check() == z3.unsat
+
+    def test_a_field_two_records_declare_differently_is_not_bounded(self):
+        assert _status_of('''(module m
+          (type A (enum a1 a2))
+          (type B (enum b1 b2 b3))
+          (type RA (record (tag A)))
+          (type RB (record (tag B)))
+          (fn f ((r RB))
+            (@spec ((RB) -> Bool))
+            (@post (== $result true))
+            (< (. r tag) 2)))''').status != 'verified'
+
+
+class TestImportedContractPre:
+    """An imported callee's post, quantified over its parameters for the
+    property solver, holds only where its @pre does (#134)."""
+
+    def _axioms(self, preconditions):
+        from slop.verifier import (ContractVerifier, Z3Translator, MinimalTypeEnv,
+                                   ImportedDefinitions, FunctionSignature)
+        from slop.parser import parse
+        from slop.types import PrimitiveType
+
+        imported_defs = ImportedDefinitions()
+        imported_defs.functions['g'] = FunctionSignature(
+            name='g',
+            param_types=[PrimitiveType('Int')],
+            return_type=PrimitiveType('Int'),
+            params=['n'],
+            postconditions=[parse("(== $result 1)")[0]],
+            preconditions=[parse(p)[0] for p in preconditions],
+        )
+        env = MinimalTypeEnv()
+        verifier = ContractVerifier(env, imported_defs=imported_defs)
+        translator = Z3Translator(env, imported_defs=imported_defs)
+        return verifier._extract_imported_postcondition_axioms(translator)
+
+    def test_the_post_is_guarded_by_the_pre(self):
+        import z3
+        axioms = self._axioms(["(> n 0)"])
+        assert len(axioms) == 1
+        g = z3.Function('fn_g_1', z3.IntSort(), z3.IntSort())
+        # Consistent with g(0) == 2: the promise does not reach n = 0.
+        solver = z3.Solver()
+        solver.add(axioms[0], g(z3.IntVal(0)) == 2)
+        assert solver.check() == z3.sat
+        # But not with g(3) == 2.
+        solver = z3.Solver()
+        solver.add(axioms[0], g(z3.IntVal(3)) == 2)
+        assert solver.check() == z3.unsat
+
+    def test_a_pre_that_cannot_be_stated_drops_the_post(self):
+        # list-visited names nothing outside a loop invariant.
+        assert self._axioms(["(== n (list-len (list-visited n)))"]) == []
+
+
+class TestImportedMutWrites:
+    """An imported signature records what each `mut` parameter's body may
+    change, so a caller in another module can read a post about a field the
+    callee never writes (#230)."""
+
+    def _sig(self, src):
+        from slop.parser import parse
+        from slop.verifier.imports import _extract_function_signature
+        return _extract_function_signature(parse(src)[0], {})
+
+    def test_a_field_push_is_a_write_to_that_field(self):
+        sig = self._sig('''(fn add ((arena Arena) (mut d D) (x Int))
+            (@spec ((Arena D Int) -> D))
+            (@post (== (. $result it) (. d it)))
+            (list-push (. d items) x)
+            d)''')
+        assert sig.mut_writes == {'d': {'items'}}
+
+    def test_every_body_form_is_read(self):
+        sig = self._sig('''(fn add ((arena Arena) (mut d D) (x Int))
+            (@spec ((Arena D Int) -> D))
+            (set! d.it 5)
+            d)''')
+        assert sig.mut_writes == {'d': {'it'}}
+
+    def test_a_whole_assignment_or_a_closure_changes_everything(self):
+        assert self._sig('''(fn z ((mut n Int))
+            (@spec ((Int) -> Int))
+            (set! n 0)
+            n)''').mut_writes == {'n': None}
+        assert self._sig('''(fn z ((mut n Int))
+            (@spec ((Int) -> Int))
+            (let ((g (fn () (set! n 1)))) n))''').mut_writes == {'n': None}

@@ -2430,10 +2430,28 @@ class AxiomGenerationMixin:
             else:
                 translator.variables['$result'] = fn_result
 
-            # Translate the postcondition body
-            post_z3 = translator.translate_expr(post)
-            if post_z3 is None or not z3.is_bool(post_z3):
-                return None
+            # The parameters are bound variables here: a call in the contract
+            # has them for arguments, and nothing about it may be stated
+            # outside the quantifier.
+            translator._quantifier_depth += 1
+            try:
+                # Translate the postcondition body
+                post_z3 = translator.translate_expr(post)
+                if post_z3 is None or not z3.is_bool(post_z3):
+                    return None
+
+                # The callee promises its post only where its @pre holds (#134).
+                # A precondition this cannot state leaves nothing to promise.
+                pre_terms = []
+                for pre in getattr(sig, 'preconditions', []) or []:
+                    pre_z3 = translator.translate_expr(pre)
+                    if pre_z3 is None or not z3.is_bool(pre_z3):
+                        return None
+                    pre_terms.append(pre_z3)
+            finally:
+                translator._quantifier_depth -= 1
+            if pre_terms:
+                post_z3 = z3.Implies(z3.And(*pre_terms), post_z3)
 
             # Wrap in universal quantifier over all parameters
             if param_vars:

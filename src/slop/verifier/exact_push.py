@@ -29,8 +29,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import z3
 
 from slop.parser import SList, Symbol, is_form
-from slop.types import (
-    PrimitiveType, RangeType, EnumType, RecordType, UnionType, OptionType, ResultType,
+
+from .callee_contracts import (
+    callee_contract, contract_closed_over, instantiate_callee_contract,
+    is_value_type, params_are_values,
 )
 
 _MISSING = object()
@@ -723,68 +725,11 @@ class ExactPushModelMixin:
         tr._pinned_terms[id(call)] = z3.FreshConst(natural.sort(), 'call')
 
     def _xp_params_are_values(self, fn_name: str) -> bool:
-        tr = self._xp_tr
-        registry = tr.function_registry
-        types: List[Any] = []
-        modes: List[Optional[str]] = []
-        if registry is not None and fn_name in registry.functions:
-            from .type_builder import _parse_type_expr_simple
-            fn_def = registry.functions[fn_name]
-            if len(fn_def.param_type_exprs) != len(fn_def.params):
-                return False
-            for expr in fn_def.param_type_exprs:
-                if expr is None:
-                    return False
-                types.append(_parse_type_expr_simple(expr, tr.type_env.type_registry))
-            modes = list(fn_def.param_modes)
-        elif fn_name in tr.imported_defs.functions:
-            sig = tr.imported_defs.functions[fn_name]
-            if len(sig.param_types) != len(sig.params):
-                return False
-            types = list(sig.param_types)
-            modes = list(getattr(sig, 'param_modes', [])) or [None] * len(types)
-        else:
-            return False
-        # A mut parameter is a local copy of a value type (#180): the callee
-        # changing it never reaches the caller. `out` no longer compiles, but
-        # a source written for an older slop may still say it.
-        if any(mode == 'out' for mode in modes):
-            return False
-        return all(self._xp_is_value_type(t, set()) for t in types)
+        return params_are_values(self._xp_tr, fn_name)
 
     def _xp_is_value_type(self, typ, seen) -> bool:
         """True if a value of `typ` reaches no mutable storage."""
-        tr = self._xp_tr
-        if isinstance(typ, PrimitiveType):
-            if typ.name in ('Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64',
-                            'Float', 'F32', 'F64', 'Bool', 'String', 'Unit', 'Arena'):
-                return True
-            target = tr.type_env.type_registry.get(typ.name) or tr.imported_defs.types.get(typ.name)
-            if target is None or target is typ:
-                return False
-            return self._xp_is_value_type(target, seen)
-        if isinstance(typ, (RangeType, EnumType)):
-            return True
-        if id(typ) in seen:
-            return True     # a recursive type is as mutable as its other parts
-        seen = seen | {id(typ)}
-        if isinstance(typ, RecordType):
-            return all(self._xp_is_value_type(t, seen) for t in typ.fields.values())
-        if isinstance(typ, UnionType):
-            payloads = []
-            for tag in typ.variants:
-                recorded = typ.payload_types.get(tag)
-                if recorded is None:
-                    first = typ.variants[tag]
-                    recorded = (first,) if first is not None else ()
-                payloads.extend(recorded)
-            return all(p is None or self._xp_is_value_type(p, seen) for p in payloads)
-        if isinstance(typ, OptionType):
-            return self._xp_is_value_type(typ.inner, seen)
-        if isinstance(typ, ResultType):
-            return all(self._xp_is_value_type(getattr(typ, f), seen)
-                       for f in ('ok_type', 'err_type') if hasattr(typ, f))
-        return False        # lists, maps, sets, pointers, channels, functions
+        return is_value_type(self._xp_tr, typ, seen)
 
     def _xp_pin_variant(self, node, tag: str, payloads, pc):
         tr = self._xp_tr
@@ -818,110 +763,26 @@ class ExactPushModelMixin:
         """Assume the callee's @post and @property of this call, under `pc` and its @pre.
 
         `keep_post(post)` may refuse a postcondition this caller cannot read
-        soundly; every one is kept when it is None.
+        soundly; every one is kept when it is None. The instantiation itself is
+        callee_contracts.instantiate_callee_contract, which the main model's
+        Phase 12 shares.
         """
         tr = self._xp_tr
-        params = None
-        posts: List[Any] = []
-        pres: List[Any] = []
-        registry = tr.function_registry
-        # A @property holds of every call, with no precondition, so it is
-        # assumed like a postcondition - under the same guard, which only
-        # weakens it. A callee states a fact as a property when a @post would
-        # also become a runtime check it cannot compile (#171).
-        if registry is not None and fn_name in registry.functions:
-            fn_def = registry.functions[fn_name]
-            params, pres = fn_def.params, getattr(fn_def, 'preconditions', [])
-            posts = list(fn_def.postconditions) + [expr for _, expr in fn_def.properties]
-        elif fn_name in tr.imported_defs.functions:
-            sig = tr.imported_defs.functions[fn_name]
-            params, pres = sig.params, getattr(sig, 'preconditions', [])
-            posts = list(sig.postconditions) + list(getattr(sig, 'properties', []))
-        if not params or not posts or len(params) != len(call.items) - 1:
+        contract = callee_contract(tr, fn_name)
+        if contract is None or len(contract[0]) != len(call.items) - 1:
             return
         call_term = tr.translate_expr(call)
         if call_term is None:
             return
-        param_map = {'$result': call_term}
-        for param, arg in zip(params, call.items[1:]):
+        arg_terms = []
+        for arg in call.items[1:]:
             arg_term = tr.translate_expr(arg)
             if arg_term is None:
                 return
-            param_map[param] = arg_term
-        allowed = set(param_map)
-        pre_terms = []
-        for pre in pres:
-            if not self._xp_closed_over(pre, allowed):
-                return      # an assumption we cannot state: skip every post
-            start = len(tr.constraints)
-            term = tr._translate_with_substitution(pre, param_map)
-            # What translating the callee's contract raised - a definedness
-            # condition above all - is not ours to assume.
-            self._xp_truncate_constraints(start)
-            if term is None or term.sort() != z3.BoolSort():
-                return
-            pre_terms.append(term)
-        guard = z3.And(pc, *pre_terms) if pre_terms else pc
-        for post in posts:
-            if not self._xp_closed_over(post, allowed):
-                continue    # a post about something other than the call: not ours to assume
-            if keep_post is not None and not keep_post(post):
-                continue
-            start = len(tr.constraints)
-            term = tr._translate_with_substitution(post, param_map)
-            self._xp_truncate_constraints(start)
-            if term is None or term.sort() != z3.BoolSort():
-                continue
-            self._xp_axioms.append(z3.Implies(guard, term))
+            arg_terms.append(arg_term)
+        self._xp_axioms.extend(instantiate_callee_contract(
+            tr, fn_name, call_term, arg_terms, pc, keep_post=keep_post))
 
     def _xp_closed_over(self, expr, allowed) -> bool:
-        """True if every free name in `expr` is in `allowed`.
-
-        Function heads and field names are not free names. Anything else a
-        callee's contract mentions - a global, another parameter's alias -
-        would be read in the caller's scope, where it means something else.
-        """
-        tr = self._xp_tr
-
-        def free(node, bound, position_is_field=False) -> bool:
-            if isinstance(node, Symbol):
-                n = node.name
-                if position_is_field or n in bound or n in ('true', 'false', 'nil', '_'):
-                    return True
-                if n.startswith("'") or n in tr.enum_values:
-                    return True
-                return False
-            if isinstance(node, SList) and len(node) > 0:
-                head = node[0]
-                if isinstance(head, Symbol) and head.name == 'quote':
-                    return True
-                if is_form(node, '.') and len(node) >= 3:
-                    return free(node[1], bound) and all(free(i, bound, True) for i in node.items[2:])
-                # Names a match arm or a quantifier binds are the contract's
-                # own, not free names of the caller's.
-                if is_form(node, 'match') and len(node) >= 2:
-                    if not free(node[1], bound):
-                        return False
-                    for clause in node.items[2:]:
-                        if not isinstance(clause, SList) or len(clause) < 1:
-                            return False
-                        pattern = clause[0]
-                        binders = set()
-                        if isinstance(pattern, SList):
-                            binders = {p.name for p in pattern.items[1:] if isinstance(p, Symbol)}
-                        if not all(free(item, bound | binders) for item in clause.items[1:]):
-                            return False
-                    return True
-                if (isinstance(head, Symbol) and head.name in ('forall', 'exists')
-                        and len(node) >= 3 and isinstance(node[1], SList) and len(node[1]) >= 1
-                        and isinstance(node[1][0], Symbol)):
-                    binding = node[1]
-                    source_ok = True
-                    if len(binding) >= 2 and not (isinstance(binding[1], Symbol) and binding[1].name[:1].isupper()):
-                        source_ok = free(binding[1], bound)
-                    return source_ok and all(free(i, bound | {binding[0].name}) for i in node.items[2:])
-                items = node.items[1:] if isinstance(head, Symbol) else node.items
-                return all(free(i, bound) for i in items)
-            return True
-
-        return free(expr, set(allowed))
+        """True if every free name in `expr` is in `allowed` (callee_contracts)."""
+        return contract_closed_over(self._xp_tr, expr, allowed)

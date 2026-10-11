@@ -38,6 +38,9 @@ class FunctionDef:
     # The return type expression from @spec, so a caller can tell what kind of
     # value a call yields - a record, or a pointer whose fields can change.
     return_type_expr: Optional['SExpr'] = None
+    # Every form of the body, in order. `body` is the last one, which is the
+    # value; anything asking what the body does needs them all.
+    body_forms: List['SExpr'] = field(default_factory=list)
 
 
 class FunctionRegistry:
@@ -92,6 +95,7 @@ class FunctionRegistry:
 
         # Extract body, postconditions, properties (skip other annotations and :keywords)
         body = None
+        body_forms: List['SExpr'] = []
         is_pure = False
         postconditions: List['SExpr'] = []
         preconditions: List['SExpr'] = []
@@ -115,6 +119,7 @@ class FunctionRegistry:
                     continue
                 # Simple expression as body
                 body = item
+                body_forms.append(item)
                 skip_next_string = False
             elif isinstance(item, String):
                 # Skip string values after :keyword (property values)
@@ -123,6 +128,7 @@ class FunctionRegistry:
                     skip_next_string = False
                     continue
                 body = item
+                body_forms.append(item)
             elif is_form(item, '@pure'):
                 is_pure = True
                 skip_next_string = False
@@ -153,9 +159,11 @@ class FunctionRegistry:
                     skip_next_string = False
                     continue
                 body = item
+                body_forms.append(item)
                 skip_next_string = False
 
         self.functions[name] = FunctionDef(name=name, params=params, body=body,
+                                           body_forms=body_forms,
                                            is_pure=is_pure, postconditions=postconditions,
                                            properties=properties, preconditions=preconditions,
                                            param_type_exprs=param_type_exprs,
