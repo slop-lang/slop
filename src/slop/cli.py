@@ -3008,7 +3008,7 @@ def cmd_build(args):
                             return 1
                         obj_files.append(obj_file)
 
-                    lib_file = f"{output}.a"
+                    lib_file = f"{output}.a" if not output.endswith('.a') else output
                     ar_cmd = ["ar", "rcs", lib_file] + obj_files
                     result = subprocess.run(ar_cmd, capture_output=True, text=True)
                     if result.returncode != 0:
@@ -3018,7 +3018,7 @@ def cmd_build(args):
 
                 elif library_mode == 'shared':
                     ext = ".dylib" if sys.platform == "darwin" else ".so"
-                    lib_file = f"{output}{ext}"
+                    lib_file = f"{output}{ext}" if not output.endswith(ext) else output
                     compile_cmd = _cc_command() + ["-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path), "-I", tmpdir,
                                   "-o", lib_file] + c_files + link_flags
                     if debug:
@@ -3089,13 +3089,20 @@ def cmd_build(args):
             # Transpile using native transpiler
             print("  Transpiling to C...")
             native_module_headers = {}  # Module headers from native transpiler (for library builds)
-            module_name = input_path.stem
-            c_mod_name = module_name.replace('-', '_').replace('/', '_')
 
             if library_mode and native_compiler_bin:
                 # For library builds with native transpiler, use split output to get separate header
                 split_results, success = transpile_native_split(str(input_path))
-                if success and module_name in split_results:
+                if success and len(split_results) != 1:
+                    # A single file holds one module; name the header after the
+                    # (module ...) form, not the file name (#304)
+                    names = ', '.join(sorted(split_results)) or 'none'
+                    print(f"  Error: expected one module in {input_path}, the transpiler "
+                          f"produced {len(split_results)} ({names})", file=sys.stderr)
+                    return 1
+                if success:
+                    module_name = next(iter(split_results))
+                    c_mod_name = module_name.replace('-', '_').replace('/', '_')
                     header, impl = split_results[module_name]
                     native_module_headers[module_name] = header
                     # Build C file with proper includes
@@ -3110,7 +3117,17 @@ def cmd_build(args):
                     print("  Native transpiler failed", file=sys.stderr)
                     return 1
 
-        c_file = f"{output}.c"
+        # A library output keeps the suffix it was given (`-o m.a` writes m.a,
+        # not m.a.a), and its intermediate files drop it (m.c, m.o) (#304)
+        if library_mode == 'static':
+            lib_ext = '.a'
+        elif library_mode == 'shared':
+            lib_ext = ".dylib" if sys.platform == "darwin" else ".so"
+        else:
+            lib_ext = None
+        out_base = output[:-len(lib_ext)] if lib_ext and output.endswith(lib_ext) else output
+
+        c_file = f"{out_base}.c"
         with open(c_file, 'w') as f:
             f.write(c_code)
 
@@ -3149,8 +3166,8 @@ def cmd_build(args):
 
         if library_mode == 'static':
             # Compile to object file, then create static library
-            obj_file = f"{output}.o"
-            lib_file = f"{output}.a"
+            obj_file = f"{out_base}.o"
+            lib_file = f"{out_base}.a"
 
             compile_cmd = _cc_command() + ["-c", f"-O{opt_level}", "-I", str(runtime_path), "-o", obj_file, c_file]
             if debug:
@@ -3182,8 +3199,7 @@ def cmd_build(args):
 
         elif library_mode == 'shared':
             # Compile to shared library
-            ext = ".dylib" if sys.platform == "darwin" else ".so"
-            lib_file = f"{output}{ext}"
+            lib_file = f"{out_base}{lib_ext}"
 
             compile_cmd = _cc_command() + ["-shared", "-fPIC", f"-O{opt_level}", "-I", str(runtime_path),
                           "-o", lib_file, c_file] + link_flags
