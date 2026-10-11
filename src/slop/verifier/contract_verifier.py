@@ -767,14 +767,17 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         that took no early exit. A call to a function that may change state -
         not @pure, and given a list, a map or a pointer - is the same term at
         every call with the same arguments (#227), and the model reads state as
-        if it never changed: of its contract only what reads no state is
-        assumed, except at the call the function returns, whose end state is
-        the caller's.
+        if it never changed: of its posts only those that read no state are
+        assumed, except at a call the function returns, whose end state is the
+        caller's. Its @pre still guards them, read as every @pre is.
 
         Returns (axioms, tail_axioms). The tail axioms are the same facts with
-        `$result` read as the caller's own, for a call that is the body's
-        straight-line value: they keep a post the call's term cannot carry -
-        one about the elements of a returned list - and they describe the
+        `$result` read as the caller's own, for a call in tail position - the
+        body's last form, through `do`, `let` and the arms of `if`, `cond` and
+        `match` - under the path the call was recorded on. On that path the
+        call is what the function returns, so this keeps a post the call's
+        term cannot carry - one about the elements of a returned list, or one
+        reading state, whose end state is the caller's. They describe the
         result only where the trailing form does, so they go through
         add_tail_axiom.
         """
@@ -783,10 +786,10 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
             contract_is_state_free)
         axioms: List = []
         tail_axioms: List = []
-        tail_call = self._straight_line_tail_call(body)
+        tail_calls = self._tail_positions(body)
         result_var = translator.variables.get('$result')
         for site in call_sites:
-            if site.expr is tail_call and result_var is not None \
+            if id(site.expr) in tail_calls and result_var is not None \
                     and site.term.sort() == result_var.sort():
                 tail_axioms.extend(instantiate_callee_contract(
                     translator, site.fn_name, site.term, site.args, site.path,
@@ -804,18 +807,41 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                     return contract_is_state_free(translator, fn_name, expr)
             axioms.extend(instantiate_callee_contract(
                 translator, site.fn_name, site.term, site.args, guard,
-                keep_pre=keep, keep_post=keep, patterns=False))
+                keep_post=keep, patterns=False))
         return axioms, tail_axioms
 
     @staticmethod
-    def _straight_line_tail_call(body: SExpr) -> Optional[SExpr]:
-        """The call a body ends in through `do` and `let` alone, or None."""
-        node = body
-        while (is_form(node, 'do') and len(node) >= 2) or (is_form(node, 'let') and len(node) >= 3):
-            node = node[-1]
-        if isinstance(node, SList) and len(node) >= 1 and isinstance(node[0], Symbol):
-            return node
-        return None
+    def _tail_positions(body: SExpr) -> Set[int]:
+        """The ids of the forms whose value is the function's, wherever reached.
+
+        The last form of a `do` or `let` body, and of each arm of an `if`,
+        `cond` or `match` in tail position. A `when` yields Unit, a loop
+        nothing, so neither has one.
+        """
+        tails: Set[int] = set()
+
+        def walk(node):
+            tails.add(id(node))
+            if not isinstance(node, SList) or len(node) == 0:
+                return
+            if is_form(node, 'do') and len(node) >= 2:
+                walk(node[-1])
+            elif is_form(node, 'let') and len(node) >= 3:
+                walk(node[-1])
+            elif is_form(node, 'if') and len(node) in (3, 4):
+                for arm in node.items[2:]:
+                    walk(arm)
+            elif is_form(node, 'cond'):
+                for clause in node.items[1:]:
+                    if isinstance(clause, SList) and len(clause) >= 2:
+                        walk(clause[-1])
+            elif is_form(node, 'match') and len(node) >= 3:
+                for clause in node.items[2:]:
+                    if isinstance(clause, SList) and len(clause) >= 2:
+                        walk(clause[-1])
+
+        walk(body)
+        return tails
 
     def _builtin_binding_axioms(self, translator: Z3Translator):
         """A recorder hook: what the RDF builtins say about the local they bind.

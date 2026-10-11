@@ -171,40 +171,84 @@ _VALUE_OPERATORS = frozenset((
 ))
 
 
+def _resolve(tr, typ, depth: int = 0):
+    """`typ` with named types looked up, to the declaration they name."""
+    while isinstance(typ, PrimitiveType) and depth < 16:
+        target = tr.type_env.type_registry.get(typ.name) or tr.imported_defs.types.get(typ.name)
+        if target is None or target is typ:
+            break
+        typ, depth = target, depth + 1
+    return typ
+
+
+def _payload_types(tr, scrutinee_type, tag: str):
+    """The payload types an arm's pattern `tag` binds, or None if unknown."""
+    typ = _resolve(tr, scrutinee_type)
+    if isinstance(typ, OptionType):
+        return (typ.inner,) if tag == 'some' else () if tag == 'none' else None
+    if isinstance(typ, ResultType):
+        return (typ.ok_type,) if tag == 'ok' else (typ.err_type,) if tag == 'error' else None
+    if isinstance(typ, UnionType) and tag in typ.variants:
+        recorded = typ.payload_types.get(tag)
+        if recorded is None:
+            first = typ.variants[tag]
+            recorded = (first,) if first is not None else ()
+        return tuple(recorded)
+    return None
+
+
 def contract_is_state_free(tr, fn_name: str, expr) -> bool:
     """True if `expr`, part of `fn_name`'s contract, reads no mutable state.
 
     A callee that may change state - not @pure, and given a list, a map or a
     pointer - is one term for every call with the same arguments (#227), and
-    the model reads state as if it never changed: `(. c n)` is one value
-    wherever it is read. A contract that reads the counter it bumps would then
-    claim, for every call, what is true only of one. One that reads nothing
-    mutable - `(!= $result nil)`, `(>= $result 0)`, a field of a record passed
-    or returned by value - is true of whatever each call returned, and is
-    kept.
+    the model reads state as if it never changed: `(. c n)` through a pointer
+    is one value wherever it is read. A contract that reads the counter it
+    bumps would then claim, for every call, what is true only of one.
+
+    What is read out of a value is fixed once the call returns: a field of a
+    record passed or returned by value - whatever else the record holds -
+    and the payload of a Result, an Option or a union, through `match`. So
+    is a String's length. Anything read through a pointer, out of a
+    collection, or by calling a function is not.
     """
     types = _callee_types(tr, fn_name)
     if types is None:
         return False
     param_types, return_type = types
-    value_roots = {name for name, typ in param_types.items()
-                   if typ is not None and is_value_type(tr, typ, set())}
-    if return_type is not None and is_value_type(tr, return_type, set()):
-        value_roots.add('$result')
+    env = dict(param_types)
+    env['$result'] = return_type
 
-    def value_rooted(node) -> bool:
+    def type_of(node, env):
+        """The declared type of a name or a by-value field chain, or None."""
         if isinstance(node, Symbol):
-            return node.name.split('.', 1)[0] in value_roots
-        if is_form(node, '.') and len(node) >= 3:
-            return value_rooted(node[1])
-        return False
+            parts = node.name.split('.')
+            typ = env.get(parts[0])
+            for field_name in parts[1:]:
+                typ = field_type(typ, field_name)
+            return typ
+        if is_form(node, '.') and len(node) == 3 and isinstance(node[2], Symbol):
+            return field_type(type_of(node[1], env), node[2].name)
+        return None
 
-    def free(node) -> bool:
+    def field_type(typ, field_name):
+        record = _resolve(tr, typ)
+        if isinstance(record, RecordType):
+            return record.fields.get(field_name)
+        return None
+
+    def by_value_record(node, env) -> bool:
+        return isinstance(_resolve(tr, type_of(node, env)), RecordType)
+
+    def free(node, env) -> bool:
         if isinstance(node, Symbol):
             # `p.field` is a field read, as `(. p field)` is; a bare name is
             # the value the call was given.
-            if '.' in node.name[1:]:
-                return value_rooted(node)
+            parts = node.name.split('.')
+            if len(parts) > 1 and parts[0]:
+                for end in range(1, len(parts)):
+                    if not by_value_record(Symbol('.'.join(parts[:end])), env):
+                        return False
             return True
         if isinstance(node, (Number, String)):
             return True
@@ -216,12 +260,31 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
         if head.name == 'quote':
             return True
         if head.name == '.':
-            return value_rooted(node)
+            return len(node) == 3 and free(node[1], env) and by_value_record(node[1], env)
+        if head.name == 'match' and len(node) >= 3:
+            if not free(node[1], env):
+                return False
+            scrutinee_type = type_of(node[1], env)
+            for clause in node.items[2:]:
+                if not isinstance(clause, SList) or len(clause) < 2:
+                    return False
+                pattern = clause[0]
+                arm_env = env
+                if isinstance(pattern, SList) and len(pattern) >= 1 and isinstance(pattern[0], Symbol):
+                    payloads = _payload_types(tr, scrutinee_type, pattern[0].name.lstrip("'"))
+                    arm_env = dict(env)
+                    for index, binder in enumerate(pattern.items[1:]):
+                        if isinstance(binder, Symbol):
+                            arm_env[binder.name] = (payloads[index] if payloads is not None
+                                                    and index < len(payloads) else None)
+                if not all(free(item, arm_env) for item in clause.items[1:]):
+                    return False
+            return True
         if head.name in _VALUE_OPERATORS:
-            return all(free(item) for item in node.items[1:])
+            return all(free(item, env) for item in node.items[1:])
         return False
 
-    return free(expr)
+    return free(expr, env)
 
 
 def contract_closed_over(tr, expr, allowed) -> bool:
