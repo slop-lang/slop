@@ -424,10 +424,16 @@ def _caller_bindings(body) -> dict:
     return sources
 
 
+# In `written_in_place`, a write whose target is not rooted at a name - through
+# `deref`, into a call's value - so what it changes is not known.
+WRITTEN_UNKNOWN = '*'
+
+
 def written_in_place(body) -> Set[str]:
     """The names `body` changes in place: a field of one set, a collection
     write through one or a field of one. Not a `set!` of the bare name, which
-    the translator gives a new version."""
+    the translator gives a new version. WRITTEN_UNKNOWN stands for a write
+    whose target is not rooted at a name."""
     names: Set[str] = set()
 
     def walk(node):
@@ -443,12 +449,13 @@ def written_in_place(body) -> Set[str]:
                     names.add(target.name.split('.', 1)[0])
                 else:
                     root, field_name = _root_and_field(target)
-                    if root is not None and field_name is not None:
+                    if root is None:
+                        names.add(WRITTEN_UNKNOWN)
+                    elif field_name is not None:
                         names.add(root)
             elif head.name in _COLLECTION_WRITES and len(node) >= 2:
                 root, _ = _root_and_field(node[1])
-                if root is not None:
-                    names.add(root)
+                names.add(root if root is not None else WRITTEN_UNKNOWN)
         for item in node.items:
             walk(item)
 
@@ -488,6 +495,35 @@ def reads_into_result(expr) -> bool:
             (not isinstance(head, Symbol) and walk(head, False))
 
     return walk(expr, True)
+
+
+def result_changed_in_place(call_expr, caller_body, written: Set[str]) -> bool:
+    """True if the caller may change, in place, the value this call returned.
+
+    `written` is what `written_in_place` found (less the caller's pointer
+    parameters). A name counts if anything it is bound or assigned from
+    holds this very call, or a name that does; an unknown target counts
+    always.
+    """
+    if WRITTEN_UNKNOWN in written:
+        return True
+    if not written:
+        return False
+    sources = _caller_bindings(caller_body)
+
+    def holds_call(node, seen) -> bool:
+        if node is call_expr:
+            return True
+        if isinstance(node, Symbol):
+            name = node.name.split('.', 1)[0]
+            if name in seen or name not in sources:
+                return False
+            return any(holds_call(expr, seen | {name}) for expr in sources[name])
+        if isinstance(node, SList):
+            return any(holds_call(item, seen) for item in node.items)
+        return False
+
+    return any(holds_call(Symbol(name), frozenset()) for name in written)
 
 
 def unstable_arguments(tr, call_expr, params: Sequence[str], caller_body,

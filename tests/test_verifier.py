@@ -14067,6 +14067,25 @@ _CALLEE_POST_LEAKS['result-the-caller-changes-in-place-after-the-call'] = '''(mo
           (list-push xs 1)
           (cast Int (list-len xs)))))'''
 
+# The caller sets a field of the record a call returned, through the pointer
+# it returned.
+_CALLEE_POST_LEAKS['returned-pointer-the-caller-writes-through'] = '''(module m
+      (type Node (record (val Int)))
+      (fn mk ((arena Arena) (v Int))
+        (@spec ((Arena Int) -> (Ptr Node)))
+        (@alloc arena)
+        (@post (== (. $result val) v))
+        (let ((n (cast (Ptr Node) (arena-alloc arena (sizeof Node)))))
+          (set! n.val v)
+          n))
+      (fn f ((arena Arena))
+        (@spec ((Arena) -> Int))
+        (@alloc arena)
+        (@post (== $result 1))
+        (let ((n (mk arena 1)))
+          (set! n.val 2)
+          (. n val))))'''
+
 # The write to the field the post reads is in an earlier body form.
 _CALLEE_POST_LEAKS['post-about-a-mut-field-written-before-the-last-form'] = '''(module m
       (type D (record (items (List Int)) (it Int)))
@@ -14148,6 +14167,21 @@ _CALLEE_POST_HOLDS = {
         (@post (== (list-len (. $result items)) (list-len (. d items))))
         (let ((items (copy-items arena (. d items))))
           (record-new Doc (items items) (n (. d n))))))''',
+    # The caller changes a list of its own in place; the call's result is not
+    # that list (HOWL advance-round).
+    'in-place-write-to-another-local': '''(module m
+      (type D (record (it Int)))
+      (fn next ((d D))
+        (@spec ((D) -> D))
+        (@post (== (. $result it) (+ (. d it) 1)))
+        (record-new D (it (+ (. d it) 1))))
+      (fn f ((arena Arena) (d D))
+        (@spec ((Arena D) -> D))
+        (@post (== (. $result it) (+ (. d it) 1)))
+        (let ((mut xs (list-new arena Int))
+              (n (next d)))
+          (list-push xs 1)
+          n)))''',
     # A callee's @pre about a literal's length is established by the literal.
     'pre-on-a-string-literal': '''(module m
       (fn q ((s String))

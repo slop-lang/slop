@@ -789,22 +789,24 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
         from .callee_contracts import (
             instantiate_callee_contract, callee_is_pure, params_are_values,
             contract_is_state_free, callee_contract, unstable_arguments, _names_any,
-            written_in_place, reads_into_result, _resolve as _resolve_type)
+            written_in_place, reads_into_result, result_changed_in_place,
+            _resolve as _resolve_type)
         from slop.types import PtrType
         axioms: List = []
         tail_axioms: List = []
         tail_calls = self._tail_positions(body)
         result_var = translator.variables.get('$result')
-        # A caller that changes anything in place may change what a call
-        # returned - push onto it, set its field - after the call, and the
-        # model does not version that (#242). Its posts reading into the
-        # result then hold of the value as returned, not as later read. A tail
-        # call has nothing after it.
+        # A caller may change what a call returned in place - push onto it,
+        # set its field - after the call, and the model does not version that
+        # (#242). A post reading into the result then holds of the value as
+        # returned, not as later read: not assumed where something the caller
+        # writes in place may hold the result. A tail call has nothing after
+        # it.
         # A field set through a parameter declared as a pointer changes what
         # it points to: not a value a call returned, nor a fresh allocation.
-        caller_writes_in_place = any(
-            not isinstance(_resolve_type(translator, caller_param_types.get(name)), PtrType)
-            for name in written_in_place(body))
+        written = {name for name in written_in_place(body)
+                   if not isinstance(_resolve_type(translator, caller_param_types.get(name)),
+                                     PtrType)}
         for site in call_sites:
             stateful = not (callee_is_pure(translator, site.fn_name)
                             or params_are_values(translator, site.fn_name))
@@ -833,7 +835,7 @@ class ContractVerifier(PatternDetectionMixin, AxiomGenerationMixin,
                 if reached_guard is not None:
                     guard = z3.And(guard, reached_guard)
             keep_post = keep
-            if caller_writes_in_place:
+            if result_changed_in_place(site.expr, body, written):
                 def keep_post(expr, keep=keep):
                     return not reads_into_result(expr) and (keep is None or keep(expr))
             axioms.extend(instantiate_callee_contract(
