@@ -24,6 +24,7 @@ import z3
 from slop.parser import SList, Symbol, Number, String, is_form
 from slop.types import (
     PrimitiveType, RangeType, EnumType, RecordType, UnionType, OptionType, ResultType,
+    ListType,
 )
 
 _MISSING = object()
@@ -239,8 +240,13 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
     What is read out of a value is fixed once the call returns: a field of a
     record passed or returned by value - whatever else the record holds -
     and the payload of a Result, an Option or a union, through `match`. So
-    is a String's length. Anything read through a pointer, out of a
-    collection, or by calling a function is not.
+    is a String's length, and the length of a List the callee cannot grow or
+    shrink: a parameter (or a List field of one) is read-only to it unless
+    `mut` (spec 3.4), and a post naming a `mut` parameter is never assumed;
+    the List it returns is its own. (Through another handle to the same List
+    - a pointer to a record holding it - the callee could still change it;
+    the model follows no aliasing anywhere, #242.) Anything read through a
+    pointer, out of a collection's contents, or by calling a function is not.
     """
     types = _callee_types(tr, fn_name)
     if types is None:
@@ -291,6 +297,11 @@ def contract_is_state_free(tr, fn_name: str, expr) -> bool:
             return True
         if head.name == '.':
             return len(node) == 3 and free(node[1], env) and by_value_record(node[1], env)
+        if head.name == 'list-len':
+            # The length of a parameter, or of a List field of one held by
+            # value, or of the List returned: not a read through a handle.
+            return (len(node) == 2 and free(node[1], env)
+                    and isinstance(_resolve(tr, type_of(node[1], env)), ListType))
         if head.name == 'match' and len(node) >= 3:
             if not free(node[1], env):
                 return False

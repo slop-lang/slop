@@ -13972,6 +13972,21 @@ _CALLEE_POST_HOLDS = {
         (let ((result (collect arena sink (+ iter 1))))
           (set! sink.code 0)
           result)))''',
+    # The length of a List parameter the callee cannot push to, and of the
+    # List it returns, are not state the callee changes (HOWL copy-decoded).
+    'length-post-of-a-stateful-callee': '''(module m
+      (type Doc (record (items (List Int)) (n Int)))
+      (fn copy-items ((arena Arena) (xs (List Int)))
+        (@spec ((Arena (List Int)) -> (List Int)))
+        (@post (== (list-len $result) (list-len xs)))
+        (let ((mut out (list-new arena Int)))
+          (for-each (x xs) (list-push out x))
+          out))
+      (fn f ((arena Arena) (d Doc))
+        (@spec ((Arena Doc) -> Doc))
+        (@post (== (list-len (. $result items)) (list-len (. d items))))
+        (let ((items (copy-items arena (. d items))))
+          (record-new Doc (items items) (n (. d n))))))''',
     # A callee's @pre about a literal's length is established by the literal.
     'pre-on-a-string-literal': '''(module m
       (fn q ((s String))
