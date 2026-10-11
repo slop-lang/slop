@@ -230,6 +230,11 @@ Windows yet. To build SLOP's generated C inside another build, such as a Rust
 `-sys` crate, compile it with clang-cl or MinGW gcc against `slop_runtime.h`;
 it needs no pthreads library.
 
+`slop.cmd` sets `PYTHONUTF8=1`. Run the CLI some other way, through `uv run
+slop` or a pip-installed `slop`, and set it yourself: without it, Python reads
+the tools' UTF-8 output in the console code page and a build of non-ASCII
+source fails with a `'charmap' codec` error.
+
 ### Build from source
 
 ```bash
