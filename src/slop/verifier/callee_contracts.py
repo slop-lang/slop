@@ -298,6 +298,9 @@ def contract_closed_over(tr, expr, allowed) -> bool:
     def free(node, bound, position_is_field=False) -> bool:
         if isinstance(node, Symbol):
             n = node.name
+            # `p.field` names p; the rest is field names.
+            if '.' in n[1:] and not n.startswith("'"):
+                n = n.split('.', 1)[0]
             if position_is_field or n in bound or n in ('true', 'false', 'nil', '_'):
                 return True
             if n.startswith("'") or n in tr.enum_values:

@@ -13915,6 +13915,39 @@ _CALLEE_POST_HOLDS = {
         (let ((n (make arena proto)))
           (set! proto.tag 1)
           n)))''',
+    # Each arm returns what its callee does; the callees change state, so
+    # their posts are taken only where the call is the value returned.
+    'tail-calls-in-both-arms-of-a-stateful-callee': '''(module m
+      (type Counter (record (n Int)))
+      (fn bump-a ((c (Ptr Counter)) (k Int))
+        (@spec (((Ptr Counter) Int) -> Int))
+        (@post (> $result c.n))
+        (do (set! c.n k) (+ k 1)))
+      (fn bump-b ((c (Ptr Counter)) (k Int))
+        (@spec (((Ptr Counter) Int) -> Int))
+        (@post (> $result c.n))
+        (do (set! c.n k) (+ k 2)))
+      (fn f ((c (Ptr Counter)) (b Bool) (k Int))
+        (@spec (((Ptr Counter) Bool Int) -> Int))
+        (@post (> $result c.n))
+        (if b (bump-a c k) (bump-b c k))))''',
+    # What a match reads out of a returned Result, and a field of a record
+    # held by value, are fixed once the call returns.
+    'value-read-post-of-a-stateful-callee': '''(module m
+      (type Delta (record (iteration Int) (items (List Int))))
+      (type Report (record (code Int)))
+      (fn collect ((arena Arena) (sink (Ptr Report)) (next Int))
+        (@spec ((Arena (Ptr Report) Int) -> (Result Delta Report)))
+        (@pre (>= next 1))
+        (@post (match $result ((ok d) (== (. d iteration) next)) ((error _) true)))
+        (ok (record-new Delta (iteration next) (items (list-new arena Int)))))
+      (fn f ((arena Arena) (sink (Ptr Report)) (iter Int))
+        (@spec ((Arena (Ptr Report) Int) -> (Result Delta Report)))
+        (@pre (>= iter 0))
+        (@post (match $result ((ok d) (== (. d iteration) (+ iter 1))) ((error _) true)))
+        (let ((result (collect arena sink (+ iter 1))))
+          (set! sink.code 0)
+          result)))''',
     # A callee's @pre about a literal's length is established by the literal.
     'pre-on-a-string-literal': '''(module m
       (fn q ((s String))
