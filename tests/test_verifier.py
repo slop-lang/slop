@@ -13872,12 +13872,12 @@ _CALLEE_POST_LEAKS['state-read-of-a-stateful-callee'] = '''(module m
       (fn bump ((c (Ptr Counter)))
         (@spec (((Ptr Counter)) -> Int))
         (@post (== $result (. c n)))
-        (do (set! (. c n) (+ (. c n) 1)) (. c n)))
+        (do (set! c.n (+ (. c n) 1)) (. c n)))
       (fn f ((c (Ptr Counter)))
         (@spec (((Ptr Counter)) -> Int))
         (@post (== $result (. c n)))
         (let ((a (bump c)))
-          (set! (. c n) 0)
+          (set! c.n 0)
           a)))'''
 
 # The same, through the `c.n` shorthand for a field read.
@@ -13886,12 +13886,12 @@ _CALLEE_POST_LEAKS['dotted-state-read-of-a-stateful-callee'] = '''(module m
       (fn bump ((c (Ptr Counter)))
         (@spec (((Ptr Counter)) -> Int))
         (@post (== $result c.n))
-        (do (set! (. c n) (+ (. c n) 1)) (. c n)))
+        (do (set! c.n (+ (. c n) 1)) (. c n)))
       (fn f ((c (Ptr Counter)))
         (@spec (((Ptr Counter)) -> Int))
         (@post (== $result c.n))
         (let ((a (bump c)))
-          (set! (. c n) 0)
+          (set! c.n 0)
           a)))'''
 
 # And these claim what is true, through a callee's contract.
@@ -13913,7 +13913,7 @@ _CALLEE_POST_HOLDS = {
         (@pre (!= proto nil))
         (@post (!= $result nil))
         (let ((n (make arena proto)))
-          (set! (. proto tag) 1)
+          (set! proto.tag 1)
           n)))''',
     # A callee's @pre about a literal's length is established by the literal.
     'pre-on-a-string-literal': '''(module m
