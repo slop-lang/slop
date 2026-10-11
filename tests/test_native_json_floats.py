@@ -107,3 +107,40 @@ class TestNativeJsonStrings:
         # value an escaped backslash gives
         items = _items(tmp_path, b'(a "q\\xz" "q\\\\xz")\n')
         assert [s.value for s in items[1:]] == ["q\\xz", "q\\xz"]
+
+    def test_non_ascii_utf8_passes_through(self, tmp_path):
+        # The escaper read each byte through a signed char, so every UTF-8
+        # byte >= 0x80 tested as a control byte (< 32) and came out as a
+        # garbled \\u00XX that json.loads rejects (#325)
+        text = "héllo ✓ § — ⊑"
+        items = _items(tmp_path, f'(a "{text}")\n'.encode("utf-8"))
+        assert isinstance(items[1], String)
+        assert items[1].value == text
+
+
+NON_ASCII_MODULE = """\
+(module u
+  (export f)
+  (fn f ()
+    (@intent "returns héllo ✓ §")
+    (@spec (() -> Int))
+    (@post {$result == 1})
+    1))
+"""
+
+
+class TestVerifyNonAscii:
+    def test_verify_source_accepts_non_ascii_literal(self, tmp_path, monkeypatch):
+        # slop verify parses through slop-parser's JSON; on 0.4.0 any
+        # non-ASCII string literal failed it with a parse error (#325)
+        from slop.verifier.api import Z3_AVAILABLE, verify_source
+        if not Z3_AVAILABLE:
+            pytest.skip("z3 not installed")
+        if not (REPO_ROOT / "bin" / "slop-parser").exists():
+            pytest.skip("native parser not built (make build-native)")
+        # Resolve slop-parser from this checkout, whatever SLOP_HOME says
+        monkeypatch.setenv("SLOP_HOME", str(REPO_ROOT))
+        results = verify_source(NON_ASCII_MODULE, filename=str(tmp_path / "u.slop"))
+        summary = [(r.name, r.status, r.message) for r in results]
+        assert all(r.status != "error" for r in results), summary
+        assert any(r.name == "f" and r.verified for r in results), summary
