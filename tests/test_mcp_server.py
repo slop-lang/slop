@@ -111,10 +111,13 @@ class TestProtocol:
             {"jsonrpc": "2.0", "method": 42},
             {"jsonrpc": "2.0", "id": {}, "method": "ping"},
             {"jsonrpc": "2.0", "id": True, "method": "ping"},
-            raw_lines=["not json"])
+            request(5, "initialize", dict(INITIALIZE, capabilities=42)),
+            request(6, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {}}),
+            raw_lines=["not json", '{"jsonrpc":"2.0","id":7,"method":"ping","params":{"x":NaN}}'])
         assert [(r["id"], r["error"]["code"]) for r in replies] == [
             (1, -32601), (2, -32602), (3, -32600), (4, -32602),
-            (None, -32600), (None, -32600), (None, -32600), (None, -32700)]
+            (None, -32600), (None, -32600), (None, -32600), (5, -32602), (6, -32602),
+            (None, -32700), (None, -32700)]
 
     def test_batch(self):
         replies, _ = session([request(1, "ping"),
@@ -296,6 +299,30 @@ NO_MODULE = """\
   (+ x "a"))
 """
 
+FIRST_FORM_NOT_A_MODULE = """\
+(@generation-mode deterministic)
+(module nested
+  (fn f ((x Int))
+    (@intent "Mixed types")
+    (@spec ((Int) -> String))
+    (+ x "a")))
+"""
+
+LOOSE_APP = """\
+(import loose-helper (g))
+(fn f ((x Int))
+  (@intent "Mixed types")
+  (@spec ((Int) -> String))
+  (+ x "a"))
+"""
+
+LOOSE_HELPER = """\
+(fn g ((x Int))
+  (@intent "Wrong result type")
+  (@spec ((Int) -> String))
+  x)
+"""
+
 USES_XML = """\
 (module uses-xml
   (import xml (xml-parse))
@@ -360,6 +387,23 @@ class TestCheck:
         assert "loose.slop:4:8: error: '+' needs a numeric operand" in text
         assert "unknown" not in text
 
+    def test_first_form_not_a_module(self, project):
+        # The checker keys it `unknown` too, though a module form follows
+        (project / "nested.slop").write_text(FIRST_FORM_NOT_A_MODULE)
+        text, _ = call("check", path="nested.slop")
+        assert "nested.slop:6:10: error: '+' needs a numeric operand" in text
+        assert "unknown" not in text
+
+    def test_two_files_without_a_module_form(self, project):
+        # Both are keyed `unknown`; each diagnostic still names its own file
+        (project / "loose-app.slop").write_text(LOOSE_APP)
+        (project / "loose-helper.slop").write_text(LOOSE_HELPER)
+        text, _ = call("check", path="loose-app.slop")
+        assert "loose-app.slop:5:8: error: '+' needs a numeric operand" in text
+        assert "loose-helper.slop:" in text and "return value of 'g'" in text
+        for line in text.splitlines()[:-1]:
+            assert ("return value of 'g'" in line) == line.startswith("loose-helper.slop:")
+
     def test_source(self, project):
         text, is_error = call("check", source=BAD)
         assert not is_error
@@ -379,21 +423,22 @@ class TestCheck:
         assert is_error and text.startswith("No such file: missing.slop")
 
 
-def test_check_output_keeps_the_entries_around_an_error_line():
+def test_check_output_has_one_item_per_file_in_order():
     # What `slop-compiler check --json a.slop b.slop c.slop` prints when b
-    # does not parse: b's error replaces its entry, mid-object
+    # does not parse: b's error line replaces its entry, mid-object
     out = ('{"a":{"diagnostics":[{"level":"error","line":8,"col":10,"message":"m1"}]}'
            'b.slop:7:15: error: invalid number literal\n'
-           ',"c":{"diagnostics":[]}}\n')
-    entries, errors = mcp_server.read_check_output(out)
-    assert [m for m, _ in entries] == ["a", "c"]
-    assert entries[0][1]["diagnostics"][0]["message"] == "m1"
-    assert errors == ["b.slop:7:15: error: invalid number literal"]
+           ',"unknown":{"diagnostics":[]}}\n')
+    items = mcp_server.read_check_output(out)
+    assert [kind for kind, _ in items] == ["entry", "error", "entry"]
+    assert items[0][1][0] == "a" and items[0][1][1]["diagnostics"][0]["message"] == "m1"
+    assert items[1][1] == "b.slop:7:15: error: invalid number literal"
+    assert items[2][1][0] == "unknown"
     # The last file failing, and a file that cannot be opened
-    assert mcp_server.read_check_output('{x.slop:1:1: error: Unterminated list\n}\n') == (
-        [], ["x.slop:1:1: error: Unterminated list"])
-    assert mcp_server.read_check_output('{Error: Could not open file: y.slop\n}') == (
-        [], ["Error: Could not open file: y.slop"])
+    assert mcp_server.read_check_output('{x.slop:1:1: error: Unterminated list\n}\n') == [
+        ("error", "x.slop:1:1: error: Unterminated list")]
+    assert mcp_server.read_check_output('{Error: Could not open file: y.slop\n}') == [
+        ("error", "Error: Could not open file: y.slop")]
     assert mcp_server.read_check_output("Usage: slop-compiler check ...") is None
 
 
@@ -443,20 +488,33 @@ class TestFormat:
         assert is_error and "is not UTF-8" in text
         assert latin1.read_bytes() == MESSY.replace('"i"', '"café"').encode("latin-1")
 
-    def test_failed_write_leaves_the_file_whole(self, tmp_path, monkeypatch):
+    def test_failed_write_restores_the_original(self, tmp_path, monkeypatch):
         path = tmp_path / "m.slop"
         path.write_text(MESSY)
-        path.chmod(0o640)
+        write = mcp_server._write_text
+        calls = []
 
-        def fail(src, dst):
-            raise OSError(28, "No space left on device")
-        monkeypatch.setattr(mcp_server.os, "replace", fail)
+        def fail_first(p, text):
+            calls.append(text)
+            if len(calls) == 1:
+                with open(p, "w") as f:      # stops part way
+                    f.write(text[:5])
+                raise OSError(28, "No space left on device")
+            write(p, text)
+        monkeypatch.setattr(mcp_server, "_write_text", fail_first)
         text, is_error = call("format", path=str(path))
-        assert is_error and "No space left on device" in text
+        assert is_error
+        assert text.endswith("No space left on device; the original was restored.")
         assert path.read_text() == MESSY
-        assert [p.name for p in tmp_path.iterdir()] == ["m.slop"]   # no temp file left
-        monkeypatch.undo()
-        monkeypatch.setenv("SLOP_HOME", str(REPO_ROOT))
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX hard links and modes")
+    def test_written_in_place(self, tmp_path):
+        # The file keeps its inode: a hard link sees the change, and the
+        # mode is the file's own
+        path, link = tmp_path / "a.slop", tmp_path / "b.slop"
+        path.write_text(MESSY)
+        path.chmod(0o640)
+        os.link(path, link)
         assert not call("format", path=str(path))[1]
-        if os.name != "nt":
-            assert path.stat().st_mode & 0o777 == 0o640
+        assert link.read_text() == format_source(MESSY)
+        assert path.stat().st_mode & 0o777 == 0o640

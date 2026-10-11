@@ -17,13 +17,12 @@ Homebrew formula installs no other Python package.
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import traceback
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from slop import __version__, paths
 
@@ -190,17 +189,18 @@ def _shown(path_str: str, aliases: Dict[str, str]) -> str:
 
 
 def read_check_output(text: str):
-    """Read `check --json` output as ([(module, entry)], [error lines]).
+    """Read `check --json` output as a list with one item per file checked,
+    in order: ('entry', (module, entry)) or ('error', line).
 
-    The output is one JSON object keyed by module name, but a file that
-    cannot be read or parsed gets a line of text (`file:line:col: error: ...`
-    or `Error: ...`) in place of its entry, in the middle of the object, and
-    the entries around it are still written. Returns None if the output is
-    not that object.
+    The output is one JSON object keyed by module name (`unknown` for a file
+    whose first form is not a module), one entry per file in argument order.
+    A file that cannot be read or parsed gets a line of text instead
+    (`file:line:col: error: ...` or `Error: ...`), in the middle of the
+    object, and the entries around it are still written. Returns None if the
+    output is not that object.
     """
     decoder = json.JSONDecoder(strict=False)
-    entries: List[Tuple[str, object]] = []
-    errors: List[str] = []
+    items: List[Tuple[str, Any]] = []
     i = len(text) - len(text.lstrip())
     if text[i:i + 1] != '{':
         return None
@@ -226,14 +226,14 @@ def read_check_output(text: str):
                 entry, i = decoder.raw_decode(text, i)
             except ValueError:
                 return None
-            entries.append((module, entry))
+            items.append(('entry', (module, entry)))
         else:
             end = text.find('\n', i)
             end = n if end < 0 else end
-            errors.append(text[i:end].strip())
+            items.append(('error', text[i:end].strip()))
             i = end + 1
-    errors += [line.strip() for line in text[i:].splitlines() if line.strip()]
-    return entries, errors
+    items += [('error', line.strip()) for line in text[i:].splitlines() if line.strip()]
+    return items
 
 
 def _run_check(target: Path, include: List[str], aliases: Dict[str, str]) -> str:
@@ -250,25 +250,39 @@ def _run_check(target: Path, include: List[str], aliases: Dict[str, str]) -> str
     result = subprocess.run(cmd + files, capture_output=True, text=True,
                             encoding='utf-8', errors='replace',
                             stdin=subprocess.DEVNULL)
-    read = read_check_output(result.stdout)
-    if read is None:
+    items = read_check_output(result.stdout)
+    if items is None:
         raise ToolError(f"The checker exited with status {result.returncode} "
                         f"and its output was not understood.\n"
                         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
-    entries, error_lines = read
 
-    # The JSON is keyed by module name, `unknown` for a file without a
-    # (module ...) form; map each back to its file
-    file_of: Dict[str, str] = {}
-    for f in files:
-        file_of.setdefault(_module_name(_read_text(f)) or 'unknown', f)
+    # One item per file, in order. Should that ever not hold, fall back to
+    # the module names the JSON is keyed by.
+    if len(items) == len(files):
+        file_at = list(files)
+    else:
+        file_of: Dict[str, str] = {}
+        for f in files:
+            file_of.setdefault(_module_name(_read_text(f)) or 'unknown', f)
+        file_at = [file_of.get(value[0], value[0]) if kind == 'entry' else ''
+                   for kind, value in items]
     order = {f: i for i, f in enumerate(reversed(files))}   # the target first
     stdlib = paths.get_stdlib_dir()
 
     diagnostics: List[Tuple[str, int, int, str, str]] = []
     hidden = 0
-    for module, entry in entries:
-        file = file_of.get(module, module)
+    parse_failed = False
+    for (kind, value), file in zip(items, file_at):
+        if kind == 'error':
+            parse_failed = True
+            d = _DIAGNOSTIC_RE.match(value)
+            if d:
+                diagnostics.append((file or d.group(1), int(d.group(2)), int(d.group(3)),
+                                    d.group(4), d.group(5)))
+            else:
+                diagnostics.append(('', 0, 0, 'error', value))
+            continue
+        entry = value[1]
         for d in (entry.get('diagnostics', []) if isinstance(entry, dict) else []):
             level = d.get('level', 'error')
             if level == 'warning' and _under(Path(file), stdlib):
@@ -276,14 +290,6 @@ def _run_check(target: Path, include: List[str], aliases: Dict[str, str]) -> str
                 continue
             diagnostics.append((file, d.get('line', 0), d.get('col', 0),
                                 level, d.get('message', '')))
-    parse_failed = bool(error_lines)
-    for line in error_lines:
-        d = _DIAGNOSTIC_RE.match(line)
-        if d:
-            diagnostics.append((d.group(1), int(d.group(2)), int(d.group(3)),
-                                d.group(4), d.group(5)))
-        else:
-            diagnostics.append(('', 0, 0, 'error', line))
     # An imported module that does not parse stops the import resolution, and
     # the checker then sees the file alone; say why
     if resolve_error is not None:
@@ -344,22 +350,11 @@ def tool_check(args: dict) -> str:
     return _run_check(target, include, {})
 
 
-def _replace_file(path: Path, text: str) -> None:
-    """Write `text` to `path` as UTF-8, all or nothing: into a temporary file
-    beside it, then renamed over it, keeping its permissions."""
-    real = path.resolve()
-    fd, tmp = tempfile.mkstemp(dir=real.parent, prefix=f".{real.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as f:
-            f.write(text)
-        shutil.copymode(real, tmp)
-        os.replace(tmp, real)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+def _write_text(path: Path, text: str) -> None:
+    # In place, as `slop format` writes: the file keeps its inode, so its
+    # owner, permissions, hard links and open readers all see the change
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(text)
 
 
 def tool_format(args: dict) -> str:
@@ -393,9 +388,15 @@ def tool_format(args: dict) -> str:
     if check:
         return f"{args['path']}: needs formatting"
     try:
-        _replace_file(path, formatted)
+        _write_text(path, formatted)
     except OSError as e:
-        raise ToolError(f"Cannot write {args['path']}: {e.strerror or e}; it was left as it was.")
+        # The write may have stopped part way; put the original back
+        try:
+            _write_text(path, source)
+            state = "the original was restored"
+        except OSError:
+            state = "it may now be incomplete"
+        raise ToolError(f"Cannot write {args['path']}: {e.strerror or e}; {state}.")
     return f"{args['path']}: formatted"
 
 
@@ -562,8 +563,10 @@ def _error(id_, code: int, message: str) -> dict:
 
 def _initialize(params: dict) -> dict:
     requested = params.get("protocolVersion")
-    if not isinstance(requested, str):
-        raise ProtocolError(INVALID_PARAMS, "initialize needs a protocolVersion string")
+    if not (isinstance(requested, str) and isinstance(params.get("capabilities"), dict)
+            and isinstance(params.get("clientInfo"), dict)):
+        raise ProtocolError(INVALID_PARAMS, "initialize needs protocolVersion (a string), "
+                                            "capabilities and clientInfo (objects)")
     version = requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
     return {
         "protocolVersion": version,
@@ -635,10 +638,15 @@ def handle_message(msg) -> Optional[dict]:
         return _error(id_, e.code, str(e))
 
 
+def _not_json(constant: str):
+    raise ValueError(f"{constant} is not JSON")
+
+
 def handle_line(line: bytes) -> Optional[object]:
     """The reply to one line of input, or None if nothing is owed."""
     try:
-        msg = json.loads(line.decode('utf-8'))
+        # parse_constant: Python's json takes NaN and Infinity; JSON does not
+        msg = json.loads(line.decode('utf-8'), parse_constant=_not_json)
     except (UnicodeDecodeError, ValueError):
         return _error(None, PARSE_ERROR, "Parse error")
     if isinstance(msg, list):
